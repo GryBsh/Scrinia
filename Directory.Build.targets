@@ -1,0 +1,16 @@
+<Project>
+  <!--
+    ICU4N_IDE_0002: ICU4N's buildTransitive targets check for NuGet.Build.Tasks.Pack.dll
+    at the old pre-.NET-10 SDK sub-path (Sdks/NuGet.Build.Tasks.Pack/CoreCLR/) to verify
+    the DLL version is >= 6.13.0.52.  On .NET 10 the DLL lives at the SDK root and the
+    check always fails, emitting a false-positive warning.
+
+    ICU4NSuppressNuGetBuildTasksPackVersionWarnings is the officially documented opt-out
+    property in ICU4N.Resources.NuGetVersionWarning.targets.  We are on .NET 10 preview
+    which ships NuGet.Build.Tasks.Pack 7.3.0, well above the 6.13.0.52 minimum, so the
+    warning is a confirmed false positive.
+  -->
+  <PropertyGroup>
+    <ICU4NSuppressNuGetBuildTasksPackVersionWarnings>true</ICU4NSuppressNuGetBuildTasksPackVersionWarnings>
+  </PropertyGroup>
+</Project>

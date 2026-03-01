@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Scrinia.Core\Scrinia.Core.csproj" />
+    <ProjectReference Include="..\Scrinia.Plugin.Abstractions\Scrinia.Plugin.Abstractions.csproj" />
+  </ItemGroup>
+
+  <!-- On Windows, use DirectML package exclusively — it ships a DML-enabled onnxruntime.dll
+       (16.5MB, CPU+DML) plus DirectML.dll. The base OnnxRuntime package's CPU-only native DLL
+       would overwrite it, so we only reference the base package on non-Windows.
+       Both packages depend on OnnxRuntime.Managed for the C# APIs. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.0"
+        Condition="!$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.22.0"
+        Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+  </ItemGroup>
+</Project>

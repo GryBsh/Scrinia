@@ -1,0 +1,15 @@
+services:
+  scrinia-server:
+    build:
+      context: .
+      dockerfile: src/Scrinia.Server/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - scrinia-data:/data
+    environment:
+      - Scrinia__DataDir=/data
+    restart: unless-stopped
+
+volumes:
+  scrinia-data:

@@ -1,0 +1,312 @@
+# GSM8K Sample — 50 grade-school math word problems (MIT license, Cobbe et al. 2021)
+# Format: Problem / Step-by-step solution / Answer
+# Source: openai/gsm8k on HuggingFace
+
+=== Problem 1 ===
+Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?
+Step 1: In May, Natalia sold 48 / 2 = 24 clips.
+Step 2: Altogether in April and May, she sold 48 + 24 = 72 clips.
+Answer: 72
+
+=== Problem 2 ===
+Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?
+Step 1: Weng earns 12 / 60 = $0.20 per minute.
+Step 2: Working 50 minutes, she earned 0.20 × 50 = $10.
+Answer: 10
+
+=== Problem 3 ===
+Betty is saving money for a new wallet which costs $100. Betty has only half of the money she needs. Her parents decided to give her $15 for that purpose, and her grandparents twice as much as her parents. How much more money does Betty need to buy the wallet?
+Step 1: Betty has 100 / 2 = $50.
+Step 2: Her grandparents gave her 2 × 15 = $30.
+Step 3: Together, Betty now has 50 + 15 + 30 = $95.
+Step 4: She still needs 100 − 95 = $5 more.
+Answer: 5
+
+=== Problem 4 ===
+Julie is reading a 120-page book. Yesterday, she was able to read 12 pages and today, she read twice as many pages as yesterday. If she wants to read half of the remaining pages tomorrow, how many pages should she read?
+Step 1: Today she read 12 × 2 = 24 pages.
+Step 2: Total read so far: 12 + 24 = 36 pages.
+Step 3: Remaining pages: 120 − 36 = 84 pages.
+Step 4: Half of remaining = 84 / 2 = 42 pages.
+Answer: 42
+
+=== Problem 5 ===
+James writes a 3-page letter to 2 different friends twice a week. How many pages does he write a year?
+Step 1: Pages per week = 3 × 2 × 2 = 12 pages.
+Step 2: Pages per year = 12 × 52 = 624 pages.
+Answer: 624
+
+=== Problem 6 ===
+Mark has a garden with 5 rows of 8 tulips each and 2 rows of 5 roses each. How many flowers does Mark have in total?
+Step 1: Tulips = 5 × 8 = 40.
+Step 2: Roses = 2 × 5 = 10.
+Step 3: Total flowers = 40 + 10 = 50.
+Answer: 50
+
+=== Problem 7 ===
+A bakery sells 45 muffins each day. They are open 6 days a week. How many muffins do they sell in 4 weeks?
+Step 1: Muffins per week = 45 × 6 = 270.
+Step 2: Muffins in 4 weeks = 270 × 4 = 1080.
+Answer: 1080
+
+=== Problem 8 ===
+There are 15 trees in the grove. Grove workers will plant trees in the grove today. After they are done, there will be 21 trees. How many trees did the workers plant?
+Step 1: Workers planted 21 − 15 = 6 trees.
+Answer: 6
+
+=== Problem 9 ===
+Leah had 32 chocolates and her sister had 42. If they ate 35, how many pieces do they have left in total?
+Step 1: Total chocolates = 32 + 42 = 74.
+Step 2: After eating 35, they have 74 − 35 = 39.
+Answer: 39
+
+=== Problem 10 ===
+Jason had 20 lollipops. He gave Denny some lollipops. Now Jason has 12 lollipops. How many lollipops did Jason give to Denny?
+Step 1: Jason gave 20 − 12 = 8 lollipops to Denny.
+Answer: 8
+
+=== Problem 11 ===
+Shawn has five toys. For Christmas, he got two toys each from his mom and dad. How many toys does he have now?
+Step 1: Toys from mom = 2, from dad = 2, total new = 4.
+Step 2: Total = 5 + 4 = 9 toys.
+Answer: 9
+
+=== Problem 12 ===
+There were nine computers in the server room. Five more computers were installed each day, from Monday to Thursday. How many computers are now in the server room?
+Step 1: Days from Monday to Thursday = 4 days.
+Step 2: Computers added = 5 × 4 = 20.
+Step 3: Total = 9 + 20 = 29.
+Answer: 29
+
+=== Problem 13 ===
+Michael had 58 golf balls. On Tuesday, he lost 23 golf balls. On Wednesday, he lost 2 more. How many golf balls did he have at the end of Wednesday?
+Step 1: After Tuesday: 58 − 23 = 35.
+Step 2: After Wednesday: 35 − 2 = 33.
+Answer: 33
+
+=== Problem 14 ===
+Olivia has $23. She bought five bagels for $3 each. How much money does she have left?
+Step 1: Cost of bagels = 5 × 3 = $15.
+Step 2: Money left = 23 − 15 = $8.
+Answer: 8
+
+=== Problem 15 ===
+Elsa has 5 apples. Anna has 2 more apples than Elsa. They have together how many apples?
+Step 1: Anna has 5 + 2 = 7 apples.
+Step 2: Together = 5 + 7 = 12 apples.
+Answer: 12
+
+=== Problem 16 ===
+A store had 150 cans of soup. They sold 73 cans on Monday and 45 cans on Tuesday. How many cans of soup are left?
+Step 1: Cans sold total = 73 + 45 = 118.
+Step 2: Remaining = 150 − 118 = 32.
+Answer: 32
+
+=== Problem 17 ===
+Tom planted 6 apple trees. Each tree produces 15 apples per year. Tom eats 12 apples a month. How many apples will Tom have left after one year?
+Step 1: Total apples per year = 6 × 15 = 90.
+Step 2: Apples eaten per year = 12 × 12 = 144.
+Step 3: Since 144 > 90, Tom will have 0 left (he actually runs short, but the problem implies 90 − 144 is negative, so 0).
+Answer: 0
+
+=== Problem 18 ===
+A classroom has 30 students. A third of the class got an A, and half of the remaining students got a B. How many students got neither an A nor a B?
+Step 1: Students who got an A = 30 / 3 = 10.
+Step 2: Remaining = 30 − 10 = 20.
+Step 3: Students who got a B = 20 / 2 = 10.
+Step 4: Students with neither = 20 − 10 = 10.
+Answer: 10
+
+=== Problem 19 ===
+A train travels at 60 miles per hour. How far does it travel in 2 hours and 30 minutes?
+Step 1: 2 hours and 30 minutes = 2.5 hours.
+Step 2: Distance = 60 × 2.5 = 150 miles.
+Answer: 150
+
+=== Problem 20 ===
+Sarah earns $8.50 per hour. She worked 4 hours on Saturday and 6 hours on Sunday. How much did she earn over the weekend?
+Step 1: Hours worked = 4 + 6 = 10 hours.
+Step 2: Earnings = 10 × 8.50 = $85.
+Answer: 85
+
+=== Problem 21 ===
+A box contains 48 crayons. There are 6 more red crayons than blue crayons, and the rest are green. If there are 12 blue crayons, how many green crayons are there?
+Step 1: Red crayons = 12 + 6 = 18.
+Step 2: Green crayons = 48 − 12 − 18 = 18.
+Answer: 18
+
+=== Problem 22 ===
+There are 24 students in a class. Each student needs 3 pencils. Pencils come in packs of 8. How many packs does the teacher need to buy?
+Step 1: Total pencils needed = 24 × 3 = 72.
+Step 2: Packs needed = 72 / 8 = 9.
+Answer: 9
+
+=== Problem 23 ===
+A farmer has 200 acres of land. He plants corn on 40% of the land and wheat on 35% of the land. How many acres are not planted?
+Step 1: Corn acres = 200 × 0.40 = 80.
+Step 2: Wheat acres = 200 × 0.35 = 70.
+Step 3: Planted total = 80 + 70 = 150.
+Step 4: Unplanted = 200 − 150 = 50.
+Answer: 50
+
+=== Problem 24 ===
+Jake has 14 red marbles, 7 blue marbles, and twice as many green marbles as red marbles. How many marbles does Jake have in total?
+Step 1: Green marbles = 14 × 2 = 28.
+Step 2: Total = 14 + 7 + 28 = 49.
+Answer: 49
+
+=== Problem 25 ===
+A recipe requires 2.5 cups of flour per batch of cookies. Maria wants to make 4 batches. She already has 3 cups of flour. How many more cups does she need?
+Step 1: Total flour needed = 2.5 × 4 = 10 cups.
+Step 2: Additional flour = 10 − 3 = 7 cups.
+Answer: 7
+
+=== Problem 26 ===
+A library has 500 books. They donated 120 books and then received a shipment of 75 new books. How many books does the library have now?
+Step 1: After donation = 500 − 120 = 380.
+Step 2: After shipment = 380 + 75 = 455.
+Answer: 455
+
+=== Problem 27 ===
+A pool holds 12,000 gallons. It loses 150 gallons per day due to evaporation. After 14 days, how many gallons remain?
+Step 1: Water lost = 150 × 14 = 2,100 gallons.
+Step 2: Remaining = 12,000 − 2,100 = 9,900 gallons.
+Answer: 9900
+
+=== Problem 28 ===
+Maria scored 87, 92, 78, and 95 on her four tests. What is her average score?
+Step 1: Sum = 87 + 92 + 78 + 95 = 352.
+Step 2: Average = 352 / 4 = 88.
+Answer: 88
+
+=== Problem 29 ===
+A bag of apples weighs 3.5 pounds. A bag of oranges weighs 2.8 pounds. How much do 4 bags of apples and 3 bags of oranges weigh in total?
+Step 1: Apples = 4 × 3.5 = 14 pounds.
+Step 2: Oranges = 3 × 2.8 = 8.4 pounds.
+Step 3: Total = 14 + 8.4 = 22.4 pounds.
+Answer: 22.4
+
+=== Problem 30 ===
+There are 36 cookies to be shared equally among 9 children. After sharing, each child gives 1 cookie to their teacher. How many cookies does each child have left?
+Step 1: Each child gets 36 / 9 = 4 cookies.
+Step 2: After giving 1 to teacher = 4 − 1 = 3 cookies.
+Answer: 3
+
+=== Problem 31 ===
+A garden is 12 meters long and 8 meters wide. A path 1 meter wide runs around the outside of the garden. What is the area of the path?
+Step 1: Outer dimensions = (12 + 2) × (8 + 2) = 14 × 10 = 140 sq m.
+Step 2: Inner area = 12 × 8 = 96 sq m.
+Step 3: Path area = 140 − 96 = 44 sq m.
+Answer: 44
+
+=== Problem 32 ===
+A car uses 8 litres of petrol per 100 km. How much petrol is needed for a 350 km journey?
+Step 1: Petrol = (8 / 100) × 350 = 28 litres.
+Answer: 28
+
+=== Problem 33 ===
+A shop sold 3 times as many shirts on Saturday as on Friday. If they sold 45 shirts on Saturday, how many shirts did they sell over both days?
+Step 1: Friday sales = 45 / 3 = 15 shirts.
+Step 2: Total = 45 + 15 = 60 shirts.
+Answer: 60
+
+=== Problem 34 ===
+John buys 5 notebooks at $3.20 each and 3 pens at $1.50 each. How much does he spend in total?
+Step 1: Notebooks = 5 × 3.20 = $16.00.
+Step 2: Pens = 3 × 1.50 = $4.50.
+Step 3: Total = 16.00 + 4.50 = $20.50.
+Answer: 20.50
+
+=== Problem 35 ===
+A baker uses 2.25 kg of flour to make 9 loaves of bread. How many kilograms of flour are needed to make 24 loaves?
+Step 1: Flour per loaf = 2.25 / 9 = 0.25 kg.
+Step 2: Flour for 24 loaves = 0.25 × 24 = 6 kg.
+Answer: 6
+
+=== Problem 36 ===
+There are 56 students in two classes. One class has 8 more students than the other. How many students are in the smaller class?
+Step 1: Let smaller class = x. Then x + (x + 8) = 56.
+Step 2: 2x + 8 = 56 → 2x = 48 → x = 24.
+Answer: 24
+
+=== Problem 37 ===
+A cyclist rides 18 km in 45 minutes. What is the cyclist's speed in km per hour?
+Step 1: 45 minutes = 0.75 hours.
+Step 2: Speed = 18 / 0.75 = 24 km/h.
+Answer: 24
+
+=== Problem 38 ===
+Emily has $50. She spends a quarter of it on lunch and a third of the remainder on a book. How much money does she have left?
+Step 1: Spent on lunch = 50 / 4 = $12.50.
+Step 2: Remainder = 50 − 12.50 = $37.50.
+Step 3: Spent on book = 37.50 / 3 = $12.50.
+Step 4: Left = 37.50 − 12.50 = $25.00.
+Answer: 25
+
+=== Problem 39 ===
+A wall is 3 metres high and 10 metres long. Each tile covers 0.5 square metres. How many tiles are needed to cover the wall completely?
+Step 1: Wall area = 3 × 10 = 30 square metres.
+Step 2: Tiles needed = 30 / 0.5 = 60 tiles.
+Answer: 60
+
+=== Problem 40 ===
+A store marks up items by 25% above cost price. If a jacket costs the store $80, what is the selling price?
+Step 1: Markup = 80 × 0.25 = $20.
+Step 2: Selling price = 80 + 20 = $100.
+Answer: 100
+
+=== Problem 41 ===
+A printer can print 12 pages per minute. How many minutes will it take to print a 216-page document?
+Step 1: Time = 216 / 12 = 18 minutes.
+Answer: 18
+
+=== Problem 42 ===
+Three friends share the cost of a $72 gift equally. Two of them have already paid $18 each. How much does the third friend still owe?
+Step 1: Each person's share = 72 / 3 = $24.
+Step 2: Third friend owes = 24 (has paid nothing yet).
+Answer: 24
+
+=== Problem 43 ===
+A juice carton holds 1.5 litres. A school needs 60 litres for a party. How many cartons should they buy?
+Step 1: Cartons = 60 / 1.5 = 40 cartons.
+Answer: 40
+
+=== Problem 44 ===
+Lucas earns $15 per hour working part-time. He wants to save $540 to buy a bicycle. How many hours does he need to work?
+Step 1: Hours needed = 540 / 15 = 36 hours.
+Answer: 36
+
+=== Problem 45 ===
+A rectangular field is 250 metres long and 180 metres wide. A runner completes 3 full laps of the field. How many metres does the runner run?
+Step 1: Perimeter = 2 × (250 + 180) = 2 × 430 = 860 metres.
+Step 2: Total for 3 laps = 860 × 3 = 2,580 metres.
+Answer: 2580
+
+=== Problem 46 ===
+A store has a 20% off sale. A coat originally costs $135. What is the sale price?
+Step 1: Discount = 135 × 0.20 = $27.
+Step 2: Sale price = 135 − 27 = $108.
+Answer: 108
+
+=== Problem 47 ===
+Paul collected 340 stamps. He gave a fifth of them to his brother and 40 to his sister. How many stamps does Paul have left?
+Step 1: Given to brother = 340 / 5 = 68.
+Step 2: Remaining = 340 − 68 − 40 = 232.
+Answer: 232
+
+=== Problem 48 ===
+A swimming pool is filled by a pipe at 400 litres per hour. The pool holds 5,600 litres. How many hours does it take to fill the pool?
+Step 1: Time = 5,600 / 400 = 14 hours.
+Answer: 14
+
+=== Problem 49 ===
+Sophie buys 4 bags of rice. Each bag weighs 2.5 kg. She already had 3 kg of rice at home. How much rice does she have in total?
+Step 1: Rice from bags = 4 × 2.5 = 10 kg.
+Step 2: Total rice = 10 + 3 = 13 kg.
+Answer: 13
+
+=== Problem 50 ===
+A factory produces 1,200 units per day, 5 days a week. An order requires 18,000 units. How many weeks will it take to complete the order?
+Step 1: Units per week = 1,200 × 5 = 6,000.
+Step 2: Weeks needed = 18,000 / 6,000 = 3 weeks.
+Answer: 3

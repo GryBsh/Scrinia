@@ -1,0 +1,29 @@
+archive/
+.claude/
+.vscode/
+bin/
+build/
+obj/
+NUL
+
+# Scrinia runtime data
+.scrinia/
+
+# Test output
+TestResults/
+*.trx
+
+# IDE / OS
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# Web UI
+web/node_modules/
+src/Scrinia.Server/wwwroot/
+
+# Publish output
+publish/
+
+.fake

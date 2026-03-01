@@ -1,0 +1,363 @@
+# MMLU Sample — 50 questions across 5 domains (MIT license, Hendrycks et al. 2021)
+# Format: domain / question / options A–D / Answer
+# Domains: physics (P), biology (B), chemistry (C), history (H), computer_science (CS)
+
+=== PHYSICS ===
+
+Q1: What is the speed of light in a vacuum?
+A. 3.0 × 10^6 m/s
+B. 3.0 × 10^8 m/s
+C. 3.0 × 10^10 m/s
+D. 3.0 × 10^12 m/s
+Answer: B
+
+Q2: According to Newton's second law, force equals:
+A. mass times velocity
+B. mass times acceleration
+C. momentum times time
+D. energy divided by distance
+Answer: B
+
+Q3: What is the SI unit of electric charge?
+A. Volt
+B. Ampere
+C. Coulomb
+D. Ohm
+Answer: C
+
+Q4: What phenomenon explains why the sky appears blue during the day?
+A. Reflection off the atmosphere
+B. Refraction of sunlight through water vapour
+C. Rayleigh scattering of sunlight by air molecules
+D. Diffraction of sunlight around clouds
+Answer: C
+
+Q5: What is the approximate half-life of Carbon-14?
+A. 573 years
+B. 5,730 years
+C. 57,300 years
+D. 573,000 years
+Answer: B
+
+Q6: Which quantum number describes the orientation of an atomic orbital in space?
+A. Principal (n)
+B. Angular momentum (l)
+C. Magnetic (ml)
+D. Spin (ms)
+Answer: C
+
+Q7: The photoelectric effect demonstrated that light:
+A. travels exclusively as waves
+B. can be polarised by a prism
+C. is quantised into discrete energy packets called photons
+D. always moves at the same speed regardless of wavelength
+Answer: C
+
+Q8: In a p-n junction diode, forward bias refers to:
+A. positive terminal connected to n-type, negative to p-type
+B. positive terminal connected to p-type, negative to n-type
+C. no external voltage applied
+D. only alternating current applied
+Answer: B
+
+Q9: Which of the following is a vector quantity?
+A. Temperature
+B. Mass
+C. Energy
+D. Velocity
+Answer: D
+
+Q10: A standing wave is characterised by:
+A. energy transport without node points
+B. nodes at which amplitude is always zero
+C. wavelengths that change over time
+D. propagation in only one direction
+Answer: B
+
+=== BIOLOGY ===
+
+Q11: Which organelle is primarily responsible for ATP synthesis in eukaryotic cells?
+A. Ribosome
+B. Nucleus
+C. Mitochondrion
+D. Endoplasmic reticulum
+Answer: C
+
+Q12: Which molecule carries genetic information in most organisms?
+A. mRNA
+B. DNA
+C. tRNA
+D. ATP
+Answer: B
+
+Q13: During which phase of mitosis do chromosomes align along the cell equator?
+A. Prophase
+B. Metaphase
+C. Anaphase
+D. Telophase
+Answer: B
+
+Q14: Which metabolic pathway converts glucose to pyruvate?
+A. Krebs cycle
+B. Glycolysis
+C. Calvin cycle
+D. Oxidative phosphorylation
+Answer: B
+
+Q15: Which ABO blood type is considered the universal donor for red blood cells?
+A. AB positive
+B. A positive
+C. O negative
+D. B negative
+Answer: C
+
+Q16: What type of bond holds the complementary strands of DNA together?
+A. Covalent
+B. Ionic
+C. Hydrogen
+D. Van der Waals
+Answer: C
+
+Q17: Which of the following is NOT a primary function of the human liver?
+A. Bile production
+B. Detoxification of blood
+C. Insulin production
+D. Glycogen storage
+Answer: C
+
+Q18: In Mendelian genetics, if Tt × Tt, what proportion of offspring will express the dominant phenotype?
+A. 25%
+B. 50%
+C. 75%
+D. 100%
+Answer: C
+
+Q19: The term for organisms that synthesise organic compounds from inorganic sources via photosynthesis is:
+A. Heterotrophs
+B. Decomposers
+C. Autotrophs
+D. Parasites
+Answer: C
+
+Q20: Which process describes how mRNA codons are translated into amino acids?
+A. Transcription
+B. Replication
+C. Translation
+D. Splicing
+Answer: C
+
+=== CHEMISTRY ===
+
+Q21: What is the chemical formula for water?
+A. H2O2
+B. HO
+C. H2O
+D. H3O
+Answer: C
+
+Q22: Which element has the atomic number 6?
+A. Oxygen
+B. Carbon
+C. Nitrogen
+D. Silicon
+Answer: B
+
+Q23: What type of bond is formed by sharing electron pairs between atoms?
+A. Ionic
+B. Metallic
+C. Covalent
+D. London dispersion
+Answer: C
+
+Q24: Which of the following is an exothermic reaction?
+A. Photosynthesis
+B. Melting of ice
+C. Combustion of methane
+D. Electrolysis of water
+Answer: C
+
+Q25: The pH of a neutral aqueous solution at 25 °C is:
+A. 0
+B. 7
+C. 14
+D. 1
+Answer: B
+
+Q26: What is the oxidation state of sulfur in H2SO4?
+A. +2
+B. +4
+C. +6
+D. +8
+Answer: C
+
+Q27: According to Le Chatelier's principle, increasing pressure on a gas-phase equilibrium shifts it toward:
+A. the side with more moles of gas
+B. the side with fewer moles of gas
+C. the reactant side, always
+D. no shift occurs
+Answer: B
+
+Q28: What is the IUPAC name for CH3CH2OH?
+A. Methanol
+B. Propan-1-ol
+C. Ethanol
+D. Butan-1-ol
+Answer: C
+
+Q29: Hess's Law states that the total enthalpy change for a reaction:
+A. depends on the reaction pathway
+B. is always negative
+C. is independent of the pathway
+D. equals zero at equilibrium
+Answer: C
+
+Q30: Which gas law states that pressure and volume are inversely proportional at constant temperature?
+A. Charles's Law
+B. Avogadro's Law
+C. Boyle's Law
+D. Gay-Lussac's Law
+Answer: C
+
+=== HISTORY ===
+
+Q31: In which year did World War II end?
+A. 1943
+B. 1944
+C. 1945
+D. 1946
+Answer: C
+
+Q32: Who was the first President of the United States?
+A. John Adams
+B. Benjamin Franklin
+C. Thomas Jefferson
+D. George Washington
+Answer: D
+
+Q33: The Renaissance movement originated in which country?
+A. France
+B. England
+C. Italy
+D. Germany
+Answer: C
+
+Q34: Which ancient wonder of the world still stands today?
+A. The Colossus of Rhodes
+B. The Hanging Gardens of Babylon
+C. The Great Pyramid of Giza
+D. The Lighthouse of Alexandria
+Answer: C
+
+Q35: The Magna Carta was signed in which year?
+A. 1066
+B. 1215
+C. 1415
+D. 1607
+Answer: B
+
+Q36: Which ruler founded the Mongol Empire in the 13th century?
+A. Kublai Khan
+B. Timur (Tamerlane)
+C. Genghis Khan
+D. Attila the Hun
+Answer: C
+
+Q37: The French Revolution began in which year?
+A. 1776
+B. 1789
+C. 1815
+D. 1848
+Answer: B
+
+Q38: Who was the last pharaoh of ancient Egypt before Roman conquest?
+A. Nefertiti
+B. Hatshepsut
+C. Cleopatra VII
+D. Ramesses II
+Answer: C
+
+Q39: The Cold War primarily opposed which two superpowers?
+A. USA and China
+B. USA and United Kingdom
+C. USA and USSR
+D. United Kingdom and USSR
+Answer: C
+
+Q40: In which year did the Berlin Wall fall?
+A. 1985
+B. 1987
+C. 1989
+D. 1991
+Answer: C
+
+=== COMPUTER SCIENCE ===
+
+Q41: What does CPU stand for?
+A. Central Processing Unit
+B. Computer Personal Unit
+C. Central Program Utility
+D. Core Processing Unit
+Answer: A
+
+Q42: Which data structure operates on the Last In, First Out (LIFO) principle?
+A. Queue
+B. Stack
+C. Linked List
+D. Heap
+Answer: B
+
+Q43: What is the time complexity of binary search on a sorted array of n elements?
+A. O(n)
+B. O(n²)
+C. O(log n)
+D. O(n log n)
+Answer: C
+
+Q44: Which protocol is used for sending outgoing email messages?
+A. HTTP
+B. FTP
+C. SMTP
+D. DNS
+Answer: C
+
+Q45: What does RAM stand for?
+A. Random Access Memory
+B. Read-Only Access Memory
+C. Rapid Access Module
+D. Random Array Memory
+Answer: A
+
+Q46: What is the base of the hexadecimal number system?
+A. 2
+B. 8
+C. 10
+D. 16
+Answer: D
+
+Q47: Which sorting algorithm has the best average-case time complexity of O(n log n)?
+A. Bubble sort
+B. Insertion sort
+C. Quicksort
+D. Selection sort
+Answer: C
+
+Q48: What does SQL stand for?
+A. Simple Query Language
+B. Standard Query Language
+C. Structured Query Language
+D. Sequential Query Language
+Answer: C
+
+Q49: In a relational database, a primary key:
+A. can contain duplicate values
+B. can be NULL
+C. uniquely identifies each record in the table
+D. must always be an integer
+Answer: C
+
+Q50: Which OSI model layer is responsible for end-to-end communication and error recovery?
+A. Network layer
+B. Data Link layer
+C. Transport layer
+D. Session layer
+Answer: C

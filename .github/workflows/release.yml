@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-cli:
+    strategy:
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            ext: .exe
+          - rid: linux-x64
+            os: ubuntu-latest
+            ext: ''
+          - rid: osx-arm64
+            os: macos-latest
+            ext: ''
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          include-prerelease: true
+
+      # ── CLI only (no embeddings) ──────────────────────────────
+      - name: Publish CLI
+        run: >
+          dotnet publish src/Scrinia/Scrinia.csproj
+          --runtime ${{ matrix.rid }}
+          --self-contained
+          --configuration Release
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=true
+          --output publish
+
+      - name: Archive CLI (zip)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: Compress-Archive -Path publish/scri${{ matrix.ext }} -DestinationPath scri-${{ matrix.rid }}.zip
+
+      - name: Archive CLI (tar)
+        if: matrix.rid != 'win-x64'
+        run: tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.ext }}
+
+      # ── CLI + embeddings plugin ───────────────────────────────
+      - name: Publish embeddings plugin
+        run: >
+          dotnet publish src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj
+          --runtime ${{ matrix.rid }}
+          --configuration Release
+          --output publish/plugins
+
+      - name: Clean stray plugin artifacts
+        shell: bash
+        run: |
+          cd publish/plugins
+          shopt -s extglob
+          rm -rf !(scri-plugin-embeddings|scri-plugin-embeddings.exe)
+
+      - name: Archive CLI+embeddings (zip)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
+
+      - name: Archive CLI+embeddings (tar)
+        if: matrix.rid != 'win-x64'
+        run: tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish scri${{ matrix.ext }} plugins
+
+      # ── Upload both archives ──────────────────────────────────
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if [[ "${{ matrix.rid }}" == "win-x64" ]]; then
+            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.zip scri-${{ matrix.rid }}-embeddings.zip
+          else
+            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.tar.gz scri-${{ matrix.rid }}-embeddings.tar.gz
+          fi
+
+  build-server:
+    strategy:
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            archive: scrinia-server-win-x64.zip
+          - rid: linux-x64
+            os: ubuntu-latest
+            archive: scrinia-server-linux-x64.tar.gz
+          - rid: osx-arm64
+            os: macos-latest
+            archive: scrinia-server-osx-arm64.tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          include-prerelease: true
+
+      - name: Publish
+        run: >
+          dotnet publish src/Scrinia.Server/Scrinia.Server.csproj
+          --runtime ${{ matrix.rid }}
+          --self-contained
+          --configuration Release
+          -p:PublishSingleFile=true
+          --output server-publish
+
+      - name: Archive (zip)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: Compress-Archive -Path server-publish/* -DestinationPath ${{ matrix.archive }}
+
+      - name: Archive (tar)
+        if: matrix.rid != 'win-x64'
+        run: tar czf ${{ matrix.archive }} -C server-publish .
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.archive }}
+
+  build-docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/Scrinia.Server/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/scrinia-server:${{ steps.version.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/scrinia-server:latest
