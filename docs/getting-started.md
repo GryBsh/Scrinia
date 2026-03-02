@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to 17 MCP tools for persistent memory. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to 18 MCP tools for persistent memory. See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -161,7 +161,7 @@ Memories are organized into three scopes:
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes 17 tools:
+When connected via MCP, Scrinia exposes 18 tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -181,7 +181,8 @@ When connected via MCP, Scrinia exposes 17 tools:
 | `guide` | Session playbook (call once per session) |
 | `reflect` | End-of-session reflection prompt |
 | `ingest` | Full knowledge ingestion playbook |
-| `kt` | Knowledge transfer briefing |
+| `ka` | Knowledge analysis -- inventory, gap analysis, report to user |
+| `kt` | Knowledge transfer -- runs ka(), then produces per-topic KT documents |
 
 ## What's Next
 

@@ -1086,12 +1086,11 @@ public sealed class ScriniaMcpTools
             3. Report the summary to the user.
             """);
 
-    [McpServerTool(Name = "kt"), Description(
-        "Knowledge transfer — prepare a thorough, human-readable briefing of all persistent memories. " +
-        "Returns an inventory of every memory with metadata, plus a detailed playbook " +
-        "instructing you to read every memory completely, annotate each one, write a synthesis " +
-        "summary, and deliver a polished markdown document. You must not skip or skim any memory.")]
-    public Task<string> Kt(
+    [McpServerTool(Name = "ka"), Description(
+        "Knowledge analysis — inventory all persistent memories, read each one completely, " +
+        "perform gap analysis, and report findings to the user. Returns the inventory plus " +
+        "a playbook for thorough analysis. Use this before kt() or on its own for auditing.")]
+    public Task<string> Ka(
         [Description("Optional comma-separated scope filter, e.g. 'local,api,research'. " +
                      "Defaults to all persistent scopes. Ephemeral memories are always excluded.")] string? scopes = null,
         CancellationToken cancellationToken = default)
@@ -1121,7 +1120,7 @@ public sealed class ScriniaMcpTools
         var sb = new System.Text.StringBuilder();
 
         // ── Inventory ────────────────────────────────────────────────────
-        sb.AppendLine("# Knowledge Transfer — Memory Inventory");
+        sb.AppendLine("# Knowledge Analysis — Memory Inventory");
         sb.AppendLine();
         sb.AppendLine($"**{allEntries.Count} {(allEntries.Count == 1 ? "memory" : "memories")}** across " +
                        $"**{topicCount} {(topicCount == 1 ? "topic" : "topics")}** ({FormatBytes(totalBytes)} total)");
@@ -1139,55 +1138,177 @@ public sealed class ScriniaMcpTools
                 string desc = e.Description.Length > 80
                     ? e.Description[..80] + "..."
                     : e.Description;
-                sb.AppendLine($"- **{qualName}** ({size}, {e.ChunkCount} chunk{(e.ChunkCount == 1 ? "" : "s")}) — {desc}");
+                string tags = e.Tags is { Length: > 0 } ? $" [tags: {string.Join(", ", e.Tags)}]" : "";
+                string review = "";
+                if (e.ReviewAfter.HasValue || !string.IsNullOrEmpty(e.ReviewWhen))
+                {
+                    var parts = new List<string>();
+                    if (e.ReviewAfter.HasValue) parts.Add($"after {e.ReviewAfter.Value:yyyy-MM-dd}");
+                    if (!string.IsNullOrEmpty(e.ReviewWhen)) parts.Add(e.ReviewWhen);
+                    review = $" **[REVIEW: {string.Join("; ", parts)}]**";
+                }
+                sb.AppendLine($"- **{qualName}** ({size}, {e.ChunkCount} chunk{(e.ChunkCount == 1 ? "" : "s")}, created {e.CreatedAt:yyyy-MM-dd}) — {desc}{tags}{review}");
             }
             sb.AppendLine();
         }
 
-        // ── Playbook ─────────────────────────────────────────────────────
+        // ── Analysis Playbook ────────────────────────────────────────────
         sb.AppendLine("""
             ## Playbook
 
-            Compile a **"Scrinia Knowledge Transfer"** markdown document. Be thorough — every scrinia memory must be represented.
+            Perform a thorough knowledge analysis and **report the findings to the user**. Do not write KT documents yet — this is analysis only.
 
             ### Step 1 — Read every scrinia memory completely
             - Call `show("name")` for each scrinia memory listed above. Do NOT skip or skim any.
             - For multi-chunk scrinia memories: call `chunk_count()` then `get_chunk()` for every chunk.
             - Read them in the order listed (grouped by topic, alphabetical within each group).
 
-            ### Step 2 — Write a section per scrinia memory
-            For each scrinia memory, write a dedicated section containing:
-            - **Heading**: the qualified name (e.g., `## api:auth-flow`)
-            - **Metadata**: size, chunk count, created/updated dates, tags, review conditions
-            - **Content**: the full content — preserve faithfully, but reformat for readability
-            - **Annotations** (your analysis):
-              - Cross-references: connections to other scrinia memories in this knowledge base
-              - Staleness: is anything outdated based on what you know?
-              - Gaps: what's missing that should be added?
-              - Contradictions: does this conflict with other scrinia memories?
+            ### Step 2 — Analyze each scrinia memory
+            As you read, evaluate each scrinia memory for:
+            - **Accuracy**: does the content match what you know about the codebase/project?
+            - **Completeness**: is important information missing from this scrinia memory?
+            - **Staleness**: has the content drifted from reality? Check review markers especially.
+            - **Cross-references**: what other scrinia memories does this one relate to or depend on?
+            - **Contradictions**: does this conflict with other scrinia memories or with the codebase?
 
-            ### Step 3 — Write a synthesis summary at the top
-            Before the per-scrinia-memory sections, add a synthesis section covering:
-            - **Coverage map**: what domains/topics are represented and at what depth
-            - **Key themes**: the most important knowledge across all scrinia memories
-            - **Dependency graph**: which scrinia memories reference or depend on each other
-            - **Gap analysis**: important knowledge areas with no coverage
-            - **Staleness audit**: scrinia memories with review markers or suspected outdated content
-            - **Recommended actions**: specific store/update/forget actions to improve the knowledge base
+            ### Step 3 — Identify gaps
+            After reading ALL scrinia memories, identify knowledge areas that SHOULD exist but DON'T:
+            - Important project features or components with no scrinia memory coverage
+            - Decisions, patterns, or conventions that are undocumented
+            - Onboarding knowledge a new contributor would need
+            - Operational knowledge (deployment, debugging, monitoring) that's missing
+            - Relationships between components that aren't captured anywhere
 
-            ### Step 4 — Deliver the document
-            - Write the completed document to a file, display inline, or deliver however your platform supports
-            - Confirm with the user how they'd like to receive it
-            - The document should be self-contained and useful without access to scrinia
+            ### Step 4 — Report to the user
+            Present a structured analysis report covering:
+
+            **Coverage summary**: What domains/topics are well-covered vs. sparse?
+
+            **Staleness audit**: List scrinia memories with review markers, suspected outdated content, or confirmed drift. Be specific about what's wrong.
+
+            **Gap analysis**: List missing knowledge areas, ordered by importance. For each gap, note:
+            - What should be documented
+            - Why it matters
+            - Which topic it belongs in
+
+            **Contradiction check**: Any conflicting information between scrinia memories?
+
+            **Recommended actions**: Concrete, prioritized list of:
+            - Scrinia memories to update (with what needs changing)
+            - Scrinia memories to create (with suggested names and content scope)
+            - Scrinia memories to delete or consolidate
+            - Scrinia memories to reorganize (wrong topic, poor naming)
+
+            ### Quality checklist
+            Before reporting, verify:
+            - [ ] Every scrinia memory from the inventory was fully read (no skipping)
+            - [ ] Multi-chunk scrinia memories were completely read (all chunks)
+            - [ ] Gap analysis considers the project holistically, not just what's stored
+            - [ ] Recommendations are specific and actionable (not vague suggestions)
+            - [ ] Staleness concerns cite specific evidence
+            """);
+
+        return Task.FromResult(sb.ToString().TrimEnd());
+    }
+
+    [McpServerTool(Name = "kt"), Description(
+        "Knowledge transfer — produce focused, per-topic KT documents from persistent memories. " +
+        "Runs knowledge analysis first (via ka()), then creates multiple smaller documents " +
+        "grouped by topic. Better quality than a single monolithic document.")]
+    public Task<string> Kt(
+        [Description("Optional comma-separated scope filter, e.g. 'local,api,research'. " +
+                     "Defaults to all persistent scopes. Ephemeral memories are always excluded.")] string? scopes = null,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // List all persistent entries, excluding ephemeral
+        var allEntries = store.ListScoped(scopes)
+            .Where(e => e.Scope != "ephemeral")
+            .ToList();
+
+        if (allEntries.Count == 0)
+            return Task.FromResult("No persistent memories found.");
+
+        // Group by scope label
+        var grouped = allEntries
+            .GroupBy(e => MemoryNaming.FormatScopeLabel(e.Scope))
+            .OrderBy(g => g.Key)
+            .Select(g => (
+                Label: g.Key,
+                Entries: g.OrderBy(e => e.Entry.Name).ToList()))
+            .ToList();
+
+        int topicCount = grouped.Count(g => g.Label != "local");
+
+        var sb = new System.Text.StringBuilder();
+
+        sb.AppendLine("# Knowledge Transfer — Multi-Document Playbook");
+        sb.AppendLine();
+        sb.AppendLine($"**{allEntries.Count} {(allEntries.Count == 1 ? "memory" : "memories")}** across " +
+                       $"**{topicCount} {(topicCount == 1 ? "topic" : "topics")}** to transfer.");
+        sb.AppendLine();
+        sb.AppendLine("## Documents to produce");
+        sb.AppendLine();
+
+        foreach (var (label, entries) in grouped)
+        {
+            string docName = label == "local" ? "Local Memories" : $"Topic: {label}";
+            sb.AppendLine($"- **{docName}** ({entries.Count} {(entries.Count == 1 ? "memory" : "memories")})");
+            foreach (var item in entries)
+            {
+                var e = item.Entry;
+                string qualName = store.FormatQualifiedName(item.Scope, e.Name);
+                sb.AppendLine($"  - {qualName}");
+            }
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("""
+            ## Playbook
+
+            ### Phase 1 — Analysis
+            Call `ka()` to perform a full knowledge analysis. Read every scrinia memory and review the analysis report before writing anything.
+
+            ### Phase 2 — Write one KT document per topic/group
+            For each group listed above, produce a **separate, focused markdown document**. Each document should be self-contained and useful on its own.
+
+            **Per-document structure:**
+
+            1. **Title and scope**: Which topic/group this document covers
+            2. **Summary**: 2-3 paragraph overview of what this knowledge area covers and why it matters
+            3. **Per-memory sections**: For each scrinia memory in the group:
+               - Heading with the qualified name
+               - Full content — preserve faithfully, reformat for readability
+               - Your annotations: cross-references, staleness notes, gaps
+            4. **Group-level notes**: Connections between scrinia memories in this group, patterns, and any missing coverage specific to this topic
+
+            **Writing guidelines:**
+            - Each document should make sense independently — a reader shouldn't need other KT documents to understand this one
+            - Preserve the actual knowledge faithfully — don't summarize away important details
+            - Add cross-references to other KT documents where relevant (e.g., "see also: api topic KT")
+            - Flag any issues found during the ka() analysis that are relevant to this group
+
+            ### Phase 3 — Write a transfer index
+            After all per-topic documents are written, produce a short **KT Index** document containing:
+            - List of all KT documents produced (with brief descriptions)
+            - Cross-cutting themes that span multiple topics
+            - The gap analysis and recommended actions from the ka() report
+            - Any contradictions or staleness concerns found
+
+            ### Phase 4 — Deliver
+            - Deliver each document separately (file, inline, or however the platform supports)
+            - The index document should be delivered last as the entry point
+            - Confirm delivery with the user
 
             ## Quality checklist
             Before delivering, verify:
-            - [ ] Every scrinia memory from the inventory has its own section (no silent omissions)
+            - [ ] ka() was called and its analysis was incorporated
+            - [ ] Every scrinia memory from the inventory appears in exactly one KT document
             - [ ] Multi-chunk scrinia memories were fully read (all chunks, not just the first)
-            - [ ] Cross-references between scrinia memories are identified and noted
-            - [ ] The synthesis summary is substantive, not just a list of scrinia memory names
-            - [ ] Staleness concerns are flagged with specific evidence
-            - [ ] Recommended actions are concrete and actionable
+            - [ ] Each document is self-contained and readable independently
+            - [ ] Cross-references between documents are noted
+            - [ ] The index document summarizes all KT documents and includes gap analysis
             """);
 
         return Task.FromResult(sb.ToString().TrimEnd());

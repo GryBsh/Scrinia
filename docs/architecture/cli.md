@@ -202,8 +202,8 @@ The CLI is safe for trimming because:
 
 ## Test Coverage
 
-325 tests in `Scrinia.Tests` covering:
-- All 17 MCP tools
+342 tests in `Scrinia.Tests` covering:
+- All 18 MCP tools
 - Store operations and edge cases
 - Search ranking and scoring
 - Encoding and chunking

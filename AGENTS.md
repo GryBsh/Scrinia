@@ -38,7 +38,7 @@ E:/source/repos/Scrinia/
       MemoryStoreContext.cs       <- AsyncLocal indirection: MCP tools read Current to dispatch
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
     Scrinia.Mcp/                  <- shared MCP tools library (net10.0 classlib, refs Core)
-      ScriniaMcpTools.cs          <- 17 MCP tools (sealed class, no constructor, no DI injection)
+      ScriniaMcpTools.cs          <- 18 MCP tools (sealed class, no constructor, no DI injection)
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
@@ -94,12 +94,12 @@ E:/source/repos/Scrinia/
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 325 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 342 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
     Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 53 tests
       ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
-    Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 38 tests (4 skipped without ONNX model)
+    Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 59 tests (4 skipped without ONNX model)
       VectorIndexTests.cs, VectorStoreTests.cs, HybridScorerTests.cs, BertTokenizerTests.cs, OnnxEmbeddingProviderTests.cs, EmbeddingsPluginCliTests.cs
   web/                            <- React + Vite + Tailwind CSS SPA
     src/api/                      <- typed API client and TypeScript DTOs
@@ -216,7 +216,7 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 
 ### `ScriniaMcpTools`
 
-17 MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
+18 MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
 
 | MCP name | Method | Description |
 |---|---|---|
@@ -236,7 +236,8 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `reflect` | Reflect() | Session-end knowledge persistence checklist |
 | `ingest` | Ingest() | Full knowledge capture — 5-phase protocol for thorough memory ingestion |
 | `budget` | Budget() | Per-memory token consumption breakdown |
-| `kt` | Kt() | Knowledge transfer — briefing of all persistent memories |
+| `ka` | Ka() | Knowledge analysis — inventory, gap analysis, report to user |
+| `kt` | Kt() | Knowledge transfer — runs ka(), produces per-topic KT documents |
 
 ### Search: BM25 + Weighted Field + Semantic Scoring
 
@@ -468,7 +469,7 @@ The `plugins:embeddings` setting controls which plugin executable is used for em
 ## Running Tests
 
 ```bash
-# CLI + MCP tests (325 tests)
+# CLI + MCP tests (342 tests)
 cd E:\source\repos\Scrinia\tests\Scrinia.Tests
 dotnet test
 
@@ -476,12 +477,12 @@ dotnet test
 cd E:\source\repos\Scrinia\tests\Scrinia.Server.Tests
 dotnet test
 
-# Embeddings plugin tests (38 tests, 4 skipped without ONNX model)
+# Embeddings plugin tests (59 tests, 4 skipped without ONNX model)
 cd E:\source\repos\Scrinia\tests\Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 416 tests total (325 + 53 + 38), 4 skipped (ONNX model download required).
+Expected: 454 tests total (342 + 53 + 59), 4 skipped (ONNX model download required).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 
@@ -612,7 +613,7 @@ MCP Streamable HTTP transport at `/mcp`, powered by `ModelContextProtocol.AspNet
 - **Auth**: Bearer token (same API key auth as REST endpoints)
 - **Store selection**: Query param `?store=default` resolves the `FileMemoryStore` for the session
 - **Session context**: `PerSessionExecutionContext = true` ensures `MemoryStoreContext.Current` (AsyncLocal) persists across MCP tool calls within a session
-- **Tools**: All 17 tools from `ScriniaMcpTools` (shared via `Scrinia.Mcp` library)
+- **Tools**: All 18 tools from `ScriniaMcpTools` (shared via `Scrinia.Mcp` library)
 
 MCP client config (HTTP transport):
 ```json

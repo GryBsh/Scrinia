@@ -69,7 +69,7 @@ All commands accept `--workspace-root` to override the workspace directory.
 
 ## MCP tools
 
-17 tools available via `scri serve`:
+18 tools available via `scri serve`:
 
 | Tool | Description |
 |---|---|
@@ -80,7 +80,8 @@ All commands accept `--workspace-root` to override the workspace directory.
 | `copy` / `forget` | Move between scopes or delete |
 | `export` / `import` | Portable .scrinia-bundle files |
 | `encode` / `chunk_count` | Low-level NMP/2 encoding |
-| `budget` / `reflect` / `kt` / `ingest` | Session lifecycle tools |
+| `ka` / `kt` | Knowledge analysis and transfer |
+| `budget` / `reflect` / `ingest` | Session lifecycle tools |
 
 ## Documentation
 
@@ -102,7 +103,7 @@ All commands accept `--workspace-root` to override the workspace directory.
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 325 CLI + MCP tests
+dotnet test tests/Scrinia.Tests             # 342 CLI + MCP tests
 dotnet test tests/Scrinia.Server.Tests      # 53 server tests
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 59 plugin tests
 ```

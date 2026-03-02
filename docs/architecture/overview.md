@@ -41,7 +41,7 @@ Scrinia is structured as a set of .NET 10 projects with a shared core library, m
 Scrinia.sln (11 projects)
   src/
     Scrinia.Core/                    Shared library: encoding, models, search, storage
-    Scrinia.Mcp/                     MCP tool definitions (17 tools)
+    Scrinia.Mcp/                     MCP tool definitions (18 tools)
     Scrinia/                         CLI executable (AssemblyName: scri)
     Scrinia.Server/                  ASP.NET Core HTTP API + Web UI
     Scrinia.AppHost/                 .NET Aspire orchestration
@@ -49,7 +49,7 @@ Scrinia.sln (11 projects)
     Scrinia.Plugin.Embeddings/       Embeddings plugin (shared logic)
     Scrinia.Plugin.Embeddings.Cli/   CLI plugin executable (MCP server)
   tests/
-    Scrinia.Tests/                   325 tests (CLI + MCP + Core)
+    Scrinia.Tests/                   342 tests (CLI + MCP + Core)
     Scrinia.Server.Tests/            53 tests (HTTP API)
     Scrinia.Plugin.Embeddings.Tests/ 59 tests (embeddings)
   web/                               React 19 + Vite + Tailwind CSS SPA
