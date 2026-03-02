@@ -4,6 +4,77 @@
 
 Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 17 MCP tools for agents to remember, search, and share knowledge across sessions. Zero infrastructure required.
 
+## Benchmarks
+
+How does a structured memory system compare to simpler approaches? We built a [runnable benchmark suite](tests/Scrinia.Tests/Benchmarks/) that quantitatively compares three strategies:
+
+- **Scrinia** — NMP/2 compressed artifacts, BM25+weighted field search, chunked retrieval
+- **Flat-file** — all knowledge in one string (AGENTS.md-style), always fully loaded, substring search
+- **Auto memory** — 200-line index always loaded, per-topic files loaded on demand (Claude-style)
+
+### Token efficiency (avg tokens per query)
+
+| Corpus size | Scrinia | Flat-file | Auto memory | Scrinia savings |
+|---|---|---|---|---|
+| 10 facts | 162 | 557 | 426 | 71% fewer tokens |
+| 50 facts | 281 | 2,735 | 989 | 90% fewer tokens |
+| 100 facts | 278 | 5,464 | 1,534 | 95% fewer tokens |
+| 500 facts | 274 | 27,324 | 5,905 | 99% fewer tokens |
+
+### Scaling (growth rate from 10 to 500 facts)
+
+| System | Growth factor | Pattern |
+|---|---|---|
+| Scrinia | 1.7x | Near-constant |
+| Auto memory | 13.8x | Sublinear |
+| Flat-file | 49.1x | Linear |
+
+### Cold start (tokens consumed before first query)
+
+| System | 10 facts | 100 facts | 500 facts |
+|---|---|---|---|
+| Scrinia | 0 | 0 | 0 |
+| Auto memory | 135 | 440 | 1,780 |
+| Flat-file | 557 | 5,464 | 27,324 |
+
+### Search recall
+
+All three systems achieve 100% recall on exact-term and natural-language queries. Scrinia's advantage is not accuracy — it's doing it at 1-5% of the token cost.
+
+### Cross-topic isolation
+
+| System | Isolation ratio | Meaning |
+|---|---|---|
+| Scrinia | 100% | Only loads matching memories |
+| Auto memory | 80% | Loads index + routed topic |
+| Flat-file | 20% | Always loads all 5 topics |
+
+### First query cost (cold start + query, 100 facts)
+
+| System | Cold start | Query | Total |
+|---|---|---|---|
+| Scrinia | 0 | 282 | **282** |
+| Auto memory | 440 | 1,564 | 2,004 |
+| Flat-file | 5,464 | 5,464 | 10,928 |
+
+### Where each system wins
+
+| Dimension | Winner | Why |
+|---|---|---|
+| Very small corpus (<20 facts) | Flat-file | Negligible overhead, everything fits |
+| Token efficiency at scale | Scrinia | Selective retrieval, zero cold start |
+| Recall on exact terms | Tie | All systems find substring matches |
+| Ranked precision | Scrinia | BM25 + weighted fields produce ranked results |
+| Cross-topic isolation | Scrinia | Only loads matching memories |
+| Setup simplicity | Flat-file | Just a string, no tools needed |
+| Staleness management | Scrinia | Only system with review markers |
+
+Run the benchmarks yourself:
+
+```bash
+dotnet test tests/Scrinia.Tests --filter "FullyQualifiedName~Benchmarks"
+```
+
 ## Install
 
 Build from source (.NET 10 SDK required):
