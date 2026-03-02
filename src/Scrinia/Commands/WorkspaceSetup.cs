@@ -7,7 +7,7 @@ namespace Scrinia.Commands;
 
 internal static class WorkspaceSetup
 {
-    private static PluginProcessHost? _pluginHost;
+    private static McpPluginHost? _pluginHost;
 
     internal static void Configure(string? workspaceRoot)
     {
@@ -45,25 +45,28 @@ internal static class WorkspaceSetup
             return;
 
         string ext = OperatingSystem.IsWindows() ? ".exe" : "";
-        string embeddingsExe = Path.Combine(pluginsDir, $"scri-plugin-embeddings{ext}");
+        string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
+        string embeddingsExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
         if (!File.Exists(embeddingsExe))
             return;
 
         // Vector data lives in the workspace-local .scrinia/ directory (per-project isolation).
-        // Model cache is global (no need to re-download 87MB ONNX model per workspace).
+        // Plugin files (models, caches) go in a folder named after the plugin executable,
+        // alongside the plugin in the plugins/ directory.
         string dataDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
-        string modelsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "scrinia", "plugins");
+        string modelsDir = Path.Combine(pluginsDir, pluginName);
         Directory.CreateDirectory(modelsDir);
 
         try
         {
-            var host = new PluginProcessHost();
+            var host = new McpPluginHost();
             await host.StartAsync(embeddingsExe, dataDir, modelsDir, GetConfigValue, ct);
 
-            SearchContributorContext.Default = host;
-            MemoryEventSinkContext.Default = host;
+            if (host.HasSearchCapability)
+                SearchContributorContext.Default = host;
+            if (host.HasEventSinkCapability)
+                MemoryEventSinkContext.Default = host;
+
             _pluginHost = host;
 
             // Ensure plugin shuts down when the CLI exits
@@ -79,20 +82,41 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
-    /// Reads config from environment variables.
+    /// Resolves a plugin executable name from env var → config file → default.
+    /// </summary>
+    internal static string GetPluginName(string key, string defaultName)
+    {
+        // 1. Environment variable
+        string envKey = key.Replace(':', '_').Replace("__", "_").ToUpperInvariant();
+        string? value = Environment.GetEnvironmentVariable(envKey);
+        if (value is not null) return value;
+
+        // 2. Config file
+        value = WorkspaceConfig.GetValue(ScriniaArtifactStore.WorkspaceRootPath, key);
+        if (value is not null) return value;
+
+        return defaultName;
+    }
+
+    /// <summary>
+    /// Reads config from environment variables, then falls back to the workspace config file.
     /// Supports colon-separated keys (e.g. "Scrinia:Embeddings:Provider")
     /// mapped to double-underscore env vars (e.g. "SCRINIA__EMBEDDINGS__PROVIDER").
     /// </summary>
     private static string? GetConfigValue(string key)
     {
-        // Try exact key as env var first (with colons replaced by double underscores)
+        // 1. Environment variable (highest priority)
         string envKey = key.Replace(':', '_').Replace("__", "_").ToUpperInvariant();
         string? value = Environment.GetEnvironmentVariable(envKey);
         if (value is not null) return value;
 
         // Also try the .NET-standard double-underscore convention
         envKey = key.Replace(':', '_').Replace(".", "_").ToUpperInvariant();
-        return Environment.GetEnvironmentVariable(envKey);
+        value = Environment.GetEnvironmentVariable(envKey);
+        if (value is not null) return value;
+
+        // 2. Config file (workspace-scoped)
+        return WorkspaceConfig.GetValue(ScriniaArtifactStore.WorkspaceRootPath, key);
     }
 
     private static string? FindWorkspaceRoot(string startDir)

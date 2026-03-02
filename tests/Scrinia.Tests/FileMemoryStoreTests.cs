@@ -19,6 +19,7 @@ public sealed class FileMemoryStoreTests : IDisposable
 
     public void Dispose()
     {
+        _store.Dispose();
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
 
@@ -204,5 +205,151 @@ public sealed class FileMemoryStoreTests : IDisposable
         string long_content = new string('x', 1000);
         string preview = _store.GenerateContentPreview(long_content);
         preview.Length.Should().BeLessOrEqualTo(500);
+    }
+
+    // ── PR 1: Index cache tests ─────────────────────────────────────────────
+
+    [Fact]
+    public void Upsert_CachePopulated_SubsequentLoadSkipsDisk()
+    {
+        var entry = new ArtifactEntry("cached", "file://cached", 100, 1, DateTimeOffset.UtcNow, "cached entry");
+        _store.Upsert(entry);
+
+        // Delete the index.json from disk — cache should still serve the data
+        string indexPath = Path.Combine(_store.GetStoreDirForScope("local"), "index.json");
+        File.Delete(indexPath);
+
+        var loaded = _store.LoadIndex();
+        loaded.Should().ContainSingle(e => e.Name == "cached");
+    }
+
+    [Fact]
+    public void SaveIndex_InvalidatesAndUpdatesCache()
+    {
+        var entry1 = new ArtifactEntry("v1", "", 50, 1, DateTimeOffset.UtcNow, "first");
+        _store.Upsert(entry1);
+
+        // Overwrite index via SaveIndex
+        var entry2 = new ArtifactEntry("v2", "", 75, 1, DateTimeOffset.UtcNow, "second");
+        _store.SaveIndex([entry2]);
+
+        var loaded = _store.LoadIndex();
+        loaded.Should().ContainSingle(e => e.Name == "v2");
+        loaded.Should().NotContain(e => e.Name == "v1");
+    }
+
+    [Fact]
+    public async Task LoadIndex_ConcurrentReaders_DoNotBlock()
+    {
+        // Seed some data
+        for (int i = 0; i < 10; i++)
+            _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
+
+        // 10 concurrent reads should all complete without blocking each other
+        var tasks = Enumerable.Range(0, 10)
+            .Select(_ => Task.Run(() => _store.LoadIndex()))
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks);
+
+        foreach (var result in results)
+            result.Should().HaveCount(10);
+    }
+
+    [Fact]
+    public void DiscoverTopics_CachedAfterFirstCall()
+    {
+        string topicDir = Path.Combine(_tempDir, ".scrinia", "topics", "cached-topic");
+        Directory.CreateDirectory(topicDir);
+
+        var first = _store.DiscoverTopics();
+        first.Should().Contain("local-topic:cached-topic");
+
+        // Delete the directory — cache should still serve the result
+        Directory.Delete(topicDir, recursive: true);
+
+        var second = _store.DiscoverTopics();
+        second.Should().Contain("local-topic:cached-topic", "cached result should persist within TTL");
+    }
+
+    [Fact]
+    public void Upsert_ExistingEntry_UsesNameDictionary()
+    {
+        // Insert 100 entries, then update the last one — should be O(1) via name dictionary
+        for (int i = 0; i < 100; i++)
+            _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
+
+        var updated = new ArtifactEntry("entry-99", "", 10, 1, DateTimeOffset.UtcNow, "updated");
+        _store.Upsert(updated);
+
+        var loaded = _store.LoadIndex();
+        loaded.Should().HaveCount(100);
+        loaded.Should().ContainSingle(e => e.Name == "entry-99" && e.Description == "updated");
+    }
+
+    [Fact]
+    public void Remove_UsesNameDictionary()
+    {
+        for (int i = 0; i < 50; i++)
+            _store.Upsert(new ArtifactEntry($"rm-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
+
+        _store.Remove("rm-25").Should().BeTrue();
+
+        var loaded = _store.LoadIndex();
+        loaded.Should().HaveCount(49);
+        loaded.Should().NotContain(e => e.Name == "rm-25");
+    }
+
+    // ── PR 3: Artifact LRU cache tests ──────────────────────────────────────
+
+    [Fact]
+    public async Task ReadArtifact_CacheHit_OnRepeatRead()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("Cache test content");
+        await _store.WriteArtifactAsync("cache-hit", "local", artifact);
+
+        // First read — cache miss, reads from disk
+        string read1 = await _store.ReadArtifactAsync("cache-hit", "local");
+        read1.Should().Be(artifact);
+
+        // Second read — should be cache hit (same content)
+        string read2 = await _store.ReadArtifactAsync("cache-hit", "local");
+        read2.Should().Be(artifact);
+    }
+
+    [Fact]
+    public async Task WriteArtifact_InvalidatesCache()
+    {
+        string v1 = Nmp2ChunkedEncoder.Encode("Version 1");
+        await _store.WriteArtifactAsync("invalidate", "local", v1);
+
+        // Read to populate cache
+        string read1 = await _store.ReadArtifactAsync("invalidate", "local");
+        read1.Should().Be(v1);
+
+        // Overwrite
+        string v2 = Nmp2ChunkedEncoder.Encode("Version 2");
+        await _store.WriteArtifactAsync("invalidate", "local", v2);
+
+        // Should read v2, not cached v1
+        string read2 = await _store.ReadArtifactAsync("invalidate", "local");
+        read2.Should().Be(v2);
+    }
+
+    [Fact]
+    public async Task DeleteArtifact_InvalidatesCache()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("Delete cache test");
+        await _store.WriteArtifactAsync("del-cache", "local", artifact);
+
+        // Populate cache
+        await _store.ReadArtifactAsync("del-cache", "local");
+
+        // Delete
+        _store.DeleteArtifact("del-cache", "local").Should().BeTrue();
+
+        // Read should now throw
+        var act = () => _store.ReadArtifactAsync("del-cache", "local");
+        await act.Should().ThrowAsync<FileNotFoundException>();
     }
 }

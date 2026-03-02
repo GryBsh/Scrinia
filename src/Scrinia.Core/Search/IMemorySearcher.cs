@@ -138,6 +138,10 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
     /// <summary>
     /// Searches both entries and topics with optional supplemental scores (e.g. from embeddings).
     /// Supplemental score keys: "{scope}|{name}" for entries, "{scope}|{name}|{chunkIndex}" for chunks.
+    ///
+    /// BM25 scores are normalized to 0–100 (min-max) before combining with field scores.
+    /// Multi-term intersection bonus of (matchedTerms - 1) * 15 rewards queries matching multiple terms.
+    /// Uses a min-heap (size K) for top-K selection instead of full sort for efficiency.
     /// </summary>
     public IReadOnlyList<SearchResult> SearchAll(
         string query,
@@ -158,31 +162,65 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         var queryTerms = TextAnalysis.Tokenize(query);
         int corpusSize = candidateList.Count;
 
-        var results = new List<SearchResult>();
+        // ── Pass 1: Compute raw BM25 scores for normalization ────────────
+        var entryBm25 = new double[candidateList.Count];
+        var chunkBm25List = new List<(int candidateIdx, int chunkIdx, double rawBm25)>();
+        double minBm25 = double.MaxValue, maxBm25 = double.MinValue;
 
-        foreach (var candidate in candidateList)
+        for (int i = 0; i < candidateList.Count; i++)
         {
+            double raw = ComputeBm25(queryTerms, candidateList[i].Entry, avgDocLen, corpusSize, docFreqs);
+            entryBm25[i] = raw;
+            if (raw > 0) { minBm25 = Math.Min(minBm25, raw); maxBm25 = Math.Max(maxBm25, raw); }
+
+            if (candidateList[i].Entry.ChunkEntries is { Length: > 0 } chunks)
+            {
+                foreach (var chunk in chunks)
+                {
+                    double chunkRaw = ComputeChunkBm25(queryTerms, chunk, avgDocLen, corpusSize, docFreqs);
+                    chunkBm25List.Add((i, chunk.ChunkIndex, chunkRaw));
+                    if (chunkRaw > 0) { minBm25 = Math.Min(minBm25, chunkRaw); maxBm25 = Math.Max(maxBm25, chunkRaw); }
+                }
+            }
+        }
+
+        double bm25Range = maxBm25 - minBm25;
+        if (bm25Range <= 0) bm25Range = 1; // Avoid division by zero
+
+        // ── Pass 2: Combine normalized BM25 with field scores, deduplicate inline ──
+        // Track best score per memory for deduplication during scoring
+        var bestPerMemory = new Dictionary<string, (SearchResult Result, double Score)>(StringComparer.OrdinalIgnoreCase);
+        var topicResults = new List<SearchResult>();
+
+        for (int i = 0; i < candidateList.Count; i++)
+        {
+            var candidate = candidateList[i];
             double fieldScore = ScoreEntry(query, candidate.Entry);
-            double bm25Score = ComputeBm25(queryTerms, candidate.Entry, avgDocLen, corpusSize, docFreqs);
+            double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
             double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
-            double total = fieldScore + bm25Score * Bm25Weight + supplemental;
+            double total = fieldScore + normalizedBm25 * Bm25Weight + supplemental;
             if (total > 0)
-                results.Add(new EntryResult(candidate, total));
+            {
+                string key = $"{candidate.Scope}|{candidate.Entry.Name}";
+                if (!bestPerMemory.TryGetValue(key, out var existing) || total > existing.Score)
+                    bestPerMemory[key] = (new EntryResult(candidate, total), total);
+            }
         }
 
         // ── Chunk-level scoring ─────────────────────────────────────────
-        foreach (var candidate in candidateList)
+        foreach (var (candidateIdx, chunkIdx, rawBm25) in chunkBm25List)
         {
-            if (candidate.Entry.ChunkEntries is not { Length: > 0 } chunkEntries)
-                continue;
-            foreach (var chunk in chunkEntries)
+            var candidate = candidateList[candidateIdx];
+            var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
+            double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
+            double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
+            double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
+            double chunkTotal = chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental;
+            if (chunkTotal > 0)
             {
-                double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
-                double chunkBm25 = ComputeChunkBm25(queryTerms, chunk, avgDocLen, corpusSize, docFreqs);
-                double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunk.ChunkIndex, supplementalScores);
-                double chunkTotal = chunkFieldScore + chunkBm25 * Bm25Weight + chunkSupplemental;
-                if (chunkTotal > 0)
-                    results.Add(new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, chunkTotal));
+                string key = $"{candidate.Scope}|{candidate.Entry.Name}";
+                if (!bestPerMemory.TryGetValue(key, out var existing) || chunkTotal > existing.Score)
+                    bestPerMemory[key] = (new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, chunkTotal), chunkTotal);
             }
         }
 
@@ -190,18 +228,32 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         {
             double score = ScoreTopic(query, topic);
             if (score > 0)
-                results.Add(new TopicResult(topic.Scope, topic.TopicName, topic.Description, topic.EntryCount, topic.Tags, score));
+                topicResults.Add(new TopicResult(topic.Scope, topic.TopicName, topic.Description, topic.EntryCount, topic.Tags, score));
         }
 
-        // Deduplicate: keep only the highest-scoring result per memory
-        results = DeduplicateResults(results);
+        // ── Min-heap top-K selection ─────────────────────────────────────
+        int k = Math.Max(1, limit);
+        var heap = new PriorityQueue<SearchResult, double>(); // min-heap: lowest score at top
 
-        results.Sort((a, b) =>
+        // Feed deduplicated memory results into heap
+        foreach (var (result, score) in bestPerMemory.Values)
+            HeapInsert(heap, result, score, k);
+
+        // Feed topic results into heap
+        foreach (var result in topicResults)
+            HeapInsert(heap, result, result.Score, k);
+
+        // Drain heap into array in descending score order
+        var final = new SearchResult[heap.Count];
+        for (int i = final.Length - 1; i >= 0; i--)
+            final[i] = heap.Dequeue();
+
+        // Stable tie-breaking: sort by score desc, then by creation date desc
+        Array.Sort(final, (a, b) =>
         {
             int cmp = b.Score.CompareTo(a.Score);
             if (cmp != 0) return cmp;
 
-            // Break ties: entries before topics, then by creation date
             DateTimeOffset aDate = a switch
             {
                 EntryResult er => er.Item.Entry.CreatedAt,
@@ -217,7 +269,24 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             return bDate.CompareTo(aDate);
         });
 
-        return results.Take(Math.Max(1, limit)).ToList();
+        return final;
+    }
+
+    /// <summary>Inserts into a min-heap of size K, evicting the smallest when full.</summary>
+    private static void HeapInsert(PriorityQueue<SearchResult, double> heap, SearchResult result, double score, int k)
+    {
+        if (heap.Count < k)
+        {
+            heap.Enqueue(result, score);
+        }
+        else
+        {
+            heap.TryPeek(out _, out double minScore);
+            if (score > minScore)
+            {
+                heap.DequeueEnqueue(result, score);
+            }
+        }
     }
 
     // ── BM25 scoring ─────────────────────────────────────────────────────────
@@ -247,8 +316,18 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         if (terms.Length == 0) return 0;
 
         double total = 0;
+        int matchedTerms = 0;
         foreach (string term in terms)
-            total += ScoreEntryTerm(term, entry);
+        {
+            double termScore = ScoreEntryTerm(term, entry);
+            total += termScore;
+            if (termScore > 0) matchedTerms++;
+        }
+
+        // Intersection bonus: reward matching multiple query terms
+        if (matchedTerms > 1)
+            total += (matchedTerms - 1) * 15.0;
+
         return total;
     }
 
@@ -317,8 +396,17 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         if (terms.Length == 0) return 0;
 
         double total = 0;
+        int matchedTerms = 0;
         foreach (string term in terms)
-            total += ScoreTopicTerm(term, topic);
+        {
+            double termScore = ScoreTopicTerm(term, topic);
+            total += termScore;
+            if (termScore > 0) matchedTerms++;
+        }
+
+        if (matchedTerms > 1)
+            total += (matchedTerms - 1) * 15.0;
+
         return total;
     }
 
@@ -374,8 +462,17 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         if (terms.Length == 0) return 0;
 
         double total = 0;
+        int matchedTerms = 0;
         foreach (string term in terms)
-            total += ScoreChunkEntryTerm(term, chunk, parentEntry);
+        {
+            double termScore = ScoreChunkEntryTerm(term, chunk, parentEntry);
+            total += termScore;
+            if (termScore > 0) matchedTerms++;
+        }
+
+        if (matchedTerms > 1)
+            total += (matchedTerms - 1) * 15.0;
+
         return total;
     }
 
@@ -407,11 +504,43 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             && chunk.ContentPreview.Contains(term, StringComparison.OrdinalIgnoreCase))
             score = Math.Max(score, 5);
 
-        // Parent name at half weight
+        // Parent name matching
         if (parentEntry.Name.Equals(term, StringComparison.OrdinalIgnoreCase))
             score = Math.Max(score, 50);
         else if (parentEntry.Name.Contains(term, StringComparison.OrdinalIgnoreCase))
             score = Math.Max(score, 10);
+
+        // Parent keywords at half weight (20 exact, 6 contains)
+        if (parentEntry.Keywords is { Length: > 0 })
+        {
+            foreach (string kw in parentEntry.Keywords)
+            {
+                if (kw.Equals(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    score = Math.Max(score, 20);
+                    break;
+                }
+
+                if (kw.Contains(term, StringComparison.OrdinalIgnoreCase))
+                    score = Math.Max(score, 6);
+            }
+        }
+
+        // Parent tags at half weight (25 exact, 8 contains)
+        if (parentEntry.Tags is { Length: > 0 })
+        {
+            foreach (string tag in parentEntry.Tags)
+            {
+                if (tag.Equals(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    score = Math.Max(score, 25);
+                    break;
+                }
+
+                if (tag.Contains(term, StringComparison.OrdinalIgnoreCase))
+                    score = Math.Max(score, 8);
+            }
+        }
 
         return score;
     }
@@ -446,38 +575,4 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         return scores.GetValueOrDefault($"{scope}|{name}");
     }
 
-    /// <summary>
-    /// Deduplicates results: for each memory (scope+name), keeps only the highest-scoring
-    /// result (entry or chunk). Topic results pass through unaffected.
-    /// </summary>
-    private static List<SearchResult> DeduplicateResults(List<SearchResult> results)
-    {
-        // Group by (scope, name) and keep the best result per memory
-        var bestByMemory = new Dictionary<string, SearchResult>(StringComparer.OrdinalIgnoreCase);
-        var passThrough = new List<SearchResult>();
-
-        foreach (var result in results)
-        {
-            string? key = result switch
-            {
-                EntryResult er => $"{er.Item.Scope}|{er.Item.Entry.Name}",
-                ChunkEntryResult cr => $"{cr.ParentItem.Scope}|{cr.ParentItem.Entry.Name}",
-                _ => null,
-            };
-
-            if (key is null)
-            {
-                passThrough.Add(result);
-                continue;
-            }
-
-            if (!bestByMemory.TryGetValue(key, out var existing) || result.Score > existing.Score)
-                bestByMemory[key] = result;
-        }
-
-        var deduped = new List<SearchResult>(bestByMemory.Count + passThrough.Count);
-        deduped.AddRange(bestByMemory.Values);
-        deduped.AddRange(passThrough);
-        return deduped;
-    }
 }

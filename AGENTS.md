@@ -42,8 +42,10 @@ E:/source/repos/Scrinia/
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
-        ScriniaCommands.cs        <- all 9 CLI commands as public methods (ConsoleAppFramework source-gen)
-        WorkspaceSetup.cs         <- shared --workspace-root configuration helper
+        ScriniaCommands.cs        <- all 10 CLI commands as public methods (ConsoleAppFramework source-gen)
+        WorkspaceSetup.cs         <- shared --workspace-root configuration + plugin loading helper
+        WorkspaceConfig.cs        <- .scrinia/config.json I/O (Load/Save/Get/Set/Unset)
+        ConfigJsonContext.cs      <- trim-safe JSON context for config file
       Mcp/
         ScriniaArtifactStore.cs   <- memory store (local, topic, ephemeral scopes; static class)
     Scrinia.Server/               <- HTTP API server (net10.0 web, refs Core + Mcp)
@@ -81,13 +83,13 @@ E:/source/repos/Scrinia/
       Models/VectorEntry.cs       <- (Name, ChunkIndex?, Vector) record
       Onnx/                       <- ModelManager, HardwareDetector, BertTokenizer, OnnxInferenceSession
       Providers/                  <- OnnxEmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider
-    Scrinia.Plugin.Embeddings.Cli/ <- child-process CLI plugin exe (stdin/stdout JSON protocol)
-      Program.cs                  <- Protocol loop, dispatches to VectorStore/EmbeddingProvider
-      Protocol.cs                 <- Request/response DTOs + source-gen JSON context
+    Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport)
+      Program.cs                  <- MCP server host, registers EmbeddingsTools
+      EmbeddingsTools.cs          <- MCP tools class (4 tools: status, search, upsert, remove)
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 310 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 311 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
     Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 53 tests
@@ -424,6 +426,25 @@ using var scope = new TestHelpers.StoreScope();
 
 `WorkspaceSetup.Configure(null)` walks up the directory tree from CWD looking for `.scrinia/` (like git finds `.git/`). If found, its parent becomes the workspace root. If not found, falls back to CWD. This makes `scri serve` work regardless of which directory the MCP client launches from.
 
+### Workspace configuration
+
+`.scrinia/config.json` stores persistent workspace-scoped settings as a flat `Dictionary<string, string>` (case-insensitive keys). Managed via `WorkspaceConfig` (Load/Save/GetValue/SetValue/UnsetValue) with `ConfigJsonContext` for trim safety.
+
+CLI command:
+```bash
+scri config                              # list all settings
+scri config plugins:embeddings           # get one setting
+scri config plugins:embeddings my-plugin # set a setting
+scri config --unset plugins:embeddings   # remove a setting
+```
+
+Config resolution order (highest priority first):
+1. Environment variable (key with `:` → `_`, uppercased)
+2. `.scrinia/config.json`
+3. Hardcoded default
+
+The `plugins:embeddings` setting controls which plugin executable is used for embeddings (default: `scri-plugin-embeddings`).
+
 ### Index serialization
 
 `_jsonOptions` uses `DefaultIgnoreCondition = WhenWritingNull` to keep index files lean. v2 indexes load cleanly (null fields).
@@ -431,7 +452,7 @@ using var scope = new TestHelpers.StoreScope();
 ## Running Tests
 
 ```bash
-# CLI + MCP tests (310 tests)
+# CLI + MCP tests (311 tests)
 cd E:\source\repos\Scrinia\tests\Scrinia.Tests
 dotnet test
 
@@ -444,7 +465,7 @@ cd E:\source\repos\Scrinia\tests\Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 391 tests total (310 + 53 + 28), 4 skipped (ONNX model download required).
+Expected: 392 tests total (311 + 53 + 28), 4 skipped (ONNX model download required).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 
@@ -544,22 +565,20 @@ The server supports drop-in plugins via `Scrinia.Plugin.Abstractions`. Plugin DL
 - `ISearchScoreContributor` + `SearchContributorContext` — supplemental search scores (both REST + MCP)
 - `IMemoryEventSink` + `MemoryEventSinkContext` — store/append/forget event notifications (MCP path only)
 
-**CLI plugin loading** (`Scrinia/Services/PluginProcessHost.cs`):
-- Discovers `{exeDir}/plugins/scri-plugin-*` executables (child-process architecture)
-- Communicates via newline-delimited JSON on stdin/stdout (stderr forwarded for logging)
-- `PluginProcessHost` implements both `ISearchScoreContributor` and `IMemoryEventSink`
-- Sets `SearchContributorContext.Default` and `MemoryEventSinkContext.Default` on startup
-- Auto-restarts crashed plugin up to 3 times, then degrades to BM25-only search
+**CLI plugin loading** (`Scrinia/Services/McpPluginHost.cs`):
+- Plugin exe name configurable via `plugins:embeddings` setting (env var → config file → default `scri-plugin-embeddings`)
+- Discovers `{exeDir}/plugins/{pluginName}[.exe]` executables (each plugin IS an MCP server)
+- Uses `StdioClientTransport` + `McpClient` from ModelContextProtocol SDK (stderr forwarded for logging)
+- `McpPluginHost` implements both `ISearchScoreContributor` and `IMemoryEventSink`
+- Capability detection via `ListToolsAsync()` at startup — conditionally wires `SearchContributorContext.Default` / `MemoryEventSinkContext.Default`
+- Auto-reconnects crashed plugin up to 3 times, then degrades to BM25-only search
 - No `TrimmerRootAssembly` entries needed — plugins run in their own .NET runtime
 
-**Child-process protocol** (JSON, one object per line):
-- `status` → provider info, availability, vector count
-- `search` (query, scopes[]) → similarity scores keyed by `{scope}|{name}[|{chunkIndex}]`
-- `upsert` (scope, name, chunkIndex?, text) → embed text and store vector
+**Plugin MCP tools** (4 tools exposed by `EmbeddingsTools.cs`):
+- `status` → provider info, availability, vector count (JSON)
+- `search` (query, scopes[]) → similarity scores keyed by `{scope}|{name}[|{chunkIndex}]` (JSON)
+- `upsert` (scope, name, text, chunkIndex?) → embed text and store vector
 - `remove` (scope, name) → remove all vectors for a memory
-- `embed` (text) → single embedding vector
-- `embed_batch` (texts[]) → batch embeddings
-- `shutdown` → graceful exit
 
 **Writing a CLI plugin**:
 1. Create a console app project referencing the embeddings/core library

@@ -287,4 +287,76 @@ public sealed class Nmp2ChunkedEncoderTests
         var act = () => Nmp2ChunkedEncoder.AppendChunk("", "new content");
         act.Should().Throw<ArgumentException>();
     }
+
+    // ── Incremental CRC32 tests (PR 4) ───────────────────────────────────────
+
+    [Fact]
+    public void AppendChunk_IncrementalCrc_MatchesFullRecompute()
+    {
+        string[] parts = ["Chunk alpha.", "Chunk bravo.", "Chunk charlie."];
+
+        // Method 1: Encode all at once
+        string allAtOnce = Nmp2ChunkedEncoder.EncodeChunks(parts);
+
+        // Method 2: Encode 2, then append the third
+        string twoChunks = Nmp2ChunkedEncoder.EncodeChunks([parts[0], parts[1]]);
+        string appendedThird = Nmp2ChunkedEncoder.AppendChunk(twoChunks, parts[2]);
+
+        // Both should produce valid artifacts with matching CRC
+        string headerAllAtOnce = allAtOnce.Split('\n')[0];
+        string headerAppended = appendedThird.Split('\n')[0];
+
+        // Extract CRC values from headers
+        string crcAllAtOnce = headerAllAtOnce.Split("CRC32:")[1].Split(' ')[0];
+        string crcAppended = headerAppended.Split("CRC32:")[1].Split(' ')[0];
+        crcAllAtOnce.Should().Be(crcAppended,
+            "incremental CRC should match full recompute");
+
+        // Also verify full decode roundtrip
+        byte[] decodedAll = new Nmp2Strategy().Decode(allAtOnce);
+        byte[] decodedAppended = new Nmp2Strategy().Decode(appendedThird);
+        decodedAppended.Should().Equal(decodedAll);
+    }
+
+    [Fact]
+    public void AppendChunk_LargeChunkCount_Performance()
+    {
+        // Build a 50-chunk artifact via sequential appends
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["Initial chunk."]);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        for (int i = 2; i <= 50; i++)
+            artifact = Nmp2ChunkedEncoder.AppendChunk(artifact, $"Chunk number {i} with some content.");
+
+        sw.Stop();
+
+        Nmp2ChunkedEncoder.GetChunkCount(artifact).Should().Be(50);
+
+        // Verify last chunk roundtrips
+        string lastChunk = Nmp2ChunkedEncoder.DecodeChunk(artifact, 50);
+        lastChunk.Should().Be("Chunk number 50 with some content.");
+
+        // Should complete well within 10 seconds even without incremental CRC
+        // With incremental CRC this should be much faster
+        sw.ElapsedMilliseconds.Should().BeLessThan(10_000);
+    }
+
+    [Fact]
+    public void Crc32Combine_ProducesCorrectResult()
+    {
+        // Verify that Crc32Combine produces the same result as hashing concatenated data
+        byte[] data1 = System.Text.Encoding.UTF8.GetBytes("Hello, ");
+        byte[] data2 = System.Text.Encoding.UTF8.GetBytes("World!");
+
+        uint crc1 = System.IO.Hashing.Crc32.HashToUInt32(data1);
+        uint crc2 = System.IO.Hashing.Crc32.HashToUInt32(data2);
+        uint combined = Nmp2ChunkedEncoder.Crc32Combine(crc1, crc2, data2.Length);
+
+        byte[] concat = new byte[data1.Length + data2.Length];
+        data1.CopyTo(concat, 0);
+        data2.CopyTo(concat, data1.Length);
+        uint expected = System.IO.Hashing.Crc32.HashToUInt32(concat);
+
+        combined.Should().Be(expected);
+    }
 }

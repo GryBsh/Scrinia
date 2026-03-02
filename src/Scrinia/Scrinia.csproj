@@ -9,6 +9,8 @@
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+    <Version>0.1.0</Version>
+    <Copyright>Copyright (c) 2026 Nick Daniels</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

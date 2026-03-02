@@ -63,9 +63,10 @@ public static class Nmp2ChunkedEncoder
     /// Appends a new chunk to an existing NMP/2 artifact without re-encoding existing chunks.
     /// <list type="bullet">
     /// <item>Single-chunk artifact → promotes to 2-chunk multi-chunk format.</item>
-    /// <item>Multi-chunk artifact → appends a new chunk section, rewrites header.</item>
+    /// <item>Multi-chunk artifact → appends a new chunk section, rewrites header.
+    ///   CRC32 is computed incrementally via <see cref="Crc32Combine"/> — existing chunks
+    ///   are NOT decoded, making this O(new chunk size) instead of O(total artifact size).</item>
     /// </list>
-    /// CRC32 is recomputed over all decoded original bytes + new chunk bytes.
     /// </summary>
     public static string AppendChunk(string existingArtifact, string newChunkText)
     {
@@ -74,8 +75,8 @@ public static class Nmp2ChunkedEncoder
         if (!Nmp2Strategy.IsMultiChunk(existingArtifact))
         {
             // Single-chunk → decode existing, promote to 2-chunk
-            byte[] existingBytes = new Nmp2Strategy().Decode(existingArtifact);
-            string existingText = System.Text.Encoding.UTF8.GetString(existingBytes);
+            byte[] decoded = new Nmp2Strategy().Decode(existingArtifact);
+            string existingText = System.Text.Encoding.UTF8.GetString(decoded);
             return EncodeMultiChunkFromParts([existingText, newChunkText]);
         }
 
@@ -86,24 +87,17 @@ public static class Nmp2ChunkedEncoder
         // Extract existing chunk sections (the raw encoded lines between ##CHUNK:N and ##PAD:N inclusive)
         var existingChunkSections = ExtractRawChunkSections(existingArtifact, oldCount);
 
-        // Decode all existing chunks to recompute CRC32 + total bytes
-        var allDecodedBytes = new List<byte[]>(newCount);
-        for (int i = 1; i <= oldCount; i++)
-            allDecodedBytes.Add(Nmp2Strategy.DecodeChunkSection(existingArtifact, i));
+        // Parse existing header for CRC and byte count — no need to decode existing chunks
+        var metadata = new Nmp2Strategy().ParseHeader(existingArtifact);
+        uint existingCrc = metadata.Crc32 ?? 0;
+        int existingBytes = metadata.OriginalBytes;
 
         byte[] newChunkUtf8 = System.Text.Encoding.UTF8.GetBytes(newChunkText);
-        allDecodedBytes.Add(newChunkUtf8);
+        uint newChunkCrc = Crc32.HashToUInt32(newChunkUtf8);
 
-        // Total original bytes and CRC32
-        int totalBytes = allDecodedBytes.Sum(b => b.Length);
-        byte[] allBytes = new byte[totalBytes];
-        int offset = 0;
-        foreach (var chunk in allDecodedBytes)
-        {
-            chunk.CopyTo(allBytes, offset);
-            offset += chunk.Length;
-        }
-        uint crc = Crc32.HashToUInt32(allBytes);
+        // Incremental CRC: combine existing CRC with new chunk CRC
+        int totalBytes = existingBytes + newChunkUtf8.Length;
+        uint crc = Crc32Combine(existingCrc, newChunkCrc, newChunkUtf8.Length);
 
         // Build new artifact: new header + existing chunk sections verbatim + new chunk compressed
         var sb = new StringBuilder();
@@ -126,6 +120,73 @@ public static class Nmp2ChunkedEncoder
 
         sb.Append("NMP/END");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Combines two CRC-32 checksums for concatenated data without re-reading the original data.
+    /// Given crc1 = CRC(data1) and crc2 = CRC(data2), computes CRC(data1 + data2).
+    /// Uses the GF(2) matrix method from zlib (crc32_combine).
+    /// Polynomial: 0xEDB88320 (standard CRC-32, IEEE 802.3).
+    /// </summary>
+    internal static uint Crc32Combine(uint crc1, uint crc2, long len2)
+    {
+        if (len2 <= 0) return crc1;
+
+        uint[] even = new uint[32];
+        uint[] odd = new uint[32];
+
+        // Operator for one zero bit: shifts right by 1 with polynomial feedback
+        odd[0] = 0xEDB88320u;
+        uint row = 1;
+        for (int n = 1; n < 32; n++)
+        {
+            odd[n] = row;
+            row <<= 1;
+        }
+
+        // Operator for two zero bits
+        Gf2MatrixSquare(even, odd);
+        // Operator for four zero bits
+        Gf2MatrixSquare(odd, even);
+
+        // Apply len2 bytes (8*len2 bits) of zeros to crc1
+        do
+        {
+            // Each iteration: square doubles the bit count of the operator
+            // First iteration: even = 8 bits (1 byte)
+            Gf2MatrixSquare(even, odd);
+            if ((len2 & 1) != 0)
+                crc1 = Gf2MatrixTimes(even, crc1);
+            len2 >>= 1;
+            if (len2 == 0) break;
+
+            Gf2MatrixSquare(odd, even);
+            if ((len2 & 1) != 0)
+                crc1 = Gf2MatrixTimes(odd, crc1);
+            len2 >>= 1;
+        } while (len2 != 0);
+
+        return crc1 ^ crc2;
+    }
+
+    private static uint Gf2MatrixTimes(uint[] mat, uint vec)
+    {
+        uint sum = 0;
+        int i = 0;
+        while (vec != 0)
+        {
+            if ((vec & 1) != 0)
+                sum ^= mat[i];
+            vec >>= 1;
+            i++;
+        }
+        return sum;
+    }
+
+    private static void Gf2MatrixSquare(uint[] square, uint[] mat)
+    {
+        for (int n = 0; n < 32; n++)
+            square[n] = Gf2MatrixTimes(mat, mat[n]);
     }
 
     /// <summary>

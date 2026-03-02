@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 
@@ -139,5 +140,87 @@ public sealed class Bm25ScorerTests
 
         avgDocLen.Should().Be(0);
         docFreqs.Should().BeEmpty();
+    }
+
+    // ── BM25 normalization tests ─────────────────────────────────────────────
+
+    [Fact]
+    public void NormalizedBm25_InSearchAll_ProducesNonNegativeScores()
+    {
+        // Verify through WeightedFieldScorer.SearchAll that normalized scores work correctly
+        var candidates = new[]
+        {
+            new ScopedArtifact("local", new ArtifactEntry("auth-doc", "", 100, 1, DateTimeOffset.UtcNow, "auth system",
+                Keywords: ["auth", "token"],
+                TermFrequencies: new Dictionary<string, int> { ["auth"] = 10, ["token"] = 5 })),
+            new ScopedArtifact("local", new ArtifactEntry("other-doc", "", 100, 1, DateTimeOffset.UtcNow, "other stuff",
+                Keywords: ["other"],
+                TermFrequencies: new Dictionary<string, int> { ["other"] = 8 })),
+        };
+
+        var scorer = new WeightedFieldScorer();
+        var results = scorer.SearchAll("auth", candidates, [], 10);
+
+        results.Should().NotBeEmpty();
+        results.Should().AllSatisfy(r => r.Score.Should().BeGreaterThan(0));
+    }
+
+    // ── Min-heap top-K tests ──────────────────────────────────────────────────
+
+    [Fact]
+    public void MinHeap_SearchAll_ReturnsCorrectTopK()
+    {
+        // Create more candidates than the limit to verify heap selects top-K
+        var now = DateTimeOffset.UtcNow;
+        var candidates = new List<ScopedArtifact>();
+        for (int i = 0; i < 20; i++)
+        {
+            candidates.Add(new ScopedArtifact("local", new ArtifactEntry(
+                $"entry-{i}", "", 100, 1, now.AddMinutes(-i), $"doc about entry {i}",
+                Keywords: [$"entry{i}"],
+                TermFrequencies: new Dictionary<string, int> { [$"entry{i}"] = i + 1 })));
+        }
+
+        // Add one entry that matches the query strongly
+        candidates.Add(new ScopedArtifact("local", new ArtifactEntry(
+            "target", "", 100, 1, now, "the target entry",
+            Keywords: ["target"],
+            TermFrequencies: new Dictionary<string, int> { ["target"] = 20 })));
+
+        var scorer = new WeightedFieldScorer();
+        var results = scorer.SearchAll("target", candidates, [], 5);
+
+        results.Should().HaveCountLessOrEqualTo(5);
+        (results[0] as EntryResult)!.Item.Entry.Name.Should().Be("target");
+    }
+
+    [Fact]
+    public void MinHeap_SearchAll_OrderingMatchesFullSort()
+    {
+        // Verify min-heap produces same ordering as a full sort would
+        var now = DateTimeOffset.UtcNow;
+        var candidates = new[]
+        {
+            new ScopedArtifact("local", new ArtifactEntry("best-match", "", 100, 1, now, "best match test query",
+                Keywords: ["best", "match", "test", "query"],
+                TermFrequencies: new Dictionary<string, int> { ["best"] = 10, ["match"] = 8, ["test"] = 5, ["query"] = 5 })),
+            new ScopedArtifact("local", new ArtifactEntry("partial-match", "", 100, 1, now, "partial match only",
+                Keywords: ["partial", "match"],
+                TermFrequencies: new Dictionary<string, int> { ["partial"] = 3, ["match"] = 2 })),
+            new ScopedArtifact("local", new ArtifactEntry("no-match", "", 100, 1, now, "irrelevant content xyz",
+                Keywords: ["irrelevant"],
+                TermFrequencies: new Dictionary<string, int> { ["irrelevant"] = 5 })),
+        };
+
+        var scorer = new WeightedFieldScorer();
+        var results = scorer.SearchAll("best match", candidates, [], 10);
+
+        // "best-match" should score highest (matches both terms + intersection bonus)
+        results.Should().HaveCountGreaterOrEqualTo(2);
+        (results[0] as EntryResult)!.Item.Entry.Name.Should().Be("best-match");
+
+        // Scores should be descending
+        for (int i = 1; i < results.Count; i++)
+            results[i].Score.Should().BeLessOrEqualTo(results[i - 1].Score);
     }
 }

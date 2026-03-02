@@ -120,4 +120,60 @@ public class VectorStoreTests : IDisposable
     {
         _store.GetVectors("nonexistent").Should().BeEmpty();
     }
+
+    // ── SVF2 append-only format tests ────────────────────────────────────────
+
+    [Fact]
+    public async Task Svf2_AppendOnly_UpsertAppends()
+    {
+        // First upsert creates SVF2 file
+        await _store.UpsertAsync("local", "first", null, [0.1f, 0.2f, 0.3f]);
+
+        // Second upsert should append rather than rewrite
+        await _store.UpsertAsync("local", "second", null, [0.4f, 0.5f, 0.6f]);
+
+        var vectors = _store.GetVectors("local");
+        vectors.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Svf2_SurvivesNewInstance()
+    {
+        await _store.UpsertAsync("local", "svf2-persist", null, [0.1f, 0.2f]);
+        await _store.UpsertAsync("local", "svf2-persist2", null, [0.3f, 0.4f]);
+
+        using var store2 = new VectorStore(_tempDir);
+        var vectors = store2.GetVectors("local");
+        vectors.Should().HaveCount(2);
+        vectors.Should().Contain(v => v.Name == "svf2-persist");
+        vectors.Should().Contain(v => v.Name == "svf2-persist2");
+    }
+
+    [Fact]
+    public async Task Svf2_UpsertExisting_DeletesAndAdds()
+    {
+        await _store.UpsertAsync("local", "update-me", null, [0.1f, 0.2f]);
+        await _store.UpsertAsync("local", "update-me", null, [0.3f, 0.4f]);
+
+        // After upsert with same key, new instance should see updated value
+        using var store2 = new VectorStore(_tempDir);
+        var vectors = store2.GetVectors("local");
+        vectors.Should().HaveCount(1);
+        vectors[0].Vector.Should().BeEquivalentTo(new[] { 0.3f, 0.4f });
+    }
+
+    [Fact]
+    public async Task Svf2_Remove_AppendsDeleteOp()
+    {
+        await _store.UpsertAsync("local", "del-me", null, [0.1f, 0.2f]);
+        await _store.UpsertAsync("local", "keep", null, [0.3f, 0.4f]);
+
+        await _store.RemoveAsync("local", "del-me");
+
+        // New instance should only see "keep"
+        using var store2 = new VectorStore(_tempDir);
+        var vectors = store2.GetVectors("local");
+        vectors.Should().HaveCount(1);
+        vectors[0].Name.Should().Be("keep");
+    }
 }

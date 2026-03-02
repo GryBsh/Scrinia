@@ -183,6 +183,50 @@ public sealed class ChunkIndexingTests
         dst.ChunkEntries.Should().HaveCount(2);
     }
 
+    // ── Chunk scoring with parent metadata (PR 5) ─────────────────────────────
+
+    [Fact]
+    public async Task Search_ChunkInheritsParentKeywords()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        // Store with parent keywords and chunks that don't directly mention those keywords
+        string[] chunks =
+        [
+            "Configuration patterns for container orchestration systems.",
+            "Monitoring alerting dashboards and observability."
+        ];
+        await Tools().Store(chunks, "infra-guide",
+            keywords: ["kubernetes", "docker", "infrastructure"]);
+
+        // Search for "kubernetes" — chunk should inherit parent keyword score
+        var results = ScriniaArtifactStore.SearchAll("kubernetes");
+        results.Should().HaveCountGreaterThan(0);
+
+        // The parent-level result should have a positive score from the keyword match
+        var anyResult = results.FirstOrDefault(r =>
+            (r is EntryResult er && er.Item.Entry.Name == "infra-guide") ||
+            (r is ChunkEntryResult cr && cr.ParentItem.Entry.Name == "infra-guide"));
+        anyResult.Should().NotBeNull("parent keyword 'kubernetes' should produce a match");
+        anyResult!.Score.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Search_ChunkInheritsParentTags()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string[] chunks =
+        [
+            "Endpoint handler implementation details.",
+            "Database migration scripts and procedures."
+        ];
+        await Tools().Store(chunks, "backend-docs",
+            tags: ["backend", "api"]);
+
+        // Search for "backend" — should find via parent tag
+        var results = ScriniaArtifactStore.SearchAll("backend");
+        results.Should().HaveCountGreaterThan(0);
+    }
+
     // ── Encode no longer auto-chunks ─────────────────────────────────────────
 
     [Fact]

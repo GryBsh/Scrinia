@@ -1361,8 +1361,8 @@ public sealed class ScriniaMcpToolsTests
             keywords: ["token"]);
 
         var entries = ScriniaArtifactStore.LoadIndex();
-        // token appears 3 times + 3 boost = 6
-        entries[0].TermFrequencies!["token"].Should().Be(6);
+        // token appears 3 times + 5 agent keyword boost = 8
+        entries[0].TermFrequencies!["token"].Should().Be(8);
     }
 
     [Fact]

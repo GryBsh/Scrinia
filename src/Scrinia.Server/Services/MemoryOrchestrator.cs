@@ -17,14 +17,13 @@ public static class MemoryOrchestrator
     {
         string joined = string.Concat(req.Content);
 
-        // Text analysis
-        var autoKeywords = TextAnalysis.ExtractKeywords(joined);
-        var mergedKeywords = TextAnalysis.MergeKeywords(req.Keywords, autoKeywords);
-        var tf = TextAnalysis.ComputeTermFrequencies(joined);
+        // Text analysis (single-pass)
+        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
+        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(req.Keywords, autoKeywords);
         foreach (string kw in mergedKeywords)
         {
             tf.TryGetValue(kw, out int count);
-            tf[kw] = count + 3;
+            tf[kw] = count + (agentKeywordSet.Contains(kw) ? 5 : 2);
         }
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
@@ -148,20 +147,18 @@ public static class MemoryOrchestrator
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
         long originalBytes = fullBytes.LongLength;
 
-        var autoKeywords = TextAnalysis.ExtractKeywords(fullText);
+        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
         var mergedKeywords = TextAnalysis.MergeKeywords(null, autoKeywords);
-        var tf = TextAnalysis.ComputeTermFrequencies(fullText);
         foreach (string kw in mergedKeywords)
         {
             tf.TryGetValue(kw, out int count);
-            tf[kw] = count + 3;
+            tf[kw] = count + 2;
         }
 
         string contentPreview = store.GenerateContentPreview(fullText);
 
-        var newKw = TextAnalysis.ExtractKeywords(content);
-        var newTf = TextAnalysis.ComputeTermFrequencies(content);
-        foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 3; }
+        var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
+        foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
             ContentPreview: store.GenerateContentPreview(content),
@@ -280,9 +277,8 @@ public static class MemoryOrchestrator
         var entries = new ChunkEntry[chunks.Length];
         for (int i = 0; i < chunks.Length; i++)
         {
-            var kw = TextAnalysis.ExtractKeywords(chunks[i]);
-            var tf2 = TextAnalysis.ComputeTermFrequencies(chunks[i]);
-            foreach (string k in kw) { tf2.TryGetValue(k, out int c); tf2[k] = c + 3; }
+            var (kw, tf2) = TextAnalysis.AnalyzeText(chunks[i]);
+            foreach (string k in kw) { tf2.TryGetValue(k, out int c); tf2[k] = c + 2; }
             string preview = store.GenerateContentPreview(chunks[i]);
             entries[i] = new ChunkEntry(
                 ChunkIndex: i + 1,

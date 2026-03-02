@@ -61,30 +61,30 @@ public sealed class ScriniaMcpTools
         "chunked retrieval, context compression, and cross-project sharing.")]
     public Task<string> Guide(CancellationToken cancellationToken = default) =>
         Task.FromResult("""
-            # scrinia guide — patterns for effective memory use
+            # scrinia guide — patterns for effective scrinia memory use
 
-            ## Ephemeral memories (~name)
+            ## Ephemeral scrinia memories (~name)
             Use `~` prefix for in-session working state that shouldn't persist:
             - `store(["scratch data"], "~scratch")` — dies when process exits
             - Great for intermediate results, draft summaries, working context
             - Promote to persistent with `copy("~scratch", "topic:final-name")`
 
             ## Topic organization
-            Use topic:subject naming to organize related memories:
+            Use topic:subject naming to organize related scrinia memories:
             - `store(["content"], "api:auth-flow")` — stored in api/ topic
             - `store(["content"], "arch:decisions")` — stored in arch/ topic
             - Topics are auto-discovered — no setup needed
 
             ## Chunked retrieval
-            For large memories, retrieve only what you need:
+            For large scrinia memories, retrieve only what you need:
             1. `chunk_count("my-memory")` — see how many chunks
             2. `get_chunk("my-memory", 1)` — read just the first chunk
             3. Process chunk by chunk to stay within context limits
 
             ## Incremental capture with append
-            Build up memories incrementally — each append adds a new independently retrievable chunk:
+            Build up scrinia memories incrementally — each append adds a new independently retrievable chunk:
             - `append("New finding here", "session-notes")` — adds as a new chunk
-            - Creates the memory if it doesn't exist yet
+            - Creates the scrinia memory if it doesn't exist yet
             - Great for session journals, running logs, and incremental notes
             - Each appended chunk is individually indexed for search
 
@@ -96,26 +96,26 @@ public sealed class ScriniaMcpTools
             This lets you carry knowledge across sessions without re-researching.
 
             ## Version history
-            When you overwrite an existing memory, the previous version is archived:
+            When you overwrite an existing scrinia memory, the previous version is archived:
             - Stored in `versions/` subdirectory with timestamp suffix
             - No manual action needed — happens automatically on store/append
 
             ## Review conditions
-            Flag memories that may become stale:
+            Flag scrinia memories that may become stale:
             - `store(["content"], "api:endpoints", reviewAfter="2026-06-01")` — date-based
             - `store(["content"], "auth:flow", reviewWhen="when auth system changes")` — condition-based
             - `list()` shows `[stale]` or `[review?]` markers
 
             ## Budget tracking
             Monitor how much context you're consuming:
-            - `budget()` — shows per-memory chars/tokens loaded via show()/get_chunk()
+            - `budget()` — shows per-scrinia-memory chars/tokens loaded via show()/get_chunk()
             - Helps decide when to use chunked retrieval vs. full show()
 
             ## Session-end reflection
             Call `reflect()` at the end of a session for a checklist of knowledge to persist.
 
             ## Context preservation (~checkpoints)
-            Long conversations get compressed by your host platform. Use ephemeral checkpoints to survive:
+            Long conversations get compressed by your host platform. Use ephemeral scrinia checkpoints to survive:
             - Before a large task or after a milestone, store your current state:
               `store(["Task: ...\nKey findings: ...\nNext steps: ..."], "~checkpoint")`
             - After context compaction, restore your bearings:
@@ -132,7 +132,7 @@ public sealed class ScriniaMcpTools
             Useful for sharing team conventions, API patterns, or onboarding knowledge.
 
             ## When to store vs. not store
-            **Store:** stable patterns, architectural decisions, API conventions,
+            **Store in scrinia:** stable patterns, architectural decisions, API conventions,
             solutions to recurring problems, project-specific knowledge.
             **Don't store:** session-specific state (use ~ephemeral instead).
             **Exception:** use `~checkpoint` to preserve working context across context compactions.
@@ -206,7 +206,7 @@ public sealed class ScriniaMcpTools
             // Store-based resolution (memory name, ephemeral, etc.)
             var store = MemoryStoreContext.Current;
             if (store is null)
-                return $"Error: memory '{artifactOrName}' not found. Use memories() to list available memories.";
+                return $"Error: memory '{artifactOrName}' not found. Use list() to list available memories.";
 
             try
             {
@@ -214,7 +214,7 @@ public sealed class ScriniaMcpTools
             }
             catch (FileNotFoundException)
             {
-                return $"Error: memory '{artifactOrName}' not found. Use memories() to list available memories.";
+                return $"Error: memory '{artifactOrName}' not found. Use list() to list available memories.";
             }
         }
 
@@ -254,16 +254,15 @@ public sealed class ScriniaMcpTools
         var store = CurrentStore;
         string joined = string.Concat(content);
 
-        // Compute text analysis: keywords + term frequencies
-        var autoKeywords = TextAnalysis.ExtractKeywords(joined);
-        var mergedKeywords = TextAnalysis.MergeKeywords(keywords, autoKeywords);
-        var tf = TextAnalysis.ComputeTermFrequencies(joined);
+        // Compute text analysis: keywords + term frequencies (single-pass)
+        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
+        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(keywords, autoKeywords);
 
-        // Boost keywords in TF (+3 per keyword)
+        // Boost keywords in TF: agent keywords +5, auto-extracted +2
         foreach (string kw in mergedKeywords)
         {
             tf.TryGetValue(kw, out int count);
-            tf[kw] = count + 3;
+            tf[kw] = count + (agentKeywordSet.Contains(kw) ? 5 : 2);
         }
 
         ChunkEntry[]? chunkEntries = content.Length > 1
@@ -883,22 +882,20 @@ public sealed class ScriniaMcpTools
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
         long originalBytes = fullBytes.LongLength;
 
-        // Compute text analysis from full decoded content
-        var autoKeywords = TextAnalysis.ExtractKeywords(fullText);
+        // Compute text analysis from full decoded content (single-pass)
+        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
         var mergedKeywords = TextAnalysis.MergeKeywords(null, autoKeywords);
-        var tf = TextAnalysis.ComputeTermFrequencies(fullText);
         foreach (string kw in mergedKeywords)
         {
             tf.TryGetValue(kw, out int count);
-            tf[kw] = count + 3;
+            tf[kw] = count + 2;
         }
 
         string contentPreview = store.GenerateContentPreview(fullText);
 
-        // Build chunk entry for the newly appended content
-        var newKw = TextAnalysis.ExtractKeywords(content);
-        var newTf = TextAnalysis.ComputeTermFrequencies(content);
-        foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 3; }
+        // Build chunk entry for the newly appended content (single-pass)
+        var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
+        foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
             ContentPreview: store.GenerateContentPreview(content),
@@ -989,9 +986,9 @@ public sealed class ScriniaMcpTools
         "Call this at the end of a work session.")]
     public Task<string> Reflect(CancellationToken cancellationToken = default) =>
         Task.FromResult("""
-            # Session Reflection Checklist
+            # Scrinia Session Reflection Checklist
 
-            Before ending this session, consider persisting knowledge from each category:
+            Before ending this session, consider persisting knowledge to scrinia from each category:
 
             ## Decisions Made
             - [ ] Were any architectural or design decisions made? Store rationale.
@@ -1014,8 +1011,8 @@ public sealed class ScriniaMcpTools
             - [ ] Are there next steps someone should know? Document them.
 
             ## Stale Knowledge Cleanup
-            - [ ] Are any stored memories now outdated? Update or forget them.
-            - [ ] Should any ephemeral (~) memories be promoted to persistent?
+            - [ ] Are any stored scrinia memories now outdated? Update or forget them.
+            - [ ] Should any ephemeral (~) scrinia memories be promoted to persistent?
 
             Use `store()` to persist, `append()` to add to existing, `forget()` to clean up.
             Use `budget()` to see how much context you consumed this session.
@@ -1029,13 +1026,13 @@ public sealed class ScriniaMcpTools
         Task.FromResult("""
             # Scrinia Memory Ingestion — Full Knowledge Capture
 
-            Follow these 5 phases to perform a thorough memory ingestion. Do not skip phases or take shortcuts.
+            Follow these 5 phases to perform a thorough scrinia memory ingestion. Do not skip phases or take shortcuts.
 
-            ## Phase 1 — Inventory existing memories
-            1. Call `list()` to see all currently stored memories.
-            2. For every memory listed, call `show("name")` to read its full content.
-               - For multi-chunk memories, use `chunk_count()` then `get_chunk()` for each chunk.
-            3. Note which memories exist, what they cover, and whether any look stale or incomplete.
+            ## Phase 1 — Inventory existing scrinia memories
+            1. Call `list()` to see all currently stored scrinia memories.
+            2. For every scrinia memory listed, call `show("name")` to read its full content.
+               - For multi-chunk scrinia memories, use `chunk_count()` then `get_chunk()` for each chunk.
+            3. Note which scrinia memories exist, what they cover, and whether any look stale or incomplete.
 
             ## Phase 2 — Read all available sources
             Read ALL information sources you have access to. Be thorough — partial ingestion leads to gaps.
@@ -1057,34 +1054,34 @@ public sealed class ScriniaMcpTools
 
             ## Phase 3 — Analyze and plan
             Compare what you read (Phase 2) against what's already stored (Phase 1):
-            - **Missing**: Important knowledge with no memory coverage
-            - **Outdated**: Memories that contradict current sources
-            - **Incomplete**: Memories that need additional detail
-            - **Redundant**: Duplicate or overlapping memories that should be consolidated
-            - **Misorganized**: Memories in wrong topics or with poor naming
+            - **Missing**: Important knowledge with no scrinia memory coverage
+            - **Outdated**: Scrinia memories that contradict current sources
+            - **Incomplete**: Scrinia memories that need additional detail
+            - **Redundant**: Duplicate or overlapping scrinia memories that should be consolidated
+            - **Misorganized**: Scrinia memories in wrong topics or with poor naming
 
             Plan your updates before executing them.
 
             ## Phase 4 — Store, update, and organize
             Execute your plan using these tools:
-            - `store(content, "topic:subject")` — create new memories or overwrite outdated ones
-            - `append(content, "name")` — add to existing memories incrementally
-            - `forget("name")` — remove obsolete or redundant memories
+            - `store(content, "topic:subject")` — create new scrinia memories or overwrite outdated ones
+            - `append(content, "name")` — add to existing scrinia memories incrementally
+            - `forget("name")` — remove obsolete or redundant scrinia memories
             - `copy("old-name", "new-name")` — reorganize into better topics
 
             **Best practices for this phase:**
             - Use topic:subject naming consistently (e.g., `arch:decisions`, `api:endpoints`)
             - Add keywords for search discoverability: `store(content, name, keywords=["term1", "term2"])`
             - Set review conditions on volatile knowledge: `store(content, name, reviewWhen="when X changes")`
-            - Keep each memory focused — one concept per memory, split large topics into multiple entries
+            - Keep each scrinia memory focused — one concept per scrinia memory, split large topics into multiple entries
             - Use chunked storage for large content: `store(["section1", "section2", ...], name)`
 
             ## Phase 5 — Verify and report
-            1. Call `list()` to confirm the final state of all memories.
+            1. Call `list()` to confirm the final state of all scrinia memories.
             2. Summarize what you did:
-               - Memories created (with names and brief descriptions)
-               - Memories updated (what changed)
-               - Memories deleted (why)
+               - Scrinia memories created (with names and brief descriptions)
+               - Scrinia memories updated (what changed)
+               - Scrinia memories deleted (why)
                - Any gaps you identified but couldn't fill (missing information)
             3. Report the summary to the user.
             """);
@@ -1151,31 +1148,31 @@ public sealed class ScriniaMcpTools
         sb.AppendLine("""
             ## Playbook
 
-            Compile a **"Scrinia Knowledge Transfer"** markdown document. Be thorough — every memory must be represented.
+            Compile a **"Scrinia Knowledge Transfer"** markdown document. Be thorough — every scrinia memory must be represented.
 
-            ### Step 1 — Read every memory completely
-            - Call `show("name")` for each memory listed above. Do NOT skip or skim any memory.
-            - For multi-chunk memories: call `chunk_count()` then `get_chunk()` for every chunk.
+            ### Step 1 — Read every scrinia memory completely
+            - Call `show("name")` for each scrinia memory listed above. Do NOT skip or skim any.
+            - For multi-chunk scrinia memories: call `chunk_count()` then `get_chunk()` for every chunk.
             - Read them in the order listed (grouped by topic, alphabetical within each group).
 
-            ### Step 2 — Write a section per memory
-            For each memory, write a dedicated section containing:
+            ### Step 2 — Write a section per scrinia memory
+            For each scrinia memory, write a dedicated section containing:
             - **Heading**: the qualified name (e.g., `## api:auth-flow`)
             - **Metadata**: size, chunk count, created/updated dates, tags, review conditions
             - **Content**: the full content — preserve faithfully, but reformat for readability
             - **Annotations** (your analysis):
-              - Cross-references: connections to other memories in this knowledge base
+              - Cross-references: connections to other scrinia memories in this knowledge base
               - Staleness: is anything outdated based on what you know?
               - Gaps: what's missing that should be added?
-              - Contradictions: does this conflict with other memories?
+              - Contradictions: does this conflict with other scrinia memories?
 
             ### Step 3 — Write a synthesis summary at the top
-            Before the per-memory sections, add a synthesis section covering:
+            Before the per-scrinia-memory sections, add a synthesis section covering:
             - **Coverage map**: what domains/topics are represented and at what depth
-            - **Key themes**: the most important knowledge across all memories
-            - **Dependency graph**: which memories reference or depend on each other
+            - **Key themes**: the most important knowledge across all scrinia memories
+            - **Dependency graph**: which scrinia memories reference or depend on each other
             - **Gap analysis**: important knowledge areas with no coverage
-            - **Staleness audit**: memories with review markers or suspected outdated content
+            - **Staleness audit**: scrinia memories with review markers or suspected outdated content
             - **Recommended actions**: specific store/update/forget actions to improve the knowledge base
 
             ### Step 4 — Deliver the document
@@ -1185,10 +1182,10 @@ public sealed class ScriniaMcpTools
 
             ## Quality checklist
             Before delivering, verify:
-            - [ ] Every memory from the inventory has its own section (no silent omissions)
-            - [ ] Multi-chunk memories were fully read (all chunks, not just the first)
-            - [ ] Cross-references between memories are identified and noted
-            - [ ] The synthesis summary is substantive, not just a list of memory names
+            - [ ] Every scrinia memory from the inventory has its own section (no silent omissions)
+            - [ ] Multi-chunk scrinia memories were fully read (all chunks, not just the first)
+            - [ ] Cross-references between scrinia memories are identified and noted
+            - [ ] The synthesis summary is substantive, not just a list of scrinia memory names
             - [ ] Staleness concerns are flagged with specific evidence
             - [ ] Recommended actions are concrete and actionable
             """);
@@ -1231,9 +1228,8 @@ public sealed class ScriniaMcpTools
         var entries = new ChunkEntry[chunks.Length];
         for (int i = 0; i < chunks.Length; i++)
         {
-            var kw = TextAnalysis.ExtractKeywords(chunks[i]);
-            var tf = TextAnalysis.ComputeTermFrequencies(chunks[i]);
-            foreach (string k in kw) { tf.TryGetValue(k, out int c); tf[k] = c + 3; }
+            var (kw, tf) = TextAnalysis.AnalyzeText(chunks[i]);
+            foreach (string k in kw) { tf.TryGetValue(k, out int c); tf[k] = c + 2; }
             string preview = store.GenerateContentPreview(chunks[i]);
             entries[i] = new ChunkEntry(
                 ChunkIndex: i + 1,

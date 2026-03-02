@@ -490,6 +490,166 @@ public class ScriniaCommands
         return Task.FromResult(0);
     }
 
+    /// <summary>Download embedding model for the embeddings plugin.</summary>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    public async Task<int> Setup(
+        string? workspaceRoot = null,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+
+        string exeDir = AppContext.BaseDirectory;
+        string pluginsDir = Path.Combine(exeDir, "plugins");
+        string pluginName = WorkspaceSetup.GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
+
+        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
+        string pluginExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
+
+        if (!File.Exists(pluginExe))
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] Embeddings plugin not found.");
+            AnsiConsole.MarkupLine($"[dim]Expected at: {Markup.Escape(pluginExe)}[/]");
+            return 1;
+        }
+
+        string modelDir = Path.Combine(pluginsDir, pluginName, "models", "all-MiniLM-L6-v2");
+        Directory.CreateDirectory(modelDir);
+
+        string[] files = ["model.onnx", "vocab.txt"];
+        string[] repoPaths = ["onnx/model.onnx", "vocab.txt"];
+        const string baseUrl = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main";
+
+        bool allExist = files.All(f => File.Exists(Path.Combine(modelDir, f)));
+        if (allExist)
+        {
+            AnsiConsole.MarkupLine("[green]Embedding model already downloaded.[/]");
+            AnsiConsole.MarkupLine($"[dim]{Markup.Escape(modelDir)}[/]");
+            return 0;
+        }
+
+        using var http = new HttpClient();
+        http.Timeout = TimeSpan.FromMinutes(10);
+
+        for (int i = 0; i < files.Length; i++)
+        {
+            string filePath = Path.Combine(modelDir, files[i]);
+            if (File.Exists(filePath))
+            {
+                AnsiConsole.MarkupLine($"[dim]{files[i]} already exists, skipping.[/]");
+                continue;
+            }
+
+            string url = $"{baseUrl}/{repoPaths[i]}";
+            AnsiConsole.MarkupLine($"Downloading [blue]{files[i]}[/]...");
+
+            string tmpPath = filePath + ".tmp";
+            using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            long? totalBytes = response.Content.Headers.ContentLength;
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+
+            await AnsiConsole.Progress()
+                .AutoClear(true)
+                .Columns(
+                    new TaskDescriptionColumn(),
+                    new ProgressBarColumn(),
+                    new PercentageColumn(),
+                    new TransferSpeedColumn(),
+                    new RemainingTimeColumn())
+                .StartAsync(async ctx =>
+                {
+                    var task = ctx.AddTask(files[i], maxValue: totalBytes ?? 0);
+                    if (totalBytes is null) task.IsIndeterminate = true;
+
+                    await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                    byte[] buffer = new byte[81920];
+                    int bytesRead;
+                    while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                    {
+                        await fs.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                        task.Increment(bytesRead);
+                    }
+                });
+
+            File.Move(tmpPath, filePath, overwrite: true);
+
+            long size = new FileInfo(filePath).Length;
+            string sizeStr = size switch
+            {
+                < 1024 => $"{size} B",
+                < 1024 * 1024 => $"{size / 1024.0:F1} KB",
+                _ => $"{size / (1024.0 * 1024):F1} MB",
+            };
+            AnsiConsole.MarkupLine($"[green]Downloaded {files[i]} ({sizeStr})[/]");
+        }
+
+        AnsiConsole.MarkupLine($"[green]Embedding model ready at:[/] {Markup.Escape(modelDir)}");
+        return 0;
+    }
+
+    /// <summary>Get or set workspace configuration.</summary>
+    /// <param name="key">Config key (e.g. plugins:embeddings). Omit to list all.</param>
+    /// <param name="value">Value to set. Omit to read current value.</param>
+    /// <param name="unset">Remove the setting.</param>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    public int Config(
+        [Argument] string? key = null,
+        [Argument] string? value = null,
+        bool unset = false,
+        string? workspaceRoot = null)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        string root = ScriniaArtifactStore.WorkspaceRootPath;
+
+        if (key is null)
+        {
+            // List all settings
+            var config = WorkspaceConfig.Load(root);
+            if (config.Count == 0)
+            {
+                AnsiConsole.MarkupLine("[dim]No configuration set.[/]");
+                return 0;
+            }
+
+            var table = new Table()
+                .Border(TableBorder.Rounded)
+                .AddColumn("Key")
+                .AddColumn("Value");
+
+            foreach (var (k, v) in config.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+                table.AddRow(Markup.Escape(k), Markup.Escape(v));
+
+            AnsiConsole.Write(table);
+            return 0;
+        }
+
+        if (unset)
+        {
+            if (WorkspaceConfig.UnsetValue(root, key))
+                AnsiConsole.MarkupLine($"[green]Unset '{Markup.Escape(key)}'.[/]");
+            else
+                AnsiConsole.MarkupLine($"[dim]'{Markup.Escape(key)}' was not set.[/]");
+            return 0;
+        }
+
+        if (value is null)
+        {
+            // Get a single value
+            string? current = WorkspaceConfig.GetValue(root, key);
+            if (current is not null)
+                AnsiConsole.WriteLine(current);
+            else
+                AnsiConsole.MarkupLine("[dim]not set[/]");
+            return 0;
+        }
+
+        // Set a value
+        WorkspaceConfig.SetValue(root, key, value);
+        AnsiConsole.MarkupLine($"[green]Set '{Markup.Escape(key)}' = '{Markup.Escape(value)}'.[/]");
+        return 0;
+    }
+
     private static List<string> ResolveFiles(string filesArg)
     {
         var result = new List<string>();

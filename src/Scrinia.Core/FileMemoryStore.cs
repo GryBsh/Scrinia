@@ -16,12 +16,143 @@ namespace Scrinia.Core;
 ///   "topic:subject"        → local topic:   {workspace}/.scrinia/topics/topic/subject.nmp2
 ///   "~subject"             → ephemeral:     in-memory only (dies with instance)
 /// </summary>
-public sealed partial class FileMemoryStore : IMemoryStore
+public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 {
     private readonly string _workspaceRoot;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _jsonOptions;
+
+    // Scope discovery cache with 2-second TTL
+    private string[]? _cachedTopics;
+    private DateTime _topicsCacheTime;
+    private static readonly TimeSpan TopicsCacheTtl = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// In-memory cache of a scope's index entries with O(1) name→position lookup
+    /// and lazily computed BM25 corpus statistics.
+    /// </summary>
+    internal sealed class CachedIndex
+    {
+        public List<ArtifactEntry> Entries { get; }
+        public Dictionary<string, int> NameToPosition { get; private set; }
+
+        /// <summary>Lazily computed BM25 corpus stats. Cleared on mutation.</summary>
+        public CorpusStats? Stats { get; set; }
+
+        public CachedIndex(List<ArtifactEntry> entries)
+        {
+            Entries = entries;
+            NameToPosition = BuildNameMap(entries);
+        }
+
+        public void Rebuild()
+        {
+            NameToPosition = BuildNameMap(Entries);
+            Stats = null; // Invalidate corpus stats on mutation
+        }
+
+        /// <summary>Computes and caches corpus stats on first access.</summary>
+        public CorpusStats GetOrComputeCorpusStats()
+        {
+            if (Stats is not null) return Stats;
+
+            var (avgDocLen, docFreqs) = Bm25Scorer.ComputeCorpusStats(
+                Entries.Select(e => (IReadOnlyDictionary<string, int>?)e.TermFrequencies));
+
+            Stats = new CorpusStats(avgDocLen, docFreqs, Entries.Count);
+            return Stats;
+        }
+
+        private static Dictionary<string, int> BuildNameMap(List<ArtifactEntry> entries)
+        {
+            var map = new Dictionary<string, int>(entries.Count, StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < entries.Count; i++)
+                map[entries[i].Name] = i;
+            return map;
+        }
+    }
+
+    /// <summary>Pre-computed BM25 corpus statistics for a scope.</summary>
+    public sealed record CorpusStats(double AvgDocLength, Dictionary<string, int> DocumentFrequencies, int CorpusSize);
+
+    /// <summary>
+    /// LRU cache for decoded artifact text, bounded by total byte size.
+    /// Thread-safe via internal locking.
+    /// </summary>
+    private sealed class ArtifactLruCache
+    {
+        private readonly int _maxBytes;
+        private int _currentBytes;
+        private readonly Dictionary<string, LinkedListNode<(string Key, string Value)>> _map = new(StringComparer.OrdinalIgnoreCase);
+        private readonly LinkedList<(string Key, string Value)> _order = new();
+        private readonly object _lock = new();
+
+        public ArtifactLruCache(int maxBytes) => _maxBytes = maxBytes;
+
+        public bool TryGet(string key, out string value)
+        {
+            lock (_lock)
+            {
+                if (_map.TryGetValue(key, out var node))
+                {
+                    _order.Remove(node);
+                    _order.AddFirst(node);
+                    value = node.Value.Value;
+                    return true;
+                }
+            }
+            value = "";
+            return false;
+        }
+
+        public void Set(string key, string value)
+        {
+            int size = value.Length * 2; // approximate byte size (UTF-16)
+            lock (_lock)
+            {
+                if (_map.TryGetValue(key, out var existing))
+                {
+                    _currentBytes -= existing.Value.Value.Length * 2;
+                    _order.Remove(existing);
+                    _map.Remove(key);
+                }
+
+                while (_currentBytes + size > _maxBytes && _order.Count > 0)
+                {
+                    var last = _order.Last!;
+                    _currentBytes -= last.Value.Value.Length * 2;
+                    _map.Remove(last.Value.Key);
+                    _order.RemoveLast();
+                }
+
+                var node = _order.AddFirst((key, value));
+                _map[key] = node;
+                _currentBytes += size;
+            }
+        }
+
+        public void Invalidate(string keyPrefix)
+        {
+            lock (_lock)
+            {
+                var toRemove = _map.Keys.Where(k => k.StartsWith(keyPrefix, StringComparison.OrdinalIgnoreCase)).ToList();
+                foreach (var key in toRemove)
+                {
+                    if (_map.TryGetValue(key, out var node))
+                    {
+                        _currentBytes -= node.Value.Value.Length * 2;
+                        _order.Remove(node);
+                        _map.Remove(key);
+                    }
+                }
+            }
+        }
+    }
+
+    // 50 MB artifact LRU cache
+    private readonly ArtifactLruCache _artifactCache = new(50 * 1024 * 1024);
 
     [JsonSourceGenerationOptions(
         WriteIndented = true,
@@ -192,25 +323,155 @@ public sealed partial class FileMemoryStore : IMemoryStore
 
     // ── CRUD ─────────────────────────────────────────────────────────────────
 
-    private SemaphoreSlim GetIndexLock(string scope) =>
-        _indexLocks.GetOrAdd(scope, _ => new SemaphoreSlim(1, 1));
+    private ReaderWriterLockSlim GetIndexLock(string scope) =>
+        _indexLocks.GetOrAdd(scope, _ => new ReaderWriterLockSlim());
 
     public List<ArtifactEntry> LoadIndex(string scope = "local")
     {
         var lk = GetIndexLock(scope);
-        lk.Wait();
+        lk.EnterReadLock();
         try
         {
             return LoadIndexUnsafe(scope);
         }
         finally
         {
-            lk.Release();
+            lk.ExitReadLock();
         }
     }
 
     private List<ArtifactEntry> LoadIndexUnsafe(string scope)
     {
+        // Check in-memory cache first
+        if (_indexCache.TryGetValue(scope, out var cached))
+            return cached.Entries.ToList();
+
+        string storeDir = GetStoreDirForScope(scope);
+        string indexPath = Path.Combine(storeDir, "index.json");
+        if (!File.Exists(indexPath)) return [];
+
+        try
+        {
+            string json = File.ReadAllText(indexPath);
+            var idx = JsonSerializer.Deserialize<IndexFile>(json, _jsonOptions);
+            var entries = idx?.Entries ?? [];
+
+            // Populate cache (safe even under read lock — ConcurrentDictionary handles races)
+            _indexCache[scope] = new CachedIndex(entries);
+
+            return entries.ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
+    {
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            SaveIndexUnsafe(entries, scope);
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
+    private void SaveIndexUnsafe(List<ArtifactEntry> entries, string scope)
+    {
+        string storeDir = GetStoreDirForScope(scope);
+        Directory.CreateDirectory(storeDir);
+
+        var idx = new IndexFile { Entries = entries };
+        string json = JsonSerializer.Serialize(idx, _jsonOptions);
+
+        string indexPath = Path.Combine(storeDir, "index.json");
+        string tmp = indexPath + ".tmp";
+        File.WriteAllText(tmp, json);
+        File.Move(tmp, indexPath, overwrite: true);
+
+        // Update the in-memory cache
+        _indexCache[scope] = new CachedIndex(entries);
+
+        // Invalidate topic discovery cache when saving a topic scope
+        if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            _cachedTopics = null;
+    }
+
+    public void Upsert(ArtifactEntry entry, string scope = "local")
+    {
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            List<ArtifactEntry> entries = LoadIndexFromCacheOrDisk(scope);
+
+            // O(1) lookup via cached name dictionary
+            if (_indexCache.TryGetValue(scope, out var cached) &&
+                cached.NameToPosition.TryGetValue(entry.Name, out int pos))
+            {
+                entries[pos] = entry;
+            }
+            else
+            {
+                int idx = entries.FindIndex(e => e.Name == entry.Name);
+                if (idx >= 0)
+                    entries[idx] = entry;
+                else
+                    entries.Add(entry);
+            }
+
+            SaveIndexUnsafe(entries, scope);
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
+    public bool Remove(string name, string scope = "local")
+    {
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            List<ArtifactEntry> entries = LoadIndexFromCacheOrDisk(scope);
+            int before = entries.Count;
+
+            // O(1) lookup via cached name dictionary
+            if (_indexCache.TryGetValue(scope, out var cached) &&
+                cached.NameToPosition.TryGetValue(name, out int pos))
+            {
+                entries.RemoveAt(pos);
+            }
+            else
+            {
+                entries.RemoveAll(e => e.Name == name);
+            }
+
+            if (entries.Count == before) return false;
+            SaveIndexUnsafe(entries, scope);
+            return true;
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
+    /// Loads index entries from cache or disk. Unlike <see cref="LoadIndexUnsafe"/>,
+    /// this does NOT take a lock — caller must already hold a write lock.
+    /// </summary>
+    private List<ArtifactEntry> LoadIndexFromCacheOrDisk(string scope)
+    {
+        if (_indexCache.TryGetValue(scope, out var cached))
+            return cached.Entries.ToList();
+
         string storeDir = GetStoreDirForScope(scope);
         string indexPath = Path.Combine(storeDir, "index.json");
         if (!File.Exists(indexPath)) return [];
@@ -227,73 +488,6 @@ public sealed partial class FileMemoryStore : IMemoryStore
         }
     }
 
-    public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
-    {
-        var lk = GetIndexLock(scope);
-        lk.Wait();
-        try
-        {
-            SaveIndexUnsafe(entries, scope);
-        }
-        finally
-        {
-            lk.Release();
-        }
-    }
-
-    private void SaveIndexUnsafe(List<ArtifactEntry> entries, string scope)
-    {
-        string storeDir = GetStoreDirForScope(scope);
-        Directory.CreateDirectory(storeDir);
-
-        var idx = new IndexFile { Entries = entries };
-        string json = JsonSerializer.Serialize(idx, _jsonOptions);
-
-        string indexPath = Path.Combine(storeDir, "index.json");
-        string tmp = indexPath + ".tmp";
-        File.WriteAllText(tmp, json);
-        File.Move(tmp, indexPath, overwrite: true);
-    }
-
-    public void Upsert(ArtifactEntry entry, string scope = "local")
-    {
-        var lk = GetIndexLock(scope);
-        lk.Wait();
-        try
-        {
-            List<ArtifactEntry> entries = LoadIndexUnsafe(scope);
-            int idx = entries.FindIndex(e => e.Name == entry.Name);
-            if (idx >= 0)
-                entries[idx] = entry;
-            else
-                entries.Add(entry);
-            SaveIndexUnsafe(entries, scope);
-        }
-        finally
-        {
-            lk.Release();
-        }
-    }
-
-    public bool Remove(string name, string scope = "local")
-    {
-        var lk = GetIndexLock(scope);
-        lk.Wait();
-        try
-        {
-            List<ArtifactEntry> entries = LoadIndexUnsafe(scope);
-            int before = entries.Count;
-            entries.RemoveAll(e => e.Name == name);
-            if (entries.Count == before) return false;
-            SaveIndexUnsafe(entries, scope);
-            return true;
-        }
-        finally
-        {
-            lk.Release();
-        }
-    }
-
     // ── Artifact file I/O ────────────────────────────────────────────────────
 
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default)
@@ -301,6 +495,7 @@ public sealed partial class FileMemoryStore : IMemoryStore
         string path = ArtifactPath(subject, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, artifactText, ct);
+        _artifactCache.Invalidate($"{scope}|{subject}|");
     }
 
     public async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
@@ -308,7 +503,16 @@ public sealed partial class FileMemoryStore : IMemoryStore
         string path = ArtifactPath(subject, scope);
         if (!File.Exists(path))
             throw new FileNotFoundException($"Artifact not found: {subject} in scope {scope}", path);
-        return await File.ReadAllTextAsync(path, ct);
+
+        // Check LRU cache (keyed by scope|subject|lastWriteTicks for staleness safety)
+        long ticks = new FileInfo(path).LastWriteTimeUtc.Ticks;
+        string cacheKey = $"{scope}|{subject}|{ticks}";
+        if (_artifactCache.TryGet(cacheKey, out string cached))
+            return cached;
+
+        string text = await File.ReadAllTextAsync(path, ct);
+        _artifactCache.Set(cacheKey, text);
+        return text;
     }
 
     public bool DeleteArtifact(string subject, string scope)
@@ -316,6 +520,7 @@ public sealed partial class FileMemoryStore : IMemoryStore
         string path = ArtifactPath(subject, scope);
         if (!File.Exists(path)) return false;
         File.Delete(path);
+        _artifactCache.Invalidate($"{scope}|{subject}|");
         return true;
     }
 
@@ -581,13 +786,25 @@ public sealed partial class FileMemoryStore : IMemoryStore
 
     public string[] DiscoverTopics()
     {
+        // Return cached result if still fresh
+        if (_cachedTopics is not null && (DateTime.UtcNow - _topicsCacheTime) < TopicsCacheTtl)
+            return _cachedTopics;
+
         string localTopicsRoot = Path.Combine(_workspaceRoot, ".scrinia", "topics");
         if (!Directory.Exists(localTopicsRoot))
+        {
+            _cachedTopics = [];
+            _topicsCacheTime = DateTime.UtcNow;
             return [];
+        }
 
-        return Directory.GetDirectories(localTopicsRoot)
+        var topics = Directory.GetDirectories(localTopicsRoot)
             .Select(d => $"local-topic:{Path.GetFileName(d)}")
             .ToArray();
+
+        _cachedTopics = topics;
+        _topicsCacheTime = DateTime.UtcNow;
+        return topics;
     }
 
     public List<TopicInfo> GatherTopicInfos(string? scopes = null)
@@ -676,5 +893,12 @@ public sealed partial class FileMemoryStore : IMemoryStore
             return uri;
         string path = uri[7..];
         return Path.GetFileNameWithoutExtension(path);
+    }
+
+    public void Dispose()
+    {
+        foreach (var lk in _indexLocks.Values)
+            lk.Dispose();
+        _indexLocks.Clear();
     }
 }

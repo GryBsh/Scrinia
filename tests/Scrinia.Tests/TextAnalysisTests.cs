@@ -172,4 +172,61 @@ public sealed class TextAnalysisTests
 
         merged.Should().Equal("token", "auth");
     }
+
+    // ── MergeKeywordsWithSource ─────────────────────────────────────────────
+
+    [Fact]
+    public void MergeKeywordsWithSource_TracksAgentKeywords()
+    {
+        var (keywords, agentSet) = TextAnalysis.MergeKeywordsWithSource(
+            ["auth", "jwt"],
+            ["token", "refresh", "auth"]);
+
+        keywords.Should().HaveCount(4);
+        agentSet.Should().Contain("auth");
+        agentSet.Should().Contain("jwt");
+        agentSet.Should().NotContain("token");
+        agentSet.Should().NotContain("refresh");
+    }
+
+    [Fact]
+    public void MergeKeywordsWithSource_NullAgent_EmptyAgentSet()
+    {
+        var (keywords, agentSet) = TextAnalysis.MergeKeywordsWithSource(null, ["token", "auth"]);
+
+        keywords.Should().Equal("token", "auth");
+        agentSet.Should().BeEmpty();
+    }
+
+    // ── AnalyzeText ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void AnalyzeText_ReturnsBothKeywordsAndTf()
+    {
+        string text = string.Join(" ", Enumerable.Repeat("authentication", 10))
+            + " " + string.Join(" ", Enumerable.Repeat("token", 5))
+            + " singleton";
+
+        var (keywords, tf) = TextAnalysis.AnalyzeText(text, topN: 3);
+
+        keywords.Should().HaveCount(3);
+        keywords[0].Should().Be("authentication");
+        keywords[1].Should().Be("token");
+        tf["authentication"].Should().Be(10);
+        tf["token"].Should().Be(5);
+        tf["singleton"].Should().Be(1);
+    }
+
+    [Fact]
+    public void AnalyzeText_ConsistentWithSeparateCalls()
+    {
+        string text = "Kubernetes pods containers orchestration cluster deployment";
+
+        var (analyzeKw, analyzeTf) = TextAnalysis.AnalyzeText(text);
+        var separateKw = TextAnalysis.ExtractKeywords(text);
+        var separateTf = TextAnalysis.ComputeTermFrequencies(text);
+
+        analyzeKw.Should().BeEquivalentTo(separateKw);
+        analyzeTf.Should().BeEquivalentTo(separateTf);
+    }
 }

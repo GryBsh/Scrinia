@@ -67,12 +67,16 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         _logger ??= sp?.GetService<ILoggerFactory>()?.CreateLogger<EmbeddingsPlugin>()
             ?? LoggerFactory.Create(b => b.AddConsole()).CreateLogger<EmbeddingsPlugin>();
 
-        string dataDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        dataDir = Path.Combine(dataDir, "scrinia-server", "plugins", "embeddings");
+        string pluginsDir = Path.Combine(AppContext.BaseDirectory, "plugins");
+        string dataDir = Path.Combine(pluginsDir, "embeddings");
         Directory.CreateDirectory(dataDir);
 
+        // Plugin files (models, caches) go in a folder named after the plugin, alongside the server.
+        string modelsDir = Path.Combine(pluginsDir, "scri-plugin-embeddings");
+        Directory.CreateDirectory(modelsDir);
+
         _vectorStore = new VectorStore(dataDir);
-        _provider = EmbeddingProviderFactory.Create(_options, Path.Combine(dataDir, ".."), _logger);
+        _provider = EmbeddingProviderFactory.Create(_options, modelsDir, _logger);
 
         _logger.LogInformation("Embeddings plugin initialized: provider={Provider}, available={Available}",
             _options.Provider, _provider.IsAvailable);

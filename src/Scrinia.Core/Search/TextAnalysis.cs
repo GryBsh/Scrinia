@@ -99,7 +99,19 @@ public static class TextAnalysis
     /// </summary>
     public static string[] MergeKeywords(string[]? agentKeywords, string[] autoKeywords, int maxTotal = 30)
     {
+        var (keywords, _) = MergeKeywordsWithSource(agentKeywords, autoKeywords, maxTotal);
+        return keywords;
+    }
+
+    /// <summary>
+    /// Merges agent-provided keywords with auto-extracted keywords, tracking which came from the agent.
+    /// Agent keywords get higher TF boost (+5) than auto-extracted (+2) for better search differentiation.
+    /// </summary>
+    public static (string[] Keywords, HashSet<string> AgentKeywords) MergeKeywordsWithSource(
+        string[]? agentKeywords, string[] autoKeywords, int maxTotal = 30)
+    {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var agentSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var merged = new List<string>(maxTotal);
 
         if (agentKeywords is not null)
@@ -110,7 +122,8 @@ public static class TextAnalysis
                 if (trimmed.Length > 0 && seen.Add(trimmed))
                 {
                     merged.Add(trimmed);
-                    if (merged.Count >= maxTotal) return [.. merged];
+                    agentSet.Add(trimmed);
+                    if (merged.Count >= maxTotal) return ([.. merged], agentSet);
                 }
             }
         }
@@ -121,10 +134,33 @@ public static class TextAnalysis
             if (trimmed.Length > 0 && seen.Add(trimmed))
             {
                 merged.Add(trimmed);
-                if (merged.Count >= maxTotal) return [.. merged];
+                if (merged.Count >= maxTotal) return ([.. merged], agentSet);
             }
         }
 
-        return [.. merged];
+        return ([.. merged], agentSet);
+    }
+
+    /// <summary>
+    /// Extracts keywords and computes term frequencies in a single tokenization pass.
+    /// Avoids the double tokenization of calling <see cref="ExtractKeywords"/> + <see cref="ComputeTermFrequencies"/> separately.
+    /// </summary>
+    public static (string[] Keywords, Dictionary<string, int> TermFrequencies) AnalyzeText(string text, int topN = 25)
+    {
+        var tf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (string token in Tokenize(text))
+        {
+            tf.TryGetValue(token, out int count);
+            tf[token] = count + 1;
+        }
+
+        var keywords = tf
+            .OrderByDescending(kvp => kvp.Value)
+            .ThenBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(topN)
+            .Select(kvp => kvp.Key)
+            .ToArray();
+
+        return (keywords, tf);
     }
 }

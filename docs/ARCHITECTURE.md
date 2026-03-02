@@ -2,7 +2,7 @@
 
 > Persistent, portable memory for LLMs — CLI, MCP server, HTTP API, and web UI.
 
-**Version**: 1.0.0 | **Runtime**: .NET 10.0 | **License**: BSD-3-Clause | **Copyright**: 2026 Nick Daniels
+**Version**: 0.1.0 | **Runtime**: .NET 10.0 | **License**: BSD-3-Clause | **Copyright**: 2026 Nick Daniels
 
 ---
 
