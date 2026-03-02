@@ -12,7 +12,7 @@ WORKDIR /web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ .
-RUN npm run build
+RUN npx tsc -b && npx vite build --outDir dist
 
 FROM restore AS build
 COPY src/Scrinia.Core/ src/Scrinia.Core/
