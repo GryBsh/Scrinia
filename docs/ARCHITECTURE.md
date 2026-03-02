@@ -4,6 +4,16 @@
 
 **Version**: 0.1.0 | **Runtime**: .NET 10.0 | **License**: BSD-3-Clause | **Copyright**: 2026 Nick Daniels
 
+### Related Documentation
+
+- **[Core Internals](core.md)** — IMemoryStore, FileMemoryStore, extensibility, models, storage scopes
+- **[Search System](search.md)** — BM25, weighted field scoring, hybrid search, TextAnalysis
+- **[Encoding](encoding.md)** — NMP/2 format, chunked encoder, AppendChunk
+- **[CLI Reference](cli.md)** — 11 commands, configuration, workspace setup
+- **[Server Guide](server.md)** — HTTP API, authentication, deployment, web UI
+- **[Plugins](plugins.md)** — embeddings plugin, CLI/server plugins, HnswIndex, HybridReranker
+- **[NMP/2 Spec](../NMP_SPEC.md)** — byte-level format specification
+
 ---
 
 ## Table of Contents
@@ -72,7 +82,7 @@ Three deployment modes:
 ## 2. Solution Structure
 
 ```
-Scrinia.sln (12 projects)
+Scrinia.sln (11 projects)
 │
 ├── src/
 │   ├── Scrinia.Core/                    net10.0 classlib
@@ -89,15 +99,16 @@ Scrinia.sln (12 projects)
 │   │
 │   ├── Scrinia/                         net10.0 exe (AssemblyName: scri)
 │   │   ├── Program.cs                   CLI entry point (3 lines)
-│   │   ├── Commands/                    ScriniaCommands (9 commands), WorkspaceSetup
+│   │   ├── Commands/                    ScriniaCommands (11 commands), WorkspaceSetup, WorkspaceConfig
 │   │   ├── Mcp/                         ScriniaArtifactStore (static CLI store)
+│   │   ├── Services/                    McpPluginHost, PluginClientJsonContext
 │   │   └── HttpMemoryStore.cs           Remote IMemoryStore proxy
 │   │
 │   ├── Scrinia.Plugin.Abstractions/     net10.0 classlib
 │   │   ├── IScriniaPlugin.cs            Plugin lifecycle interface
 │   │   ├── ScriniaPluginBase.cs         Convenience base class
 │   │   ├── IMemoryOperationHook.cs      Before/After hooks
-│   │   └── HookContexts.cs             6 context classes (Store/Append/Forget × Before/After)
+│   │   └── HookContexts.cs              6 context classes (Store/Append/Forget × Before/After)
 │   │
 │   ├── Scrinia.Server/                  net10.0 web (ASP.NET Core)
 │   │   ├── Program.cs                   Full middleware pipeline + bootstrap
@@ -113,25 +124,27 @@ Scrinia.sln (12 projects)
 │   │   ├── IEmbeddingProvider.cs        Provider abstraction
 │   │   ├── NullEmbeddingProvider.cs     No-op fallback
 │   │   ├── EmbeddingProviderFactory.cs  Factory (onnx/ollama/openai/none)
-│   │   ├── VectorStore.cs              Per-scope binary vector storage (SVF1 format)
-│   │   ├── VectorIndex.cs              SIMD cosine similarity + flat-scan search
-│   │   ├── Models/VectorEntry.cs       (Name, ChunkIndex?, Vector) record
-│   │   ├── Onnx/                       ModelManager, HardwareDetector, BertTokenizer, OnnxInferenceSession
-│   │   └── Providers/                  OnnxEmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider
+│   │   ├── VectorStore.cs               Per-scope binary vector storage (SVF2 format, append-only)
+│   │   ├── VectorIndex.cs               SIMD cosine similarity + flat-scan search
+│   │   ├── HnswIndex.cs                 Hierarchical Navigable Small World graph (ANN search)
+│   │   ├── HybridReranker.cs            ISearchScoreContributor: re-ranks BM25 top-K with cosine
+│   │   ├── Models/VectorEntry.cs        (Name, ChunkIndex?, Vector) record
+│   │   ├── Onnx/                        ModelManager, HardwareDetector, BertTokenizer, OnnxInferenceSession
+│   │   └── Providers/                   OnnxEmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider
 │   │
 │   └── Scrinia.AppHost/                 .NET Aspire AppHost
 │       └── Program.cs                   Orchestrates Scrinia.Server
 │
 ├── tests/
-│   ├── Scrinia.Tests/                   310 tests (xunit + FluentAssertions)
+│   ├── Scrinia.Tests/                   325 tests (xunit + FluentAssertions)
 │   ├── Scrinia.Server.Tests/            53 tests (WebApplicationFactory)
-│   └── Scrinia.Plugin.Embeddings.Tests/ 28 tests (VectorIndex, VectorStore, HybridScorer, BertTokenizer)
+│   └── Scrinia.Plugin.Embeddings.Tests/ 38 tests (VectorIndex, VectorStore, HybridScorer, BertTokenizer, HNSW)
 │
 └── web/                                 React 19 + Vite + Tailwind CSS 4
     └── src/                             SPA: Login, Dashboard, MemoryBrowser, MemoryDetail, KeyManagement
 ```
 
-**Total: 391 tests across 3 test projects.**
+**Total: 416 tests across 3 test projects.**
 
 ---
 
@@ -166,105 +179,9 @@ Core exposes internals to: `scri` (CLI), `Scrinia.Mcp`, `Scrinia.Server`, `Scrin
 
 The shared foundation — encoding, models, search, and the store abstraction. Zero ASP.NET Core dependency.
 
-### 4.1 IMemoryStore Interface
+> **Detailed reference:** [Core Internals](core.md) — IMemoryStore (27 methods), FileMemoryStore (ReaderWriterLockSlim, CachedIndex, LRU cache), extensibility interfaces, models, storage scopes, v3 index schema.
 
-27-method contract for persistent and ephemeral memory. Key method groups:
-
-| Group | Methods | Purpose |
-|-------|---------|---------|
-| **Naming** | `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName` | Name resolution and path safety |
-| **CRUD** | `ResolveArtifactAsync`, `LoadIndex`, `SaveIndex`, `Upsert`, `Remove` | Index and artifact operations |
-| **Listing/Search** | `ListScoped`, `SearchAll` | Multi-scope enumeration and hybrid search |
-| **Ephemeral** | `RememberEphemeral`, `ForgetEphemeral`, `GetEphemeral` | In-memory transient storage |
-| **File I/O** | `WriteArtifactAsync`, `ReadArtifactAsync`, `DeleteArtifact` | `.nmp2` file operations |
-| **Copy/Archive** | `CopyMemory`, `ArchiveVersion` | Cross-scope copy and version history |
-| **Paths** | `ArtifactPath`, `ArtifactUri`, `FindArtifactPath`, `GetStoreDirForScope` | Filesystem path resolution |
-| **Topics** | `DiscoverTopics`, `GatherTopicInfos`, `ResolveReadScopes` | Topic directory discovery |
-| **Export/Import** | `ListTopicArtifacts`, `ImportTopicEntries` | Bundle support |
-| **Utility** | `GenerateContentPreview` | Content truncation |
-
-### 4.2 FileMemoryStore
-
-Instance-based `IMemoryStore` implementation backed by the filesystem.
-
-**Naming conventions:**
-- `"subject"` → `{workspace}/.scrinia/store/subject.nmp2` (local scope)
-- `"topic:subject"` → `{workspace}/.scrinia/topics/topic/subject.nmp2` (topic scope)
-- `"~subject"` → in-memory only (ephemeral scope)
-
-**Index locking:** Per-scope `SemaphoreSlim` locks stored in `ConcurrentDictionary<string, SemaphoreSlim>`. All index mutations (Load, Save, Upsert, Remove) acquire the scope's lock. Write operations use atomic rename (`File.Move` from `.tmp` to `index.json`) for crash safety.
-
-**Path traversal protection:** `SanitizeName()` strips `..`, replaces `/` and `\` with `_`, removes invalid filename chars, and applies `Path.GetFileName()` as a final safety measure.
-
-**Source-gen JSON context:** Private nested `FileStoreJsonContext` for trim/AOT-safe serialization.
-
-### 4.3 MemoryStoreContext
-
-```csharp
-public static class MemoryStoreContext
-{
-    private static readonly AsyncLocal<IMemoryStore?> _current = new();
-    public static IMemoryStore? Current { get; set; }
-}
-```
-
-AsyncLocal indirection for `IMemoryStore`. MCP tools read `Current` to dispatch calls. Set per-request by the server, per-session by the CLI, and overridden per-test for isolation.
-
-### 4.4 Extensibility Contexts
-
-Two additional AsyncLocal contexts enable plugin extensibility across both REST and MCP code paths:
-
-**`SearchContributorContext`** (`Scrinia.Core.Search`):
-```csharp
-public interface ISearchScoreContributor
-{
-    Task<IReadOnlyDictionary<string, double>?> ComputeScoresAsync(
-        string query, IReadOnlyList<ScopedArtifact> candidates,
-        IMemoryStore store, CancellationToken ct);
-}
-public static class SearchContributorContext
-{
-    public static ISearchScoreContributor? Current { get; set; } // AsyncLocal
-}
-```
-
-Plugins implement `ISearchScoreContributor` to provide supplemental search scores (e.g., semantic similarity). Both REST (`PluginPipeline.SearchAsync`) and MCP (`ScriniaMcpTools.Search`) check this context.
-
-**`MemoryEventSinkContext`** (`Scrinia.Core`):
-```csharp
-public interface IMemoryEventSink
-{
-    Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct);
-    Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct);
-    Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct);
-}
-public static class MemoryEventSinkContext
-{
-    public static IMemoryEventSink? Current { get; set; } // AsyncLocal
-}
-```
-
-The MCP code path fires `IMemoryEventSink` events after store/append/forget operations. The REST path uses `IMemoryOperationHook` instead (via `PluginPipeline`). This separation guarantees no double-firing — a plugin implements both interfaces but only one fires per code path.
-
-**Context lifecycle:** Set per-request by the server middleware and per MCP session in `ConfigureSessionOptions`. Both contexts are null when no plugin is loaded — all callers check for null, falling back to legacy behavior.
-
-### 4.5 SessionBudget
-
-Internal static class tracking estimated token consumption per session. Uses `ConcurrentDictionary<string, long>` with AsyncLocal override for test isolation.
-
-- `RecordAccess(memoryName, charsLoaded)` — thread-safe accumulation
-- `EstimatedTokensLoaded` — `TotalCharsLoaded / 4` heuristic
-- `Breakdown` — per-memory `(chars, estimatedTokens)` dictionary
-
-### 4.5 Models
-
-| Record | Key Fields | Purpose |
-|--------|-----------|---------|
-| `ArtifactEntry` | Name, Uri, OriginalBytes, ChunkCount, CreatedAt, Description, Tags, Keywords, TermFrequencies, ChunkEntries | Index entry (14 fields, v3 format) |
-| `ChunkEntry` | ChunkIndex, ContentPreview, Keywords, TermFrequencies | Per-chunk search metadata |
-| `EphemeralEntry` | Name, Artifact (inline text), OriginalBytes, ... | In-memory entry (stores artifact directly) |
-| `IndexFile` | Version (=3), Entries | On-disk `index.json` wrapper |
-| `ScopedArtifact` | Scope, Entry | Entry + scope pair for listing/search |
+Key components: `IMemoryStore` (27-method contract), `FileMemoryStore` (ReaderWriterLockSlim locking, CachedIndex with O(1) lookup, 50 MB LRU artifact cache), `MemoryStoreContext` (AsyncLocal dispatch), `SessionBudget` (token tracking), `ISearchScoreContributor` + `IMemoryEventSink` (plugin extensibility with static `Default` fallback for CLI).
 
 ---
 
@@ -293,7 +210,7 @@ Internal static class tracking estimated token consumption per session. Uses `Co
 | `budget` | — | table | Token consumption report |
 
 **Key design decisions:**
-- `store()` performs text analysis: keyword extraction (`TextAnalysis.ExtractKeywords`), term frequency computation (`ComputeTermFrequencies`), keyword boosting (+3 per keyword in TF), and per-chunk metadata for multi-chunk content.
+- `store()` performs text analysis: keyword extraction, term frequency computation, keyword TF boosting (+5 agent, +2 auto), and per-chunk metadata for multi-chunk content.
 - `append()` uses `Nmp2ChunkedEncoder.AppendChunk()` for surgical chunk promotion: single-chunk → 2-chunk, or adds to existing multi-chunk. Re-computes keywords and TF across all content.
 - `show()` records access via `SessionBudget.RecordAccess()`.
 
@@ -315,7 +232,7 @@ await app.RunAsync(args);
 
 ConsoleAppFramework v5 — source-gen, zero-reflection, trim/AOT safe.
 
-### 6.1 Commands (9)
+### 6.1 Commands (11)
 
 | Command | Key Parameters | Description |
 |---------|---------------|-------------|
@@ -328,6 +245,8 @@ ConsoleAppFramework v5 — source-gen, zero-reflection, trim/AOT safe.
 | `export` | `topics`, `--filename` | Export topics to bundle |
 | `import` | `path`, `--topics`, `--overwrite` | Import from bundle |
 | `bundle` | `topic`, `files` | Bundle raw files (CLI-only, no MCP equivalent) |
+| `setup` | `--workspace-root` | Download ONNX embedding model |
+| `config` | `key?`, `value?`, `--unset` | Get/set workspace configuration |
 
 ### 6.2 Workspace Discovery
 
@@ -492,17 +411,22 @@ Forget       → RemoveVectorsAsync → VectorStore.RemoveAsync
 
 **ONNX pipeline:** `HardwareDetector` (CUDA → DirectML → CPU) → `ModelManager` (auto-download from HuggingFace) → `BertTokenizer` (WordPiece, 30,522 tokens) → `OnnxInferenceSession` (tokenize → infer → mean pool → L2 normalize).
 
-### 9.3 Vector Storage (SVF1 Format)
+### 9.3 Vector Storage (SVF2 Format)
 
-Binary file per scope at `{dataDir}/plugins/embeddings/{storeName}/{scope}/vectors.bin`:
+Append-only binary file per scope at `{dataDir}/plugins/embeddings/{storeName}/{scope}/vectors.bin`:
 ```
-[magic "SVF1" 4B] [dimensions uint16] [count uint32]
-Entry:  [nameLen uint16] [nameUtf8] [chunkIndex int32 (-1=none)] [vector float32[dims]]
+[magic "SVF2" 4B] [dimensions uint16]
+Operation: [op uint8 (0=add, 1=delete)] [nameLen uint16] [nameUtf8] [chunkIndex int32 (-1=none)] [vector float32[dims]]
 ```
 
+- **Append-only**: new entries and deletions are appended as operations
+- **Compaction**: when deletes exceed 20% of total operations (and >= 10 deletes), the file is rewritten
 - Atomic writes (`.tmp` → rename), per-scope `SemaphoreSlim` locking
 - Ephemeral scope: in-memory only (not persisted)
+- Legacy SVF1 files are read-only (auto-migrated on next write)
 - `VectorIndex.Search`: flat-scan cosine similarity using `System.Numerics.Vector<float>` SIMD
+- `HnswIndex`: Hierarchical Navigable Small World graph for approximate nearest neighbor search (M=16, efConstruction=200)
+- `HybridReranker`: `ISearchScoreContributor` implementation that re-ranks only BM25 top-K candidates with cosine similarity
 
 ### 9.4 Scoring
 
@@ -570,192 +494,35 @@ React 19 + TypeScript + Vite 7 + Tailwind CSS 4 + React Router 7 + TanStack Quer
 
 Brotli-compressed, URL-safe Base64 encoded artifacts with CRC32 integrity.
 
-### 11.1 Single-Chunk Format
+> **Detailed reference:** [Encoding](encoding.md) — Nmp2ChunkedEncoder API, single/multi-chunk formats, AppendChunk with incremental CRC32, compression density.
 
-```
-NMP/2 {N}B CRC32:{hex} BR+B64
-{up to 76 url-safe base64 chars per line}
-...
-##PAD:{0-2}
-NMP/END
-```
+See also [NMP_SPEC.md](../NMP_SPEC.md) for the byte-level format specification.
 
-- **Header**: `{N}B` = original byte count, CRC32 over original UTF-8 bytes, 8 hex chars
-- **Data**: URL-safe Base64 (RFC 4648 section 5: `A-Z a-z 0-9 - _`), 76 chars/line, no `=` padding
-- **Padding**: `##PAD:{n}` — 0-2 zero bytes for 3-byte Base64 alignment
-- **Sentinel**: `NMP/END`
-
-### 11.2 Multi-Chunk Format
-
-```
-NMP/2 {N}B CRC32:{hex} BR+B64 C:{k}
-##CHUNK:1
-{independently brotli-compressed + base64 lines}
-##PAD:{n}
-##CHUNK:2
-...
-NMP/END
-```
-
-- CRC32 computed over full original UTF-8 bytes (pre-split)
-- Each chunk independently Brotli-compressed → independently decodable
-- `C:{k}` in header indicates chunk count
-
-### 11.3 Encoding Pipeline
-
-```
-Nmp2ChunkedEncoder (public API)
-  └─ Encode(text) → always single chunk
-  └─ EncodeChunks(string[]) → 1 elem = single, 2+ = multi-chunk
-  └─ AppendChunk(existing, newText) → promotes single→multi or appends
-  └─ GetChunkCount(artifact) → count
-  └─ DecodeChunk(artifact, index) → text (1-based)
-
-Nmp2Strategy (IEncodingStrategy impl)
-  └─ Encode(bytes, options) → Brotli → pad → Base64url → format
-  └─ Decode(artifact) → strip → Base64url decode → Brotli decompress
-  └─ Internal: BrotliCompress, BrotliDecompress, Base64UrlEncode, Base64UrlDecode
-```
-
-**Key design**: No auto-chunking. Single elements always produce single-chunk format. Multi-chunk only via explicit multiple elements or `AppendChunk()`.
-
-**Density**: ~0.68-0.76 chars/byte depending on content compressibility.
+Key design: no auto-chunking — single elements always produce single-chunk format. Multi-chunk only via explicit multiple elements or `AppendChunk()`. `AppendChunk` uses `Crc32Combine` for incremental CRC32 (no re-read of existing data). Density: ~0.68-0.76 chars/byte.
 
 ---
 
 ## 12. Search System
 
-Hybrid BM25 + weighted field scoring in `Scrinia.Core.Search`.
+Hybrid BM25 + weighted field + semantic scoring in `Scrinia.Core.Search`.
 
-### 12.1 Scoring Formula
+> **Detailed reference:** [Search System](search.md) — scoring formula, BM25 normalization, intersection bonus, min-heap top-K, weighted field tables, keyword TF boosting, TextAnalysis API.
 
 ```
-finalScore = weightedFieldScore + bm25Score × 5.0 + supplementalScore
+finalScore = weightedFieldScore + normalizedBm25 × 5.0 + supplementalScore
 ```
 
-The `supplementalScore` comes from `ISearchScoreContributor` plugins (§8.3). When no contributor is registered, it's 0 (legacy behavior).
-
-**Supplemental score key format** (matches deduplication key pattern):
-- Entries: `"{scope}|{name}"`
-- Chunks: `"{scope}|{name}|{chunkIndex}"` — chunk key checked first, falls back to entry key
-
-`IMemoryStore.SearchAll()` has two overloads: the original 3-parameter version delegates to the new 4-parameter version with `supplementalScores: null`. `FileMemoryStore` passes supplemental scores through to `WeightedFieldScorer.SearchAll()`.
-
-### 12.2 Weighted Field Scoring (per query term)
-
-**Entry scoring:**
-
-| Match Type | Score |
-|-----------|-------|
-| Exact name match | 100 |
-| Tag exact match | 50 |
-| Keyword exact match | 40 |
-| Name starts with | 30 |
-| Name contains | 20 |
-| Tag contains | 15 |
-| Keyword contains | 12 |
-| Description contains | 10 |
-| Content preview contains | 5 |
-
-Multi-term queries: each term scored independently, per-term max scores summed.
-
-**Topic scoring**: similar pattern with topic name, tags, description, and entry name matches.
-
-**Chunk scoring**: parent name, chunk keywords, chunk content preview, plus chunk-level BM25.
-
-### 12.3 BM25
-
-Standard BM25 with k1=1.5, b=0.75. IDF: `ln((N - df + 0.5) / (df + 0.5) + 1)`. Corpus stats computed per search invocation.
-
-### 12.4 Deduplication
-
-Groups `EntryResult` and `ChunkEntryResult` by `"{scope}|{name}"`. Keeps only the highest-scoring result per memory. `TopicResult` passes through unaffected.
-
-### 12.5 TextAnalysis
-
-Public static class:
-- `Tokenize(text)` — character-by-character scan, splits on non-alphanumeric, lowercases, filters stop words (~190 English words) and tokens < 2 chars
-- `ComputeTermFrequencies(text)` — tokenize + count
-- `ExtractKeywords(text, topN=25)` — top N terms by frequency
-- `MergeKeywords(agentKeywords?, autoKeywords, maxTotal=30)` — dedup, agent-first, cap at 30
+Key features: BM25 min-max normalized to 0–100, multi-term intersection bonus `(matchedTerms - 1) × 15`, min-heap top-K via `PriorityQueue`, inline deduplication via `bestPerMemory` dict, keyword TF boost (+5 agent, +2 auto), `CachedIndex` for corpus stats reuse.
 
 ---
 
 ## 13. Storage Architecture
 
-### 13.1 Three Scopes
+> **Detailed reference:** [Core Internals](core.md) — three scopes, v3 index schema, version archiving, IStorageBackend extensibility.
 
-| Scope | Path | Lifetime | Use Case |
-|-------|------|----------|----------|
-| **local** | `.scrinia/store/` | Persistent | Project-level knowledge |
-| **topic** | `.scrinia/topics/{name}/` | Persistent | Categorized knowledge |
-| **ephemeral** | In-memory | Session | Scratch/temporary |
+Three scopes: **local** (`.scrinia/store/`), **topic** (`.scrinia/topics/{name}/`), **ephemeral** (in-memory). Each persistent scope has its own v3 `index.json` and `.nmp2` artifact files. V3 fields include `keywords`, `termFrequencies`, `chunkEntries`, `reviewAfter`, `reviewWhen`. Version archiving copies `.nmp2` to `versions/` before overwrite.
 
-Each scope has its own `index.json` (v3 format) and `.nmp2` artifact files.
-
-### 13.2 V3 Index Format
-
-```json
-{
-  "v": 3,
-  "entries": [{
-    "name": "auth-flow",
-    "uri": "file://...auth-flow.nmp2",
-    "originalBytes": 1234,
-    "chunkCount": 1,
-    "createdAt": "2026-01-15T...",
-    "description": "OAuth 2.0 implementation notes",
-    "tags": ["auth", "oauth"],
-    "contentPreview": "First 500 chars...",
-    "keywords": ["oauth", "token", "refresh"],
-    "termFrequencies": {"oauth": 12, "token": 8, ...},
-    "updatedAt": "2026-01-16T...",
-    "reviewAfter": "2026-07-15T...",
-    "reviewWhen": "when auth system changes",
-    "chunkEntries": [{
-      "chunkIndex": 1,
-      "contentPreview": "...",
-      "keywords": ["..."],
-      "termFrequencies": {...}
-    }]
-  }]
-}
-```
-
-V3 fields (added over v2): `keywords`, `termFrequencies`, `updatedAt`, `reviewAfter`, `reviewWhen`, `chunkEntries`. Entries from v2 indexes gracefully degrade (BM25 score = 0).
-
-### 13.3 Version Archiving
-
-Before overwriting an artifact, `ArchiveVersion()` copies to `{storeDir}/versions/{subject}_{yyyyMMdd-HHmmss}.nmp2`.
-
-### 13.4 Bundle Format (`.scrinia-bundle`)
-
-ZIP archive containing:
-```
-manifest.json         { version: 1, exported: "...", topics: [...], totalEntries: N }
-topics/{topic}/
-  index.json          { entries: [...] }
-  {name}.nmp2         artifact files
-```
-
-### 13.5 Storage Backend Extensibility
-
-The server decouples store creation from the filesystem via `IStorageBackend`:
-
-```csharp
-public interface IStorageBackend
-{
-    string BackendId { get; }
-    IMemoryStore CreateStore(string storeName, string storePath);
-}
-```
-
-- **Default**: `FilesystemBackend` creates `FileMemoryStore` instances with `Directory.CreateDirectory`.
-- **StoreManager** accepts `IStorageBackend` via DI (deferred factory delegate in `Program.cs`), caches `IMemoryStore` instances per store name.
-- **Plugins** can replace the default by registering a custom `IStorageBackend` singleton in `ConfigureServices` — plugin DI runs before `StoreManager` is constructed.
-- **`RequestContext.Store`** is typed `IMemoryStore?` (not `FileMemoryStore?`).
-- **`MemoryNaming`** (`Scrinia.Core`) provides `StripEphemeralPrefix` and `FormatScopeLabel` as static utilities, decoupled from any store implementation.
-- **Health endpoint** reports `backend:{id}` in readiness checks.
+Bundle format (`.scrinia-bundle`): ZIP containing `manifest.json` + `topics/{name}/index.json` + `topics/{name}/{subject}.nmp2`.
 
 ---
 
@@ -832,10 +599,10 @@ public sealed class RequestContext
 
 | Project | Tests | Framework | Key Patterns |
 |---------|-------|-----------|-------------|
-| `Scrinia.Tests` | 310 | xunit + FluentAssertions | `TestHelpers.StoreScope` for isolation |
+| `Scrinia.Tests` | 325 | xunit + FluentAssertions | `TestHelpers.StoreScope` for isolation |
 | `Scrinia.Server.Tests` | 53 | + WebApplicationFactory | `ScriniaServerFactory` with temp data dir |
-| `Scrinia.Plugin.Embeddings.Tests` | 28 | xunit + FluentAssertions | VectorIndex, VectorStore, HybridScorer, BertTokenizer, OnnxProvider |
-| **Total** | **391** | | |
+| `Scrinia.Plugin.Embeddings.Tests` | 38 | xunit + FluentAssertions | VectorIndex, VectorStore, HybridScorer, BertTokenizer, OnnxProvider, HNSW |
+| **Total** | **416** | | |
 
 ### 16.2 Test Isolation
 
@@ -894,9 +661,9 @@ public sealed class RequestContext
 
 ```bash
 dotnet build                           # Build all projects
-cd Scrinia.Tests && dotnet test        # 310 core tests
+cd Scrinia.Tests && dotnet test        # 325 core tests
 cd Scrinia.Server.Tests && dotnet test # 53 server tests
-cd Scrinia.Plugin.Embeddings.Tests && dotnet test # 28 embeddings tests
+cd Scrinia.Plugin.Embeddings.Tests && dotnet test # 38 embeddings tests
 cd web && npm run dev                  # Vite dev server on :5173
 ```
 

@@ -101,6 +101,18 @@ scri bundle <topic> <files> [-o filename] [-d description] [-t tags]
 scri bundle docs "src/**/*.md" -d "Source documentation" -t docs,reference
 ```
 
+### `scri setup`
+
+Download the ONNX embedding model for the embeddings plugin.
+
+```bash
+scri setup [--workspace-root <path>]
+```
+
+Downloads `model.onnx` and `vocab.txt` from HuggingFace (`sentence-transformers/all-MiniLM-L6-v2`) to `{exeDir}/plugins/{pluginName}/models/all-MiniLM-L6-v2/`. Shows progress bars with transfer speed. Skips files that already exist.
+
+Requires the embeddings plugin executable to be present at `{exeDir}/plugins/scri-plugin-embeddings[.exe]` (installed via `publish.ps1 -WithEmbeddings`).
+
 ### `scri config`
 
 Get, set, list, or remove workspace configuration settings. Settings are stored in `.scrinia/config.json`.

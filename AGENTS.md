@@ -42,12 +42,15 @@ E:/source/repos/Scrinia/
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
-        ScriniaCommands.cs        <- all 10 CLI commands as public methods (ConsoleAppFramework source-gen)
+        ScriniaCommands.cs        <- all 11 CLI commands as public methods (ConsoleAppFramework source-gen)
         WorkspaceSetup.cs         <- shared --workspace-root configuration + plugin loading helper
         WorkspaceConfig.cs        <- .scrinia/config.json I/O (Load/Save/Get/Set/Unset)
         ConfigJsonContext.cs      <- trim-safe JSON context for config file
       Mcp/
         ScriniaArtifactStore.cs   <- memory store (local, topic, ephemeral scopes; static class)
+      Services/
+        McpPluginHost.cs          <- MCP client for child-process plugins (stdio transport, auto-reconnect)
+        PluginClientJsonContext.cs <- trim-safe JSON context for plugin communication
     Scrinia.Server/               <- HTTP API server (net10.0 web, refs Core + Mcp)
       Program.cs                  <- entry point (ASP.NET Core minimal API)
       Auth/
@@ -78,23 +81,25 @@ E:/source/repos/Scrinia/
       EmbeddingOptions.cs         <- Config POCO (Provider, Hardware, SemanticWeight)
       IEmbeddingProvider.cs       <- Provider abstraction
       EmbeddingProviderFactory.cs <- Factory (onnx/ollama/openai/none)
-      VectorStore.cs              <- Per-scope binary vector storage (SVF1 format)
+      VectorStore.cs              <- Per-scope binary vector storage (SVF2 format, append-only with compaction)
       VectorIndex.cs              <- SIMD cosine similarity + flat-scan search
+      HnswIndex.cs                <- Hierarchical Navigable Small World graph (M=16, efConstruction=200)
+      HybridReranker.cs           <- ISearchScoreContributor: re-ranks BM25 top-K with cosine similarity
       Models/VectorEntry.cs       <- (Name, ChunkIndex?, Vector) record
       Onnx/                       <- ModelManager, HardwareDetector, BertTokenizer, OnnxInferenceSession
       Providers/                  <- OnnxEmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider
-    Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport)
+    Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport, self-contained NOT trimmed)
       Program.cs                  <- MCP server host, registers EmbeddingsTools
-      EmbeddingsTools.cs          <- MCP tools class (4 tools: status, search, upsert, remove)
+      EmbeddingsTools.cs          <- MCP tools class (sealed, 4 tools: status, search, upsert, remove)
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 311 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 325 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
     Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 53 tests
       ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
-    Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 28 tests (4 skipped without ONNX model)
+    Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 38 tests (4 skipped without ONNX model)
       VectorIndexTests.cs, VectorStoreTests.cs, HybridScorerTests.cs, BertTokenizerTests.cs, OnnxEmbeddingProviderTests.cs, EmbeddingsPluginCliTests.cs
   web/                            <- React + Vite + Tailwind CSS SPA
     src/api/                      <- typed API client and TypeScript DTOs
@@ -106,7 +111,13 @@ E:/source/repos/Scrinia/
   AGENTS.md                      <- this file
   docker-compose.yml             <- one-command server deployment
   docs/
-    ARCHITECTURE.md               <- comprehensive architecture document
+    ARCHITECTURE.md               <- system overview and project structure (links to detail docs)
+    core.md                       <- Scrinia.Core internals (IMemoryStore, FileMemoryStore, extensibility)
+    search.md                     <- search system reference (BM25, weighted fields, hybrid scoring)
+    encoding.md                   <- NMP/2 encoding reference (chunked encoder, format, density)
+    cli.md                        <- CLI reference (11 commands, config, workspace)
+    server.md                     <- HTTP API server guide
+    plugins.md                    <- plugin system (embeddings, CLI plugins, server plugins)
   .github/workflows/ci.yml       <- CI build + test on push/PR
   .github/workflows/release.yml  <- release builds (CLI, server, Docker image)
 ```
@@ -229,13 +240,16 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 
 ### Search: BM25 + Weighted Field + Semantic Scoring
 
-All search types in `Scrinia.Core.Search`. Hybrid scoring: `finalScore = weightedFieldScore + bm25Score * 5.0 + supplementalScore`
+All search types in `Scrinia.Core.Search`. Hybrid scoring: `finalScore = weightedFieldScore + normalizedBm25 × 5.0 + supplementalScore`
 
-Supplemental scores come from `ISearchScoreContributor` plugins (e.g., embeddings). When no contributor is registered, `supplementalScore = 0` (legacy behavior). Score keys: `"{scope}|{name}"` for entries, `"{scope}|{name}|{chunkIndex}"` for chunks.
+Supplemental scores come from `ISearchScoreContributor` plugins (e.g., `HybridReranker`). When no contributor is registered, `supplementalScore = 0` (legacy behavior). Score keys: `"{scope}|{name}"` for entries, `"{scope}|{name}|{chunkIndex}"` for chunks.
 
-- `TextAnalysis`: tokenizer (stop words, >= 2 chars), TF computation, keyword extraction (top 25), keyword merge (agent-first, cap 30)
-- `Bm25Scorer`: k1=1.5, b=0.75, IDF formula, corpus stats computed per search
-- Keywords: agent-provided + auto-extracted, merged (agent first), boosted in TF (+3)
+- **BM25 normalization**: Raw BM25 scores are min-max normalized to 0–100 range across all candidates per search
+- **Intersection bonus**: `(matchedTerms - 1) × 15` rewards multi-term matches
+- **Top-K**: Min-heap via `PriorityQueue` (O(n log k) vs O(n log n) sort), inline dedup via `bestPerMemory` dict
+- `TextAnalysis`: tokenizer (stop words, >= 2 chars), single-pass `AnalyzeText`, keyword extraction (top 25), `MergeKeywordsWithSource` (agent-first, cap 30)
+- `Bm25Scorer`: k1=1.5, b=0.75, IDF formula. `CachedIndex` caches corpus stats per index version
+- Keywords: agent-provided boosted +5 in TF, auto-extracted boosted +2 in TF
 - Entries without TF data (v2 index) get bm25Score=0 (graceful degradation)
 
 Entry scoring (per term, max wins):
@@ -258,7 +272,9 @@ Instance-based `IMemoryStore` implementation in `Scrinia.Core`. Takes `workspace
 
 Key safety features:
 - **Path traversal protection**: `SanitizeName` strips `..`, `/`, `\` sequences and applies `Path.GetFileName()` as final safety net.
-- **Index file locking**: `ConcurrentDictionary<string, SemaphoreSlim>` provides per-scope mutual exclusion for `LoadIndex`/`SaveIndex`/`Upsert`/`Remove`. Internal `LoadIndexUnsafe`/`SaveIndexUnsafe` methods exist for lock-already-held paths.
+- **Index locking**: `ConcurrentDictionary<string, ReaderWriterLockSlim>` provides per-scope reader/writer locks (concurrent reads, serialized writes). Write operations use atomic rename for crash safety.
+- **CachedIndex**: Wraps `IndexFile` with O(1) name→position lookup (`NameToPosition` dict) and lazily computed BM25 `CorpusStats`.
+- **Artifact LRU cache**: 50 MB bounded LRU cache for decoded artifact content (O(1) access via `Dictionary` + `LinkedList`).
 
 ### `MemoryStoreContext`
 
@@ -452,7 +468,7 @@ The `plugins:embeddings` setting controls which plugin executable is used for em
 ## Running Tests
 
 ```bash
-# CLI + MCP tests (311 tests)
+# CLI + MCP tests (325 tests)
 cd E:\source\repos\Scrinia\tests\Scrinia.Tests
 dotnet test
 
@@ -460,12 +476,12 @@ dotnet test
 cd E:\source\repos\Scrinia\tests\Scrinia.Server.Tests
 dotnet test
 
-# Embeddings plugin tests (28 tests, 4 skipped without ONNX model)
+# Embeddings plugin tests (38 tests, 4 skipped without ONNX model)
 cd E:\source\repos\Scrinia\tests\Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 392 tests total (311 + 53 + 28), 4 skipped (ONNX model download required).
+Expected: 416 tests total (325 + 53 + 38), 4 skipped (ONNX model download required).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 
@@ -581,10 +597,12 @@ The server supports drop-in plugins via `Scrinia.Plugin.Abstractions`. Plugin DL
 - `remove` (scope, name) → remove all vectors for a memory
 
 **Writing a CLI plugin**:
-1. Create a console app project referencing the embeddings/core library
-2. Implement the stdin/stdout JSON protocol loop (see `Scrinia.Plugin.Embeddings.Cli/Program.cs`)
-3. Publish self-contained (NOT trimmed) to `{exeDir}/plugins/scri-plugin-{name}`
-4. For server-side: create a separate `{Name}Plugin : ScriniaPluginBase` class sharing internal types
+1. Create a .NET console app referencing `ModelContextProtocol` package
+2. Implement an MCP server with tools (at minimum: `status` for health checks)
+3. Accept `--data-dir` and `--models-dir` arguments for data isolation
+4. Accept `--config Key=Value` arguments for configuration passthrough
+5. Publish self-contained (NOT trimmed) to `{exeDir}/plugins/scri-plugin-{name}`
+6. See `Scrinia.Plugin.Embeddings.Cli/` for a complete reference implementation
 
 ### MCP over HTTP
 

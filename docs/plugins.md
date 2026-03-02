@@ -4,13 +4,13 @@ Scrinia supports plugins in both the CLI and the HTTP API server.
 
 ## Embeddings plugin
 
-The built-in embeddings plugin adds semantic vector search alongside BM25 for hybrid scoring. It uses ONNX Runtime with the `all-MiniLM-L6-v2` model (384 dimensions, ~87 MB).
+The built-in embeddings plugin adds semantic vector search alongside BM25 for hybrid scoring. It uses ONNX Runtime with the `all-MiniLM-L6-v2` model (384 dimensions, ~87 MB). Vectors are stored in SVF2 format (append-only with compaction) and searched via `HnswIndex` (HNSW graph) with `HybridReranker` for combining semantic and BM25 scores.
 
 ### How it works
 
 - On `store`/`append`, text is embedded and vectors stored in `.scrinia/embeddings/`
 - On `search`, the query is embedded and cosine similarity scores combine with BM25
-- The ONNX model is cached globally (`%LOCALAPPDATA%/scrinia/plugins/models/`)
+- The ONNX model is stored alongside the plugin at `{exeDir}/plugins/{pluginName}/models/` (use `scri setup` to download)
 - Vector data is workspace-local (per-project isolation)
 
 ### Publishing with embeddings
@@ -19,7 +19,7 @@ The built-in embeddings plugin adds semantic vector search alongside BM25 for hy
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 ```
 
-This produces `scri.exe` plus `plugins/scri-plugin-embeddings.exe`.
+This produces `scri.exe` plus `plugins/scri-plugin-embeddings.exe`. After publishing, run `scri setup` to download the ONNX model.
 
 ### Configuration
 
@@ -88,6 +88,16 @@ scri (MCP client) ←─stdio─→ scri-plugin-embeddings (MCP server)
 | `search` | Similarity scores keyed by `{scope}\|{name}` |
 | `upsert` | Embed text and store vector |
 | `remove` | Remove all vectors for a memory |
+
+### Key internal types
+
+| Type | Description |
+|------|-------------|
+| `VectorStore` | Per-scope binary vector storage in SVF2 format (append-only with compaction at 20% delete threshold) |
+| `VectorIndex` | SIMD cosine similarity via `System.Numerics.Vector<float>` |
+| `HnswIndex` | Hierarchical Navigable Small World graph for approximate nearest neighbor search (M=16, efConstruction=200) |
+| `HybridReranker` | `ISearchScoreContributor` that re-ranks BM25 top-K candidates with cosine similarity scores |
+| `EmbeddingsTools` | MCP tool class exposing 4 tools (status, search, upsert, remove) for the CLI plugin exe |
 
 ### Server plugins (in-process)
 

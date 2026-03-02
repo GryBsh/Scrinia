@@ -51,6 +51,7 @@ scri forget api:auth                # delete a memory
 scri export api                     # export topic to .scrinia-bundle
 scri import ./bundle.scrinia-bundle # import a bundle
 scri bundle docs *.md               # bundle raw files
+scri setup                          # download embedding model
 scri config                         # list workspace settings
 scri config plugins:embeddings      # get a setting
 scri config plugins:embeddings val  # set a setting
@@ -86,15 +87,18 @@ All commands accept `--workspace-root` to override the workspace directory.
 - **[CLI Reference](docs/cli.md)** — commands, configuration, workspace setup
 - **[Server Guide](docs/server.md)** — HTTP API, authentication, deployment, web UI
 - **[Plugins](docs/plugins.md)** — embeddings plugin, writing custom plugins
-- **[Architecture](docs/ARCHITECTURE.md)** — comprehensive technical deep-dive
+- **[Architecture](docs/ARCHITECTURE.md)** — system overview and project structure
+- **[Core Internals](docs/core.md)** — IMemoryStore, FileMemoryStore, extensibility
+- **[Search System](docs/search.md)** — BM25, weighted field scoring, hybrid search
+- **[Encoding](docs/encoding.md)** — NMP/2 format, chunked encoding
 - **[NMP/2 Spec](NMP_SPEC.md)** — encoding format specification
 
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 311 CLI + MCP tests
+dotnet test tests/Scrinia.Tests             # 325 CLI + MCP tests
 dotnet test tests/Scrinia.Server.Tests      # 53 server tests
-dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 28 plugin tests
+dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 38 plugin tests
 ```
 
 ## License
