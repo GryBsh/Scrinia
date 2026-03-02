@@ -36,7 +36,7 @@ Add to your MCP client config (Claude Code, Cursor, Copilot, etc.):
 }
 ```
 
-For HTTP transport via the API server, see [Server documentation](docs/server.md).
+For HTTP transport via the API server, see [Server Administration](docs/server-admin.md).
 
 ## CLI quick reference
 
@@ -84,13 +84,19 @@ All commands accept `--workspace-root` to override the workspace directory.
 
 ## Documentation
 
-- **[CLI Reference](docs/cli.md)** — commands, configuration, workspace setup
-- **[Server Guide](docs/server.md)** — HTTP API, authentication, deployment, web UI
-- **[Plugins](docs/plugins.md)** — embeddings plugin, writing custom plugins
-- **[Architecture](docs/ARCHITECTURE.md)** — system overview and project structure
-- **[Core Internals](docs/core.md)** — IMemoryStore, FileMemoryStore, extensibility
-- **[Search System](docs/search.md)** — BM25, weighted field scoring, hybrid search
-- **[Encoding](docs/encoding.md)** — NMP/2 format, chunked encoding
+### User Guides
+- **[Getting Started](docs/getting-started.md)** — overview, installation, quick start
+- **[CLI Reference](docs/cli-reference.md)** — commands, configuration, embedding providers, MCP client setup
+- **[Server Administration](docs/server-admin.md)** — deployment, authentication, REST API, web UI, Docker
+
+### Architecture
+- **[Overview](docs/architecture/overview.md)** — system design, project structure, dependency graph
+- **[CLI Architecture](docs/architecture/cli.md)** — workspace discovery, plugin host, MCP tools
+- **[Server Architecture](docs/architecture/server.md)** — startup, middleware, auth, multi-store, plugins
+- **[Core Internals](docs/architecture/core.md)** — IMemoryStore, NMP/2 encoding, search algorithms
+- **[Embeddings Architecture](docs/architecture/embeddings.md)** — providers, vector store, HNSW, hybrid scoring
+
+### Specification
 - **[NMP/2 Spec](NMP_SPEC.md)** — encoding format specification
 
 ## Running tests
@@ -98,7 +104,7 @@ All commands accept `--workspace-root` to override the workspace directory.
 ```bash
 dotnet test tests/Scrinia.Tests             # 325 CLI + MCP tests
 dotnet test tests/Scrinia.Server.Tests      # 53 server tests
-dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 38 plugin tests
+dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 59 plugin tests
 ```
 
 ## License

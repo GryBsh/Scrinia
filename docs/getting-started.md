@@ -1,0 +1,190 @@
+# Getting Started with Scrinia
+
+Scrinia gives LLMs persistent, portable memory. It compresses text into compact NMP/2 artifacts, stores them as named memories in a `.scrinia/` workspace, and exposes them through MCP tools, a CLI, an HTTP API, and a web UI.
+
+## How It Works
+
+1. An LLM (or you) stores text as a named memory: `scri store session-notes ./notes.md`
+2. Scrinia compresses it with Brotli, indexes it for BM25 + weighted-field search, and (optionally) embeds it for semantic vector search.
+3. Later, the LLM searches for relevant context: `scri search "authentication flow"`
+4. Scrinia returns ranked results from across all stored memories.
+
+Memories persist in a `.scrinia/` directory alongside your project (like `.git/`), travel with the code, and work across sessions.
+
+## Deployment Modes
+
+| Mode | Best for | Transport |
+|------|----------|-----------|
+| **CLI + MCP** | Single developer, local AI coding tools | stdio |
+| **HTTP API Server** | Teams, multi-user, remote access | HTTP REST + MCP over HTTP |
+| **Docker** | Production deployment | HTTP (containerized) |
+
+## Installation
+
+### Build from Source
+
+Requires [.NET 10 SDK](https://dotnet.microsoft.com/download).
+
+```bash
+git clone https://github.com/yourusername/scrinia.git
+cd scrinia
+dotnet build
+```
+
+### Publish Trimmed Binary (CLI)
+
+```powershell
+.\publish.ps1 -OutputDir ./dist -Platform win-x64
+```
+
+Produces a single-file `scri.exe` (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
+
+To include the embeddings plugin for semantic search:
+
+```powershell
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
+```
+
+Then download the ONNX model:
+
+```bash
+scri setup
+```
+
+### Docker (Server)
+
+```bash
+docker compose up -d
+```
+
+See [Server Administration](server-admin.md) for full deployment options.
+
+## Quick Start: CLI + MCP
+
+### 1. Initialize a Workspace
+
+Scrinia stores data in `.scrinia/` at your project root. It's created automatically on first use:
+
+```bash
+cd /path/to/your/project
+scri list    # creates .scrinia/ if needed
+```
+
+### 2. Store a Memory
+
+```bash
+# From a file
+scri store api:auth-flow ./docs/auth.md -d "OAuth2 authentication flow"
+
+# From stdin
+echo "Always use snake_case for API endpoints" | scri store conventions -
+```
+
+### 3. Search
+
+```bash
+scri search "authentication"
+```
+
+### 4. Connect an MCP Client
+
+Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "scrinia": {
+      "command": "scri",
+      "args": ["serve"],
+      "transport": "stdio"
+    }
+  }
+}
+```
+
+Now your AI assistant has access to 17 MCP tools for persistent memory. See [CLI Reference](cli-reference.md) for full details.
+
+## Quick Start: HTTP API Server
+
+### 1. Start the Server
+
+```bash
+dotnet run --project src/Scrinia.Server
+```
+
+The server starts on `http://localhost:5000`. A bootstrap API key is written to `BOOTSTRAP_KEY` in the data directory on first run.
+
+### 2. Authenticate
+
+```bash
+# Read the bootstrap key
+cat $LOCALAPPDATA/scrinia-server/BOOTSTRAP_KEY
+
+# Use it to create a scoped key
+curl -X POST http://localhost:5000/api/v1/keys \
+  -H "Authorization: Bearer <bootstrap-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "dev", "stores": ["default"], "permissions": ["read","search","store","append","forget"]}'
+```
+
+### 3. Store and Search via API
+
+```bash
+KEY="scri_..."
+
+# Store
+curl -X POST http://localhost:5000/api/v1/stores/default/memories \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "notes", "content": ["My project notes..."], "description": "Project notes"}'
+
+# Search
+curl "http://localhost:5000/api/v1/stores/default/search?query=project" \
+  -H "Authorization: Bearer $KEY"
+```
+
+See [Server Administration](server-admin.md) for full API reference.
+
+## Memory Naming
+
+Memories are organized into three scopes:
+
+| Pattern | Scope | Storage | Lifetime |
+|---------|-------|---------|----------|
+| `subject` | Local | `.scrinia/store/subject.nmp2` | Persistent |
+| `topic:subject` | Topic | `.scrinia/topics/topic/subject.nmp2` | Persistent |
+| `~subject` | Ephemeral | In-memory only | Dies with process |
+
+**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize project knowledge by domain.
+
+**Ephemeral** memories are scratch space that disappears when the process exits. Useful for temporary context within a session.
+
+## MCP Tools Overview
+
+When connected via MCP, Scrinia exposes 17 tools:
+
+| Tool | Purpose |
+|------|---------|
+| `store` | Compress and persist text as a named memory |
+| `show` | Retrieve and decode a memory's full content |
+| `append` | Add a chunk to an existing memory |
+| `list` | Inventory all memories with metadata |
+| `search` | Hybrid BM25 + semantic search across memories |
+| `forget` | Delete a memory |
+| `copy` | Copy a memory between scopes |
+| `encode` | Compress text to an NMP/2 artifact (inline) |
+| `chunk_count` | Count chunks in a multi-chunk artifact |
+| `get_chunk` | Decode a specific chunk |
+| `export` | Export topics to a portable bundle |
+| `import` | Import memories from a bundle |
+| `budget` | Show token consumption for this session |
+| `guide` | Session playbook (call once per session) |
+| `reflect` | End-of-session reflection prompt |
+| `ingest` | Full knowledge ingestion playbook |
+| `kt` | Knowledge transfer briefing |
+
+## What's Next
+
+- **[CLI Reference](cli-reference.md)** -- Full command reference, configuration, embedding providers, MCP client setup
+- **[Server Administration](server-admin.md)** -- Deployment, authentication, REST API, Web UI, Docker
+- **[Architecture Overview](architecture/overview.md)** -- System design, project structure, dependency graph

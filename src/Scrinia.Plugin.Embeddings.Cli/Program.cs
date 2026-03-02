@@ -45,6 +45,19 @@ if (configValues.TryGetValue("Scrinia:Embeddings:OllamaModel", out var om)) opti
 if (configValues.TryGetValue("Scrinia:Embeddings:OpenAiApiKey", out var oak)) options.OpenAiApiKey = oak;
 if (configValues.TryGetValue("Scrinia:Embeddings:OpenAiModel", out var oam)) options.OpenAiModel = oam;
 if (configValues.TryGetValue("Scrinia:Embeddings:OpenAiBaseUrl", out var oab)) options.OpenAiBaseUrl = oab;
+if (configValues.TryGetValue("Scrinia:Embeddings:VoyageAiApiKey", out var vak)) options.VoyageAiApiKey = vak;
+if (configValues.TryGetValue("Scrinia:Embeddings:VoyageAiModel", out var vam)) options.VoyageAiModel = vam;
+if (configValues.TryGetValue("Scrinia:Embeddings:VoyageAiBaseUrl", out var vab)) options.VoyageAiBaseUrl = vab;
+if (configValues.TryGetValue("Scrinia:Embeddings:AzureEndpoint", out var ae)) options.AzureEndpoint = ae;
+if (configValues.TryGetValue("Scrinia:Embeddings:AzureApiKey", out var aak)) options.AzureApiKey = aak;
+if (configValues.TryGetValue("Scrinia:Embeddings:AzureDeployment", out var ad)) options.AzureDeployment = ad;
+if (configValues.TryGetValue("Scrinia:Embeddings:AzureModel", out var am)) options.AzureModel = am;
+if (configValues.TryGetValue("Scrinia:Embeddings:AzureApiVersion", out var aav)) options.AzureApiVersion = aav;
+if (configValues.TryGetValue("Scrinia:Embeddings:AzureUseV1", out var auv) && bool.TryParse(auv, out var auvVal)) options.AzureUseV1 = auvVal;
+if (configValues.TryGetValue("Scrinia:Embeddings:GoogleApiKey", out var gak)) options.GoogleApiKey = gak;
+if (configValues.TryGetValue("Scrinia:Embeddings:GoogleModel", out var gm)) options.GoogleModel = gm;
+if (configValues.TryGetValue("Scrinia:Embeddings:GoogleBaseUrl", out var gbu)) options.GoogleBaseUrl = gbu;
+if (configValues.TryGetValue("Scrinia:Embeddings:GoogleDimensions", out var gd) && int.TryParse(gd, out var gdVal)) options.GoogleDimensions = gdVal;
 
 ILogger logger = NullLogger.Instance;
 string embeddingsDir = Path.Combine(dataDir, "embeddings");
