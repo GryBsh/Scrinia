@@ -520,10 +520,13 @@ internal static partial class ScriniaArtifactStore
         return preview.Replace('\n', ' ').Replace('\r', ' ').Trim();
     }
 
+    // Characters invalid on Windows that Linux allows — always strip for portability.
+    private static readonly HashSet<char> s_portableInvalid =
+        [.. Path.GetInvalidFileNameChars(), ':', '*', '?', '<', '>', '|', '"'];
+
     public static string SanitizeName(string name)
     {
-        char[] invalid = Path.GetInvalidFileNameChars();
-        return string.Concat(name.Select(c => invalid.Contains(c) ? '_' : c));
+        return string.Concat(name.Select(c => s_portableInvalid.Contains(c) ? '_' : c));
     }
 
     public static string NameFromUri(string uri)

@@ -207,14 +207,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public bool IsEphemeral(string name) =>
         !string.IsNullOrEmpty(name) && name[0] == '~';
 
+    // Characters invalid on Windows that Linux allows — always strip for portability.
+    private static readonly HashSet<char> s_portableInvalid =
+        [.. Path.GetInvalidFileNameChars(), ':', '*', '?', '<', '>', '|', '"'];
+
     public string SanitizeName(string name)
     {
         // Strip directory separators and path traversal sequences first
         string safe = name.Replace("..", "").Replace('/', '_').Replace('\\', '_');
 
-        // Remove remaining invalid filename characters
-        char[] invalid = Path.GetInvalidFileNameChars();
-        safe = string.Concat(safe.Select(c => invalid.Contains(c) ? '_' : c));
+        // Remove remaining invalid filename characters (cross-platform set)
+        safe = string.Concat(safe.Select(c => s_portableInvalid.Contains(c) ? '_' : c));
 
         // Final safety: extract only the filename component (blocks any residual path)
         safe = Path.GetFileName(safe);
