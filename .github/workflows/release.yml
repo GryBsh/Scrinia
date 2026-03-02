@@ -84,9 +84,9 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.rid }}" == "win-x64" ]]; then
-            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.zip scri-${{ matrix.rid }}-embeddings.zip
+            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.zip scri-${{ matrix.rid }}-embeddings.zip --clobber
           else
-            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.tar.gz scri-${{ matrix.rid }}-embeddings.tar.gz
+            gh release upload ${{ github.event.release.tag_name }} scri-${{ matrix.rid }}.tar.gz scri-${{ matrix.rid }}-embeddings.tar.gz --clobber
           fi
 
   build-server:
@@ -134,7 +134,7 @@ jobs:
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.archive }}
+        run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.archive }} --clobber
 
   build-docker:
     runs-on: ubuntu-latest
