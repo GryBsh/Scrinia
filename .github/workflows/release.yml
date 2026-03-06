@@ -95,13 +95,13 @@ jobs:
         include:
           - rid: win-x64
             os: windows-latest
-            archive: scrinia-server-win-x64.zip
+            archive: scrinium-win-x64.zip
           - rid: linux-x64
             os: ubuntu-latest
-            archive: scrinia-server-linux-x64.tar.gz
+            archive: scrinium-linux-x64.tar.gz
           - rid: osx-arm64
             os: macos-latest
-            archive: scrinia-server-osx-arm64.tar.gz
+            archive: scrinium-osx-arm64.tar.gz
 
     runs-on: ${{ matrix.os }}
 
@@ -163,5 +163,5 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ steps.meta.outputs.owner }}/scrinia-server:${{ steps.meta.outputs.tag }}
-            ghcr.io/${{ steps.meta.outputs.owner }}/scrinia-server:latest
+            ghcr.io/${{ steps.meta.outputs.owner }}/scrinium:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/scrinium:latest

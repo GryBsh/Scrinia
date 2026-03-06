@@ -1,6 +1,6 @@
 # Embeddings Architecture
 
-The embeddings plugin adds semantic vector search to Scrinia's hybrid scoring system. It embeds text into high-dimensional vectors, stores them per-workspace, and re-ranks BM25 candidates with cosine similarity scores.
+Scrinia has built-in semantic vector search in `Scrinia.Core`. It embeds text into high-dimensional vectors, stores them per-workspace, and re-ranks BM25 candidates with cosine similarity scores. An optional Vulkan GPU plugin provides hardware-accelerated embeddings.
 
 ## Overview
 
@@ -21,38 +21,50 @@ The embeddings plugin adds semantic vector search to Scrinia's hybrid scoring sy
           +---------------------+
 ```
 
-The embeddings plugin only embeds the top-K BM25 candidates (not the entire corpus), making search O(K) embeddings instead of O(corpus).
+The reranker only embeds the top-K BM25 candidates (not the entire corpus), making search O(K) embeddings instead of O(corpus).
+
+## Two-Layer Architecture
+
+| Layer | What | Deps | Providers |
+|---|---|---|---|
+| **Core (built-in)** | Model2Vec + API providers + VectorStore + HybridReranker | Zero native (pure C#) | model2vec, openai, voyageai, azure, google, ollama |
+| **Plugin (optional)** | Vulkan GPU acceleration | LLamaSharp native | vulkan (GGUF model) |
+
+Semantic search works out of the box with the built-in Model2Vec provider (384-dim, ~22MB model, distilled from all-MiniLM-L6-v2). Both Model2Vec and the optional Vulkan plugin produce 384-dim vectors in the same MiniLM vector space, making them interchangeable without reindexing.
 
 ## Project Structure
 
 ```
-src/Scrinia.Plugin.Embeddings/           Shared library (providers, vector store, scoring)
+src/Scrinia.Core/Embeddings/              Built-in embeddings (zero native deps)
+  IEmbeddingProvider.cs                   Provider abstraction
+  NullEmbeddingProvider.cs                No-op fallback
+  EmbeddingOptions.cs                     Configuration POCO (Provider="model2vec")
+  EmbeddingProviderFactory.cs             Factory (model2vec/ollama/openai/voyageai/azure/google/none)
+  Model2VecProvider.cs                    Local model: m2v-MiniLM-L6-v2, 384-dim, pure C#
+  Model2VecModelManager.cs               Downloads model from HuggingFace (~22MB)
+  SafeTensorsReader.cs                    Binary SafeTensors parser (F16+F32, internal)
+  UnigramTokenizer.cs                    SentencePiece-style tokenizer for distilled models
+  BertTokenizer.cs                        WordPiece tokenizer (TokenizeRaw, Encode)
+  VectorStore.cs                          Per-scope binary vector storage (SVF2 format)
+  VectorIndex.cs                          SIMD cosine similarity + flat-scan search
+  HnswIndex.cs                            HNSW approximate nearest neighbor
+  HybridReranker.cs                       ISearchScoreContributor implementation
+  Models/VectorEntry.cs                   Vector data record
   Providers/
-    OnnxEmbeddingProvider.cs             Local ONNX Runtime (all-MiniLM-L6-v2, 384-dim)
-    OllamaEmbeddingProvider.cs           Remote Ollama API
-    OpenAiEmbeddingProvider.cs           OpenAI API
-    VoyageAiEmbeddingProvider.cs         Voyage AI API
-    AzureAiEmbeddingProvider.cs          Azure OpenAI API
-    GoogleGeminiEmbeddingProvider.cs     Google Gemini API
-    NullEmbeddingProvider.cs             No-op fallback
-  Onnx/
-    OnnxEmbeddingProvider.cs             ONNX Runtime inference
-    BertTokenizer.cs                     Hand-rolled BERT tokenizer
-    HardwareDetector.cs                  DirectML/CUDA/CPU detection
-    ModelManager.cs                      Model file validation
-  EmbeddingOptions.cs                    Configuration POCO
-  EmbeddingProviderFactory.cs            Provider factory
-  EmbeddingsPlugin.cs                    Server in-process plugin
-  HybridReranker.cs                      ISearchScoreContributor implementation
-  VectorStore.cs                         SVF2 binary vector storage
-  VectorIndex.cs                         SIMD cosine similarity
-  HnswIndex.cs                           HNSW approximate nearest neighbor
-  IEmbeddingProvider.cs                  Provider interface
-  Models/VectorEntry.cs                  Vector data record
+    OllamaEmbeddingProvider.cs            Remote Ollama API
+    OpenAiEmbeddingProvider.cs            OpenAI API
+    VoyageAiEmbeddingProvider.cs          Voyage AI API
+    AzureAiEmbeddingProvider.cs           Azure OpenAI API
+    GoogleGeminiEmbeddingProvider.cs      Google Gemini API
 
-src/Scrinia.Plugin.Embeddings.Cli/       CLI plugin executable (MCP server)
-  Program.cs                             Entry point, config parsing, MCP registration
-  EmbeddingsTools.cs                     4 MCP tools (status, search, upsert, remove)
+src/Scrinia.Plugin.Embeddings/            Optional Vulkan GPU plugin (LLamaSharp)
+  EmbeddingsPlugin.cs                     Server in-process plugin
+  VulkanEmbeddingProvider.cs              LLamaSharp Vulkan-accelerated embeddings
+  VulkanModelManager.cs                   Downloads GGUF model from HuggingFace
+
+src/Scrinia.Plugin.Embeddings.Cli/        CLI plugin executable (MCP server)
+  Program.cs                              Entry point, MCP registration (Vulkan provider)
+  EmbeddingsTools.cs                      4 MCP tools (status, search, upsert, remove)
 ```
 
 ## IEmbeddingProvider
@@ -70,36 +82,47 @@ public interface IEmbeddingProvider : IDisposable
 All providers:
 - Return L2-normalized vectors
 - Return `null` on failure (logged, never throws)
-- Lazy dimension detection (set on first successful embedding)
-- `EmbedBatchAsync` iterates `EmbedAsync` (no batch API optimization)
+- `EmbedBatchAsync` iterates `EmbedAsync` by default (no batch API optimization)
 
 ## Embedding Providers
 
 ### Provider Summary
 
-| Provider | Auth | Default Model | Default Dims | Notes |
-|----------|------|---------------|-------------|-------|
-| `onnx` | None (local) | all-MiniLM-L6-v2 | 384 | ONNX Runtime, DirectML/CUDA/CPU |
-| `ollama` | None | all-minilm | (detected) | Local Ollama instance |
-| `openai` | Bearer token | text-embedding-3-small | 1536 | OpenAI API |
-| `voyageai` | Bearer token | voyage-3.5 | 1024 | Voyage AI API, adds `input_type: "document"` |
-| `azure` | `api-key` header | text-embedding-3-small | 1536 | Classic + v1 URL patterns |
-| `google` | API key in query | gemini-embedding-001 | 3072 | Unique embedContent format |
-| `none` | N/A | N/A | 0 | No-op, disables semantic search |
+| Provider | Auth | Default Model | Default Dims | Location |
+|----------|------|---------------|-------------|----------|
+| `model2vec` | None (local) | m2v-MiniLM-L6-v2 | 384 | Core (built-in) |
+| `ollama` | None | all-minilm | (detected) | Core |
+| `openai` | Bearer token | text-embedding-3-small | 1536 | Core |
+| `voyageai` | Bearer token | voyage-3.5 | 1024 | Core |
+| `azure` | `api-key` header | text-embedding-3-small | 1536 | Core |
+| `google` | API key in query | gemini-embedding-001 | 3072 | Core |
+| `vulkan` | None (local) | GGUF model | (model-dependent) | Plugin (optional) |
+| `none` | N/A | N/A | 0 | Core |
 
-### ONNX Provider
+### Model2Vec Provider (Default)
 
-Runs locally using ONNX Runtime with the `all-MiniLM-L6-v2` model (384 dimensions, ~87 MB).
-
-**Hardware detection order:** DirectML (Windows GPU) → CUDA (NVIDIA) → CPU
+Runs locally using a pure C# implementation with zero native dependencies. Uses a distilled `m2v-MiniLM-L6-v2` model (384 dimensions, ~22MB, F16 SafeTensors). This model is distilled from `all-MiniLM-L6-v2` via the [model2vec](https://github.com/MinishLab/model2vec) library, producing vectors in the same semantic space as the full MiniLM transformer.
 
 **Components:**
-- `BertTokenizer`: Hand-rolled WordPiece tokenizer reading `vocab.txt` (no ML.NET dependency)
-- `OnnxEmbeddingProvider`: ONNX Runtime session management, batch inference
-- `HardwareDetector`: Probes available execution providers
-- `ModelManager`: Validates model files exist (`model.onnx`, `vocab.txt`)
+- `SafeTensorsReader`: Parses the SafeTensors binary format, supports both F32 and F16 tensors (F16→F32 conversion via `BitConverter.UInt16BitsToHalf()`)
+- `UnigramTokenizer`: SentencePiece-style tokenizer for distilled models (reads `vocab.txt`, greedy longest-match segmentation with `▁` word-start markers)
+- `BertTokenizer`: WordPiece tokenizer for BERT-style vocabularies (used as fallback when `##` subword markers detected)
+- `Model2VecProvider`: Auto-detects tokenizer type from vocabulary file. Loads embedding matrix from `model.safetensors`, tokenizes via the appropriate tokenizer, averages token embeddings, L2-normalizes.
+- `Model2VecModelManager`: Downloads from `https://huggingface.co/grybsh/m2v-MiniLM-L6-v2/resolve/main/`
 
-**Model location:** `{exeDir}/plugins/{pluginName}/models/all-MiniLM-L6-v2/`
+**Model location:** `{exeDir}/models/m2v-MiniLM-L6-v2/` (files: `model.safetensors`, `vocab.txt`)
+
+**Embedding algorithm:**
+1. Tokenize text via auto-detected tokenizer (UnigramTokenizer for SentencePiece vocab, BertTokenizer for WordPiece vocab)
+2. For each token ID, look up the corresponding row in the embedding matrix
+3. Average all token vectors element-wise (using `TensorPrimitives.Add` for SIMD acceleration)
+4. L2-normalize the result (using `TensorPrimitives.Norm` + `TensorPrimitives.Divide`)
+
+### Vulkan Provider (Optional Plugin)
+
+GPU-accelerated embeddings via LLamaSharp 0.25.0 with Vulkan backend. Loads a GGUF embedding model and uses `LLamaEmbedder` with `PoolingType.Mean`.
+
+**Model location:** `{exeDir}/plugins/{pluginName}/models/`
 
 ### HTTP Providers (OpenAI, Voyage AI, Azure, Google)
 
@@ -114,7 +137,6 @@ All HTTP providers follow the same pattern:
 - Classic URL: `{endpoint}/openai/deployments/{deployment}/embeddings?api-version={apiVersion}`
 - V1 URL: `{endpoint}/openai/v1/embeddings` (model in request body)
 - Auth: `api-key` header (not Bearer)
-- Model field uses `JsonIgnoreCondition.WhenWritingNull` (null for classic, set for v1)
 
 **Google specifics:**
 - URL: `{baseUrl}/v1beta/models/{model}:embedContent?key={apiKey}`
@@ -128,19 +150,19 @@ public static IEmbeddingProvider Create(EmbeddingOptions options, string dataDir
 {
     return options.Provider.ToLowerInvariant() switch
     {
-        "onnx"    => CreateOnnx(options, dataDir, logger),
-        "ollama"  => new OllamaEmbeddingProvider(...),
-        "openai"  => new OpenAiEmbeddingProvider(...),
-        "voyageai" => new VoyageAiEmbeddingProvider(...),
-        "azure"   => new AzureAiEmbeddingProvider(...),
-        "google"  => new GoogleGeminiEmbeddingProvider(...),
-        "none"    => new NullEmbeddingProvider(),
-        _         => new NullEmbeddingProvider(),  // unknown provider = graceful fallback
+        "model2vec" => LoadModel2Vec(dataDir, logger),
+        "ollama"    => new OllamaEmbeddingProvider(...),
+        "openai"    => new OpenAiEmbeddingProvider(...),
+        "voyageai"  => new VoyageAiEmbeddingProvider(...),
+        "azure"     => new AzureAiEmbeddingProvider(...),
+        "google"    => new GoogleGeminiEmbeddingProvider(...),
+        "none"      => new NullEmbeddingProvider(),
+        _           => new NullEmbeddingProvider(),
     };
 }
 ```
 
-Constructor failures (e.g., missing API key) are caught and fall back to `NullEmbeddingProvider` with a warning log.
+Constructor failures (e.g., missing API key, model not downloaded) are caught and fall back to `NullEmbeddingProvider` with a warning log.
 
 ## Vector Storage
 
@@ -232,12 +254,6 @@ public sealed class HnswIndex
 - `MaxLayers = 6`
 - `efSearch = max(topK, 50)` (beam width during search)
 
-**Algorithms:**
-- `GreedyClosest`: Single-layer nearest neighbor descent
-- `SearchLayer`: Beam search returning ordered candidates
-- `SelectNeighbors`: Distance-based neighbor selection
-- `RandomLevel`: Exponential level distribution (`1.0 / M`)
-
 **Persistence:** Binary format with `"HNSW"` magic, serializes full graph topology.
 
 ## Hybrid Scoring
@@ -273,17 +289,43 @@ finalScore = weightedFieldScore + (normalizedBm25 * 5.0) + supplementalScore
 
 ## CLI Integration
 
-### Child-Process Architecture
+### Two-Step Initialization
 
-The CLI can't load plugin DLLs because the trimmed single-file host is incompatible with dynamic assembly loading. Instead, the embeddings plugin runs as a separate executable communicating via MCP over stdio.
+The CLI uses a two-step initialization in `WorkspaceSetup.LoadPluginsAsync()`:
+
+1. **Built-in embeddings (in-process):**
+   - Create `EmbeddingOptions` from workspace config
+   - `EmbeddingProviderFactory.Create(options, modelsDir, logger)` → `IEmbeddingProvider`
+   - Create `VectorStore(embeddingsDir)` + `HybridReranker(provider, store, weight)`
+   - Create `CoreEmbeddingEventHandler(provider, store, logger)` (in-process event sink)
+   - Set `SearchContributorContext.Default` + `MemoryEventSinkContext.Default`
+
+2. **Optional Vulkan plugin (child-process, overrides built-in):**
+   - Discover `{exeDir}/plugins/scri-plugin-embeddings[.exe]`
+   - If found: launch via `McpPluginHost`, override context defaults
+   - If not found or fails: built-in remains active
+
+This means semantic search works out of the box with zero plugins installed. The Vulkan plugin is an optional upgrade for GPU acceleration.
+
+### CoreEmbeddingEventHandler
+
+In-process `IMemoryEventSink` that handles embed-and-index without a child process:
+
+- **On store:** Embeds full content + per-chunk vectors, upserts to VectorStore
+- **On append:** Embeds the new chunk, upserts to VectorStore
+- **On forget:** Removes all vectors for the memory from VectorStore
+
+### Child-Process Plugin (Optional)
+
+The Vulkan plugin runs as a separate executable communicating via MCP over stdio:
 
 ```
 scri (MCP client) <--stdio--> scri-plugin-embeddings (MCP server)
 ```
 
-### EmbeddingsTools (CLI Plugin MCP Server)
+### EmbeddingsTools (Plugin MCP Server)
 
-The CLI plugin exposes 4 MCP tools:
+The plugin exposes 4 MCP tools:
 
 | Tool | Parameters | Returns |
 |------|-----------|---------|
@@ -291,17 +333,6 @@ The CLI plugin exposes 4 MCP tools:
 | `search` | `query`, `scope`, `topK` | `Dictionary<string, double>` (name → similarity) |
 | `upsert` | `scope`, `name`, `chunkIndex?`, `text` | Success message |
 | `remove` | `scope`, `name` | Success message |
-
-### McpPluginHost (CLI Side)
-
-The CLI's `McpPluginHost` acts as the MCP client, implementing both `ISearchScoreContributor` and `IMemoryEventSink`:
-
-- **On store:** Calls `upsert` for each content element + per-chunk embeddings
-- **On append:** Calls `upsert` for the new chunk
-- **On forget:** Calls `remove` to delete all vectors for the memory
-- **On search:** Calls `search` with the query and returns similarity scores
-
-Auto-reconnects up to 3 times on failure, then degrades to BM25-only.
 
 ### Config Passthrough
 
@@ -311,15 +342,14 @@ Workspace configuration is forwarded to the plugin process:
 scri-plugin-embeddings \
   --data-dir /path/.scrinia \
   --models-dir /path/plugins/scri-plugin-embeddings \
-  --config Scrinia:Embeddings:Provider=voyageai \
-  --config Scrinia:Embeddings:VoyageAiApiKey=pa-...
+  --config Scrinia:Embeddings:Provider=vulkan
 ```
 
 ## Server Integration
 
-### EmbeddingsPlugin (In-Process)
+### EmbeddingsPlugin (In-Process, Optional)
 
-On the server, the embeddings plugin runs in-process as a loaded DLL. It implements all three integration interfaces:
+On the server, the Vulkan embeddings plugin runs in-process as a loaded DLL. It implements all three integration interfaces:
 
 ```csharp
 public sealed class EmbeddingsPlugin : ScriniaPluginBase,
@@ -328,19 +358,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     IMemoryEventSink             // MCP path hooks
 ```
 
-**REST endpoints** (group: `/embeddings`):
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/status` | Provider info, availability, dimensions, vector count |
-| POST | `/reindex` | Re-embed all memories in the active store |
-| GET | `/settings` | Current semantic weight and batch size |
-| PUT | `/settings` | Update semantic weight and batch size |
-
-**Event handling:**
-- `OnAfterStore`: Embed full content + per-chunk vectors
-- `OnAfterAppend`: Embed the appended chunk
-- `OnAfterForget`: Remove vectors if the memory was deleted
+The server can also use Core's built-in embeddings directly without the plugin.
 
 ### Two Code Paths
 
@@ -356,18 +374,26 @@ A plugin implementing both interfaces fires only once per operation.
 ## Data Isolation
 
 - **Vector data** is always workspace-local: `.scrinia/embeddings/`
-- **ONNX model** is stored alongside the plugin: `{exeDir}/plugins/{pluginName}/models/`
-- `WorkspaceSetup` passes separate `dataDir` (workspace) and `modelsDir` (plugin models) to the plugin host
+- **Model2Vec model** is stored alongside the CLI: `{exeDir}/models/m2v-MiniLM-L6-v2/`
+- **Vulkan GGUF model** is stored alongside the plugin: `{exeDir}/plugins/{pluginName}/models/`
 
-This ensures multiple workspaces don't share vector data, even when using the same plugin binary.
+This ensures multiple workspaces don't share vector data, even when using the same binary.
+
+## Shared Vector Space
+
+Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-dimensional vectors in the MiniLM-L6-v2 semantic space. This means vectors are interchangeable — switching between providers does not require reindexing. Model2Vec uses static token embedding lookup (fast, CPU-only) while Vulkan runs the full transformer (slower per-query but with attention-based contextual embeddings).
 
 ## Testing
 
-59 tests in `Scrinia.Plugin.Embeddings.Tests`:
+449 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
 - VectorStore: SVF2 format, upsert, remove, compaction, scope isolation
 - VectorIndex: SIMD cosine similarity, search ranking
 - HnswIndex: Insert, search, remove, persistence, large-scale behavior
 - HybridReranker: Score integration with BM25
-- BertTokenizer: WordPiece tokenization (skipped without vocab file)
-- OnnxEmbeddingProvider: End-to-end embedding (skipped without model)
+- BertTokenizer: WordPiece tokenization, TokenizeRaw, VocabSize (skipped without vocab file)
+- UnigramTokenizer: SentencePiece vocab loading, tokenization, Model2Vec integration (skipped without model)
+- SafeTensorsReader: Synthetic SafeTensors parsing, F16 + F32 float extraction
+- Model2VecProvider: Embed output shape (384-dim), L2 normalization, determinism, similarity (skipped without model)
 - Provider tests: Constructor validation, defaults, factory creation, fallback behavior
+
+12 tests in `Scrinia.Plugin.Embeddings.Tests` for Vulkan plugin CLI integration and 3-way benchmarks.

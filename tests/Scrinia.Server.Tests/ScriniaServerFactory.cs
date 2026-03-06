@@ -21,7 +21,7 @@ public sealed class ScriniaServerFactory : WebApplicationFactory<Program>
 
     public ScriniaServerFactory()
     {
-        _tempDir = Path.Combine(Path.GetTempPath(), "scrinia-server-tests-" + Guid.NewGuid().ToString("N")[..8]);
+        _tempDir = Path.Combine(Path.GetTempPath(), "scrinium-tests-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_tempDir);
     }
 

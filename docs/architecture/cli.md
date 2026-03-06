@@ -83,13 +83,41 @@ builder.Services
 
 ### Remote Mode
 
-When `--remote` is specified, the CLI creates a remote store proxy instead of a local `FileMemoryStore`. All MCP tool calls are forwarded to the Scrinia.Server HTTP API.
+When `--remote` is specified, the CLI creates a remote store proxy instead of a local `FileMemoryStore`. All MCP tool calls are forwarded to the Scrinium HTTP API.
 
-## Plugin Host
+## Embeddings Integration
+
+### Two-Step Initialization
+
+`WorkspaceSetup.LoadPluginsAsync()` performs two-step embeddings initialization:
+
+**Step 1: Built-in embeddings (in-process, always available):**
+- Create `EmbeddingOptions` from workspace config
+- `EmbeddingProviderFactory.Create(options, modelsDir, logger)` → `IEmbeddingProvider`
+- Create `VectorStore(embeddingsDir)` + `HybridReranker(provider, store, weight)`
+- Create `CoreEmbeddingEventHandler(provider, store, logger)` (in-process event sink)
+- Set `SearchContributorContext.Default` + `MemoryEventSinkContext.Default`
+
+**Step 2: Optional Vulkan plugin (child-process, overrides built-in):**
+- Discover `{exeDir}/plugins/scri-plugin-embeddings[.exe]`
+- If found: launch via `McpPluginHost`, override context defaults
+- If not found or fails: built-in remains active
+
+This means semantic search works out of the box with zero plugins installed.
+
+### CoreEmbeddingEventHandler
+
+In-process `IMemoryEventSink` that handles embed-and-index:
+
+- **On store:** Embeds full content + per-chunk vectors, upserts to VectorStore
+- **On append:** Embeds the new chunk, upserts to VectorStore
+- **On forget:** Removes all vectors for the memory from VectorStore
+
+## Plugin Host (Optional Vulkan)
 
 ### Architecture
 
-CLI plugins run as separate executables communicating via MCP over stdio. Each plugin IS an MCP server; the CLI is the MCP client.
+The optional Vulkan GPU plugin runs as a separate executable communicating via MCP over stdio:
 
 ```
 scri (MCP client) <--stdio--> scri-plugin-embeddings (MCP server)
@@ -143,7 +171,7 @@ _hasStatus = tools.Any(t => t.Name == "status");
 Workspace configuration is forwarded to plugins as CLI arguments:
 
 ```
-scri-plugin-embeddings --data-dir /path/.scrinia --models-dir /path/plugins/scri-plugin-embeddings --config Scrinia:Embeddings:Provider=openai --config Scrinia:Embeddings:OpenAiApiKey=sk-...
+scri-plugin-embeddings --data-dir /path/.scrinia --models-dir /path/plugins/scri-plugin-embeddings --config Scrinia:Embeddings:Provider=vulkan
 ```
 
 ## Configuration Resolution
@@ -202,7 +230,7 @@ The CLI is safe for trimming because:
 
 ## Test Coverage
 
-342 tests in `Scrinia.Tests` covering:
+449 tests in `Scrinia.Tests` covering:
 - All 18 MCP tools
 - Store operations and edge cases
 - Search ranking and scoring
@@ -210,5 +238,6 @@ The CLI is safe for trimming because:
 - Bundle export/import
 - Workspace discovery
 - Configuration resolution
+- Embeddings (VectorStore, VectorIndex, HnswIndex, HybridReranker, BertTokenizer, SafeTensorsReader, Model2Vec, API providers)
 
 Test isolation uses `TestHelpers.StoreScope` which redirects workspace, store directory, ephemeral store, and `SessionBudget` via `AsyncLocal` overrides.

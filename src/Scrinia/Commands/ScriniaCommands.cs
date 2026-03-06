@@ -129,15 +129,16 @@ public class ScriniaCommands
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral).</param>
     /// <param name="limit">Maximum results to return.</param>
-    public Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20)
+    public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var matches = ScriniaArtifactStore.SearchAll(query, scopes, limit);
         if (matches.Count == 0)
         {
             AnsiConsole.MarkupLine("[yellow]No matching memories found.[/]");
-            return Task.FromResult(0);
+            return 0;
         }
 
         var table = new Table()
@@ -185,7 +186,7 @@ public class ScriniaCommands
         }
 
         AnsiConsole.Write(table);
-        return Task.FromResult(0);
+        return 0;
     }
 
     /// <summary>Store a file as a named memory.</summary>
@@ -209,6 +210,7 @@ public class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         string content;
         if (string.IsNullOrEmpty(file) || file == "-")
@@ -286,6 +288,7 @@ public class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
         string result = await tools.Forget(name, cancellationToken);
@@ -347,6 +350,7 @@ public class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         string[]? topicArray = topics?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -490,7 +494,7 @@ public class ScriniaCommands
         return Task.FromResult(0);
     }
 
-    /// <summary>Download embedding model for the embeddings plugin.</summary>
+    /// <summary>Download embedding models for built-in and optional Vulkan plugin.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
@@ -499,55 +503,92 @@ public class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
 
         string exeDir = AppContext.BaseDirectory;
-        string pluginsDir = Path.Combine(exeDir, "plugins");
-        string pluginName = WorkspaceSetup.GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
 
-        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
-        string pluginExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
+        // ── Step 1: Built-in Model2Vec model (always) ──
+        AnsiConsole.MarkupLine("[bold]Built-in embeddings (Model2Vec / MiniLM-L6-v2)[/]");
 
-        if (!File.Exists(pluginExe))
-        {
-            AnsiConsole.MarkupLine("[red]Error:[/] Embeddings plugin not found.");
-            AnsiConsole.MarkupLine($"[dim]Expected at: {Markup.Escape(pluginExe)}[/]");
-            return 1;
-        }
-
-        string modelDir = Path.Combine(pluginsDir, pluginName, "models", "all-MiniLM-L6-v2");
+        string modelDir = Path.Combine(exeDir, "models", "m2v-MiniLM-L6-v2");
         Directory.CreateDirectory(modelDir);
 
-        string[] files = ["model.onnx", "vocab.txt"];
-        string[] repoPaths = ["onnx/model.onnx", "vocab.txt"];
-        const string baseUrl = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main";
+        string[] files = ["model.safetensors", "vocab.txt"];
+        const string baseUrl = "https://huggingface.co/grybsh/m2v-MiniLM-L6-v2/resolve/main";
 
         bool allExist = files.All(f => File.Exists(Path.Combine(modelDir, f)));
         if (allExist)
         {
-            AnsiConsole.MarkupLine("[green]Embedding model already downloaded.[/]");
-            AnsiConsole.MarkupLine($"[dim]{Markup.Escape(modelDir)}[/]");
-            return 0;
+            AnsiConsole.MarkupLine("[green]  Model already downloaded.[/]");
+            AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(modelDir)}[/]");
+        }
+        else
+        {
+            await DownloadFilesAsync(baseUrl, files, modelDir, cancellationToken);
+            AnsiConsole.MarkupLine($"[green]  Model ready at:[/] {Markup.Escape(modelDir)}");
         }
 
+        // ── Step 2: Vulkan plugin GGUF model (if plugin is installed) ──
+        string pluginsDir = Path.Combine(exeDir, "plugins");
+        string pluginName = WorkspaceSetup.GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
+        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
+
+        // Check both subdirectory layout (multi-file publish) and flat layout (single-file)
+        string pluginExe = Path.Combine(pluginsDir, pluginName, $"{pluginName}{ext}");
+        if (!File.Exists(pluginExe))
+            pluginExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
+
+        if (File.Exists(pluginExe))
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[bold]Vulkan plugin (GPU acceleration)[/]");
+
+            string vulkanModelsDir = Path.Combine(pluginsDir, pluginName);
+            Directory.CreateDirectory(vulkanModelsDir);
+
+            const string ggufFile = "all-MiniLM-L6-v2-Q8_0.gguf";
+            const string ggufUrl = "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q8_0.gguf";
+
+            if (File.Exists(Path.Combine(vulkanModelsDir, ggufFile)))
+            {
+                AnsiConsole.MarkupLine("[green]  GGUF model already downloaded.[/]");
+                AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(vulkanModelsDir)}[/]");
+            }
+            else
+            {
+                await DownloadFilesAsync(ggufUrl.Replace($"/{ggufFile}", ""), [ggufFile], vulkanModelsDir, cancellationToken);
+                AnsiConsole.MarkupLine($"[green]  GGUF model ready at:[/] {Markup.Escape(vulkanModelsDir)}");
+            }
+        }
+        else
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[dim]Vulkan plugin not installed — skipping GPU model download.[/]");
+        }
+
+        return 0;
+    }
+
+    private static async Task DownloadFilesAsync(string baseUrl, string[] files, string targetDir, CancellationToken ct)
+    {
         using var http = new HttpClient();
         http.Timeout = TimeSpan.FromMinutes(10);
 
-        for (int i = 0; i < files.Length; i++)
+        foreach (string file in files)
         {
-            string filePath = Path.Combine(modelDir, files[i]);
+            string filePath = Path.Combine(targetDir, file);
             if (File.Exists(filePath))
             {
-                AnsiConsole.MarkupLine($"[dim]{files[i]} already exists, skipping.[/]");
+                AnsiConsole.MarkupLine($"  [dim]{file} already exists, skipping.[/]");
                 continue;
             }
 
-            string url = $"{baseUrl}/{repoPaths[i]}";
-            AnsiConsole.MarkupLine($"Downloading [blue]{files[i]}[/]...");
+            string url = $"{baseUrl}/{file}";
+            AnsiConsole.MarkupLine($"  Downloading [blue]{file}[/]...");
 
             string tmpPath = filePath + ".tmp";
-            using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
 
             long? totalBytes = response.Content.Headers.ContentLength;
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
 
             await AnsiConsole.Progress()
                 .AutoClear(true)
@@ -559,15 +600,15 @@ public class ScriniaCommands
                     new RemainingTimeColumn())
                 .StartAsync(async ctx =>
                 {
-                    var task = ctx.AddTask(files[i], maxValue: totalBytes ?? 0);
+                    var task = ctx.AddTask(file, maxValue: totalBytes ?? 0);
                     if (totalBytes is null) task.IsIndeterminate = true;
 
                     await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
                     byte[] buffer = new byte[81920];
                     int bytesRead;
-                    while ((bytesRead = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                    while ((bytesRead = await stream.ReadAsync(buffer, ct)) > 0)
                     {
-                        await fs.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                        await fs.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
                         task.Increment(bytesRead);
                     }
                 });
@@ -581,11 +622,8 @@ public class ScriniaCommands
                 < 1024 * 1024 => $"{size / 1024.0:F1} KB",
                 _ => $"{size / (1024.0 * 1024):F1} MB",
             };
-            AnsiConsole.MarkupLine($"[green]Downloaded {files[i]} ({sizeStr})[/]");
+            AnsiConsole.MarkupLine($"  [green]Downloaded {file} ({sizeStr})[/]");
         }
-
-        AnsiConsole.MarkupLine($"[green]Embedding model ready at:[/] {Markup.Escape(modelDir)}");
-        return 0;
     }
 
     /// <summary>Get or set workspace configuration.</summary>

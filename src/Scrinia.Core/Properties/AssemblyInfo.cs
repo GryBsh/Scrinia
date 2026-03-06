@@ -5,3 +5,5 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Scrinia.Tests")]
 [assembly: InternalsVisibleTo("Scrinia.Server")]
 [assembly: InternalsVisibleTo("Scrinia.Server.Tests")]
+[assembly: InternalsVisibleTo("Scrinia.Plugin.Embeddings")]
+[assembly: InternalsVisibleTo("Scrinia.Plugin.Embeddings.Tests")]

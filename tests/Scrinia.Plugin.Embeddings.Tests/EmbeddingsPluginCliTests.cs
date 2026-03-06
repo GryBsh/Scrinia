@@ -1,7 +1,5 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using FluentAssertions;
-using Scrinia.Plugin.Embeddings;
+using Scrinia.Core.Embeddings;
 using Xunit;
 
 namespace Scrinia.Plugin.Embeddings.Tests;
@@ -20,8 +18,7 @@ public class EmbeddingsPluginCliTests
     public void EmbeddingOptions_HasExpectedDefaults()
     {
         var options = new EmbeddingOptions();
-        options.Provider.Should().Be("onnx");
-        options.Hardware.Should().Be("auto");
+        options.Provider.Should().Be("model2vec");
         options.SemanticWeight.Should().Be(50.0);
     }
 

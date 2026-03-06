@@ -39,16 +39,16 @@ dotnet build
 
 Produces a single-file `scri.exe` (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
 
-To include the embeddings plugin for semantic search:
-
-```powershell
-.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
-```
-
-Then download the ONNX model:
+Then download the Model2Vec embedding model (~22MB) for semantic search:
 
 ```bash
 scri setup
+```
+
+Semantic search is built-in -- no plugins needed. For optional Vulkan GPU acceleration:
+
+```powershell
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
 ```
 
 ### Docker (Server)
@@ -118,7 +118,7 @@ The server starts on `http://localhost:5000`. A bootstrap API key is written to 
 
 ```bash
 # Read the bootstrap key
-cat $LOCALAPPDATA/scrinia-server/BOOTSTRAP_KEY
+cat $LOCALAPPDATA/scrinium/BOOTSTRAP_KEY
 
 # Use it to create a scoped key
 curl -X POST http://localhost:5000/api/v1/keys \

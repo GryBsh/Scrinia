@@ -65,6 +65,13 @@ internal sealed class FlatFileMemorySystem : MemorySystemBase
         return Task.FromResult(new QueryResult(found, CharsToTokens(charsCost), found.Count, foundTarget, sw.Elapsed));
     }
 
+    public override Task<(string Context, int TokensCost)> GetLlmContextAsync(string query)
+    {
+        int cost = CharsToTokens(_fullContent.Length);
+        TokensConsumed += cost;
+        return Task.FromResult((_fullContent, cost));
+    }
+
     public override int GetColdStartTokens() => CharsToTokens(_fullContent.Length);
 
     public override int GetTotalCorpusTokens() => CharsToTokens(_fullContent.Length);

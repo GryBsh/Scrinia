@@ -19,7 +19,7 @@ export default function Layout() {
       {/* Sidebar */}
       <nav className="w-56 bg-gray-900 text-gray-100 flex flex-col">
         <div className="p-4 border-b border-gray-700">
-          <h1 className="text-lg font-bold tracking-tight">Scrinia</h1>
+          <h1 className="text-lg font-bold tracking-tight">Scrinium</h1>
           <div className="flex items-center gap-1.5 mt-1 text-xs text-gray-400">
             <Heart className="w-3 h-3" />
             <span className={health?.status === 'ok' ? 'text-green-400' : 'text-red-400'}>

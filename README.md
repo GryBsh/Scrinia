@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 17 MCP tools for agents to remember, search, and share knowledge across sessions. Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 18 MCP tools for agents to remember, search, and share knowledge across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Zero infrastructure required.
 
 ## Benchmarks
 
@@ -87,8 +87,11 @@ dotnet build
 # Publish trimmed single-file binary
 .\publish.ps1 -OutputDir ./dist -Platform win-x64
 
-# With semantic search (embeddings plugin)
-.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
+# Download embedding model for semantic search (~22MB)
+scri setup
+
+# Optional: with Vulkan GPU-accelerated embeddings plugin
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
 ```
 
 ## MCP setup
@@ -174,9 +177,9 @@ All commands accept `--workspace-root` to override the workspace directory.
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 342 CLI + MCP tests
+dotnet test tests/Scrinia.Tests             # 449 CLI + MCP + embeddings tests
 dotnet test tests/Scrinia.Server.Tests      # 53 server tests
-dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 59 plugin tests
+dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
 ```
 
 ## License

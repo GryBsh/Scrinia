@@ -27,6 +27,18 @@ internal abstract class MemorySystemBase : IAsyncDisposable
     /// <summary>Overwrite a fact with updated content.</summary>
     public abstract Task UpdateFactAsync(BenchmarkFact updated);
 
+    /// <summary>
+    /// Returns the text that would be in an LLM's context window for this query.
+    /// Default: joins FoundContent from QueryAsync. Override for systems where the
+    /// LLM sees more than just search results (e.g., flat-file sees everything).
+    /// </summary>
+    public virtual async Task<(string Context, int TokensCost)> GetLlmContextAsync(string query)
+    {
+        ResetBudget();
+        var result = await QueryAsync(query);
+        return (string.Join("\n\n", result.FoundContent), TokensConsumed);
+    }
+
     /// <summary>Reset token budget between benchmark iterations.</summary>
     public void ResetBudget() => TokensConsumed = 0;
 

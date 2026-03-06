@@ -1,6 +1,6 @@
 # Server Architecture
 
-Scrinia.Server is an ASP.NET Core minimal API application providing multi-user, multi-store persistent memory with API key authentication, REST endpoints, MCP over HTTP, a web UI, and an in-process plugin system.
+Scrinium is an ASP.NET Core minimal API application providing multi-user, multi-store persistent memory with API key authentication, REST endpoints, MCP over HTTP, a web UI, and an in-process plugin system.
 
 ## Project Layout
 
@@ -36,7 +36,7 @@ src/Scrinia.Server/
 `Program.cs` configures the server in this order:
 
 1. **Kestrel limits**: 10 MB max request body, 50 MB max multipart form
-2. **Data directory resolution**: `Scrinia:DataDir` config or `%LOCALAPPDATA%/scrinia-server`
+2. **Data directory resolution**: `Scrinia:DataDir` config or `%LOCALAPPDATA%/scrinium`
 3. **Store definitions**: Read `Scrinia:Stores` section (name-to-path mapping)
 4. **Plugin loading**: Scan `{dataDir}/plugins/*.dll` via `PluginLoader`
 5. **Service registration**: `ApiKeyStore` (singleton, SQLite), `StoreManager` (singleton), `PluginPipeline` (singleton), `IStorageBackend` (singleton, `FilesystemBackend`)

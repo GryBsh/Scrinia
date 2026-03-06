@@ -1,6 +1,6 @@
-# Scrinia Server Administration
+# Scrinium Administration
 
-Scrinia.Server is an ASP.NET Core HTTP API server providing multi-user, multi-store persistent memory with API key authentication, a REST API, MCP over HTTP, and a web UI.
+Scrinium is an ASP.NET Core HTTP API server providing multi-user, multi-store persistent memory with API key authentication, a REST API, MCP over HTTP, and a web UI.
 
 ## Running the Server
 
@@ -18,7 +18,7 @@ Starts on `http://localhost:5000`. On first run, a bootstrap API key with full p
 dotnet run --project src/Scrinia.AppHost
 ```
 
-Opens the Aspire dashboard with telemetry and orchestration for Scrinia.Server.
+Opens the Aspire dashboard with telemetry and orchestration for Scrinium.
 
 ### Docker
 
@@ -30,20 +30,20 @@ The included `docker-compose.yml` maps port 8080, mounts a persistent data volum
 
 ```yaml
 services:
-  scrinia-server:
+  scrinium:
     build:
       context: .
       dockerfile: src/Scrinia.Server/Dockerfile
     ports:
       - "8080:8080"
     volumes:
-      - scrinia-data:/data
+      - scrinium-data:/data
     environment:
       - Scrinia__DataDir=/data
     restart: unless-stopped
 
 volumes:
-  scrinia-data:
+  scrinium-data:
 ```
 
 ### Production with Reverse Proxy
@@ -456,7 +456,7 @@ Configuration via `appsettings.json` or environment variables:
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
-| `Scrinia:DataDir` | `Scrinia__DataDir` | `%LOCALAPPDATA%/scrinia-server` | Root data directory |
+| `Scrinia:DataDir` | `Scrinia__DataDir` | `%LOCALAPPDATA%/scrinium` | Root data directory |
 | `Scrinia:CorsOrigins` | `Scrinia__CorsOrigins` | Allow any | Allowed CORS origins |
 | `Scrinia:Stores` | (section) | `{"default": ""}` | Named stores with custom paths |
 
@@ -519,4 +519,4 @@ Each store is a full `.scrinia/` workspace with its own index, artifacts, topics
 
 Server plugins are .NET class libraries loaded at startup from `{dataDir}/plugins/`. They run in-process using isolated `AssemblyLoadContext`.
 
-See [Embeddings Architecture](architecture/embeddings.md) for details on the built-in embeddings plugin, and [Server Architecture](architecture/server.md) for the plugin loading system.
+See [Embeddings Architecture](architecture/embeddings.md) for details on the built-in semantic search (Model2Vec in Core) and the optional Vulkan GPU plugin, and [Server Architecture](architecture/server.md) for the plugin loading system.

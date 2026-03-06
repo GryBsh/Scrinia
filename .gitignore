@@ -25,5 +25,9 @@ src/Scrinia.Server/wwwroot/
 
 # Publish output
 publish/
+scrinia-test/
+
+# Downloaded models (runtime, via scri setup)
+/models/
 
 .fake

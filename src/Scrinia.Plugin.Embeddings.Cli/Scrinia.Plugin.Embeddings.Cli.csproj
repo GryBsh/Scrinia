@@ -9,13 +9,14 @@
     <LangVersion>latest</LangVersion>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
 
-    <!-- Single-file self-contained: bundle everything including native DLLs (onnxruntime, DirectML).
-         Native libs are auto-extracted to a temp dir at first run. NOT trimmed — the whole point
-         of the child-process architecture is that the plugin has a full .NET runtime. -->
-    <PublishSingleFile>true</PublishSingleFile>
+    <!-- Self-contained single-file, NOT trimmed — full .NET runtime for LLamaSharp compatibility.
+         Native DLLs (ggml, llama, etc.) extract alongside the exe automatically.
+         ErrorOnDuplicatePublishOutputFiles=false: LLamaSharp.Backend.Cpu (transitive) ships
+         multiple AVX variants (avx/avx2/avx512/noavx) with the same filename. -->
     <SelfContained>true</SelfContained>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishSingleFile>true</PublishSingleFile>
     <DebugType>embedded</DebugType>
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,11 +25,5 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Scrinia.Plugin.Embeddings\Scrinia.Plugin.Embeddings.csproj" />
-  </ItemGroup>
-
-  <!-- Exclude the onnxruntime import library (.lib) from publish output — it's a build artifact,
-       not needed at runtime, and won't go into the single-file bundle. -->
-  <ItemGroup>
-    <Content Remove="**\*.lib" />
   </ItemGroup>
 </Project>

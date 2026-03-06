@@ -37,7 +37,7 @@ export default function LoginPage() {
           <div className="inline-flex items-center justify-center w-12 h-12 bg-gray-900 text-white rounded-xl mb-4">
             <KeyRound className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-bold">Scrinia</h1>
+          <h1 className="text-2xl font-bold">Scrinium</h1>
           <p className="text-gray-500 text-sm mt-1">Enter your API key to continue</p>
         </div>
 

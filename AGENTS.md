@@ -76,31 +76,40 @@ E:/source/repos/Scrinia/
       ScriniaPluginBase.cs        <- convenience base class
       IMemoryOperationHook.cs     <- before/after hooks
       HookContexts.cs             <- 6 context classes
-    Scrinia.Plugin.Embeddings/    <- semantic search via vector embeddings plugin (net10.0 classlib)
-      EmbeddingsPlugin.cs         <- server: IScriniaPlugin + ISearchScoreContributor + IMemoryEventSink + IMemoryOperationHook
-      EmbeddingOptions.cs         <- Config POCO (Provider, Hardware, SemanticWeight)
-      IEmbeddingProvider.cs       <- Provider abstraction
-      EmbeddingProviderFactory.cs <- Factory (onnx/ollama/openai/none)
+    Scrinia.Core/Embeddings/      <- built-in semantic search (zero native deps, pure C#)
+      IEmbeddingProvider.cs       <- Provider abstraction (IsAvailable, Dimensions, EmbedAsync, EmbedBatchAsync)
+      NullEmbeddingProvider.cs    <- No-op fallback (IsAvailable=false)
+      EmbeddingOptions.cs         <- Config POCO (Provider="model2vec", SemanticWeight)
+      EmbeddingProviderFactory.cs <- Factory (model2vec/ollama/openai/voyageai/azure/google/none)
+      Model2VecProvider.cs        <- Local model: m2v-MiniLM-L6-v2, 384-dim, pure C# SafeTensors reader
+      Model2VecModelManager.cs    <- Downloads model from HuggingFace (~22MB)
+      SafeTensorsReader.cs        <- Binary SafeTensors parser (internal)
+      UnigramTokenizer.cs            <- SentencePiece-style tokenizer for distilled models
+      BertTokenizer.cs            <- WordPiece tokenizer (TokenizeRaw, Encode for BERT-style vocab)
       VectorStore.cs              <- Per-scope binary vector storage (SVF2 format, append-only with compaction)
       VectorIndex.cs              <- SIMD cosine similarity + flat-scan search
       HnswIndex.cs                <- Hierarchical Navigable Small World graph (M=16, efConstruction=200)
       HybridReranker.cs           <- ISearchScoreContributor: re-ranks BM25 top-K with cosine similarity
       Models/VectorEntry.cs       <- (Name, ChunkIndex?, Vector) record
-      Onnx/                       <- ModelManager, HardwareDetector, BertTokenizer, OnnxInferenceSession
-      Providers/                  <- OnnxEmbeddingProvider, OllamaEmbeddingProvider, OpenAiEmbeddingProvider
+      Providers/                  <- OllamaEmbeddingProvider, OpenAiEmbeddingProvider, VoyageAiEmbeddingProvider, AzureAiEmbeddingProvider, GoogleGeminiEmbeddingProvider
+    Scrinia.Plugin.Embeddings/    <- optional Vulkan GPU acceleration plugin (net10.0 classlib, LLamaSharp)
+      EmbeddingsPlugin.cs         <- server: IScriniaPlugin + ISearchScoreContributor + IMemoryEventSink + IMemoryOperationHook
+      VulkanEmbeddingProvider.cs  <- LLamaSharp Vulkan-accelerated embeddings (GGUF model)
+      VulkanModelManager.cs       <- Downloads GGUF model from HuggingFace
     Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport, self-contained NOT trimmed)
-      Program.cs                  <- MCP server host, registers EmbeddingsTools
+      Program.cs                  <- MCP server host, registers EmbeddingsTools (Vulkan provider)
       EmbeddingsTools.cs          <- MCP tools class (sealed, 4 tools: status, search, upsert, remove)
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 342 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 449 tests (8 skipped without model download)
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
+      Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
     Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 53 tests
       ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
-    Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 59 tests (4 skipped without ONNX model)
-      VectorIndexTests.cs, VectorStoreTests.cs, HybridScorerTests.cs, BertTokenizerTests.cs, OnnxEmbeddingProviderTests.cs, EmbeddingsPluginCliTests.cs
+    Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 12 tests (Vulkan plugin CLI + benchmark tests)
+      EmbeddingsPluginCliTests.cs <- core type integration tests (EmbeddingOptions, Factory, VectorStore)
   web/                            <- React + Vite + Tailwind CSS SPA
     src/api/                      <- typed API client and TypeScript DTOs
     src/pages/                    <- Login, Dashboard, MemoryBrowser, MemoryDetail, KeyManagement
@@ -469,7 +478,7 @@ The `plugins:embeddings` setting controls which plugin executable is used for em
 ## Running Tests
 
 ```bash
-# CLI + MCP tests (342 tests)
+# CLI + MCP + embeddings tests (449 tests, 8 skipped without model download)
 cd E:\source\repos\Scrinia\tests\Scrinia.Tests
 dotnet test
 
@@ -477,12 +486,12 @@ dotnet test
 cd E:\source\repos\Scrinia\tests\Scrinia.Server.Tests
 dotnet test
 
-# Embeddings plugin tests (59 tests, 4 skipped without ONNX model)
+# Vulkan plugin + benchmark tests (12 tests)
 cd E:\source\repos\Scrinia\tests\Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 454 tests total (342 + 53 + 59), 4 skipped (ONNX model download required).
+Expected: 514 tests total (449 + 53 + 12), 8 skipped (Model2Vec/BertTokenizer model download required).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 
@@ -641,7 +650,7 @@ React 19 + TypeScript + Vite + Tailwind CSS 4 + React Router 7 + TanStack Query 
 
 | Setting | Env var | Default |
 |---|---|---|
-| `Scrinia:DataDir` | `Scrinia__DataDir` | `{LocalAppData}/scrinia-server` |
+| `Scrinia:DataDir` | `Scrinia__DataDir` | `{LocalAppData}/scrinium` |
 | `Scrinia:Stores:{name}` | `Scrinia__Stores__{name}` | `{DataDir}/stores/{name}` |
 | `Scrinia:CorsOrigins` | `Scrinia__CorsOrigins__0` etc. | `[]` (allows all origins) |
 

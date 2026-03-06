@@ -5,52 +5,45 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Plugin.Abstractions;
 
 namespace Scrinia.Plugin.Embeddings;
 
-internal sealed class EmbeddingsSettingsUpdate
-{
-    public double? SemanticWeight { get; init; }
-    public int? MaxBatchSize { get; init; }
-}
-
 /// <summary>
-/// Embeddings plugin: adds semantic search via vector embeddings.
+/// Vulkan GPU-accelerated embeddings plugin for the server path.
 ///
-/// Implements three interfaces for the server path:
+/// Implements three interfaces:
 /// - <see cref="IMemoryOperationHook"/>: REST path hooks (via PluginPipeline)
 /// - <see cref="ISearchScoreContributor"/>: supplemental search scores for both REST and MCP
 /// - <see cref="IMemoryEventSink"/>: MCP path event notifications
 ///
-/// No double-firing: REST uses hooks, MCP uses event sink. Both call the same internal methods.
-///
-/// For the CLI (trimmed single-file host), see <c>Scrinia.Plugin.Embeddings.Cli</c> which
-/// runs as a child process communicating via stdin/stdout JSON.
+/// For the CLI, built-in Model2Vec embeddings are used by default. This plugin
+/// provides optional Vulkan GPU acceleration when installed.
 /// </summary>
 public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     IMemoryOperationHook, ISearchScoreContributor, IMemoryEventSink
 {
     public override string Name => "Embeddings";
-    public override string Version => "1.0.0";
+    public override string Version => "2.0.0";
 
     private IEmbeddingProvider _provider = new NullEmbeddingProvider();
     private VectorStore? _vectorStore;
-    private EmbeddingOptions _options = new();
+    private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
 
-    // ── IScriniaPlugin (server path) ─────────────────────────────────────────
+    // -- IScriniaPlugin (server path) --
 
     public override void ConfigureServices(IServiceCollection services, IConfiguration configuration)
     {
         var section = configuration.GetSection("Scrinia:Embeddings");
-        var options = new EmbeddingOptions();
-        section.Bind(options);
-        _options = options;
 
-        services.AddSingleton(options);
+        string? weightStr = section["SemanticWeight"];
+        if (weightStr is not null && double.TryParse(weightStr, out double w))
+            _semanticWeight = w;
+
         services.AddSingleton<ISearchScoreContributor>(this);
         services.AddSingleton<IMemoryEventSink>(this);
         services.AddSingleton<IMemoryOperationHook>(this);
@@ -71,15 +64,31 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         string dataDir = Path.Combine(pluginsDir, "embeddings");
         Directory.CreateDirectory(dataDir);
 
-        // Plugin files (models, caches) go in a folder named after the plugin, alongside the server.
         string modelsDir = Path.Combine(pluginsDir, "scri-plugin-embeddings");
         Directory.CreateDirectory(modelsDir);
 
         _vectorStore = new VectorStore(dataDir);
-        _provider = EmbeddingProviderFactory.Create(_options, modelsDir, _logger);
+
+        // Try Vulkan provider
+        try
+        {
+            if (VulkanModelManager.IsModelAvailable(modelsDir))
+            {
+                string modelPath = VulkanModelManager.GetModelPath(modelsDir);
+                _provider = VulkanEmbeddingProvider.Create(modelPath, 384, _logger);
+            }
+            else
+            {
+                _logger.LogWarning("Vulkan GGUF model not found at {Dir}. Plugin inactive.", modelsDir);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to create Vulkan embedding provider");
+        }
 
         _logger.LogInformation("Embeddings plugin initialized: provider={Provider}, available={Available}",
-            _options.Provider, _provider.IsAvailable);
+            _provider.GetType().Name, _provider.IsAvailable);
     }
 
     public override void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -91,11 +100,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             EnsureInitialized(ctx.RequestServices);
             return Results.Ok(new
             {
-                provider = _options.Provider,
-                hardware = _options.Hardware,
+                provider = _provider.GetType().Name,
                 available = _provider.IsAvailable,
                 dimensions = _provider.Dimensions,
-                semanticWeight = _options.SemanticWeight,
+                semanticWeight = _semanticWeight,
                 vectorCount = _vectorStore?.TotalVectorCount() ?? 0,
             });
         });
@@ -106,7 +114,6 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             if (!_provider.IsAvailable)
                 return Results.BadRequest(new { error = "Embedding provider is not available." });
 
-            // Get the memory store from MemoryStoreContext (set by server middleware/MCP)
             var store = MemoryStoreContext.Current;
             if (store is null)
                 return Results.BadRequest(new { error = "No store context available." });
@@ -120,41 +127,13 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             EnsureInitialized(ctx.RequestServices);
             return Results.Ok(new
             {
-                provider = _options.Provider,
-                hardware = _options.Hardware,
-                semanticWeight = _options.SemanticWeight,
-                maxBatchSize = _options.MaxBatchSize,
-                ollamaBaseUrl = _options.OllamaBaseUrl,
-                ollamaModel = _options.OllamaModel,
-                openAiModel = _options.OpenAiModel,
-                openAiBaseUrl = _options.OpenAiBaseUrl,
+                provider = _provider.GetType().Name,
+                semanticWeight = _semanticWeight,
             });
-        });
-
-        group.MapPut("/settings", async (HttpContext ctx) =>
-        {
-            EnsureInitialized(ctx.RequestServices);
-            var dto = await ctx.Request.ReadFromJsonAsync<EmbeddingsSettingsUpdate>(cancellationToken: ctx.RequestAborted);
-            if (dto is null) return Results.BadRequest(new { error = "Invalid request body." });
-
-            if (dto.SemanticWeight is not null)
-            {
-                if (dto.SemanticWeight.Value < 0 || dto.SemanticWeight.Value > 200)
-                    return Results.BadRequest(new { error = "SemanticWeight must be between 0 and 200." });
-                _options.SemanticWeight = dto.SemanticWeight.Value;
-            }
-            if (dto.MaxBatchSize is not null)
-            {
-                if (dto.MaxBatchSize.Value < 1 || dto.MaxBatchSize.Value > 64)
-                    return Results.BadRequest(new { error = "MaxBatchSize must be between 1 and 64." });
-                _options.MaxBatchSize = dto.MaxBatchSize.Value;
-            }
-
-            return Results.Ok(new { message = "Settings updated." });
         });
     }
 
-    // ── ISearchScoreContributor (both REST + MCP) ────────────────────────────
+    // -- ISearchScoreContributor (both REST + MCP) --
 
     public async Task<IReadOnlyDictionary<string, double>?> ComputeScoresAsync(
         string query, IReadOnlyList<ScopedArtifact> candidates,
@@ -170,7 +149,6 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
         var scores = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
-        // Group candidates by scope to load vectors efficiently
         var byScope = candidates.GroupBy(c => c.Scope, StringComparer.OrdinalIgnoreCase);
         foreach (var group in byScope)
         {
@@ -184,14 +162,14 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                     ? $"{group.Key}|{entry.Name}|{entry.ChunkIndex}"
                     : $"{group.Key}|{entry.Name}";
 
-                scores[key] = similarity * _options.SemanticWeight;
+                scores[key] = similarity * _semanticWeight;
             }
         }
 
         return scores.Count > 0 ? scores : null;
     }
 
-    // ── IMemoryOperationHook (REST path via PluginPipeline) ──────────────────
+    // -- IMemoryOperationHook (REST path via PluginPipeline) --
 
     public async Task OnAfterStoreAsync(AfterStoreContext ctx, CancellationToken ct)
     {
@@ -208,7 +186,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         await RemoveVectorsAsync(ctx.Name, ctx.WasDeleted, ctx.Store, ct);
     }
 
-    // ── IMemoryEventSink (MCP path) ─────────────────────────────────────────
+    // -- IMemoryEventSink (MCP path) --
 
     public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
     {
@@ -225,7 +203,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         await RemoveVectorsAsync(qualifiedName, wasDeleted, store, ct);
     }
 
-    // ── Shared internal ─────────────────────────────────────────────────────
+    // -- Shared internal --
 
     private async Task EmbedAndIndexAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
     {
@@ -241,7 +219,6 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             if (string.IsNullOrWhiteSpace(joined))
                 return;
 
-            // Collect all texts to embed in one batch
             var items = new List<(string text, int? chunkIndex)> { (joined, null) };
 
             if (content.Length > 1)
@@ -251,7 +228,6 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                         items.Add((content[i], i + 1));
             }
 
-            // Single batched embed call
             var vectors = await _provider.EmbedBatchAsync(
                 items.Select(x => x.text).ToList(), ct);
             if (vectors is null) return;
@@ -283,13 +259,10 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
     }
 
-    /// <summary>Re-embeds all existing memories in a store.</summary>
     private async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
     {
         var allItems = store.ListScoped();
         int count = 0;
-
-        var batch = new List<(ScopedArtifact item, string qualifiedName, string text)>();
 
         foreach (var item in allItems)
         {
@@ -303,12 +276,11 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                 string decoded = System.Text.Encoding.UTF8.GetString(
                     new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
 
-                batch.Add((item, qualifiedName, decoded));
-
-                if (batch.Count >= _options.MaxBatchSize)
+                var vec = await _provider.EmbedAsync(decoded, ct);
+                if (vec is not null)
                 {
-                    count += await FlushReindexBatchAsync(batch, ct);
-                    batch.Clear();
+                    await _vectorStore!.UpsertAsync(item.Scope, item.Entry.Name, null, vec, ct);
+                    count++;
                 }
             }
             catch (Exception ex)
@@ -317,27 +289,6 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             }
         }
 
-        if (batch.Count > 0)
-            count += await FlushReindexBatchAsync(batch, ct);
-
-        return count;
-    }
-
-    private async Task<int> FlushReindexBatchAsync(
-        List<(ScopedArtifact item, string qualifiedName, string text)> batch,
-        CancellationToken ct)
-    {
-        var texts = batch.Select(b => b.text).ToList();
-        var vectors = await _provider.EmbedBatchAsync(texts, ct);
-        if (vectors is null) return 0;
-
-        int count = 0;
-        for (int i = 0; i < vectors.Length; i++)
-        {
-            await _vectorStore!.UpsertAsync(
-                batch[i].item.Scope, batch[i].item.Entry.Name, null, vectors[i], ct);
-            count++;
-        }
         return count;
     }
 }

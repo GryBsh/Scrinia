@@ -18,14 +18,16 @@ Scrinia is structured as a set of .NET 10 projects with a shared core library, m
               |                               |
    +----------v-----------+    +--------------v--------------+
    |    Scrinia.Core       |    | scri-plugin-embeddings (MCP) |
-   |  IMemoryStore         |    |  VectorStore | HnswIndex    |
-   |  FileMemoryStore      |    |  EmbeddingProviders          |
-   |  NMP/2 Encoding       |    +------------------------------+
+   |  IMemoryStore         |    |  (optional Vulkan GPU accel) |
+   |  FileMemoryStore      |    +------------------------------+
+   |  NMP/2 Encoding       |
    |  BM25 + Search        |
+   |  Embeddings (Model2Vec |
+   |  + API providers)     |
    +----------+------------+
               |
    +----------v-----------------------------------------------------+
-   |                    Scrinia.Server (HTTP API)                    |
+   |                      Scrinium (HTTP API)                        |
    |  REST Endpoints | API Key Auth | Multi-Store | Web UI | MCP/HTTP |
    +--------+-------------------+-----------------------------------+
             |                   |
@@ -46,12 +48,12 @@ Scrinia.sln (11 projects)
     Scrinia.Server/                  ASP.NET Core HTTP API + Web UI
     Scrinia.AppHost/                 .NET Aspire orchestration
     Scrinia.Plugin.Abstractions/     Plugin interfaces for server
-    Scrinia.Plugin.Embeddings/       Embeddings plugin (shared logic)
-    Scrinia.Plugin.Embeddings.Cli/   CLI plugin executable (MCP server)
+    Scrinia.Plugin.Embeddings/       Optional Vulkan GPU acceleration (LLamaSharp)
+    Scrinia.Plugin.Embeddings.Cli/   CLI plugin executable (Vulkan MCP server)
   tests/
-    Scrinia.Tests/                   342 tests (CLI + MCP + Core)
+    Scrinia.Tests/                   449 tests (CLI + MCP + Core + Embeddings)
     Scrinia.Server.Tests/            53 tests (HTTP API)
-    Scrinia.Plugin.Embeddings.Tests/ 59 tests (embeddings)
+    Scrinia.Plugin.Embeddings.Tests/ 12 tests (Vulkan plugin CLI + benchmarks)
   web/                               React 19 + Vite + Tailwind CSS SPA
 ```
 
@@ -72,7 +74,7 @@ Scrinia.Core  <--  Scrinia.Mcp  <--  Scrinia (CLI)
 ```
 
 Key constraints:
-- **Core** has no ASP.NET dependencies (only `System.IO.Hashing`)
+- **Core** has no ASP.NET or native dependencies (only `System.IO.Hashing`). Includes built-in embeddings (Model2Vec, API providers, VectorStore, HybridReranker).
 - **Mcp** depends only on Core and `ModelContextProtocol`
 - **CLI** is trimmed and single-file; plugins run as separate processes
 - **Server** references everything except the CLI plugin executable
@@ -84,7 +86,7 @@ Key constraints:
 
 The CLI (`scri`) runs as both a command-line tool and an MCP server. It reads and writes directly to a `.scrinia/` workspace on the local filesystem.
 
-The embeddings plugin runs as a child process communicating via MCP over stdio. The CLI is the MCP client; the plugin is the MCP server.
+Semantic search is built-in via Model2Vec (in-process, zero native deps). An optional Vulkan GPU plugin can override the built-in provider, running as a child process via MCP over stdio.
 
 See [CLI Architecture](cli.md).
 
@@ -92,7 +94,7 @@ See [CLI Architecture](cli.md).
 
 The server provides multi-user access with API key authentication, a REST API, MCP over HTTP, and a web UI. Each API key is scoped to specific stores and permissions.
 
-The embeddings plugin runs in-process as a loaded DLL.
+Semantic search is built-in. The optional Vulkan embeddings plugin can run in-process as a loaded DLL for GPU acceleration.
 
 See [Server Architecture](server.md).
 
@@ -109,7 +111,7 @@ The CLI can proxy all operations to a remote Scrinia.Server via `--remote`. This
 | `ISearchScoreContributor` | Plugin hook for supplemental search scores | Core |
 | `IMemoryEventSink` | Plugin hook for store/append/forget events | Core |
 | `IStorageBackend` | Factory for creating `IMemoryStore` instances | Core |
-| `IEmbeddingProvider` | Vector embedding generation | Plugin.Embeddings |
+| `IEmbeddingProvider` | Vector embedding generation | Core.Embeddings |
 | `IScriniaPlugin` | Server plugin lifecycle | Plugin.Abstractions |
 | `IMemoryOperationHook` | Server-side before/after hooks | Plugin.Abstractions |
 

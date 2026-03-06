@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)]
     [string]$OutputDir,
 
-    [switch]$WithEmbeddings,
+    [switch]$WithVulkan,
 
     [ValidateSet('win-x64', 'linux-x64', 'osx-arm64')]
     [string]$Platform
@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $Rids = if ($Platform) { @($Platform) } else { @('win-x64', 'linux-x64', 'osx-arm64') }
 $Project = 'src/Scrinia/Scrinia.csproj'
-$EmbeddingsProject = 'src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj'
+$VulkanProject = 'src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj'
 # When a single platform is specified, output directly into OutputDir (no RID subdirectory).
 $SinglePlatform = [bool]$Platform
 
@@ -32,20 +32,30 @@ foreach ($rid in $Rids) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid" }
     Write-Host "  -> $ridDir"
 
-    if ($WithEmbeddings) {
-        Write-Host "  Publishing embeddings plugin for $rid ..."
-        $pluginsDir = "$ridDir/plugins"
-        # Single-file + self-contained + native bundling is configured in the .csproj.
-        # Only --runtime is needed here for RID selection.
-        dotnet publish $EmbeddingsProject `
+    if ($WithVulkan) {
+        Write-Host "  Publishing Vulkan embeddings plugin for $rid ..."
+        $pluginsDir = "$ridDir/plugins/scri-plugin-embeddings"
+        # Single-file + self-contained (not trimmed). Native DLLs extract alongside the exe.
+        dotnet publish $VulkanProject `
             --runtime $rid `
             --configuration Release `
             --output $pluginsDir
-        if ($LASTEXITCODE -ne 0) { throw "dotnet publish (embeddings) failed for $rid" }
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish (vulkan plugin) failed for $rid" }
 
-        # Clean stray build artifacts that don't go into the single-file bundle
-        Get-ChildItem "$pluginsDir" -Exclude "scri-plugin-*" -ErrorAction SilentlyContinue |
-            Remove-Item -Force -Recurse
+        # Single-file publish flattens all native DLLs to the root. The CPU backend's
+        # DLLs (ggml-base, ggml, llama, mtmd) overwrite the Vulkan ones since they share
+        # filenames. Overwrite the root copies with the Vulkan-compiled versions so
+        # LLamaSharp loads Vulkan by default.
+        $nugetBase = "$env:USERPROFILE/.nuget/packages"
+        if ($rid -like 'win-*') {
+            $vulkanSrc = "$nugetBase/llamasharp.backend.vulkan.windows/0.25.0/runtimes/$rid/native/vulkan"
+        } else {
+            $vulkanSrc = "$nugetBase/llamasharp.backend.vulkan.linux/0.25.0/runtimes/$rid/native/vulkan"
+        }
+        if (Test-Path $vulkanSrc) {
+            Copy-Item "$vulkanSrc/*" $pluginsDir -Force
+            Write-Host "    Overwrote root native DLLs with Vulkan variants"
+        }
         Write-Host "  -> $pluginsDir"
     }
 }
@@ -57,7 +67,7 @@ foreach ($rid in $Rids) {
     Get-ChildItem "$ridDir/scri*" -ErrorAction SilentlyContinue |
         ForEach-Object { '{0}  {1}' -f $_.Length.ToString('N0').PadLeft(12), $_.FullName } |
         Write-Host
-    if ($WithEmbeddings) {
+    if ($WithVulkan) {
         $ext = if ($rid -like 'win-*') { '.exe' } else { '' }
         Get-ChildItem "$ridDir/plugins/scri-plugin-embeddings$ext" -ErrorAction SilentlyContinue |
             ForEach-Object { '{0}  {1}' -f $_.Length.ToString('N0').PadLeft(12), $_.FullName } |

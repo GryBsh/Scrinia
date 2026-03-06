@@ -125,6 +125,33 @@ internal sealed class AutoMemorySystem : MemorySystemBase
         return Task.FromResult(new QueryResult(found, CharsToTokens(charsCost), found.Count, foundTarget, sw.Elapsed));
     }
 
+    public override Task<(string Context, int TokensCost)> GetLlmContextAsync(string query)
+    {
+        // Always charge index
+        var sb = new StringBuilder(_indexContent);
+        int charsCost = _indexContent.Length;
+
+        // Route to topic files (same logic as QueryAsync)
+        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var matchedTopics = _topicFiles.Keys
+            .Where(topic => terms.Any(t => topic.Contains(t, StringComparison.OrdinalIgnoreCase)
+                || _indexContent.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (matchedTopics.Count == 0)
+            matchedTopics = _topicFiles.Keys.ToList(); // fallback: load all
+
+        foreach (var topic in matchedTopics)
+        {
+            sb.AppendLine().Append(_topicFiles[topic]);
+            charsCost += _topicFiles[topic].Length;
+        }
+
+        int cost = CharsToTokens(charsCost);
+        TokensConsumed += cost;
+        return Task.FromResult((sb.ToString(), cost));
+    }
+
     public override int GetColdStartTokens() => CharsToTokens(_indexContent.Length);
 
     public override int GetTotalCorpusTokens()

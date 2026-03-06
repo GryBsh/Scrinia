@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using ModelContextProtocol.Server;
-using Scrinia.Plugin.Embeddings;
+using Scrinia.Core.Embeddings;
 
 namespace Scrinia.Plugin.Embeddings.Cli;
 
@@ -16,7 +16,6 @@ public sealed class EmbeddingsTools(
         return JsonSerializer.Serialize(new
         {
             provider = provider.GetType().Name,
-            hardware = options.Hardware,
             available = provider.IsAvailable,
             dimensions = provider.Dimensions,
             vectorCount = vectorStore.TotalVectorCount(),

@@ -27,9 +27,11 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
 
     // Capability flags discovered via ListToolsAsync
     private bool _hasSearch, _hasUpsert, _hasRemove, _hasStatus;
+    // Set to true only when the plugin's status reports available=true (i.e. a real provider, not NullEmbeddingProvider)
+    private bool _isAvailable;
 
-    public bool HasSearchCapability => _hasSearch && !_degraded;
-    public bool HasEventSinkCapability => (_hasUpsert || _hasRemove) && !_degraded;
+    public bool HasSearchCapability => _hasSearch && _isAvailable && !_degraded;
+    public bool HasEventSinkCapability => (_hasUpsert || _hasRemove) && _isAvailable && !_degraded;
 
     private static readonly string[] ConfigKeys =
     [
@@ -64,10 +66,11 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
                 {
                     using var doc = JsonDocument.Parse(text);
                     var root = doc.RootElement;
+                    _isAvailable = GetBool(root, "available");
                     Console.Error.WriteLine(
                         $"[scrinia:info] Embeddings plugin ready " +
                         $"(provider={GetString(root, "provider")}, hardware={GetString(root, "hardware")}, " +
-                        $"available={GetBool(root, "available")}, dims={GetInt(root, "dimensions")}, " +
+                        $"available={_isAvailable}, dims={GetInt(root, "dimensions")}, " +
                         $"vectors={GetInt(root, "vectorCount")})");
                 }
             }

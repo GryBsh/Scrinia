@@ -5,7 +5,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
-    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,14 +16,8 @@
     <ProjectReference Include="..\Scrinia.Plugin.Abstractions\Scrinia.Plugin.Abstractions.csproj" />
   </ItemGroup>
 
-  <!-- On Windows, use DirectML package exclusively — it ships a DML-enabled onnxruntime.dll
-       (16.5MB, CPU+DML) plus DirectML.dll. The base OnnxRuntime package's CPU-only native DLL
-       would overwrite it, so we only reference the base package on non-Windows.
-       Both packages depend on OnnxRuntime.Managed for the C# APIs. -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.0"
-        Condition="!$([MSBuild]::IsOSPlatform('Windows'))" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.22.0"
-        Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="LLamaSharp" Version="0.25.0" />
+    <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.25.0" />
   </ItemGroup>
 </Project>

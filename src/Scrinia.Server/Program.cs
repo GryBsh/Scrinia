@@ -27,12 +27,15 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(opt =
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-var defaultPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "scrinia-server");
+var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+var defaultPath = Path.Combine(localAppData, "scrinium");
 string dataDir = builder.Configuration["Scrinia:DataDir"] ?? string.Empty;
-                 
+
 if (string.IsNullOrWhiteSpace(dataDir))
 {
-    dataDir = defaultPath;
+    // Migrate from pre-rename data directory if it exists and the new one doesn't
+    var legacyPath = Path.Combine(localAppData, "scrinia-server");
+    dataDir = !Directory.Exists(defaultPath) && Directory.Exists(legacyPath) ? legacyPath : defaultPath;
 }
     
 

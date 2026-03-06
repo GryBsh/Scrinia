@@ -16,11 +16,11 @@ scri serve --remote http://localhost:5000 --api-key <key> [--store default]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--workspace-root` | Auto-detected | Override workspace directory |
-| `--remote` | (none) | Connect to a remote Scrinia.Server instead of local storage |
+| `--remote` | (none) | Connect to a remote Scrinium instead of local storage |
 | `--api-key` | (none) | API key for remote server authentication |
 | `--store` | `default` | Target store on the remote server |
 
-**Local mode** reads/writes directly to `.scrinia/` on disk. **Remote mode** proxies all MCP tool calls to a Scrinia.Server instance over HTTP.
+**Local mode** reads/writes directly to `.scrinia/` on disk. **Remote mode** proxies all MCP tool calls to a Scrinium instance over HTTP.
 
 ### scri list
 
@@ -106,15 +106,15 @@ scri bundle docs "src/**/*.md" -d "Source documentation" -t docs,reference
 
 ### scri setup
 
-Download the ONNX embedding model (`all-MiniLM-L6-v2`, 384 dimensions) for the embeddings plugin.
+Download the Model2Vec embedding model (`m2v-MiniLM-L6-v2`, 384 dimensions) for built-in semantic search.
 
 ```bash
 scri setup [--workspace-root <path>]
 ```
 
-Downloads `model.onnx` and `vocab.txt` from HuggingFace to `{exeDir}/plugins/{pluginName}/models/all-MiniLM-L6-v2/`. Shows progress bars. Skips files that already exist.
+Downloads `model.safetensors` (~22MB) and `vocab.txt` from HuggingFace to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Shows progress bars. Skips files that already exist.
 
-Requires the embeddings plugin to be installed (published via `publish.ps1 -WithEmbeddings`).
+No plugin installation required -- Model2Vec is built into Scrinia Core.
 
 ### scri config
 
@@ -170,29 +170,30 @@ Settings are resolved in priority order:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `Scrinia:Embeddings:Provider` | `onnx` | Provider: `onnx`, `ollama`, `openai`, `voyageai`, `azure`, `google`, `none` |
-| `Scrinia:Embeddings:Hardware` | `auto` | ONNX hardware: `auto`, `directml`, `cuda`, `cpu` |
+| `Scrinia:Embeddings:Provider` | `model2vec` | Provider: `model2vec`, `ollama`, `openai`, `voyageai`, `azure`, `google`, `none` |
 | `Scrinia:Embeddings:SemanticWeight` | `50.0` | Semantic score weight in hybrid search |
 
-### ONNX Provider
+### Model2Vec Provider (Default)
 
-The default provider. Runs the `all-MiniLM-L6-v2` model (384 dimensions) locally via ONNX Runtime.
-
-Hardware acceleration is auto-detected:
-
-| Hardware | Flag | Notes |
-|----------|------|-------|
-| DirectML | `directml` | Windows GPU (AMD, Intel, NVIDIA) |
-| CUDA | `cuda` | NVIDIA GPU (requires CUDA toolkit) |
-| CPU | `cpu` | Fallback, always available |
-| Auto | `auto` | Tries DirectML, then CUDA, then CPU |
+The default provider. Runs the `m2v-MiniLM-L6-v2` model (384 dimensions, distilled from all-MiniLM-L6-v2) locally with zero native dependencies. Pure C# implementation using SafeTensors format (F16).
 
 Setup:
 
 ```bash
-.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithEmbeddings
 scri setup
 ```
+
+Downloads `model.safetensors` (~22MB) and `vocab.txt` to `{exeDir}/models/m2v-MiniLM-L6-v2/`.
+
+### Vulkan Provider (Optional Plugin)
+
+GPU-accelerated embeddings via LLamaSharp with Vulkan backend. Requires the plugin to be installed:
+
+```bash
+.\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
+```
+
+When the Vulkan plugin is installed, it automatically overrides the built-in Model2Vec provider.
 
 ### Ollama Provider
 
@@ -330,7 +331,7 @@ Add to `.mcp.json` in your project root or `~/.claude/`:
 }
 ```
 
-### Remote Mode (Connecting to Scrinia.Server)
+### Remote Mode (Connecting to Scrinium)
 
 ```json
 {

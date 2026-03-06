@@ -1,6 +1,6 @@
 # Core Architecture
 
-`Scrinia.Core` is the shared class library containing encoding, models, search, storage, and extensibility interfaces. It has no ASP.NET dependencies (only `System.IO.Hashing`) and is referenced by all other projects.
+`Scrinia.Core` is the shared class library containing encoding, models, search, storage, embeddings, and extensibility interfaces. It has no ASP.NET or native dependencies (only `System.IO.Hashing`) and is referenced by all other projects. Built-in semantic search (Model2Vec provider, API embedding providers, VectorStore, HybridReranker) lives in `Scrinia.Core.Embeddings` -- see [Embeddings Architecture](embeddings.md).
 
 ## NMP/2 Encoding
 
