@@ -135,7 +135,7 @@ builder.Services.AddOpenApi();
 builder.Services
     .AddMcpServer(options =>
     {
-        options.ServerInfo = new() { Name = "scrinia", Version = "1.0.0" };
+        options.ServerInfo = new() { Name = "scrinia", Version = "0.2.0" };
     })
     .WithHttpTransport(options =>
     {
