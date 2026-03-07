@@ -131,6 +131,12 @@ public sealed class ScriniaMcpTools
             3. `import("path/to/bundle.scrinia-bundle")` — restores all topics
             Useful for sharing team conventions, API patterns, or onboarding knowledge.
 
+            ## Workspace changes
+            Scrinia tools (store, append, forget, import, copy) write to the `.scrinia/` directory
+            in the workspace root. These file changes are a direct result of your tool calls —
+            treat them as changes you made. Include `.scrinia/` changes in your commits alongside
+            other project changes.
+
             ## When to store vs. not store
             **Store in scrinia:** stable patterns, architectural decisions, API conventions,
             solutions to recurring problems, project-specific knowledge.
@@ -236,7 +242,8 @@ public sealed class ScriniaMcpTools
         "Use topic:subject naming to organize into local topics " +
         "(e.g. 'api:auth-flow', 'arch:decisions'). " +
         "Prefix with ~ for ephemeral in-memory storage (e.g. '~scratch'). " +
-        "Flag memories that may become stale with optional review conditions.")]
+        "Flag memories that may become stale with optional review conditions. " +
+        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
     public async Task<string> Store(
         [Description("The text content to compress and store. " +
                      "Pass a single element for a single-chunk artifact, or multiple elements to control " +
@@ -368,7 +375,7 @@ public sealed class ScriniaMcpTools
         try { await (MemoryEventSinkContext.Current?.OnStoredAsync(qualifiedName, content, store, cancellationToken) ?? Task.CompletedTask); }
         catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
 
-        return $"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)})";
+        return $"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.";
     }
 
     [McpServerTool(Name = "list"), Description(
@@ -539,7 +546,8 @@ public sealed class ScriniaMcpTools
     [McpServerTool(Name = "forget"), Description(
         "Removes a stored artifact and its index entry. " +
         "Use to clean up outdated or incorrect memories. " +
-        "Accepts a qualified name (e.g. 'session-notes', 'api:auth-flow', '~scratch').")]
+        "Accepts a qualified name (e.g. 'session-notes', 'api:auth-flow', '~scratch'). " +
+        "Note: this modifies .scrinia/ in the workspace — treat those file changes as your own.")]
     public async Task<string> Forget(
         [Description("The artifact name (e.g. \"session-notes\", \"api:auth\", \"~scratch\") or its file:// URI.")] string nameOrUri,
         CancellationToken cancellationToken = default)
@@ -582,7 +590,7 @@ public sealed class ScriniaMcpTools
             try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(name, fileDeleted || removedAny, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
 
-            return $"Forgot: {name}";
+            return $"Forgot: {name}. Files in .scrinia/ were updated — these are your changes.";
         }
 
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
@@ -599,7 +607,7 @@ public sealed class ScriniaMcpTools
         try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(qualifiedName, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block forget */ }
 
-        return $"Forgot: {qualifiedName}";
+        return $"Forgot: {qualifiedName}. Files in .scrinia/ were updated — these are your changes.";
     }
 
     // ── Export/Import tools ───────────────────────────────────────────────────
@@ -849,7 +857,8 @@ public sealed class ScriniaMcpTools
         "Append content as a new independently retrievable chunk to an existing memory, " +
         "or create it if it does not exist. " +
         "Useful for incremental capture — build up session journals entry by entry " +
-        "without recomposing the full document each time.")]
+        "without recomposing the full document each time. " +
+        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
     public async Task<string> Append(
         [Description("The text content to append.")] string content,
         [Description("Memory name to append to (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string name,
@@ -978,7 +987,7 @@ public sealed class ScriniaMcpTools
         try { await (MemoryEventSinkContext.Current?.OnAppendedAsync(qualifiedName, content, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block append */ }
 
-        return $"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)})";
+        return $"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.";
     }
 
     [McpServerTool(Name = "reflect"), Description(
