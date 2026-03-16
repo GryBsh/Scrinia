@@ -23,6 +23,12 @@ public partial class BundleJsonContext : JsonSerializerContext;
 [McpServerToolType]
 public sealed class ScriniaMcpTools
 {
+    /// <summary>
+    /// Maximum tool response size in characters. MCP clients (notably VS Code Copilot)
+    /// silently truncate responses above ~10 KB. We cap at 8 KB to leave headroom.
+    /// </summary>
+    private const int MaxResponseChars = 8 * 1024;
+
     public static readonly JsonSerializerOptions BundleJsonOptions = new()
     {
         WriteIndented = true,
@@ -1233,28 +1239,31 @@ public sealed class ScriniaMcpTools
                        $"**{topicCount} {(topicCount == 1 ? "topic" : "topics")}** ({FormatBytes(totalBytes)} total)");
         sb.AppendLine();
 
+        int staleCount = allEntries.Count(e => e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow);
+        int reviewCount = allEntries.Count(e => !string.IsNullOrEmpty(e.Entry.ReviewWhen)
+            && !(e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow));
+        if (staleCount > 0 || reviewCount > 0)
+        {
+            var markers = new List<string>();
+            if (staleCount > 0) markers.Add($"{staleCount} stale");
+            if (reviewCount > 0) markers.Add($"{reviewCount} need review");
+            sb.AppendLine($"⚠ {string.Join(", ", markers)}");
+            sb.AppendLine();
+        }
+
         foreach (var (label, entries) in grouped)
         {
             string heading = label == "local" ? "Local" : $"Topic: {label}";
-            sb.AppendLine($"### {heading}");
+            long groupBytes = entries.Sum(e => e.Entry.OriginalBytes);
+            sb.AppendLine($"### {heading} ({FormatBytes(groupBytes)})");
             foreach (var item in entries)
             {
                 var e = item.Entry;
                 string qualName = store.FormatQualifiedName(item.Scope, e.Name);
-                string size = FormatBytes(e.OriginalBytes);
-                string desc = e.Description.Length > 80
-                    ? e.Description[..80] + "..."
-                    : e.Description;
-                string tags = e.Tags is { Length: > 0 } ? $" [tags: {string.Join(", ", e.Tags)}]" : "";
-                string review = "";
-                if (e.ReviewAfter.HasValue || !string.IsNullOrEmpty(e.ReviewWhen))
-                {
-                    var parts = new List<string>();
-                    if (e.ReviewAfter.HasValue) parts.Add($"after {e.ReviewAfter.Value:yyyy-MM-dd}");
-                    if (!string.IsNullOrEmpty(e.ReviewWhen)) parts.Add(e.ReviewWhen);
-                    review = $" **[REVIEW: {string.Join("; ", parts)}]**";
-                }
-                sb.AppendLine($"- **{qualName}** ({size}, {e.ChunkCount} chunk{(e.ChunkCount == 1 ? "" : "s")}, created {e.CreatedAt:yyyy-MM-dd}) — {desc}{tags}{review}");
+                string marker = "";
+                if (e.ReviewAfter.HasValue && e.ReviewAfter.Value <= DateTimeOffset.UtcNow) marker = " [stale]";
+                else if (!string.IsNullOrEmpty(e.ReviewWhen)) marker = " [review?]";
+                sb.AppendLine($"- {qualName} ({FormatBytes(e.OriginalBytes)}, {e.ChunkCount}ch){marker}");
             }
             sb.AppendLine();
         }
@@ -1361,13 +1370,9 @@ public sealed class ScriniaMcpTools
         foreach (var (label, entries) in grouped)
         {
             string docName = label == "local" ? "Local Memories" : $"Topic: {label}";
-            sb.AppendLine($"- **{docName}** ({entries.Count} {(entries.Count == 1 ? "memory" : "memories")})");
-            foreach (var item in entries)
-            {
-                var e = item.Entry;
-                string qualName = store.FormatQualifiedName(item.Scope, e.Name);
-                sb.AppendLine($"  - {qualName}");
-            }
+            long groupBytes = entries.Sum(e => e.Entry.OriginalBytes);
+            var names = entries.Select(e => store.FormatQualifiedName(e.Scope, e.Entry.Name));
+            sb.AppendLine($"- **{docName}** ({entries.Count} memories, {FormatBytes(groupBytes)}): {string.Join(", ", names)}");
         }
         sb.AppendLine();
 

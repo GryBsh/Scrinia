@@ -67,7 +67,7 @@ public sealed class KaToolTests
 
         string result = await tools.Ka();
 
-        result.Should().Contain("1 chunk");
+        result.Should().Contain("1ch");
         result.Should().MatchRegex(@"\d+(\.\d+)? (B|KB|MB)");
     }
 
@@ -143,7 +143,7 @@ public sealed class KaToolTests
     }
 
     [Fact]
-    public async Task Ka_IncludesDescriptionSnippets()
+    public async Task Ka_IncludesMemoryNames()
     {
         using var scope = new TestHelpers.StoreScope();
         var tools = Tools();
@@ -153,34 +153,7 @@ public sealed class KaToolTests
 
         string result = await tools.Ka();
 
-        result.Should().Contain("OAuth2 authorization code flow with PKCE");
-    }
-
-    [Fact]
-    public async Task Ka_IncludesCreatedDate()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        var tools = Tools();
-
-        await tools.Store(["Content."], "notes", description: "Notes");
-
-        string result = await tools.Ka();
-
-        result.Should().MatchRegex(@"created \d{4}-\d{2}-\d{2}");
-    }
-
-    [Fact]
-    public async Task Ka_IncludesTagsWhenPresent()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        var tools = Tools();
-
-        await tools.Store(["Content."], "api:auth",
-            description: "Auth", tags: ["oauth", "security"]);
-
-        string result = await tools.Ka();
-
-        result.Should().Contain("[tags: oauth, security]");
+        result.Should().Contain("api:auth-flow");
     }
 
     [Fact]
@@ -194,8 +167,22 @@ public sealed class KaToolTests
 
         string result = await tools.Ka();
 
-        result.Should().Contain("[REVIEW:");
-        result.Should().Contain("when auth system changes");
+        result.Should().Contain("[review?]");
+    }
+
+    [Fact]
+    public async Task Ka_IncludesStaleMarkers()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var tools = Tools();
+
+        await tools.Store(["Content."], "api:auth",
+            description: "Auth", reviewAfter: "2020-01-01");
+
+        string result = await tools.Ka();
+
+        result.Should().Contain("[stale]");
+        result.Should().Contain("1 stale");
     }
 }
 
