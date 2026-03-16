@@ -157,6 +157,7 @@ internal static partial class ScriniaArtifactStore
         PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonSerializable(typeof(IndexFile))]
+    [JsonSerializable(typeof(ArtifactEntry))]
     private partial class StoreJsonContext : JsonSerializerContext;
 
     /// <summary>The resolved workspace root path (respects test overrides).</summary>
@@ -260,6 +261,40 @@ internal static partial class ScriniaArtifactStore
 
     private static List<ArtifactEntry> LoadIndexFrom(string storeDir)
     {
+        var entries = LoadEntriesFromSidecars(storeDir);
+
+        // Fallback: migrate from legacy index.json
+        if (entries.Count == 0)
+        {
+            entries = LoadEntriesFromLegacyIndex(storeDir);
+            if (entries.Count > 0)
+                WriteSidecars(entries, storeDir);
+        }
+
+        return entries;
+    }
+
+    private static List<ArtifactEntry> LoadEntriesFromSidecars(string storeDir)
+    {
+        if (!Directory.Exists(storeDir)) return [];
+
+        var entries = new List<ArtifactEntry>();
+        foreach (string metaFile in Directory.EnumerateFiles(storeDir, "*.meta.json"))
+        {
+            try
+            {
+                string json = File.ReadAllText(metaFile);
+                var entry = JsonSerializer.Deserialize<ArtifactEntry>(json, _jsonOptions);
+                if (entry is not null)
+                    entries.Add(entry);
+            }
+            catch { /* skip corrupt sidecar */ }
+        }
+        return entries;
+    }
+
+    private static List<ArtifactEntry> LoadEntriesFromLegacyIndex(string storeDir)
+    {
         string indexPath = Path.Combine(storeDir, "index.json");
         if (!File.Exists(indexPath)) return [];
 
@@ -275,23 +310,27 @@ internal static partial class ScriniaArtifactStore
         }
     }
 
+    private static void WriteSidecars(List<ArtifactEntry> entries, string storeDir)
+    {
+        foreach (var entry in entries)
+            WriteSidecar(entry, storeDir);
+    }
+
+    private static void WriteSidecar(ArtifactEntry entry, string storeDir)
+    {
+        string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
+        string json = JsonSerializer.Serialize(entry, _jsonOptions);
+        string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
+        File.WriteAllText(tmp, json);
+        File.Move(tmp, metaPath, overwrite: true);
+    }
+
     public static void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        SaveIndexUnsafe(entries, storeDir);
-    }
-
-    private static void SaveIndexUnsafe(List<ArtifactEntry> entries, string storeDir)
-    {
-        var idx = new IndexFile { Entries = entries };
-        string json = JsonSerializer.Serialize(idx, _jsonOptions);
-
-        string indexPath = Path.Combine(storeDir, "index.json");
-        string tmp = $"{indexPath}.{Environment.ProcessId}.tmp";
-        File.WriteAllText(tmp, json);
-        File.Move(tmp, indexPath, overwrite: true);
+        WriteSidecars(entries, storeDir);
     }
 
     public static void Upsert(ArtifactEntry entry, string scope = "local")
@@ -299,13 +338,7 @@ internal static partial class ScriniaArtifactStore
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        List<ArtifactEntry> entries = LoadIndexFrom(storeDir);
-        int idx = entries.FindIndex(e => e.Name == entry.Name);
-        if (idx >= 0)
-            entries[idx] = entry;
-        else
-            entries.Add(entry);
-        SaveIndexUnsafe(entries, storeDir);
+        WriteSidecar(entry, storeDir);
     }
 
     public static bool Remove(string name, string scope = "local")
@@ -313,11 +346,9 @@ internal static partial class ScriniaArtifactStore
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        List<ArtifactEntry> entries = LoadIndexFrom(storeDir);
-        int before = entries.Count;
-        entries.RemoveAll(e => e.Name == name);
-        if (entries.Count == before) return false;
-        SaveIndexUnsafe(entries, storeDir);
+        string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
+        if (!File.Exists(metaPath)) return false;
+        File.Delete(metaPath);
         return true;
     }
 
@@ -703,13 +734,8 @@ internal static partial class ScriniaArtifactStore
                 CreatedAt = DateTimeOffset.UtcNow
             };
 
-            int idx = existingEntries.FindIndex(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-            if (idx >= 0)
-                existingEntries[idx] = updatedEntry;
-            else
-                existingEntries.Add(updatedEntry);
+            // Write sidecar metadata
+            WriteSidecar(updatedEntry, storeDir);
         }
-
-        SaveIndexUnsafe(existingEntries, storeDir);
     }
 }

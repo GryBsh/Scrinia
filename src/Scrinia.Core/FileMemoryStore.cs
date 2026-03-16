@@ -159,6 +159,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonSerializable(typeof(IndexFile))]
+    [JsonSerializable(typeof(ArtifactEntry))]
     private partial class FileStoreJsonContext : JsonSerializerContext;
 
     public FileMemoryStore(string workspaceRoot)
@@ -286,6 +287,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public string ArtifactPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".nmp2");
 
+    internal string MetaPath(string name, string scope = "local") =>
+        Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".meta.json");
+
     public string ArtifactUri(string name, string scope = "local") =>
         $"file://{ArtifactPath(name, scope)}";
 
@@ -354,24 +358,85 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return cached.Entries.ToList();
 
         string storeDir = GetStoreDirForScope(scope);
+        var entries = LoadEntriesFromSidecars(storeDir);
+
+        // Fallback: migrate from legacy index.json if no sidecars found
+        if (entries.Count == 0)
+        {
+            entries = LoadEntriesFromLegacyIndex(storeDir);
+            if (entries.Count > 0)
+                WriteSidecars(entries, storeDir);
+        }
+
+        if (entries.Count > 0)
+            _indexCache[scope] = new CachedIndex(entries);
+
+        return entries.ToList();
+    }
+
+    private List<ArtifactEntry> LoadEntriesFromSidecars(string storeDir)
+    {
+        if (!Directory.Exists(storeDir)) return [];
+
+        var entries = new List<ArtifactEntry>();
+        foreach (string metaFile in Directory.EnumerateFiles(storeDir, "*.meta.json"))
+        {
+            try
+            {
+                string json = File.ReadAllText(metaFile);
+                var entry = JsonSerializer.Deserialize<ArtifactEntry>(json, _jsonOptions);
+                if (entry is not null)
+                    entries.Add(entry);
+            }
+            catch { /* skip corrupt sidecar */ }
+        }
+        return entries;
+    }
+
+    private static List<ArtifactEntry> LoadEntriesFromLegacyIndex(string storeDir)
+    {
         string indexPath = Path.Combine(storeDir, "index.json");
         if (!File.Exists(indexPath)) return [];
 
         try
         {
             string json = File.ReadAllText(indexPath);
-            var idx = JsonSerializer.Deserialize<IndexFile>(json, _jsonOptions);
-            var entries = idx?.Entries ?? [];
-
-            // Populate cache (safe even under read lock — ConcurrentDictionary handles races)
-            _indexCache[scope] = new CachedIndex(entries);
-
-            return entries.ToList();
+            var idx = System.Text.Json.JsonSerializer.Deserialize<IndexFile>(json,
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+                    TypeInfoResolver = FileStoreJsonContext.Default,
+                });
+            return idx?.Entries ?? [];
         }
         catch
         {
             return [];
         }
+    }
+
+    private void WriteSidecars(List<ArtifactEntry> entries, string storeDir)
+    {
+        foreach (var entry in entries)
+            WriteSidecar(entry, storeDir);
+    }
+
+    private void WriteSidecar(ArtifactEntry entry, string storeDir)
+    {
+        string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
+        string json = JsonSerializer.Serialize(entry, _jsonOptions);
+        string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
+        File.WriteAllText(tmp, json);
+        File.Move(tmp, metaPath, overwrite: true);
+    }
+
+    private void DeleteSidecar(string name, string storeDir)
+    {
+        string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
+        if (File.Exists(metaPath))
+            File.Delete(metaPath);
     }
 
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
@@ -394,13 +459,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
 
-        var idx = new IndexFile { Entries = entries };
-        string json = JsonSerializer.Serialize(idx, _jsonOptions);
-
-        string indexPath = Path.Combine(storeDir, "index.json");
-        string tmp = $"{indexPath}.{Environment.ProcessId}.tmp";
-        File.WriteAllText(tmp, json);
-        File.Move(tmp, indexPath, overwrite: true);
+        // Write per-artifact sidecar metadata files
+        WriteSidecars(entries, storeDir);
 
         // Update the in-memory cache
         _indexCache[scope] = new CachedIndex(entries);
@@ -417,26 +477,20 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         lk.EnterWriteLock();
         try
         {
-            // Invalidate cache under lock to pick up changes from other processes
+            string storeDir = GetStoreDirForScope(scope);
+            Directory.CreateDirectory(storeDir);
+
+            // Write the sidecar for this single entry
+            WriteSidecar(entry, storeDir);
+
+            // Invalidate cache and rebuild from sidecars
             _indexCache.TryRemove(scope, out _);
-            List<ArtifactEntry> entries = LoadIndexFromCacheOrDisk(scope);
+            var entries = LoadEntriesFromSidecars(storeDir);
+            _indexCache[scope] = new CachedIndex(entries);
 
-            // O(1) lookup via cached name dictionary
-            if (_indexCache.TryGetValue(scope, out var cached) &&
-                cached.NameToPosition.TryGetValue(entry.Name, out int pos))
-            {
-                entries[pos] = entry;
-            }
-            else
-            {
-                int idx = entries.FindIndex(e => e.Name == entry.Name);
-                if (idx >= 0)
-                    entries[idx] = entry;
-                else
-                    entries.Add(entry);
-            }
-
-            SaveIndexUnsafe(entries, scope);
+            // Invalidate topic discovery cache when saving a topic scope
+            if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+                _cachedTopics = null;
         }
         finally
         {
@@ -451,24 +505,19 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         lk.EnterWriteLock();
         try
         {
-            // Invalidate cache under lock to pick up changes from other processes
+            string storeDir = GetStoreDirForScope(scope);
+            string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
+
+            if (!File.Exists(metaPath))
+                return false;
+
+            // Delete the sidecar file
+            File.Delete(metaPath);
+
+            // Invalidate cache and rebuild from remaining sidecars
             _indexCache.TryRemove(scope, out _);
-            List<ArtifactEntry> entries = LoadIndexFromCacheOrDisk(scope);
-            int before = entries.Count;
-
-            // O(1) lookup via cached name dictionary
-            if (_indexCache.TryGetValue(scope, out var cached) &&
-                cached.NameToPosition.TryGetValue(name, out int pos))
-            {
-                entries.RemoveAt(pos);
-            }
-            else
-            {
-                entries.RemoveAll(e => e.Name == name);
-            }
-
-            if (entries.Count == before) return false;
-            SaveIndexUnsafe(entries, scope);
+            var entries = LoadEntriesFromSidecars(storeDir);
+            _indexCache[scope] = new CachedIndex(entries);
             return true;
         }
         finally
@@ -487,19 +536,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return cached.Entries.ToList();
 
         string storeDir = GetStoreDirForScope(scope);
-        string indexPath = Path.Combine(storeDir, "index.json");
-        if (!File.Exists(indexPath)) return [];
+        var entries = LoadEntriesFromSidecars(storeDir);
 
-        try
+        // Fallback: migrate from legacy index.json
+        if (entries.Count == 0)
         {
-            string json = File.ReadAllText(indexPath);
-            var idx = JsonSerializer.Deserialize<IndexFile>(json, _jsonOptions);
-            return idx?.Entries ?? [];
+            entries = LoadEntriesFromLegacyIndex(storeDir);
+            if (entries.Count > 0)
+                WriteSidecars(entries, storeDir);
         }
-        catch
-        {
-            return [];
-        }
+
+        return entries;
     }
 
     // ── Artifact file I/O ────────────────────────────────────────────────────
