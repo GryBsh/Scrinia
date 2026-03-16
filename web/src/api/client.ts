@@ -69,6 +69,12 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(msg);
   }
 
+  // Guard against SPA fallback returning HTML for missing API routes
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(`Expected JSON but got ${contentType || 'unknown content type'} — endpoint may not exist`);
+  }
+
   return response.json();
 }
 

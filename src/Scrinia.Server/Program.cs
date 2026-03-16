@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using ModelContextProtocol.Server;
 using Scalar.AspNetCore;
 using Scrinia.Core;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.Plugin.Abstractions;
@@ -85,6 +86,58 @@ foreach (var plugin in loadedPlugins)
 
     if (plugin is IMemoryOperationHook hook)
         builder.Services.AddSingleton(hook);
+}
+
+// Built-in Model2Vec embeddings — registered unless a plugin already provides ISearchScoreContributor
+bool pluginProvidesEmbeddings = loadedPlugins.Any(p => p is ISearchScoreContributor);
+if (!pluginProvidesEmbeddings)
+{
+    try
+    {
+        string modelsDir = Path.Combine(AppContext.BaseDirectory, "models");
+        string embeddingsDir = Path.Combine(dataDir, "embeddings");
+        Directory.CreateDirectory(embeddingsDir);
+
+        var embeddingOptions = new EmbeddingOptions();
+        var weightStr = builder.Configuration["Scrinia:Embeddings:SemanticWeight"];
+        if (weightStr is not null && double.TryParse(weightStr, out double w))
+            embeddingOptions.SemanticWeight = w;
+
+        var embeddingProvider = EmbeddingProviderFactory.Create(
+            embeddingOptions, modelsDir,
+            loggerFactory.CreateLogger("Scrinia.Embeddings"));
+
+        if (embeddingProvider.IsAvailable)
+        {
+            var vectorStore = new VectorStore(embeddingsDir);
+            builder.Services.AddSingleton(embeddingProvider);
+            builder.Services.AddSingleton(vectorStore);
+            builder.Services.AddSingleton(sp =>
+                new BuiltInEmbeddingsService(
+                    sp.GetRequiredService<IEmbeddingProvider>(),
+                    sp.GetRequiredService<VectorStore>(),
+                    embeddingOptions.SemanticWeight,
+                    sp.GetRequiredService<ILogger<BuiltInEmbeddingsService>>()));
+            builder.Services.AddSingleton<ISearchScoreContributor>(sp =>
+                sp.GetRequiredService<BuiltInEmbeddingsService>());
+            builder.Services.AddSingleton<IMemoryEventSink>(sp =>
+                sp.GetRequiredService<BuiltInEmbeddingsService>());
+            builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
+                sp.GetRequiredService<BuiltInEmbeddingsService>());
+
+            bootLogger.LogInformation("Built-in embeddings ready (provider={Provider}, dims={Dims})",
+                embeddingProvider.GetType().Name, embeddingProvider.Dimensions);
+        }
+        else
+        {
+            bootLogger.LogInformation("Built-in embeddings not available (provider={Provider}). Run 'scri setup' to download the model.",
+                embeddingProvider.GetType().Name);
+        }
+    }
+    catch (Exception ex)
+    {
+        bootLogger.LogWarning(ex, "Failed to initialize built-in embeddings");
+    }
 }
 
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
@@ -292,6 +345,48 @@ app.MapHealthEndpoints();
 var pluginGroup = app.MapGroup("/api/v1/plugins");
 foreach (var plugin in loadedPlugins)
     plugin.MapEndpoints(pluginGroup);
+
+// Built-in embeddings endpoints (if no plugin provides them)
+if (!pluginProvidesEmbeddings)
+{
+    var embGroup = pluginGroup.MapGroup("/embeddings");
+
+    embGroup.MapGet("/status", (HttpContext ctx) =>
+    {
+        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
+        if (svc is null)
+            return Results.Ok(new { provider = "none", available = false, dimensions = 0, semanticWeight = 0.0, vectorCount = 0, hardware = "" });
+        return Results.Ok(new { provider = svc.ProviderName, available = svc.IsAvailable, dimensions = svc.Dimensions, semanticWeight = svc.SemanticWeight, vectorCount = svc.TotalVectorCount, hardware = "CPU" });
+    });
+
+    embGroup.MapGet("/settings", (HttpContext ctx) =>
+    {
+        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
+        if (svc is null)
+            return Results.Ok(new { provider = "none", semanticWeight = 0.0, maxBatchSize = 1 });
+        return Results.Ok(new { provider = svc.ProviderName, semanticWeight = svc.SemanticWeight, maxBatchSize = 1 });
+    });
+
+    embGroup.MapPost("/reindex", async (HttpContext ctx, CancellationToken ct) =>
+    {
+        var svc = ctx.RequestServices.GetService<BuiltInEmbeddingsService>();
+        if (svc is null || !svc.IsAvailable)
+            return Results.BadRequest(new { error = "Embedding provider is not available." });
+
+        var store = MemoryStoreContext.Current;
+        if (store is null)
+        {
+            // Resolve from request context
+            var reqCtx = ctx.RequestServices.GetRequiredService<RequestContext>();
+            store = reqCtx.Store;
+        }
+        if (store is null)
+            return Results.BadRequest(new { error = "No store context available." });
+
+        int count = await svc.ReindexStoreAsync(store, ct);
+        return Results.Ok(new { message = $"Reindexed {count} memories." });
+    });
+}
 
 app.MapOpenApi();
 app.MapScalarApiReference();

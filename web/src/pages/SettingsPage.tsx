@@ -52,6 +52,10 @@ export default function SettingsPage() {
 
   const isLoading = statusLoading || settingsLoading
   const error = statusError || settingsError
+  const pluginNotInstalled = error && (
+    (error as Error).message.includes('endpoint may not exist') ||
+    (error as Error).message.includes('HTTP 404')
+  )
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -60,7 +64,17 @@ export default function SettingsPage() {
       <h3 className="text-lg font-medium mb-4">Embeddings</h3>
 
       {isLoading && <p className="text-gray-500 text-sm">Loading...</p>}
-      {error && (
+      {pluginNotInstalled && (
+        <div className="bg-gray-50 border rounded-lg p-4 mb-4">
+          <p className="text-gray-600 text-sm">
+            Embeddings plugin is not installed. Semantic search uses built-in BM25 scoring.
+          </p>
+          <p className="text-gray-400 text-xs mt-1">
+            Install the embeddings plugin to enable vector-based semantic search.
+          </p>
+        </div>
+      )}
+      {error && !pluginNotInstalled && (
         <p className="text-red-500 text-sm mb-4">
           Error: {(error as Error).message}
         </p>
