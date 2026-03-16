@@ -393,7 +393,8 @@ When you overwrite an existing memory, the previous version is archived:
 Flag memories that may become stale:
 - `store(content, "api:endpoints", reviewAfter="2026-06-01")` — date-based
 - `store(content, "auth:flow", reviewWhen="when auth system changes")` — condition-based
-- `list()` shows `[stale]` or `[review?]` markers
+- `list()` summary includes stale/review counts
+- `list(mode="full")` shows `[stale]` or `[review?]` markers per entry
 
 ### Budget tracking
 Monitor how much context you're consuming:
@@ -410,10 +411,22 @@ Export topics as portable .scrinia-bundle files:
 3. `import("path/to/bundle.scrinia-bundle")` — restores all topics
 Useful for sharing team conventions, API patterns, or onboarding knowledge.
 
+### Context preservation (~checkpoints)
+Long conversations get compressed by your host platform. Use ephemeral checkpoints to survive:
+- Before a large task or after a milestone: `store(["Task: ...\nKey findings: ...\nNext steps: ..."], "~checkpoint")`
+- After context compaction: `list(scopes="ephemeral")` then `show("~checkpoint")`
+- Update as you make progress — overwrite with fresh state
+
+### Workspace changes
+Scrinia tools (store, append, forget, import, copy) write to the `.scrinia/` directory.
+These file changes are a direct result of your tool calls — treat them as changes you made.
+Include `.scrinia/` changes in your commits alongside other project changes.
+
 ### When to store vs. not store
 **Store:** stable patterns, architectural decisions, API conventions,
 solutions to recurring problems, project-specific knowledge.
 **Don't store:** session-specific state (use ~ephemeral instead).
+**Exception:** use `~checkpoint` to preserve working context across context compactions.
 
 ## Known Pitfalls
 
