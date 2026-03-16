@@ -205,7 +205,7 @@ var contributor = SearchContributorContext.Current ?? SearchContributorContext.D
 ## Output Rendering
 
 The CLI uses Spectre.Console for rich terminal output:
-- Tables with colors for `list` and `search` results
+- Tables with colors for `list` and `search` results (bypassed when `--json` is used)
 - Progress bars for `setup` (model download)
 - Formatted memory content for `show`
 - Markup for status messages
@@ -223,14 +223,18 @@ dotnet publish src/Scrinia/Scrinia.csproj -c Release -r win-x64 --self-contained
 ### Trimming Safety
 
 The CLI is safe for trimming because:
-- All JSON serialization uses source-gen contexts (`StoreJsonContext`, `BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`)
+- All JSON serialization uses source-gen contexts (`StoreJsonContext`, `BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`, `CliJsonContext`)
 - ConsoleAppFramework v5 is source-generated (no reflection)
 - No dynamic assembly loading (plugins are child processes)
 - `InternalsVisibleTo` for test access only
 
+## JSON CLI Output
+
+All CLI commands support a `--json` flag for machine-readable JSON output. A source-generated `CliJsonContext` ensures trimming safety. When `--json` is passed, Spectre.Console rendering is bypassed and structured JSON is written to stdout instead.
+
 ## Test Coverage
 
-449 tests in `Scrinia.Tests` covering:
+460 tests in `Scrinia.Tests` covering:
 - All 18 MCP tools
 - Store operations and edge cases
 - Search ranking and scoring

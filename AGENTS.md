@@ -42,10 +42,11 @@ E:/source/repos/Scrinia/
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
-        ScriniaCommands.cs        <- all 11 CLI commands as public methods (ConsoleAppFramework source-gen)
+        ScriniaCommands.cs        <- all 11 CLI commands as public methods (ConsoleAppFramework source-gen, all support --json)
         WorkspaceSetup.cs         <- shared --workspace-root configuration + plugin loading helper
         WorkspaceConfig.cs        <- .scrinia/config.json I/O (Load/Save/Get/Set/Unset)
         ConfigJsonContext.cs      <- trim-safe JSON context for config file
+        CliJsonContext.cs         <- trim-safe JSON context for --json CLI output
       Mcp/
         ScriniaArtifactStore.cs   <- memory store (local, topic, ephemeral scopes; static class)
       Services/
@@ -102,7 +103,7 @@ E:/source/repos/Scrinia/
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 449 tests (8 skipped without model download)
+    Scrinia.Tests/                <- xunit + FluentAssertions, 460 tests (8 skipped without model download)
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
       Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
@@ -235,7 +236,7 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `get_chunk` | GetChunk() | Decode one chunk (1-based); records budget |
 | `show` | Show() | Unpack artifact to original text; records budget |
 | `store` | Store() | Compress + persist; content[] for agent-directed chunking, keywords, review |
-| `list` | List() | Formatted table with ~tokens column and review markers |
+| `list` | List() | Summary mode (default): topics, keywords, stats. Full mode: paginated table with ~tokens and review markers. `list(mode="full", offset=0, limit=50)` |
 | `search` | Search() | BM25 + weighted field hybrid search with ~tokens; returns entry/chunk/topic results |
 | `copy` | Copy() | Copy between scopes (ephemeral promotion supported) |
 | `forget` | Forget() | Delete memory |
@@ -283,6 +284,7 @@ Instance-based `IMemoryStore` implementation in `Scrinia.Core`. Takes `workspace
 Key safety features:
 - **Path traversal protection**: `SanitizeName` strips `..`, `/`, `\` sequences and applies `Path.GetFileName()` as final safety net.
 - **Index locking**: `ConcurrentDictionary<string, ReaderWriterLockSlim>` provides per-scope reader/writer locks (concurrent reads, serialized writes). Write operations use atomic rename for crash safety.
+- **Cross-process file locking**: `FileLock` class (`Scrinia.Core`) provides OS-enforced shared/exclusive file locks with retry and exponential backoff. Both `FileMemoryStore` and `ScriniaArtifactStore` use per-scope `.lock` files (e.g., `.scrinia/store/.lock`, `.scrinia/topics/{topic}/.lock`) to coordinate access across multiple processes. Unique `.tmp` filenames use PID-based suffixes to prevent temp file collisions.
 - **CachedIndex**: Wraps `IndexFile` with O(1) name→position lookup (`NameToPosition` dict) and lazily computed BM25 `CorpusStats`.
 - **Artifact LRU cache**: 50 MB bounded LRU cache for decoded artifact content (O(1) access via `Dictionary` + `LinkedList`).
 
@@ -333,7 +335,8 @@ Use `~` prefix for in-session working state that shouldn't persist:
 Group related memories by topic for easy discovery:
 - `store(content, "api:auth-flow")` — API topic, auth-flow entry
 - `store(content, "arch:decisions")` — architecture decisions
-- `list(scopes="api")` — list only the api topic
+- `list(scopes="api")` — list only the api topic (summary mode by default)
+- `list(mode="full", offset=0, limit=50)` — paginated full listing
 - `search("auth", scopes="api")` — search within a topic
 Topics appear automatically when you use the colon syntax.
 
@@ -471,6 +474,27 @@ Config resolution order (highest priority first):
 
 The `plugins:embeddings` setting controls which plugin executable is used for embeddings (default: `scri-plugin-embeddings`).
 
+### JSON CLI output
+
+All CLI commands support a `--json` flag that outputs structured JSON instead of Spectre.Console formatted text. JSON types are defined in `CliJsonContext.cs` (source-gen for trim safety):
+
+- `CliListOutput` / `CliListSummaryOutput` — list command output (full vs summary mode)
+- `CliScopeEntry` / `CliMemoryEntry` — scope and memory entry data
+- `CliSearchOutput` / `CliSearchResult` — search results
+- `CliShowOutput` — memory content
+- `CliStoreOutput` / `CliForgetOutput` — store/forget confirmations
+- `CliExportOutput` / `CliImportOutput` / `CliBundleOutput` — bundle operations
+- `CliConfigOutput` — config values
+- `CliErrorOutput` — error responses
+
+### CLI list command
+
+The `list` command supports these flags:
+- `--summary` — summary mode (topics, keywords, stats; matches MCP default behavior)
+- `--offset N` — skip first N entries (full mode only)
+- `--limit N` — max entries to return (full mode only, default 50)
+- `--json` — JSON output
+
 ### Index serialization
 
 `_jsonOptions` uses `DefaultIgnoreCondition = WhenWritingNull` to keep index files lean. v2 indexes load cleanly (null fields).
@@ -478,7 +502,7 @@ The `plugins:embeddings` setting controls which plugin executable is used for em
 ## Running Tests
 
 ```bash
-# CLI + MCP + embeddings tests (449 tests, 8 skipped without model download)
+# CLI + MCP + embeddings tests (460 tests, 8 skipped without model download)
 cd E:\source\repos\Scrinia\tests\Scrinia.Tests
 dotnet test
 
@@ -491,7 +515,7 @@ cd E:\source\repos\Scrinia\tests\Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 514 tests total (449 + 53 + 12), 8 skipped (Model2Vec/BertTokenizer model download required).
+Expected: 525 tests total (460 + 53 + 12), 8 skipped (Model2Vec/BertTokenizer model download required).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 

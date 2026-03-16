@@ -385,7 +385,7 @@ Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-
 
 ## Testing
 
-449 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
+460 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
 - VectorStore: SVF2 format, upsert, remove, compaction, scope isolation
 - VectorIndex: SIMD cosine similarity, search ranking
 - HnswIndex: Insert, search, remove, persistence, large-scale behavior

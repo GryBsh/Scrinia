@@ -168,7 +168,7 @@ When connected via MCP, Scrinia exposes 18 tools:
 | `store` | Compress and persist text as a named memory |
 | `show` | Retrieve and decode a memory's full content |
 | `append` | Add a chunk to an existing memory |
-| `list` | Inventory all memories with metadata |
+| `list` | Summary of memories (default) or paginated full listing |
 | `search` | Hybrid BM25 + semantic search across memories |
 | `forget` | Delete a memory |
 | `copy` | Copy a memory between scopes |

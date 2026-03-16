@@ -51,7 +51,7 @@ Scrinia.sln (11 projects)
     Scrinia.Plugin.Embeddings/       Optional Vulkan GPU acceleration (LLamaSharp)
     Scrinia.Plugin.Embeddings.Cli/   CLI plugin executable (Vulkan MCP server)
   tests/
-    Scrinia.Tests/                   449 tests (CLI + MCP + Core + Embeddings)
+    Scrinia.Tests/                   460 tests (CLI + MCP + Core + Embeddings)
     Scrinia.Server.Tests/            53 tests (HTTP API)
     Scrinia.Plugin.Embeddings.Tests/ 12 tests (Vulkan plugin CLI + benchmarks)
   web/                               React 19 + Vite + Tailwind CSS SPA

@@ -303,12 +303,24 @@ internal sealed class CachedIndex
 - Keys include modification timestamp for staleness detection
 - Cache miss reads from filesystem and populates cache
 
+### Cross-Process File Locking
+
+`FileLock` in `Scrinia.Core` provides OS-enforced shared/exclusive file locks for safe multi-process access. Per-scope `.lock` files (`.scrinia/store/.lock`, `.scrinia/topics/{topic}/.lock`) prevent concurrent index corruption when multiple CLI processes (or a CLI and a server) access the same workspace.
+
+- **Shared locks** for reads (multiple readers allowed)
+- **Exclusive locks** for writes (single writer, no readers)
+- Exponential backoff retry on contention
+- Unique PID-based `.tmp` filenames prevent write collisions
+
+Both `FileMemoryStore` and `ScriniaArtifactStore` use file locks for all index and artifact operations.
+
 ### Concurrency
 
-- Per-scope `ReaderWriterLockSlim` for index CRUD
+- Per-scope `ReaderWriterLockSlim` for in-process index CRUD
 - Per-scope `CachedIndex` invalidated on write
 - `ConcurrentDictionary` for ephemeral store, scope locks, scope caches
 - Topic discovery cache with 2-second TTL
+- Cross-process `FileLock` for filesystem-level coordination
 
 ### Version Archiving
 
@@ -407,5 +419,6 @@ All serialized types use source-generated `JsonSerializerContext` for trimming s
 | `ServerJsonContext` | Server | API request/response DTOs |
 | `ConfigJsonContext` | CLI | Workspace config file |
 | `PluginClientJsonContext` | CLI | Plugin MCP communication |
+| `CliJsonContext` | CLI | `--json` CLI output |
 
 Without source-gen contexts, the trimmed CLI binary silently fails to serialize/deserialize.

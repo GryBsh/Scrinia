@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 18 MCP tools for agents to remember, search, and share knowledge across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 18 MCP tools for agents to remember, search, and share knowledge across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -118,7 +118,9 @@ For HTTP transport via the API server, see [Server Administration](docs/server-a
 scri serve                          # start MCP server (stdio)
 scri store notes ./notes.md         # store a file as memory
 scri store api:auth ./auth.md       # store under a topic
-scri list                           # list all memories
+scri list                           # list summary (topics, keywords, stats)
+scri list --summary=false           # list all memories (full listing)
+scri list --offset 0 --limit 50    # paginated full listing
 scri search "auth"                  # hybrid BM25 + semantic search
 scri show api:auth                  # display memory content
 scri forget api:auth                # delete a memory
@@ -131,7 +133,7 @@ scri config plugins:embeddings      # get a setting
 scri config plugins:embeddings val  # set a setting
 ```
 
-All commands accept `--workspace-root` to override the workspace directory.
+All commands accept `--workspace-root` to override the workspace directory and `--json` for machine-parseable JSON output.
 
 ## Memory naming
 
@@ -150,7 +152,7 @@ All commands accept `--workspace-root` to override the workspace directory.
 | `guide` | Session playbook (call once per session) |
 | `store` / `append` | Persist or incrementally add to memories |
 | `show` / `get_chunk` | Retrieve full content or individual chunks |
-| `list` / `search` | Browse and search with BM25 + semantic scoring |
+| `list` / `search` | Browse (summary by default) and search with BM25 + semantic scoring |
 | `copy` / `forget` | Move between scopes or delete |
 | `export` / `import` | Portable .scrinia-bundle files |
 | `encode` / `chunk_count` | Low-level NMP/2 encoding |
@@ -177,7 +179,7 @@ All commands accept `--workspace-root` to override the workspace directory.
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 449 CLI + MCP + embeddings tests
+dotnet test tests/Scrinia.Tests             # 460 CLI + MCP + embeddings tests
 dotnet test tests/Scrinia.Server.Tests      # 53 server tests
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
 ```

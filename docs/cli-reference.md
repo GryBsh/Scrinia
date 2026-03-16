@@ -24,11 +24,19 @@ scri serve --remote http://localhost:5000 --api-key <key> [--store default]
 
 ### scri list
 
-List all stored memories with chunk counts, sizes, token estimates, and review markers.
+List stored memories. Defaults to summary mode (topics, keywords, stats). Use `--summary false` for the full table with chunk counts, sizes, token estimates, and review markers.
 
 ```bash
 scri list [--workspace-root <path>] [--scopes local,api,ephemeral]
+    [--summary] [--offset 0] [--limit 50] [--json]
 ```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--summary` | `true` | Show summary view (topics, keywords, stats) instead of full table |
+| `--offset` | `0` | Skip this many entries (for pagination) |
+| `--limit` | `50` | Maximum entries to return |
+| `--json` | `false` | Output as JSON |
 
 ### scri search
 
@@ -131,6 +139,16 @@ scri config --unset <key>                # Remove a setting
 scri config plugins:embeddings my-custom-plugin
 scri config Scrinia:Embeddings:Provider ollama
 scri config Scrinia:Embeddings:OllamaModel nomic-embed-text
+```
+
+## JSON Output
+
+All CLI commands support a `--json` flag for machine-readable JSON output. This uses a source-generated `CliJsonContext` for trimming safety.
+
+```bash
+scri list --json
+scri search "auth" --json
+scri show api:auth-flow --json
 ```
 
 ## Workspace
