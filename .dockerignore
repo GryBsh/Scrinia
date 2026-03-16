@@ -4,8 +4,8 @@
 .vscode/
 .scrinia/
 archive/
-bin/
-obj/
+**/bin/
+**/obj/
 build/
 publish/
 TestResults/
