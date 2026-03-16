@@ -253,7 +253,7 @@ public sealed class VectorStore : IDisposable
         string path = GetFilePath(scope);
         string dir = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
-        string tmp = path + ".tmp";
+        string tmp = $"{path}.{Environment.ProcessId}.tmp";
 
         await using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
         await using (var writer = new BinaryWriter(fs))

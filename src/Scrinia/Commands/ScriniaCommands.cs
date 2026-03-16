@@ -17,6 +17,17 @@ namespace Scrinia.Commands;
 
 public class ScriniaCommands
 {
+    private static void WriteJson<T>(T value, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
+    {
+        Console.Write(JsonSerializer.Serialize(value, typeInfo));
+        Console.WriteLine();
+    }
+
+    private static void WriteJsonError(string message)
+    {
+        WriteJson(new CliErrorOutput(message), CliJsonContext.Default.CliErrorOutput);
+    }
+
     /// <summary>Start the MCP server (stdio transport for Claude Desktop / Claude Code).</summary>
     /// <param name="workspaceRoot">Workspace root for local memory store. Defaults to current working directory.</param>
     /// <param name="remote">Scrinia.Server URL for remote mode (e.g. http://localhost:5000).</param>
@@ -69,18 +80,67 @@ public class ScriniaCommands
     /// <summary>List stored memories.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="scopes">Comma-separated scopes to list (e.g. local,api,ephemeral).</param>
-    public Task<int> List(string? workspaceRoot = null, string? scopes = null)
+    /// <param name="summary">Show summary (topics, keywords, stats) instead of full table.</param>
+    /// <param name="offset">Starting index for paginated output (0-based).</param>
+    /// <param name="limit">Maximum entries to show (0 = unlimited).</param>
+    /// <param name="json">Output as JSON instead of a table.</param>
+    public Task<int> List(string? workspaceRoot = null, string? scopes = null,
+        bool summary = false, int offset = 0, int limit = 0, bool json = false)
     {
         WorkspaceSetup.Configure(workspaceRoot);
 
         var entries = ScriniaArtifactStore.ListScoped(scopes);
         if (entries.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No memories stored.[/]");
+            if (json)
+                WriteJson(new CliListOutput([], 0, null), CliJsonContext.Default.CliListOutput);
+            else
+                AnsiConsole.MarkupLine("[yellow]No memories stored.[/]");
             return Task.FromResult(0);
         }
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
+
+        if (summary)
+        {
+            var summaryData = BuildCliSummary(entries, json);
+            if (json)
+                WriteJson(summaryData, CliJsonContext.Default.CliListSummaryOutput);
+            else
+                AnsiConsole.Write(new Markup(summaryData.Rendered!));
+            return Task.FromResult(0);
+        }
+
+        // Apply pagination
+        int total = entries.Count;
+        if (offset > 0) entries = entries.Skip(offset).ToList();
+        if (limit > 0) entries = entries.Take(limit).ToList();
+
+        if (json)
+        {
+            var items = entries.Select(item =>
+            {
+                var e = item.Entry;
+                string name = item.Scope == "ephemeral"
+                    ? $"~{e.Name}"
+                    : ScriniaArtifactStore.FormatQualifiedName(item.Scope, e.Name);
+                bool isStale = e.ReviewAfter.HasValue && e.ReviewAfter.Value <= DateTimeOffset.UtcNow;
+                bool needsReview = !isStale && !string.IsNullOrEmpty(e.ReviewWhen);
+                return new CliMemoryEntry(
+                    name, e.ChunkCount, e.OriginalBytes, (int)(e.OriginalBytes / 4),
+                    e.CreatedAt.ToString("o"), e.UpdatedAt?.ToString("o"),
+                    e.Description, e.Tags, e.ReviewAfter?.ToString("o"), e.ReviewWhen,
+                    isStale, needsReview);
+            }).ToArray();
+            WriteJson(new CliListOutput(items, total, null), CliJsonContext.Default.CliListOutput);
+            return Task.FromResult(0);
+        }
+
+        if (offset > 0 || limit > 0)
+        {
+            int showEnd = offset + entries.Count;
+            AnsiConsole.MarkupLine($"[dim]Showing {offset + 1}-{showEnd} of {total} memories.[/]");
+        }
 
         var table = new Table()
             .Border(TableBorder.Rounded)
@@ -124,12 +184,91 @@ public class ScriniaCommands
         return Task.FromResult(0);
     }
 
+    private static CliListSummaryOutput BuildCliSummary(List<ScopedArtifact> entries, bool forJson)
+    {
+        long totalBytes = entries.Sum(e => e.Entry.OriginalBytes);
+        int totalTokens = (int)(totalBytes / 4);
+        int staleCount = entries.Count(e => e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow);
+        int reviewCount = entries.Count(e => !string.IsNullOrEmpty(e.Entry.ReviewWhen)
+            && !(e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow));
+        int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
+
+        var grouped = entries
+            .Where(e => e.Scope != "ephemeral")
+            .GroupBy(e => MemoryNaming.FormatScopeLabel(e.Scope))
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        int topicCount = grouped.Count(g => g.Key != "local");
+
+        // Build scopes list
+        var scopeEntries = grouped.Select(g =>
+        {
+            string label = g.Key == "local" ? "local" : $"topic:{g.Key}";
+            return new CliScopeEntry(label, g.Count(), g.Sum(e => e.Entry.OriginalBytes));
+        }).ToList();
+        if (ephemeralCount > 0)
+            scopeEntries.Add(new CliScopeEntry("ephemeral", ephemeralCount, entries.Where(e => e.Scope == "ephemeral").Sum(e => e.Entry.OriginalBytes)));
+
+        // Top keywords
+        var keywordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in entries)
+        {
+            if (item.Entry.Keywords is { Length: > 0 })
+                foreach (var kw in item.Entry.Keywords)
+                    keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
+            if (item.Entry.Tags is { Length: > 0 })
+                foreach (var tag in item.Entry.Tags)
+                    keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
+        }
+        var topKeywords = keywordCounts
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .Select(kv => kv.Key)
+            .ToArray();
+
+        // Build rendered text for CLI display
+        string? rendered = null;
+        if (!forJson)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"[bold]Memory Summary[/]");
+            sb.AppendLine($"[blue]{entries.Count} memories[/] — {ScriniaMcpTools.FormatBytes(totalBytes)} (~{totalTokens:N0} tokens)");
+            var parts = new List<string>();
+            if (topicCount > 0) parts.Add($"{topicCount} topic{(topicCount == 1 ? "" : "s")}");
+            if (ephemeralCount > 0) parts.Add($"{ephemeralCount} ephemeral");
+            if (staleCount > 0) parts.Add($"[red]{staleCount} stale[/]");
+            if (reviewCount > 0) parts.Add($"[yellow]{reviewCount} need review[/]");
+            if (parts.Count > 0) sb.AppendLine(string.Join(" · ", parts));
+            sb.AppendLine();
+            sb.AppendLine("[bold]Scopes[/]");
+            foreach (var scope in scopeEntries)
+                sb.AppendLine($"  [dim]•[/] [green]{Markup.Escape(scope.Name)}[/] — {scope.Count} {(scope.Count == 1 ? "memory" : "memories")}, {ScriniaMcpTools.FormatBytes(scope.TotalBytes)}");
+            if (topKeywords.Length > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("[bold]Top keywords[/]");
+                sb.AppendLine($"  {Markup.Escape(string.Join(", ", topKeywords))}");
+            }
+            rendered = sb.ToString();
+        }
+
+        return new CliListSummaryOutput(
+            entries.Count, totalBytes, totalTokens, topicCount, ephemeralCount,
+            staleCount, reviewCount,
+            scopeEntries.ToArray(),
+            topKeywords.Length > 0 ? topKeywords : null,
+            rendered);
+    }
+
     /// <summary>Search memories.</summary>
     /// <param name="query">Search term to match against memory names and descriptions.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral).</param>
     /// <param name="limit">Maximum results to return.</param>
-    public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, CancellationToken cancellationToken = default)
+    /// <param name="json">Output as JSON instead of a table.</param>
+    public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, bool json = false, CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
@@ -137,7 +276,32 @@ public class ScriniaCommands
         var matches = ScriniaArtifactStore.SearchAll(query, scopes, limit);
         if (matches.Count == 0)
         {
-            AnsiConsole.MarkupLine("[yellow]No matching memories found.[/]");
+            if (json)
+                WriteJson(new CliSearchOutput([], 0, query), CliJsonContext.Default.CliSearchOutput);
+            else
+                AnsiConsole.MarkupLine("[yellow]No matching memories found.[/]");
+            return 0;
+        }
+
+        if (json)
+        {
+            var results = matches.Select<SearchResult, CliSearchResult>(match => match switch
+            {
+                ChunkEntryResult cr => new CliSearchResult("chunk",
+                    cr.ParentItem.Scope == "ephemeral" ? $"~{cr.ParentItem.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
+                    cr.Score, (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4),
+                    cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description,
+                    cr.Chunk.ChunkIndex, cr.TotalChunks),
+                EntryResult er => new CliSearchResult("entry",
+                    er.Item.Scope == "ephemeral" ? $"~{er.Item.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
+                    er.Score, (int)(er.Item.Entry.OriginalBytes / 4),
+                    er.Item.Entry.Description, null, null),
+                TopicResult tr => new CliSearchResult("topic",
+                    ScriniaArtifactStore.FormatScopeLabel(tr.Scope),
+                    tr.Score, 0, tr.Description, null, null),
+                _ => new CliSearchResult("unknown", "", 0, 0, "", null, null),
+            }).ToArray();
+            WriteJson(new CliSearchOutput(results, results.Length, query), CliJsonContext.Default.CliSearchOutput);
             return 0;
         }
 
@@ -198,6 +362,7 @@ public class ScriniaCommands
     /// <param name="keywords">-k, Comma-separated keywords for search.</param>
     /// <param name="reviewAfter">ISO 8601 date after which this memory should be reviewed.</param>
     /// <param name="reviewWhen">Free-text condition for when this memory should be reviewed.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
     public async Task<int> Store(
         [Argument] string name,
         [Argument] string? file = null,
@@ -207,6 +372,7 @@ public class ScriniaCommands
         string? keywords = null,
         string? reviewAfter = null,
         string? reviewWhen = null,
+        bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -217,6 +383,7 @@ public class ScriniaCommands
         {
             if (!Console.IsInputRedirected)
             {
+                if (json) { WriteJsonError("No file specified and stdin is not redirected."); return 1; }
                 AnsiConsole.MarkupLine("[red]Error:[/] No file specified and stdin is not redirected.");
                 AnsiConsole.MarkupLine("Usage: scri store <name> <file> or pipe content via stdin.");
                 return 1;
@@ -227,6 +394,7 @@ public class ScriniaCommands
         {
             if (!File.Exists(file))
             {
+                if (json) { WriteJsonError($"File not found: {file}"); return 1; }
                 AnsiConsole.MarkupLine($"[red]Error:[/] File not found: {Markup.Escape(file)}");
                 return 1;
             }
@@ -241,7 +409,19 @@ public class ScriniaCommands
         var tools = new ScriniaMcpTools();
         string result = await tools.Store([content], name, description ?? "", tagArray,
             keywordArray, reviewAfter, reviewWhen, cancellationToken: cancellationToken);
-        AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
+
+        if (json)
+        {
+            var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName(name);
+            string qualifiedName = ScriniaArtifactStore.FormatQualifiedName(scope, subject);
+            long bytes = System.Text.Encoding.UTF8.GetByteCount(content);
+            WriteJson(new CliStoreOutput(qualifiedName, 1, bytes, result),
+                CliJsonContext.Default.CliStoreOutput);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
+        }
         return 0;
     }
 
@@ -249,10 +429,12 @@ public class ScriniaCommands
     /// <param name="name">Memory name to display (e.g. 'session-notes', 'api:auth-flow', '~scratch').</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="output">-o, Write output to a file instead of stdout.</param>
+    /// <param name="json">Output as JSON instead of raw text.</param>
     public async Task<int> Show(
         [Argument] string name,
         string? workspaceRoot = null,
         string? output = null,
+        bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -262,8 +444,15 @@ public class ScriniaCommands
 
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {
+            if (json) { WriteJsonError(result); return 1; }
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
             return 1;
+        }
+
+        if (json)
+        {
+            WriteJson(new CliShowOutput(name, result, result.Length), CliJsonContext.Default.CliShowOutput);
+            return 0;
         }
 
         if (!string.IsNullOrEmpty(output))
@@ -282,9 +471,11 @@ public class ScriniaCommands
     /// <summary>Delete a stored memory.</summary>
     /// <param name="name">Memory name to delete (e.g. 'session-notes', 'api:auth-flow', '~scratch').</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
     public async Task<int> Forget(
         [Argument] string name,
         string? workspaceRoot = null,
+        bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -295,11 +486,15 @@ public class ScriniaCommands
 
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {
+            if (json) { WriteJsonError(result); return 1; }
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
+        if (json)
+            WriteJson(new CliForgetOutput(name, true, result), CliJsonContext.Default.CliForgetOutput);
+        else
+            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
         return 0;
     }
 
@@ -307,10 +502,12 @@ public class ScriniaCommands
     /// <param name="topics">Comma-separated topic names to export (e.g. api,arch).</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="filename">-o, Output filename (saved to .scrinia/exports/).</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
     public async Task<int> Export(
         [Argument] string topics,
         string? workspaceRoot = null,
         string? filename = null,
+        bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -320,6 +517,7 @@ public class ScriniaCommands
 
         if (topicArray.Length == 0)
         {
+            if (json) { WriteJsonError("At least one topic name is required."); return 1; }
             AnsiConsole.MarkupLine("[red]Error:[/] At least one topic name is required.");
             return 1;
         }
@@ -329,11 +527,15 @@ public class ScriniaCommands
 
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {
+            if (json) { WriteJsonError(result); return 1; }
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
+        if (json)
+            WriteJson(new CliExportOutput("", result), CliJsonContext.Default.CliExportOutput);
+        else
+            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
         return 0;
     }
 
@@ -342,11 +544,13 @@ public class ScriniaCommands
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="topics">Comma-separated topic names to import (imports all if omitted).</param>
     /// <param name="overwrite">Replace existing entries if they conflict.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
     public async Task<int> Import(
         [Argument] string path,
         string? workspaceRoot = null,
         string? topics = null,
         bool overwrite = false,
+        bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -361,11 +565,15 @@ public class ScriniaCommands
         if (result.StartsWith("Error:", StringComparison.Ordinal) ||
             result.StartsWith("No topics", StringComparison.Ordinal))
         {
+            if (json) { WriteJsonError(result); return 1; }
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
+        if (json)
+            WriteJson(new CliImportOutput(result), CliJsonContext.Default.CliImportOutput);
+        else
+            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
         return 0;
     }
 
@@ -376,6 +584,7 @@ public class ScriniaCommands
     /// <param name="output">-o, Output filename (default: {topic}-{timestamp}.scrinia-bundle).</param>
     /// <param name="description">-d, Description for all entries.</param>
     /// <param name="tags">-t, Comma-separated tags for all entries.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
     public Task<int> Bundle(
         [Argument] string topic,
         [Argument] string files,
@@ -383,6 +592,7 @@ public class ScriniaCommands
         string? output = null,
         string? description = null,
         string? tags = null,
+        bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -390,6 +600,7 @@ public class ScriniaCommands
         string sanitizedTopic = ScriniaArtifactStore.SanitizeName(topic.Trim());
         if (string.IsNullOrWhiteSpace(sanitizedTopic))
         {
+            if (json) { WriteJsonError("Topic name is required."); return Task.FromResult(1); }
             AnsiConsole.MarkupLine("[red]Error:[/] Topic name is required.");
             return Task.FromResult(1);
         }
@@ -398,6 +609,7 @@ public class ScriniaCommands
         var filePaths = ResolveFiles(files);
         if (filePaths.Count == 0)
         {
+            if (json) { WriteJsonError("No files matched the pattern."); return Task.FromResult(1); }
             AnsiConsole.MarkupLine("[red]Error:[/] No files matched the pattern.");
             return Task.FromResult(1);
         }
@@ -488,9 +700,19 @@ public class ScriniaCommands
         }
 
         long fileSize = new FileInfo(bundlePath).Length;
-        AnsiConsole.MarkupLine(
-            $"[green]Bundled {entries.Count} file(s) into topic '{Markup.Escape(sanitizedTopic)}' " +
-            $"({ScriniaMcpTools.FormatBytes(fileSize)}) at {Markup.Escape(bundlePath)}[/]");
+
+        if (json)
+        {
+            string msg = $"Bundled {entries.Count} file(s) into topic '{sanitizedTopic}' ({ScriniaMcpTools.FormatBytes(fileSize)})";
+            WriteJson(new CliBundleOutput(bundlePath, entries.Count, sanitizedTopic, fileSize, msg),
+                CliJsonContext.Default.CliBundleOutput);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                $"[green]Bundled {entries.Count} file(s) into topic '{Markup.Escape(sanitizedTopic)}' " +
+                $"({ScriniaMcpTools.FormatBytes(fileSize)}) at {Markup.Escape(bundlePath)}[/]");
+        }
         return Task.FromResult(0);
     }
 
@@ -631,11 +853,13 @@ public class ScriniaCommands
     /// <param name="value">Value to set. Omit to read current value.</param>
     /// <param name="unset">Remove the setting.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
     public int Config(
         [Argument] string? key = null,
         [Argument] string? value = null,
         bool unset = false,
-        string? workspaceRoot = null)
+        string? workspaceRoot = null,
+        bool json = false)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         string root = ScriniaArtifactStore.WorkspaceRootPath;
@@ -644,6 +868,13 @@ public class ScriniaCommands
         {
             // List all settings
             var config = WorkspaceConfig.Load(root);
+            if (json)
+            {
+                WriteJson(new CliConfigOutput(new Dictionary<string, string>(config, StringComparer.OrdinalIgnoreCase), null, null),
+                    CliJsonContext.Default.CliConfigOutput);
+                return 0;
+            }
+
             if (config.Count == 0)
             {
                 AnsiConsole.MarkupLine("[dim]No configuration set.[/]");
@@ -664,7 +895,10 @@ public class ScriniaCommands
 
         if (unset)
         {
-            if (WorkspaceConfig.UnsetValue(root, key))
+            bool wasSet = WorkspaceConfig.UnsetValue(root, key);
+            if (json)
+                WriteJson(new CliConfigOutput(null, key, null), CliJsonContext.Default.CliConfigOutput);
+            else if (wasSet)
                 AnsiConsole.MarkupLine($"[green]Unset '{Markup.Escape(key)}'.[/]");
             else
                 AnsiConsole.MarkupLine($"[dim]'{Markup.Escape(key)}' was not set.[/]");
@@ -675,6 +909,11 @@ public class ScriniaCommands
         {
             // Get a single value
             string? current = WorkspaceConfig.GetValue(root, key);
+            if (json)
+            {
+                WriteJson(new CliConfigOutput(null, key, current), CliJsonContext.Default.CliConfigOutput);
+                return 0;
+            }
             if (current is not null)
                 AnsiConsole.WriteLine(current);
             else
@@ -684,7 +923,10 @@ public class ScriniaCommands
 
         // Set a value
         WorkspaceConfig.SetValue(root, key, value);
-        AnsiConsole.MarkupLine($"[green]Set '{Markup.Escape(key)}' = '{Markup.Escape(value)}'.[/]");
+        if (json)
+            WriteJson(new CliConfigOutput(null, key, value), CliJsonContext.Default.CliConfigOutput);
+        else
+            AnsiConsole.MarkupLine($"[green]Set '{Markup.Escape(key)}' = '{Markup.Escape(value)}'.[/]");
         return 0;
     }
 

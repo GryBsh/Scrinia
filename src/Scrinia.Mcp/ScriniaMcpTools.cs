@@ -104,7 +104,8 @@ public sealed class ScriniaMcpTools
             Flag scrinia memories that may become stale:
             - `store(["content"], "api:endpoints", reviewAfter="2026-06-01")` — date-based
             - `store(["content"], "auth:flow", reviewWhen="when auth system changes")` — condition-based
-            - `list()` shows `[stale]` or `[review?]` markers
+            - `list()` shows a summary with topics, keywords, and stats
+            - `list(mode="full")` shows all entries with `[stale]` or `[review?]` markers
 
             ## Budget tracking
             Monitor how much context you're consuming:
@@ -212,7 +213,7 @@ public sealed class ScriniaMcpTools
             // Store-based resolution (memory name, ephemeral, etc.)
             var store = MemoryStoreContext.Current;
             if (store is null)
-                return $"Error: memory '{artifactOrName}' not found. Use list() to list available memories.";
+                return $"Error: memory '{artifactOrName}' not found. Use list() or search() to find available memories.";
 
             try
             {
@@ -220,7 +221,7 @@ public sealed class ScriniaMcpTools
             }
             catch (FileNotFoundException)
             {
-                return $"Error: memory '{artifactOrName}' not found. Use list() to list available memories.";
+                return $"Error: memory '{artifactOrName}' not found. Use list() or search() to find available memories.";
             }
         }
 
@@ -379,14 +380,17 @@ public sealed class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "list"), Description(
-        "Returns a formatted table of persisted artifacts across scope(s). " +
-        "Check this when starting a session to see what project knowledge is already available. " +
-        "The name column shows the exact name to pass to show() or get_chunk(). " +
-        "Default reads local store, local topics, then ephemeral. " +
-        "Use scopes='local,api,ephemeral' to filter by specific scopes.")]
+        "Returns a summary or full listing of persisted memories. " +
+        "Call this when starting a session to orient on available project knowledge. " +
+        "Default mode is 'summary' — returns topics, top keywords, and stats without flooding context. " +
+        "Use mode='full' with offset/limit to page through entries.")]
     public Task<string> List(
         [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
                      "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
+        [Description("'summary' (default) returns topics, top keywords, and stats. " +
+                     "'full' returns a paginated table of all entries.")] string mode = "summary",
+        [Description("Starting index for full mode (0-based). Ignored in summary mode.")] int offset = 0,
+        [Description("Maximum entries to return in full mode (default 50). Ignored in summary mode.")] int limit = 50,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -396,10 +400,94 @@ public sealed class ScriniaMcpTools
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
 
-        // Build qualified names first to compute dynamic column width (never truncate names)
-        var rows = new List<(string Name, ArtifactEntry Entry)>(entries.Count);
-        int nameW = 4; // min width = "name".Length
+        if (!string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult(BuildSummary(entries, store));
+
+        return Task.FromResult(BuildFullList(entries, store, offset, limit));
+    }
+
+    private static string BuildSummary(List<ScopedArtifact> entries, IMemoryStore store)
+    {
+        long totalBytes = entries.Sum(e => e.Entry.OriginalBytes);
+        int totalTokens = (int)(totalBytes / 4);
+        int staleCount = entries.Count(e => e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow);
+        int reviewCount = entries.Count(e => !string.IsNullOrEmpty(e.Entry.ReviewWhen)
+            && !(e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow));
+        int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
+
+        // Group by scope
+        var grouped = entries
+            .Where(e => e.Scope != "ephemeral")
+            .GroupBy(e => MemoryNaming.FormatScopeLabel(e.Scope))
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        int topicCount = grouped.Count(g => g.Key != "local");
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"## Memory Summary");
+        sb.AppendLine($"**{entries.Count} memories** — {FormatBytes(totalBytes)} (~{totalTokens:N0} tokens)");
+        if (topicCount > 0 || ephemeralCount > 0 || staleCount > 0 || reviewCount > 0)
+        {
+            var parts = new List<string>();
+            if (topicCount > 0) parts.Add($"{topicCount} topic{(topicCount == 1 ? "" : "s")}");
+            if (ephemeralCount > 0) parts.Add($"{ephemeralCount} ephemeral");
+            if (staleCount > 0) parts.Add($"{staleCount} stale");
+            if (reviewCount > 0) parts.Add($"{reviewCount} need review");
+            sb.AppendLine(string.Join(" · ", parts));
+        }
+        sb.AppendLine();
+
+        // Topics with entry counts and total size
+        sb.AppendLine("### Scopes");
+        foreach (var group in grouped)
+        {
+            string label = group.Key == "local" ? "local" : $"topic:{group.Key}";
+            long groupBytes = group.Sum(e => e.Entry.OriginalBytes);
+            sb.AppendLine($"- **{label}** — {group.Count()} {(group.Count() == 1 ? "memory" : "memories")}, {FormatBytes(groupBytes)}");
+        }
+        if (ephemeralCount > 0)
+            sb.AppendLine($"- **ephemeral** — {ephemeralCount} {(ephemeralCount == 1 ? "memory" : "memories")}");
+        sb.AppendLine();
+
+        // Top keywords — aggregate from Keywords and Tags across all entries
+        var keywordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in entries)
+        {
+            if (item.Entry.Keywords is { Length: > 0 })
+                foreach (var kw in item.Entry.Keywords)
+                    keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
+            if (item.Entry.Tags is { Length: > 0 })
+                foreach (var tag in item.Entry.Tags)
+                    keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
+        }
+        if (keywordCounts.Count > 0)
+        {
+            var topKeywords = keywordCounts
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .Select(kv => kv.Key);
+            sb.AppendLine($"### Top keywords");
+            sb.AppendLine(string.Join(", ", topKeywords));
+            sb.AppendLine();
+        }
+
+        sb.Append("Use `list(mode=\"full\")` to see all entries, or `search(\"query\")` to find specific memories.");
+        return sb.ToString();
+    }
+
+    private static string BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)
+    {
+        int total = entries.Count;
+        if (offset < 0) offset = 0;
+        if (limit < 1) limit = 50;
+        var page = entries.Skip(offset).Take(limit).ToList();
+
+        // Build qualified names first to compute dynamic column width (never truncate names)
+        var rows = new List<(string Name, ArtifactEntry Entry)>(page.Count);
+        int nameW = 4; // min width = "name".Length
+        foreach (var item in page)
         {
             var e = item.Entry;
             string qualifiedName = item.Scope == "ephemeral"
@@ -415,6 +503,13 @@ public sealed class ScriniaMcpTools
         const int dateW = 17;
 
         var sb = new System.Text.StringBuilder();
+
+        // Pagination header
+        int showing = offset + 1;
+        int showingEnd = offset + page.Count;
+        sb.AppendLine($"Showing {showing}-{showingEnd} of {total} memories.");
+        sb.AppendLine();
+
         sb.AppendLine(
             $"{"name".PadRight(nameW)}  {"chunks",chunkW}  {"bytes",bytesW}  {"~tokens",tokensW}  {"created",dateW}  description");
         sb.AppendLine(new string('-', nameW + chunkW + bytesW + tokensW + dateW + 18));
@@ -441,7 +536,10 @@ public sealed class ScriniaMcpTools
                 $"{qualifiedName.PadRight(nameW)}  {e.ChunkCount,chunkW}  {sizeStr,bytesW}  {estTokens,tokensW}  {dateStr,-dateW}  {fullDesc}");
         }
 
-        return Task.FromResult(sb.ToString().TrimEnd());
+        if (showingEnd < total)
+            sb.AppendLine($"\nUse list(mode=\"full\", offset={showingEnd}) for more.");
+
+        return sb.ToString().TrimEnd();
     }
 
     [McpServerTool(Name = "search"), Description(
@@ -1038,8 +1136,8 @@ public sealed class ScriniaMcpTools
             Follow these 5 phases to perform a thorough scrinia memory ingestion. Do not skip phases or take shortcuts.
 
             ## Phase 1 — Inventory existing scrinia memories
-            1. Call `list()` to see all currently stored scrinia memories.
-            2. For every scrinia memory listed, call `show("name")` to read its full content.
+            1. Call `list()` for a summary of topics, keywords, and stats.
+            2. Call `list(mode="full")` to see all entry names, then `show("name")` to read content.
                - For multi-chunk scrinia memories, use `chunk_count()` then `get_chunk()` for each chunk.
             3. Note which scrinia memories exist, what they cover, and whether any look stale or incomplete.
 
@@ -1086,7 +1184,7 @@ public sealed class ScriniaMcpTools
             - Use chunked storage for large content: `store(["section1", "section2", ...], name)`
 
             ## Phase 5 — Verify and report
-            1. Call `list()` to confirm the final state of all scrinia memories.
+            1. Call `list()` to confirm the final state of all scrinia memories (summary view).
             2. Summarize what you did:
                - Scrinia memories created (with names and brief descriptions)
                - Scrinia memories updated (what changed)

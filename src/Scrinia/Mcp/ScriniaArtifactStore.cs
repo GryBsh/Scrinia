@@ -247,9 +247,14 @@ internal static partial class ScriniaArtifactStore
         return ordered.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
+    private static string GetLockPath(string scope) =>
+        Path.Combine(GetStoreDirForScope(scope), ".lock");
+
     public static List<ArtifactEntry> LoadIndex(string scope = "local")
     {
         string storeDir = GetStoreDirForScope(scope);
+        Directory.CreateDirectory(storeDir);
+        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         return LoadIndexFrom(storeDir);
     }
 
@@ -274,34 +279,45 @@ internal static partial class ScriniaArtifactStore
     {
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        SaveIndexUnsafe(entries, storeDir);
+    }
 
+    private static void SaveIndexUnsafe(List<ArtifactEntry> entries, string storeDir)
+    {
         var idx = new IndexFile { Entries = entries };
         string json = JsonSerializer.Serialize(idx, _jsonOptions);
 
         string indexPath = Path.Combine(storeDir, "index.json");
-        string tmp = indexPath + ".tmp";
+        string tmp = $"{indexPath}.{Environment.ProcessId}.tmp";
         File.WriteAllText(tmp, json);
         File.Move(tmp, indexPath, overwrite: true);
     }
 
     public static void Upsert(ArtifactEntry entry, string scope = "local")
     {
-        List<ArtifactEntry> entries = LoadIndex(scope);
+        string storeDir = GetStoreDirForScope(scope);
+        Directory.CreateDirectory(storeDir);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        List<ArtifactEntry> entries = LoadIndexFrom(storeDir);
         int idx = entries.FindIndex(e => e.Name == entry.Name);
         if (idx >= 0)
             entries[idx] = entry;
         else
             entries.Add(entry);
-        SaveIndex(entries, scope);
+        SaveIndexUnsafe(entries, storeDir);
     }
 
     public static bool Remove(string name, string scope = "local")
     {
-        List<ArtifactEntry> entries = LoadIndex(scope);
+        string storeDir = GetStoreDirForScope(scope);
+        Directory.CreateDirectory(storeDir);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        List<ArtifactEntry> entries = LoadIndexFrom(storeDir);
         int before = entries.Count;
         entries.RemoveAll(e => e.Name == name);
         if (entries.Count == before) return false;
-        SaveIndex(entries, scope);
+        SaveIndexUnsafe(entries, storeDir);
         return true;
     }
 
@@ -664,7 +680,8 @@ internal static partial class ScriniaArtifactStore
         string storeDir = GetStoreDirForScope(topicScope);
         Directory.CreateDirectory(storeDir);
 
-        var existingEntries = LoadIndex(topicScope);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(topicScope));
+        var existingEntries = LoadIndexFrom(storeDir);
 
         foreach (var entry in entries)
         {
@@ -693,6 +710,6 @@ internal static partial class ScriniaArtifactStore
                 existingEntries.Add(updatedEntry);
         }
 
-        SaveIndex(existingEntries, topicScope);
+        SaveIndexUnsafe(existingEntries, storeDir);
     }
 }

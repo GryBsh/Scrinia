@@ -502,7 +502,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store([TestHelpers.Facts.Fact1], "appear-test");
 
-        string memories = await Tools().List();
+        string memories = await Tools().List(mode: "full");
 
         memories.Should().Contain("appear-test",
             because: "a stored artifact must be listed in List()");
@@ -515,7 +515,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["first content"], "overwrite-test", "first desc");
         await Tools().Store(["second content"], "overwrite-test", "second desc");
 
-        string memories = await Tools().List();
+        string memories = await Tools().List(mode: "full");
 
         memories.Should().Contain("overwrite-test",
             because: "overwritten artifact must still appear in List");
@@ -595,15 +595,61 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task List_Summary_ShowsTopicsAndStats()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["api notes"], "api:auth-flow", keywords: ["auth", "api"]);
+        await Tools().Store(["arch notes"], "arch:decisions", keywords: ["architecture"]);
+        await Tools().Store(["local note"], "quick-ref");
+
+        string result = await Tools().List(); // default = summary
+
+        result.Should().Contain("Memory Summary");
+        result.Should().Contain("3 memories");
+        result.Should().Contain("2 topic");
+        result.Should().Contain("topic:api");
+        result.Should().Contain("topic:arch");
+        result.Should().Contain("local");
+        result.Should().Contain("Top keywords");
+        result.Should().Contain("auth");
+        result.Should().Contain("search(");
+    }
+
+    [Fact]
+    public async Task List_Summary_EphemeralIncluded()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["persistent"], "some-note");
+        await Tools().Store(["temp"], "~scratch");
+
+        string result = await Tools().List();
+
+        result.Should().Contain("2 memories");
+        result.Should().Contain("1 ephemeral");
+    }
+
+    [Fact]
+    public async Task List_Full_Pagination()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        for (int i = 0; i < 5; i++)
+            await Tools().Store([$"content {i}"], $"page-test-{i}");
+
+        string result = await Tools().List(mode: "full", offset: 2, limit: 2);
+
+        result.Should().Contain("Showing 3-4 of 5");
+    }
+
+    [Fact]
     public async Task List_AfterRemember_ContainsName()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store([TestHelpers.Facts.Fact50], "marie-curie");
 
-        string result = await Tools().List();
+        string result = await Tools().List(mode: "full");
 
         result.Should().Contain("marie-curie",
-            because: "the stored artifact name must appear in List() output");
+            because: "the stored artifact name must appear in List(mode='full') output");
     }
 
     [Fact]
@@ -615,7 +661,7 @@ public sealed class ScriniaMcpToolsTests
         await Task.Delay(10);
         await Tools().Store(["beta content"], "beta-entry");
 
-        string result = await Tools().List();
+        string result = await Tools().List(mode: "full");
 
         int alphaPos = result.IndexOf("alpha-entry", StringComparison.Ordinal);
         int betaPos  = result.IndexOf("beta-entry",  StringComparison.Ordinal);
@@ -705,7 +751,7 @@ public sealed class ScriniaMcpToolsTests
         result.Should().StartWith("Remembered:");
 
         // List shows it
-        string memoriesAfterRemember = await Tools().List();
+        string memoriesAfterRemember = await Tools().List(mode: "full");
         memoriesAfterRemember.Should().Contain("cycle-test");
 
         // Forget it
@@ -713,7 +759,7 @@ public sealed class ScriniaMcpToolsTests
         forgetResult.Should().Contain("Forgot");
 
         // List no longer shows it
-        string memoriesAfterForget = await Tools().List();
+        string memoriesAfterForget = await Tools().List(mode: "full");
         memoriesAfterForget.Should().Be("No memories stored.",
             because: "after forgetting the only artifact the store must be empty");
     }
@@ -962,10 +1008,10 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["temp notes"], "~temp");
 
-        string memories = await Tools().List();
+        string memories = await Tools().List(mode: "full");
 
         memories.Should().Contain("~temp",
-            because: "ephemeral memories must appear in List() output with ~ prefix");
+            because: "ephemeral memories must appear in List(mode='full') output with ~ prefix");
     }
 
     [Fact]
@@ -1072,7 +1118,7 @@ public sealed class ScriniaMcpToolsTests
         remResult.Should().Contain("[ephemeral]");
 
         // Appears in List
-        string memories = await Tools().List();
+        string memories = await Tools().List(mode: "full");
         memories.Should().Contain("~lifecycle");
 
         // Show works
@@ -1086,7 +1132,7 @@ public sealed class ScriniaMcpToolsTests
 
         // Forget ephemeral
         await Tools().Forget("~lifecycle");
-        string afterForget = await Tools().List();
+        string afterForget = await Tools().List(mode: "full");
         afterForget.Should().NotContain("~lifecycle");
         afterForget.Should().Contain("lifecycle-saved",
             because: "the promoted persistent copy must survive ephemeral Forget");
@@ -1178,7 +1224,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["auth notes"], "api:auth-flow");
 
-        string memories = await Tools().List();
+        string memories = await Tools().List(mode: "full");
 
         memories.Should().Contain("api",
             because: "scope column for local-topic:api must display as 'api'");
@@ -1415,7 +1461,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["content"], "stale-test",
             reviewAfter: "2020-01-01");
 
-        string list = await Tools().List();
+        string list = await Tools().List(mode: "full");
 
         list.Should().Contain("[stale]",
             because: "entries past their review date should show [stale] marker");
@@ -1428,7 +1474,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["content"], "review-when-list",
             reviewWhen: "when auth system changes");
 
-        string list = await Tools().List();
+        string list = await Tools().List(mode: "full");
 
         list.Should().Contain("[review?]",
             because: "entries with reviewWhen should show [review?] marker");
@@ -1485,7 +1531,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["some content here"], "tokens-col-test");
 
-        string list = await Tools().List();
+        string list = await Tools().List(mode: "full");
 
         list.Should().Contain("~tokens",
             because: "List output must include a ~tokens column header");

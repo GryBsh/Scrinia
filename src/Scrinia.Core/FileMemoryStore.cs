@@ -329,8 +329,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private ReaderWriterLockSlim GetIndexLock(string scope) =>
         _indexLocks.GetOrAdd(scope, _ => new ReaderWriterLockSlim());
 
+    private string GetLockPath(string scope) =>
+        Path.Combine(GetStoreDirForScope(scope), ".lock");
+
     public List<ArtifactEntry> LoadIndex(string scope = "local")
     {
+        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         var lk = GetIndexLock(scope);
         lk.EnterReadLock();
         try
@@ -372,6 +376,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         var lk = GetIndexLock(scope);
         lk.EnterWriteLock();
         try
@@ -393,7 +398,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string json = JsonSerializer.Serialize(idx, _jsonOptions);
 
         string indexPath = Path.Combine(storeDir, "index.json");
-        string tmp = indexPath + ".tmp";
+        string tmp = $"{indexPath}.{Environment.ProcessId}.tmp";
         File.WriteAllText(tmp, json);
         File.Move(tmp, indexPath, overwrite: true);
 
@@ -407,10 +412,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
     {
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         var lk = GetIndexLock(scope);
         lk.EnterWriteLock();
         try
         {
+            // Invalidate cache under lock to pick up changes from other processes
+            _indexCache.TryRemove(scope, out _);
             List<ArtifactEntry> entries = LoadIndexFromCacheOrDisk(scope);
 
             // O(1) lookup via cached name dictionary
@@ -438,10 +446,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public bool Remove(string name, string scope = "local")
     {
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         var lk = GetIndexLock(scope);
         lk.EnterWriteLock();
         try
         {
+            // Invalidate cache under lock to pick up changes from other processes
+            _indexCache.TryRemove(scope, out _);
             List<ArtifactEntry> entries = LoadIndexFromCacheOrDisk(scope);
             int before = entries.Count;
 
