@@ -69,7 +69,16 @@ Directory.CreateDirectory(pluginsDir);
 
 using var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
 var bootLogger = loggerFactory.CreateLogger("Scrinia.Server");
-var loadedPlugins = new PluginLoader().LoadPlugins(pluginsDir, bootLogger);
+
+// Only load plugins when Vulkan embeddings are explicitly enabled
+bool vulkanEnabled = string.Equals(
+    builder.Configuration["Scrinia:Embeddings:Vulkan"], "true",
+    StringComparison.OrdinalIgnoreCase);
+var loadedPlugins = vulkanEnabled
+    ? new PluginLoader().LoadPlugins(pluginsDir, bootLogger)
+    : (IReadOnlyList<IScriniaPlugin>)[];
+if (!vulkanEnabled)
+    bootLogger.LogInformation("Vulkan embeddings disabled (set Scrinia__Embeddings__Vulkan=true to enable)");
 
 // ── Services ─────────────────────────────────────────────────────────────────
 

@@ -9,6 +9,8 @@ services:
       - scrinium-data:/data
     environment:
       - Scrinia__DataDir=/data
+      # Uncomment to enable Vulkan GPU-accelerated embeddings (requires GPU passthrough)
+      # - Scrinia__Embeddings__Vulkan=true
     restart: unless-stopped
 
 volumes:
