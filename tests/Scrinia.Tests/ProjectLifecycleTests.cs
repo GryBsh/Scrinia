@@ -423,6 +423,71 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_status must include a Blockers field (even if value is 'none')");
     }
 
+    // ── Gap closure tests (02-03) ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task PlanRoadmap_RejectsDuplicateReqIdsAcrossPhases()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.PlanRequirements(
+            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+
+        // Act — PROJ-01 appears in both Phase 1 and Phase 2 (duplicate across phases)
+        string result = await _tools.PlanRoadmap(
+            "### Phase 1\nPROJ-01 tasks\n### Phase 2\nPROJ-01 and PROJ-02 tasks",
+            CancellationToken.None);
+
+        // Assert — must return error with duplicate/more-than-once language
+        result.Should().StartWith("Error:",
+            "plan_roadmap with a REQ-ID in multiple phases should return an error");
+        result.Should().MatchRegex("(?i)(duplicate|more than once|more than one phase)",
+            "error should mention duplicate or 'more than once'");
+
+        // Verify nothing was stored (all-or-nothing semantics)
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("plan:roadmap");
+        var entries = store.LoadIndex(scope);
+        entries.Should().NotContain(e => e.Name == subject,
+            "plan_roadmap should store nothing when a REQ-ID appears in multiple phases");
+    }
+
+    [Fact]
+    public async Task PlanRoadmap_AcceptsSameReqIdMentionedOncePerPhase()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.PlanRequirements(
+            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+
+        // Act — each REQ-ID appears in exactly one phase (valid)
+        string result = await _tools.PlanRoadmap(
+            "### Phase 1\nPROJ-01 tasks\n### Phase 2\nPROJ-02 tasks",
+            CancellationToken.None);
+
+        // Assert — should succeed
+        result.Should().NotStartWith("Error:",
+            "plan_roadmap with each REQ-ID in exactly one phase should succeed");
+    }
+
+    [Fact]
+    public void PlanRequirements_DescriptionMentionsScope()
+    {
+        // Verify via reflection that the Description attribute on PlanRequirements
+        // mentions v1/v2 scope labels — this is a contract test for agent guidance.
+        var method = typeof(ScriniaProjectTools).GetMethod("PlanRequirements");
+        method.Should().NotBeNull("PlanRequirements method must exist");
+
+        var descAttr = method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+            .Cast<System.ComponentModel.DescriptionAttribute>()
+            .FirstOrDefault();
+        descAttr.Should().NotBeNull("PlanRequirements must have a [Description] attribute");
+
+        string descText = descAttr!.Description;
+        descText.Should().ContainEquivalentOf("v1",
+            "PlanRequirements description must mention 'v1' so agents know to include v1/v2 scope labels");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)
