@@ -204,7 +204,165 @@ public sealed class ScriniaProjectTools
         return $"Stored: plan:roadmap. Files in .scrinia/ were updated — these are your changes.{extraNote}";
     }
 
+    /// <summary>Resume project context after context loss.</summary>
+    [McpServerTool(Name = "plan_resume"), Description(
+        "Resume project context after context loss. Returns a structured summary of current project " +
+        "state including project name, current phase, progress, last action, blockers, and a concrete " +
+        "next-step suggestion. If project state is missing or corrupted, attempts to rebuild from " +
+        "existing project memories. " +
+        "Note: reads from .scrinia/ in the workspace.")]
+    public async Task<string> PlanResume(CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        string response;
+        try
+        {
+            response = await ReadMemoryAsync(store, "project:state", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            string? rebuilt = await RebuildStateFromMemoriesAsync(store, cancellationToken);
+            if (rebuilt is null)
+                return "Error: no project found. Run project_init first.";
+            response = rebuilt;
+        }
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
+    /// <summary>Query current project status.</summary>
+    [McpServerTool(Name = "plan_status"), Description(
+        "Query current project status. Returns current phase, progress percentage, and any blockers. " +
+        "Works with partial project state (e.g., only project:context exists with no roadmap yet). " +
+        "Note: reads from .scrinia/ in the workspace.")]
+    public async Task<string> PlanStatus(CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        string stateText;
+        try
+        {
+            stateText = await ReadMemoryAsync(store, "project:state", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            string? rebuilt = await RebuildStateFromMemoriesAsync(store, cancellationToken);
+            if (rebuilt is null)
+                return "Error: no project found. Run project_init first.";
+            stateText = rebuilt;
+        }
+
+        // Build compact status report from state fields
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown";
+        string phase = ExtractStateField(stateText, "Phase:") ?? "Unknown";
+        string progress = ExtractStateField(stateText, "Progress:") ?? "0%";
+        string blockers = ExtractStateField(stateText, "Blockers:") ?? "none";
+        string next = ExtractStateField(stateText, "Next:") ?? "(not set)";
+        string lastAction = ExtractStateField(stateText, "Last action:") ?? "(not set)";
+
+        // Optionally enrich with roadmap summary
+        string roadmapNote = "";
+        try
+        {
+            string roadmap = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken);
+            int phaseCount = CountPhases(roadmap);
+            if (phaseCount > 0)
+                roadmapNote = $"\nRoadmap: {phaseCount} phase(s) defined";
+        }
+        catch (FileNotFoundException) { /* roadmap not yet created — skip silently */ }
+
+        string response =
+            $"Project: {projectName}\n" +
+            $"Phase: {phase}\n" +
+            $"Progress: {progress}\n" +
+            $"Last action: {lastAction}\n" +
+            $"Blockers: {blockers}\n" +
+            $"Next: {next}" +
+            roadmapNote;
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Attempts to reconstruct project state from available memories when project:state is missing.
+    /// Returns rebuilt state text prefixed with "[State rebuilt from memories]", or null if no
+    /// project memories exist at all.
+    /// </summary>
+    private static async Task<string?> RebuildStateFromMemoriesAsync(
+        IMemoryStore store, CancellationToken ct)
+    {
+        // Step 1: Try project:context for project name
+        string? projectName = null;
+        try
+        {
+            string contextText = await ReadMemoryAsync(store, "project:context", ct);
+            // Extract first meaningful line or first 100 chars as project name indicator
+            string firstLine = contextText.Split('\n')[0].Trim();
+            projectName = firstLine.Length > 100 ? firstLine[..100] : firstLine;
+        }
+        catch (FileNotFoundException) { /* no context */ }
+
+        if (projectName is null)
+            return null; // No project memories at all
+
+        // Step 2: Try plan:roadmap for phase info
+        string phase = "Not started";
+        string progressPct = "0";
+        try
+        {
+            string roadmap = await ReadMemoryAsync(store, "plan:roadmap", ct);
+            int phaseCount = CountPhases(roadmap);
+            phase = phaseCount > 0 ? $"Roadmap created ({phaseCount} phases)" : "Roadmap created";
+            progressPct = "20";
+        }
+        catch (FileNotFoundException) { /* no roadmap yet */ }
+
+        // Step 3: Count plan:* memories for progress estimate
+        try
+        {
+            var planMemories = store.ListScoped("plan");
+            if (planMemories.Count > 1) // more than just roadmap
+                progressPct = "30";
+        }
+        catch { /* listing failed — skip */ }
+
+        // Step 4: Derive project ID
+        string projectId = DeriveProjectId(store);
+        string projectDisplayName = ToProjectName(projectId);
+
+        // Step 5: Write the rebuilt state for future calls (avoids repeated rebuilds)
+        string rebuiltNote = "[State rebuilt from memories]\n";
+        string nextStep = phase.Contains("Roadmap")
+            ? "run plan_tasks for phase 1"
+            : "run plan_requirements to define project requirements";
+
+        await WriteStateAsync(store, projectDisplayName, projectId,
+            phase: phase,
+            progressPct: progressPct,
+            lastAction: "State rebuilt from memories",
+            blockers: "none",
+            nextStep: nextStep,
+            ct);
+
+        string timestamp = DateTimeOffset.UtcNow.ToString("o");
+        return rebuiltNote +
+               $"Project: {projectDisplayName}\n" +
+               $"ID: {projectId}\n" +
+               $"Phase: {phase}\n" +
+               $"Progress: {progressPct}%\n" +
+               $"Last action: State rebuilt from memories ({timestamp})\n" +
+               $"Blockers: none\n" +
+               $"Next: {nextStep}";
+    }
 
     /// <summary>
     /// Derives a project ID from the workspace directory name.

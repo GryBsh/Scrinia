@@ -275,6 +275,154 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_roadmap result should include .scrinia/ ownership hint");
     }
 
+    // ── plan_resume tests (PROJ-04) ───────────────────────────────────────────
+
+    [Fact]
+    public async Task PlanResume_ReturnsStructuredSummary()
+    {
+        // Arrange — full state via all three write tools
+        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", CancellationToken.None);
+        await _tools.PlanRoadmap("### Phase 1\nPROJ-01, PROJ-02 tasks", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanResume(CancellationToken.None);
+
+        // Assert — all required fields present
+        result.Should().Contain("Project:", "plan_resume must include project name");
+        result.Should().Contain("Phase:", "plan_resume must include current phase");
+        result.Should().Contain("Progress:", "plan_resume must include progress");
+        result.Should().Contain("Last action:", "plan_resume must include last action");
+        result.Should().Contain("Next:", "plan_resume must include next step");
+    }
+
+    [Fact]
+    public async Task PlanResume_RespectsResponseCap()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanResume(CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "plan_resume response must be <= 8192 characters (MaxResponseChars)");
+    }
+
+    [Fact]
+    public async Task PlanResume_IncludesNextActionSuggestion()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanResume(CancellationToken.None);
+
+        // Assert — must contain a concrete suggestion
+        bool hasConcreteAction = result.Contains("run ") || result.Contains("plan_") || result.Contains("task_");
+        hasConcreteAction.Should().BeTrue(
+            "plan_resume must return a concrete next action (contains 'run ', 'plan_', or 'task_')");
+    }
+
+    [Fact]
+    public async Task PlanResume_RebuildsFromMemories()
+    {
+        // Arrange — initialize project so memories exist
+        await _tools.ProjectInit("Goals: build a memory server for AI agents", CancellationToken.None);
+        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", CancellationToken.None);
+
+        // Delete project:state artifact so rebuild is triggered
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("project:state");
+        store.DeleteArtifact(subject, scope);
+        store.Remove(subject, scope);
+
+        // Act
+        string result = await _tools.PlanResume(CancellationToken.None);
+
+        // Assert — rebuilt from memories prefix must be present
+        result.Should().ContainEquivalentOf("State rebuilt from memories",
+            "plan_resume should indicate state was rebuilt when project:state is missing");
+        result.Should().NotStartWith("Error:",
+            "plan_resume should succeed even without project:state if other memories exist");
+    }
+
+    [Fact]
+    public async Task PlanResume_FailsWithoutAnyMemories()
+    {
+        // Act — no project memories at all
+        string result = await _tools.PlanResume(CancellationToken.None);
+
+        // Assert
+        result.Should().StartWith("Error:",
+            "plan_resume with no project memories should return an error");
+        result.Should().Contain("project_init",
+            "error should direct user to run project_init");
+    }
+
+    // ── plan_status tests (PROJ-05) ───────────────────────────────────────────
+
+    [Fact]
+    public async Task PlanStatus_ReturnsPhaseAndProgress()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+        await _tools.PlanRequirements("- PROJ-01: init", CancellationToken.None);
+        await _tools.PlanRoadmap("### Phase 1\nPROJ-01 tasks", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert
+        result.Should().Contain("Phase:", "plan_status must include current phase");
+        result.Should().Contain("Progress:", "plan_status must include progress percentage");
+        result.Should().Contain("%", "plan_status progress must include percentage sign");
+    }
+
+    [Fact]
+    public async Task PlanStatus_RespectsResponseCap()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "plan_status response must be <= 8192 characters (MaxResponseChars)");
+    }
+
+    [Fact]
+    public async Task PlanStatus_WorksWithPartialState()
+    {
+        // Arrange — only project_init, no roadmap
+        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — should return useful info, not an error
+        result.Should().NotStartWith("Error:",
+            "plan_status with partial state (only project:context + project:state) should return useful info");
+        result.Should().NotBeNullOrEmpty("plan_status should always return a non-empty response");
+    }
+
+    [Fact]
+    public async Task PlanStatus_IncludesBlockers()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert
+        result.Should().ContainEquivalentOf("Blockers:",
+            "plan_status must include a Blockers field (even if value is 'none')");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)
