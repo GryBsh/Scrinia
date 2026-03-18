@@ -488,6 +488,274 @@ public sealed class ProjectLifecycleTests : IDisposable
             "PlanRequirements description must mention 'v1' so agents know to include v1/v2 scope labels");
     }
 
+    // -- plan_tasks tests (PLAN-01, PLAN-02, PLAN-04) --
+
+    private static string MakeTwoTaskInput() =>
+        """
+        ## Task 01
+        Wave: 1
+        Depends on: none
+        Action: Implement authentication
+        Acceptance criteria:
+        - Users can log in
+        - JWT tokens are returned
+
+        ## Task 02
+        Wave: 1
+        Depends on: none
+        Action: Implement user profile
+        Acceptance criteria:
+        - Profile data is stored
+        """;
+
+    private static string MakeMultiWaveInput() =>
+        """
+        ## Task 01
+        Wave: 1
+        Depends on: none
+        Action: Implement authentication
+        Acceptance criteria:
+        - Users can log in
+
+        ## Task 02
+        Wave: 2
+        Depends on: none
+        Action: Implement advanced features
+        Acceptance criteria:
+        - Feature works
+        """;
+
+    private static string MakeDependencyInput() =>
+        """
+        ## Task 01
+        Wave: 1
+        Depends on: none
+        Action: Implement authentication
+        Acceptance criteria:
+        - Users can log in
+
+        ## Task 02
+        Wave: 2
+        Depends on: 01-1-01
+        Action: Implement something that depends on auth
+        Acceptance criteria:
+        - Depends on auth
+        """;
+
+    private async Task SetupProjectAndRoadmap()
+    {
+        await _tools.ProjectInit("Goals: build a test project", CancellationToken.None);
+        await _tools.PlanRequirements("- PLAN-01: task storage\n- PLAN-02: research guidance", CancellationToken.None);
+        await _tools.PlanRoadmap("### Phase 1\nPLAN-01, PLAN-02 tasks", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task PlanTasks_StoresTaskMemories()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Assert — task:01-1-01 and task:01-1-02 must exist in index
+        var store = MemoryStoreContext.Current!;
+        var (scope1, subject1) = store.ParseQualifiedName("task:01-1-01");
+        var (scope2, subject2) = store.ParseQualifiedName("task:01-1-02");
+        var entries1 = store.LoadIndex(scope1);
+        var entries2 = store.LoadIndex(scope2);
+
+        entries1.Should().Contain(e => e.Name == subject1,
+            "plan_tasks should store task:01-1-01 memory");
+        entries2.Should().Contain(e => e.Name == subject2,
+            "plan_tasks should store task:01-1-02 memory");
+    }
+
+    [Fact]
+    public async Task PlanTasks_WritesKeywordsOverload_PopulatesKeywords()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Assert — task:01-1-01 must have Keywords containing status:pending
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("task:01-1-01");
+        var entries = store.LoadIndex(scope);
+        var taskEntry = entries.FirstOrDefault(e => e.Name == subject);
+        taskEntry.Should().NotBeNull("task:01-1-01 must exist in index");
+        taskEntry!.Keywords.Should().NotBeNull("task entry must have Keywords populated");
+        taskEntry.Keywords.Should().Contain("status:pending",
+            "task Keywords must include status:pending");
+    }
+
+    [Fact]
+    public async Task PlanTasks_SetsWaveKeyword()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanTasks("01", MakeMultiWaveInput(), CancellationToken.None);
+
+        // Assert — wave:1 on task 01, wave:2 on task 02
+        var store = MemoryStoreContext.Current!;
+        var (scope1, subject1) = store.ParseQualifiedName("task:01-1-01");
+        var (scope2, subject2) = store.ParseQualifiedName("task:01-2-02");
+        var entries1 = store.LoadIndex(scope1);
+        var entries2 = store.LoadIndex(scope2);
+
+        var task1 = entries1.FirstOrDefault(e => e.Name == subject1);
+        var task2 = entries2.FirstOrDefault(e => e.Name == subject2);
+
+        task1.Should().NotBeNull("task:01-1-01 must exist");
+        task2.Should().NotBeNull("task:01-2-02 must exist");
+        task1!.Keywords.Should().Contain("wave:1", "wave 1 task should have wave:1 keyword");
+        task2!.Keywords.Should().Contain("wave:2", "wave 2 task should have wave:2 keyword");
+    }
+
+    [Fact]
+    public async Task PlanTasks_SetsPhaseKeyword()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Assert — both tasks should have phase:01 keyword
+        var store = MemoryStoreContext.Current!;
+        var (scope1, subject1) = store.ParseQualifiedName("task:01-1-01");
+        var (scope2, subject2) = store.ParseQualifiedName("task:01-1-02");
+        var entries1 = store.LoadIndex(scope1);
+        var entries2 = store.LoadIndex(scope2);
+
+        var task1 = entries1.FirstOrDefault(e => e.Name == subject1);
+        var task2 = entries2.FirstOrDefault(e => e.Name == subject2);
+
+        task1!.Keywords.Should().Contain("phase:01", "task should have phase:01 keyword");
+        task2!.Keywords.Should().Contain("phase:01", "task should have phase:01 keyword");
+    }
+
+    [Fact]
+    public async Task PlanTasks_SetsDependsOnKeyword()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanTasks("01", MakeDependencyInput(), CancellationToken.None);
+
+        // Assert — task 02 depends on task 01-1-01 (subject-only, not qualified)
+        var store = MemoryStoreContext.Current!;
+        var (scope2, subject2) = store.ParseQualifiedName("task:01-2-02");
+        var entries2 = store.LoadIndex(scope2);
+        var task2 = entries2.FirstOrDefault(e => e.Name == subject2);
+
+        task2.Should().NotBeNull("task:01-2-02 must exist");
+        task2!.Keywords.Should().Contain("depends_on:01-1-01",
+            "task 02 should have depends_on:01-1-01 keyword (subject-only, not qualified)");
+        task2.Keywords.Should().NotContain(kw => kw.StartsWith("depends_on:task:"),
+            "depends_on keyword must use subject-only name, not qualified name");
+    }
+
+    [Fact]
+    public async Task PlanTasks_StoresContentWithAction()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Assert — task:01-1-01 content should contain the action text
+        var store = MemoryStoreContext.Current!;
+        string content = await ReadMemoryText(store, "task:01-1-01");
+        content.Should().Contain("Implement authentication",
+            "task content should contain the action text");
+        content.Should().Contain("Users can log in",
+            "task content should contain the acceptance criteria");
+    }
+
+    [Fact]
+    public async Task PlanTasks_FailsWithoutRoadmap()
+    {
+        // Arrange — no roadmap (just init)
+        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Assert — should return error mentioning plan_roadmap
+        result.Should().StartWith("Error:", "plan_tasks without roadmap should return Error:");
+        result.Should().ContainEquivalentOf("plan_roadmap",
+            "error message should mention plan_roadmap");
+    }
+
+    [Fact]
+    public async Task PlanTasks_UpdatesProjectState()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Assert — project:state should reference plan_tasks or "Tasks created"
+        var store = MemoryStoreContext.Current!;
+        string stateText = await ReadMemoryText(store, "project:state");
+        bool hasTasksInfo = stateText.Contains("plan_tasks", StringComparison.OrdinalIgnoreCase)
+            || stateText.Contains("Tasks created", StringComparison.OrdinalIgnoreCase)
+            || stateText.Contains("task", StringComparison.OrdinalIgnoreCase);
+        hasTasksInfo.Should().BeTrue(
+            "project:state should reflect that plan_tasks was called (contain 'plan_tasks', 'Tasks created', or 'task')");
+    }
+
+    [Fact]
+    public void PlanTasks_DescriptionAdvicesResearch()
+    {
+        // Reflection test — verify [Description] attribute on PlanTasks contains "research" (PLAN-02)
+        var method = typeof(ScriniaProjectTools).GetMethod("PlanTasks");
+        method.Should().NotBeNull("PlanTasks method must exist");
+
+        var descAttr = method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+            .Cast<System.ComponentModel.DescriptionAttribute>()
+            .FirstOrDefault();
+        descAttr.Should().NotBeNull("PlanTasks must have a [Description] attribute");
+
+        string descText = descAttr!.Description;
+        descText.Should().ContainEquivalentOf("research",
+            "PlanTasks description must advise agent to 'research' domain before planning (PLAN-02)");
+    }
+
+    [Fact]
+    public async Task PlanTasks_ReturnsWithin8KBCap()
+    {
+        // Arrange — create 12 tasks
+        await SetupProjectAndRoadmap();
+        var manyTasks = new System.Text.StringBuilder();
+        for (int i = 1; i <= 12; i++)
+        {
+            manyTasks.AppendLine($"## Task {i:D2}");
+            manyTasks.AppendLine("Wave: 1");
+            manyTasks.AppendLine("Depends on: none");
+            manyTasks.AppendLine($"Action: Implement feature {i} with detailed description spanning many characters in the action text");
+            manyTasks.AppendLine("Acceptance criteria:");
+            manyTasks.AppendLine($"- Feature {i} works correctly");
+            manyTasks.AppendLine($"- Feature {i} is tested");
+            manyTasks.AppendLine();
+        }
+
+        // Act
+        string result = await _tools.PlanTasks("01", manyTasks.ToString(), CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "plan_tasks response must be <= 8192 characters (MaxResponseChars)");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)
