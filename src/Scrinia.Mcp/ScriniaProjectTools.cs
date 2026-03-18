@@ -220,6 +220,98 @@ public sealed class ScriniaProjectTools
         return $"Stored: plan:roadmap. Files in .scrinia/ were updated — these are your changes.{extraNote}";
     }
 
+    /// <summary>Decompose a phase into task memories with keyword-based metadata.</summary>
+    [McpServerTool(Name = "plan_tasks"), Description(
+        "Decompose a phase into task memories with keyword-based metadata for status, wave, phase, and dependencies. " +
+        "Research the domain before calling this tool — study existing code, APIs, and patterns so tasks accurately " +
+        "reflect the work needed. Each task is stored as task:{phaseId}-{wave}-{id} with keywords: " +
+        "status:pending, wave:N, phase:XX, and depends_on:{subject} for each dependency. " +
+        "Requires plan:roadmap to exist (run plan_roadmap first). " +
+        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
+    public async Task<string> PlanTasks(
+        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
+        [Description(
+            "Free-text task definitions. Each task section uses this format:\n" +
+            "## Task {id}\n" +
+            "Wave: {N}\n" +
+            "Depends on: {comma-separated subject names, or 'none'}\n" +
+            "Action: {what to do}\n" +
+            "Acceptance criteria:\n" +
+            "- criterion 1\n" +
+            "- criterion 2")] string tasks,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Prerequisite check: plan:roadmap must exist
+        try
+        {
+            await ReadMemoryAsync(store, "plan:roadmap", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return "Error: no roadmap found. Run plan_roadmap first.";
+        }
+
+        // Parse task sections from free-text input
+        var parsedTasks = ParseTaskSections(tasks);
+        if (parsedTasks.Count == 0)
+            return "Error: no tasks found. Provide tasks using '## Task {id}' section headers.";
+
+        int waveCount = parsedTasks.Select(t => t.Wave).Distinct().Count();
+        var createdNames = new List<string>();
+
+        foreach (var task in parsedTasks)
+        {
+            // Build keywords: status:pending, wave:N, phase:XX, depends_on:* entries
+            var keywords = new List<string>
+            {
+                "status:pending",
+                $"wave:{task.Wave}",
+                $"phase:{phaseId}"
+            };
+            foreach (string dep in task.DependsOn)
+                keywords.Add($"depends_on:{dep}");
+
+            // Task naming: task:{phaseId}-{wave}-{id}
+            string taskName = $"task:{phaseId}-{task.Wave}-{task.Id}";
+
+            await WritePlanningMemoryAsync(store, taskName, task.Content,
+                archiveExisting: false, keywords: [.. keywords], cancellationToken);
+
+            createdNames.Add(taskName);
+        }
+
+        // Update project:state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: "30",
+            lastAction: $"Tasks created for phase {phaseId} ({parsedTasks.Count} tasks, {waveCount} wave(s))",
+            blockers: "none",
+            nextStep: $"run task_next to get first task for phase {phaseId}",
+            cancellationToken);
+
+        string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
+        string response =
+            $"Created {parsedTasks.Count} task(s) for phase {phaseId} in {waveCount} wave(s).\n" +
+            $"Tasks stored:\n{taskList}\n" +
+            $"Files in .scrinia/ were updated — these are your changes.\n" +
+            $"Next: run task_next to get the first pending task.";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
     /// <summary>Resume project context after context loss.</summary>
     [McpServerTool(Name = "plan_resume"), Description(
         "Resume project context after context loss. Returns a structured summary of current project " +
@@ -420,6 +512,20 @@ public sealed class ScriniaProjectTools
         string content,
         bool archiveExisting,
         CancellationToken ct)
+        => await WritePlanningMemoryAsync(store, qualifiedName, content, archiveExisting, keywords: null, ct);
+
+    /// <summary>
+    /// Encodes and writes a planning memory with optional keyword metadata, updating the index.
+    /// Keywords are stored in the index entry for fast keyword-only scans without artifact decoding.
+    /// If archiveExisting is true and an entry already exists, archives it first.
+    /// </summary>
+    private static async Task WritePlanningMemoryAsync(
+        IMemoryStore store,
+        string qualifiedName,
+        string content,
+        bool archiveExisting,
+        string[]? keywords,
+        CancellationToken ct)
     {
         var (scope, subject) = store.ParseQualifiedName(qualifiedName);
 
@@ -445,6 +551,7 @@ public sealed class ScriniaProjectTools
             ChunkCount: 1,
             CreatedAt: existing?.CreatedAt ?? DateTimeOffset.UtcNow,
             Description: desc,
+            Keywords: keywords,
             UpdatedAt: updatedAt);
 
         store.Upsert(entry, scope);
@@ -509,5 +616,80 @@ public sealed class ScriniaProjectTools
                 count++;
         }
         return count;
+    }
+
+    private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
+
+    /// <summary>
+    /// Parses free-text task input into structured task records.
+    /// Each task section starts with "## Task {id}" and contains Wave, Depends on, Action, and Acceptance criteria fields.
+    /// </summary>
+    private static List<ParsedTask> ParseTaskSections(string tasks)
+    {
+        var result = new List<ParsedTask>();
+        // Split by task section headers: ## Task XX or ## Task XX (anything)
+        var taskHeaderPattern = new Regex(@"^##\s+Task\s+(\w+)", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+        var headerMatches = taskHeaderPattern.Matches(tasks);
+
+        for (int i = 0; i < headerMatches.Count; i++)
+        {
+            Match header = headerMatches[i];
+            string taskId = header.Groups[1].Value.TrimStart('0');
+            if (taskId.Length == 0) taskId = "0";
+            // Pad to 2 digits
+            if (int.TryParse(taskId, out int taskIdNum))
+                taskId = taskIdNum.ToString("D2");
+
+            // Extract the section content between this header and the next
+            int sectionStart = header.Index + header.Length;
+            int sectionEnd = i + 1 < headerMatches.Count
+                ? headerMatches[i + 1].Index
+                : tasks.Length;
+            string section = tasks[sectionStart..sectionEnd];
+
+            // Parse Wave
+            int wave = 1;
+            var waveMatch = Regex.Match(section, @"^Wave:\s*(\d+)", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            if (waveMatch.Success && int.TryParse(waveMatch.Groups[1].Value, out int parsedWave))
+                wave = parsedWave;
+
+            // Parse Depends on
+            string[] dependsOn = [];
+            var depsMatch = Regex.Match(section, @"^Depends\s+on:\s*(.+)$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            if (depsMatch.Success)
+            {
+                string depsValue = depsMatch.Groups[1].Value.Trim();
+                if (!string.Equals(depsValue, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    dependsOn = depsValue
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .ToArray();
+                }
+            }
+
+            // Build content: Action + Acceptance criteria (everything except Wave/Depends on lines)
+            var contentLines = section.Split('\n')
+                .Where(line =>
+                {
+                    string t = line.Trim();
+                    return !Regex.IsMatch(t, @"^Wave:\s*\d+", RegexOptions.IgnoreCase) &&
+                           !Regex.IsMatch(t, @"^Depends\s+on:", RegexOptions.IgnoreCase);
+                })
+                .ToList();
+
+            // Trim leading/trailing blank lines from content
+            while (contentLines.Count > 0 && string.IsNullOrWhiteSpace(contentLines[0]))
+                contentLines.RemoveAt(0);
+            while (contentLines.Count > 0 && string.IsNullOrWhiteSpace(contentLines[^1]))
+                contentLines.RemoveAt(contentLines.Count - 1);
+
+            string content = string.Join('\n', contentLines).Trim();
+            if (string.IsNullOrWhiteSpace(content))
+                content = "(no action specified)";
+
+            result.Add(new ParsedTask(taskId, wave, dependsOn, content));
+        }
+
+        return result;
     }
 }
