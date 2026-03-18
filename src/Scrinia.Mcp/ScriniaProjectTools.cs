@@ -97,10 +97,10 @@ public sealed class ScriniaProjectTools
     /// <summary>Store project requirements with category grouping and REQ-IDs.</summary>
     [McpServerTool(Name = "plan_requirements"), Description(
         "Store project requirements with category grouping and REQ-IDs. " +
-        "The agent formats categories and REQ-IDs in the requirements text. " +
+        "The agent formats categories (e.g. Foundation, API, UI) and REQ-IDs with v1/v2 scope labels in the requirements text. " +
         "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
     public async Task<string> PlanRequirements(
-        [Description("Free-text requirements, ideally organized by category with REQ-IDs (e.g. 'PROJ-01: ...').")] string requirements,
+        [Description("Free-text requirements organized by category with REQ-IDs and v1/v2 scope labels (e.g. '## v1 Requirements\\n### Auth\\n- AUTH-01: Login via email').")] string requirements,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -162,9 +162,25 @@ public sealed class ScriniaProjectTools
             .Select(m => m.Groups[1].Value)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var roadmapIds = reqPattern.Matches(roadmap)
+        var roadmapIdList = reqPattern.Matches(roadmap)
             .Select(m => m.Groups[1].Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToList();
+
+        // Detect duplicate REQ-IDs across phases (same ID in multiple phases)
+        var duplicates = roadmapIdList
+            .GroupBy(id => id, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .OrderBy(id => id)
+            .ToList();
+
+        if (duplicates.Count > 0)
+        {
+            return $"Error: REQ-IDs appear in more than one phase: {string.Join(", ", duplicates)}. " +
+                   "Every requirement must appear in exactly one phase.";
+        }
+
+        var roadmapIds = roadmapIdList.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         // Validate: every REQ-ID from requirements must appear in roadmap
         var missingIds = reqIds.Where(id => !roadmapIds.Contains(id)).OrderBy(id => id).ToList();
