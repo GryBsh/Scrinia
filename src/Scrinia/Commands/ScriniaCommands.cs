@@ -66,11 +66,12 @@ public class ScriniaCommands
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
 
-        // Register the MCP server with stdio transport and our tool class.
+        // Register the MCP server with stdio transport and our tool classes.
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithTools<ScriniaMcpTools>();
+            .WithTools<ScriniaMcpTools>()
+            .WithTools<ScriniaProjectTools>();
 
         var host = builder.Build();
         await host.RunAsync(cancellationToken);

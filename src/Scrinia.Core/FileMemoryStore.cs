@@ -663,6 +663,70 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return searcher.SearchAll(query, candidates, topics, limit, supplementalScores);
     }
 
+    // ── Filtering overloads (excludeTopics) ──────────────────────────────────
+
+    /// <summary>
+    /// Efficient override of the default interface method: filters at scope-resolution level
+    /// rather than post-filtering, avoiding loading indices for excluded topics.
+    /// </summary>
+    public List<ScopedArtifact> ListScoped(string? scopes, string? excludeTopics)
+    {
+        if (string.IsNullOrWhiteSpace(excludeTopics))
+            return ListScoped(scopes);
+
+        var result = new List<ScopedArtifact>();
+
+        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes);
+        if (!includeEphemeral && scopes is not null)
+        {
+            includeEphemeral = scopes
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(s => s.Trim().Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+        }
+        if (includeEphemeral)
+            result.AddRange(ListEphemeral());
+
+        foreach (string scope in ResolveReadScopes(scopes, excludeTopics))
+        {
+            foreach (var entry in LoadIndex(scope))
+                result.Add(new ScopedArtifact(scope, entry));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Efficient override of the default interface method: filters candidates and topics
+    /// at scope-resolution level before searching.
+    /// </summary>
+    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics)
+    {
+        if (string.IsNullOrWhiteSpace(excludeTopics))
+            return SearchAll(query, scopes, limit);
+
+        if (string.IsNullOrWhiteSpace(query))
+            return [];
+
+        var searcher = new WeightedFieldScorer();
+        var candidates = ListScoped(scopes, excludeTopics);
+        var topics = GatherTopicInfos(scopes)
+            .Where(t => !IMemoryStore.ShouldExcludeScope(t.Scope, excludeTopics))
+            .ToList();
+        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores: null);
+    }
+
+    /// <summary>
+    /// Efficient override of the default interface method: resolves scopes then excludes
+    /// the specified topic scopes.
+    /// </summary>
+    public IReadOnlyList<string> ResolveReadScopes(string? scopes, string? excludeTopics)
+    {
+        var resolved = ResolveReadScopes(scopes);
+        if (string.IsNullOrWhiteSpace(excludeTopics))
+            return resolved;
+        var excluded = IMemoryStore.BuildExcludedScopeSet(excludeTopics);
+        return resolved.Where(s => !excluded.Contains(s)).ToArray();
+    }
+
     // ── Copy & Archive ───────────────────────────────────────────────────────
 
     public bool CopyMemory(string sourceName, string destinationName, bool overwrite, out string message)

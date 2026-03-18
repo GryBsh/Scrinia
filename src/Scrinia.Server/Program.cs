@@ -215,7 +215,8 @@ builder.Services
             return Task.CompletedTask;
         };
     })
-    .WithTools<ScriniaMcpTools>();
+    .WithTools<ScriniaMcpTools>()
+    .WithTools<ScriniaProjectTools>();
 
 // JSON
 builder.Services.ConfigureHttpJsonOptions(options =>

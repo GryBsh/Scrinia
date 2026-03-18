@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>Scrinia.Tests</RootNamespace>
@@ -32,8 +32,6 @@
 
   <ItemGroup>
     <Compile Remove="Archive\**" />
-    <!-- ScopeFilterTests uses Phase 2+ APIs (excludeTopics overloads). Excluded until those APIs are implemented. -->
-    <Compile Remove="ScopeFilterTests.cs" />
   </ItemGroup>
 
   <ItemGroup>

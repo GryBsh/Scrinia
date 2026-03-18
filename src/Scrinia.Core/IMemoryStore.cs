@@ -34,6 +34,86 @@ public interface IMemoryStore
         IReadOnlyDictionary<string, double>? supplementalScores)
         => SearchAll(query, scopes, limit);
 
+    // Listing & Search with topic exclusion
+
+    /// <summary>
+    /// Lists memories, excluding entries from the specified topics.
+    /// Default implementation post-filters after calling <see cref="ListScoped(string?)"/>.
+    /// FileMemoryStore overrides with efficient scope-level filtering.
+    /// </summary>
+    /// <param name="scopes">Optional comma-separated scope filter.</param>
+    /// <param name="excludeTopics">Optional comma-separated topic names to exclude (e.g. "plan,task,project,learn").</param>
+    List<ScopedArtifact> ListScoped(string? scopes, string? excludeTopics)
+        => string.IsNullOrWhiteSpace(excludeTopics)
+            ? ListScoped(scopes)
+            : ListScoped(scopes)
+                .Where(e => !ShouldExcludeScope(e.Scope, excludeTopics))
+                .ToList();
+
+    /// <summary>
+    /// Searches memories, excluding results from the specified topics.
+    /// Default implementation post-filters after calling <see cref="SearchAll(string, string?, int)"/>.
+    /// FileMemoryStore overrides with efficient scope-level filtering.
+    /// </summary>
+    /// <param name="query">Search query.</param>
+    /// <param name="scopes">Optional comma-separated scope filter.</param>
+    /// <param name="limit">Maximum results to return.</param>
+    /// <param name="excludeTopics">Optional comma-separated topic names to exclude (e.g. "plan,task,project,learn").</param>
+    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics)
+        => string.IsNullOrWhiteSpace(excludeTopics)
+            ? SearchAll(query, scopes, limit)
+            : SearchAll(query, scopes, limit)
+                .Where(r => !ShouldExcludeScope(GetResultScope(r), excludeTopics))
+                .ToList();
+
+    /// <summary>
+    /// Resolves read scopes, excluding the specified topic scopes.
+    /// Default implementation post-filters after calling <see cref="ResolveReadScopes(string?)"/>.
+    /// FileMemoryStore overrides with efficient scope-level filtering.
+    /// </summary>
+    IReadOnlyList<string> ResolveReadScopes(string? scopes, string? excludeTopics)
+    {
+        var resolved = ResolveReadScopes(scopes);
+        if (string.IsNullOrWhiteSpace(excludeTopics))
+            return resolved;
+        var excluded = BuildExcludedScopeSet(excludeTopics);
+        return resolved.Where(s => !excluded.Contains(s)).ToList();
+    }
+
+    // Static helpers for scope exclusion
+
+    /// <summary>
+    /// Returns true if the given scope should be excluded based on the excludeTopics string.
+    /// Case-insensitive. Topics are matched as "local-topic:{topicName}".
+    /// </summary>
+    static bool ShouldExcludeScope(string scope, string? excludeTopics)
+    {
+        if (string.IsNullOrWhiteSpace(excludeTopics) || string.IsNullOrWhiteSpace(scope))
+            return false;
+        var excluded = BuildExcludedScopeSet(excludeTopics);
+        return excluded.Contains(scope);
+    }
+
+    /// <summary>Builds a HashSet of excluded scope names from a comma-separated excludeTopics string.</summary>
+    static HashSet<string> BuildExcludedScopeSet(string excludeTopics) =>
+        new(
+            excludeTopics
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(t => $"local-topic:{t.Trim().ToLowerInvariant()}"),
+            StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Extracts the scope string from any <see cref="SearchResult"/> subtype.
+    /// Returns empty string for unknown result types.
+    /// </summary>
+    static string GetResultScope(SearchResult result) => result switch
+    {
+        EntryResult er => er.Item.Scope,
+        ChunkEntryResult cr => cr.ParentItem.Scope,
+        TopicResult tr => tr.Scope,
+        _ => string.Empty
+    };
+
     // Ephemeral
     void RememberEphemeral(string key, EphemeralEntry entry);
     bool ForgetEphemeral(string key);
