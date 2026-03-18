@@ -397,10 +397,12 @@ public sealed class ScriniaMcpTools
                      "'full' returns a paginated table of all entries.")] string mode = "summary",
         [Description("Starting index for full mode (0-based). Ignored in summary mode.")] int offset = 0,
         [Description("Maximum entries to return in full mode (default 50). Ignored in summary mode.")] int limit = 50,
+        [Description("Optional comma-separated topic names to exclude from results. " +
+                     "Use 'plan,task,project,learn' to hide planning namespaces from knowledge listings.")] string? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
-        List<ScopedArtifact> entries = store.ListScoped(scopes);
+        List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
             return Task.FromResult("No memories stored.");
 
@@ -558,22 +560,27 @@ public sealed class ScriniaMcpTools
         [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
                      "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
         [Description("Maximum results to return.")] int limit = 20,
+        [Description("Optional comma-separated topic names to exclude from results. " +
+                     "Use 'plan,task,project,learn' to hide planning namespaces from knowledge searches.")] string? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
 
         // Compute supplemental scores from plugin (e.g. embeddings) if available
+        // Use excludeTopics-filtered candidates so excluded topics don't influence embeddings scoring
         var contributor = SearchContributorContext.Current;
         IReadOnlyDictionary<string, double>? supplemental = null;
         if (contributor is not null)
         {
-            var candidates = store.ListScoped(scopes);
+            var candidates = store.ListScoped(scopes, excludeTopics);
             supplemental = await contributor.ComputeScoresAsync(query, candidates, store, cancellationToken);
         }
 
         IReadOnlyList<SearchResult> matches = supplemental is { Count: > 0 }
             ? store.SearchAll(query, scopes, limit, supplemental)
-            : store.SearchAll(query, scopes, limit);
+                .Where(r => !IMemoryStore.ShouldExcludeScope(IMemoryStore.GetResultScope(r), excludeTopics))
+                .ToList()
+            : store.SearchAll(query, scopes, limit, excludeTopics);
         if (matches.Count == 0)
             return "No matching memories found.";
 
