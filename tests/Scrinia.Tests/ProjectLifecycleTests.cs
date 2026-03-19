@@ -1427,6 +1427,145 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_gaps response must be <= 8192 characters (MaxResponseChars)");
     }
 
+    // -- plan_retrospective tests (LEARN-01, LEARN-03, LEARN-04) --
+
+    [Fact]
+    public async Task PlanRetrospective_StoresLearnMemory()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", CancellationToken.None);
+
+        // Assert — learn:execution-outcomes must exist in index
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("learn:execution-outcomes");
+        var entries = store.LoadIndex(scope);
+        entries.Should().Contain(e => e.Name == subject,
+            "plan_retrospective should store learn:execution-outcomes memory");
+    }
+
+    [Fact]
+    public async Task PlanRetrospective_ContentContainsSections()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanRetrospective("01", "Tests passed quickly", "Build was slow", "Use incremental builds", CancellationToken.None);
+
+        // Assert — content must contain all required section headers
+        var store = MemoryStoreContext.Current!;
+        string content = await ReadMemoryText(store, "learn:execution-outcomes");
+        content.Should().Contain("## What Worked", "retrospective content must include '## What Worked' section");
+        content.Should().Contain("## What Failed", "retrospective content must include '## What Failed' section");
+        content.Should().Contain("## Lessons", "retrospective content must include '## Lessons' section");
+        content.Should().Contain("## Provenance", "retrospective content must include '## Provenance' section");
+    }
+
+    [Fact]
+    public async Task PlanRetrospective_HasProvenanceKeyword()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", CancellationToken.None);
+
+        // Assert — index entry Keywords must contain "provenance:agent"
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("learn:execution-outcomes");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name == subject);
+        entry.Keywords.Should().Contain("provenance:agent",
+            "learn:execution-outcomes must have provenance:agent keyword");
+    }
+
+    [Fact]
+    public async Task PlanRetrospective_AccumulatesChunks()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act — two calls for different phases
+        await _tools.PlanRetrospective("01", "Worked well", "Minor issues", "Lessons from 01", CancellationToken.None);
+        await _tools.PlanRetrospective("02", "Worked well", "Some failures", "Lessons from 02", CancellationToken.None);
+
+        // Assert — artifact must have 2 chunks (append, not overwrite)
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("learn:execution-outcomes");
+        string artifact = await store.ReadArtifactAsync(subject, scope);
+        int chunkCount = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.GetChunkCount(artifact);
+        chunkCount.Should().Be(2,
+            "two plan_retrospective calls should produce a 2-chunk artifact (append, not overwrite)");
+    }
+
+    [Fact]
+    public async Task PlanRetrospective_ContainsPhaseId()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+
+        // Assert — content must reference phase ID
+        var store = MemoryStoreContext.Current!;
+        string content = await ReadMemoryText(store, "learn:execution-outcomes");
+        content.Should().ContainAny("Phase 01", "## Phase 01 Retrospective",
+            "retrospective content must reference the phase ID '01'");
+    }
+
+    [Fact]
+    public async Task PlanRetrospective_ContainsTimestamp()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+
+        // Assert — content must contain ISO 8601 date pattern YYYY-MM-DD
+        var store = MemoryStoreContext.Current!;
+        string content = await ReadMemoryText(store, "learn:execution-outcomes");
+        content.Should().MatchRegex(@"\d{4}-\d{2}-\d{2}",
+            "retrospective content must contain an ISO 8601 date pattern");
+    }
+
+    [Fact]
+    public async Task PlanRetrospective_RespectsResponseCap()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+
+        // Act
+        string result = await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "plan_retrospective response must be <= 8192 characters (MaxResponseChars)");
+    }
+
+    [Fact]
+    public async Task PlanRetrospective_SearchableViaStandardSearch()
+    {
+        // Arrange
+        await SetupProjectAndRoadmap();
+        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+
+        // Act — search via standard search with no excludeTopics
+        var store = MemoryStoreContext.Current!;
+        var results = store.SearchAll("retrospective", scopes: null, limit: 10);
+
+        // Assert — learn:execution-outcomes should appear in results
+        bool found = results
+            .OfType<Scrinia.Core.Search.EntryResult>()
+            .Any(er => er.Item.Entry.Name == "execution-outcomes");
+        found.Should().BeTrue(
+            "learn:execution-outcomes must be discoverable via standard search for 'retrospective'");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     /// <summary>

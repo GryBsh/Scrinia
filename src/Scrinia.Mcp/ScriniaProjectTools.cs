@@ -1198,6 +1198,20 @@ public sealed class ScriniaProjectTools
         return criteria;
     }
 
+    [McpServerTool(Name = "plan_retrospective"), Description(
+        "Store a structured phase retrospective in learn:execution-outcomes. " +
+        "Call after a phase completes to record what worked, what failed, and lessons learned. " +
+        "Outcomes accumulate across phases as independently retrievable chunks.")]
+    public async Task<string> PlanRetrospective(
+        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
+        [Description("Free-text describing what worked well during this phase.")] string whatWorked,
+        [Description("Free-text describing what failed or was problematic.")] string whatFailed,
+        [Description("Free-text describing lessons learned for future phases.")] string lessons,
+        CancellationToken cancellationToken = default)
+    {
+        throw new NotImplementedException();
+    }
+
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
 
     /// <summary>
