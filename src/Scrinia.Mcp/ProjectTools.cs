@@ -1781,6 +1781,272 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    // -- Dynamic goal management (GOAL-01, GOAL-02, GOAL-04) ---------------------
+
+    /// <summary>Manage project goals dynamically.</summary>
+    [McpServerTool(Name = "goal_update"), Description(
+        "Manage project goals dynamically. Actions: 'add' (new goal), 'complete' (mark done with outcome), 'list' (show all goals with status). " +
+        "Goals modify project:context in-place — no re-initialization needed. " +
+        "Original goal count is preserved for scope drift detection by plan_status.")]
+    public async Task<string> GoalUpdate(
+        [Description("Action to perform: 'add', 'complete', or 'list'.")] string action,
+        [Description("Goal description (required for 'add' action).")] string? description = null,
+        [Description("Goal ID to complete (e.g. 'G-1'); required for 'complete' action.")] string? goalId = null,
+        [Description("Outcome note; required for 'complete' action.")] string? outcome = null,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Prerequisite check: project:context must exist
+        string contextText;
+        try
+        {
+            contextText = await ReadMemoryAsync(store, "project:context", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return "Error: no project initialized. Run project_init first.";
+        }
+
+        string actionLower = action.Trim().ToLowerInvariant();
+
+        switch (actionLower)
+        {
+            case "add":
+            {
+                if (string.IsNullOrWhiteSpace(description))
+                    return "Error: 'add' action requires a description.";
+
+                var (goals, originalCount, contextWithoutGoals) = ParseGoalsSection(contextText);
+
+                // First mutation: lock original count if not yet set
+                int lockedOriginalCount = originalCount >= 0 ? originalCount : goals.Count;
+
+                // Assign sequential ID across all goals (raw init goals + structured goals)
+                int nextId = goals.Count + 1;
+                string newGoalLine = $"- [G-{nextId}] [active] {description}";
+                goals.Add(newGoalLine);
+
+                // Rebuild goals section
+                string goalsSection = BuildGoalsSection(goals, lockedOriginalCount);
+                string updatedContext = contextWithoutGoals.TrimEnd() + "\n\n" + goalsSection;
+
+                await WritePlanningMemoryAsync(store, "project:context", updatedContext,
+                    archiveExisting: true, cancellationToken);
+
+                // Update project:state
+                await UpdateStateAfterGoalMutationAsync(store, $"Goal added: G-{nextId}", cancellationToken);
+
+                return $"Goal added as G-{nextId}: {description}. " +
+                       $"project:context updated. Files in .scrinia/ were updated — these are your changes.";
+            }
+
+            case "complete":
+            {
+                if (string.IsNullOrWhiteSpace(goalId))
+                    return "Error: 'complete' action requires a goalId (e.g. 'G-1').";
+
+                var (goals, originalCount, contextWithoutGoals) = ParseGoalsSection(contextText);
+
+                // Find goal line matching goalId (case-insensitive)
+                string searchId = goalId.Trim();
+                int matchIndex = goals.FindIndex(g =>
+                    g.Contains($"[{searchId}]", StringComparison.OrdinalIgnoreCase) ||
+                    g.Contains($"[{searchId.ToUpperInvariant()}]", StringComparison.OrdinalIgnoreCase));
+
+                if (matchIndex < 0)
+                    return $"Error: goal '{goalId}' not found. Use goal_update(action:'list') to see all goal IDs.";
+
+                // Extract description from the matched line
+                string existingLine = goals[matchIndex];
+                string goalDesc = ExtractGoalDescription(existingLine);
+                string outcomeText = outcome ?? "(no outcome recorded)";
+                string timestamp = DateTimeOffset.UtcNow.ToString("o");
+
+                goals[matchIndex] =
+                    $"- [{searchId.ToUpperInvariant()}] [complete] {goalDesc} | Outcome: {outcomeText} | Completed: {timestamp}";
+
+                string goalsSection = BuildGoalsSection(goals, originalCount >= 0 ? originalCount : goals.Count);
+                string updatedContext = contextWithoutGoals.TrimEnd() + "\n\n" + goalsSection;
+
+                await WritePlanningMemoryAsync(store, "project:context", updatedContext,
+                    archiveExisting: true, cancellationToken);
+
+                await UpdateStateAfterGoalMutationAsync(store, $"Goal completed: {searchId}", cancellationToken);
+
+                return $"Goal '{searchId}' marked complete. Outcome recorded. " +
+                       $"project:context updated. Files in .scrinia/ were updated — these are your changes.";
+            }
+
+            case "list":
+            {
+                var (goals, originalCount, _) = ParseGoalsSection(contextText);
+
+                if (goals.Count == 0)
+                    return "No structured goals found in project:context. Use goal_update(action:'add') to add goals.";
+
+                int locked = originalCount >= 0 ? originalCount : goals.Count;
+                int current = goals.Count;
+
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine($"Project Goals | Original: {locked} | Current total: {current}");
+                sb.AppendLine();
+
+                int lineNum = 0;
+                foreach (string goal in goals)
+                {
+                    lineNum++;
+                    string trimmedGoal = goal.TrimStart('-', '*', ' ');
+                    // If the goal doesn't have a structured [G-N] ID, annotate as active
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(trimmedGoal, @"^\[G-\d+\]"))
+                    {
+                        sb.AppendLine($"[active] {trimmedGoal}");
+                    }
+                    else
+                    {
+                        sb.AppendLine(trimmedGoal);
+                    }
+
+                    if (sb.Length > MaxResponseChars - 200)
+                    {
+                        sb.AppendLine("[... truncated to 8KB limit]");
+                        break;
+                    }
+                }
+
+                string response = sb.ToString();
+                if (response.Length > MaxResponseChars)
+                    response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+                return response;
+            }
+
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: 'add', 'complete', 'list'.";
+        }
+    }
+
+    /// <summary>
+    /// Parses the goals section from project:context text.
+    /// Returns: (goalLines, originalCount, contextWithoutGoals).
+    /// originalCount is -1 if the "Original goals:" marker is not present.
+    /// goalLines contains all goal lines (raw or structured) found in the goals section.
+    /// contextWithoutGoals is the context text with the goals section stripped.
+    /// </summary>
+    private static (List<string> Goals, int OriginalCount, string ContextWithoutGoals)
+        ParseGoalsSection(string contextText)
+    {
+        var goals = new List<string>();
+        int originalCount = -1;
+
+        // Find goals section start: "## Goals" or "Goals:" header (case-insensitive)
+        var lines = contextText.Split('\n');
+        int goalsSectionStart = -1;
+        int goalsSectionEnd = lines.Length;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string trimmed = lines[i].Trim();
+            if (goalsSectionStart < 0)
+            {
+                // Detect goals section header
+                if (System.Text.RegularExpressions.Regex.IsMatch(trimmed,
+                        @"^#{0,4}\s*Goals\s*:?\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
+                    System.Text.RegularExpressions.Regex.IsMatch(trimmed,
+                        @"^Goals\s*:", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                {
+                    goalsSectionStart = i;
+                }
+            }
+            else
+            {
+                // Inside goals section — look for "Original goals: N" marker
+                if (System.Text.RegularExpressions.Regex.IsMatch(trimmed,
+                        @"^[Oo]riginal goals?\s*:\s*\d+"))
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(trimmed, @"\d+");
+                    if (m.Success) originalCount = int.Parse(m.Value);
+                    continue;
+                }
+
+                // Detect end of goals section: blank line followed by new non-goal content,
+                // OR a new section header (## or ###)
+                if (System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^#{1,4}\s+\S"))
+                {
+                    goalsSectionEnd = i;
+                    break;
+                }
+
+                // Collect goal lines: lines starting with "- "
+                if (trimmed.StartsWith("- ") || trimmed.StartsWith("* "))
+                {
+                    goals.Add(trimmed);
+                }
+            }
+        }
+
+        // Build contextWithoutGoals: remove the goals section lines
+        string contextWithoutGoals;
+        if (goalsSectionStart < 0)
+        {
+            contextWithoutGoals = contextText; // no goals section found
+        }
+        else
+        {
+            var beforeGoals = lines[..goalsSectionStart];
+            var afterGoals = lines[goalsSectionEnd..];
+            contextWithoutGoals = string.Join('\n', beforeGoals.Concat(afterGoals)).TrimEnd();
+        }
+
+        return (goals, originalCount, contextWithoutGoals);
+    }
+
+    /// <summary>Builds a formatted goals section string from goal lines and original count.</summary>
+    private static string BuildGoalsSection(List<string> goals, int originalCount)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("## Goals");
+        sb.AppendLine($"Original goals: {originalCount}");
+        foreach (string goal in goals)
+            sb.AppendLine(goal);
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Extracts the description text from a goal line, stripping ID and status brackets.</summary>
+    private static string ExtractGoalDescription(string goalLine)
+    {
+        string stripped = goalLine.TrimStart('-', '*', ' ');
+        // Remove leading [G-N] and [status] brackets if present
+        stripped = System.Text.RegularExpressions.Regex.Replace(
+            stripped, @"^\[G-\d+\]\s*\[[\w]+\]\s*", "").Trim();
+        // Also strip trailing " | Outcome: ..." sections from previously completed lines
+        int pipeIdx = stripped.IndexOf(" | Outcome:", StringComparison.OrdinalIgnoreCase);
+        if (pipeIdx >= 0) stripped = stripped[..pipeIdx];
+        return stripped.Trim();
+    }
+
+    /// <summary>Updates project:state after a goal mutation, preserving existing state fields.</summary>
+    private static async Task UpdateStateAfterGoalMutationAsync(
+        IMemoryStore store, string lastAction, CancellationToken ct)
+    {
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", ct); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string phase = ExtractStateField(stateText, "Phase:") ?? "Not started";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: phase,
+            progressPct: progressPct,
+            lastAction: lastAction,
+            blockers: "none",
+            nextStep: "run goal_update(action:'list') to see all goals with status",
+            ct);
+    }
+
     // -- Built-in specialist scaffolds (AGENT-04) --------------------------------
 
     private const string ResearcherScaffold =
