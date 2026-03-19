@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 18 MCP tools for agents to remember, search, and share knowledge across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 30 MCP tools — 18 for memory and 12 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -145,7 +145,9 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-18 tools available via `scri serve`:
+30 tools available via `scri serve` — 18 memory tools and 12 project planning tools.
+
+### Memory tools
 
 | Tool | Description |
 |---|---|
@@ -158,6 +160,29 @@ All commands accept `--workspace-root` to override the workspace directory and `
 | `encode` / `chunk_count` | Low-level NMP/2 encoding |
 | `ka` / `kt` | Knowledge analysis and transfer |
 | `budget` / `reflect` / `ingest` | Session lifecycle tools |
+
+### Planning tools (ScriniaProjectTools)
+
+Full project lifecycle — ideation, planning, execution, verification, and learning.
+
+| Tool | Description |
+|---|---|
+| `project_init` | Initialize a new project with goals and scope |
+| `plan_requirements` | Capture and refine project requirements |
+| `plan_roadmap` | Generate a phased roadmap from requirements |
+| `plan_resume` | Resume a previously started plan |
+| `plan_status` | View current plan progress and health |
+| `plan_tasks` | List tasks with filtering and status |
+| `task_next` | Get the next actionable task |
+| `task_complete` | Mark a task as done with outcome details |
+| `plan_verify` | Verify plan completion and quality |
+| `plan_gaps` | Identify gaps and risks in the plan |
+| `plan_retrospective` | Record execution outcomes and lessons learned |
+| `plan_profile` | Store and retrieve user/agent preferences |
+
+Plans are stored as topic-scoped memories (`plan:*`, `task:*`, `project:*`, `learn:*`, `user:*`) — no separate database. All planning data is searchable via the standard `search` tool. The `excludeTopics` parameter on `list` and `search` lets agents separate knowledge from planning data when needed.
+
+Agent learning is built in: `plan_retrospective` stores execution outcomes with the `provenance:agent` keyword, and `plan_profile` stores user preferences — both discoverable via standard search.
 
 ## Documentation
 
@@ -179,7 +204,7 @@ All commands accept `--workspace-root` to override the workspace directory and `
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 460 CLI + MCP + embeddings tests
+dotnet test tests/Scrinia.Tests             # ~567 CLI + MCP + planning + embeddings tests
 dotnet test tests/Scrinia.Server.Tests      # 53 server tests
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
 ```

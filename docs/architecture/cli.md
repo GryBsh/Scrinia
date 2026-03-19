@@ -76,10 +76,13 @@ When `scri serve` is invoked, the CLI starts an MCP server over stdio transport:
 builder.Services
     .AddMcpServer(mcp => mcp.ServerInfo = new() { Name = "scrinia", Version = "1.0.0" })
     .WithStdioServerTransport()
-    .WithTools<ScriniaMcpTools>();
+    .WithTools<ScriniaMcpTools>()
+    .WithTools<ScriniaProjectTools>();
 ```
 
-`ScriniaMcpTools` is a sealed class (non-static, no constructor, no DI) containing all 17 MCP tool methods. It accesses the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+Both `ScriniaMcpTools` (18 memory tools) and `ScriniaProjectTools` (12 planning tools) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+
+`ScriniaProjectTools` uses dedicated topic conventions (`project:*`, `plan:*`, `task:*`, `learn:*`, `user:*`) and maintains a `project:state` memory for tracking progress. It includes `PlanningJsonContext` for trimming-safe serialization of planning DTOs.
 
 ### Remote Mode
 
@@ -223,7 +226,7 @@ dotnet publish src/Scrinia/Scrinia.csproj -c Release -r win-x64 --self-contained
 ### Trimming Safety
 
 The CLI is safe for trimming because:
-- All JSON serialization uses source-gen contexts (`StoreJsonContext`, `BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`, `CliJsonContext`)
+- All JSON serialization uses source-gen contexts (`StoreJsonContext`, `BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`, `CliJsonContext`, `PlanningJsonContext`)
 - ConsoleAppFramework v5 is source-generated (no reflection)
 - No dynamic assembly loading (plugins are child processes)
 - `InternalsVisibleTo` for test access only
@@ -234,8 +237,8 @@ All CLI commands support a `--json` flag for machine-readable JSON output. A sou
 
 ## Test Coverage
 
-460 tests in `Scrinia.Tests` covering:
-- All 18 MCP tools
+~567 tests in `Scrinia.Tests` covering:
+- All 30 MCP tools (18 memory + 12 planning)
 - Store operations and edge cases
 - Search ranking and scoring
 - Encoding and chunking

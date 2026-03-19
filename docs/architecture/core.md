@@ -245,7 +245,7 @@ Tokenization: split on non-alphanumeric characters, lowercase, filter stop words
 
 ### IMemoryStore
 
-27-method interface covering all memory operations:
+27-method interface covering all memory operations, plus default interface methods for `excludeTopics` filtering:
 
 **Naming:** `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName`
 
@@ -262,6 +262,8 @@ Tokenization: split on non-alphanumeric characters, lowercase, filter stop words
 **Topics:** `DiscoverTopics`, `GatherTopicInfos`, `ListTopicArtifacts`, `ImportTopicEntries`
 
 **Scope resolution:** `ResolveReadScopes`, `GetStoreDirForScope`, `FindArtifactPath`
+
+**Scope filtering (default interface methods):** `ListScoped(scope, excludeTopics)` and `SearchAll(..., excludeTopics)` overloads filter out entries belonging to specified topics. `FileMemoryStore` provides efficient overrides. The MCP `list` and `search` tools use `excludeTopics` to let agents exclude planning topics (`plan`, `task`, `project`, `learn`, `user`) from general queries.
 
 ### FileMemoryStore
 
@@ -416,6 +418,7 @@ All serialized types use source-generated `JsonSerializerContext` for trimming s
 | `FileStoreJsonContext` | Core | Index file persistence |
 | `BundleJsonContext` | Core | Export/import bundles |
 | `StoreJsonContext` | CLI | CLI store operations |
+| `PlanningJsonContext` | Mcp | Planning DTOs (ProjectRecord, PlanRecord, TaskRecord) |
 | `ServerJsonContext` | Server | API request/response DTOs |
 | `ConfigJsonContext` | CLI | Workspace config file |
 | `PluginClientJsonContext` | CLI | Plugin MCP communication |

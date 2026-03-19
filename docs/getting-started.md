@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to 18 MCP tools for persistent memory. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to 30 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -155,13 +155,15 @@ Memories are organized into three scopes:
 | `topic:subject` | Topic | `.scrinia/topics/topic/subject.nmp2` | Persistent |
 | `~subject` | Ephemeral | In-memory only | Dies with process |
 
-**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize project knowledge by domain.
+**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize project knowledge by domain. The planning tools use reserved topic prefixes: `project:*`, `plan:*`, `task:*`, `learn:*`, and `user:*`.
 
 **Ephemeral** memories are scratch space that disappears when the process exits. Useful for temporary context within a session.
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes 18 tools:
+When connected via MCP, Scrinia exposes 30 tools across two tool classes: 18 memory tools (`ScriniaMcpTools`) and 12 planning tools (`ScriniaProjectTools`).
+
+### Memory Tools (18)
 
 | Tool | Purpose |
 |------|---------|
@@ -183,6 +185,25 @@ When connected via MCP, Scrinia exposes 18 tools:
 | `ingest` | Full knowledge ingestion playbook |
 | `ka` | Knowledge analysis -- inventory, gap analysis, report to user |
 | `kt` | Knowledge transfer -- runs ka(), then produces per-topic KT documents |
+
+### Planning Tools (12)
+
+| Tool | Purpose |
+|------|---------|
+| `project_init` | Initialize a project with goals, context, and constraints |
+| `plan_requirements` | Store categorized requirements with REQ-IDs |
+| `plan_roadmap` | Store a phased roadmap mapping requirements to phases |
+| `plan_tasks` | Decompose a phase into task memories with wave/dependency metadata |
+| `plan_resume` | Resume project context after context loss |
+| `plan_status` | Query current project status, phase, and blockers |
+| `task_next` | Get all unblocked tasks in the current wave for a phase |
+| `task_complete` | Mark a task complete with outcome metadata |
+| `plan_verify` | Verify a phase achieved its goal using success criteria |
+| `plan_gaps` | Create gap closure tasks for failed verification criteria |
+| `plan_retrospective` | Store a structured phase retrospective in `learn:execution-outcomes` |
+| `plan_profile` | Store or update user preferences for agent behavior |
+
+Planning tools use dedicated topic conventions: `project:*` for project state, `plan:*` for roadmaps, `task:*` for individual tasks, `learn:*` for retrospective outcomes, and `user:*` for user preferences. The `list` and `search` memory tools support `excludeTopics` to filter planning topics out of general queries.
 
 ## What's Next
 
