@@ -261,7 +261,17 @@ public sealed class ScriniaProjectTools
             nextStep: "run plan_tasks for phase 1",
             cancellationToken);
 
-        return $"Stored: plan:roadmap. Files in .scrinia/ were updated — these are your changes.{extraNote}";
+        // Optionally surface learn:patterns as a hint for the roadmap author
+        string patternNote = "";
+        try
+        {
+            string patterns = await ReadMemoryAsync(store, "learn:patterns", cancellationToken);
+            string hint = patterns.Length > 300 ? patterns[..300] + "..." : patterns;
+            patternNote = $" Patterns from prior phases: {hint}";
+        }
+        catch { /* no learn:patterns yet — skip silently */ }
+
+        return $"Stored: plan:roadmap. Files in .scrinia/ were updated — these are your changes.{extraNote}{patternNote}";
     }
 
     /// <summary>Decompose a phase into task memories with keyword-based metadata.</summary>
@@ -343,12 +353,23 @@ public sealed class ScriniaProjectTools
             nextStep: $"run task_next to get first task for phase {phaseId}",
             cancellationToken);
 
+        // Optionally surface learn:patterns as a hint for the task planner
+        string patternNote = "";
+        try
+        {
+            string patterns = await ReadMemoryAsync(store, "learn:patterns", cancellationToken);
+            string hint = patterns.Length > 300 ? patterns[..300] + "..." : patterns;
+            patternNote = $"\nPatterns from prior phases: {hint}";
+        }
+        catch { /* no learn:patterns yet — skip silently */ }
+
         string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
         string response =
             $"Created {parsedTasks.Count} task(s) for phase {phaseId} in {waveCount} wave(s).\n" +
             $"Tasks stored:\n{taskList}\n" +
             $"Files in .scrinia/ were updated — these are your changes.\n" +
-            $"Next: run task_next to get the first pending task.";
+            $"Next: run task_next to get the first pending task." +
+            patternNote;
 
         if (response.Length > MaxResponseChars)
             response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
@@ -400,6 +421,37 @@ public sealed class ScriniaProjectTools
         catch { /* concern scope not yet created — skip silently */ }
 
         response += concernNote;
+
+        // Optionally surface unused capability hints (ADOPT-03)
+        string capabilityHints = "";
+
+        // Check if concern tracking has been used (scope exists with entries)
+        bool concernsUsed = false;
+        try
+        {
+            var (cs2, _) = store.ParseQualifiedName("concern:placeholder");
+            var cEntries = store.LoadIndex(cs2);
+            concernsUsed = cEntries.Count > 0;
+        }
+        catch { /* scope not created — concerns not used */ }
+
+        if (!concernsUsed)
+            capabilityHints += "\nHint: concern tracking is available — use concern_add to track risks and issues across phases.";
+
+        // Check if knowledge (bok) has been used
+        bool knowledgeUsed = false;
+        try
+        {
+            var (bs, _) = store.ParseQualifiedName("bok:placeholder");
+            var bEntries = store.LoadIndex(bs);
+            knowledgeUsed = bEntries.Count > 0;
+        }
+        catch { /* scope not created — knowledge not used */ }
+
+        if (!knowledgeUsed)
+            capabilityHints += "\nHint: body of knowledge is available — use knowledge_add to store domain expertise that persists across sessions.";
+
+        response += capabilityHints;
 
         if (response.Length > MaxResponseChars)
             response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
@@ -467,6 +519,23 @@ public sealed class ScriniaProjectTools
         }
         catch { /* concern scope not yet created — skip silently */ }
 
+        // Optionally enrich with goal delta (GOAL-03): original count vs current
+        string goalNote = "";
+        try
+        {
+            string contextText = await ReadMemoryAsync(store, "project:context", cancellationToken);
+            var (goals, originalCount, _) = ParseGoalsSection(contextText);
+            int totalGoals = goals.Count;
+            if (totalGoals > 0)
+            {
+                int addedCount = originalCount >= 0 ? totalGoals - originalCount : 0;
+                goalNote = addedCount > 0
+                    ? $"\nGoals: {totalGoals} ({originalCount} original + {addedCount} added)"
+                    : $"\nGoals: {totalGoals}";
+            }
+        }
+        catch { /* no project:context or no goals section — skip silently */ }
+
         string response =
             $"Project: {projectName}\n" +
             $"Phase: {phase}\n" +
@@ -474,7 +543,7 @@ public sealed class ScriniaProjectTools
             $"Last action: {lastAction}\n" +
             $"Blockers: {blockers}\n" +
             $"Next: {next}" +
-            roadmapNote + concernNote;
+            roadmapNote + concernNote + goalNote;
 
         if (response.Length > MaxResponseChars)
             response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
