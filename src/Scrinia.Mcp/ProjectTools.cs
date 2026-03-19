@@ -1781,6 +1781,251 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    // -- Built-in specialist scaffolds (AGENT-04) --------------------------------
+
+    private const string ResearcherScaffold =
+        "## Role: Researcher Specialist\n" +
+        "You investigate technical questions and gather findings for the current project.\n\n" +
+        "## Tools Available (if Scrinia MCP is active)\n" +
+        "- research_start: Open a research investigation with questions to investigate.\n" +
+        "- research_complete: Store findings once investigation is done.\n" +
+        "- search: Query stored knowledge and memories for related context.\n" +
+        "- show: Retrieve full artifact content for a named memory.\n\n" +
+        "## Instructions\n" +
+        "1. Call research_start with your phase and topic to register the investigation.\n" +
+        "2. Use search() to find existing knowledge before researching from scratch.\n" +
+        "3. Investigate thoroughly, then call research_complete with your findings.\n" +
+        "4. Store durable knowledge via knowledge_add for reuse across sessions.\n\n" +
+        "## Fallback Instructions (if Scrinia MCP is not available)\n" +
+        "Organize findings in markdown. Use file read/write operations to persist results.\n" +
+        "Document questions answered, sources consulted, and key conclusions.\n";
+
+    private const string ReviewerScaffold =
+        "## Role: Reviewer Specialist\n" +
+        "You review code, architecture, or plans and provide structured feedback with actionable concerns.\n\n" +
+        "## Tools Available (if Scrinia MCP is active)\n" +
+        "- search: Query memories for existing decisions, patterns, or prior art.\n" +
+        "- show: Load full artifact content for review context.\n" +
+        "- concern_add: Track issues found during review with severity and phase scope.\n" +
+        "- concern_resolve: Mark concerns resolved when addressed.\n\n" +
+        "## Instructions\n" +
+        "1. Use search() to load relevant context before reviewing.\n" +
+        "2. For each issue found, call concern_add with severity (high/medium/low) and phase.\n" +
+        "3. Provide specific, actionable feedback — not just identification.\n" +
+        "4. Summarize findings with a list of concerns added and recommendations.\n\n" +
+        "## Fallback Instructions (if Scrinia MCP is not available)\n" +
+        "Write a structured review document. List issues with severity labels.\n" +
+        "Use markdown headings: Critical Issues, Medium Issues, Minor Issues, Recommendations.\n";
+
+    private const string DomainExpertScaffold =
+        "## Role: Domain Expert Specialist\n" +
+        "You apply deep domain knowledge to answer questions and document expert-level insights.\n\n" +
+        "## Tools Available (if Scrinia MCP is active)\n" +
+        "- search: Find existing knowledge entries before adding new ones.\n" +
+        "- knowledge_add: Store expert insights in the body of knowledge (bok:*).\n" +
+        "- show: Retrieve full artifact content for context on prior decisions.\n\n" +
+        "## Instructions\n" +
+        "1. Use search(scopes='bok') to check for existing domain knowledge first.\n" +
+        "2. Provide expert-level analysis grounded in established domain patterns.\n" +
+        "3. Store durable insights via knowledge_add(domain, slug, knowledge, ...).\n" +
+        "4. Flag uncertainty explicitly — indicate confidence level in your responses.\n\n" +
+        "## Fallback Instructions (if Scrinia MCP is not available)\n" +
+        "Document expert insights in a structured markdown file.\n" +
+        "Include sections: Domain Context, Key Patterns, Caveats, References.\n";
+
+    // -- Subagent creation tools (AGENT-01, AGENT-02, AGENT-03, AGENT-04) -------
+
+    /// <summary>Generate a specialist subagent prompt and store as skill:* memory.</summary>
+    [McpServerTool(Name = "spawn_agent"), Description(
+        "Generate a specialist subagent prompt and store as skill:* memory. " +
+        "Built-in scaffolds: researcher, reviewer, domain-expert. " +
+        "Use skill_load to retrieve stored skills. " +
+        "Includes capability-conditional fallbacks for non-MCP environments.")]
+    public async Task<string> SpawnAgent(
+        [Description("Skill name slug (e.g. 'api-reviewer', 'auth-researcher').")] string skillName,
+        [Description("Built-in scaffold: researcher, reviewer, domain-expert, or custom.")] string scaffold,
+        [Description("Additional context or instructions to embed in the prompt.")] string? instructions = null,
+        [Description("Comma-separated tool names the agent should use (for custom scaffold).")] string? tools = null,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Prerequisite check: project:context must exist
+        try
+        {
+            await ReadMemoryAsync(store, "project:context", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return "Error: no project initialized. Run project_init first.";
+        }
+
+        // Select prompt template based on scaffold (case-insensitive)
+        string promptContent;
+        string role;
+
+        string scaffoldLower = scaffold.Trim().ToLowerInvariant();
+        switch (scaffoldLower)
+        {
+            case "researcher":
+                promptContent = ResearcherScaffold;
+                role = "researcher";
+                if (!string.IsNullOrWhiteSpace(instructions))
+                    promptContent += $"\n## Additional Instructions\n{instructions}\n";
+                break;
+
+            case "reviewer":
+                promptContent = ReviewerScaffold;
+                role = "reviewer";
+                if (!string.IsNullOrWhiteSpace(instructions))
+                    promptContent += $"\n## Additional Instructions\n{instructions}\n";
+                break;
+
+            case "domain-expert":
+                promptContent = DomainExpertScaffold;
+                role = "domain-expert";
+                if (!string.IsNullOrWhiteSpace(instructions))
+                    promptContent += $"\n## Additional Instructions\n{instructions}\n";
+                break;
+
+            default:
+                // Custom scaffold: build from instructions/tools parameters
+                role = "custom";
+                string toolSection = "";
+                if (!string.IsNullOrWhiteSpace(tools))
+                {
+                    var toolList = tools
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Select(t => $"- {t}: use as needed");
+                    toolSection =
+                        "## Tools Available (if Scrinia MCP is active)\n" +
+                        string.Join("\n", toolList) + "\n\n";
+                }
+
+                string instructionsSection = string.IsNullOrWhiteSpace(instructions)
+                    ? "(no custom instructions provided)"
+                    : instructions;
+
+                promptContent =
+                    $"## Role: Custom Specialist\n" +
+                    $"{instructionsSection}\n\n" +
+                    toolSection +
+                    $"## Instructions\n" +
+                    $"{instructionsSection}\n\n" +
+                    $"## Fallback Instructions (if Scrinia MCP is not available)\n" +
+                    $"Organize findings in markdown. Use standard file operations to persist results.\n";
+                break;
+        }
+
+        // Build capability list for keywords
+        string capabilityList = string.IsNullOrWhiteSpace(tools) ? scaffoldLower : tools;
+
+        // Store via WritePlanningMemoryAsync with skill:{skillName} qualified name
+        string qualifiedName = $"skill:{skillName}";
+        await WritePlanningMemoryAsync(store, qualifiedName, promptContent,
+            archiveExisting: true,
+            keywords: [$"role:{role}", $"capabilities:{capabilityList}"],
+            cancellationToken);
+
+        // Update project:state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: progressPct,
+            lastAction: $"Skill created: {qualifiedName} (role:{role})",
+            blockers: "none",
+            nextStep: "use skill_load to retrieve stored skills",
+            cancellationToken);
+
+        string response = $"Stored as {qualifiedName}. Files in .scrinia/ were updated -- these are your changes.";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
+    /// <summary>List or load stored specialist skills.</summary>
+    [McpServerTool(Name = "skill_load"), Description(
+        "List or load stored specialist skills. " +
+        "Call with no skillName to list available skills. " +
+        "Call with a skillName to load the full prompt for activation. " +
+        "Skills created by spawn_agent.")]
+    public Task<string> SkillLoad(
+        [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? skillName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        if (string.IsNullOrWhiteSpace(skillName))
+        {
+            // List mode: synchronous index-only scan, no artifact decode
+            var (scope, _) = store.ParseQualifiedName("skill:placeholder");
+            IReadOnlyList<ArtifactEntry> entries;
+            try { entries = store.LoadIndex(scope); }
+            catch { return Task.FromResult("No skills stored yet."); }
+
+            if (entries.Count == 0)
+                return Task.FromResult("No skills stored yet.");
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"Available skills ({entries.Count}):");
+            sb.AppendLine();
+
+            foreach (var entry in entries)
+            {
+                string roleKw = entry.Keywords?
+                    .FirstOrDefault(k => k.StartsWith("role:", StringComparison.OrdinalIgnoreCase))
+                    ?? "role:unknown";
+
+                sb.AppendLine($"- skill:{entry.Name} [{roleKw}]");
+
+                if (sb.Length > MaxResponseChars - 200)
+                {
+                    sb.AppendLine("[... truncated to 8KB limit]");
+                    break;
+                }
+            }
+
+            string listResponse = sb.ToString();
+            if (listResponse.Length > MaxResponseChars)
+                listResponse = listResponse[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+            return Task.FromResult(listResponse);
+        }
+
+        // Load mode: async artifact read
+        return LoadSkillAsync(store, skillName, cancellationToken);
+    }
+
+    private static async Task<string> LoadSkillAsync(
+        IMemoryStore store, string skillName, CancellationToken ct)
+    {
+        string qualifiedName = $"skill:{skillName}";
+        string content;
+        try
+        {
+            content = await ReadMemoryAsync(store, qualifiedName, ct);
+        }
+        catch (FileNotFoundException)
+        {
+            return $"Error: skill '{skillName}' not found. Use skill_load (no name) to list available skills.";
+        }
+
+        if (content.Length > MaxResponseChars)
+            content = content[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return content;
+    }
+
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
 
     /// <summary>
