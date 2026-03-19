@@ -1566,6 +1566,119 @@ public sealed class ProjectLifecycleTests : IDisposable
             "learn:execution-outcomes must be discoverable via standard search for 'retrospective'");
     }
 
+    // -- plan_profile tests (LEARN-02) --
+
+    [Fact]
+    public async Task PlanProfile_StoresUserProfile()
+    {
+        // Act — no project_init required; user preferences are project-independent
+        await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", CancellationToken.None);
+
+        // Assert — user:profile must exist in index
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var entries = store.LoadIndex(scope);
+        entries.Should().Contain(e => e.Name == subject,
+            "plan_profile should store a user:profile memory");
+    }
+
+    [Fact]
+    public async Task PlanProfile_ContentContainsPreferences()
+    {
+        // Act
+        await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", CancellationToken.None);
+
+        // Assert — content must contain the preference text
+        var store = MemoryStoreContext.Current!;
+        string content = await ReadMemoryText(store, "user:profile");
+        content.Should().Contain("autonomy_level: high",
+            "user:profile content must contain 'autonomy_level: high'");
+        content.Should().Contain("review_depth: detailed",
+            "user:profile content must contain 'review_depth: detailed'");
+    }
+
+    [Fact]
+    public async Task PlanProfile_HasProvenanceKeyword()
+    {
+        // Act
+        await _tools.PlanProfile("autonomy_level: high", CancellationToken.None);
+
+        // Assert — index entry Keywords must contain "provenance:agent"
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name == subject);
+        entry.Keywords.Should().Contain("provenance:agent",
+            "user:profile index entry must have provenance:agent keyword");
+    }
+
+    [Fact]
+    public async Task PlanProfile_OverwritesOnSecondCall()
+    {
+        // Act — two calls with different content
+        await _tools.PlanProfile("autonomy_level: high", CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", CancellationToken.None);
+
+        // Assert — artifact must have ChunkCount == 1 (overwrite, not append)
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name == subject);
+        entry.ChunkCount.Should().Be(1,
+            "two plan_profile calls should produce ChunkCount == 1 (overwrite semantics)");
+    }
+
+    [Fact]
+    public async Task PlanProfile_DoesNotArchive()
+    {
+        // Act — two calls with different content
+        await _tools.PlanProfile("autonomy_level: high", CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", CancellationToken.None);
+
+        // Assert — only one entry in index, content from second call
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var entries = store.LoadIndex(scope);
+        entries.Where(e => e.Name == subject).Should().HaveCount(1,
+            "plan_profile must use overwrite (not append) — only 1 index entry expected");
+
+        // Content should be from the second call
+        string content = await ReadMemoryText(store, "user:profile");
+        content.Should().Contain("autonomy_level: low",
+            "user:profile should contain content from the second call (overwrite semantics)");
+        content.Should().NotContain("autonomy_level: high",
+            "user:profile must not contain content from first call (archiveExisting: false means no version created AND content is replaced)");
+    }
+
+    [Fact]
+    public async Task PlanProfile_RespectsResponseCap()
+    {
+        // Act
+        string result = await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "plan_profile response must be <= 8192 characters (MaxResponseChars)");
+    }
+
+    [Fact]
+    public async Task Guide_MentionsLearningMemories()
+    {
+        // Arrange — Guide() does not access store but use scope for safety
+        var mcpTools = new ScriniaMcpTools();
+
+        // Act
+        string result = await mcpTools.Guide(CancellationToken.None);
+
+        // Assert — must mention learning memory topics and provenance keyword
+        result.Should().Contain("learn:execution-outcomes",
+            "guide() must mention learn:execution-outcomes learning memory topic");
+        result.Should().Contain("user:profile",
+            "guide() must mention user:profile learning memory topic");
+        result.Should().Contain("provenance:agent",
+            "guide() must mention provenance:agent keyword");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     /// <summary>

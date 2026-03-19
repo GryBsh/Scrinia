@@ -1242,6 +1242,18 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    [McpServerTool(Name = "plan_profile"), Description(
+        "Store or update user preferences for agent behavior. " +
+        "Preferences persist across sessions in user:profile. " +
+        "Accepts key-value text (e.g. 'autonomy_level: high\\nreview_depth: detailed'). " +
+        "Each call fully overwrites the previous profile.")]
+    public async Task<string> PlanProfile(
+        [Description("Key-value preferences text, one per line (e.g. 'autonomy_level: high').")] string profile,
+        CancellationToken cancellationToken = default)
+    {
+        throw new NotImplementedException();
+    }
+
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
 
     /// <summary>
