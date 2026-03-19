@@ -205,8 +205,39 @@ When connected via MCP, Scrinia exposes 30 tools across two tool classes: 18 mem
 
 Planning tools use dedicated topic conventions: `project:*` for project state, `plan:*` for roadmaps, `task:*` for individual tasks, `learn:*` for retrospective outcomes, and `user:*` for user preferences. The `list` and `search` memory tools support `excludeTopics` to filter planning topics out of general queries.
 
+## Planning Quick Start
+
+Scrinia's 12 planning tools let an agent manage a full project lifecycle. Here's a minimal flow:
+
+```
+# 1. Initialize a project
+project_init(context: "Build a REST API for user management with JWT auth")
+
+# 2. Define requirements
+plan_requirements(requirements: "## v1\n- AUTH-01: User registration\n- AUTH-02: JWT login\n- API-01: CRUD endpoints")
+
+# 3. Create a phased roadmap (every REQ-ID must appear exactly once)
+plan_roadmap(roadmap: "## Phase 1: Auth\nRequirements: AUTH-01, AUTH-02\n## Phase 2: API\nRequirements: API-01")
+
+# 4. Decompose Phase 1 into tasks
+plan_tasks(phaseId: "01", tasks: "## Task 01\nWave: 1\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201")
+
+# 5. Execute: get task → do the work → mark complete
+task_next(phaseId: "01")      # returns unblocked tasks
+task_complete(taskName: "task:01-1-01", outcome: "Registration endpoint created. Tests pass.")
+
+# 6. Verify the phase achieved its goal
+plan_verify(phaseId: "01")    # structured PASS/FAIL per criterion
+
+# 7. Resume anytime after context loss
+plan_resume()                 # restores full project state
+```
+
+See [Planning Tools Guide](planning-tools.md) for full documentation of all 12 tools.
+
 ## What's Next
 
+- **[Planning Tools Guide](planning-tools.md)** -- Full planning lifecycle reference with examples
 - **[CLI Reference](cli-reference.md)** -- Full command reference, configuration, embedding providers, MCP client setup
 - **[Server Administration](server-admin.md)** -- Deployment, authentication, REST API, Web UI, Docker
 - **[Architecture Overview](architecture/overview.md)** -- System design, project structure, dependency graph
