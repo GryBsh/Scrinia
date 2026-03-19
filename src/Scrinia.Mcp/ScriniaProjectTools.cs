@@ -1041,8 +1041,17 @@ public sealed class ScriniaProjectTools
     /// Appends an outcome entry to the named execution log memory using AppendChunk.
     /// Creates the log if it doesn't exist.
     /// </summary>
-    private static async Task AppendToExecutionLogAsync(
+    private static Task AppendToExecutionLogAsync(
         IMemoryStore store, string logName, string outcomeText, CancellationToken ct)
+        => AppendToExecutionLogAsync(store, logName, outcomeText, keywords: null, ct);
+
+    /// <summary>
+    /// Appends an outcome entry to the named execution log memory using AppendChunk,
+    /// optionally setting keywords on the index entry.
+    /// Creates the log if it doesn't exist.
+    /// </summary>
+    private static async Task AppendToExecutionLogAsync(
+        IMemoryStore store, string logName, string outcomeText, string[]? keywords, CancellationToken ct)
     {
         var (logScope, logSubject) = store.ParseQualifiedName(logName);
 
@@ -1095,6 +1104,7 @@ public sealed class ScriniaProjectTools
             ChunkCount: chunkCount,
             CreatedAt: logEntry?.CreatedAt ?? DateTimeOffset.UtcNow,
             Description: desc,
+            Keywords: keywords,
             UpdatedAt: updatedAt);
 
         store.Upsert(newLogEntry, logScope);
@@ -1209,7 +1219,27 @@ public sealed class ScriniaProjectTools
         [Description("Free-text describing lessons learned for future phases.")] string lessons,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException();
+        var store = CurrentStore;
+
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+        string retroContent =
+            $"## Phase {phaseId} Retrospective\n" +
+            $"**Date:** {timestamp}\n\n" +
+            $"## What Worked\n{whatWorked}\n\n" +
+            $"## What Failed\n{whatFailed}\n\n" +
+            $"## Lessons\n{lessons}\n\n" +
+            $"## Provenance\nAuthored by agent via plan_retrospective. Keyword: provenance:agent";
+
+        await AppendToExecutionLogAsync(store, "learn:execution-outcomes",
+            retroContent, keywords: ["provenance:agent"], cancellationToken);
+
+        string response = $"Phase {phaseId} retrospective stored in learn:execution-outcomes. " +
+            "Searchable via standard search. Use get_chunk() to retrieve individual phase retrospectives.";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
     }
 
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
