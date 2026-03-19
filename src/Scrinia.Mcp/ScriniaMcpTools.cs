@@ -150,6 +150,26 @@ public sealed class ScriniaMcpTools
             **Don't store:** session-specific state (use ~ephemeral instead).
             **Exception:** use `~checkpoint` to preserve working context across context compactions.
 
+            ## Project planning tools
+            Scrinia includes 12 planning tools for structured project lifecycle management.
+            Plans are stored as standard scrinia memories with reserved topic conventions.
+
+            **Lifecycle flow:**
+            `project_init` → `plan_requirements` → `plan_roadmap` → `plan_tasks`
+            → `task_next` → (execute) → `task_complete` → `plan_verify`
+            → (if gaps) `plan_gaps` → `task_next` → ...
+            → `plan_retrospective`
+
+            **Tools by stage:**
+            - Setup: `project_init`, `plan_requirements`, `plan_roadmap`
+            - Execution: `plan_tasks`, `task_next`, `task_complete`
+            - Verification: `plan_verify`, `plan_gaps`
+            - Recovery: `plan_resume`, `plan_status`
+            - Learning: `plan_retrospective`, `plan_profile`
+
+            **Reserved topics:** `project:*`, `plan:*`, `task:*`, `learn:*`, `user:*`
+            Use `excludeTopics="plan,task,project,learn"` on `list`/`search` to hide planning from knowledge queries.
+
             ## Agent learning memories
             The planning tools create and maintain learning memories:
             - `learn:execution-outcomes` — phase retrospectives (what worked, what failed, lessons)

@@ -324,6 +324,21 @@ Both `FileMemoryStore` and `ScriniaArtifactStore` use file locks for all index a
 - Topic discovery cache with 2-second TTL
 - Cross-process `FileLock` for filesystem-level coordination
 
+### Planning Tool Task Queries
+
+The `task_next` planning tool demonstrates an important performance pattern — keyword-only index scan:
+
+1. `store.LoadIndex("local-topic:task")` — loads index entries (O(1) via CachedIndex)
+2. Filter by `phase:{phaseId}` keyword — no artifact decode
+3. Filter by `status:pending` keyword
+4. Group by `wave:{N}`, select lowest wave
+5. Check `depends_on:{subject}` against completed task set
+6. Only then decode artifact content for the unblocked result set
+
+This means `task_next` with 100 tasks scans keywords only, decoding perhaps 3-5 artifacts for the current wave — not all 100.
+
+`task_complete` updates status keywords via record `with`-expression + `Upsert` — no `ArchiveVersion` call (prevents version bloat from frequent status updates).
+
 ### Version Archiving
 
 When a memory is overwritten, the old version is moved to `.scrinia/store/versions/{name}_{timestamp}.nmp2`. This provides a safety net for accidental overwrites.

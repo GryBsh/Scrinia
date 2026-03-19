@@ -292,6 +292,59 @@ public sealed record TaskRecord(string Id, string Phase, string Name, string? De
 
 **`PlanningJsonContext`**: Source-gen JSON context for trimming safety. Serializes `ProjectRecord`, `PlanRecord`, `TaskRecord` (and their array forms). Camel case, ignores nulls, indented.
 
+### Planning Tools Usage Examples
+
+**Project Setup:**
+```
+project_init(context: "# My App\n## Goals\nBuild a REST API\n## Constraints\nUse PostgreSQL")
+→ "Initialized project 'my-app'. Stored: project:context, project:state."
+
+plan_requirements(requirements: "## v1\n- AUTH-01: JWT login\n- API-01: CRUD endpoints")
+→ "Stored: project:requirements."
+
+plan_roadmap(roadmap: "## Phase 1\nRequirements: AUTH-01\n## Phase 2\nRequirements: API-01")
+→ "Stored: plan:roadmap."
+```
+
+**Execution:**
+```
+plan_tasks(phaseId: "01", tasks: "## Task 01\nWave: 1\nDepends on: none\nAction: Create auth endpoint\nAcceptance criteria:\n- POST /login returns JWT")
+→ "Created 1 task(s) for phase 01 in 1 wave(s)."
+
+task_next(phaseId: "01")
+→ "Phase 01 — Wave 1 — 1 unblocked task(s):\n## task:01-1-01\nAction: Create auth endpoint..."
+
+task_complete(taskName: "task:01-1-01", outcome: "Auth endpoint created. Tests pass.")
+→ "Task 'task:01-1-01' marked complete."
+```
+
+**Verification:**
+```
+plan_verify(phaseId: "01")
+→ "Phase 01 Verification — 1 criteria:\n1. PASS — POST /login returns JWT\n   Evidence: task:01-1-01 completed"
+
+plan_gaps(phaseId: "01", failedCriteria: "## Gap 01\nFailed: Rate limiting\nFix: Add middleware")
+→ "Created 1 gap closure task(s) for phase 01."
+```
+
+**Recovery:**
+```
+plan_resume()
+→ "Project: my-app\nPhase: Phase 01\nProgress: 50%\nNext: run task_next..."
+
+plan_status()
+→ "Project: my-app\nPhase: Phase 01\nProgress: 50%\nBlockers: none"
+```
+
+**Learning:**
+```
+plan_retrospective(phaseId: "01", whatWorked: "TDD caught edge cases", whatFailed: "Forgot rate limiting", lessons: "Check non-functional requirements early")
+→ "Phase 01 retrospective stored in learn:execution-outcomes."
+
+plan_profile(profile: "autonomy_level: high\nreview_depth: detailed")
+→ "User profile stored in user:profile."
+```
+
 ### `excludeTopics` scope filtering
 
 `IMemoryStore` provides default interface methods for `ListScoped`, `SearchAll`, and `ResolveReadScopes` that accept an optional `excludeTopics` parameter (comma-separated topic names, e.g. `"plan,task,project,learn"`). Topics are matched as `local-topic:{topicName}` scopes. `FileMemoryStore` provides efficient overrides. The `list` and `search` MCP tools expose `excludeTopics` to let agents hide planning namespaces from knowledge listings.

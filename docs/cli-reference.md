@@ -391,6 +391,8 @@ The planning tools (`ScriniaProjectTools`) use reserved topic prefixes:
 
 The `list` and `search` MCP tools support an `excludeTopics` parameter to filter planning topics out of general queries.
 
+> **Note:** The 12 planning tools (`project_init`, `plan_requirements`, `plan_roadmap`, `plan_tasks`, `task_next`, `task_complete`, `plan_verify`, `plan_gaps`, `plan_resume`, `plan_status`, `plan_retrospective`, `plan_profile`) are MCP-only — they are accessed via `scri serve`, not as standalone CLI commands. See the [Planning Tools Guide](planning-tools.md) for full documentation.
+
 ## Portable Bundles
 
 Bundles (`.scrinia-bundle` files) are ZIP archives containing memories and their index. They're the mechanism for sharing knowledge between workspaces or team members.

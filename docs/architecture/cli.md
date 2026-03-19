@@ -231,6 +231,34 @@ The CLI is safe for trimming because:
 - No dynamic assembly loading (plugins are child processes)
 - `InternalsVisibleTo` for test access only
 
+## Planning Data Flow
+
+The 12 planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write tool updates `project:state`:
+
+```
+project_init ──→ project:context + project:state
+                      ↓
+plan_requirements → project:requirements + project:state (updated)
+                      ↓
+plan_roadmap ────→ plan:roadmap + project:state (updated)
+                      ↓
+plan_tasks ──────→ task:{phaseId}-{wave}-{id} memories + project:state
+                      ↓
+task_next ───────→ reads LoadIndex("local-topic:task"), filters by keywords
+                   (status:pending → phase:{id} → min wave → unblocked deps)
+                   NO artifact decode during scan — keyword-only
+                      ↓
+task_complete ───→ Upsert(entry with status:complete) + AppendChunk to execution log
+                      ↓
+plan_verify ─────→ reads plan:roadmap criteria + task index + execution log
+                   returns structured PASS/FAIL per criterion
+                      ↓
+plan_gaps ───────→ creates task:{phaseId}-gap-{id} with gap_closure:true
+                   re-opens phase in project:state
+```
+
+`plan_resume` and `plan_status` read `project:state`. If missing, `RebuildStateFromMemoriesAsync` reconstructs from `project:context` + `plan:roadmap` + task index.
+
 ## JSON CLI Output
 
 All CLI commands support a `--json` flag for machine-readable JSON output. A source-generated `CliJsonContext` ensures trimming safety. When `--json` is passed, Spectre.Console rendering is bypassed and structured JSON is written to stdout instead.
