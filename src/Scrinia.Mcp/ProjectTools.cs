@@ -36,6 +36,42 @@ public sealed record TaskRecord(
     string[]? DependsOn,
     string[]? AcceptanceCriteria);
 
+/// <summary>Represents a concern/risk tracked across project phases (concern:* topic).</summary>
+public sealed record ConcernRecord(
+    string Id,
+    string Phase,
+    string Description,
+    string Severity,
+    string? Status,
+    string? Resolution,
+    string? ResolvedAt);
+
+/// <summary>Represents a reusable agent skill/prompt template (skill:* topic).</summary>
+public sealed record SkillRecord(
+    string Id,
+    string Name,
+    string? Description,
+    string? SystemPrompt,
+    string[]? Tools,
+    string[]? Capabilities);
+
+/// <summary>Represents a research investigation and its findings (research:* topic).</summary>
+public sealed record ResearchRecord(
+    string Id,
+    string Topic,
+    string? Question,
+    string? Status,
+    string? Findings,
+    string[]? Sources);
+
+/// <summary>Represents a project goal that can evolve over time (project:goals topic).</summary>
+public sealed record GoalRecord(
+    string Id,
+    string Description,
+    string? Status,
+    string? Outcome,
+    string? CompletedAt);
+
 // ── Source-gen JSON context (trimming-safe) ──────────────────────────────────
 
 [JsonSourceGenerationOptions(
@@ -45,9 +81,17 @@ public sealed record TaskRecord(
 [JsonSerializable(typeof(ProjectRecord))]
 [JsonSerializable(typeof(PlanRecord))]
 [JsonSerializable(typeof(TaskRecord))]
+[JsonSerializable(typeof(ConcernRecord))]
+[JsonSerializable(typeof(SkillRecord))]
+[JsonSerializable(typeof(ResearchRecord))]
+[JsonSerializable(typeof(GoalRecord))]
 [JsonSerializable(typeof(ProjectRecord[]))]
 [JsonSerializable(typeof(PlanRecord[]))]
 [JsonSerializable(typeof(TaskRecord[]))]
+[JsonSerializable(typeof(ConcernRecord[]))]
+[JsonSerializable(typeof(SkillRecord[]))]
+[JsonSerializable(typeof(ResearchRecord[]))]
+[JsonSerializable(typeof(GoalRecord[]))]
 public partial class PlanningJsonContext : JsonSerializerContext;
 
 // ── Planning MCP tool class ──────────────────────────────────────────────────
