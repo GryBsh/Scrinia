@@ -756,6 +756,184 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_tasks response must be <= 8192 characters (MaxResponseChars)");
     }
 
+    // -- task_next tests (EXEC-01, EXEC-03) --
+
+    private async Task SetupProjectWithTasks(string phaseId, string tasksInput)
+    {
+        await SetupProjectAndRoadmap();
+        await _tools.PlanTasks(phaseId, tasksInput, CancellationToken.None);
+    }
+
+    private static string MakeThreeTaskInput() =>
+        """
+        ## Task 01
+        Wave: 1
+        Depends on: none
+        Action: Implement authentication
+        Acceptance criteria:
+        - Users can log in
+
+        ## Task 02
+        Wave: 1
+        Depends on: none
+        Action: Implement user profile
+        Acceptance criteria:
+        - Profile data is stored
+
+        ## Task 03
+        Wave: 1
+        Depends on: none
+        Action: Implement dashboard
+        Acceptance criteria:
+        - Dashboard renders
+        """;
+
+    private static string MakeWaveDependencyInput() =>
+        """
+        ## Task 01
+        Wave: 1
+        Depends on: none
+        Action: Implement authentication
+        Acceptance criteria:
+        - Users can log in
+
+        ## Task 02
+        Wave: 2
+        Depends on: 01-1-01
+        Action: Implement something requiring auth
+        Acceptance criteria:
+        - Requires auth
+        """;
+
+    [Fact]
+    public async Task TaskNext_ReturnsUnblockedTasks()
+    {
+        // Arrange - 2 wave-1 tasks with no dependencies
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert - result should contain both task names
+        result.Should().Contain("01-1-01", "task_next should include first task");
+        result.Should().Contain("01-1-02", "task_next should include second task");
+    }
+
+    [Fact]
+    public async Task TaskNext_ReturnsAllInWave()
+    {
+        // Arrange - 3 wave-1 tasks
+        await SetupProjectWithTasks("01", MakeThreeTaskInput());
+
+        // Act
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert - ALL 3 should appear (EXEC-03: returns batch, not single)
+        result.Should().Contain("01-1-01", "task_next should include task 01");
+        result.Should().Contain("01-1-02", "task_next should include task 02");
+        result.Should().Contain("01-1-03", "task_next should include task 03");
+    }
+
+    [Fact]
+    public async Task TaskNext_SkipsBlockedTasks()
+    {
+        // Arrange - wave 1: task A (no deps), wave 2: task B (depends on A)
+        await SetupProjectWithTasks("01", MakeWaveDependencyInput());
+
+        // Act - call task_next for phase 01
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert - only wave-1 task should appear; wave-2 task should not
+        result.Should().Contain("01-1-01", "wave-1 unblocked task should appear");
+        result.Should().NotContain("01-2-02", "wave-2 blocked task should NOT appear");
+    }
+
+    [Fact]
+    public async Task TaskNext_SkipsCompletedTasks()
+    {
+        // Arrange - 2 wave-1 tasks; complete task 1
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+
+        // Act
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert - only task 2 should appear; task 1 is complete
+        result.Should().Contain("01-1-02", "incomplete task 02 should appear");
+        result.Should().NotContain("01-1-01", "completed task 01 should NOT appear in pending list");
+    }
+
+    [Fact]
+    public async Task TaskNext_ReturnsEmptyWhenAllComplete()
+    {
+        // Arrange - 1 task; complete it
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+
+        // Act
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert - should indicate no pending tasks
+        result.Should().ContainEquivalentOf("no pending", "result should indicate no pending tasks when all complete");
+    }
+
+    [Fact]
+    public async Task TaskNext_FiltersCorrectPhase()
+    {
+        // Arrange - create tasks for phase "01"; create tasks for a "02" project
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+        // Add phase 02 tasks too
+        await _tools.PlanTasks("02", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Act - only request phase 01
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert - only phase-01 tasks should appear
+        result.Should().Contain("01-1-", "phase-01 tasks should appear");
+        // Phase-02 tasks should not dominate the result (task names contain phase identifier)
+        // Phase 02 tasks are named with "02-1-01", "02-1-02"
+        result.Should().NotContain("02-1-01", "phase-02 tasks should NOT appear when filtering for phase 01");
+    }
+
+    [Fact]
+    public async Task TaskNext_FailsWithoutProject()
+    {
+        // Act - call task_next without any project setup
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert - should return an error or "no pending tasks"
+        bool isError = result.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
+            || result.Contains("no pending", StringComparison.OrdinalIgnoreCase);
+        isError.Should().BeTrue("task_next without any project should return error or no-pending response");
+    }
+
+    [Fact]
+    public async Task TaskNext_RespectsResponseCap()
+    {
+        // Arrange - create many tasks
+        await SetupProjectAndRoadmap();
+        var manyTasks = new System.Text.StringBuilder();
+        for (int i = 1; i <= 20; i++)
+        {
+            manyTasks.AppendLine($"## Task {i:D2}");
+            manyTasks.AppendLine("Wave: 1");
+            manyTasks.AppendLine("Depends on: none");
+            manyTasks.AppendLine($"Action: Implement feature {i} with a very long description that adds many characters to test the 8KB cap");
+            manyTasks.AppendLine("Acceptance criteria:");
+            manyTasks.AppendLine($"- Feature {i} works correctly with many detailed criteria spanning multiple lines");
+            manyTasks.AppendLine();
+        }
+        await _tools.PlanTasks("01", manyTasks.ToString(), CancellationToken.None);
+
+        // Act
+        string result = await _tools.TaskNext("01", CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "task_next response must be <= 8192 characters (MaxResponseChars)");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)
