@@ -398,6 +398,114 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    /// <summary>Returns all unblocked tasks in the current wave for a phase.</summary>
+    [McpServerTool(Name = "task_next"), Description(
+        "Returns all unblocked tasks in the current wave for a phase. " +
+        "The agent decides which to execute and in what order. Call task_complete when done.")]
+    public async Task<string> TaskNext(
+        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Get task scope via ParseQualifiedName — "local-topic:task" scope
+        var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+
+        // Keyword-only scan — no ResolveArtifactAsync during filtering
+        var allEntries = store.LoadIndex(taskScope);
+
+        // Filter to tasks for this phase
+        var phaseEntries = allEntries
+            .Where(e => HasKeyword(e, $"phase:{phaseId}"))
+            .ToList();
+
+        if (phaseEntries.Count == 0)
+            return $"No pending tasks for phase {phaseId}.";
+
+        // Find pending entries
+        var pendingEntries = phaseEntries
+            .Where(e => HasKeyword(e, "status:pending"))
+            .ToList();
+
+        if (pendingEntries.Count == 0)
+            return $"No pending tasks for phase {phaseId}.";
+
+        // Find the lowest wave among pending entries
+        int currentWave = pendingEntries.Min(e => ParseWave(e));
+
+        // Filter pending to current wave only
+        var currentWaveEntries = pendingEntries
+            .Where(e => ParseWave(e) == currentWave)
+            .ToList();
+
+        // Build a HashSet of completed task names for dependency checking
+        var completedNames = allEntries
+            .Where(e => HasKeyword(e, "status:complete"))
+            .Select(e => e.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Filter to unblocked: all depends_on names must be in completedNames
+        var unblockedEntries = currentWaveEntries
+            .Where(e => GetDependencies(e).All(dep => completedNames.Contains(dep)))
+            .ToList();
+
+        if (unblockedEntries.Count == 0)
+            return $"No unblocked tasks for phase {phaseId} in wave {currentWave}. Some tasks may be waiting on dependencies.";
+
+        // Build response: read artifact content only for unblocked tasks
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Phase {phaseId} — Wave {currentWave} — {unblockedEntries.Count} unblocked task(s):");
+        sb.AppendLine();
+
+        foreach (var entry in unblockedEntries)
+        {
+            string qualifiedName = $"task:{entry.Name}";
+            string content;
+            try
+            {
+                content = await ReadMemoryAsync(store, qualifiedName, cancellationToken);
+            }
+            catch (FileNotFoundException)
+            {
+                content = "(content not found)";
+            }
+
+            sb.AppendLine($"## {qualifiedName}");
+            sb.AppendLine(content);
+            sb.AppendLine();
+
+            // Truncate early if getting close to limit
+            if (sb.Length > MaxResponseChars - 200)
+            {
+                sb.AppendLine("[... truncated to 8KB limit]");
+                break;
+            }
+        }
+
+        // Update project state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "30",
+            lastAction: $"task_next called for phase {phaseId} wave {currentWave}",
+            blockers: "none",
+            nextStep: $"execute tasks for phase {phaseId} wave {currentWave}, then call task_complete for each",
+            cancellationToken);
+
+        string response = sb.ToString();
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -617,6 +725,161 @@ public sealed class ScriniaProjectTools
         }
         return count;
     }
+
+    /// <summary>Mark a task complete with outcome metadata. Appends to execution log.</summary>
+    [McpServerTool(Name = "task_complete"), Description(
+        "Mark a task complete with outcome metadata. Appends to execution log. " +
+        "Call task_next to get the next task.")]
+    public async Task<string> TaskComplete(
+        [Description("Qualified task name (e.g. 'task:01-1-01').")] string taskName,
+        [Description("Free-text describing what was done, any deviations or outcomes.")] string outcome,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Parse task name to get scope and subject
+        var (scope, subject) = store.ParseQualifiedName(taskName);
+
+        // Load index and find the existing task entry
+        var allEntries = store.LoadIndex(scope);
+        var existing = allEntries.FirstOrDefault(e => e.Name == subject);
+
+        if (existing is null)
+            return $"Error: task '{taskName}' not found.";
+
+        // Replace status keyword: remove status:* and add status:complete
+        var newKeywords = (existing.Keywords ?? [])
+            .Where(k => !k.StartsWith("status:", StringComparison.OrdinalIgnoreCase))
+            .Append("status:complete")
+            .ToArray();
+
+        // Update entry via record with-expression — DO NOT call ArchiveVersion
+        var updated = existing with
+        {
+            Keywords = newKeywords,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        store.Upsert(updated, scope);
+
+        // Append to execution log: task:{phaseId}-execution-log
+        string phaseId = existing.Keywords?
+            .FirstOrDefault(k => k.StartsWith("phase:", StringComparison.OrdinalIgnoreCase))
+            ?["phase:".Length..] ?? "unknown";
+
+        string logName = $"task:{phaseId}-execution-log";
+        string outcomeEntry = $"[{DateTimeOffset.UtcNow:o}] COMPLETE: {taskName}\n{outcome}";
+
+        await AppendToExecutionLogAsync(store, logName, outcomeEntry, cancellationToken);
+
+        // Update project state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "30";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: progressPct,
+            lastAction: $"Completed {taskName}",
+            blockers: "none",
+            nextStep: "run task_next to get the next pending task",
+            cancellationToken);
+
+        string response = $"Task '{taskName}' marked complete. Execution log updated. Run task_next for next task.";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
+    /// <summary>
+    /// Appends an outcome entry to the named execution log memory using AppendChunk.
+    /// Creates the log if it doesn't exist.
+    /// </summary>
+    private static async Task AppendToExecutionLogAsync(
+        IMemoryStore store, string logName, string outcomeText, CancellationToken ct)
+    {
+        var (logScope, logSubject) = store.ParseQualifiedName(logName);
+
+        // Check for existing log artifact
+        string? existingArtifact = null;
+        long existingBytes = 0;
+        var logEntries = store.LoadIndex(logScope);
+        var logEntry = logEntries.FirstOrDefault(e => e.Name == logSubject);
+
+        if (logEntry is not null)
+        {
+            try
+            {
+                existingArtifact = await store.ReadArtifactAsync(logSubject, logScope, ct);
+                existingBytes = logEntry.OriginalBytes;
+            }
+            catch (FileNotFoundException)
+            {
+                existingArtifact = null;
+            }
+        }
+
+        // Build new artifact: AppendChunk if existing, Encode if fresh
+        string newArtifact;
+        int newByteCount = System.Text.Encoding.UTF8.GetByteCount(outcomeText);
+        long totalBytes;
+
+        if (existingArtifact is not null)
+        {
+            newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, outcomeText);
+            totalBytes = existingBytes + newByteCount;
+        }
+        else
+        {
+            newArtifact = Nmp2ChunkedEncoder.Encode(outcomeText);
+            totalBytes = newByteCount;
+        }
+
+        await store.WriteArtifactAsync(logSubject, logScope, newArtifact, ct);
+
+        string uri = store.ArtifactUri(logSubject, logScope);
+        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
+        string desc = outcomeText[..Math.Min(200, outcomeText.Length)];
+        DateTimeOffset? updatedAt = existingArtifact is not null ? DateTimeOffset.UtcNow : null;
+
+        var newLogEntry = new ArtifactEntry(
+            Name: logSubject,
+            Uri: uri,
+            OriginalBytes: totalBytes,
+            ChunkCount: chunkCount,
+            CreatedAt: logEntry?.CreatedAt ?? DateTimeOffset.UtcNow,
+            Description: desc,
+            UpdatedAt: updatedAt);
+
+        store.Upsert(newLogEntry, logScope);
+    }
+
+    // ── Keyword helpers (EXEC-01) ─────────────────────────────────────────────
+
+    /// <summary>Returns true if the entry has the given keyword (case-insensitive).</summary>
+    private static bool HasKeyword(ArtifactEntry e, string keyword) =>
+        e.Keywords?.Contains(keyword, StringComparer.OrdinalIgnoreCase) == true;
+
+    /// <summary>Extracts wave number from "wave:N" keyword; returns 0 if not found.</summary>
+    private static int ParseWave(ArtifactEntry e)
+    {
+        string? waveKw = e.Keywords?.FirstOrDefault(k =>
+            k.StartsWith("wave:", StringComparison.OrdinalIgnoreCase));
+        return waveKw is not null && int.TryParse(waveKw[5..], out int w) ? w : 0;
+    }
+
+    /// <summary>Returns all subject names from "depends_on:*" keywords.</summary>
+    private static IEnumerable<string> GetDependencies(ArtifactEntry e) =>
+        e.Keywords?
+            .Where(k => k.StartsWith("depends_on:", StringComparison.OrdinalIgnoreCase))
+            .Select(k => k["depends_on:".Length..])
+        ?? Enumerable.Empty<string>();
 
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
 
