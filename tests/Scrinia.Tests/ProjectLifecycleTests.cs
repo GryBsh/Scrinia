@@ -1117,7 +1117,335 @@ public sealed class ProjectLifecycleTests : IDisposable
             "task_complete response must be <= 8192 characters (MaxResponseChars)");
     }
 
+    // -- plan_verify tests (PLAN-03, VERI-01, VERI-02) --
+
+    [Fact]
+    public async Task PlanVerify_ReturnsStructuredPassFail()
+    {
+        // Arrange — full lifecycle with roadmap success criteria + all tasks complete
+        await SetupProjectWithCriteria("01");
+        await _tools.TaskComplete("task:01-1-01", "Implemented auth", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Implemented profile", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert — must contain PASS or FAIL structured markers
+        result.Should().MatchRegex("(PASS|FAIL):",
+            "plan_verify must return structured PASS/FAIL markers");
+    }
+
+    [Fact]
+    public async Task PlanVerify_ChecksAllCriteriaInPhase()
+    {
+        // Arrange — roadmap with 2 success criteria
+        await SetupProjectWithCriteria("01");
+        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert — both criteria should appear in output
+        result.Should().Contain("All tasks complete",
+            "plan_verify should check task completion criterion");
+        result.Should().Contain("execution log",
+            "plan_verify should check execution log criterion");
+    }
+
+    [Fact]
+    public async Task PlanVerify_FailsWhenTasksIncomplete()
+    {
+        // Arrange — setup tasks but do NOT complete them
+        await SetupProjectWithCriteria("01");
+        // No task_complete calls
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert — must show at least one FAIL
+        result.Should().Contain("FAIL:",
+            "plan_verify should report FAIL when tasks are incomplete");
+    }
+
+    [Fact]
+    public async Task PlanVerify_PassesWhenAllTasksComplete()
+    {
+        // Arrange — complete both tasks
+        await SetupProjectWithCriteria("01");
+        await _tools.TaskComplete("task:01-1-01", "Done auth", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done profile", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert — task completion criterion should PASS
+        result.Should().Contain("PASS:",
+            "plan_verify should report PASS when all tasks are complete");
+    }
+
+    [Fact]
+    public async Task PlanVerify_IncludesEvidence()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert — must contain evidence strings
+        result.Should().Contain("Evidence:",
+            "plan_verify must include Evidence: strings for each criterion");
+    }
+
+    [Fact]
+    public async Task PlanVerify_ScopesToTargetPhase()
+    {
+        // Arrange — roadmap with criteria for phase 01 AND phase 02
+        await _tools.ProjectInit("Goals: test", CancellationToken.None);
+        await _tools.PlanRequirements("- SCOPE-01: phase one req\n- SCOPE-02: phase two req", CancellationToken.None);
+        string roadmapWithTwoPhases =
+            "### Phase 1\nSCOPE-01\n\n**Success Criteria** (what must be TRUE):\n- Criterion for phase one only\n\n" +
+            "### Phase 2\nSCOPE-02\n\n**Success Criteria** (what must be TRUE):\n- Criterion for phase two only";
+        await _tools.PlanRoadmap(roadmapWithTwoPhases, CancellationToken.None);
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+
+        // Act — verify only phase 01
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert — phase 02 criterion must NOT appear
+        result.Should().Contain("phase one only",
+            "plan_verify('01') should include phase 01 criteria");
+        result.Should().NotContain("phase two only",
+            "plan_verify('01') must NOT include phase 02 criteria");
+    }
+
+    [Fact]
+    public async Task PlanVerify_FailsWithoutRoadmap()
+    {
+        // Arrange — only init, no roadmap
+        await _tools.ProjectInit("Goals: test", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert
+        result.Should().StartWith("Error:",
+            "plan_verify without roadmap should return an error");
+    }
+
+    [Fact]
+    public async Task PlanVerify_RespectsResponseCap()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "plan_verify response must be <= 8192 characters (MaxResponseChars)");
+    }
+
+    [Fact]
+    public async Task PlanVerify_WorksBeforeExecution()
+    {
+        // Arrange — roadmap + plan_tasks but NO task_complete calls
+        await SetupProjectWithCriteria("01");
+        // No task_complete calls — testing pre-execution quality check (PLAN-03)
+
+        // Act
+        string result = await _tools.PlanVerify("01", CancellationToken.None);
+
+        // Assert — should return pass/fail (with failures for incomplete tasks), not an error
+        result.Should().MatchRegex("(PASS|FAIL):",
+            "plan_verify should work before execution and report task completion status");
+        result.Should().NotStartWith("Error:",
+            "plan_verify before execution should not return an error");
+    }
+
+    // -- plan_gaps tests (VERI-03) --
+
+    [Fact]
+    public async Task PlanGaps_CreatesGapTasks()
+    {
+        // Arrange — phase with incomplete tasks (plan_verify would show failures)
+        await SetupProjectWithCriteria("01");
+        string failedCriteria = "All tasks must be complete";
+
+        // Act
+        await _tools.PlanGaps("01", failedCriteria, CancellationToken.None);
+
+        // Assert — gap task memory must exist in index
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("task:01-gap-01");
+        var entries = store.LoadIndex(scope);
+        entries.Should().Contain(e => e.Name == "01-gap-01",
+            "plan_gaps should create task:01-gap-01 in index");
+    }
+
+    [Fact]
+    public async Task PlanGaps_GapTaskHasGapClosureKeyword()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+
+        // Act
+        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+
+        // Assert
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("task:01-gap-01");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name == "01-gap-01");
+
+        entry.Should().NotBeNull("gap task should exist");
+        entry!.Keywords.Should().Contain("gap_closure:true",
+            "gap task must have gap_closure:true keyword");
+    }
+
+    [Fact]
+    public async Task PlanGaps_GapTaskHasStatusPending()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+
+        // Act
+        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+
+        // Assert
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("task:01-gap-01");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name == "01-gap-01");
+
+        entry!.Keywords.Should().Contain("status:pending",
+            "gap task must have status:pending keyword");
+    }
+
+    [Fact]
+    public async Task PlanGaps_GapTaskHasCorrectPhase()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+
+        // Act
+        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+
+        // Assert
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("task:01-gap-01");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name == "01-gap-01");
+
+        entry!.Keywords.Should().Contain("phase:01",
+            "gap task must have phase:01 keyword");
+    }
+
+    [Fact]
+    public async Task PlanGaps_ReopensPhaseStatus()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+
+        // Act
+        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+
+        // Assert — project:state should indicate phase was re-opened
+        var store = MemoryStoreContext.Current!;
+        string stateText = await ReadMemoryText(store, "project:state");
+        stateText.Should().ContainEquivalentOf("re-open",
+            "project:state should reflect phase re-opened for gap closure");
+    }
+
+    [Fact]
+    public async Task PlanGaps_CreatesMultipleGapTasks()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+        string threeCriteria = "Criterion one\nCriterion two\nCriterion three";
+
+        // Act
+        await _tools.PlanGaps("01", threeCriteria, CancellationToken.None);
+
+        // Assert — three gap tasks: gap-01, gap-02, gap-03
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("task:01-gap-01");
+        var entries = store.LoadIndex(scope);
+        entries.Should().Contain(e => e.Name == "01-gap-01", "gap-01 should exist");
+        entries.Should().Contain(e => e.Name == "01-gap-02", "gap-02 should exist");
+        entries.Should().Contain(e => e.Name == "01-gap-03", "gap-03 should exist");
+    }
+
+    [Fact]
+    public async Task PlanGaps_GapTaskContentIncludesCriterion()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+        string criterion = "Tasks must produce verified output artifacts";
+
+        // Act
+        await _tools.PlanGaps("01", criterion, CancellationToken.None);
+
+        // Assert — gap task content contains criterion text
+        var store = MemoryStoreContext.Current!;
+        string content = await ReadMemoryText(store, "task:01-gap-01");
+        content.Should().Contain(criterion,
+            "gap task content must include the failed criterion text");
+    }
+
+    [Fact]
+    public async Task PlanGaps_FailsWithoutProject()
+    {
+        // Arrange — no project_init called (fresh scope)
+        // No setup at all
+
+        // Act
+        string result = await _tools.PlanGaps("01", "Some criterion", CancellationToken.None);
+
+        // Assert
+        result.Should().StartWith("Error:",
+            "plan_gaps without project should return an error");
+    }
+
+    [Fact]
+    public async Task PlanGaps_RespectsResponseCap()
+    {
+        // Arrange
+        await SetupProjectWithCriteria("01");
+
+        // Act
+        string result = await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "plan_gaps response must be <= 8192 characters (MaxResponseChars)");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Sets up a project with roadmap containing explicit success criteria for the given phase,
+    /// plus two tasks in that phase (without completing them).
+    /// </summary>
+    private async Task SetupProjectWithCriteria(string phaseId)
+    {
+        await _tools.ProjectInit("Goals: build a test project", CancellationToken.None);
+        await _tools.PlanRequirements("- CRIT-01: task storage\n- CRIT-02: verification support", CancellationToken.None);
+        string roadmap =
+            $"### Phase {int.Parse(phaseId)}: Foundation\n" +
+            $"CRIT-01, CRIT-02\n\n" +
+            $"**Success Criteria** (what must be TRUE):\n" +
+            $"  1. All tasks complete in phase {phaseId}\n" +
+            $"  2. Execution log exists and contains completion entries\n";
+        await _tools.PlanRoadmap(roadmap, CancellationToken.None);
+        await _tools.PlanTasks(phaseId, MakeTwoTaskInput(), CancellationToken.None);
+    }
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)
     {
