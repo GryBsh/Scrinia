@@ -278,4 +278,54 @@ public sealed class GoalToolTests : IDisposable
         descText.Should().Contain("list",
             "description should reference the 'list' action");
     }
+
+    // ── GOAL-03 tests (plan_status goal delta) ────────────────────────────────
+
+    [Fact]
+    public async Task PlanStatus_ShowsGoalDelta()
+    {
+        // Arrange — init project with 2 goals, add 1 more via goal_update
+        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI", CancellationToken.None);
+        await _tools.GoalUpdate("add", "Deploy to production", null, null, CancellationToken.None);
+
+        // Act
+        string response = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — response must contain goal delta text showing "2 original + 1 added" or equivalent
+        (response.Contains("original") && response.Contains("added"))
+            .Should().BeTrue(
+                "plan_status should show goal delta (original count vs current count) when goals have been added");
+        response.Should().Contain("Goals:",
+            "plan_status should include a 'Goals:' line when goals exist");
+    }
+
+    [Fact]
+    public async Task PlanStatus_NoGoalLineWhenNoGoals()
+    {
+        // Arrange — init project with NO explicit goals section
+        await _tools.ProjectInit("A project context with no explicit goals section", CancellationToken.None);
+
+        // Act
+        string response = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — response must NOT contain a "Goals:" line when no goals
+        response.Should().NotContain("Goals:",
+            "plan_status should not show a Goals: line when project has no goals section");
+    }
+
+    [Fact]
+    public async Task PlanStatus_OriginalOnlyNoAddedNote()
+    {
+        // Arrange — init project with 2 goals, do NOT add any
+        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI", CancellationToken.None);
+
+        // Act
+        string response = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — response shows "Goals: 2" without "added" text
+        response.Should().Contain("Goals:",
+            "plan_status should include a 'Goals:' line when goals exist");
+        response.Should().NotContain("added",
+            "plan_status should NOT show 'added' text when no goals have been added");
+    }
 }
