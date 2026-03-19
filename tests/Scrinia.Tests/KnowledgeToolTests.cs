@@ -154,8 +154,8 @@ public sealed class KnowledgeToolTests : IDisposable
         var store = MemoryStoreContext.Current!;
         var (bokScope, bokSubject) = store.ParseQualifiedName("bok:dotnet-mcp-tools");
         string storeDir = store.GetStoreDirForScope(bokScope);
-        string versionsDir = Path.Combine(Path.GetDirectoryName(storeDir)!, "versions",
-            Path.GetFileName(storeDir)!);
+        // ArchiveVersion stores copies in {storeDir}/versions/
+        string versionsDir = Path.Combine(storeDir, "versions");
 
         // Act — write again (same qualified name, archiveExisting: true)
         await _tools.KnowledgeAdd(

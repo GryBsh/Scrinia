@@ -1689,6 +1689,98 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    // -- Knowledge building tools (KNOW-01, KNOW-02, KNOW-03, KNOW-04) ----------
+
+    /// <summary>Store domain knowledge in the body of knowledge (bok:*).</summary>
+    [McpServerTool(Name = "knowledge_add"), Description(
+        "Store domain knowledge in the body of knowledge (bok:*). " +
+        "Warns if an existing entry covers the same topic (conflict detection). " +
+        "Search existing knowledge with search(scopes='bok') before adding. " +
+        "Stored entries feed into future search results automatically.")]
+    public async Task<string> KnowledgeAdd(
+        [Description("Knowledge domain (e.g. 'dotnet', 'auth', 'deployment').")] string domain,
+        [Description("Topic slug within the domain (e.g. 'mcp-tools', 'jwt-pattern').")] string slug,
+        [Description("Knowledge content to store.")] string knowledge,
+        [Description("How knowledge was obtained: agent, research, manual, or inferred.")] string sourceType,
+        [Description("Confidence level: high, medium, or low.")] string confidence,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Prerequisite check: project:context must exist
+        try
+        {
+            await ReadMemoryAsync(store, "project:context", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return "Error: no project initialized. Run project_init first.";
+        }
+
+        // Build qualified name
+        string qualifiedName = $"bok:{domain}-{slug}";
+
+        // Conflict detection BEFORE write: BM25 search scoped to bok using full subject name
+        // Uses "{domain}-{slug}" as query so an exact name match (score=100) indicates a conflict.
+        // Threshold > 60.0 catches exact/prefix matches while ignoring weak partial matches.
+        string conflictWarning = "";
+        string conflictQuery = $"{domain}-{slug}";
+        var conflictResults = store.SearchAll(conflictQuery, scopes: "bok", limit: 3);
+        foreach (var result in conflictResults)
+        {
+            if (result is Scrinia.Core.Search.EntryResult er && er.Score > 60.0)
+            {
+                conflictWarning =
+                    $" Warning: existing bok entry '{er.Item.Entry.Name}' may cover the same topic." +
+                    " Review with search(scopes='bok') or show() before storing.";
+                break;
+            }
+        }
+
+        // Build content string with provenance header
+        string timestamp = DateTimeOffset.UtcNow.ToString("o");
+        string content =
+            $"## Knowledge Entry\n" +
+            $"Domain: {domain}\n" +
+            $"Slug: {slug}\n" +
+            $"Source: {sourceType}\n" +
+            $"Confidence: {confidence}\n" +
+            $"Added: {timestamp}\n\n" +
+            $"## Content\n{knowledge}";
+
+        // Write with provenance keywords and archiveExisting: true
+        await WritePlanningMemoryAsync(store, qualifiedName, content,
+            archiveExisting: true,
+            keywords: [$"source_type:{sourceType}", $"confidence:{confidence}", $"domain:{domain}"],
+            cancellationToken);
+
+        // Update project:state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: progressPct,
+            lastAction: $"Knowledge added: {qualifiedName}",
+            blockers: "none",
+            nextStep: "continue planning or search bok:* to retrieve stored knowledge",
+            cancellationToken);
+
+        string response =
+            $"Stored as {qualifiedName}. Files in .scrinia/ were updated -- these are your changes.{conflictWarning}";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
 
     /// <summary>
