@@ -506,6 +506,246 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    /// <summary>Verify a phase achieved its goal using success criteria from the roadmap.</summary>
+    [McpServerTool(Name = "plan_verify"), Description(
+        "Verify a phase achieved its goal using success criteria from the roadmap. " +
+        "Returns structured pass/fail per criterion with evidence. " +
+        "Can be called before execution to check plan coverage (PLAN-03). " +
+        "Note: reads from .scrinia/ in the workspace.")]
+    public async Task<string> PlanVerify(
+        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Read plan:roadmap — required
+        string roadmapText;
+        try { roadmapText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken); }
+        catch (FileNotFoundException)
+        {
+            return "Error: no roadmap found. Run plan_roadmap first.";
+        }
+
+        // Extract success criteria scoped to target phase
+        var criteria = ExtractPhaseCriteria(roadmapText, phaseId);
+        if (criteria.Count == 0)
+            return $"No success criteria found for phase {phaseId}.";
+
+        // Load task index for this phase (keyword-only scan)
+        var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+        var allEntries = store.LoadIndex(taskScope);
+        var phaseEntries = allEntries.Where(e => HasKeyword(e, $"phase:{phaseId}")).ToList();
+        int totalTasks = phaseEntries.Count;
+        int completeTasks = phaseEntries.Count(e => HasKeyword(e, "status:complete"));
+
+        // Try read execution log
+        string? logText = null;
+        try { logText = await ReadMemoryAsync(store, $"task:{phaseId}-execution-log", cancellationToken); }
+        catch (FileNotFoundException) { /* no log yet — acceptable */ }
+
+        // Check each criterion
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"## Phase Verification: {phaseId}");
+
+        int passCount = 0;
+        var criterionResults = new List<(bool pass, string criterion, string evidence)>();
+
+        foreach (string criterion in criteria)
+        {
+            bool pass;
+            string evidence;
+
+            string lower = criterion.ToLowerInvariant();
+
+            if (lower.Contains("task") || lower.Contains("complete") || lower.Contains("all"))
+            {
+                // Task completion criterion
+                if (totalTasks == 0)
+                {
+                    pass = false;
+                    evidence = "No tasks found for this phase";
+                }
+                else if (completeTasks == totalTasks)
+                {
+                    pass = true;
+                    evidence = $"All {totalTasks} tasks complete";
+                }
+                else
+                {
+                    pass = false;
+                    evidence = $"{totalTasks - completeTasks} of {totalTasks} tasks incomplete";
+                }
+            }
+            else if (lower.Contains("execution log") || lower.Contains("log") || lower.Contains("completion entr"))
+            {
+                // Execution log criterion
+                if (logText is not null)
+                {
+                    pass = true;
+                    evidence = $"Execution log exists ({logText.Length} chars, {completeTasks} completion record(s))";
+                }
+                else
+                {
+                    pass = false;
+                    evidence = $"No execution log found (task:{phaseId}-execution-log missing)";
+                }
+            }
+            else
+            {
+                // Generic criterion — check execution log content for keywords
+                if (logText is not null)
+                {
+                    // Extract significant words from criterion (4+ chars)
+                    var words = Regex.Matches(criterion, @"\b\w{4,}\b")
+                        .Select(m => m.Value.ToLowerInvariant())
+                        .Where(w => !new[] { "must", "that", "with", "from", "this", "have", "been", "were" }.Contains(w))
+                        .Take(3)
+                        .ToList();
+
+                    bool found = words.Count == 0 || words.Any(w =>
+                        logText.Contains(w, StringComparison.OrdinalIgnoreCase));
+
+                    if (found)
+                    {
+                        pass = true;
+                        string snippet = logText[..Math.Min(80, logText.Length)].Replace('\n', ' ');
+                        evidence = $"Execution log contains: {snippet}...";
+                    }
+                    else
+                    {
+                        pass = false;
+                        evidence = "Criterion not evidenced in execution log";
+                    }
+                }
+                else
+                {
+                    pass = false;
+                    evidence = $"No execution log found — cannot verify criterion";
+                }
+            }
+
+            criterionResults.Add((pass, criterion, evidence));
+            if (pass) passCount++;
+        }
+
+        // Overall status
+        string status = passCount == criteria.Count
+            ? "ALL_PASS"
+            : passCount == 0
+                ? "ALL_FAIL"
+                : $"PARTIAL ({passCount}/{criteria.Count} passed)";
+
+        sb.AppendLine($"Status: {status}");
+        sb.AppendLine();
+
+        foreach (var (pass, criterion, evidence) in criterionResults)
+        {
+            sb.AppendLine($"{(pass ? "PASS" : "FAIL")}: {criterion}");
+            sb.AppendLine($"  Evidence: {evidence}");
+            sb.AppendLine();
+        }
+
+        // Update project:state with verification results
+        string stateText2;
+        try { stateText2 = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText2 = ""; }
+
+        string projectName2 = ExtractStateField(stateText2, "Project:") ?? "Unknown Project";
+        string projectId2 = ExtractStateField(stateText2, "ID:") ?? DeriveProjectId(store);
+        string currentPhase2 = ExtractStateField(stateText2, "Phase:") ?? $"Phase {phaseId}";
+        string progressPct2 = ExtractStateField(stateText2, "Progress:")?.TrimEnd('%') ?? "50";
+
+        await WriteStateAsync(store, projectName2, projectId2,
+            phase: currentPhase2,
+            progressPct: progressPct2,
+            lastAction: $"plan_verify for phase {phaseId}: {status}",
+            blockers: passCount < criteria.Count ? $"{criteria.Count - passCount} criteria failed" : "none",
+            nextStep: passCount < criteria.Count
+                ? "run plan_gaps to create gap closure tasks"
+                : "phase verification complete",
+            cancellationToken);
+
+        string response = sb.ToString();
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
+    /// <summary>Create gap closure tasks for failed verification criteria and re-open the phase.</summary>
+    [McpServerTool(Name = "plan_gaps"), Description(
+        "Create gap closure tasks for failed verification criteria. " +
+        "Re-opens the phase for another execution cycle. " +
+        "Call after plan_verify identifies failures. " +
+        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
+    public async Task<string> PlanGaps(
+        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
+        [Description("Newline-separated list of failed criterion texts (from plan_verify output).")] string failedCriteria,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Verify project exists
+        try { await ReadMemoryAsync(store, "project:context", cancellationToken); }
+        catch (FileNotFoundException)
+        {
+            return "Error: no project found. Run project_init first.";
+        }
+
+        // Parse failed criteria — split on newlines, trim, filter empty
+        var criteria = failedCriteria
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(c => c.Length > 0)
+            .ToList();
+
+        if (criteria.Count == 0)
+            return $"Error: no failed criteria provided. Pass newline-separated criterion texts.";
+
+        // Create a gap task for each failed criterion
+        var createdNames = new List<string>();
+        for (int i = 0; i < criteria.Count; i++)
+        {
+            string criterion = criteria[i];
+            string gapTaskName = $"task:{phaseId}-gap-{(i + 1):D2}";
+            string[] gapKeywords = ["status:pending", "wave:1", $"phase:{phaseId}", "gap_closure:true"];
+            string content =
+                $"Gap closure task for failed criterion:\n{criterion}\n\n" +
+                $"Action: Address the failed criterion and ensure it passes on re-verification.";
+
+            await WritePlanningMemoryAsync(store, gapTaskName, content,
+                archiveExisting: false, keywords: gapKeywords, cancellationToken);
+
+            createdNames.Add(gapTaskName);
+        }
+
+        // Re-open phase in project:state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "50";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: $"Phase {phaseId} (re-opened for gap closure)",
+            progressPct: progressPct,
+            lastAction: $"Gap closure: {criteria.Count} task(s) created for phase {phaseId}",
+            blockers: "none",
+            nextStep: "run task_next to work on gap tasks",
+            cancellationToken);
+
+        string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
+        string response =
+            $"Created {criteria.Count} gap closure task(s) for phase {phaseId}. Phase re-opened. Run task_next to begin.\n" +
+            $"Gap tasks created:\n{taskList}";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -880,6 +1120,83 @@ public sealed class ScriniaProjectTools
             .Where(k => k.StartsWith("depends_on:", StringComparison.OrdinalIgnoreCase))
             .Select(k => k["depends_on:".Length..])
         ?? Enumerable.Empty<string>();
+
+    /// <summary>
+    /// Extracts success criteria from the roadmap text scoped to the specified phase section.
+    /// Handles numbered lists (1. ...), bulleted lists (- ..., * ...).
+    /// Stops extracting when a new Phase section heading is reached.
+    /// </summary>
+    private static List<string> ExtractPhaseCriteria(string roadmapText, string phaseId)
+    {
+        var criteria = new List<string>();
+        bool inTargetPhase = false;
+        bool inCriteriaSection = false;
+
+        foreach (string rawLine in roadmapText.Split('\n'))
+        {
+            string line = rawLine.TrimEnd();
+            string trimmed = line.Trim();
+
+            // Detect Phase heading — matches "### Phase 1:" or "Phase 1" or "Phase 01"
+            bool isPhaseHeading = Regex.IsMatch(trimmed,
+                @"^#{1,4}\s+Phase\s+\d", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(trimmed, @"^Phase\s+\d", RegexOptions.IgnoreCase);
+
+            if (isPhaseHeading)
+            {
+                // Check if this heading matches our target phase
+                // Extract the number from the heading
+                var phaseNumMatch = Regex.Match(trimmed, @"Phase\s+0*(\d+)", RegexOptions.IgnoreCase);
+                if (phaseNumMatch.Success)
+                {
+                    int headingNum = int.Parse(phaseNumMatch.Groups[1].Value);
+                    int targetNum = int.TryParse(phaseId.TrimStart('0').Length > 0
+                        ? phaseId.TrimStart('0') : "0", out int n) ? n : 0;
+                    inTargetPhase = headingNum == targetNum;
+                    inCriteriaSection = false; // reset on new phase
+                }
+                continue;
+            }
+
+            if (!inTargetPhase) continue;
+
+            // Detect success criteria sub-heading
+            bool isCriteriaHeading = Regex.IsMatch(trimmed,
+                @"^#{1,4}\s+(success\s+criteria|criteria|acceptance)", RegexOptions.IgnoreCase) ||
+                Regex.IsMatch(trimmed,
+                @"^\*{0,2}Success\s+Criteria", RegexOptions.IgnoreCase);
+
+            if (isCriteriaHeading)
+            {
+                inCriteriaSection = true;
+                continue;
+            }
+
+            // A non-criteria heading while in target phase ends the criteria section
+            if (inCriteriaSection && Regex.IsMatch(trimmed, @"^#{1,4}\s+", RegexOptions.None))
+            {
+                inCriteriaSection = false;
+                continue;
+            }
+
+            if (!inCriteriaSection) continue;
+
+            // Collect bulleted or numbered list items
+            if (trimmed.StartsWith("- ") || trimmed.StartsWith("* "))
+            {
+                criteria.Add(trimmed[2..].Trim());
+            }
+            else if (Regex.IsMatch(trimmed, @"^\d+\.\s+"))
+            {
+                // Numbered: "1. criterion text"
+                string criterionText = Regex.Replace(trimmed, @"^\d+\.\s+", "").Trim();
+                if (criterionText.Length > 0)
+                    criteria.Add(criterionText);
+            }
+        }
+
+        return criteria;
+    }
 
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);
 

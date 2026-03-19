@@ -1149,7 +1149,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Assert — both criteria should appear in output
         result.Should().Contain("All tasks complete",
             "plan_verify should check task completion criterion");
-        result.Should().Contain("execution log",
+        result.Should().ContainEquivalentOf("execution log",
             "plan_verify should check execution log criterion");
     }
 
