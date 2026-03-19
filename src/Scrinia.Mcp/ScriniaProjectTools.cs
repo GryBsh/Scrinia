@@ -1251,7 +1251,18 @@ public sealed class ScriniaProjectTools
         [Description("Key-value preferences text, one per line (e.g. 'autonomy_level: high').")] string profile,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException();
+        var store = CurrentStore;
+
+        await WritePlanningMemoryAsync(store, "user:profile", profile,
+            archiveExisting: false, keywords: ["provenance:agent"], cancellationToken);
+
+        string response = "User profile stored in user:profile. " +
+            "Preferences persist across sessions and are searchable via standard search.";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
     }
 
     private sealed record ParsedTask(string Id, int Wave, string[] DependsOn, string Content);

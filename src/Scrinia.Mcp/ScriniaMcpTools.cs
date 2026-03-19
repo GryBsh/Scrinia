@@ -149,6 +149,13 @@ public sealed class ScriniaMcpTools
             solutions to recurring problems, project-specific knowledge.
             **Don't store:** session-specific state (use ~ephemeral instead).
             **Exception:** use `~checkpoint` to preserve working context across context compactions.
+
+            ## Agent learning memories
+            The planning tools create and maintain learning memories:
+            - `learn:execution-outcomes` — phase retrospectives (what worked, what failed, lessons)
+            - `user:profile` — user preferences (autonomy level, review depth, communication style)
+            Both topics are searchable — use `search("retrospective")` or `search("preferences")` to recall.
+            Memories authored via plan_retrospective and plan_profile carry `provenance:agent` keyword.
             """);
 
     [McpServerTool(Name = "encode"), Description(
