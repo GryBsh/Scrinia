@@ -71,7 +71,7 @@ builder.Services.AddSingleton(provider);
 builder.Services.AddSingleton(options);
 
 builder.Services
-    .AddMcpServer(mcp => mcp.ServerInfo = new() { Name = "scrinia-plugin-embeddings", Version = "0.3.1" })
+    .AddMcpServer(mcp => mcp.ServerInfo = new() { Name = "scrinia-plugin-embeddings", Version = "0.4.0" })
     .WithStdioServerTransport()
     .WithTools<EmbeddingsTools>();
 
