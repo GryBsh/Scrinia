@@ -934,6 +934,189 @@ public sealed class ProjectLifecycleTests : IDisposable
             "task_next response must be <= 8192 characters (MaxResponseChars)");
     }
 
+    // -- task_complete tests (EXEC-02, EXEC-04) --
+
+    [Fact]
+    public async Task TaskComplete_UpdatesStatusKeyword()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+
+        // Assert - entry should have status:complete, NOT status:pending
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("task:01-1-01");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name == "01-1-01");
+
+        entry.Should().NotBeNull("task entry should still exist after task_complete");
+        entry!.Keywords.Should().Contain("status:complete",
+            "task_complete should update keyword to status:complete");
+        entry.Keywords.Should().NotContain("status:pending",
+            "task_complete should remove status:pending keyword");
+    }
+
+    [Fact]
+    public async Task TaskComplete_PreservesOtherKeywords()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+
+        // Assert - wave, phase keywords still present
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("task:01-1-01");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name == "01-1-01");
+
+        entry!.Keywords.Should().Contain("wave:1",
+            "wave keyword should be preserved after task_complete");
+        entry.Keywords.Should().Contain("phase:01",
+            "phase keyword should be preserved after task_complete");
+    }
+
+    [Fact]
+    public async Task TaskComplete_CreatesExecutionLog()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+
+        // Assert - task:01-execution-log memory must exist
+        var store = MemoryStoreContext.Current!;
+        var (logScope, logSubject) = store.ParseQualifiedName("task:01-execution-log");
+        var logEntries = store.LoadIndex(logScope);
+        logEntries.Should().Contain(e => e.Name == logSubject,
+            "task_complete should create task:{phaseId}-execution-log memory");
+    }
+
+    [Fact]
+    public async Task TaskComplete_AppendsToExistingLog()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act - complete two different tasks
+        await _tools.TaskComplete("task:01-1-01", "Completed first task", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Completed second task", CancellationToken.None);
+
+        // Assert - execution log should have 2 chunks
+        var store = MemoryStoreContext.Current!;
+        var (logScope, logSubject) = store.ParseQualifiedName("task:01-execution-log");
+        string logArtifact = await store.ReadArtifactAsync(logSubject, logScope);
+        int chunkCount = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.GetChunkCount(logArtifact);
+        chunkCount.Should().Be(2,
+            "task_complete called twice should produce an execution log with 2 chunks");
+    }
+
+    [Fact]
+    public async Task TaskComplete_LogContainsOutcome()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        await _tools.TaskComplete("task:01-1-01", "Fixed the parser bug", CancellationToken.None);
+
+        // Assert - reading the log should contain the outcome text
+        var store = MemoryStoreContext.Current!;
+        string logText = await ReadMemoryText(store, "task:01-execution-log");
+        logText.Should().Contain("Fixed the parser bug",
+            "execution log should contain the outcome text passed to task_complete");
+    }
+
+    [Fact]
+    public async Task TaskComplete_LogContainsTimestamp()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        await _tools.TaskComplete("task:01-1-01", "Some outcome", CancellationToken.None);
+
+        // Assert - log should contain ISO timestamp pattern
+        var store = MemoryStoreContext.Current!;
+        string logText = await ReadMemoryText(store, "task:01-execution-log");
+        // ISO 8601 timestamp pattern: YYYY-MM-DDTHH:MM:SS
+        logText.Should().MatchRegex(@"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+            "execution log should contain an ISO 8601 timestamp");
+    }
+
+    [Fact]
+    public async Task TaskComplete_FailsForUnknownTask()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        string result = await _tools.TaskComplete("task:99-9-99", "Done", CancellationToken.None);
+
+        // Assert - should return error for unknown task
+        result.Should().StartWith("Error:",
+            "task_complete with unknown task name should return an error");
+        result.Should().Contain("not found",
+            "error should mention 'not found'");
+    }
+
+    [Fact]
+    public async Task TaskComplete_DoesNotArchive()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Get the versions directory path for task scope
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("task:01-1-01");
+        string storeDir = store.GetStoreDirForScope(scope);
+        string versionsDir = Path.Combine(Path.GetDirectoryName(storeDir)!, "versions",
+            Path.GetFileName(storeDir)!);
+
+        // Act
+        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+
+        // Assert - no version files should be created
+        bool versionsExist = Directory.Exists(versionsDir) &&
+            Directory.GetFiles(versionsDir, "01-1-01*").Length > 0;
+        versionsExist.Should().BeFalse(
+            "task_complete should NOT archive versions — only updates keywords in place");
+    }
+
+    [Fact]
+    public async Task TaskComplete_UpdatesProjectState()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+
+        // Assert - project:state should reference the completed task
+        var store = MemoryStoreContext.Current!;
+        string stateText = await ReadMemoryText(store, "project:state");
+        stateText.Should().ContainEquivalentOf("01-1-01",
+            "project:state last action should reference the completed task");
+    }
+
+    [Fact]
+    public async Task TaskComplete_RespectsResponseCap()
+    {
+        // Arrange
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Act
+        string result = await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+
+        // Assert
+        result.Length.Should().BeLessOrEqualTo(8192,
+            "task_complete response must be <= 8192 characters (MaxResponseChars)");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)
