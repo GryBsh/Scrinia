@@ -267,8 +267,8 @@ public sealed class ScriniaProjectTools
     /// <summary>Decompose a phase into task memories with keyword-based metadata.</summary>
     [McpServerTool(Name = "plan_tasks"), Description(
         "Decompose a phase into task memories with keyword-based metadata for status, wave, phase, and dependencies. " +
-        "Research the domain before calling this tool — study existing code, APIs, and patterns so tasks accurately " +
-        "reflect the work needed. Each task is stored as task:{phaseId}-{wave}-{id} with keywords: " +
+        "Call research_complete to store research:{phaseId}-{topic} findings before decomposing tasks. " +
+        "Each task is stored as task:{phaseId}-{wave}-{id} with keywords: " +
         "status:pending, wave:N, phase:XX, and depends_on:{subject} for each dependency. " +
         "Requires plan:roadmap to exist (run plan_roadmap first). " +
         "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
@@ -790,6 +790,135 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    /// <summary>Open a research investigation and store questions under research:{phaseId}-{topic}.</summary>
+    [McpServerTool(Name = "research_start"), Description(
+        "Open a research investigation before plan_tasks. " +
+        "Stores research:{phaseId}-{topic} with status:active. " +
+        "Call research_complete when findings are ready, then call plan_tasks.")]
+    public async Task<string> ResearchStart(
+        [Description("Two-digit phase number (e.g. '06').")] string phaseId,
+        [Description("Research topic slug — used as the memory name suffix (e.g. 'auth', 'storage').")] string topic,
+        [Description("Questions to investigate during this research session.")] string questions,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Prerequisite check: project:context must exist
+        try
+        {
+            await ReadMemoryAsync(store, "project:context", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return "Error: no project initialized. Run project_init first.";
+        }
+
+        string memoryName = $"research:{phaseId}-{topic}";
+        string content =
+            $"## Research Investigation\n" +
+            $"Phase: {phaseId}\n" +
+            $"Topic: {topic}\n\n" +
+            $"## Questions\n{questions}";
+
+        await WritePlanningMemoryAsync(store, memoryName, content,
+            archiveExisting: true,
+            keywords: ["status:active", $"phase:{phaseId}"],
+            cancellationToken);
+
+        // Update project:state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: progressPct,
+            lastAction: $"Research started: {memoryName}",
+            blockers: "none",
+            nextStep: $"investigate questions, then call research_complete(\"{phaseId}\", \"{topic}\", findings)",
+            cancellationToken);
+
+        string response = $"Research investigation started. Stored as {memoryName} with status:active. " +
+                          $"Files in .scrinia/ were updated — these are your changes. " +
+                          $"Call research_complete when you have findings.";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
+    /// <summary>Complete a research investigation with findings.</summary>
+    [McpServerTool(Name = "research_complete"), Description(
+        "Complete a research investigation with findings. " +
+        "Call after research_start, before plan_tasks. " +
+        "Overwrites research:{phaseId}-{topic} memory with status:complete.")]
+    public async Task<string> ResearchComplete(
+        [Description("Two-digit phase number (e.g. '06').")] string phaseId,
+        [Description("Research topic slug — must match the topic used in research_start.")] string topic,
+        [Description("Findings from the research investigation.")] string findings,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Verify research:{phaseId}-{topic} exists with status:active
+        string memoryName = $"research:{phaseId}-{topic}";
+        var (researchScope, researchSubject) = store.ParseQualifiedName(memoryName);
+        var allEntries = store.LoadIndex(researchScope);
+        var existing = allEntries.FirstOrDefault(e => e.Name == researchSubject);
+
+        if (existing is null || !HasKeyword(existing, "status:active"))
+        {
+            return $"Error: no active research found for '{memoryName}'. Call research_start first.";
+        }
+
+        // Build updated content with findings
+        string existingContent;
+        try { existingContent = await ReadMemoryAsync(store, memoryName, cancellationToken); }
+        catch (FileNotFoundException) { existingContent = ""; }
+
+        string updatedContent =
+            existingContent.TrimEnd() + "\n\n" +
+            $"## Findings\n{findings}";
+
+        await WritePlanningMemoryAsync(store, memoryName, updatedContent,
+            archiveExisting: true,
+            keywords: ["status:complete", $"phase:{phaseId}"],
+            cancellationToken);
+
+        // Update project:state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: progressPct,
+            lastAction: $"Research complete: {memoryName}",
+            blockers: "none",
+            nextStep: $"call plan_tasks(\"{phaseId}\", ...) to decompose tasks using research findings",
+            cancellationToken);
+
+        string response = $"Research complete. {memoryName} updated with findings and status:complete. " +
+                          $"Files in .scrinia/ were updated — these are your changes. " +
+                          $"Call plan_tasks to decompose tasks using these findings.";
+
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return response;
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -1250,6 +1379,217 @@ public sealed class ScriniaProjectTools
         }
 
         return criteria;
+    }
+
+    // ── Concern tracking tools (CONC-01, CONC-02, CONC-03) ───────────────────
+
+    /// <summary>Track a risk or concern with severity and phase scope.</summary>
+    [McpServerTool(Name = "concern_add"), Description(
+        "Track a risk or issue with severity and phase scope. " +
+        "Call concern_resolve when addressed. Query active concerns with concern tool.")]
+    public async Task<string> ConcernAdd(
+        [Description("Concern description.")] string description,
+        [Description("Severity: high, medium, or low.")] string severity,
+        [Description("Phase scope, e.g. '06' or 'all'.")] string phaseScope,
+        [Description("Optional readable ID; auto-generated if omitted (e.g. 'auth-risk').")] string? id = null,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Prerequisite check: project:context must exist
+        try
+        {
+            await ReadMemoryAsync(store, "project:context", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return "Error: no project initialized. Run project_init first.";
+        }
+
+        // Generate ID if not provided
+        string concernId = id ?? DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+
+        // Build content
+        string content =
+            $"## Concern: {concernId}\n" +
+            $"**Description:** {description}\n" +
+            $"**Severity:** {severity}\n" +
+            $"**Phase:** {phaseScope}\n" +
+            $"**Added:** {DateTimeOffset.UtcNow:o}\n";
+
+        string qualifiedName = $"concern:{concernId}";
+        await WritePlanningMemoryAsync(store, qualifiedName, content,
+            archiveExisting: false,
+            keywords: ["status:active", $"severity:{severity}", $"phase:{phaseScope}"],
+            cancellationToken);
+
+        // Update project state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: progressPct,
+            lastAction: $"Concern added: {qualifiedName} (severity:{severity})",
+            blockers: "none",
+            nextStep: "run concern to list active concerns, or concern_resolve when addressed",
+            cancellationToken);
+
+        return $"Stored as {qualifiedName}. Files in .scrinia/ were updated — these are your changes.";
+    }
+
+    /// <summary>Resolve a tracked concern with resolution notes.</summary>
+    [McpServerTool(Name = "concern_resolve"), Description(
+        "Resolve a tracked concern with resolution notes. " +
+        "Call after concern_add when the issue is addressed.")]
+    public async Task<string> ConcernResolve(
+        [Description("Concern name (e.g. 'concern:auth-risk' or 'concern:20260319-143022').")] string concernName,
+        [Description("Resolution notes.")] string resolution,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Parse name to get scope and subject
+        var (scope, subject) = store.ParseQualifiedName(concernName);
+
+        // Load index and find existing entry
+        var allEntries = store.LoadIndex(scope);
+        var existing = allEntries.FirstOrDefault(e =>
+            string.Equals(e.Name, subject, StringComparison.OrdinalIgnoreCase));
+
+        if (existing is null)
+            return $"Error: concern '{concernName}' not found.";
+
+        // Extract existing severity and phase keywords (to preserve them)
+        string severityKw = existing.Keywords?
+            .FirstOrDefault(k => k.StartsWith("severity:", StringComparison.OrdinalIgnoreCase))
+            ?? "severity:unknown";
+        string phaseKw = existing.Keywords?
+            .FirstOrDefault(k => k.StartsWith("phase:", StringComparison.OrdinalIgnoreCase))
+            ?? "phase:unknown";
+
+        // Read existing content
+        string existingContent;
+        try
+        {
+            existingContent = await ReadMemoryAsync(store, concernName, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            existingContent = $"(original content not found for {concernName})";
+        }
+
+        // Build updated content with resolution appended
+        string timestamp = DateTimeOffset.UtcNow.ToString("o");
+        string updatedContent =
+            existingContent.TrimEnd() +
+            $"\n\n## Resolution\n{resolution}\n**Resolved at:** {timestamp}\n";
+
+        // Write updated content with resolved status (no archiving)
+        string[] resolvedKeywords = ["status:resolved", severityKw, phaseKw];
+        await WritePlanningMemoryAsync(store, concernName, updatedContent,
+            archiveExisting: false,
+            keywords: resolvedKeywords,
+            cancellationToken);
+
+        // Update project state
+        string stateText;
+        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+        catch (FileNotFoundException) { stateText = ""; }
+
+        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
+        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
+        string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
+        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+
+        await WriteStateAsync(store, projectName, projectId,
+            phase: currentPhase,
+            progressPct: progressPct,
+            lastAction: $"Concern resolved: {concernName}",
+            blockers: "none",
+            nextStep: "run concern to check remaining active concerns",
+            cancellationToken);
+
+        return $"Concern '{concernName}' resolved. Files in .scrinia/ were updated — these are your changes.";
+    }
+
+    /// <summary>List tracked concerns by status and phase (index-only, no artifact decoding).</summary>
+    [McpServerTool(Name = "concern"), Description(
+        "List tracked concerns by status and phase. Returns index-only summary (no artifact decoding). " +
+        "Use concern_add to add concerns, concern_resolve to resolve them. Called by plan_status automatically.")]
+    public Task<string> Concern(
+        [Description("Filter by phase (e.g. '06'); omit for all phases.")] string? phaseFilter = null,
+        [Description("Filter by status; defaults to 'active'.")] string? statusFilter = null,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        string effectiveStatus = statusFilter ?? "active";
+
+        // Load index via keyword-only scan
+        IReadOnlyList<ArtifactEntry> allEntries;
+        try
+        {
+            var (scope, _) = store.ParseQualifiedName("concern:placeholder");
+            allEntries = store.LoadIndex(scope);
+        }
+        catch
+        {
+            return Task.FromResult($"No active concerns.");
+        }
+
+        // Filter by status
+        var filtered = allEntries
+            .Where(e => HasKeyword(e, $"status:{effectiveStatus}"))
+            .ToList();
+
+        // Filter by phase if provided
+        if (!string.IsNullOrWhiteSpace(phaseFilter))
+        {
+            filtered = filtered
+                .Where(e => HasKeyword(e, $"phase:{phaseFilter}"))
+                .ToList();
+        }
+
+        if (filtered.Count == 0)
+        {
+            string phaseNote = phaseFilter is not null ? $" (phase:{phaseFilter})" : "";
+            return Task.FromResult($"No active concerns{phaseNote}.");
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Active concerns ({filtered.Count}):");
+        sb.AppendLine();
+
+        foreach (var entry in filtered)
+        {
+            string sevKw = entry.Keywords?
+                .FirstOrDefault(k => k.StartsWith("severity:", StringComparison.OrdinalIgnoreCase))
+                ?? "severity:unknown";
+            string phaseKw = entry.Keywords?
+                .FirstOrDefault(k => k.StartsWith("phase:", StringComparison.OrdinalIgnoreCase))
+                ?? "phase:unknown";
+
+            sb.AppendLine($"- concern:{entry.Name} [{sevKw}] [{phaseKw}]");
+
+            if (sb.Length > MaxResponseChars - 200)
+            {
+                sb.AppendLine("[... truncated to 8KB limit]");
+                break;
+            }
+        }
+
+        string response = sb.ToString();
+        if (response.Length > MaxResponseChars)
+            response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
+
+        return Task.FromResult(response);
     }
 
     [McpServerTool(Name = "plan_retrospective"), Description(
