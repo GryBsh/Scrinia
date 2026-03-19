@@ -380,6 +380,27 @@ public sealed class ScriniaProjectTools
             response = rebuilt;
         }
 
+        // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
+        string concernNote = "";
+        try
+        {
+            var (cs, _) = store.ParseQualifiedName("concern:placeholder");
+            var entries = store.LoadIndex(cs);
+            int activeCount = entries.Count(e => HasKeyword(e, "status:active"));
+            if (activeCount > 0)
+            {
+                int highCount = entries.Count(e =>
+                    HasKeyword(e, "status:active") &&
+                    HasKeyword(e, "severity:high"));
+                concernNote = highCount > 0
+                    ? $"\nConcerns: {activeCount} active ({highCount} high-severity)"
+                    : $"\nConcerns: {activeCount} active";
+            }
+        }
+        catch { /* concern scope not yet created — skip silently */ }
+
+        response += concernNote;
+
         if (response.Length > MaxResponseChars)
             response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
 
@@ -427,6 +448,25 @@ public sealed class ScriniaProjectTools
         }
         catch (FileNotFoundException) { /* roadmap not yet created — skip silently */ }
 
+        // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
+        string concernNote = "";
+        try
+        {
+            var (cs, _) = store.ParseQualifiedName("concern:placeholder");
+            var entries = store.LoadIndex(cs);
+            int activeCount = entries.Count(e => HasKeyword(e, "status:active"));
+            if (activeCount > 0)
+            {
+                int highCount = entries.Count(e =>
+                    HasKeyword(e, "status:active") &&
+                    HasKeyword(e, "severity:high"));
+                concernNote = highCount > 0
+                    ? $"\nConcerns: {activeCount} active ({highCount} high-severity)"
+                    : $"\nConcerns: {activeCount} active";
+            }
+        }
+        catch { /* concern scope not yet created — skip silently */ }
+
         string response =
             $"Project: {projectName}\n" +
             $"Phase: {phase}\n" +
@@ -434,7 +474,7 @@ public sealed class ScriniaProjectTools
             $"Last action: {lastAction}\n" +
             $"Blockers: {blockers}\n" +
             $"Next: {next}" +
-            roadmapNote;
+            roadmapNote + concernNote;
 
         if (response.Length > MaxResponseChars)
             response = response[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
