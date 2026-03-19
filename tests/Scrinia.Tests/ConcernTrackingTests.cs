@@ -401,4 +401,86 @@ public sealed class ConcernTrackingTests : IDisposable
         hasContextSignal.Should().BeTrue(
             "Concern (query) description must contain context signals referencing 'concern_add' or 'plan_status'");
     }
+
+    // ── plan_status concern enrichment tests (CONC-04) ────────────────────────
+
+    [Fact]
+    public async Task PlanStatus_IncludesConcernCount()
+    {
+        // Arrange — project with 2 active concerns
+        await InitProject();
+        await _tools.ConcernAdd("Risk: alpha", "medium", "06", id: "ps-c1", CancellationToken.None);
+        await _tools.ConcernAdd("Risk: beta", "medium", "06", id: "ps-c2", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — response must include concern count line
+        result.Should().Contain("Concerns: 2 active",
+            "plan_status should report active concern count when concerns exist");
+    }
+
+    [Fact]
+    public async Task PlanStatus_IncludesHighSeverityCount()
+    {
+        // Arrange — 1 high + 1 medium concern
+        await InitProject();
+        await _tools.ConcernAdd("Risk: critical thing", "high", "06", id: "ps-high", CancellationToken.None);
+        await _tools.ConcernAdd("Risk: minor thing", "medium", "06", id: "ps-med", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — response must include high-severity count
+        result.Should().Contain("1 high-severity",
+            "plan_status should include high-severity count when high-severity concerns exist");
+    }
+
+    [Fact]
+    public async Task PlanStatus_NoConcernLineWhenNoConcerns()
+    {
+        // Arrange — project with no concerns
+        await InitProject();
+
+        // Act
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — response must NOT include a Concerns: line
+        result.Should().NotContain("Concerns:",
+            "plan_status should NOT include a Concerns: line when no concerns exist");
+    }
+
+    [Fact]
+    public async Task PlanResume_IncludesConcernSummary()
+    {
+        // Arrange — project with 1 active concern
+        await InitProject();
+        await _tools.ConcernAdd("Risk: gamma", "high", "06", id: "pr-c1", CancellationToken.None);
+
+        // Act
+        string result = await _tools.PlanResume(CancellationToken.None);
+
+        // Assert — plan_resume response should mention concern(s)
+        bool hasConcernInfo = result.Contains("Concerns:", StringComparison.OrdinalIgnoreCase)
+            || result.Contains("concern", StringComparison.OrdinalIgnoreCase);
+        hasConcernInfo.Should().BeTrue(
+            "plan_resume should include concern summary when active concerns exist");
+    }
+
+    [Fact]
+    public async Task PlanStatus_HandlesMissingConcernScope()
+    {
+        // Arrange — fresh project, concern scope never created (no concern_add called)
+        await InitProject();
+
+        // Act — must not throw
+        string result = await _tools.PlanStatus(CancellationToken.None);
+
+        // Assert — should succeed and NOT contain "Concerns:" line
+        result.Should().NotBeNull("plan_status must return a result even when concern scope does not exist");
+        result.Should().Contain("Project:",
+            "plan_status response should still contain project info when concern scope is missing");
+        result.Should().NotContain("Concerns:",
+            "plan_status should not include Concerns: line when concern scope is missing");
+    }
 }
