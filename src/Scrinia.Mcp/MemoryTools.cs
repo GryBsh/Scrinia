@@ -64,7 +64,8 @@ public sealed class ScriniaMcpTools
     [McpServerTool(Name = "guide"), Description(
         "Required reading for effective memory use — call once per session. " +
         "Returns a concise playbook covering ephemeral memories, topic organization, " +
-        "chunked retrieval, context compression, and cross-project sharing.")]
+        "chunked retrieval, context compression, cross-project sharing, and all planning tools " +
+        "(including research, concerns, knowledge, subagents, and goal management).")]
     public Task<string> Guide(CancellationToken cancellationToken = default) =>
         Task.FromResult("""
             # scrinia guide — patterns for effective scrinia memory use
@@ -151,14 +152,14 @@ public sealed class ScriniaMcpTools
             **Exception:** use `~checkpoint` to preserve working context across context compactions.
 
             ## Project planning tools
-            Scrinia includes 12 planning tools for structured project lifecycle management.
+            Scrinia includes planning tools for structured project lifecycle management.
             Plans are stored as standard scrinia memories with reserved topic conventions.
 
             **Lifecycle flow:**
-            `project_init` → `plan_requirements` → `plan_roadmap` → `plan_tasks`
-            → `task_next` → (execute) → `task_complete` → `plan_verify`
-            → (if gaps) `plan_gaps` → `task_next` → ...
-            → `plan_retrospective`
+            `project_init` -> `plan_requirements` -> `plan_roadmap` -> `plan_tasks`
+            -> `task_next` -> (execute) -> `task_complete` -> `plan_verify`
+            -> (if gaps) `plan_gaps` -> `task_next` -> ...
+            -> `plan_retrospective`
 
             **Tools by stage:**
             - Setup: `project_init`, `plan_requirements`, `plan_roadmap`
@@ -166,8 +167,13 @@ public sealed class ScriniaMcpTools
             - Verification: `plan_verify`, `plan_gaps`
             - Recovery: `plan_resume`, `plan_status`
             - Learning: `plan_retrospective`, `plan_profile`
+            - Research: `research_start`, `research_complete` — investigate before planning
+            - Concerns: `concern_add`, `concern_resolve`, `concern` — track risks across phases
+            - Knowledge: `knowledge_add` — store domain expertise in bok:* topic (searchable via `search(scopes='bok')`)
+            - Subagents: `spawn_agent`, `skill_load` — generate and reuse specialist prompts (skill:* topic)
+            - Goals: `goal_update` — add/complete/list goals dynamically without re-initialization
 
-            **Reserved topics:** `project:*`, `plan:*`, `task:*`, `learn:*`, `user:*`
+            **Reserved topics:** `project:*`, `plan:*`, `task:*`, `learn:*`, `user:*`, `research:*`, `concern:*`, `bok:*`, `skill:*`
             Use `excludeTopics="plan,task,project,learn"` on `list`/`search` to hide planning from knowledge queries.
 
             ## Agent learning memories
