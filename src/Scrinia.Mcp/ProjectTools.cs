@@ -98,7 +98,7 @@ public partial class PlanningJsonContext : JsonSerializerContext;
 
 /// <summary>
 /// MCP tools for project planning — stores and retrieves planning memories using
-/// the plan:*, task:*, project:*, and learn:* topic conventions.
+/// the plan:*, task:*, project:*, learn:*, and backlog:* topic conventions.
 /// </summary>
 [McpServerToolType]
 public sealed class ScriniaProjectTools
@@ -1267,6 +1267,7 @@ public sealed class ScriniaProjectTools
 
         string response = $"Research complete. {memoryName} updated with findings and status:complete. " +
                           $"Files in .scrinia/ were updated — these are your changes.\n\n" +
+                          $"Check backlog:* for related deferred work that research may have unblocked.\n\n" +
                           $"Before decomposing into tasks, share your findings with the user:\n" +
                           $"- Summarize what you found and any concerns discovered\n" +
                           $"- Flag anything surprising or that changes the approach\n" +
@@ -2312,6 +2313,7 @@ public sealed class ScriniaProjectTools
 
                 return $"Goal added as G-{nextId}: {description}.\n" +
                        $"project:context updated. Files in .scrinia/ were updated — these are your changes.\n\n" +
+                       $"Check backlog:* for deferred items that could be grouped into this goal — search('backlog:').\n\n" +
                        $"Before planning, confirm the goal with the user:\n" +
                        $"- **Scope**: What's included? What's explicitly out of scope?\n" +
                        $"- **Success criteria**: How will we know the goal is achieved?\n" +
@@ -3298,7 +3300,12 @@ public sealed class ScriniaProjectTools
             Review `agent:profile` and `agent:execution-policy` against accumulated evidence.
             Do the norms still match how work actually gets done? Propose updates with reasoning.
 
-            ### 5. Prune and consolidate
+            ### 5. Scan backlog for unblocked items
+            `search("backlog:")` to review deferred work. Check if recent goal outcomes,
+            code changes, or new capabilities have unblocked any items. If an item is now
+            actionable, flag it for promotion to a goal in your output.
+
+            ### 6. Prune and consolidate
             Merge memories that overlap significantly. Remove memories superseded by code changes.
             Promote ephemeral memories that proved valuable via `copy("~name", "topic:name")`.
 

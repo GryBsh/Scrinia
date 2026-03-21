@@ -307,7 +307,16 @@ public sealed class ScriniaMcpTools
             - `research:*` — investigation findings and hypotheses
             - `concern:*` — tracked risks and issues
             - `skill:*` — reusable specialist prompts
-            Use `excludeTopics="plan,task,project,learn"` on `list`/`search` to hide planning from knowledge queries.
+            - `backlog:*` — deferred work and future ideas (e.g. `backlog:resilience`, `backlog:auth`, `backlog:scrinia`)
+            Use `excludeTopics="plan,task,project,learn,backlog"` on `list`/`search` to hide planning from knowledge queries.
+
+            ## Backlog management
+            Use `backlog:*` to track deferred work, accepted low-priority findings, and future ideas.
+            - `store([description], "backlog:domain", keywords=[...])` to add items
+            - `search("backlog:")` to review before setting new goals
+            - Items promoted to goals via `goal_update(add)` — reference the backlog entry
+            - The evolutionary skill scans backlog for items unblocked by recent changes
+            Examples: `backlog:resilience` (deferred quality findings), `backlog:scrinia` (product improvements)
 
             ## Agent learning
             Learning happens through the full cycle, not just retrospectives:
