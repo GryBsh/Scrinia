@@ -429,6 +429,11 @@ public sealed class ScriniaProjectTools
                 else
                     keywords.Add($"depends_on:{dep}"); // already full name or external ref
             }
+            if (task.Files is { Length: > 0 })
+            {
+                foreach (string file in task.Files)
+                    keywords.Add($"files:{file.Trim()}");
+            }
 
             // Task naming: task:{phaseId}-{wave}-{id}
             string taskName = $"task:{phaseId}-{wave}-{task.Id}";
@@ -437,6 +442,31 @@ public sealed class ScriniaProjectTools
                 archiveExisting: false, keywords: [.. keywords], cancellationToken);
 
             createdNames.Add(taskName);
+        }
+
+        // File-conflict detection: flag same-wave tasks that modify the same file
+        var fileConflicts = new List<string>();
+        var tasksByWave = parsedTasks
+            .Where(t => t.Files is { Length: > 0 })
+            .GroupBy(t => computedWaves[t.Id]);
+
+        foreach (var waveGroup in tasksByWave)
+        {
+            var fileToTasks = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var task in waveGroup)
+            {
+                foreach (var file in task.Files!)
+                {
+                    var trimmed = file.Trim();
+                    if (!fileToTasks.ContainsKey(trimmed))
+                        fileToTasks[trimmed] = new();
+                    fileToTasks[trimmed].Add(task.Id);
+                }
+            }
+            foreach (var (file, conflictTasks) in fileToTasks.Where(kv => kv.Value.Count > 1))
+            {
+                fileConflicts.Add($"Wave {waveGroup.Key}: {file} modified by tasks {string.Join(", ", conflictTasks)}. Use worktree isolation or re-sequence.");
+            }
         }
 
         // Update project:state
@@ -483,6 +513,9 @@ public sealed class ScriniaProjectTools
         catch { /* agent scope not created — skip silently */ }
 
         string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
+        string conflictWarning = fileConflicts.Count > 0
+            ? "\n\nFile conflicts detected:\n" + string.Join("\n", fileConflicts.Select(c => $"  - {c}"))
+            : "";
         string response =
             $"Created {parsedTasks.Count} task(s) for phase {phaseId} in {waveCount} wave(s).\n" +
             $"Tasks stored:\n{taskList}\n" +
@@ -490,6 +523,7 @@ public sealed class ScriniaProjectTools
             $"Next: run task_next to get the first pending tasks.{parallelHint}\n" +
             $"Spawn agents for all task execution — the primary agent orchestrates, it does not execute tasks directly." +
             executionPolicyHint +
+            conflictWarning +
             patternNote;
 
         response = Truncate(response);
@@ -2478,6 +2512,47 @@ public sealed class ScriniaProjectTools
         }
     }
 
+    /// <summary>Promote a backlog entry to a new goal.</summary>
+    [McpServerTool(Name = "backlog_promote"), Description(
+        "Promote a backlog entry to a new goal. Reads the backlog:* memory, " +
+        "extracts its description, and creates a new goal via goal_update(add).")]
+    public async Task<string> BacklogPromote(
+        [Description("Backlog entry name (e.g. 'backlog:resilience').")] string name,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Read the backlog entry
+        string content;
+        try { content = await ReadMemoryAsync(store, name, cancellationToken); }
+        catch (FileNotFoundException)
+        {
+            return $"Error: backlog entry '{name}' not found.";
+        }
+
+        // Extract description — use the entry's metadata description,
+        // or fall back to first non-empty, non-header line of content
+        var (scope, subject) = store.ParseQualifiedName(name);
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        string goalDescription = entry?.Description ?? "";
+        if (string.IsNullOrWhiteSpace(goalDescription))
+        {
+            // Fall back to first content line
+            goalDescription = content.Split('\n')
+                .Select(l => l.Trim())
+                .FirstOrDefault(l => !string.IsNullOrEmpty(l) && !l.StartsWith('#'))
+                ?? name;
+        }
+
+        // Create the goal
+        string result = await GoalUpdate("add", goalDescription, cancellationToken: cancellationToken);
+
+        return $"Promoted '{name}' to goal.\n{result}";
+    }
+
     /// <summary>
     /// Parses the goals section from project:context text.
     /// Returns: (goalLines, originalCount, contextWithoutGoals).
@@ -3362,7 +3437,7 @@ public sealed class ScriniaProjectTools
             """,
     };
 
-    private sealed record ParsedTask(string Id, string[] DependsOn, string Content);
+    private sealed record ParsedTask(string Id, string[] DependsOn, string Content, string[]? Files = null);
 
     /// <summary>
     /// Parses free-text task input into structured task records.
@@ -3405,9 +3480,20 @@ public sealed class ScriniaProjectTools
                 }
             }
 
-            // Build content: Action + Acceptance criteria (everything except Depends on line)
+            // Parse Files
+            string[]? files = null;
+            var filesMatch = Regex.Match(section, @"^Files:\s*(.+)$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            if (filesMatch.Success)
+            {
+                files = filesMatch.Groups[1].Value
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToArray();
+            }
+
+            // Build content: Action + Acceptance criteria (everything except Depends on / Files lines)
             var contentLines = section.Split('\n')
                 .Where(line => !Regex.IsMatch(line.Trim(), @"^Depends\s+on:", RegexOptions.IgnoreCase))
+                .Where(line => !Regex.IsMatch(line.Trim(), @"^Files:", RegexOptions.IgnoreCase))
                 .ToList();
 
             // Trim leading/trailing blank lines from content
@@ -3420,7 +3506,7 @@ public sealed class ScriniaProjectTools
             if (string.IsNullOrWhiteSpace(content))
                 content = "(no action specified)";
 
-            result.Add(new ParsedTask(taskId, dependsOn, content));
+            result.Add(new ParsedTask(taskId, dependsOn, content, files));
         }
 
         return result;

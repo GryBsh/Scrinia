@@ -568,6 +568,121 @@ public sealed class ScriniaMcpTools
         return $"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.";
     }
 
+    [McpServerTool(Name = "update_meta"), Description(
+        "Update metadata (keywords, description, review conditions) on an existing memory " +
+        "without re-encoding its content. Preferred over store() when only metadata needs changing. " +
+        "Keywords are merged with existing (not replaced). Description and review conditions are " +
+        "replaced if provided. " +
+        "Note: this modifies .scrinia/ in the workspace — treat those file changes as your own.")]
+    public Task<string> UpdateMeta(
+        [Description("Memory name (e.g. 'api:auth-flow', 'session-notes').")] string name,
+        [Description("Keywords to add (merged with existing, not replaced).")] string[]? keywords = null,
+        [Description("New description (replaces existing if provided).")] string? description = null,
+        [Description("ISO 8601 date for review (replaces existing if provided).")] string? reviewAfter = null,
+        [Description("Condition for review (replaces existing if provided).")] string? reviewWhen = null,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        if (store.IsEphemeral(name))
+            return Task.FromResult("Error: update_meta does not support ephemeral memories. Use store() instead.");
+
+        var (scope, subject) = store.ParseQualifiedName(name);
+
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (entry is null)
+        {
+            string qualName = store.FormatQualifiedName(scope, subject);
+            return Task.FromResult($"Error: memory '{qualName}' not found.");
+        }
+
+        // Track what changed for the response message
+        var changes = new List<string>();
+
+        // Merge keywords (additive)
+        string[]? mergedKeywords = entry.Keywords;
+        int addedCount = 0;
+        if (keywords is { Length: > 0 })
+        {
+            var existing = entry.Keywords ?? [];
+            mergedKeywords = existing.Union(keywords, StringComparer.OrdinalIgnoreCase).ToArray();
+            addedCount = mergedKeywords.Length - existing.Length;
+            if (addedCount > 0)
+                changes.Add($"{addedCount} keyword(s) added");
+        }
+
+        // Replace description if provided
+        string updatedDescription = entry.Description;
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            updatedDescription = description;
+            changes.Add("description updated");
+        }
+
+        // Parse reviewAfter if provided
+        DateTimeOffset? parsedReviewAfter = entry.ReviewAfter;
+        if (!string.IsNullOrWhiteSpace(reviewAfter))
+        {
+            if (DateTimeOffset.TryParse(reviewAfter, out var ra))
+            {
+                parsedReviewAfter = ra;
+                changes.Add($"reviewAfter set to {ra:yyyy-MM-dd}");
+            }
+            else
+            {
+                changes.Add("reviewAfter ignored (invalid date)");
+            }
+        }
+
+        // Replace reviewWhen if provided
+        string? updatedReviewWhen = entry.ReviewWhen;
+        if (reviewWhen is not null)
+        {
+            updatedReviewWhen = string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen;
+            changes.Add(updatedReviewWhen is not null ? "reviewWhen updated" : "reviewWhen cleared");
+        }
+
+        if (changes.Count == 0)
+            return Task.FromResult("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen.");
+
+        // Build the updated entry via term frequencies merge
+        var updatedTf = entry.TermFrequencies;
+        if (keywords is { Length: > 0 } && addedCount > 0)
+        {
+            var tf = entry.TermFrequencies is not null
+                ? new Dictionary<string, int>(entry.TermFrequencies)
+                : new Dictionary<string, int>();
+            var existing = entry.Keywords ?? [];
+            foreach (string kw in keywords)
+            {
+                if (!existing.Contains(kw, StringComparer.OrdinalIgnoreCase))
+                {
+                    tf.TryGetValue(kw, out int count);
+                    tf[kw] = count + 5;
+                }
+            }
+            updatedTf = tf;
+        }
+
+        var updated = entry with
+        {
+            Keywords = mergedKeywords,
+            TermFrequencies = updatedTf,
+            Description = updatedDescription,
+            ReviewAfter = parsedReviewAfter,
+            ReviewWhen = updatedReviewWhen,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
+        store.Upsert(updated, scope);
+
+        string qualifiedName = store.FormatQualifiedName(scope, subject);
+        return Task.FromResult(
+            $"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}. " +
+            "Files in .scrinia/ were updated — these are your changes.");
+    }
+
     [McpServerTool(Name = "list"), Description(
         "Returns a summary or full listing of persisted memories. " +
         "Call this when starting a session to orient on available project knowledge. " +
