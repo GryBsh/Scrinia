@@ -2174,10 +2174,11 @@ public sealed class ScriniaProjectTools
 
                 if (allPhasesDone)
                     retroNextStep = "\nAll phases complete. Before completing the goal:\n" +
-                        "1. Distill valuable learnings into topical memories (store) so future goals start smarter\n" +
-                        "2. Update existing skills or create new ones (skill_create) with lessons from this goal" +
+                        "1. Produce a march report: skill_load(\"march-reporter\") → docs/reports/ + sessions:YYYY-MM-DD memory\n" +
+                        "2. Distill valuable learnings into topical memories (store) so future goals start smarter\n" +
+                        "3. Update existing skills or create new ones (skill_create) with lessons from this goal" +
                         skillNudge + "\n" +
-                        "3. Then run goal_update(action:'complete')";
+                        "4. Then run goal_update(action:'complete')";
                 else if (nextPhase is not null)
                     retroNextStep = $"\nNext: run research_start for phase {nextPhase} to investigate before decomposing into tasks." +
                         skillNudge +
@@ -2208,7 +2209,8 @@ public sealed class ScriniaProjectTools
             cancellationToken);
 
         string response = $"Phase {phaseId} retrospective stored in learn:execution-outcomes. " +
-            "Searchable via standard search. Use get_chunk() to retrieve individual phase retrospectives." +
+            "Searchable via standard search. Use get_chunk() to retrieve individual phase retrospectives.\n" +
+            "Update your session log: append to or store sessions:YYYY-MM-DD with this phase's outcome." +
             retroNextStep;
 
         response = Truncate(response);
@@ -2421,6 +2423,7 @@ public sealed class ScriniaProjectTools
                         "\nConsider running plan_verify and plan_retrospective before moving on.";
 
                 response += "\n\nPost-goal learning:\n" +
+                    "- Produce a march report: skill_load(\"march-reporter\") → write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
                     "- Distill valuable findings into topical memories (store) for future goals\n" +
                     "- Update or create skills (skill_create) with lessons learned\n" +
                     "Planning artifacts (task:*, plan:*, research:*) can be cleaned up — " +

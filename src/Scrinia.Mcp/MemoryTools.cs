@@ -79,6 +79,8 @@ public sealed class ScriniaMcpTools
             - **When the user corrects you** → store the correction as a pattern to follow next time
             - **When you discover a convention** → store it so future sessions follow it automatically
             - **When starting work** → `search()` first to check if prior sessions already covered this ground
+            - **Maintain a session log** → `store` or `append` to `sessions:YYYY-MM-DD` as you complete phases
+              and goals. This running log feeds march reports and makes session handoffs seamless.
             These aren't planning steps — they're habits that make every session smarter than the last.
             Use topic naming to organize: `patterns:auth`, `bugs:sqlite-locking`, `conventions:naming`, etc.
             After research-heavy phases or when many memories are created in a session,
@@ -277,8 +279,9 @@ public sealed class ScriniaMcpTools
             - Distill valuable findings into topical memories (`store`) so future goals start smarter
             - Update skills with accumulated lessons — this is the learning loop
             - `goal_update(action:"complete", goalId, outcome)` — mark the goal done
-            - **Offer a march report**: `skill_load("march-reporter")` — produce a human-readable goal
-            summary document for audit trail. Always produce one at milestone boundaries; ask for smaller goals.
+            - **Produce a march report**: `skill_load("march-reporter")` — produce a human-readable goal
+            summary document in docs/reports/. This is mandatory, not optional — the report is the
+            audit trail. Update the session memory (`sessions:YYYY-MM-DD`) to match.
             - Planning artifacts (task:*, plan:*, research:*) can be cleaned up — the learnings live in memories and skills now
             - Set the next goal → back to step 2
 
