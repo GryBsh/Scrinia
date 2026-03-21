@@ -48,7 +48,7 @@ public static class MemoryEndpoints
         if (req.Name.Length > MaxNameLength)
             return Results.BadRequest(new ErrorResponse($"Name must not exceed {MaxNameLength} characters."));
 
-        if (req.Content.Any(c => c is not null && c.Length > MaxContentBytes))
+        if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
             return Results.BadRequest(new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
         try
@@ -150,7 +150,7 @@ public static class MemoryEndpoints
         if (decoded.Length > MaxNameLength)
             return Results.BadRequest(new ErrorResponse($"Name must not exceed {MaxNameLength} characters."));
 
-        if (req.Content.Length > MaxContentBytes)
+        if (System.Text.Encoding.UTF8.GetByteCount(req.Content) > MaxContentBytes)
             return Results.BadRequest(new ErrorResponse($"Content must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
         try

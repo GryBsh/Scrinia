@@ -67,6 +67,11 @@ public sealed class AnthropicChatProvider : IChatProvider, IDisposable
             circuitError = ex.Message;
             response = null!;
         }
+        catch (Exception)
+        {
+            _circuitBreaker.RecordFailure();
+            throw; // Let it propagate to ChatEndpoints catch-all
+        }
 
         if (circuitError is not null)
         {
@@ -78,7 +83,8 @@ public sealed class AnthropicChatProvider : IChatProvider, IDisposable
         {
             if (!response.IsSuccessStatusCode)
             {
-                _circuitBreaker.RecordFailure();
+                if (TransientDetector.IsTransient(response))
+                    _circuitBreaker.RecordFailure();
                 string body = "";
                 try { body = await response.Content.ReadAsStringAsync(ct); } catch { }
                 yield return new ChatEvent("error", Error: $"Provider returned {(int)response.StatusCode}: {response.ReasonPhrase}");

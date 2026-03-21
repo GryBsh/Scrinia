@@ -3114,11 +3114,24 @@ public sealed class ScriniaProjectTools
         ["planner"] = """
             ## Role: Wave Execution Planner
             You decompose validated work into parallel execution waves with explicit agent specifications.
-            You don't do the work — you plan how agents will do it.
+            You don't do the work — you plan how agents will do it. The primary agent NEVER executes tasks.
 
-            ## When to use
-            After research produces a change manifest (files, functions, transformations) and tasks are
-            defined, the planner produces an execution plan that maximizes parallelism.
+            ## MANDATORY: This skill must be loaded before plan_tasks
+            The primary agent must `skill_load("planner")` before decomposing any phase into tasks.
+            The planner produces agent-executable task specs. Without it, task descriptions
+            lack file scoping, isolation decisions, and SOS criteria — and the primary agent will
+            default to executing tasks itself, which blocks user interaction.
+
+            ## MANDATORY: All tasks execute via spawned agents
+            Every task — even a single-task wave — must be executed by a spawned Agent tool call.
+            The primary agent is an orchestrator. It plans, spawns, monitors, handles SOS, verifies.
+            It never reads implementation files, never edits code, never runs tests during execution.
+
+            Benefits:
+            - User always has a responsive primary agent to talk to
+            - Agents can SOS back if they hit walls (need skill, need decomposition, need domain input)
+            - Primary context stays clean for orchestration decisions
+            - Single tasks still get SOS capability — a stuck agent signals instead of thrashing
 
             ## Methodology
 
@@ -3128,6 +3141,7 @@ public sealed class ScriniaProjectTools
             - **Dependencies**: which tasks must complete before this one starts
             - **Agent type**: Explore (research), general-purpose (code changes), or specialist (loaded skill)
             - **Isolation needed**: does this task modify files that other tasks also modify?
+            - **SOS criteria**: what would cause this agent to signal instead of continuing
 
             ### 2. Detect file conflicts
             Build a file → task mapping. If two tasks touch the same file:
@@ -3136,29 +3150,44 @@ public sealed class ScriniaProjectTools
             - Worktree isolation allows parallel execution but requires merge afterward
 
             ### 3. Produce the execution plan
-            For each wave, specify:
+            For each wave, specify agent spawn specs:
             ```
             Wave N:
             - Agent 1 [type: general-purpose, isolation: worktree]
-              Files: src/Server/Program.cs
+              Files: src/Server/Program.cs, src/Server/Startup.cs
               Task: {exact change description with file:line, transformation}
+              SOS if: {conditions that should trigger SOS instead of continuing}
             - Agent 2 [type: general-purpose]
               Files: src/Core/FileMemoryStore.cs
               Task: {exact change description}
-            - Agent 3 [type: Explore]
-              Task: {research question}
+              SOS if: {conditions}
             Merge: build + test after wave completes
             ```
 
-            ### 4. Handle SOS signals
+            ### 4. Primary agent execution loop
+            ```
+            for each wave:
+              1. Spawn all agents in the wave (single message, parallel tool calls)
+              2. Wait for results — remain available for user interaction
+              3. Handle any SOS signals:
+                 - Skill needed → skill_create or skill_load, respawn
+                 - Decomposition needed → split task, add to next wave
+                 - Domain input needed → ask user, relay answer
+              4. After all agents complete: build + test
+              5. Mark tasks complete (task_complete)
+              6. Proceed to next wave
+            ```
+
+            ### 5. Handle SOS signals
             If an agent returns an SOS (needs specialist, needs skill, needs decomposition):
             - Assess the SOS request
             - If skill needed: create it via `skill_create`, spawn specialist in next wave
             - If decomposition needed: split the task, add sub-tasks to current or next wave
             - If specialist needed: `skill_load` the relevant skill, spawn with its methodology
+            - If user input needed: ask the user, then respawn with the answer
             - Update the execution plan and continue
 
-            ### 5. Convergence
+            ### 6. Convergence
             After all waves complete:
             - Build the full project
             - Run all tests
@@ -3166,11 +3195,13 @@ public sealed class ScriniaProjectTools
             - Report: which tasks completed, which SOS'd, what was replanned
 
             ## Key rules
+            - **Primary agent never executes tasks.** Always spawn. No exceptions.
             - **Different files = parallel agents.** Always. Not a judgment call.
             - **Same file = same agent or sequential waves.** Worktree if urgent.
             - **Research = Explore agent.** Code changes = general-purpose agent.
             - **Every agent gets the exact change spec.** No agent should need to explore.
             - **Build + test between waves.** Never start wave N+1 on a broken build.
+            - **Single-task waves still spawn an agent.** The cost is low; the SOS capability is valuable.
             """,
 
         ["sos-handler"] = """

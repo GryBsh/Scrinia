@@ -37,7 +37,7 @@ public sealed class ApiKeyStore : IDisposable
             try { return operation(); }
             catch (SqliteException ex) when (ex.SqliteErrorCode == 5 && attempt < 3) // 5 = SQLITE_BUSY
             {
-                Thread.Sleep(100 * (attempt + 1));
+                Thread.Sleep(100 * (1 << attempt));
             }
         }
     }
@@ -115,35 +115,42 @@ public sealed class ApiKeyStore : IDisposable
             RetryOnBusy(() =>
             {
                 using var transaction = _db.BeginTransaction();
-
-                using (var cmd = _db.CreateCommand())
+                try
                 {
-                    cmd.Transaction = transaction;
-                    cmd.CommandText = """
-                        INSERT INTO api_keys (id, key_hash, user_id, permissions, label, created_at, salt)
-                        VALUES ($id, $hash, $userId, $permissions, $label, $createdAt, $salt);
-                        """;
-                    cmd.Parameters.AddWithValue("$id", keyId);
-                    cmd.Parameters.AddWithValue("$hash", keyHash);
-                    cmd.Parameters.AddWithValue("$userId", userId);
-                    cmd.Parameters.AddWithValue("$permissions", permissionsJson);
-                    cmd.Parameters.AddWithValue("$label", (object?)label ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("o"));
-                    cmd.Parameters.AddWithValue("$salt", saltHex);
-                    cmd.ExecuteNonQuery();
-                }
+                    using (var cmd = _db.CreateCommand())
+                    {
+                        cmd.Transaction = transaction;
+                        cmd.CommandText = """
+                            INSERT INTO api_keys (id, key_hash, user_id, permissions, label, created_at, salt)
+                            VALUES ($id, $hash, $userId, $permissions, $label, $createdAt, $salt);
+                            """;
+                        cmd.Parameters.AddWithValue("$id", keyId);
+                        cmd.Parameters.AddWithValue("$hash", keyHash);
+                        cmd.Parameters.AddWithValue("$userId", userId);
+                        cmd.Parameters.AddWithValue("$permissions", permissionsJson);
+                        cmd.Parameters.AddWithValue("$label", (object?)label ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("o"));
+                        cmd.Parameters.AddWithValue("$salt", saltHex);
+                        cmd.ExecuteNonQuery();
+                    }
 
-                foreach (string store in stores)
+                    foreach (string store in stores)
+                    {
+                        using var storeCmd = _db.CreateCommand();
+                        storeCmd.Transaction = transaction;
+                        storeCmd.CommandText = "INSERT INTO key_stores (key_id, store_name) VALUES ($keyId, $store);";
+                        storeCmd.Parameters.AddWithValue("$keyId", keyId);
+                        storeCmd.Parameters.AddWithValue("$store", store);
+                        storeCmd.ExecuteNonQuery();
+                    }
+
+                    transaction.Commit();
+                }
+                catch
                 {
-                    using var storeCmd = _db.CreateCommand();
-                    storeCmd.Transaction = transaction;
-                    storeCmd.CommandText = "INSERT INTO key_stores (key_id, store_name) VALUES ($keyId, $store);";
-                    storeCmd.Parameters.AddWithValue("$keyId", keyId);
-                    storeCmd.Parameters.AddWithValue("$store", store);
-                    storeCmd.ExecuteNonQuery();
+                    transaction.Rollback();
+                    throw; // RetryOnBusy will catch and retry
                 }
-
-                transaction.Commit();
             });
         }
         finally { _lock.ExitWriteLock(); }
@@ -159,54 +166,50 @@ public sealed class ApiKeyStore : IDisposable
     /// </summary>
     public KeyInfo? ValidateKey(string rawKey)
     {
-        _lock.EnterReadLock();
-        string? matchedKeyId = null;
-        string? matchedUserId = null;
-        string? matchedPermissionsJson = null;
-        try
-        {
-            using var cmd = _db.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, user_id, permissions, revoked, salt, key_hash
-            FROM api_keys
-            WHERE revoked = 0;
-            """;
-
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            string storedHash = reader.GetString(5);
-            string? saltHex = reader.IsDBNull(4) ? null : reader.GetString(4);
-
-            byte[]? salt = saltHex is not null ? Convert.FromHexString(saltHex) : null;
-            byte[] candidateHash = HashKeyBytes(rawKey, salt);
-            byte[] storedHashBytes = Convert.FromHexString(storedHash);
-
-            if (!CryptographicOperations.FixedTimeEquals(candidateHash, storedHashBytes))
-                continue;
-
-            matchedKeyId = reader.GetString(0);
-            matchedUserId = reader.GetString(1);
-            matchedPermissionsJson = reader.GetString(2);
-            break;
-        }
-        }
-        finally { _lock.ExitReadLock(); }
-
-        if (matchedKeyId is null) return null;
-
-        string[] permissions = JsonSerializer.Deserialize<string[]>(matchedPermissionsJson!) ?? [];
-
-        // GetStoresForKey under read lock to prevent race with concurrent key deletion
-        _lock.EnterReadLock();
-        string[] stores;
-        try { stores = GetStoresForKey(matchedKeyId); }
-        finally { _lock.ExitReadLock(); }
-
-        // Update last_used_at (write operation — needs write lock)
         _lock.EnterWriteLock();
         try
         {
+            // Hash matching
+            string? matchedKeyId = null;
+            string? matchedUserId = null;
+            string? matchedPermissionsJson = null;
+
+            using (var cmd = _db.CreateCommand())
+            {
+                cmd.CommandText = """
+                    SELECT id, user_id, permissions, revoked, salt, key_hash
+                    FROM api_keys
+                    WHERE revoked = 0;
+                    """;
+
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    string storedHash = reader.GetString(5);
+                    string? saltHex = reader.IsDBNull(4) ? null : reader.GetString(4);
+
+                    byte[]? salt = saltHex is not null ? Convert.FromHexString(saltHex) : null;
+                    byte[] candidateHash = HashKeyBytes(rawKey, salt);
+                    byte[] storedHashBytes = Convert.FromHexString(storedHash);
+
+                    if (!CryptographicOperations.FixedTimeEquals(candidateHash, storedHashBytes))
+                        continue;
+
+                    matchedKeyId = reader.GetString(0);
+                    matchedUserId = reader.GetString(1);
+                    matchedPermissionsJson = reader.GetString(2);
+                    break;
+                }
+            }
+
+            if (matchedKeyId is null) return null;
+
+            string[] permissions = JsonSerializer.Deserialize<string[]>(matchedPermissionsJson!) ?? [];
+
+            // GetStoresForKey — no TOCTOU window since we hold the write lock
+            string[] stores = GetStoresForKey(matchedKeyId);
+
+            // Update last_used_at
             RetryOnBusy(() =>
             {
                 using var updateCmd = _db.CreateCommand();
@@ -215,10 +218,10 @@ public sealed class ApiKeyStore : IDisposable
                 updateCmd.Parameters.AddWithValue("$id", matchedKeyId);
                 updateCmd.ExecuteNonQuery();
             });
+
+            return new KeyInfo(matchedKeyId, matchedUserId!, stores, permissions);
         }
         finally { _lock.ExitWriteLock(); }
-
-        return new KeyInfo(matchedKeyId, matchedUserId!, stores, permissions);
     }
 
     /// <summary>Revokes a key by its ID.</summary>

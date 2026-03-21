@@ -145,6 +145,7 @@ All HTTP providers follow the same pattern:
 3. `EmbedAsync` sends JSON request, parses response, L2-normalizes vector
 4. On failure: logs warning, returns `null`
 5. Each provider has its own internal `JsonSerializerContext` for trimming safety
+6. API-based providers use `RetryPolicy` + `CircuitBreaker` from `Scrinia.Core.Resilience` for transient failure resilience (configurable via `EmbeddingOptions.MaxRetries`, `RetryBaseDelayMs`, `CircuitBreakerThreshold`, `CircuitBreakerCooldownSeconds`)
 
 **Azure specifics:**
 - Classic URL: `{endpoint}/openai/deployments/{deployment}/embeddings?api-version={apiVersion}`
@@ -398,7 +399,7 @@ Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-
 
 ## Testing
 
-673 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
+730 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
 - VectorStore: SVF2 format, upsert, remove, compaction, scope isolation
 - VectorIndex: SIMD cosine similarity, search ranking
 - HnswIndex: Insert, search, remove, persistence, large-scale behavior

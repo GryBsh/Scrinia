@@ -24,19 +24,57 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     /// <summary>
     /// Sends a synchronous HTTP request with retry + circuit breaker.
+    /// Content is buffered before the retry loop so each attempt gets a fresh HttpContent.
     /// </summary>
     private HttpResponseMessage SendSync(HttpRequestMessage request)
     {
-        _circuitBreaker.EnsureClosed();
-        var response = RetryPolicy.Execute(
-            () =>
-            {
-                // HttpRequestMessage can't be reused — clone essentials
-                var clone = new HttpRequestMessage(request.Method, request.RequestUri) { Content = request.Content };
-                return _http.Send(clone, HttpCompletionOption.ResponseContentRead);
-            },
-            resp => TransientDetector.IsTransient(resp),
-            _retryOptions);
+        // Buffer content before the retry loop so each attempt gets fresh HttpContent (SEC-028/QAL-016)
+        byte[]? contentBytes = null;
+        string? contentType = null;
+        if (request.Content is not null)
+        {
+            contentBytes = request.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            contentType = request.Content.Headers.ContentType?.ToString();
+        }
+
+        try
+        {
+            _circuitBreaker.EnsureClosed();
+        }
+        catch (CircuitBreakerOpenException)
+        {
+            // Degrade gracefully — let callers check IsSuccessStatusCode (OPS-1)
+            return new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable);
+        }
+
+        HttpResponseMessage response;
+        try
+        {
+            response = RetryPolicy.Execute(
+                () =>
+                {
+                    var clone = new HttpRequestMessage(request.Method, request.RequestUri);
+                    if (contentBytes is not null)
+                    {
+                        clone.Content = new ByteArrayContent(contentBytes);
+                        if (contentType is not null)
+                        {
+                            clone.Content.Headers.Remove("Content-Type");
+                            clone.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
+                        }
+                    }
+                    return _http.Send(clone, HttpCompletionOption.ResponseContentRead);
+                },
+                resp => TransientDetector.IsTransient(resp),
+                _retryOptions);
+        }
+        catch (Exception)
+        {
+            // Network failure after retries exhausted — record for circuit breaker
+            _circuitBreaker.RecordFailure();
+            throw;
+        }
+
         if (response.IsSuccessStatusCode)
             _circuitBreaker.RecordSuccess();
         else if (TransientDetector.IsTransient(response))
@@ -94,7 +132,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         _store = store;
         _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
         _retryOptions = retryOptions ?? new RetryOptions();
-        CircuitBreakerRegistry.Register("http-memory-store", _circuitBreaker);
+        CircuitBreakerRegistry.Register($"http-memory-store:{_store}", _circuitBreaker);
         // Use a temp dir for the helper — we only use it for naming/parsing
         _tempDir = Path.Combine(Path.GetTempPath(), $"scrinia-http-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
@@ -427,10 +465,14 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         string text = System.Text.Encoding.UTF8.GetString(bytes);
         string qualifiedName = FormatQualifiedName(scope, subject);
         var req = new StoreApiRequest([text], qualifiedName);
-        var content = JsonContent.Create(req, HttpStoreJsonContext.Default.StoreApiRequest);
         _circuitBreaker.EnsureClosed();
         var resp = await RetryPolicy.ExecuteAsync(
-            () => _http.PostAsync($"{BaseUrl}/memories", content, ct),
+            () =>
+            {
+                // Create fresh content per attempt — HttpContent is consumed after send (SEC-029/QAL-017)
+                var content = JsonContent.Create(req, HttpStoreJsonContext.Default.StoreApiRequest);
+                return _http.PostAsync($"{BaseUrl}/memories", content, ct);
+            },
             r => TransientDetector.IsTransient(r),
             _retryOptions, logger: null, ct);
         if (resp.IsSuccessStatusCode)

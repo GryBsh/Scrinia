@@ -11,7 +11,6 @@ public sealed class GeminiChatProvider : IChatProvider, IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _model;
-    private readonly string _apiKey;
     private readonly int _maxTokens;
     private readonly double _temperature;
     private readonly CircuitBreaker _circuitBreaker;
@@ -25,7 +24,6 @@ public sealed class GeminiChatProvider : IChatProvider, IDisposable
         _http = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
         _http.DefaultRequestHeaders.Add("x-goog-api-key", apiKey);
         _http.Timeout = TimeSpan.FromSeconds(120);
-        _apiKey = apiKey;
         _model = model;
         _maxTokens = maxTokens;
         _temperature = temperature;
@@ -76,6 +74,11 @@ public sealed class GeminiChatProvider : IChatProvider, IDisposable
             circuitError = ex.Message;
             response = null!;
         }
+        catch (Exception)
+        {
+            _circuitBreaker.RecordFailure();
+            throw; // Let it propagate to ChatEndpoints catch-all
+        }
 
         if (circuitError is not null)
         {
@@ -87,7 +90,8 @@ public sealed class GeminiChatProvider : IChatProvider, IDisposable
         {
             if (!response.IsSuccessStatusCode)
             {
-                _circuitBreaker.RecordFailure();
+                if (TransientDetector.IsTransient(response))
+                    _circuitBreaker.RecordFailure();
                 string body = "";
                 try { body = await response.Content.ReadAsStringAsync(ct); } catch { }
                 yield return new ChatEvent("error", Error: $"Provider returned {(int)response.StatusCode}: {response.ReasonPhrase}");

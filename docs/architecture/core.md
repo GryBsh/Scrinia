@@ -440,3 +440,43 @@ All serialized types use source-generated `JsonSerializerContext` for trimming s
 | `CliJsonContext` | CLI | `--json` CLI output |
 
 Without source-gen contexts, the trimmed CLI binary silently fails to serialize/deserialize.
+
+## Resilience
+
+`Scrinia.Core.Resilience` provides transient failure handling for HTTP-based providers (embedding and chat). Zero external dependencies — pure .NET.
+
+### TransientDetector
+
+Classifies failures as transient (retryable) or permanent:
+- **HTTP status codes**: 429 (Too Many Requests), 500, 502, 503, 504
+- **Exceptions**: `TimeoutException`, `IOException`, `SocketException`, `HttpRequestException` wrapping socket/IO errors
+
+### RetryPolicy
+
+Static class with async and sync retry methods using exponential backoff with jitter:
+- **Backoff formula**: `baseDelayMs * 2^attempt + random(0, baseDelayMs)`
+- **Retry-After header**: Honored when the response is `HttpResponseMessage` (uses the longer of computed delay or header value)
+- **Exception retry**: Catches transient exceptions (via `TransientDetector`) and retries up to `MaxRetries`
+- **Result retry**: Caller provides `isTransient` predicate for result-based retry decisions
+
+### CircuitBreaker
+
+Per-provider circuit breaker with three states:
+- **Closed**: Normal operation. Consecutive failures tracked via `Interlocked` operations.
+- **Open**: Failures reached threshold. All requests rejected with `CircuitBreakerOpenException`. Transitions to HalfOpen after cooldown expires.
+- **HalfOpen**: Cooldown expired. Next request is a probe — success closes the circuit, failure re-opens it.
+
+Thread-safe via `Interlocked` and `Volatile` operations (no locks).
+
+### CircuitBreakerRegistry
+
+Static `ConcurrentDictionary<string, CircuitBreaker>` registry. Providers register their circuit breaker instances by name so the `/health/details` endpoint can report state without tight coupling.
+
+### Configuration Records
+
+```csharp
+public sealed record RetryOptions(int MaxRetries = 3, int BaseDelayMs = 200);
+public sealed record CircuitBreakerOptions(int Threshold = 5, int CooldownSeconds = 30);
+```
+
+Both `EmbeddingOptions` (Core) and `ChatOptions` (Server) expose `MaxRetries`, `RetryBaseDelayMs`, `CircuitBreakerThreshold`, and `CircuitBreakerCooldownSeconds` properties that map to these records.

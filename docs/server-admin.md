@@ -457,6 +457,40 @@ If `provider` is omitted, the first available provider is used. Returns 503 if n
 
 Only providers with API keys configured are available. Set `"Providers": "none"` to disable the feature entirely.
 
+### Resilience Configuration
+
+Both the Chat and Embeddings sections support resilience properties for transient failure handling. These control retry behavior and circuit breaker thresholds for API-based providers:
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `MaxRetries` | `3` | Maximum retry attempts for transient failures (0 = no retries, max 10) |
+| `RetryBaseDelayMs` | `200` | Base delay in milliseconds for exponential backoff with jitter |
+| `CircuitBreakerThreshold` | `5` | Consecutive failures before the circuit breaker opens |
+| `CircuitBreakerCooldownSeconds` | `30` | Seconds to wait before transitioning from open to half-open |
+
+Example:
+
+```json
+"Chat": {
+  "Providers": "anthropic",
+  "AnthropicApiKey": "sk-ant-...",
+  "MaxRetries": 5,
+  "RetryBaseDelayMs": 500,
+  "CircuitBreakerThreshold": 3,
+  "CircuitBreakerCooldownSeconds": 60
+},
+"Embeddings": {
+  "Provider": "openai",
+  "OpenAiApiKey": "sk-...",
+  "MaxRetries": 3,
+  "RetryBaseDelayMs": 200,
+  "CircuitBreakerThreshold": 5,
+  "CircuitBreakerCooldownSeconds": 30
+}
+```
+
+Circuit breaker state is visible via the `/health/details` endpoint (requires `health` permission).
+
 ## Web UI
 
 The server includes a built-in React web UI served from `/`. Pages:

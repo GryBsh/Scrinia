@@ -5,13 +5,21 @@ using Microsoft.Extensions.Logging;
 namespace Scrinia.Core.Resilience;
 
 /// <summary>Configuration for retry behavior.</summary>
-public sealed record RetryOptions(int MaxRetries = 3, int BaseDelayMs = 200);
+public sealed record RetryOptions
+{
+    public int MaxRetries { get; }
+    public int BaseDelayMs { get; }
+
+    public RetryOptions(int MaxRetries = 3, int BaseDelayMs = 200)
+    {
+        this.MaxRetries = Math.Clamp(MaxRetries, 0, 10);
+        this.BaseDelayMs = Math.Clamp(BaseDelayMs, 1, 10_000);
+    }
+}
 
 /// <summary>Retry with exponential backoff and jitter.</summary>
 public static class RetryPolicy
 {
-    private static readonly Random Jitter = new();
-
     /// <summary>Execute an async operation with retry on transient failures.</summary>
     public static async Task<T> ExecuteAsync<T>(
         Func<Task<T>> operation,
@@ -46,6 +54,7 @@ public static class RetryPolicy
                 retryDelay = GetRetryAfterDelay(httpResponse.Headers, retryDelay);
 
             logger?.LogWarning("Retry {Attempt}/{Max} after {Delay}ms (transient response)", attempt + 1, options.MaxRetries, retryDelay.TotalMilliseconds);
+            if (result is IDisposable d) d.Dispose();
             await Task.Delay(retryDelay, ct);
         }
     }
@@ -79,15 +88,15 @@ public static class RetryPolicy
 
             var retryDelay = ComputeDelay(attempt, options.BaseDelayMs);
             logger?.LogWarning("Retry {Attempt}/{Max} after {Delay}ms (transient result)", attempt + 1, options.MaxRetries, (int)retryDelay.TotalMilliseconds);
+            if (result is IDisposable d) d.Dispose();
             Thread.Sleep(retryDelay);
         }
     }
 
     private static TimeSpan ComputeDelay(int attempt, int baseDelayMs)
     {
-        int exponential = baseDelayMs * (1 << Math.Min(attempt, 10));
-        int jitter;
-        lock (Jitter) { jitter = Jitter.Next(0, baseDelayMs); }
+        long exponential = (long)baseDelayMs * (1 << Math.Min(attempt, 10));
+        int jitter = Random.Shared.Next(0, baseDelayMs);
         return TimeSpan.FromMilliseconds(exponential + jitter);
     }
 

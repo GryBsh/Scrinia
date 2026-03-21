@@ -200,7 +200,7 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = 429;
     options.AddPolicy("api", context =>
     {
-        string partitionKey = context.User?.FindFirst("UserId")?.Value
+        string partitionKey = context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? context.Connection.RemoteIpAddress?.ToString()
             ?? "anonymous";
 
@@ -269,6 +269,15 @@ if (!keyStore.HasAnyKeys())
     app.Logger.LogWarning(
         "No API keys found. Bootstrap key (id={KeyId}) written to {KeyFile} — read it, then delete the file.",
         keyId, keyFile);
+}
+
+// Warn if bootstrap key file still exists after operator has created additional keys
+{
+    string bootstrapKeyPath = Path.Combine(dataDir, "BOOTSTRAP_KEY");
+    if (File.Exists(bootstrapKeyPath) && keyStore.ListKeys().Count > 1)
+    {
+        app.Logger.LogCritical("SECURITY: Bootstrap key file '{Path}' still exists. Delete it after creating a permanent API key.", bootstrapKeyPath);
+    }
 }
 
 // ── Middleware pipeline ──────────────────────────────────────────────────────

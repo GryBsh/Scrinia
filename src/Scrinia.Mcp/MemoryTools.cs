@@ -942,10 +942,17 @@ public sealed class ScriniaMcpTools
         var store = CurrentStore;
 
         // Resolve path relative to workspace root if not absolute
+        string storeDir = store.GetStoreDirForScope("local");
+        string workspaceRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(storeDir)!, ".."));
+
         string resolvedPath = Path.IsPathRooted(bundlePath)
             ? bundlePath
-            : Path.Combine(Path.GetDirectoryName(store.GetStoreDirForScope("local"))!, "..", bundlePath);
+            : Path.Combine(workspaceRoot, bundlePath);
         resolvedPath = Path.GetFullPath(resolvedPath);
+
+        // SEC-041: prevent path traversal outside workspace
+        if (!resolvedPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult("Error: bundle path must be within the workspace.");
 
         if (!File.Exists(resolvedPath))
             return Task.FromResult($"Error: bundle file not found: {resolvedPath}");

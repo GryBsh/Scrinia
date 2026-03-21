@@ -38,8 +38,8 @@ scrinia/
       MemoryStoreContext.cs       <- AsyncLocal indirection: MCP tools read Current to dispatch
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
     Scrinia.Mcp/                  <- shared MCP tools library (net10.0 classlib, refs Core)
-      ScriniaMcpTools.cs          <- 13 memory MCP tools (sealed class, no constructor, no DI injection)
-      ScriniaProjectTools.cs      <- 20 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
+      MemoryTools.cs              <- 13 memory MCP tools (sealed class, no constructor, no DI injection)
+      ProjectTools.cs             <- 20 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
@@ -62,7 +62,7 @@ scrinia/
       Endpoints/
         MemoryEndpoints.cs        <- REST routes for memory CRUD, search, export/import
         KeyEndpoints.cs           <- API key management routes
-        HealthEndpoints.cs        <- Kubernetes-style health probes (/health, /health/live, /health/ready)
+        HealthEndpoints.cs        <- Kubernetes-style health probes (/health, /health/live, /health/ready, /health/details)
       Services/
         StoreManager.cs           <- multi-store factory + cache (name → IMemoryStore via IStorageBackend)
         MemoryOrchestrator.cs     <- business logic for memory operations
@@ -95,6 +95,11 @@ scrinia/
       HybridReranker.cs           <- ISearchScoreContributor: re-ranks BM25 top-K with cosine similarity
       Models/VectorEntry.cs       <- (Name, ChunkIndex?, Vector) record
       Providers/                  <- OllamaEmbeddingProvider, OpenAiEmbeddingProvider, VoyageAiEmbeddingProvider, AzureAiEmbeddingProvider, GoogleGeminiEmbeddingProvider
+    Scrinia.Core/Resilience/      <- transient failure resilience (zero external deps)
+      RetryPolicy.cs              <- async/sync retry with exponential backoff, jitter, Retry-After
+      CircuitBreaker.cs           <- Closed/Open/HalfOpen states, per-provider isolation
+      CircuitBreakerRegistry.cs   <- static registry for health observability
+      TransientDetector.cs        <- classifies HTTP codes and exceptions as retryable
     Scrinia.Plugin.Embeddings/    <- optional Vulkan GPU acceleration plugin (net10.0 classlib, LLamaSharp)
       EmbeddingsPlugin.cs         <- server: IScriniaPlugin + ISearchScoreContributor + IMemoryEventSink + IMemoryOperationHook
       VulkanEmbeddingProvider.cs  <- LLamaSharp Vulkan-accelerated embeddings (GGUF model)
@@ -105,11 +110,11 @@ scrinia/
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 673 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 730 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
       Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
-    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 60 tests
+    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 61 tests
       ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
     Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 12 tests (Vulkan plugin CLI + benchmark tests)
       EmbeddingsPluginCliTests.cs <- core type integration tests (EmbeddingOptions, Factory, VectorStore)
@@ -266,14 +271,14 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `plan_verify` | PlanVerify(phaseId) | Structured pass/fail per success criterion from plan:roadmap |
 | `plan_gaps` | PlanGaps(phaseId, failedCriteria) | Create gap closure tasks, re-open phase status |
 | `research_start` | ResearchStart(phaseId, topic, question) | Start a research investigation before task decomposition |
-| `research_complete` | ResearchComplete(phaseId, topic, findings, sources) | Complete research with findings and sources |
-| `concern_add` | ConcernAdd(title, description, severity) | Add a project concern with severity (low/medium/high) |
-| `concern_resolve` | ConcernResolve(concernId, resolution) | Resolve a concern with resolution details |
+| `research_complete` | ResearchComplete(phaseId, topic, findings, hypothesis?) | Complete research with findings and hypothesis |
+| `concern_add` | ConcernAdd(description, severity, phaseScope, id?) | Add a project concern with severity (low/medium/high) |
+| `concern_resolve` | ConcernResolve(concernName, resolution) | Resolve a concern with resolution details |
 | `concern` | Concern(phaseFilter?) | List active concerns, optionally filtered by phase |
 | `goal_update` | GoalUpdate(action, description?, goalId?, outcome?) | Manage project goals: add, complete, or list |
 | `skill_create` | SkillCreate(skillName, scaffold, instructions?, tools?) | Create a reusable specialist skill with project-specific context (stored as skill:*) |
 | `skill_load` | SkillLoad(skillName) | Load a reusable agent skill/prompt template |
-| `plan_retrospective` | PlanRetrospective(phaseId, whatWorked, whatFailed, lessons) | Append to learn:execution-outcomes with provenance:agent |
+| `plan_retrospective` | PlanRetrospective(phaseId, whatWorked, whatFailed, lessons, beliefsUpdated?) | Append to learn:execution-outcomes with provenance:agent |
 | `plan_profile` | PlanProfile(profile) | Store agent:profile with full overwrite |
 
 **Tool budget**: 33/50 (13 memory + 20 planning).
@@ -290,7 +295,7 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 
 **Task naming**: `task:{phaseId}-{wave}-{id}` (e.g. `task:01-1-03`). Keywords encode metadata: `status:pending`/`status:complete`, `wave:N`, `phase:XX`, `depends_on:{subject}`.
 
-**Planning DTOs** (`ScriniaProjectTools.cs`):
+**Planning DTOs** (`ProjectTools.cs`):
 ```csharp
 public sealed record ProjectRecord(string Id, string Name, string? Description, string[]? Goals, string[]? Constraints);
 public sealed record PlanRecord(string Id, string Phase, string? Goal, string? Status, string[]? TaskIds);
@@ -562,7 +567,7 @@ Encoding.UTF8.GetBytes(text)              // ambiguous — resolves to Scrinia.C
 
 ### MCP tool class internals
 
-`ScriniaMcpTools` and `ScriniaProjectTools` both live in `Scrinia.Mcp` (shared library). Both sealed with no constructor (no DI injection). Both registered via `.WithTools<T>()` in CLI and Server. `FormatBytes` and `BundleJsonOptions` on `ScriniaMcpTools` are `public static`. `BundleIndex`, `BundleManifest`, and `BundleJsonContext` are `public`. `PlanningJsonContext` is `public` on `ScriniaProjectTools.cs`.
+`ScriniaMcpTools` and `ScriniaProjectTools` both live in `Scrinia.Mcp` (shared library). Both sealed with no constructor (no DI injection). Both registered via `.WithTools<T>()` in CLI and Server. `FormatBytes` and `BundleJsonOptions` on `ScriniaMcpTools` are `public static`. `BundleIndex`, `BundleManifest`, and `BundleJsonContext` are `public`. `PlanningJsonContext` is `public` on `ProjectTools.cs`.
 
 ### Test isolation
 
@@ -625,11 +630,11 @@ The `list` command supports these flags:
 ## Running Tests
 
 ```bash
-# CLI + MCP + planning + embeddings tests (673 tests)
+# CLI + MCP + planning + embeddings tests (730 tests)
 cd tests/Scrinia.Tests
 dotnet test
 
-# Server API tests (60 tests)
+# Server API tests (61 tests)
 cd tests/Scrinia.Server.Tests
 dotnet test
 
@@ -638,7 +643,7 @@ cd tests/Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 745 tests total (673 + 60 + 12). Auth plugin adds 62 tests (distributed separately).
+Expected: 803 tests total (730 + 61 + 12). Auth plugin adds 62 tests (distributed separately).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 

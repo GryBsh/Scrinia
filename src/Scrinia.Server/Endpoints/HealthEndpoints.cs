@@ -33,7 +33,7 @@ public static class HealthEndpoints
         IReadOnlyList<IScriniaPlugin> plugins, ILoggerFactory loggerFactory)
     {
         var checks = RunReadinessChecks(keyStore, storeManager, plugins, loggerFactory.CreateLogger("Health"));
-        bool allOk = checks.All(c => c.Status == "ok");
+        bool allOk = checks.Where(c => !c.Name.StartsWith("circuit-breaker:")).All(c => c.Status == "ok");
         string status = allOk ? "ok" : "degraded";
         return allOk ? Results.Ok(new HealthResponse(status)) : Results.Json(new HealthResponse(status), statusCode: 503);
     }

@@ -16,7 +16,7 @@ src/Scrinia.Server/
   Endpoints/
     MemoryEndpoints.cs      10 memory operation endpoints
     KeyEndpoints.cs         4 key management endpoints
-    HealthEndpoints.cs      3 health probe endpoints
+    HealthEndpoints.cs      4 health probe endpoints
   Services/
     StoreManager.cs         Multi-store factory + cache
     MemoryOrchestrator.cs   Stateless business logic
@@ -198,6 +198,7 @@ No authentication required.
 | `/health/live` | Always 200 (liveness) |
 | `/health/ready` | Checks SQLite, storage, stores, plugins (readiness) |
 | `/health` | Alias for `/health/ready` |
+| `/health/details` | Authenticated. Returns full check array including circuit breaker state. |
 
 ## Services
 
@@ -327,7 +328,7 @@ The server exposes MCP Streamable HTTP at `/mcp` via `ModelContextProtocol.AspNe
 app.MapMcp("/mcp").RequireAuthorization();
 ```
 
-All 33 MCP tools from `ScriniaMcpTools` (13 memory) and `ScriniaProjectTools` (20 planning) are available. The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
+All 33 MCP tools from `ScriniaMcpTools` (13 memory) and `ScriniaProjectTools` (20 planning) are available (defined in `MemoryTools.cs` and `ProjectTools.cs` respectively). The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
 
 ## Web UI Integration
 
@@ -341,7 +342,7 @@ The server generates an OpenAPI spec at `/openapi/v1.json` and hosts a Scalar AP
 
 ## Test Coverage
 
-60 tests in `Scrinia.Server.Tests` using:
+61 tests in `Scrinia.Server.Tests` using:
 - `WebApplicationFactory` for in-process HTTP testing
 - In-memory SQLite for key storage
 - FluentAssertions for readable assertions
