@@ -1,3 +1,4 @@
+using System.Text;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
@@ -228,5 +229,155 @@ public sealed class NewToolTests : IDisposable
             "backlog_promote on a missing entry must return an error containing 'not found'");
         result.Should().StartWith("Error:",
             "error responses should start with 'Error:'");
+    }
+
+    // ── compact() tests ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Compact_MergesAllChunks()
+    {
+        // Arrange — store a memory, then append twice to create 3 chunks
+        await _memTools.Store(["Chunk one content."], "compact-merge-test");
+        await _memTools.Append("Chunk two content.", "compact-merge-test");
+        await _memTools.Append("Chunk three content.", "compact-merge-test");
+
+        // Act
+        string result = await _memTools.Compact("compact-merge-test");
+
+        // Assert — response mentions compaction
+        result.Should().Contain("Compacted",
+            "compact response should confirm the memory was compacted");
+
+        // Verify chunk count is now 1
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("compact-merge-test");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        entry.ChunkCount.Should().Be(1,
+            "after compact with no keepRecent, all chunks should merge into 1");
+
+        // Verify all original content is still accessible
+        string artifact = await store.ReadArtifactAsync(subject, scope);
+        byte[] decoded = new Nmp2Strategy().Decode(artifact);
+        string fullText = Encoding.UTF8.GetString(decoded);
+        fullText.Should().Contain("Chunk one content.",
+            "merged artifact must contain text from the first chunk");
+        fullText.Should().Contain("Chunk two content.",
+            "merged artifact must contain text from the second chunk");
+        fullText.Should().Contain("Chunk three content.",
+            "merged artifact must contain text from the third chunk");
+    }
+
+    [Fact]
+    public async Task Compact_KeepRecent()
+    {
+        // Arrange — store + append 4 times = 5 chunks total
+        await _memTools.Store(["Part one."], "compact-keep-test");
+        await _memTools.Append("Part two.", "compact-keep-test");
+        await _memTools.Append("Part three.", "compact-keep-test");
+        await _memTools.Append("Part four.", "compact-keep-test");
+        await _memTools.Append("Part five.", "compact-keep-test");
+
+        // Act — keep only the 2 most recent chunks
+        string result = await _memTools.Compact("compact-keep-test", keepRecent: 2);
+
+        // Assert
+        result.Should().Contain("Compacted",
+            "compact response should confirm compaction occurred");
+
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("compact-keep-test");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        entry.ChunkCount.Should().Be(2,
+            "after compact with keepRecent=2, chunk count should be 2");
+    }
+
+    [Fact]
+    public async Task Compact_ArchivesOriginal()
+    {
+        // Arrange — store + append once = 2 chunks
+        await _memTools.Store(["Original content."], "compact-archive-test");
+        await _memTools.Append("Appended content.", "compact-archive-test");
+
+        // Act
+        string result = await _memTools.Compact("compact-archive-test");
+
+        // Assert — a version file should exist in the versions/ directory
+        result.Should().Contain("archived",
+            "compact response should mention the original was archived");
+
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("compact-archive-test");
+        string storeDir = store.GetStoreDirForScope(scope);
+        string versionsDir = Path.Combine(storeDir, "versions");
+        Directory.Exists(versionsDir).Should().BeTrue(
+            "versions/ directory should exist after compact archives the original");
+        Directory.GetFiles(versionsDir, "*.nmp2").Should().NotBeEmpty(
+            "versions/ directory should contain at least one .nmp2 archive file");
+    }
+
+    [Fact]
+    public async Task Compact_SingleChunk_NoOp()
+    {
+        // Arrange — store a single-chunk memory (no appends)
+        await _memTools.Store(["Single chunk only."], "compact-noop-test");
+
+        // Act
+        string result = await _memTools.Compact("compact-noop-test");
+
+        // Assert — should indicate nothing to compact
+        result.Should().Contain("single chunk",
+            "compact on a single-chunk memory should indicate nothing to compact");
+    }
+
+    // ── suggest_patterns() tests ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task SuggestPatterns_FindsOverlap()
+    {
+        // Arrange — create 3+ concern:* entries sharing the "retry" keyword
+        await _memTools.Store(
+            ["Concern A: retry failures in network layer"],
+            "concern:issue-alpha",
+            keywords: ["retry", "network"]);
+        await _memTools.Store(
+            ["Concern B: retry timeout handling"],
+            "concern:issue-beta",
+            keywords: ["retry", "timeout"]);
+        await _memTools.Store(
+            ["Concern C: retry logic in provider"],
+            "concern:issue-gamma",
+            keywords: ["retry", "provider"]);
+
+        // Act
+        string result = await _memTools.SuggestPatterns();
+
+        // Assert — should detect "retry" appearing in 3+ entries
+        result.Should().Contain("retry",
+            "suggest_patterns should identify 'retry' as a recurring keyword");
+        result.Should().Contain("3",
+            "suggest_patterns should report that 3 entries share the keyword");
+    }
+
+    [Fact]
+    public async Task SuggestPatterns_NoOverlap()
+    {
+        // Arrange — create 2 concerns with unique keywords (no 3+ overlap)
+        await _memTools.Store(
+            ["Concern X: unique issue one"],
+            "concern:unique-one",
+            keywords: ["alpha-unique"]);
+        await _memTools.Store(
+            ["Concern Y: unique issue two"],
+            "concern:unique-two",
+            keywords: ["beta-unique"]);
+
+        // Act
+        string result = await _memTools.SuggestPatterns();
+
+        // Assert — no patterns should be detected
+        result.Should().Contain("No recurring patterns",
+            "suggest_patterns should report no patterns when fewer than 3 entries share a keyword");
     }
 }

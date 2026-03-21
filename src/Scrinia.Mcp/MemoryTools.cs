@@ -1442,6 +1442,143 @@ public sealed class ScriniaMcpTools
         return Task.FromResult(response);
     }
 
+    // ── Maintenance tools ──────────────────────────────────────────────────
+
+    [McpServerTool(Name = "compact"), Description(
+        "Compact a multi-chunk memory by merging chunks. Archives the original version. " +
+        "Use keepRecent to retain only the N most recent chunks. Default merges all into one.")]
+    public async Task<string> Compact(
+        [Description("Memory name to compact.")] string name,
+        [Description("Keep only the N most recent chunks. 0 = merge all into one (default).")] int keepRecent = 0,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+        var (scope, subject) = store.ParseQualifiedName(name);
+
+        string artifact = await store.ReadArtifactAsync(subject, scope, cancellationToken);
+        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+
+        if (chunkCount <= 1)
+            return "Already a single chunk, nothing to compact.";
+
+        if (keepRecent > 0 && keepRecent >= chunkCount)
+            return $"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).";
+
+        // Archive the original before modifying
+        store.ArchiveVersion(subject, scope);
+
+        string compacted;
+        int newChunkCount;
+
+        if (keepRecent <= 0)
+        {
+            // Merge all chunks into one: decode entire artifact, re-encode as single chunk
+            byte[] allBytes = new Nmp2Strategy().Decode(artifact);
+            string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
+            compacted = Nmp2ChunkedEncoder.Encode(fullText);
+            newChunkCount = 1;
+        }
+        else if (keepRecent == 1)
+        {
+            // Keep only the last chunk as a single-chunk artifact
+            string lastChunk = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunkCount);
+            compacted = Nmp2ChunkedEncoder.Encode(lastChunk);
+            newChunkCount = 1;
+        }
+        else
+        {
+            // Keep the N most recent chunks
+            int startChunk = chunkCount - keepRecent + 1;
+            var keptChunks = new string[keepRecent];
+            for (int i = 0; i < keepRecent; i++)
+                keptChunks[i] = Nmp2ChunkedEncoder.DecodeChunk(artifact, startChunk + i);
+
+            compacted = Nmp2ChunkedEncoder.EncodeChunks(keptChunks);
+            newChunkCount = keepRecent;
+        }
+
+        await store.WriteArtifactAsync(subject, scope, compacted, cancellationToken);
+
+        // Preserve keywords from the existing entry metadata
+        var entries = store.LoadIndex(scope);
+        var existingEntry = entries.FirstOrDefault(e => e.Name == subject);
+
+        if (existingEntry is not null)
+        {
+            long newBytes = System.Text.Encoding.UTF8.GetByteCount(
+                System.Text.Encoding.UTF8.GetString(new Nmp2Strategy().Decode(compacted)));
+            var updatedEntry = existingEntry with
+            {
+                ChunkCount = newChunkCount,
+                OriginalBytes = newBytes,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                ChunkEntries = null  // chunk-level entries no longer valid after compaction
+            };
+            store.Upsert(updatedEntry, scope);
+        }
+
+        string qualifiedName = store.FormatQualifiedName(scope, subject);
+        int dropped = chunkCount - newChunkCount;
+        return $"Compacted {qualifiedName}: {chunkCount} → {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived. Files in .scrinia/ were updated — these are your changes.";
+    }
+
+    [McpServerTool(Name = "suggest_patterns"), Description(
+        "Analyze concern:* entries for recurring themes. Suggests creating pattern " +
+        "memories when 3+ concerns share specific keywords.")]
+    public Task<string> SuggestPatterns(CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+
+        // Load concern entries from the concern topic scope
+        var (concernScope, _) = store.ParseQualifiedName("concern:placeholder");
+        List<ArtifactEntry> entries;
+        try
+        {
+            entries = store.LoadIndex(concernScope);
+        }
+        catch
+        {
+            return Task.FromResult("No concern entries found.");
+        }
+
+        if (entries.Count == 0)
+            return Task.FromResult("No concern entries found.");
+
+        // Noise prefixes to exclude from pattern detection
+        var noisePrefixes = new[] { "status:", "severity:", "phase:", "provenance:", "goal:" };
+
+        // Build keyword → entry names map
+        var keywordEntries = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            if (entry.Keywords is null) continue;
+            foreach (string kw in entry.Keywords)
+            {
+                if (noisePrefixes.Any(p => kw.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                if (!keywordEntries.TryGetValue(kw, out var list))
+                {
+                    list = new List<string>();
+                    keywordEntries[kw] = list;
+                }
+                list.Add(entry.Name);
+            }
+        }
+
+        // Filter to keywords appearing in 3+ entries
+        var suggestions = keywordEntries
+            .Where(kvp => kvp.Value.Count >= 3)
+            .OrderByDescending(kvp => kvp.Value.Count)
+            .Select(kvp => $"Keyword '{kvp.Key}' appears in {kvp.Value.Count} concerns: {string.Join(", ", kvp.Value)}. Consider creating patterns:{kvp.Key}.")
+            .ToList();
+
+        if (suggestions.Count == 0)
+            return Task.FromResult("No recurring patterns detected (need 3+ concerns with shared keywords).");
+
+        return Task.FromResult(string.Join("\n", suggestions));
+    }
+
     private static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)
     {
         var entries = new ChunkEntry[chunks.Length];
