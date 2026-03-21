@@ -455,6 +455,14 @@ public sealed class ScriniaMcpTools
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(keywords, autoKeywords);
 
+        // Extract file and memory references as prefixed keywords
+        string rawContent = string.Join("\n", content);
+        var fileRefs = ReferenceExtractor.ExtractFileRefs(rawContent);
+        var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(rawContent);
+        var refKeywords = fileRefs.Select(f => $"file:{f}")
+            .Concat(memoryRefs.Select(m => $"ref:{m}"));
+        mergedKeywords = mergedKeywords.Concat(refKeywords).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
         // Boost keywords in TF: agent keywords +5, auto-extracted +2
         foreach (string kw in mergedKeywords)
         {
@@ -1156,6 +1164,14 @@ public sealed class ScriniaMcpTools
         // Compute text analysis from full decoded content (single-pass)
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
         var mergedKeywords = TextAnalysis.MergeKeywords(null, autoKeywords);
+
+        // Extract file and memory references as prefixed keywords
+        var appendFileRefs = ReferenceExtractor.ExtractFileRefs(fullText);
+        var appendMemoryRefs = ReferenceExtractor.ExtractMemoryRefs(fullText);
+        var appendRefKeywords = appendFileRefs.Select(f => $"file:{f}")
+            .Concat(appendMemoryRefs.Select(m => $"ref:{m}"));
+        mergedKeywords = mergedKeywords.Concat(appendRefKeywords).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
         foreach (string kw in mergedKeywords)
         {
             tf.TryGetValue(kw, out int count);
@@ -1167,6 +1183,13 @@ public sealed class ScriniaMcpTools
         // Build chunk entry for the newly appended content (single-pass)
         var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
+
+        // Add ref keywords from the new chunk to its chunk-level keywords
+        var chunkFileRefs = ReferenceExtractor.ExtractFileRefs(content);
+        var chunkMemoryRefs = ReferenceExtractor.ExtractMemoryRefs(content);
+        var chunkRefKeywords = chunkFileRefs.Select(f => $"file:{f}")
+            .Concat(chunkMemoryRefs.Select(m => $"ref:{m}"));
+        newKw = newKw.Concat(chunkRefKeywords).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
             ContentPreview: store.GenerateContentPreview(content),
@@ -1254,6 +1277,57 @@ public sealed class ScriniaMcpTools
 
     // kt removed — knowledge transfer is a learnable goal, not a fixed tool.
     // The agent should treat "produce KT documents" as a goal, execute it, retrospect, and save a skill.
+
+    [McpServerTool(Name = "references"), Description(
+        "Find all memories that reference a file path or memory name. " +
+        "Returns a list of memory names whose content mentions the target.")]
+    public Task<string> References(
+        [Description("Target to search for — a file path (e.g. 'FileMemoryStore.cs') or memory name (e.g. 'api:auth-flow').")] string target,
+        CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+        string fileKey = $"file:{target}";
+        string refKey = $"ref:{target}";
+
+        // Search all scopes for entries with matching ref keywords
+        var allEntries = store.ListScoped(null);
+        var matches = allEntries
+            .Where(sa => sa.Entry.Keywords is not null &&
+                sa.Entry.Keywords.Any(k =>
+                    k.Equals(fileKey, StringComparison.OrdinalIgnoreCase) ||
+                    k.Equals(refKey, StringComparison.OrdinalIgnoreCase) ||
+                    k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
+            .Select(sa => store.FormatQualifiedName(sa.Scope, sa.Entry.Name))
+            .Distinct()
+            .ToList();
+
+        if (matches.Count == 0)
+            return Task.FromResult($"No memories reference '{target}'.");
+
+        string result = $"Found {matches.Count} memory(s) referencing '{target}':\n" +
+            string.Join("\n", matches.Select(m => $"- {m}"));
+        return Task.FromResult(result);
+    }
+
+    [McpServerTool(Name = "link"), Description(
+        "Create a bidirectional relationship between two memories. " +
+        "Adds ref: keywords to both entries so searching for one finds the other.")]
+    public async Task<string> Link(
+        [Description("Source memory name.")] string from,
+        [Description("Target memory name.")] string to,
+        [Description("Reason for the connection.")] string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Add ref:{to} keyword to {from}
+        await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
+        // Add ref:{from} keyword to {to}
+        await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
+
+        string response = $"Linked '{from}' \u2194 '{to}'.";
+        if (!string.IsNullOrWhiteSpace(reason))
+            response += $" Reason: {reason}";
+        return response;
+    }
 
     private static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)
     {
