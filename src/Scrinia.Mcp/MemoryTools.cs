@@ -189,6 +189,12 @@ public sealed class ScriniaMcpTools
             - **Name for searchability**: will `search("auth fix")` find this? Use descriptive names and keywords
             - **When in doubt, smaller is better**: two focused memories beat one sprawling one
 
+            ## Test count tracking
+            Use `codeRefs` on testing memories to point at test `.csproj` files.
+            When `check_drift()` flags a `.csproj` as changed, the evolutionary skill
+            knows to re-run `dotnet test` and update counts automatically.
+            Example: `store(content, "testing:infrastructure", codeRefs=["tests/Scrinia.Tests/Scrinia.Tests.csproj", ...])`
+
             ## Project planning tools
             Scrinia includes 20 planning tools for structured project lifecycle management.
             Plans are stored as standard scrinia memories with reserved topic conventions.
@@ -300,6 +306,16 @@ public sealed class ScriniaMcpTools
             Built-in skills include: planner (wave execution), release-auditor (security/quality/docs/ops audit),
             evolutionary (proactive knowledge and skill improvement), cartographer (cross-domain connection indexing),
             and others. Use `skill_load()` with no args to list all available skills.
+
+            ## Skill precedence
+            `skill_load(name)` checks .scrinia/ project memory first — if `skill:{name}` exists there,
+            it loads as a project override. Otherwise the built-in skill is used.
+            - **Built-in skills** are product features — all scrinia projects benefit from them.
+              Update these in the codebase (ProjectTools.cs BuiltInSkills) when the improvement is universal.
+            - **Project overrides** via `skill_create` are for project-specific behavioral evolution
+              (e.g., adding a backlog scan step to the evolutionary skill for this project only).
+            - **When in doubt**: if only this project needs the behavior, use `skill_create`. If all
+              projects would benefit, update the built-in and remove the override.
 
             **Reserved planning topics** — avoid using these prefixes for general knowledge:
             - `project:*` — project context, requirements, state (e.g. `project:context`, `project:state`)

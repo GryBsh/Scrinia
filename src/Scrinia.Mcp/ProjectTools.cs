@@ -2880,7 +2880,7 @@ public sealed class ScriniaProjectTools
             // Built-in skills (always available, project version overrides if exists)
             foreach (string name in BuiltInSkills.Keys)
             {
-                string tag = projectNames.Contains(name) ? "built-in, custom override" : "built-in";
+                string tag = projectNames.Contains(name) ? "override" : "built-in";
                 sb.AppendLine($"- skill:{name} [{tag}]");
             }
 
@@ -2894,7 +2894,7 @@ public sealed class ScriniaProjectTools
                     .FirstOrDefault(k => k.StartsWith("role:", StringComparison.OrdinalIgnoreCase))
                     ?? "role:unknown";
 
-                sb.AppendLine($"- skill:{entry.Name} [{roleKw}]");
+                sb.AppendLine($"- skill:{entry.Name} [custom] [{roleKw}]");
 
                 if (sb.Length > MaxResponseChars - 200)
                 {
@@ -2926,11 +2926,12 @@ public sealed class ScriniaProjectTools
         {
             // Fall back to built-in skills
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
-                return Truncate(builtIn);
+                return "[Loaded from built-in]\n" + Truncate(builtIn);
             return $"Error: skill '{skillName}' not found. Use skill_load (no name) to list available skills.";
         }
 
         content = Truncate(content);
+        content = "[Loaded from project override]\n" + content;
 
         return content;
     }
