@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Resilience;
 
 namespace Scrinia.Core.Embeddings.Providers;
 
@@ -12,6 +13,8 @@ public sealed class AzureAiEmbeddingProvider : IEmbeddingProvider
     private readonly string _requestUrl;
     private readonly bool _useV1;
     private readonly ILogger _logger;
+    private readonly CircuitBreaker _circuitBreaker;
+    private readonly RetryOptions _retryOptions;
     private int _dimensions;
 
     public bool IsAvailable => true;
@@ -19,7 +22,8 @@ public sealed class AzureAiEmbeddingProvider : IEmbeddingProvider
 
     public AzureAiEmbeddingProvider(
         string? endpoint, string? apiKey, string deployment, string model,
-        string apiVersion, bool useV1, ILogger logger)
+        string apiVersion, bool useV1, ILogger logger,
+        CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
     {
         if (string.IsNullOrWhiteSpace(endpoint))
             throw new ArgumentException("Azure endpoint is required for the Azure embedding provider.", nameof(endpoint));
@@ -33,6 +37,8 @@ public sealed class AzureAiEmbeddingProvider : IEmbeddingProvider
         _model = model;
         _useV1 = useV1;
         _logger = logger;
+        _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
+        _retryOptions = retryOptions ?? new RetryOptions();
 
         _requestUrl = useV1
             ? $"{baseUrl}/openai/v1/embeddings"
@@ -43,8 +49,15 @@ public sealed class AzureAiEmbeddingProvider : IEmbeddingProvider
     {
         try
         {
+            _circuitBreaker.EnsureClosed();
+
             var request = new AzureEmbedRequest(text, _useV1 ? _model : null);
-            var response = await _http.PostAsJsonAsync(_requestUrl, request, AzureJsonContext.Default.AzureEmbedRequest, ct);
+            var response = await RetryPolicy.ExecuteAsync(
+                async () => await _http.PostAsJsonAsync(_requestUrl, request, AzureJsonContext.Default.AzureEmbedRequest, ct),
+                resp => TransientDetector.IsTransient(resp),
+                _retryOptions,
+                _logger,
+                ct);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync(AzureJsonContext.Default.AzureEmbedResponse, ct);
@@ -53,36 +66,18 @@ public sealed class AzureAiEmbeddingProvider : IEmbeddingProvider
                 var vec = result.Data[0].Embedding;
                 if (_dimensions == 0)
                     _dimensions = vec.Length;
-                L2Normalize(vec);
+                VectorMath.L2Normalize(vec);
+                _circuitBreaker.RecordSuccess();
                 return vec;
             }
             return null;
         }
         catch (Exception ex)
         {
+            _circuitBreaker.RecordFailure();
             _logger.LogWarning(ex, "Azure embedding failed");
             return null;
         }
-    }
-
-    public async Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
-    {
-        var results = new float[texts.Count][];
-        for (int i = 0; i < texts.Count; i++)
-        {
-            var vec = await EmbedAsync(texts[i], ct);
-            if (vec is null) return null;
-            results[i] = vec;
-        }
-        return results;
-    }
-
-    private static void L2Normalize(float[] v)
-    {
-        float norm = 0;
-        foreach (float f in v) norm += f * f;
-        norm = MathF.Sqrt(norm);
-        if (norm > 0) for (int i = 0; i < v.Length; i++) v[i] /= norm;
     }
 
     public void Dispose() => _http.Dispose();

@@ -62,4 +62,18 @@ public sealed class EmbeddingOptions
 
     /// <summary>Google Gemini output dimensions (0 = model default).</summary>
     public int GoogleDimensions { get; set; }
+
+    // ── Resilience ─────────────────────────────────────────────────────────
+
+    /// <summary>Maximum retry attempts for transient failures (0 = no retries).</summary>
+    public int MaxRetries { get; set; } = 3;
+
+    /// <summary>Base delay in milliseconds for exponential backoff.</summary>
+    public int RetryBaseDelayMs { get; set; } = 200;
+
+    /// <summary>Consecutive failures before the circuit breaker opens.</summary>
+    public int CircuitBreakerThreshold { get; set; } = 5;
+
+    /// <summary>Seconds to wait before transitioning from open to half-open.</summary>
+    public int CircuitBreakerCooldownSeconds { get; set; } = 30;
 }

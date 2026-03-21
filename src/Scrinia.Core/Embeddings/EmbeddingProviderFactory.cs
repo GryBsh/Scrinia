@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Scrinia.Core.Embeddings.Providers;
+using Scrinia.Core.Resilience;
 
 namespace Scrinia.Core.Embeddings;
 
@@ -10,14 +11,22 @@ public static class EmbeddingProviderFactory
     {
         try
         {
+            var retryOptions = new RetryOptions(options.MaxRetries, options.RetryBaseDelayMs);
+            var cbOptions = new CircuitBreakerOptions(options.CircuitBreakerThreshold, options.CircuitBreakerCooldownSeconds);
+
             return options.Provider.ToLowerInvariant() switch
             {
                 "model2vec" => CreateModel2Vec(modelsDir, logger),
-                "ollama" => new OllamaEmbeddingProvider(options.OllamaBaseUrl, options.OllamaModel, logger),
-                "openai" => new OpenAiEmbeddingProvider(options.OpenAiApiKey, options.OpenAiModel, options.OpenAiBaseUrl, logger),
-                "voyageai" => new VoyageAiEmbeddingProvider(options.VoyageAiApiKey, options.VoyageAiModel, options.VoyageAiBaseUrl, logger),
-                "azure" => new AzureAiEmbeddingProvider(options.AzureEndpoint, options.AzureApiKey, options.AzureDeployment, options.AzureModel, options.AzureApiVersion, options.AzureUseV1, logger),
-                "google" => new GoogleGeminiEmbeddingProvider(options.GoogleApiKey, options.GoogleModel, options.GoogleBaseUrl, options.GoogleDimensions, logger),
+                "ollama" => new OllamaEmbeddingProvider(options.OllamaBaseUrl, options.OllamaModel, logger,
+                    new CircuitBreaker(cbOptions), retryOptions),
+                "openai" => new OpenAiEmbeddingProvider(options.OpenAiApiKey, options.OpenAiModel, options.OpenAiBaseUrl, logger,
+                    new CircuitBreaker(cbOptions), retryOptions),
+                "voyageai" => new VoyageAiEmbeddingProvider(options.VoyageAiApiKey, options.VoyageAiModel, options.VoyageAiBaseUrl, logger,
+                    new CircuitBreaker(cbOptions), retryOptions),
+                "azure" => new AzureAiEmbeddingProvider(options.AzureEndpoint, options.AzureApiKey, options.AzureDeployment, options.AzureModel, options.AzureApiVersion, options.AzureUseV1, logger,
+                    new CircuitBreaker(cbOptions), retryOptions),
+                "google" => new GoogleGeminiEmbeddingProvider(options.GoogleApiKey, options.GoogleModel, options.GoogleBaseUrl, options.GoogleDimensions, logger,
+                    new CircuitBreaker(cbOptions), retryOptions),
                 "none" => new NullEmbeddingProvider(),
                 _ => new NullEmbeddingProvider(),
             };

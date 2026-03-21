@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Resilience;
 
 namespace Scrinia.Core.Embeddings.Providers;
 
@@ -12,12 +13,15 @@ public sealed class GoogleGeminiEmbeddingProvider : IEmbeddingProvider
     private readonly string _requestUrl;
     private readonly int _configuredDimensions;
     private readonly ILogger _logger;
+    private readonly CircuitBreaker _circuitBreaker;
+    private readonly RetryOptions _retryOptions;
     private int _dimensions;
 
     public bool IsAvailable => true;
     public int Dimensions => _dimensions > 0 ? _dimensions : (_configuredDimensions > 0 ? _configuredDimensions : 3072);
 
-    public GoogleGeminiEmbeddingProvider(string? apiKey, string model, string baseUrl, int dimensions, ILogger logger)
+    public GoogleGeminiEmbeddingProvider(string? apiKey, string model, string baseUrl, int dimensions, ILogger logger,
+        CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new ArgumentException("Google API key is required for the Google Gemini embedding provider.", nameof(apiKey));
@@ -27,6 +31,8 @@ public sealed class GoogleGeminiEmbeddingProvider : IEmbeddingProvider
         _model = model;
         _configuredDimensions = dimensions;
         _logger = logger;
+        _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
+        _retryOptions = retryOptions ?? new RetryOptions();
 
         var url = baseUrl.TrimEnd('/');
         _requestUrl = $"{url}/v1beta/models/{model}:embedContent?key={apiKey}";
@@ -36,11 +42,18 @@ public sealed class GoogleGeminiEmbeddingProvider : IEmbeddingProvider
     {
         try
         {
+            _circuitBreaker.EnsureClosed();
+
             var request = new GeminiEmbedRequest(
                 new GeminiContent([new GeminiPart(text)]),
                 "RETRIEVAL_DOCUMENT",
                 _configuredDimensions > 0 ? _configuredDimensions : null);
-            var response = await _http.PostAsJsonAsync(_requestUrl, request, GeminiJsonContext.Default.GeminiEmbedRequest, ct);
+            var response = await RetryPolicy.ExecuteAsync(
+                async () => await _http.PostAsJsonAsync(_requestUrl, request, GeminiJsonContext.Default.GeminiEmbedRequest, ct),
+                resp => TransientDetector.IsTransient(resp),
+                _retryOptions,
+                _logger,
+                ct);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync(GeminiJsonContext.Default.GeminiEmbedResponse, ct);
@@ -49,36 +62,18 @@ public sealed class GoogleGeminiEmbeddingProvider : IEmbeddingProvider
                 var vec = result.Embedding.Values;
                 if (_dimensions == 0)
                     _dimensions = vec.Length;
-                L2Normalize(vec);
+                VectorMath.L2Normalize(vec);
+                _circuitBreaker.RecordSuccess();
                 return vec;
             }
             return null;
         }
         catch (Exception ex)
         {
+            _circuitBreaker.RecordFailure();
             _logger.LogWarning(ex, "Google Gemini embedding failed");
             return null;
         }
-    }
-
-    public async Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
-    {
-        var results = new float[texts.Count][];
-        for (int i = 0; i < texts.Count; i++)
-        {
-            var vec = await EmbedAsync(texts[i], ct);
-            if (vec is null) return null;
-            results[i] = vec;
-        }
-        return results;
-    }
-
-    private static void L2Normalize(float[] v)
-    {
-        float norm = 0;
-        foreach (float f in v) norm += f * f;
-        norm = MathF.Sqrt(norm);
-        if (norm > 0) for (int i = 0; i < v.Length; i++) v[i] /= norm;
     }
 
     public void Dispose() => _http.Dispose();

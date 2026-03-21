@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Resilience;
 
 namespace Scrinia.Core.Embeddings.Providers;
 
@@ -11,25 +12,37 @@ public sealed class OllamaEmbeddingProvider : IEmbeddingProvider
     private readonly HttpClient _http;
     private readonly string _model;
     private readonly ILogger _logger;
+    private readonly CircuitBreaker _circuitBreaker;
+    private readonly RetryOptions _retryOptions;
     private int _dimensions;
 
     public bool IsAvailable => _dimensions > 0;
     public int Dimensions => _dimensions;
 
-    public OllamaEmbeddingProvider(string baseUrl, string model, ILogger logger)
+    public OllamaEmbeddingProvider(string baseUrl, string model, ILogger logger,
+        CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
     {
         _http = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
         _http.Timeout = TimeSpan.FromSeconds(30);
         _model = model;
         _logger = logger;
+        _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
+        _retryOptions = retryOptions ?? new RetryOptions();
     }
 
     public async Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)
     {
         try
         {
+            _circuitBreaker.EnsureClosed();
+
             var request = new OllamaEmbedRequest(_model, text);
-            var response = await _http.PostAsJsonAsync("api/embed", request, OllamaJsonContext.Default.OllamaEmbedRequest, ct);
+            var response = await RetryPolicy.ExecuteAsync(
+                async () => await _http.PostAsJsonAsync("api/embed", request, OllamaJsonContext.Default.OllamaEmbedRequest, ct),
+                resp => TransientDetector.IsTransient(resp),
+                _retryOptions,
+                _logger,
+                ct);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync(OllamaJsonContext.Default.OllamaEmbedResponse, ct);
@@ -38,36 +51,18 @@ public sealed class OllamaEmbeddingProvider : IEmbeddingProvider
                 var vec = result.Embeddings[0];
                 if (_dimensions == 0)
                     _dimensions = vec.Length;
-                L2Normalize(vec);
+                VectorMath.L2Normalize(vec);
+                _circuitBreaker.RecordSuccess();
                 return vec;
             }
             return null;
         }
         catch (Exception ex)
         {
+            _circuitBreaker.RecordFailure();
             _logger.LogWarning(ex, "Ollama embedding failed");
             return null;
         }
-    }
-
-    public async Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
-    {
-        var results = new float[texts.Count][];
-        for (int i = 0; i < texts.Count; i++)
-        {
-            var vec = await EmbedAsync(texts[i], ct);
-            if (vec is null) return null;
-            results[i] = vec;
-        }
-        return results;
-    }
-
-    private static void L2Normalize(float[] v)
-    {
-        float norm = 0;
-        foreach (float f in v) norm += f * f;
-        norm = MathF.Sqrt(norm);
-        if (norm > 0) for (int i = 0; i < v.Length; i++) v[i] /= norm;
     }
 
     public void Dispose() => _http.Dispose();
