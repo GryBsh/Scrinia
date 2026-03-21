@@ -15,4 +15,5 @@ public sealed record ArtifactEntry(
     DateTimeOffset? UpdatedAt = null,
     DateTimeOffset? ReviewAfter = null,
     string? ReviewWhen = null,
-    ChunkEntry[]? ChunkEntries = null);
+    ChunkEntry[]? ChunkEntries = null,
+    Dictionary<string, string>? CodeRefs = null);

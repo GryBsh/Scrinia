@@ -446,6 +446,7 @@ public sealed class ScriniaMcpTools
         [Description("Optional keywords for search. Merged with auto-extracted content terms.")] string[]? keywords = null,
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
         [Description("Optional free-text condition describing when this memory should be reviewed (e.g. 'when auth system changes').")] string? reviewWhen = null,
+        [Description("Optional file paths this memory depends on. Hashes are recorded to detect drift.")] string[]? codeRefs = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -551,6 +552,26 @@ public sealed class ScriniaMcpTools
         if (!string.IsNullOrWhiteSpace(reviewAfter) && DateTimeOffset.TryParse(reviewAfter, out var ra))
             parsedReviewAfter = ra;
 
+        // Compute code reference hashes
+        Dictionary<string, string>? codeRefDict = null;
+        if (codeRefs is { Length: > 0 })
+        {
+            string storeDir = store.GetStoreDirForScope("local");
+            string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
+            string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+            codeRefDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var refPath in codeRefs)
+            {
+                var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, refPath.Trim()));
+                if (File.Exists(fullPath))
+                {
+                    var hash = Convert.ToHexStringLower(
+                        System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath)));
+                    codeRefDict[refPath.Trim()] = hash;
+                }
+            }
+        }
+
         var entry = new ArtifactEntry(
             Name: subject,
             Uri: uri,
@@ -565,7 +586,8 @@ public sealed class ScriniaMcpTools
             UpdatedAt: updatedAt,
             ReviewAfter: parsedReviewAfter,
             ReviewWhen: string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen,
-            ChunkEntries: chunkEntries);
+            ChunkEntries: chunkEntries,
+            CodeRefs: codeRefDict);
 
         store.Upsert(entry, scope);
 
@@ -798,6 +820,16 @@ public sealed class ScriniaMcpTools
         if (limit < 1) limit = 50;
         var page = entries.Skip(offset).Take(limit).ToList();
 
+        // Derive workspace root for drift checking (only used if any entry has CodeRefs)
+        string? workspaceRoot = null;
+        bool anyCodeRefs = page.Any(p => p.Entry.CodeRefs is { Count: > 0 });
+        if (anyCodeRefs)
+        {
+            string sd = store.GetStoreDirForScope("local");
+            string sd2 = Path.GetDirectoryName(sd) ?? sd;
+            workspaceRoot = Path.GetDirectoryName(sd2) ?? sd2;
+        }
+
         // Build qualified names first to compute dynamic column width (never truncate names)
         var rows = new List<(string Name, ArtifactEntry Entry)>(page.Count);
         int nameW = 4; // min width = "name".Length
@@ -841,9 +873,33 @@ public sealed class ScriniaMcpTools
             else if (!string.IsNullOrEmpty(e.ReviewWhen))
                 reviewPrefix = "[review?] ";
 
+            // Drift marker — only check entries that have CodeRefs
+            string driftPrefix = "";
+            if (workspaceRoot is not null && e.CodeRefs is { Count: > 0 })
+            {
+                bool hasDrift = false;
+                foreach (var (path, storedHash) in e.CodeRefs)
+                {
+                    var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, path));
+                    if (!File.Exists(fullPath))
+                    {
+                        hasDrift = true;
+                        break;
+                    }
+                    var currentHash = Convert.ToHexStringLower(
+                        System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath)));
+                    if (!currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasDrift = true;
+                        break;
+                    }
+                }
+                if (hasDrift) driftPrefix = "[drift] ";
+            }
+
             string desc = e.Description;
             desc = desc.Replace('\n', ' ').Replace('\r', ' ');
-            string fullDesc = reviewPrefix + desc;
+            string fullDesc = reviewPrefix + driftPrefix + desc;
             if (fullDesc.Length > 60) fullDesc = fullDesc[..57] + "...";
 
             sb.AppendLine(
@@ -1327,6 +1383,63 @@ public sealed class ScriniaMcpTools
         if (!string.IsNullOrWhiteSpace(reason))
             response += $" Reason: {reason}";
         return response;
+    }
+
+    [McpServerTool(Name = "check_drift"), Description(
+        "Check if files referenced by memories have changed since the memory was written. " +
+        "Compares stored SHA-256 hashes against current file contents.")]
+    public Task<string> CheckDrift(CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
+        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+
+        var allEntries = store.ListScoped(null);
+        var results = new List<string>();
+        int driftCount = 0, missingCount = 0, okCount = 0;
+
+        foreach (var sa in allEntries)
+        {
+            if (sa.Entry.CodeRefs is null or { Count: 0 }) continue;
+
+            string qualName = store.FormatQualifiedName(
+                sa.Scope switch {
+                    "local" => "local",
+                    var s when s.StartsWith("local-topic:") => s["local-topic:".Length..],
+                    _ => sa.Scope
+                }, sa.Entry.Name);
+
+            foreach (var (path, storedHash) in sa.Entry.CodeRefs)
+            {
+                var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, path));
+                if (!File.Exists(fullPath))
+                {
+                    results.Add($"  {qualName} → {path} [MISSING]");
+                    missingCount++;
+                }
+                else
+                {
+                    var currentHash = Convert.ToHexStringLower(
+                        System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath)));
+                    if (!currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        results.Add($"  {qualName} → {path} [DRIFT]");
+                        driftCount++;
+                    }
+                    else okCount++;
+                }
+            }
+        }
+
+        if (results.Count == 0)
+            return Task.FromResult(okCount > 0
+                ? $"All {okCount} code references are current. No drift detected."
+                : "No memories have code references. Use codeRefs parameter on store() to track file dependencies.");
+
+        string response = $"Code reference drift detected ({driftCount} drifted, {missingCount} missing, {okCount} ok):\n" +
+            string.Join("\n", results);
+        return Task.FromResult(response);
     }
 
     private static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)

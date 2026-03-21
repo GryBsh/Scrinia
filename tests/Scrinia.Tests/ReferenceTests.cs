@@ -167,4 +167,156 @@ public sealed class ReferenceTests : IDisposable
         result.Should().Contain("linked-beta",
             "references() should find memories linked to the target via ref: keywords");
     }
+
+    // ── CodeRefs & drift detection tests ────────────────────────────────────
+
+    [Fact]
+    public async Task Store_WithCodeRefs_RecordsHashes()
+    {
+        // Arrange — create a temp file relative to the workspace root
+        string relPath = "src/example.cs";
+        string fullPath = Path.Combine(_scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "public class Example {}");
+
+        // Act — store a memory with codeRefs pointing to the file
+        await _tools.Store(
+            ["Documents the Example class."],
+            "coderef-hash-test",
+            codeRefs: [relPath]);
+
+        // Assert — verify the entry's CodeRefs contains the file with a non-empty hash
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("coderef-hash-test");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        entry.CodeRefs.Should().NotBeNull("store with codeRefs should populate CodeRefs dictionary");
+        entry.CodeRefs.Should().ContainKey(relPath, "CodeRefs should include the referenced file path");
+        entry.CodeRefs![relPath].Should().NotBeNullOrEmpty("hash value should be a non-empty SHA-256 hex string");
+    }
+
+    [Fact]
+    public async Task Store_WithCodeRefs_MissingFile_Skipped()
+    {
+        // Arrange — reference a file that does not exist
+        string relPath = "nonexistent/phantom.cs";
+
+        // Act — store with codeRefs pointing to a missing file (should not throw)
+        await _tools.Store(
+            ["References a file that doesn't exist."],
+            "coderef-missing-test",
+            codeRefs: [relPath]);
+
+        // Assert — CodeRefs should be empty or not contain the missing file
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("coderef-missing-test");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        if (entry.CodeRefs is not null)
+        {
+            entry.CodeRefs.Should().NotContainKey(relPath,
+                "missing files should be skipped, not recorded in CodeRefs");
+        }
+    }
+
+    [Fact]
+    public async Task CheckDrift_NoDrift_ReportsOk()
+    {
+        // Arrange — create a temp file and store a memory with codeRefs
+        string relPath = "src/stable.cs";
+        string fullPath = Path.Combine(_scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "// stable content");
+
+        await _tools.Store(
+            ["Tracks stable.cs for drift."],
+            "drift-ok-test",
+            codeRefs: [relPath]);
+
+        // Act — check drift without modifying the file
+        string result = await _tools.CheckDrift();
+
+        // Assert — should report all references are current with no drift
+        result.Should().Contain("current",
+            "check_drift should report 'current' when no files have changed");
+        result.Should().NotContain("DRIFT",
+            "check_drift should not report DRIFT when files are unchanged");
+    }
+
+    [Fact]
+    public async Task CheckDrift_FileChanged_DetectsDrift()
+    {
+        // Arrange — create a temp file and store a memory with codeRefs
+        string relPath = "src/changing.cs";
+        string fullPath = Path.Combine(_scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "// original content");
+
+        await _tools.Store(
+            ["Tracks changing.cs for drift."],
+            "drift-changed-test",
+            codeRefs: [relPath]);
+
+        // Modify the file after storing
+        await File.WriteAllTextAsync(fullPath, "// modified content — different hash");
+
+        // Act — check drift
+        string result = await _tools.CheckDrift();
+
+        // Assert — should detect drift
+        result.Should().Contain("DRIFT",
+            "check_drift should report DRIFT when a referenced file has been modified");
+    }
+
+    [Fact]
+    public async Task CheckDrift_FileMissing_DetectsMissing()
+    {
+        // Arrange — create a temp file and store a memory with codeRefs
+        string relPath = "src/ephemeral.cs";
+        string fullPath = Path.Combine(_scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "// will be deleted");
+
+        await _tools.Store(
+            ["Tracks ephemeral.cs for drift."],
+            "drift-missing-test",
+            codeRefs: [relPath]);
+
+        // Delete the file after storing
+        File.Delete(fullPath);
+
+        // Act — check drift
+        string result = await _tools.CheckDrift();
+
+        // Assert — should detect the file as missing
+        result.Should().Contain("MISSING",
+            "check_drift should report MISSING when a referenced file has been deleted");
+    }
+
+    [Fact]
+    public async Task List_Full_ShowsDriftMarker_WhenFileChanged()
+    {
+        // Arrange — create a temp file and store a memory with codeRefs
+        string relPath = "src/drifted.cs";
+        string fullPath = Path.Combine(_scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "// original");
+
+        await _tools.Store(
+            ["Tracks drifted.cs."],
+            "drift-list-test",
+            codeRefs: [relPath]);
+
+        // Modify the file after storing
+        await File.WriteAllTextAsync(fullPath, "// changed");
+
+        // Act — list in full mode
+        string result = await _tools.List(mode: "full");
+
+        // Assert — the listing should contain a [drift] marker
+        result.Should().Contain("[drift]",
+            "list(mode='full') should show [drift] marker for entries whose code references have changed");
+    }
 }
