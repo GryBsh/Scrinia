@@ -81,6 +81,9 @@ public sealed class ScriniaMcpTools
             - **When starting work** → `search()` first to check if prior sessions already covered this ground
             These aren't planning steps — they're habits that make every session smarter than the last.
             Use topic naming to organize: `patterns:auth`, `bugs:sqlite-locking`, `conventions:naming`, etc.
+            After research-heavy phases or when many memories are created in a session,
+            `skill_load("cartographer")` to discover cross-domain connections that embedding search
+            alone would miss. The cartographer indexes bridges between unrelated vocabulary domains.
 
             **Scrinia is the single source of truth.** If your platform provides its own memory or note
             system (Claude auto-memory, Cursor notes, Windsurf memories, etc.), do not use it for project
@@ -291,6 +294,9 @@ public sealed class ScriniaMcpTools
             - `skill_load(skillName?)` — list available skills or load one for use as a subagent prompt
             Skills evolve from experience: retrospective lessons feed back into skill updates.
             Use skill_load before research to check for existing specialists.
+            Built-in skills include: planner (wave execution), release-auditor (security/quality/docs/ops audit),
+            evolutionary (proactive knowledge and skill improvement), cartographer (cross-domain connection indexing),
+            and others. Use `skill_load()` with no args to list all available skills.
 
             **Reserved planning topics** — avoid using these prefixes for general knowledge:
             - `project:*` — project context, requirements, state (e.g. `project:context`, `project:state`)
@@ -311,6 +317,9 @@ public sealed class ScriniaMcpTools
             - Agent behavioral norms persist in `agent:profile` across sessions
             The result: each goal starts with better context than the last.
             Memories authored via plan_retrospective and plan_profile carry `provenance:agent` keyword.
+            After completing a goal, `skill_load("evolutionary")` to proactively scan for stale memories,
+            skill drift, emergent patterns, and behavioral norm updates. Also run periodically on session
+            start to catch staleness from time passing between sessions.
             """);
 
     [McpServerTool(Name = "encode"), Description(
