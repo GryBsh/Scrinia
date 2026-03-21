@@ -10,7 +10,8 @@ namespace Scrinia.Core.Embeddings;
 /// </summary>
 public static class Model2VecModelManager
 {
-    private const string BaseUrl = "https://huggingface.co/grybsh/m2v-MiniLM-L6-v2/resolve/main";
+    /// <summary>HuggingFace base URL for model files.</summary>
+    public const string ModelBaseUrl = "https://huggingface.co/grybsh/m2v-MiniLM-L6-v2/resolve/main";
 
     private static readonly string[] Files = ["model.safetensors", "vocab.txt"];
 
@@ -32,7 +33,7 @@ public static class Model2VecModelManager
             if (File.Exists(filePath))
                 continue;
 
-            string url = $"{BaseUrl}/{file}";
+            string url = $"{ModelBaseUrl}/{file}";
             logger.LogInformation("Downloading {File} from {Url}...", file, url);
 
             string tmpPath = filePath + ".tmp";

@@ -149,6 +149,12 @@ if (!pluginProvidesEmbeddings)
     }
 }
 
+// Chat providers (cloud LLM for agent chat)
+var chatOptions = new Scrinia.Server.Chat.ChatOptions();
+builder.Configuration.GetSection("Scrinia:Chat").Bind(chatOptions);
+chatOptions.Temperature = Math.Clamp(chatOptions.Temperature, 0.0, 2.0);
+if (chatOptions.MaxTokens <= 0) chatOptions.MaxTokens = 4096;
+
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
 builder.Services.AddSingleton(sp =>
     new StoreManager(storePaths, sp.GetRequiredService<IStorageBackend>()));
@@ -161,32 +167,50 @@ builder.Services.AddAuthentication(Scrinia.Server.Auth.ApiKeyOptions.SchemeName)
     .AddScheme<Scrinia.Server.Auth.ApiKeyOptions, ApiKeyAuthHandler>(Scrinia.Server.Auth.ApiKeyOptions.SchemeName, _ => { });
 builder.Services.AddAuthorizationBuilder()
     .AddPolicy("ManageKeys", policy =>
-        policy.RequireClaim("permission", "manage_keys"));
+        policy.RequireClaim("permission", "manage_keys"))
+    .AddPolicy("Health", policy =>
+        policy.RequireClaim("permission", "health"))
+    .AddPolicy("Chat", policy =>
+        policy.RequireClaim("permission", "chat"));
 
-// CORS
+// CORS — restrictive by default; only explicitly configured origins are allowed
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
         var origins = builder.Configuration.GetSection("Scrinia:CorsOrigins").Get<string[]>();
         if (origins is { Length: > 0 })
-            policy.WithOrigins(origins);
-        else
-            policy.AllowAnyOrigin();
+        {
+            if (origins.Length == 1 && origins[0] == "*")
+                policy.AllowAnyOrigin();
+            else
+                policy.WithOrigins(origins);
+        }
         policy.AllowAnyHeader().AllowAnyMethod();
     });
 });
 
-// Rate Limiting
+// Rate Limiting — per-user (authenticated) or per-IP (unauthenticated)
+var rlPermitLimit = builder.Configuration.GetValue("Scrinia:RateLimit:PermitLimit", 100);
+var rlWindowSeconds = builder.Configuration.GetValue("Scrinia:RateLimit:WindowSeconds", 60);
+if (rlPermitLimit <= 0) { bootLogger.LogWarning("Scrinia:RateLimit:PermitLimit must be > 0, using default (100)"); rlPermitLimit = 100; }
+if (rlWindowSeconds <= 0) { bootLogger.LogWarning("Scrinia:RateLimit:WindowSeconds must be > 0, using default (60)"); rlWindowSeconds = 60; }
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = 429;
-    options.AddSlidingWindowLimiter("api", opt =>
+    options.AddPolicy("api", context =>
     {
-        opt.PermitLimit = 100;
-        opt.Window = TimeSpan.FromMinutes(1);
-        opt.SegmentsPerWindow = 6;
-        opt.QueueLimit = 0;
+        string partitionKey = context.User?.FindFirst("UserId")?.Value
+            ?? context.Connection.RemoteIpAddress?.ToString()
+            ?? "anonymous";
+
+        return RateLimitPartition.GetSlidingWindowLimiter(partitionKey, _ => new()
+        {
+            PermitLimit = rlPermitLimit,
+            Window = TimeSpan.FromSeconds(rlWindowSeconds),
+            SegmentsPerWindow = 6,
+            QueueLimit = 0,
+        });
     });
 });
 
@@ -197,7 +221,7 @@ builder.Services.AddOpenApi();
 builder.Services
     .AddMcpServer(options =>
     {
-        options.ServerInfo = new() { Name = "scrinia", Version = "0.4.0" };
+        options.ServerInfo = new() { Name = "scrinia", Version = "0.5.0" };
     })
     .WithHttpTransport(options =>
     {
@@ -209,6 +233,9 @@ builder.Services
             var sm = httpContext.RequestServices.GetRequiredService<StoreManager>();
             if (!sm.StoreExists(storeName))
                 throw new InvalidOperationException($"Store '{storeName}' not found.");
+            var reqCtx = httpContext.RequestServices.GetRequiredService<RequestContext>();
+            if (!reqCtx.CanAccessStore(storeName))
+                throw new UnauthorizedAccessException($"Access denied to store '{storeName}'.");
             MemoryStoreContext.Current = sm.GetStore(storeName);
             SearchContributorContext.Current = httpContext.RequestServices.GetService<ISearchScoreContributor>();
             MemoryEventSinkContext.Current = httpContext.RequestServices.GetService<IMemoryEventSink>();
@@ -350,6 +377,7 @@ foreach (var plugin in loadedPlugins)
 app.MapMemoryEndpoints();
 app.MapKeyEndpoints();
 app.MapHealthEndpoints();
+app.MapChatEndpoints(chatOptions);
 
 // Plugin endpoints
 var pluginGroup = app.MapGroup("/api/v1/plugins");
@@ -401,7 +429,7 @@ if (!pluginProvidesEmbeddings)
 app.MapOpenApi();
 app.MapScalarApiReference();
 
-app.MapMcp("/mcp").RequireAuthorization();
+app.MapMcp("/mcp").RequireAuthorization().RequireRateLimiting("api");
 
 // SPA fallback — must be last so API routes take priority
 app.MapFallbackToFile("index.html");

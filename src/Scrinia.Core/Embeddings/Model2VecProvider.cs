@@ -116,19 +116,12 @@ public sealed class Model2VecProvider : IEmbeddingProvider
         if (count == 0)
             return Task.FromResult<float[]?>(null);
 
-        // Average + L2 normalize
+        // Average then L2 normalize
         float scale = 1.0f / count;
-        float normSq = 0;
         for (int i = 0; i < _dims; i++)
-        {
             result[i] *= scale;
-            normSq += result[i] * result[i];
-        }
 
-        float norm = MathF.Sqrt(normSq);
-        if (norm > 0)
-            for (int i = 0; i < _dims; i++)
-                result[i] /= norm;
+        VectorMath.L2Normalize(result);
 
         return Task.FromResult<float[]?>(result);
     }

@@ -8,6 +8,7 @@ import MemoryBrowserPage from './pages/MemoryBrowserPage'
 import MemoryDetailPage from './pages/MemoryDetailPage'
 import KeyManagementPage from './pages/KeyManagementPage'
 import SettingsPage from './pages/SettingsPage'
+import AgentChatPage from './pages/AgentChatPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState<boolean | null>(null)
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/stores/:store" element={<MemoryBrowserPage />} />
         <Route path="/stores/:store/memories/:name" element={<MemoryDetailPage />} />
+        <Route path="/chat" element={<AgentChatPage />} />
         <Route path="/keys" element={<KeyManagementPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>

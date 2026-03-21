@@ -1,6 +1,6 @@
 # Scrinia CLI Reference
 
-`scri` is the command-line interface and MCP server for Scrinia. It provides 11 commands for managing persistent memories and serves as an MCP server exposing 30 tools (18 memory + 12 planning) for AI coding tools.
+`scri` is the command-line interface and MCP server for Scrinia. It provides 11 commands for managing persistent memories and serves as an MCP server exposing 33 tools (13 memory + 20 planning) for AI coding tools.
 
 ## Commands
 
@@ -387,11 +387,11 @@ The planning tools (`ScriniaProjectTools`) use reserved topic prefixes:
 | `plan:*` | Roadmaps and phase plans |
 | `task:*` | Individual tasks with status/wave/dependency keywords |
 | `learn:*` | Retrospective outcomes and lessons learned |
-| `user:*` | User preferences and agent behavior profiles |
+| `agent:*` | Project-level agent behavioral norms |
 
 The `list` and `search` MCP tools support an `excludeTopics` parameter to filter planning topics out of general queries.
 
-> **Note:** The 12 planning tools (`project_init`, `plan_requirements`, `plan_roadmap`, `plan_tasks`, `task_next`, `task_complete`, `plan_verify`, `plan_gaps`, `plan_resume`, `plan_status`, `plan_retrospective`, `plan_profile`) are MCP-only — they are accessed via `scri serve`, not as standalone CLI commands. See the [Planning Tools Guide](planning-tools.md) for full documentation.
+> **Note:** The 20 planning tools are MCP-only — they are accessed via `scri serve`, not as standalone CLI commands. See the [Planning Tools Guide](planning-tools.md) for full documentation.
 
 ## Portable Bundles
 

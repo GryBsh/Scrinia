@@ -227,6 +227,13 @@ public static class MemoryEndpoints
         if (string.IsNullOrWhiteSpace(q))
             return Results.BadRequest(new ErrorResponse("q parameter is required."));
 
+        // Input bounds validation
+        if (q.Length > 10_240)
+            return Results.BadRequest(new ErrorResponse("Query too long (max 10KB)."));
+        if (scopes is { Length: > 1024 })
+            return Results.BadRequest(new ErrorResponse("Scopes parameter too long (max 1KB)."));
+        limit = Math.Clamp(limit, 1, 1000);
+
         var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit, ct);
         var mapped = results.Select<SearchResult, SearchResultItem>(r => r switch
         {
@@ -269,9 +276,16 @@ public static class MemoryEndpoints
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("topics is required.")));
 
         var stream = BundleService.ExportToStream(ctx.Store!, req.Topics);
-        string filename = string.IsNullOrWhiteSpace(req.Filename)
-            ? $"export-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.scrinia-bundle"
-            : req.Filename;
+        string filename = $"export-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.scrinia-bundle";
+        if (!string.IsNullOrWhiteSpace(req.Filename))
+        {
+            // Sanitize: strip control chars, path separators, keep only safe filename characters
+            string sanitized = new(req.Filename
+                .Where(c => !char.IsControl(c) && c != '/' && c != '\\' && c != '\r' && c != '\n')
+                .ToArray());
+            if (!string.IsNullOrWhiteSpace(sanitized))
+                filename = Path.GetFileName(sanitized); // final safety net against path traversal
+        }
 
         return Task.FromResult<IResult>(Results.File(stream, "application/octet-stream", filename));
     }
@@ -302,6 +316,10 @@ public static class MemoryEndpoints
         catch (InvalidOperationException ex)
         {
             return Results.BadRequest(new ErrorResponse(ex.Message));
+        }
+        catch (System.IO.InvalidDataException)
+        {
+            return Results.BadRequest(new ErrorResponse("Invalid or corrupted bundle file."));
         }
     }
 }

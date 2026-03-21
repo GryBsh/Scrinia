@@ -1,19 +1,48 @@
 # Planning Tools Guide
 
-Scrinia includes 12 MCP tools for structured project planning, execution, and learning. Plans are stored as standard scrinia memories using reserved topic conventions — no separate database or file format.
+Scrinia includes 20 MCP tools for structured project planning, execution, and learning. Plans are stored as standard scrinia memories using reserved topic conventions — no separate database or file format.
+
+The workflow is **goal-driven** — you initialize once, then cycle through goals.
 
 ## Lifecycle Overview
 
 ```
-project_init → plan_requirements → plan_roadmap → plan_tasks
-                                                       ↓
-                              plan_retrospective ← plan_verify ← task_complete ← task_next
-                                                       ↓ (if gaps)
-                                                   plan_gaps → task_next → ...
+project_init (one-time)
+  ↓
+Pre-plan: scan codebase → concern_add
+  ↓
+goal_update(add) ← ← ← ← ← ← ← ← ← ← ← ← ← (next goal)
+  ↓                                                   ↑
+research_start → research_complete                    |
+  ↓                                                   |
+plan_requirements → plan_roadmap → plan_tasks         |
+  ↓                                                   |
+task_next → (execute) → task_complete                 |
+  ↓                                                   |
+plan_verify → (if gaps) plan_gaps → task_next → ...   |
+  ↓                                                   |
+concern_resolve + plan_retrospective                  |
+  ↓                                                   |
+goal_update(complete) → → → → → → → → → → → → → → → ↑
 ```
 
-Recovery at any point: `plan_resume` / `plan_status`
-User preferences: `plan_profile`
+**Recovery at any point:** `plan_resume` / `plan_status` / `concern()`
+**Agent behavioral norms:** `plan_profile`
+
+### One-time setup
+
+`project_init(context)` — call once per workspace. In an existing codebase (any non-dotfile in the workspace), this returns guidance to scan for concerns and build knowledge before setting goals. In an empty workspace, it directs you to set a goal immediately.
+
+### Pre-planning (existing codebases)
+
+Before setting your first goal, scan the codebase to build understanding:
+- `concern_add(description, severity, phaseScope)` — track risks, tech debt, issues
+
+Concerns persist across goals — they accumulate over the project's lifetime and inform future planning.
+
+### The goal cycle
+
+Goals are the top-level unit of work. Each goal drives a requirements → roadmap → execution → verification cycle. After completing a goal, set the next one. Accumulated concerns and knowledge carry forward.
 
 ---
 
@@ -99,7 +128,7 @@ Stored: plan:roadmap. Files in .scrinia/ were updated — these are your changes
 
 ### plan_tasks
 
-Decompose a phase into individual tasks with dependencies and wave grouping.
+Decompose a phase into individual tasks with dependencies. Waves are computed automatically from the dependency graph — tasks with no dependencies run in wave 1, tasks depending on wave N tasks run in wave N+1.
 
 **Parameters:**
 - `phaseId` (string, required) — Two-digit phase number (e.g., `"01"`)
@@ -110,7 +139,6 @@ Decompose a phase into individual tasks with dependencies and wave grouping.
 **Task format:**
 ```
 ## Task 01
-Wave: 1
 Depends on: none
 Action: Create user registration endpoint with email/password validation
 Acceptance criteria:
@@ -118,7 +146,6 @@ Acceptance criteria:
 - Duplicate email returns 409
 
 ## Task 02
-Wave: 1
 Depends on: none
 Action: Create JWT middleware for route protection
 Acceptance criteria:
@@ -126,8 +153,7 @@ Acceptance criteria:
 - Valid token passes through
 
 ## Task 03
-Wave: 2
-Depends on: 01-1-01, 01-1-02
+Depends on: 01, 02
 Action: Integration test for registration + auth flow
 Acceptance criteria:
 - Register, login, access protected route in one test
@@ -140,9 +166,10 @@ Tasks stored: task:01-1-01, task:01-1-02, task:01-2-03
 ```
 
 **Key concepts:**
-- **Waves** group tasks that can run in parallel (Wave 1 tasks are independent)
-- **Dependencies** reference task subjects (e.g., `01-1-01`), not qualified names
-- Task metadata stored as keywords: `status:pending`, `wave:1`, `phase:01`, `depends_on:01-1-01`
+- **Waves** are computed from the dependency graph — no need to specify them
+- Tasks with no dependencies → wave 1 (can run in parallel). Tasks depending on wave N → wave N+1
+- **Dependencies** reference task IDs (e.g., `01`, `02`), not qualified names
+- Task metadata stored as keywords: `status:pending`, `wave:1`, `phase:01`, `goal:G-14`, `depends_on:01-1-01`
 
 ---
 
@@ -198,9 +225,13 @@ Task 'task:01-1-01' marked complete. Execution log updated. Run task_next for ne
 ```
 
 **What happens:**
-- Updates `status:pending` → `status:complete` keyword (no version archiving — prevents bloat)
+- Updates `status:pending` → `status:complete` keyword via record with-expression + `Upsert`
 - Appends outcome to `task:{phaseId}-execution-log` as a new chunk
-- Updates `project:state` with last action
+- Updates `project:state` with last action and computed progress
+
+**No-archiving design:** Both `task_complete` and `project:state` updates deliberately skip `ArchiveVersion`:
+- **task_complete**: Status keyword changes are frequent, mechanical updates — archiving every status flip would create massive version bloat with no useful history.
+- **project:state**: Updated by every planning tool call (progress, last action, next step). Archiving would produce dozens of near-identical snapshots per session. State can always be rebuilt from `project:context` + `plan:roadmap` + task index via `plan_resume`.
 
 ---
 
@@ -354,24 +385,24 @@ Searchable via standard search. Use get_chunk() to retrieve individual phase ret
 
 ### plan_profile
 
-Store user preferences for agent behavior.
+Store project-level agent behavioral norms.
 
 **Parameters:**
-- `profile` (string, required) — Key-value preferences, one per line
+- `profile` (string, required) — Key-value norms, one per line
 
 **Example call:**
 ```
-plan_profile(profile: "autonomy_level: high\nreview_depth: detailed\ncommunication_style: concise\npreferred_testing: tdd")
+plan_profile(profile: "response_style: terse\nreview_depth: detailed\nmemory_persistence: use scrinia only")
 ```
 
 **Response:**
 ```
-User profile stored in user:profile. Preferences persist across sessions and are searchable via standard search.
+Agent profile stored in agent:profile. Norms persist across sessions and are searchable via standard search.
 ```
 
 **Key behavior:**
 - Full overwrite on each call (not merge)
-- Persists in `user:profile` across sessions
+- Persists in `agent:profile` across sessions
 - Tagged with `provenance:agent` keyword
 
 ---
@@ -386,7 +417,7 @@ Planning tools use 5 reserved topic prefixes. These are standard scrinia topics 
 | `plan:*` | `local-topic:plan` | Roadmaps and phase plans | `plan:roadmap` |
 | `task:*` | `local-topic:task` | Individual tasks with keyword metadata | `task:01-1-01`, `task:01-execution-log` |
 | `learn:*` | `local-topic:learn` | Execution outcomes and retrospectives | `learn:execution-outcomes` |
-| `user:*` | `local-topic:user` | Agent behavior preferences | `user:profile` |
+| `agent:*` | `local-topic:agent` | Project-level agent behavioral norms | `agent:profile` |
 
 ### Scope Filtering with excludeTopics
 
@@ -414,7 +445,8 @@ Tasks store structured metadata as keywords on `ArtifactEntry`, queryable withou
 | `status:complete` | Task finished | Set by `task_complete` |
 | `wave:1` | Execution wave (parallel group) | Set by `plan_tasks` |
 | `phase:01` | Phase membership | Set by `plan_tasks` |
-| `depends_on:01-1-01` | Dependency on another task | Set by `plan_tasks` |
+| `depends_on:01-1-01` | Dependency on another task (full task name) | Set by `plan_tasks` |
+| `goal:G-14` | Goal scoping (prevents cross-goal collisions) | Set by `plan_tasks` |
 | `gap_closure:true` | Task created by `plan_gaps` | Set by `plan_gaps` |
 | `provenance:agent` | Content authored by agent | Set by `plan_retrospective`, `plan_profile` |
 
@@ -435,7 +467,7 @@ plan_requirements(requirements: "## v1\n### API\n- API-01: CRUD endpoints\n### U
 plan_roadmap(roadmap: "## Phase 1: API\nRequirements: API-01\n...\n## Phase 2: UI\nRequirements: UI-01\n...")
 
 # 4. Decompose Phase 1 into tasks
-plan_tasks(phaseId: "01", tasks: "## Task 01\nWave: 1\nDepends on: none\nAction: Create Express server with CRUD routes\n...")
+plan_tasks(phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create Express server with CRUD routes\n...")
 
 # 5. Get next task
 task_next(phaseId: "01")

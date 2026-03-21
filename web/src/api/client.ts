@@ -14,6 +14,10 @@ import type {
   EmbeddingsStatus,
   EmbeddingsSettings,
   EmbeddingsSettingsUpdate,
+  ChatMessage,
+  ChatEvent,
+  ChatRequest,
+  ChatProvidersResponse,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -85,6 +89,14 @@ export function isAuthenticated(): boolean {
 // ── Health ───────────────────────────────────────────────────────────────────
 
 export async function getHealth(): Promise<HealthResponse> {
+  // Use /health/details (authenticated) for full check data including store names.
+  // Falls back to /health/ready (unauthenticated, status-only) if auth fails.
+  const token = getToken();
+  if (token) {
+    try {
+      return await apiFetch<HealthResponse>('/health/details');
+    } catch { /* fall through to unauthenticated */ }
+  }
   const resp = await fetch('/health/ready');
   return resp.json();
 }
@@ -182,4 +194,68 @@ export function reindexEmbeddings() {
   return apiFetch<{ message: string }>(`${API_BASE}/plugins/embeddings/reindex`, {
     method: 'POST',
   });
+}
+
+// ── Chat ────────────────────────────────────────────────────────────────────
+
+export function getChatProviders(store: string) {
+  return apiFetch<ChatProvidersResponse>(`${API_BASE}/stores/${store}/chat/providers`);
+}
+
+export async function streamChat(
+  store: string,
+  messages: ChatMessage[],
+  provider: string | undefined,
+  onEvent: (event: ChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const body: ChatRequest = { messages, provider };
+
+  const response = await fetch(`${API_BASE}/stores/${store}/chat/`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (response.status === 401) {
+    clearToken();
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+
+  if (!response.ok) {
+    let msg = `HTTP ${response.status}`;
+    try {
+      const err = await response.json();
+      msg = err.error || msg;
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice('data: '.length);
+      try {
+        const event: ChatEvent = JSON.parse(data);
+        onEvent(event);
+      } catch { /* skip malformed lines */ }
+    }
+  }
 }

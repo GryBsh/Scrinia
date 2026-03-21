@@ -382,7 +382,7 @@ internal static class SessionBudget
 }
 ```
 
-Records are made when `show()` or `get_chunk()` decode memory content. The MCP `budget` tool reports this data.
+Records are made when `show()` or `get_chunk()` decode memory content.
 
 ## Extensibility Interfaces
 
@@ -433,7 +433,7 @@ All serialized types use source-generated `JsonSerializerContext` for trimming s
 | `FileStoreJsonContext` | Core | Index file persistence |
 | `BundleJsonContext` | Core | Export/import bundles |
 | `StoreJsonContext` | CLI | CLI store operations |
-| `PlanningJsonContext` | Mcp | Planning DTOs (ProjectRecord, PlanRecord, TaskRecord) |
+| `PlanningJsonContext` | Mcp | Planning DTOs (ProjectRecord, PlanRecord, TaskRecord, ConcernRecord, SkillRecord, ResearchRecord, GoalRecord + array forms) |
 | `ServerJsonContext` | Server | API request/response DTOs |
 | `ConfigJsonContext` | CLI | Workspace config file |
 | `PluginClientJsonContext` | CLI | Plugin MCP communication |

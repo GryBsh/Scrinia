@@ -13,10 +13,17 @@ namespace Scrinia;
 /// <see cref="IMemoryStore"/> implementation that proxies to a Scrinia.Server REST API.
 /// Ephemeral storage stays client-side. Naming/parsing uses shared logic.
 /// </summary>
-public sealed partial class HttpMemoryStore : IMemoryStore
+public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 {
     private readonly HttpClient _http;
     private readonly string _store;
+    private readonly string _tempDir;
+
+    /// <summary>
+    /// Sends a synchronous HTTP request using HttpClient.Send (avoids .GetAwaiter().GetResult() deadlocks).
+    /// </summary>
+    private HttpResponseMessage SendSync(HttpRequestMessage request)
+        => _http.Send(request, HttpCompletionOption.ResponseContentRead);
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeral = new(StringComparer.OrdinalIgnoreCase);
     private readonly FileMemoryStore _localHelper;
 
@@ -60,14 +67,15 @@ public sealed partial class HttpMemoryStore : IMemoryStore
         TypeInfoResolver = HttpStoreJsonContext.Default,
     };
 
-    public HttpMemoryStore(HttpClient http, string store = "default")
+    public HttpMemoryStore(HttpClient http, string store = "default", TimeSpan? timeout = null)
     {
         _http = http;
+        _http.Timeout = timeout ?? TimeSpan.FromSeconds(30);
         _store = store;
         // Use a temp dir for the helper — we only use it for naming/parsing
-        string tempRoot = Path.Combine(Path.GetTempPath(), $"scrinia-http-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempRoot);
-        _localHelper = new FileMemoryStore(tempRoot);
+        _tempDir = Path.Combine(Path.GetTempPath(), $"scrinia-http-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(_tempDir);
+        _localHelper = new FileMemoryStore(_tempDir);
     }
 
     private string BaseUrl => $"/api/v1/stores/{Uri.EscapeDataString(_store)}";
@@ -132,12 +140,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore
         if (nameOrArtifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
             return nameOrArtifact;
 
-        // file:// URI
+        // file:// URIs are not supported in remote mode — the server handles its own file resolution
         if (nameOrArtifact.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
-        {
-            string filePath = nameOrArtifact[7..];
-            return await File.ReadAllTextAsync(filePath, ct);
-        }
+            throw new NotSupportedException("file:// URIs are not supported in remote mode.");
 
         // Ephemeral
         if (IsEphemeral(nameOrArtifact))
@@ -178,7 +183,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore
     public bool Remove(string name, string scope = "local")
     {
         string encoded = Uri.EscapeDataString(FormatQualifiedName(scope, name));
-        var resp = _http.DeleteAsync($"{BaseUrl}/memories/{encoded}").GetAwaiter().GetResult();
+        using var req = new HttpRequestMessage(HttpMethod.Delete, $"{BaseUrl}/memories/{encoded}");
+        using var resp = SendSync(req);
         return resp.IsSuccessStatusCode;
     }
 
@@ -204,10 +210,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore
             ? $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scopes)}"
             : $"{BaseUrl}/memories";
 
-        var resp = _http.GetAsync(url).GetAwaiter().GetResult();
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        using var resp = SendSync(req);
         if (resp.IsSuccessStatusCode)
         {
-            var list = resp.Content.ReadFromJsonAsync(HttpStoreJsonContext.Default.ListApiResponse).GetAwaiter().GetResult();
+            using var stream = resp.Content.ReadAsStream();
+            var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
             if (list?.Memories is not null)
             {
                 foreach (var item in list.Memories)
@@ -246,11 +254,13 @@ public sealed partial class HttpMemoryStore : IMemoryStore
         if (scopes is not null)
             url += $"&scopes={Uri.EscapeDataString(scopes)}";
 
-        var resp = _http.GetAsync(url).GetAwaiter().GetResult();
+        using var req2 = new HttpRequestMessage(HttpMethod.Get, url);
+        using var resp = SendSync(req2);
         if (!resp.IsSuccessStatusCode)
             return [];
 
-        var search = resp.Content.ReadFromJsonAsync(HttpStoreJsonContext.Default.SearchApiResponse).GetAwaiter().GetResult();
+        using var stream = resp.Content.ReadAsStream();
+        var search = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.SearchApiResponse);
         if (search?.Results is null)
             return [];
 
@@ -335,7 +345,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore
         string encoded = Uri.EscapeDataString(srcEphemeral ? MemoryNaming.StripEphemeralPrefix(src) : src);
         var req = new CopyApiRequest(dst, overwrite);
         var content = JsonContent.Create(req, HttpStoreJsonContext.Default.CopyApiRequest);
-        var resp = _http.PostAsync($"{BaseUrl}/memories/{encoded}/copy", content).GetAwaiter().GetResult();
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/memories/{encoded}/copy") { Content = content };
+        using var resp = SendSync(httpReq);
 
         if (resp.IsSuccessStatusCode)
         {
@@ -398,7 +409,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore
     {
         string qualifiedName = FormatQualifiedName(scope, subject);
         string encoded = Uri.EscapeDataString(qualifiedName);
-        var resp = _http.DeleteAsync($"{BaseUrl}/memories/{encoded}").GetAwaiter().GetResult();
+        using var delReq = new HttpRequestMessage(HttpMethod.Delete, $"{BaseUrl}/memories/{encoded}");
+        using var resp = SendSync(delReq);
         return resp.IsSuccessStatusCode;
     }
 
@@ -461,5 +473,13 @@ public sealed partial class HttpMemoryStore : IMemoryStore
         var ordered = new List<string> { "local" };
         ordered.AddRange(DiscoverTopics());
         return ordered.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    public void Dispose()
+    {
+        _localHelper.Dispose();
+        _http.Dispose();
+        try { if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true); }
+        catch { /* best-effort cleanup */ }
     }
 }

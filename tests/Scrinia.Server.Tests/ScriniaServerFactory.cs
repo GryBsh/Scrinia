@@ -40,7 +40,7 @@ public sealed class ScriniaServerFactory : WebApplicationFactory<Program>
                 TestUserId,
                 [PrimaryStore, SecondaryStore],
                 ["read", "search", "store", "append", "forget", "copy",
-                 "export", "import", "manage_keys", "manage_roles"],
+                 "export", "import", "manage_keys", "manage_roles", "health", "chat"],
                 "test");
             TestApiKey = rawKey;
             TestKeyId = keyId;

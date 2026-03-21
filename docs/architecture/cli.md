@@ -80,9 +80,9 @@ builder.Services
     .WithTools<ScriniaProjectTools>();
 ```
 
-Both `ScriniaMcpTools` (18 memory tools) and `ScriniaProjectTools` (12 planning tools) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+Both `ScriniaMcpTools` (13 memory tools) and `ScriniaProjectTools` (20 planning tools) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
 
-`ScriniaProjectTools` uses dedicated topic conventions (`project:*`, `plan:*`, `task:*`, `learn:*`, `user:*`) and maintains a `project:state` memory for tracking progress. It includes `PlanningJsonContext` for trimming-safe serialization of planning DTOs.
+`ScriniaProjectTools` uses dedicated topic conventions (`project:*`, `plan:*`, `task:*`, `learn:*`, `agent:*`) and maintains a `project:state` memory for tracking progress. It includes `PlanningJsonContext` for trimming-safe serialization of planning DTOs.
 
 ### Remote Mode
 
@@ -192,18 +192,28 @@ public static string? Get(string key, string workspaceRoot)
 
 The config file is a flat `Dictionary<string, string>` with case-insensitive keys.
 
-## AsyncLocal Considerations
+## AsyncLocal Context Pattern
 
-`AsyncLocal<T>` does NOT propagate from the CLI's startup code through the generic host to MCP tool handler threads. Both `MemoryEventSinkContext` and `SearchContributorContext` have a `Default` static fallback for this reason:
+Three `AsyncLocal`-based context types provide indirection between MCP tool handlers and their backing services:
+
+| Context | Purpose | CLI | Server |
+|---------|---------|-----|--------|
+| `MemoryStoreContext` | Routes to active `IMemoryStore` | Set once at startup | Set per-request |
+| `SearchContributorContext` | Semantic search scoring plugin | `.Default` (static) | `.Current` (per-request) |
+| `MemoryEventSinkContext` | Store/append/forget event hooks | `.Default` (static) | `.Current` (per-request) |
+
+**Why Default exists:** `AsyncLocal<T>` does NOT propagate from the CLI's startup code through the .NET generic host to MCP tool handler threads. The generic host creates new threads with empty `AsyncLocal` values. The `.Default` static fallback solves this:
 
 ```csharp
-// CLI sets Default (global static)
+// CLI sets Default (global static) — survives thread boundary
 SearchContributorContext.Default = pluginHost;
 MemoryEventSinkContext.Default = pluginHost;
 
 // MCP tool handlers read Default when Current is null
 var contributor = SearchContributorContext.Current ?? SearchContributorContext.Default;
 ```
+
+The server does NOT use `.Default` — it sets `.Current` per-request in middleware, which propagates correctly within a single request's async chain. See [Server Architecture](server.md#asynclocal-context-pattern) for the server-side pattern.
 
 ## Output Rendering
 
@@ -233,7 +243,7 @@ The CLI is safe for trimming because:
 
 ## Planning Data Flow
 
-The 12 planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write tool updates `project:state`:
+The 20 planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write tool updates `project:state`:
 
 ```
 project_init ──→ project:context + project:state
@@ -265,8 +275,8 @@ All CLI commands support a `--json` flag for machine-readable JSON output. A sou
 
 ## Test Coverage
 
-~567 tests in `Scrinia.Tests` covering:
-- All 30 MCP tools (18 memory + 12 planning)
+673 tests in `Scrinia.Tests` covering:
+- All 33 MCP tools (13 memory + 20 planning)
 - Store operations and edge cases
 - Search ranking and scoring
 - Encoding and chunking

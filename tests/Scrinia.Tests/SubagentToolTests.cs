@@ -7,7 +7,7 @@ namespace Scrinia.Tests;
 
 /// <summary>
 /// Unit tests for subagent creation MCP tools:
-/// spawn_agent (AGENT-01, AGENT-02, AGENT-04) and skill_load (AGENT-03).
+/// skill_create (AGENT-01, AGENT-02, AGENT-04) and skill_load (AGENT-03).
 /// Also covers ADOPT-02 description context signal checks.
 /// </summary>
 public sealed class SubagentToolTests : IDisposable
@@ -32,41 +32,41 @@ public sealed class SubagentToolTests : IDisposable
         return System.Text.Encoding.UTF8.GetString(decoded);
     }
 
-    /// <summary>Sets up a project so spawn_agent prerequisite check passes.</summary>
+    /// <summary>Sets up a project so skill_create prerequisite check passes.</summary>
     private async Task InitProject()
     {
         await _tools.ProjectInit("Goals: test subagent creation", CancellationToken.None);
     }
 
-    // ── AGENT-01 tests (spawn_agent storage and response) ─────────────────────
+    // ── AGENT-01 tests (skill_create storage and response) ─────────────────────
 
     [Fact]
-    public async Task SpawnAgent_StoresSkillMemory()
+    public async Task SkillCreate_StoresSkillMemory()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Assert — a skill:* entry must exist in skill scope index
         var store = MemoryStoreContext.Current!;
         var (scope, _) = store.ParseQualifiedName("skill:placeholder");
         var entries = store.LoadIndex(scope);
         entries.Should().HaveCountGreaterOrEqualTo(1,
-            "spawn_agent should create at least one skill entry in the index");
+            "skill_create should create at least one skill entry in the index");
         entries.Should().Contain(e => e.Name == "test-reviewer",
-            "spawn_agent should store a skill:test-reviewer entry in the skill scope");
+            "skill_create should store a skill:test-reviewer entry in the skill scope");
     }
 
     [Fact]
-    public async Task SpawnAgent_StoresRoleKeyword()
+    public async Task SkillCreate_StoresRoleKeyword()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Assert — stored entry must have keyword role:reviewer
         var store = MemoryStoreContext.Current!;
@@ -79,13 +79,13 @@ public sealed class SubagentToolTests : IDisposable
     }
 
     [Fact]
-    public async Task SpawnAgent_ContentContainsSystemPrompt()
+    public async Task SkillCreate_ContentContainsSystemPrompt()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Assert — decoded content must contain "## Role" and the role description
         var store = MemoryStoreContext.Current!;
@@ -97,25 +97,25 @@ public sealed class SubagentToolTests : IDisposable
     }
 
     [Fact]
-    public async Task SpawnAgent_ResponseConfirmsStorage()
+    public async Task SkillCreate_ResponseConfirmsStorage()
     {
         // Arrange
         await InitProject();
 
         // Act
-        string result = await _tools.SpawnAgent("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        string result = await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Assert — return value starts with "Stored as skill:test-reviewer"
         result.Should().StartWith("Stored as skill:test-reviewer",
-            "spawn_agent response must confirm storage with the qualified name");
+            "skill_create response must confirm storage with the qualified name");
     }
 
     [Fact]
-    public async Task SpawnAgent_ArchivesExistingVersion()
+    public async Task SkillCreate_ArchivesExistingVersion()
     {
         // Arrange — write same skill name twice
         await InitProject();
-        await _tools.SpawnAgent("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Get the versions dir path for skill scope
         var store = MemoryStoreContext.Current!;
@@ -124,36 +124,36 @@ public sealed class SubagentToolTests : IDisposable
         string versionsDir = Path.Combine(storeDir, "versions");
 
         // Act — write again (same name, archiveExisting: true)
-        await _tools.SpawnAgent("test-reviewer", "reviewer", "Updated instructions.", null, CancellationToken.None);
+        await _tools.SkillCreate("test-reviewer", "reviewer", "Updated instructions.", null, CancellationToken.None);
 
         // Assert — a version archive file must exist for the subject
         bool versionsExist = Directory.Exists(versionsDir) &&
             Directory.GetFiles(versionsDir, $"{skillSubject}*").Length > 0;
         versionsExist.Should().BeTrue(
-            "spawn_agent with same skill name should archive the previous version");
+            "skill_create with same skill name should archive the previous version");
     }
 
     [Fact]
-    public async Task SpawnAgent_RequiresProjectInit()
+    public async Task SkillCreate_RequiresProjectInit()
     {
         // Act — no project_init called
-        string result = await _tools.SpawnAgent("test-skill", "researcher", null, null, CancellationToken.None);
+        string result = await _tools.SkillCreate("test-skill", "researcher", null, null, CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",
-            "spawn_agent without project:context must return Error:");
+            "skill_create without project:context must return Error:");
     }
 
     // ── AGENT-02 tests (capability-conditional fallback section) ──────────────
 
     [Fact]
-    public async Task SpawnAgent_PromptContainsFallbackSection()
+    public async Task SkillCreate_PromptContainsFallbackSection()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("my-researcher", "researcher", null, null, CancellationToken.None);
+        await _tools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
 
         // Assert — decoded content must contain "Fallback"
         var store = MemoryStoreContext.Current!;
@@ -163,13 +163,13 @@ public sealed class SubagentToolTests : IDisposable
     }
 
     [Fact]
-    public async Task SpawnAgent_FallbackSectionHasInstructions()
+    public async Task SkillCreate_FallbackSectionHasInstructions()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("my-researcher", "researcher", null, null, CancellationToken.None);
+        await _tools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
 
         // Assert — content contains fallback marker phrase
         var store = MemoryStoreContext.Current!;
@@ -189,8 +189,8 @@ public sealed class SubagentToolTests : IDisposable
     {
         // Arrange — store two skills
         await InitProject();
-        await _tools.SpawnAgent("api-reviewer", "reviewer", null, null, CancellationToken.None);
-        await _tools.SpawnAgent("auth-researcher", "researcher", null, null, CancellationToken.None);
+        await _tools.SkillCreate("api-reviewer", "reviewer", null, null, CancellationToken.None);
+        await _tools.SkillCreate("auth-researcher", "researcher", null, null, CancellationToken.None);
 
         // Act — list mode (no skillName)
         string result = await _tools.SkillLoad(null, CancellationToken.None);
@@ -207,7 +207,7 @@ public sealed class SubagentToolTests : IDisposable
     {
         // Arrange — store a skill
         await InitProject();
-        await _tools.SpawnAgent("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Act — load mode (skillName provided)
         string result = await _tools.SkillLoad("test-reviewer", CancellationToken.None);
@@ -220,17 +220,19 @@ public sealed class SubagentToolTests : IDisposable
     }
 
     [Fact]
-    public async Task SkillLoad_EmptyListWhenNoSkills()
+    public async Task SkillLoad_ListsBuiltInSkillsWhenNoProjectSkills()
     {
-        // Arrange — no skills stored yet (but project initialized)
+        // Arrange — no project skills stored yet (but project initialized)
         await InitProject();
 
-        // Act — list mode with no skills
+        // Act — list mode with no project skills
         string result = await _tools.SkillLoad(null, CancellationToken.None);
 
-        // Assert
-        result.Should().ContainEquivalentOf("No skills stored yet",
-            "skill_load with no stored skills must return 'No skills stored yet.'");
+        // Assert — built-in skills should always appear
+        result.Should().Contain("march-reporter",
+            "skill_load must list built-in skills even when no project skills exist");
+        result.Should().Contain("built-in",
+            "built-in skills must be tagged as [built-in]");
     }
 
     [Fact]
@@ -254,13 +256,13 @@ public sealed class SubagentToolTests : IDisposable
     // ── AGENT-04 tests (built-in scaffolds and custom mode) ───────────────────
 
     [Fact]
-    public async Task SpawnAgent_ResearcherScaffold()
+    public async Task SkillCreate_ResearcherScaffold()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("my-researcher", "researcher", null, null, CancellationToken.None);
+        await _tools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
 
         // Assert — content must contain "research" and tool references
         var store = MemoryStoreContext.Current!;
@@ -272,13 +274,13 @@ public sealed class SubagentToolTests : IDisposable
     }
 
     [Fact]
-    public async Task SpawnAgent_ReviewerScaffold()
+    public async Task SkillCreate_ReviewerScaffold()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("my-reviewer", "reviewer", null, null, CancellationToken.None);
+        await _tools.SkillCreate("my-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Assert — content must contain "review"
         var store = MemoryStoreContext.Current!;
@@ -288,13 +290,13 @@ public sealed class SubagentToolTests : IDisposable
     }
 
     [Fact]
-    public async Task SpawnAgent_DomainExpertScaffold()
+    public async Task SkillCreate_DomainExpertScaffold()
     {
         // Arrange
         await InitProject();
 
         // Act
-        await _tools.SpawnAgent("my-expert", "domain-expert", null, null, CancellationToken.None);
+        await _tools.SkillCreate("my-expert", "domain-expert", null, null, CancellationToken.None);
 
         // Assert — content must contain "domain" or "expert"
         var store = MemoryStoreContext.Current!;
@@ -307,13 +309,13 @@ public sealed class SubagentToolTests : IDisposable
     }
 
     [Fact]
-    public async Task SpawnAgent_CustomRole()
+    public async Task SkillCreate_CustomRole()
     {
         // Arrange
         await InitProject();
 
         // Act — custom scaffold with instructions and tools
-        await _tools.SpawnAgent(
+        await _tools.SkillCreate(
             "my-custom",
             "custom",
             "Analyze database query performance and suggest indexes.",
@@ -330,21 +332,21 @@ public sealed class SubagentToolTests : IDisposable
     // ── ADOPT-02 tests (description context signals) ──────────────────────────
 
     [Fact]
-    public void SpawnAgent_DescriptionContainsContextSignals()
+    public void SkillCreate_DescriptionContainsContextSignals()
     {
-        // Reflection test — [Description] on SpawnAgent must reference "skill"
-        var method = typeof(ScriniaProjectTools).GetMethod("SpawnAgent");
-        method.Should().NotBeNull("SpawnAgent method must exist");
+        // Reflection test — [Description] on SkillCreate must reference "skill"
+        var method = typeof(ScriniaProjectTools).GetMethod("SkillCreate");
+        method.Should().NotBeNull("SkillCreate method must exist");
 
         var descAttr = method!.GetCustomAttributes(
                 typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
             .Cast<System.ComponentModel.DescriptionAttribute>()
             .FirstOrDefault();
-        descAttr.Should().NotBeNull("SpawnAgent must have a [Description] attribute");
+        descAttr.Should().NotBeNull("SkillCreate must have a [Description] attribute");
 
         string descText = descAttr!.Description;
         descText.Should().ContainEquivalentOf("skill",
-            "SpawnAgent description must contain 'skill' reference so agents know where prompts are stored");
+            "SkillCreate description must contain 'skill' reference so agents know where prompts are stored");
     }
 
     [Fact]

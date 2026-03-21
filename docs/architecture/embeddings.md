@@ -49,6 +49,7 @@ src/Scrinia.Core/Embeddings/              Built-in embeddings (zero native deps)
   VectorIndex.cs                          SIMD cosine similarity + flat-scan search
   HnswIndex.cs                            HNSW approximate nearest neighbor
   HybridReranker.cs                       ISearchScoreContributor implementation
+  VectorMath.cs                           Shared L2Normalize utility (used by all providers)
   Models/VectorEntry.cs                   Vector data record
   Providers/
     OllamaEmbeddingProvider.cs            Remote Ollama API
@@ -75,14 +76,26 @@ public interface IEmbeddingProvider : IDisposable
     bool IsAvailable { get; }
     int Dimensions { get; }
     Task<float[]?> EmbedAsync(string text, CancellationToken ct = default);
-    Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default);
+
+    // Default interface method — sequential fallback, providers can override for batch APIs
+    async Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
+    {
+        var results = new float[texts.Count][];
+        for (int i = 0; i < texts.Count; i++)
+        {
+            var vec = await EmbedAsync(texts[i], ct);
+            if (vec is null) return null;
+            results[i] = vec;
+        }
+        return results;
+    }
 }
 ```
 
 All providers:
-- Return L2-normalized vectors
+- Return L2-normalized vectors via `VectorMath.L2Normalize(vec)` (shared utility in `Scrinia.Core.Embeddings`)
 - Return `null` on failure (logged, never throws)
-- `EmbedBatchAsync` iterates `EmbedAsync` by default (no batch API optimization)
+- `EmbedBatchAsync` has a default interface implementation (sequential loop) — providers can override for true batch APIs
 
 ## Embedding Providers
 
@@ -385,7 +398,7 @@ Both the built-in Model2Vec provider and the optional Vulkan plugin produce 384-
 
 ## Testing
 
-~567 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
+673 tests in `Scrinia.Tests` include embedding tests in `Embeddings/`:
 - VectorStore: SVF2 format, upsert, remove, compaction, scope isolation
 - VectorIndex: SIMD cosine similarity, search ranking
 - HnswIndex: Insert, search, remove, persistence, large-scale behavior

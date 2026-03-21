@@ -174,6 +174,28 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
             TypeInfoResolver = FileStoreJsonContext.Default,
         };
+
+        EnsureGitIgnore(_workspaceRoot);
+    }
+
+    internal static void EnsureGitIgnore(string workspaceRoot)
+    {
+        string scriniaDir = Path.Combine(workspaceRoot, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+
+        string gitIgnorePath = Path.Combine(scriniaDir, ".gitignore");
+        if (File.Exists(gitIgnorePath)) return;
+
+        File.WriteAllText(gitIgnorePath, """
+            # Lock files (runtime artifacts from cross-process file locking)
+            **/.lock
+
+            # Export bundles (generated, can be re-exported)
+            exports/
+
+            # Temporary files from interrupted writes
+            **/*.tmp
+            """.Replace("            ", ""));
     }
 
     // ── Naming ───────────────────────────────────────────────────────────────
@@ -596,10 +618,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (nameOrArtifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
             return nameOrArtifact;
 
-        // 2. file:// URI (backward compat)
+        // 2. file:// URI (backward compat — restricted to workspace)
         if (nameOrArtifact.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
         {
-            string filePath = nameOrArtifact[7..];
+            string filePath = Path.GetFullPath(nameOrArtifact[7..]);
+            string scriniDir = Path.GetFullPath(Path.Combine(_workspaceRoot, ".scrinia"));
+            if (!filePath.StartsWith(scriniDir, StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException(
+                    $"file:// URIs are restricted to the workspace .scrinia/ directory.");
             return await File.ReadAllTextAsync(filePath, ct);
         }
 

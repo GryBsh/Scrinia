@@ -64,32 +64,7 @@ public static class VectorIndex
         if (entries.Count == 0)
             return [];
 
-        // Use HNSW for large collections when index is available
-        if (hnsw is not null && entries.Count >= 1000)
-        {
-            var hnswResults = hnsw.Search(query.ToArray(), topK);
-            // Map HNSW keys back to VectorEntry objects
-            var entryMap = new Dictionary<string, VectorEntry>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in entries)
-                entryMap[entry.Name + "|" + (entry.ChunkIndex ?? -1)] = entry;
-
-            var results = new List<(VectorEntry Entry, float Similarity)>(hnswResults.Count);
-            foreach (var (key, sim) in hnswResults)
-            {
-                // Try to find the matching entry
-                foreach (var entry in entries)
-                {
-                    if (entry.Name.Equals(key, StringComparison.OrdinalIgnoreCase))
-                    {
-                        results.Add((entry, sim));
-                        break;
-                    }
-                }
-            }
-            return results;
-        }
-
-        // Flat scan — fast enough for typical memory counts (< 1000 entries)
+        // Flat scan — fast enough for typical memory counts
         var scored = new List<(VectorEntry Entry, float Similarity)>(entries.Count);
         foreach (var entry in entries)
         {

@@ -4,16 +4,16 @@ Licensed under BSD-3-Clause. Copyright (c) 2026 Nick Daniels. **v1.0 planning mi
 
 This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It describes what scrinia is, how the codebase is structured, what patterns to follow, and common pitfalls to avoid.
 
-**If scrinia is available as an MCP server in your session, call `guide()` once at the start of your session and follow its guidance.** The guide covers ephemeral memories, topic organization, agent-directed chunking strategies, keywords, review conditions, budget tracking, and session-end reflection. Use scrinia's memory tools proactively to persist knowledge as you work — it's what they're built for.
+**If scrinia is available as an MCP server in your session, call `guide()` once and commit its content to your project's agent file.** The guide covers ephemeral memories, topic organization, agent-directed chunking strategies, keywords, review conditions, cross-project sharing, and the full goal-driven planning workflow. Use scrinia's memory tools proactively to persist knowledge as you work — it's what they're built for.
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 30 MCP tools (18 memory + 12 planning) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
+scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 33 MCP tools (13 memory + 20 planning) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
 
 ## Project Layout
 
 ```
-E:/source/repos/Scrinia/
+scrinia/
   src/
     Scrinia.Core/                 <- shared class library (net10.0, BSD-3-Clause)
       Encoding/
@@ -38,8 +38,8 @@ E:/source/repos/Scrinia/
       MemoryStoreContext.cs       <- AsyncLocal indirection: MCP tools read Current to dispatch
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
     Scrinia.Mcp/                  <- shared MCP tools library (net10.0 classlib, refs Core)
-      ScriniaMcpTools.cs          <- 18 memory MCP tools (sealed class, no constructor, no DI injection)
-      ScriniaProjectTools.cs      <- 12 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
+      ScriniaMcpTools.cs          <- 13 memory MCP tools (sealed class, no constructor, no DI injection)
+      ScriniaProjectTools.cs      <- 20 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
@@ -79,7 +79,8 @@ E:/source/repos/Scrinia/
       IMemoryOperationHook.cs     <- before/after hooks
       HookContexts.cs             <- 6 context classes
     Scrinia.Core/Embeddings/      <- built-in semantic search (zero native deps, pure C#)
-      IEmbeddingProvider.cs       <- Provider abstraction (IsAvailable, Dimensions, EmbedAsync, EmbedBatchAsync)
+      IEmbeddingProvider.cs       <- Provider abstraction (IsAvailable, Dimensions, EmbedAsync, default EmbedBatchAsync)
+      VectorMath.cs               <- Shared L2Normalize utility (used by all providers)
       NullEmbeddingProvider.cs    <- No-op fallback (IsAvailable=false)
       EmbeddingOptions.cs         <- Config POCO (Provider="model2vec", SemanticWeight)
       EmbeddingProviderFactory.cs <- Factory (model2vec/ollama/openai/voyageai/azure/google/none)
@@ -104,11 +105,11 @@ E:/source/repos/Scrinia/
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, ~567 tests (8 skipped without model download)
+    Scrinia.Tests/                <- xunit + FluentAssertions, 673 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
       Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
-    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 53 tests
+    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 60 tests
       ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
     Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 12 tests (Vulkan plugin CLI + benchmark tests)
       EmbeddingsPluginCliTests.cs <- core type integration tests (EmbeddingOptions, Factory, VectorStore)
@@ -122,13 +123,16 @@ E:/source/repos/Scrinia/
   AGENTS.md                      <- this file
   docker-compose.yml             <- one-command server deployment
   docs/
-    ARCHITECTURE.md               <- system overview and project structure (links to detail docs)
-    core.md                       <- Scrinia.Core internals (IMemoryStore, FileMemoryStore, extensibility)
-    search.md                     <- search system reference (BM25, weighted fields, hybrid scoring)
-    encoding.md                   <- NMP/2 encoding reference (chunked encoder, format, density)
-    cli.md                        <- CLI reference (11 commands, config, workspace)
-    server.md                     <- HTTP API server guide
-    plugins.md                    <- plugin system (embeddings, CLI plugins, server plugins)
+    getting-started.md            <- overview, installation, quick start
+    cli-reference.md              <- 11 CLI commands, configuration, embedding providers, MCP client setup
+    server-admin.md               <- deployment, authentication, REST API, web UI, Docker
+    planning-tools.md             <- complete guide for 20 planning tools with lifecycle and examples
+    architecture/
+      overview.md                 <- system diagram, solution structure, dependency graph
+      cli.md                      <- workspace discovery, plugin host, MCP tools
+      server.md                   <- startup, middleware, auth, multi-store, plugins
+      core.md                     <- IMemoryStore, NMP/2 encoding, search algorithms, data models
+      embeddings.md               <- providers, vector store, HNSW, hybrid scoring
   .github/workflows/ci.yml       <- CI build + test on push/PR
   .github/workflows/release.yml  <- release builds (CLI, server, Docker image)
 ```
@@ -225,13 +229,13 @@ record ArtifactEntry(
 
 Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fields).
 
-### `ScriniaMcpTools` (18 memory tools)
+### `ScriniaMcpTools` (13 memory tools)
 
-18 memory MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
+13 memory MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
 
 | MCP name | Method | Description |
 |---|---|---|
-| `guide` | Guide() | Session playbook: ephemeral, topics, chunking, keywords, review, budget |
+| `guide` | Guide() | Cognitive toolset guide: three-rings model, memory/skill habits, goal-driven planning |
 | `encode` | Encode() | Compress text into NMP/2 artifact; 1 element = single-chunk, N = agent-directed |
 | `chunk_count` | ChunkCount() | Count chunks in an artifact |
 | `get_chunk` | GetChunk() | Decode one chunk (1-based); records budget |
@@ -244,32 +248,35 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `export` | Export() | Topic -> .scrinia-bundle |
 | `import` | Import() | .scrinia-bundle -> topic |
 | `append` | Append() | Append content as a new independently retrievable chunk |
-| `reflect` | Reflect() | Session-end knowledge persistence checklist |
-| `ingest` | Ingest() | Full knowledge capture — 5-phase protocol for thorough memory ingestion |
-| `budget` | Budget() | Per-memory token consumption breakdown |
-| `ka` | Ka() | Knowledge analysis — inventory, gap analysis, report to user |
-| `kt` | Kt() | Knowledge transfer — runs ka(), produces per-topic KT documents |
 
-### `ScriniaProjectTools` (12 planning tools)
+### `ScriniaProjectTools` (20 planning tools)
 
-12 planning MCP tools in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
+20 planning MCP tools in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
 
 | MCP name | Method | Description |
 |---|---|---|
-| `project_init` | ProjectInit(context) | Initialize project: stores project:context + project:state, returns workspace-derived project ID |
+| `project_init` | ProjectInit(context) | One-time init: stores project:context + project:state, detects existing codebase (non-dotfiles), returns tailored next steps (scan→concerns→goal or goal→plan) |
 | `plan_requirements` | PlanRequirements(requirements) | Store requirements with REQ-IDs; validates project_init ran first |
 | `plan_roadmap` | PlanRoadmap(roadmap) | Store phased roadmap; validates all REQ-IDs from requirements appear exactly once |
 | `plan_tasks` | PlanTasks(phaseId, tasks) | Decompose phase into task memories with keyword metadata (status:pending, wave:N, phase:XX, depends_on:*) |
 | `task_next` | TaskNext(phaseId) | Keyword-only index scan returning all unblocked tasks in current wave |
 | `task_complete` | TaskComplete(taskName, outcome) | Update status keyword to complete + append to execution log |
 | `plan_resume` | PlanResume() | Return structured summary; rebuilds state from memories if corrupted |
-| `plan_status` | PlanStatus() | Return current phase, progress %, blockers (compact status report) |
+| `plan_status` | PlanStatus() | Return current phase, progress %, blockers (computed live from task data) |
 | `plan_verify` | PlanVerify(phaseId) | Structured pass/fail per success criterion from plan:roadmap |
 | `plan_gaps` | PlanGaps(phaseId, failedCriteria) | Create gap closure tasks, re-open phase status |
+| `research_start` | ResearchStart(phaseId, topic, question) | Start a research investigation before task decomposition |
+| `research_complete` | ResearchComplete(phaseId, topic, findings, sources) | Complete research with findings and sources |
+| `concern_add` | ConcernAdd(title, description, severity) | Add a project concern with severity (low/medium/high) |
+| `concern_resolve` | ConcernResolve(concernId, resolution) | Resolve a concern with resolution details |
+| `concern` | Concern(phaseFilter?) | List active concerns, optionally filtered by phase |
+| `goal_update` | GoalUpdate(action, description?, goalId?, outcome?) | Manage project goals: add, complete, or list |
+| `skill_create` | SkillCreate(skillName, scaffold, instructions?, tools?) | Create a reusable specialist skill with project-specific context (stored as skill:*) |
+| `skill_load` | SkillLoad(skillName) | Load a reusable agent skill/prompt template |
 | `plan_retrospective` | PlanRetrospective(phaseId, whatWorked, whatFailed, lessons) | Append to learn:execution-outcomes with provenance:agent |
-| `plan_profile` | PlanProfile(profile) | Store user:profile with full overwrite |
+| `plan_profile` | PlanProfile(profile) | Store agent:profile with full overwrite |
 
-**Tool budget**: 30/50 (18 memory + 12 planning).
+**Tool budget**: 33/50 (13 memory + 20 planning).
 
 **Planning topic conventions**: Planning tools use topic-scoped memories with these prefixes:
 
@@ -279,7 +286,7 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `plan:*` | Phased roadmap | `plan:roadmap` |
 | `task:*` | Individual tasks + execution logs | `task:01-1-01`, `task:01-execution-log` |
 | `learn:*` | Retrospectives and lessons | `learn:execution-outcomes` |
-| `user:*` | User preferences | `user:profile` |
+| `agent:*` | Project-level agent behavioral norms | `agent:profile` |
 
 **Task naming**: `task:{phaseId}-{wave}-{id}` (e.g. `task:01-1-03`). Keywords encode metadata: `status:pending`/`status:complete`, `wave:N`, `phase:XX`, `depends_on:{subject}`.
 
@@ -308,7 +315,7 @@ plan_roadmap(roadmap: "## Phase 1\nRequirements: AUTH-01\n## Phase 2\nRequiremen
 
 **Execution:**
 ```
-plan_tasks(phaseId: "01", tasks: "## Task 01\nWave: 1\nDepends on: none\nAction: Create auth endpoint\nAcceptance criteria:\n- POST /login returns JWT")
+plan_tasks(phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create auth endpoint\nAcceptance criteria:\n- POST /login returns JWT")
 → "Created 1 task(s) for phase 01 in 1 wave(s)."
 
 task_next(phaseId: "01")
@@ -342,7 +349,7 @@ plan_retrospective(phaseId: "01", whatWorked: "TDD caught edge cases", whatFaile
 → "Phase 01 retrospective stored in learn:execution-outcomes."
 
 plan_profile(profile: "autonomy_level: high\nreview_depth: detailed")
-→ "User profile stored in user:profile."
+→ "Agent profile stored in agent:profile."
 ```
 
 ### `excludeTopics` scope filtering
@@ -376,6 +383,10 @@ Entry scoring (per term, max wins):
 | Keyword contains | 12 |
 | Description contains | 10 |
 | Content preview contains | 5 |
+
+### `HttpMemoryStore`
+
+`IMemoryStore` implementation in `Scrinia` (CLI project) that proxies to a Scrinia.Server REST API. Used when `--remote` is specified. Ephemeral storage stays client-side. Synchronous interface methods use `HttpClient.Send()` (sync HTTP, not `.GetAwaiter().GetResult()`) to avoid thread pool starvation.
 
 ### `FileMemoryStore`
 
@@ -466,7 +477,6 @@ You control how content is split — organize by semantic boundaries:
 #### Strategies for effective chunking
 - **One concept per chunk**: split by function, endpoint, topic, or section header
 - **Self-contained chunks**: each chunk should make sense on its own without context from other chunks
-- **Use budget() to learn**: check which memories consume the most tokens, then re-store with finer-grained chunks
 - **Journal pattern**: use `append(entry, "log")` to build a log where each entry is independently addressable — read only recent entries instead of the whole history
 - **Chunk size sweet spot**: aim for 2K-8K chars per chunk — small enough to be selective, large enough to carry meaningful context
 
@@ -496,14 +506,6 @@ Flag memories that may become stale:
 - `list()` summary includes stale/review counts
 - `list(mode="full")` shows `[stale]` or `[review?]` markers per entry
 
-### Budget tracking
-Monitor how much context you're consuming:
-- `budget()` — shows per-memory chars/tokens loaded via show()/get_chunk()
-- Helps decide when to use chunked retrieval vs. full show()
-
-### Session-end reflection
-Call `reflect()` at the end of a session for a checklist of knowledge to persist.
-
 ### Cross-project sharing
 Export topics as portable .scrinia-bundle files:
 1. `export(["api", "arch"])` — creates a .scrinia-bundle in .scrinia/exports/
@@ -529,6 +531,14 @@ solutions to recurring problems, project-specific knowledge.
 **Exception:** use `~checkpoint` to preserve working context across context compactions.
 
 ## Known Pitfalls
+
+### file:// URI sandboxing
+
+`FileMemoryStore.ResolveArtifactAsync` accepts `file://` URIs for backward compatibility but restricts them to the workspace `.scrinia/` directory. Paths outside the workspace throw `UnauthorizedAccessException`. The Forget MCP tool resolves `file://` URIs to memory names and deletes via the store API — it does NOT do direct `File.Delete`.
+
+### Search input bounds
+
+The server enforces bounds on search parameters: query max 10KB, scopes max 1KB, limit clamped to 1–1000. The MCP tools do not enforce these limits (the MCP transport is trusted).
 
 ### ConsoleAppFramework v5 source-gen CLI
 
@@ -615,20 +625,20 @@ The `list` command supports these flags:
 ## Running Tests
 
 ```bash
-# CLI + MCP + planning + embeddings tests (~567 tests, 8 skipped without model download)
-cd E:\source\repos\Scrinia\tests\Scrinia.Tests
+# CLI + MCP + planning + embeddings tests (673 tests)
+cd tests/Scrinia.Tests
 dotnet test
 
-# Server API tests (53 tests)
-cd E:\source\repos\Scrinia\tests\Scrinia.Server.Tests
+# Server API tests (60 tests)
+cd tests/Scrinia.Server.Tests
 dotnet test
 
 # Vulkan plugin + benchmark tests (12 tests)
-cd E:\source\repos\Scrinia\tests\Scrinia.Plugin.Embeddings.Tests
+cd tests/Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: ~620 tests total (~567 + 53 + 12), 8 skipped (Model2Vec/BertTokenizer model download required). Auth plugin adds 62 tests (distributed separately).
+Expected: 745 tests total (673 + 60 + 12). Auth plugin adds 62 tests (distributed separately).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 
@@ -759,7 +769,7 @@ MCP Streamable HTTP transport at `/mcp`, powered by `ModelContextProtocol.AspNet
 - **Auth**: Bearer token (same API key auth as REST endpoints)
 - **Store selection**: Query param `?store=default` resolves the `FileMemoryStore` for the session
 - **Session context**: `PerSessionExecutionContext = true` ensures `MemoryStoreContext.Current` (AsyncLocal) persists across MCP tool calls within a session
-- **Tools**: All 30 tools from `ScriniaMcpTools` (18 memory) + `ScriniaProjectTools` (12 planning), shared via `Scrinia.Mcp` library
+- **Tools**: All 33 tools from `ScriniaMcpTools` (13 memory) + `ScriniaProjectTools` (20 planning), shared via `Scrinia.Mcp` library
 
 MCP client config (HTTP transport):
 ```json

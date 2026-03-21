@@ -16,7 +16,7 @@ public sealed class HealthEndpointTests : IClassFixture<ScriniaServerFactory>
     }
 
     [Fact]
-    public async Task Health_returns_200_without_auth()
+    public async Task Health_returns_200_without_auth_status_only()
     {
         var client = _factory.CreateClient(); // no auth header
         var resp = await client.GetAsync("/health");
@@ -25,7 +25,7 @@ public sealed class HealthEndpointTests : IClassFixture<ScriniaServerFactory>
         var body = await resp.Content.ReadFromJsonAsync<HealthResponse>();
         body.Should().NotBeNull();
         body!.Status.Should().Be("ok");
-        body.Checks.Should().NotBeNullOrEmpty();
+        body.Checks.Should().BeNullOrEmpty("unauthenticated health should not expose check details");
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public sealed class HealthEndpointTests : IClassFixture<ScriniaServerFactory>
     }
 
     [Fact]
-    public async Task Health_ready_returns_200_with_checks()
+    public async Task Health_ready_returns_200_status_only()
     {
         var client = _factory.CreateClient();
         var resp = await client.GetAsync("/health/ready");
@@ -50,8 +50,29 @@ public sealed class HealthEndpointTests : IClassFixture<ScriniaServerFactory>
         var body = await resp.Content.ReadFromJsonAsync<HealthResponse>();
         body.Should().NotBeNull();
         body!.Status.Should().Be("ok");
+        body.Checks.Should().BeNullOrEmpty("unauthenticated ready should not expose check details");
+    }
+
+    [Fact]
+    public async Task Health_details_returns_checks_when_authenticated()
+    {
+        var client = _factory.CreateAuthenticatedClient();
+        var resp = await client.GetAsync("/health/details");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var body = await resp.Content.ReadFromJsonAsync<HealthResponse>();
+        body.Should().NotBeNull();
+        body!.Status.Should().Be("ok");
         body.Checks.Should().NotBeNullOrEmpty();
         body.Checks.Should().Contain(c => c.Name == "sqlite");
         body.Checks.Should().Contain(c => c.Name == "store:test-store");
+    }
+
+    [Fact]
+    public async Task Health_details_returns_401_without_auth()
+    {
+        var client = _factory.CreateClient(); // no auth
+        var resp = await client.GetAsync("/health/details");
+        resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 }

@@ -153,3 +153,35 @@ export interface EmbeddingsSettingsUpdate {
   semanticWeight?: number;
   maxBatchSize?: number;
 }
+
+// ── Chat ────────────────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: string;
+  content?: string | null;
+  toolCalls?: ChatToolCall[];
+  toolCallId?: string;
+}
+
+export interface ChatToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface ChatEvent {
+  type: 'chunk' | 'tool-start' | 'tool-result' | 'done' | 'error';
+  content?: string;
+  toolName?: string;
+  toolCallId?: string;
+  error?: string;
+}
+
+export interface ChatRequest {
+  messages: ChatMessage[];
+  provider?: string;
+}
+
+export interface ChatProvidersResponse {
+  providers: string[];
+}

@@ -69,15 +69,7 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
         {
             var embeddings = await _embedder.GetEmbeddings(text);
             var vec = embeddings.Single().ToArray();
-
-            // L2 normalize
-            float normSq = 0;
-            foreach (float f in vec) normSq += f * f;
-            float norm = MathF.Sqrt(normSq);
-            if (norm > 0)
-                for (int i = 0; i < vec.Length; i++)
-                    vec[i] /= norm;
-
+            VectorMath.L2Normalize(vec);
             return vec;
         }
         catch (Exception ex)

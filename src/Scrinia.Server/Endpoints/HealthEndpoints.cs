@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Scrinia.Plugin.Abstractions;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
@@ -9,29 +10,35 @@ public static class HealthEndpoints
 {
     public static void MapHealthEndpoints(this WebApplication app)
     {
+        // Unauthenticated — status only (no store/plugin/backend names)
         app.MapGet("/health/live", () => Results.Ok(new HealthResponse("ok")));
 
-        app.MapGet("/health/ready", (ApiKeyStore keyStore, StoreManager storeManager, IReadOnlyList<IScriniaPlugin> plugins) =>
+        app.MapGet("/health/ready", StatusOnly);
+        app.MapGet("/health", StatusOnly); // backward-compat alias
+
+        // Authenticated — full detail with store names, plugin names, backend info
+        app.MapGet("/health/details", (ApiKeyStore keyStore, StoreManager storeManager,
+            IReadOnlyList<IScriniaPlugin> plugins, ILoggerFactory loggerFactory) =>
         {
-            var checks = RunReadinessChecks(keyStore, storeManager, plugins);
+            var checks = RunReadinessChecks(keyStore, storeManager, plugins, loggerFactory.CreateLogger("Health"));
             bool allOk = checks.All(c => c.Status == "ok");
 
             var response = new HealthResponse(allOk ? "ok" : "degraded", checks);
             return allOk ? Results.Ok(response) : Results.Json(response, statusCode: 503);
-        });
-
-        // Backward-compat alias
-        app.MapGet("/health", (ApiKeyStore keyStore, StoreManager storeManager, IReadOnlyList<IScriniaPlugin> plugins) =>
-        {
-            var checks = RunReadinessChecks(keyStore, storeManager, plugins);
-            bool allOk = checks.All(c => c.Status == "ok");
-
-            var response = new HealthResponse(allOk ? "ok" : "degraded", checks);
-            return allOk ? Results.Ok(response) : Results.Json(response, statusCode: 503);
-        });
+        }).RequireAuthorization("Health");
     }
 
-    private static HealthCheck[] RunReadinessChecks(ApiKeyStore keyStore, StoreManager storeManager, IReadOnlyList<IScriniaPlugin> plugins)
+    private static IResult StatusOnly(ApiKeyStore keyStore, StoreManager storeManager,
+        IReadOnlyList<IScriniaPlugin> plugins, ILoggerFactory loggerFactory)
+    {
+        var checks = RunReadinessChecks(keyStore, storeManager, plugins, loggerFactory.CreateLogger("Health"));
+        bool allOk = checks.All(c => c.Status == "ok");
+        string status = allOk ? "ok" : "degraded";
+        return allOk ? Results.Ok(new HealthResponse(status)) : Results.Json(new HealthResponse(status), statusCode: 503);
+    }
+
+    private static HealthCheck[] RunReadinessChecks(
+        ApiKeyStore keyStore, StoreManager storeManager, IReadOnlyList<IScriniaPlugin> plugins, ILogger logger)
     {
         var checks = new List<HealthCheck>();
 
@@ -43,7 +50,8 @@ public static class HealthEndpoints
         }
         catch (Exception ex)
         {
-            checks.Add(new HealthCheck("sqlite", "fail", ex.Message));
+            logger.LogWarning(ex, "Health check failed: SQLite connectivity");
+            checks.Add(new HealthCheck("sqlite", "fail", "unavailable"));
         }
 
         // Storage backend
@@ -59,7 +67,8 @@ public static class HealthEndpoints
             }
             catch (Exception ex)
             {
-                checks.Add(new HealthCheck($"store:{name}", "fail", ex.Message));
+                logger.LogWarning(ex, "Health check failed: store {StoreName}", name);
+                checks.Add(new HealthCheck($"store:{name}", "fail", "unavailable"));
             }
         }
 

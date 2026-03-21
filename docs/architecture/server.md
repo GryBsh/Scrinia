@@ -304,6 +304,21 @@ A server plugin can integrate at 8 points:
 7. **IMemoryEventSink** -- Receive event notifications (MCP path)
 8. **StoreAccessLevels** in RequestContext -- SSO integration for per-store access control
 
+## AsyncLocal Context Pattern
+
+The server sets `AsyncLocal`-based contexts **per-request** in the `RequestContext` middleware. Unlike the CLI (which uses `.Default` static fallback), the server sets `.Current` which propagates correctly within a single request's async chain:
+
+```csharp
+// Per-request middleware sets Current
+MemoryStoreContext.Current = requestContext.Store;
+SearchContributorContext.Current = embeddingContributor;
+MemoryEventSinkContext.Current = embeddingEventSink;
+```
+
+This ensures each request is isolated — concurrent requests to different stores get the correct `IMemoryStore` instance without interference.
+
+See [CLI Architecture](cli.md#asynclocal-context-pattern) for why the CLI uses a different approach.
+
 ## MCP over HTTP
 
 The server exposes MCP Streamable HTTP at `/mcp` via `ModelContextProtocol.AspNetCore`:
@@ -312,7 +327,7 @@ The server exposes MCP Streamable HTTP at `/mcp` via `ModelContextProtocol.AspNe
 app.MapMcp("/mcp").RequireAuthorization();
 ```
 
-All 30 MCP tools from `ScriniaMcpTools` (18 memory) and `ScriniaProjectTools` (12 planning) are available. The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
+All 33 MCP tools from `ScriniaMcpTools` (13 memory) and `ScriniaProjectTools` (20 planning) are available. The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
 
 ## Web UI Integration
 
@@ -326,7 +341,7 @@ The server generates an OpenAPI spec at `/openapi/v1.json` and hosts a Scalar AP
 
 ## Test Coverage
 
-53 tests in `Scrinia.Server.Tests` using:
+60 tests in `Scrinia.Server.Tests` using:
 - `WebApplicationFactory` for in-process HTTP testing
 - In-memory SQLite for key storage
 - FluentAssertions for readable assertions

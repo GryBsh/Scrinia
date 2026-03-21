@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 30 MCP tools — 18 for memory and 12 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 33 MCP tools — 13 for memory and 20 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -145,7 +145,7 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-30 tools available via `scri serve` — 18 memory tools and 12 project planning tools.
+33 tools available via `scri serve` — 13 memory tools and 20 project planning tools.
 
 ### Memory tools
 
@@ -158,8 +158,6 @@ All commands accept `--workspace-root` to override the workspace directory and `
 | `copy` / `forget` | Move between scopes or delete |
 | `export` / `import` | Portable .scrinia-bundle files |
 | `encode` / `chunk_count` | Low-level NMP/2 encoding |
-| `ka` / `kt` | Knowledge analysis and transfer |
-| `budget` / `reflect` / `ingest` | Session lifecycle tools |
 
 ### Planning tools (ScriniaProjectTools)
 
@@ -179,10 +177,20 @@ Full project lifecycle — ideation, planning, execution, verification, and lear
 | `plan_gaps` | Identify gaps and risks in the plan |
 | `plan_retrospective` | Record execution outcomes and lessons learned |
 | `plan_profile` | Store and retrieve user/agent preferences |
+| `research_start` | Start a research investigation before task decomposition |
+| `research_complete` | Complete research with findings and sources |
+| `concern_add` | Add a project concern with severity level |
+| `concern_resolve` | Resolve a concern with resolution details |
+| `concern` | List active concerns, optionally filtered by phase |
+| `goal_update` | Manage project goals: add, complete, or list |
+| `skill_create` | Create a reusable specialist skill with project-specific context |
+| `skill_load` | Load a reusable agent skill/prompt template |
 
-Plans are stored as topic-scoped memories (`plan:*`, `task:*`, `project:*`, `learn:*`, `user:*`) — no separate database. All planning data is searchable via the standard `search` tool. The `excludeTopics` parameter on `list` and `search` lets agents separate knowledge from planning data when needed.
+Seven **built-in skills** ship with scrinia: `march-reporter`, `auditor`, `debugger`, `chaos-engineer`, `onboarder`, `planner`, `sos-handler`. Call `skill_load()` to list them. Projects can override any built-in with `skill_create`.
 
-Agent learning is built in: `plan_retrospective` stores execution outcomes with the `provenance:agent` keyword, and `plan_profile` stores user preferences — both discoverable via standard search.
+Plans are stored as topic-scoped memories (`plan:*`, `task:*`, `project:*`, `learn:*`, `agent:*`) — no separate database. All planning data is searchable via the standard `search` tool. The `excludeTopics` parameter on `list` and `search` lets agents separate knowledge from planning data when needed.
+
+Agent learning is built in: `plan_retrospective` stores execution outcomes with the `provenance:agent` keyword, and `plan_profile` stores agent behavioral norms — both discoverable via standard search.
 
 ## Documentation
 
@@ -190,6 +198,9 @@ Agent learning is built in: `plan_retrospective` stores execution outcomes with 
 - **[Getting Started](docs/getting-started.md)** — overview, installation, quick start
 - **[CLI Reference](docs/cli-reference.md)** — commands, configuration, embedding providers, MCP client setup
 - **[Server Administration](docs/server-admin.md)** — deployment, authentication, REST API, web UI, Docker
+- **[Planning Tools](docs/planning-tools.md)** — project lifecycle, task execution, verification
+- **[Web UI](docs/web-ui-guide.md)** — React SPA component architecture, dev setup, deployment
+- **[Troubleshooting](docs/troubleshooting.md)** — common issues, plugin failures, recovery
 
 ### Architecture
 - **[Overview](docs/architecture/overview.md)** — system design, project structure, dependency graph
@@ -204,8 +215,8 @@ Agent learning is built in: `plan_retrospective` stores execution outcomes with 
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # ~567 CLI + MCP + planning + embeddings tests
-dotnet test tests/Scrinia.Server.Tests      # 53 server tests
+dotnet test tests/Scrinia.Tests             # 673 CLI + MCP + planning + embeddings tests
+dotnet test tests/Scrinia.Server.Tests      # 60 server tests
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
 ```
 

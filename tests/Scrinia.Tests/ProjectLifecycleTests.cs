@@ -27,7 +27,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_StoresProjectContext()
     {
         // Act
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert — project:context memory must exist
         var store = MemoryStoreContext.Current!;
@@ -41,7 +41,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_ResultContainsProjectContextReference()
     {
         // Act
-        string result = await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        string result = await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().Contain("project:context",
@@ -52,7 +52,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_CreatesProjectState()
     {
         // Act
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert — project:state memory must exist with expected fields
         var store = MemoryStoreContext.Current!;
@@ -65,7 +65,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_ReturnsProjectId()
     {
         // Act
-        string result = await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        string result = await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert — result contains workspace-derived project ID (sanitized directory name)
         string expectedId = Path.GetFileName(_scope.WorkspaceDir)
@@ -82,7 +82,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_IncludesOwnershipHint()
     {
         // Act
-        string result = await _tools.ProjectInit("Goals: build X", CancellationToken.None);
+        string result = await _tools.ProjectInit("Goals: build X", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().Contain(".scrinia/",
@@ -95,11 +95,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRequirements_StoresRequirements()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -113,11 +113,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRequirements_UpdatesState()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: reqs", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
 
         // Assert — state should be updated with recent timestamp
         var store = MemoryStoreContext.Current!;
@@ -132,7 +132,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Act — call plan_requirements without calling project_init first
         string result = await _tools.PlanRequirements(
-            "- PROJ-01: init", CancellationToken.None);
+            "- PROJ-01: init", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().Contain("project_init",
@@ -145,11 +145,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRequirements_IncludesOwnershipHint()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanRequirements(
-            "- PROJ-01: init", CancellationToken.None);
+            "- PROJ-01: init", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().Contain(".scrinia/",
@@ -162,13 +162,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_StoresRoadmap()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Act
         string roadmap = "### Phase 1\nPROJ-01, PROJ-02\n- implement init";
-        await _tools.PlanRoadmap(roadmap, CancellationToken.None);
+        await _tools.PlanRoadmap(roadmap, cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -182,13 +182,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_ValidatesReqIds()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Act — roadmap contains all required REQ-IDs
         string roadmap = "### Phase 1\nPROJ-01 and PROJ-02 tasks here";
-        string result = await _tools.PlanRoadmap(roadmap, CancellationToken.None);
+        string result = await _tools.PlanRoadmap(roadmap, cancellationToken: CancellationToken.None);
 
         // Assert — should succeed (not an error)
         result.Should().NotStartWith("Error:",
@@ -201,13 +201,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_RejectsMissingReqIds()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Act — roadmap is missing PROJ-02
         string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 tasks only", CancellationToken.None);
+            "### Phase 1\nPROJ-01 tasks only", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",
@@ -227,13 +227,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_AcceptsExtraReqIds()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements(
-            "- PROJ-01: init", CancellationToken.None);
+            "- PROJ-01: init", cancellationToken: CancellationToken.None);
 
         // Act — roadmap has PROJ-01 (required) plus NEW-99 (not in requirements)
         string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 and NEW-99 tasks", CancellationToken.None);
+            "### Phase 1\nPROJ-01 and NEW-99 tasks", cancellationToken: CancellationToken.None);
 
         // Assert — extra REQ-IDs are allowed (agent may define new ones)
         result.Should().NotStartWith("Error:",
@@ -244,13 +244,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_UpdatesState()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Act
         await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01, PROJ-02", CancellationToken.None);
+            "### Phase 1\nPROJ-01, PROJ-02", cancellationToken: CancellationToken.None);
 
         // Assert — state should be updated
         var store = MemoryStoreContext.Current!;
@@ -263,12 +263,12 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_IncludesOwnershipHint()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- PROJ-01: init", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 tasks", CancellationToken.None);
+            "### Phase 1\nPROJ-01 tasks", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().Contain(".scrinia/",
@@ -281,9 +281,9 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanResume_ReturnsStructuredSummary()
     {
         // Arrange — full state via all three write tools
-        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", CancellationToken.None);
-        await _tools.PlanRoadmap("### Phase 1\nPROJ-01, PROJ-02 tasks", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
+        await _tools.PlanRoadmap("### Phase 1\nPROJ-01, PROJ-02 tasks", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanResume(CancellationToken.None);
@@ -300,7 +300,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanResume_RespectsResponseCap()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanResume(CancellationToken.None);
@@ -314,23 +314,25 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanResume_IncludesNextActionSuggestion()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanResume(CancellationToken.None);
 
-        // Assert — must contain a concrete suggestion
-        bool hasConcreteAction = result.Contains("run ") || result.Contains("plan_") || result.Contains("task_");
+        // Assert — must contain a concrete suggestion (tool name or action verb)
+        bool hasConcreteAction = result.Contains("run ") || result.Contains("plan_")
+            || result.Contains("task_") || result.Contains("goal_update")
+            || result.Contains("concern") || result.Contains("research");
         hasConcreteAction.Should().BeTrue(
-            "plan_resume must return a concrete next action (contains 'run ', 'plan_', or 'task_')");
+            "plan_resume must return a concrete next action (contains a tool name or action)");
     }
 
     [Fact]
     public async Task PlanResume_RebuildsFromMemories()
     {
         // Arrange — initialize project so memories exist
-        await _tools.ProjectInit("Goals: build a memory server for AI agents", CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server for AI agents", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
 
         // Delete project:state artifact so rebuild is triggered
         var store = MemoryStoreContext.Current!;
@@ -367,9 +369,9 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanStatus_ReturnsPhaseAndProgress()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init", CancellationToken.None);
-        await _tools.PlanRoadmap("### Phase 1\nPROJ-01 tasks", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- PROJ-01: init", cancellationToken: CancellationToken.None);
+        await _tools.PlanRoadmap("### Phase 1\nPROJ-01 tasks", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanStatus(CancellationToken.None);
@@ -384,7 +386,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanStatus_RespectsResponseCap()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanStatus(CancellationToken.None);
@@ -398,7 +400,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanStatus_WorksWithPartialState()
     {
         // Arrange — only project_init, no roadmap
-        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanStatus(CancellationToken.None);
@@ -413,7 +415,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanStatus_IncludesBlockers()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanStatus(CancellationToken.None);
@@ -429,9 +431,9 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_RejectsDuplicateReqIdsAcrossPhases()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Act — PROJ-01 appears in both Phase 1 and Phase 2 (duplicate across phases)
         string result = await _tools.PlanRoadmap(
@@ -456,9 +458,9 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRoadmap_AcceptsSameReqIdMentionedOncePerPhase()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", CancellationToken.None);
+            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Act — each REQ-ID appears in exactly one phase (valid)
         string result = await _tools.PlanRoadmap(
@@ -511,15 +513,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     private static string MakeMultiWaveInput() =>
         """
         ## Task 01
-        Wave: 1
         Depends on: none
         Action: Implement authentication
         Acceptance criteria:
         - Users can log in
 
         ## Task 02
-        Wave: 2
-        Depends on: none
+        Depends on: 01
         Action: Implement advanced features
         Acceptance criteria:
         - Feature works
@@ -544,9 +544,9 @@ public sealed class ProjectLifecycleTests : IDisposable
 
     private async Task SetupProjectAndRoadmap()
     {
-        await _tools.ProjectInit("Goals: build a test project", CancellationToken.None);
-        await _tools.PlanRequirements("- PLAN-01: task storage\n- PLAN-02: research guidance", CancellationToken.None);
-        await _tools.PlanRoadmap("### Phase 1\nPLAN-01, PLAN-02 tasks", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- PLAN-01: task storage\n- PLAN-02: research guidance", cancellationToken: CancellationToken.None);
+        await _tools.PlanRoadmap("### Phase 1\nPLAN-01, PLAN-02 tasks", cancellationToken: CancellationToken.None);
     }
 
     [Fact]
@@ -556,7 +556,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task:01-1-01 and task:01-1-02 must exist in index
         var store = MemoryStoreContext.Current!;
@@ -578,7 +578,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task:01-1-01 must have Keywords containing status:pending
         var store = MemoryStoreContext.Current!;
@@ -598,7 +598,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeMultiWaveInput(), CancellationToken.None);
+        await _tools.PlanTasks("01", MakeMultiWaveInput(), cancellationToken: CancellationToken.None);
 
         // Assert — wave:1 on task 01, wave:2 on task 02
         var store = MemoryStoreContext.Current!;
@@ -623,7 +623,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — both tasks should have phase:01 keyword
         var store = MemoryStoreContext.Current!;
@@ -646,7 +646,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeDependencyInput(), CancellationToken.None);
+        await _tools.PlanTasks("01", MakeDependencyInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task 02 depends on task 01-1-01 (subject-only, not qualified)
         var store = MemoryStoreContext.Current!;
@@ -668,7 +668,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task:01-1-01 content should contain the action text
         var store = MemoryStoreContext.Current!;
@@ -683,10 +683,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanTasks_FailsWithoutRoadmap()
     {
         // Arrange — no roadmap (just init)
-        await _tools.ProjectInit("Goals: build something", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+        string result = await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — should return error mentioning plan_roadmap
         result.Should().StartWith("Error:", "plan_tasks without roadmap should return Error:");
@@ -701,7 +701,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — project:state should reference plan_tasks or "Tasks created"
         var store = MemoryStoreContext.Current!;
@@ -749,7 +749,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         }
 
         // Act
-        string result = await _tools.PlanTasks("01", manyTasks.ToString(), CancellationToken.None);
+        string result = await _tools.PlanTasks("01", manyTasks.ToString(), cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -761,7 +761,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     private async Task SetupProjectWithTasks(string phaseId, string tasksInput)
     {
         await SetupProjectAndRoadmap();
-        await _tools.PlanTasks(phaseId, tasksInput, CancellationToken.None);
+        await _tools.PlanTasks(phaseId, tasksInput, cancellationToken: CancellationToken.None);
     }
 
     private static string MakeThreeTaskInput() =>
@@ -812,7 +812,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - result should contain both task names
         result.Should().Contain("01-1-01", "task_next should include first task");
@@ -826,7 +826,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeThreeTaskInput());
 
         // Act
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - ALL 3 should appear (EXEC-03: returns batch, not single)
         result.Should().Contain("01-1-01", "task_next should include task 01");
@@ -841,7 +841,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeWaveDependencyInput());
 
         // Act - call task_next for phase 01
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - only wave-1 task should appear; wave-2 task should not
         result.Should().Contain("01-1-01", "wave-1 unblocked task should appear");
@@ -853,10 +853,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange - 2 wave-1 tasks; complete task 1
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - only task 2 should appear; task 1 is complete
         result.Should().Contain("01-1-02", "incomplete task 02 should appear");
@@ -868,11 +868,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange - 1 task; complete it
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
-        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - should indicate no pending tasks
         result.Should().ContainEquivalentOf("no pending", "result should indicate no pending tasks when all complete");
@@ -884,10 +884,10 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Arrange - create tasks for phase "01"; create tasks for a "02" project
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
         // Add phase 02 tasks too
-        await _tools.PlanTasks("02", MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanTasks("02", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Act - only request phase 01
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - only phase-01 tasks should appear
         result.Should().Contain("01-1-", "phase-01 tasks should appear");
@@ -900,7 +900,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task TaskNext_FailsWithoutProject()
     {
         // Act - call task_next without any project setup
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - should return an error or "no pending tasks"
         bool isError = result.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
@@ -924,10 +924,10 @@ public sealed class ProjectLifecycleTests : IDisposable
             manyTasks.AppendLine($"- Feature {i} works correctly with many detailed criteria spanning multiple lines");
             manyTasks.AppendLine();
         }
-        await _tools.PlanTasks("01", manyTasks.ToString(), CancellationToken.None);
+        await _tools.PlanTasks("01", manyTasks.ToString(), cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.TaskNext("01", CancellationToken.None);
+        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -943,7 +943,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Assert - entry should have status:complete, NOT status:pending
         var store = MemoryStoreContext.Current!;
@@ -965,7 +965,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
 
         // Assert - wave, phase keywords still present
         var store = MemoryStoreContext.Current!;
@@ -986,7 +986,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Assert - task:01-execution-log memory must exist
         var store = MemoryStoreContext.Current!;
@@ -1003,8 +1003,8 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act - complete two different tasks
-        await _tools.TaskComplete("task:01-1-01", "Completed first task", CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Completed second task", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Completed first task", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Completed second task", cancellationToken: CancellationToken.None);
 
         // Assert - execution log should have 2 chunks
         var store = MemoryStoreContext.Current!;
@@ -1022,7 +1022,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Fixed the parser bug", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Fixed the parser bug", cancellationToken: CancellationToken.None);
 
         // Assert - reading the log should contain the outcome text
         var store = MemoryStoreContext.Current!;
@@ -1038,7 +1038,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Some outcome", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Some outcome", cancellationToken: CancellationToken.None);
 
         // Assert - log should contain ISO timestamp pattern
         var store = MemoryStoreContext.Current!;
@@ -1055,7 +1055,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        string result = await _tools.TaskComplete("task:99-9-99", "Done", CancellationToken.None);
+        string result = await _tools.TaskComplete("task:99-9-99", "Done", cancellationToken: CancellationToken.None);
 
         // Assert - should return error for unknown task
         result.Should().StartWith("Error:",
@@ -1078,7 +1078,7 @@ public sealed class ProjectLifecycleTests : IDisposable
             Path.GetFileName(storeDir)!);
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
 
         // Assert - no version files should be created
         bool versionsExist = Directory.Exists(versionsDir) &&
@@ -1094,7 +1094,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Assert - project:state should reference the completed task
         var store = MemoryStoreContext.Current!;
@@ -1110,7 +1110,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        string result = await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
+        string result = await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1124,11 +1124,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — full lifecycle with roadmap success criteria + all tasks complete
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Implemented auth", CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Implemented profile", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Implemented auth", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Implemented profile", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — must contain PASS or FAIL structured markers
         result.Should().MatchRegex("(PASS|FAIL):",
@@ -1140,11 +1140,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — roadmap with 2 success criteria
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — both criteria should appear in output
         result.Should().Contain("All tasks complete",
@@ -1154,18 +1154,19 @@ public sealed class ProjectLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanVerify_FailsWhenTasksIncomplete()
+    public async Task PlanVerify_WithoutEvidence_ReturnsChecklist()
     {
         // Arrange — setup tasks but do NOT complete them
         await SetupProjectWithCriteria("01");
-        // No task_complete calls
 
-        // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        // Act — call without evidence to get checklist
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
-        // Assert — must show at least one FAIL
-        result.Should().Contain("FAIL:",
-            "plan_verify should report FAIL when tasks are incomplete");
+        // Assert — returns a verification checklist, not auto-evaluated results
+        result.Should().Contain("Verification Checklist",
+            "plan_verify without evidence should return a checklist");
+        result.Should().Contain("[ ]",
+            "checklist items should be unchecked");
     }
 
     [Fact]
@@ -1173,11 +1174,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — complete both tasks
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done auth", CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done profile", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Done auth", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done profile", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — task completion criterion should PASS
         result.Should().Contain("PASS:",
@@ -1185,35 +1186,38 @@ public sealed class ProjectLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanVerify_IncludesEvidence()
+    public async Task PlanVerify_WithEvidence_RecordsResults()
     {
         // Arrange
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
-        // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        // Act — provide agent-verified evidence
+        string result = await _tools.PlanVerify("01",
+            "PASS: Auth endpoint created — tests pass\nPASS: Profile endpoint created — tests pass",
+            CancellationToken.None);
 
-        // Assert — must contain evidence strings
+        // Assert — must contain evidence strings from the agent
         result.Should().Contain("Evidence:",
-            "plan_verify must include Evidence: strings for each criterion");
+            "plan_verify with evidence must include Evidence: strings for each criterion");
+        result.Should().Contain("ALL_PASS");
     }
 
     [Fact]
     public async Task PlanVerify_ScopesToTargetPhase()
     {
         // Arrange — roadmap with criteria for phase 01 AND phase 02
-        await _tools.ProjectInit("Goals: test", CancellationToken.None);
-        await _tools.PlanRequirements("- SCOPE-01: phase one req\n- SCOPE-02: phase two req", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- SCOPE-01: phase one req\n- SCOPE-02: phase two req", cancellationToken: CancellationToken.None);
         string roadmapWithTwoPhases =
             "### Phase 1\nSCOPE-01\n\n**Success Criteria** (what must be TRUE):\n- Criterion for phase one only\n\n" +
             "### Phase 2\nSCOPE-02\n\n**Success Criteria** (what must be TRUE):\n- Criterion for phase two only";
-        await _tools.PlanRoadmap(roadmapWithTwoPhases, CancellationToken.None);
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanRoadmap(roadmapWithTwoPhases, cancellationToken: CancellationToken.None);
+        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Act — verify only phase 01
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — phase 02 criterion must NOT appear
         result.Should().Contain("phase one only",
@@ -1226,10 +1230,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanVerify_FailsWithoutRoadmap()
     {
         // Arrange — only init, no roadmap
-        await _tools.ProjectInit("Goals: test", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",
@@ -1241,11 +1245,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1260,7 +1264,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         // No task_complete calls — testing pre-execution quality check (PLAN-03)
 
         // Act
-        string result = await _tools.PlanVerify("01", CancellationToken.None);
+        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — should return pass/fail (with failures for incomplete tasks), not an error
         result.Should().MatchRegex("(PASS|FAIL):",
@@ -1279,7 +1283,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         string failedCriteria = "All tasks must be complete";
 
         // Act
-        await _tools.PlanGaps("01", failedCriteria, CancellationToken.None);
+        await _tools.PlanGaps("01", failedCriteria, cancellationToken: CancellationToken.None);
 
         // Assert — gap task memory must exist in index
         var store = MemoryStoreContext.Current!;
@@ -1296,7 +1300,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -1316,7 +1320,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -1335,7 +1339,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -1354,7 +1358,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert — project:state should indicate phase was re-opened
         var store = MemoryStoreContext.Current!;
@@ -1371,7 +1375,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         string threeCriteria = "Criterion one\nCriterion two\nCriterion three";
 
         // Act
-        await _tools.PlanGaps("01", threeCriteria, CancellationToken.None);
+        await _tools.PlanGaps("01", threeCriteria, cancellationToken: CancellationToken.None);
 
         // Assert — three gap tasks: gap-01, gap-02, gap-03
         var store = MemoryStoreContext.Current!;
@@ -1390,7 +1394,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         string criterion = "Tasks must produce verified output artifacts";
 
         // Act
-        await _tools.PlanGaps("01", criterion, CancellationToken.None);
+        await _tools.PlanGaps("01", criterion, cancellationToken: CancellationToken.None);
 
         // Assert — gap task content contains criterion text
         var store = MemoryStoreContext.Current!;
@@ -1406,7 +1410,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         // No setup at all
 
         // Act
-        string result = await _tools.PlanGaps("01", "Some criterion", CancellationToken.None);
+        string result = await _tools.PlanGaps("01", "Some criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",
@@ -1420,7 +1424,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        string result = await _tools.PlanGaps("01", "Failed criterion", CancellationToken.None);
+        string result = await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1436,7 +1440,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", CancellationToken.None);
+        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", cancellationToken: CancellationToken.None);
 
         // Assert — learn:execution-outcomes must exist in index
         var store = MemoryStoreContext.Current!;
@@ -1453,7 +1457,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed quickly", "Build was slow", "Use incremental builds", CancellationToken.None);
+        await _tools.PlanRetrospective("01", "Tests passed quickly", "Build was slow", "Use incremental builds", cancellationToken: CancellationToken.None);
 
         // Assert — content must contain all required section headers
         var store = MemoryStoreContext.Current!;
@@ -1471,7 +1475,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", CancellationToken.None);
+        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", cancellationToken: CancellationToken.None);
 
         // Assert — index entry Keywords must contain "provenance:agent"
         var store = MemoryStoreContext.Current!;
@@ -1489,8 +1493,8 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act — two calls for different phases
-        await _tools.PlanRetrospective("01", "Worked well", "Minor issues", "Lessons from 01", CancellationToken.None);
-        await _tools.PlanRetrospective("02", "Worked well", "Some failures", "Lessons from 02", CancellationToken.None);
+        await _tools.PlanRetrospective("01", "Worked well", "Minor issues", "Lessons from 01", cancellationToken: CancellationToken.None);
+        await _tools.PlanRetrospective("02", "Worked well", "Some failures", "Lessons from 02", cancellationToken: CancellationToken.None);
 
         // Assert — artifact must have 2 chunks (append, not overwrite)
         var store = MemoryStoreContext.Current!;
@@ -1508,7 +1512,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Assert — content must reference phase ID
         var store = MemoryStoreContext.Current!;
@@ -1524,7 +1528,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Assert — content must contain ISO 8601 date pattern YYYY-MM-DD
         var store = MemoryStoreContext.Current!;
@@ -1540,7 +1544,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        string result = await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+        string result = await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1552,7 +1556,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange
         await SetupProjectAndRoadmap();
-        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", CancellationToken.None);
+        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Act — search via standard search with no excludeTopics
         var store = MemoryStoreContext.Current!;
@@ -1572,56 +1576,56 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanProfile_StoresUserProfile()
     {
         // Act — no project_init required; user preferences are project-independent
-        await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", cancellationToken: CancellationToken.None);
 
-        // Assert — user:profile must exist in index
+        // Assert — agent:profile must exist in index
         var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var (scope, subject) = store.ParseQualifiedName("agent:profile");
         var entries = store.LoadIndex(scope);
         entries.Should().Contain(e => e.Name == subject,
-            "plan_profile should store a user:profile memory");
+            "plan_profile should store a agent:profile memory");
     }
 
     [Fact]
     public async Task PlanProfile_ContentContainsPreferences()
     {
         // Act
-        await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", cancellationToken: CancellationToken.None);
 
         // Assert — content must contain the preference text
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "user:profile");
+        string content = await ReadMemoryText(store, "agent:profile");
         content.Should().Contain("autonomy_level: high",
-            "user:profile content must contain 'autonomy_level: high'");
+            "agent:profile content must contain 'autonomy_level: high'");
         content.Should().Contain("review_depth: detailed",
-            "user:profile content must contain 'review_depth: detailed'");
+            "agent:profile content must contain 'review_depth: detailed'");
     }
 
     [Fact]
     public async Task PlanProfile_HasProvenanceKeyword()
     {
         // Act
-        await _tools.PlanProfile("autonomy_level: high", CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: high", cancellationToken: CancellationToken.None);
 
         // Assert — index entry Keywords must contain "provenance:agent"
         var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var (scope, subject) = store.ParseQualifiedName("agent:profile");
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e => e.Name == subject);
         entry.Keywords.Should().Contain("provenance:agent",
-            "user:profile index entry must have provenance:agent keyword");
+            "agent:profile index entry must have provenance:agent keyword");
     }
 
     [Fact]
     public async Task PlanProfile_OverwritesOnSecondCall()
     {
         // Act — two calls with different content
-        await _tools.PlanProfile("autonomy_level: high", CancellationToken.None);
-        await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: high", cancellationToken: CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", cancellationToken: CancellationToken.None);
 
         // Assert — artifact must have ChunkCount == 1 (overwrite, not append)
         var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var (scope, subject) = store.ParseQualifiedName("agent:profile");
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e => e.Name == subject);
         entry.ChunkCount.Should().Be(1,
@@ -1632,29 +1636,29 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanProfile_DoesNotArchive()
     {
         // Act — two calls with different content
-        await _tools.PlanProfile("autonomy_level: high", CancellationToken.None);
-        await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: high", cancellationToken: CancellationToken.None);
+        await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", cancellationToken: CancellationToken.None);
 
         // Assert — only one entry in index, content from second call
         var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("user:profile");
+        var (scope, subject) = store.ParseQualifiedName("agent:profile");
         var entries = store.LoadIndex(scope);
         entries.Where(e => e.Name == subject).Should().HaveCount(1,
             "plan_profile must use overwrite (not append) — only 1 index entry expected");
 
         // Content should be from the second call
-        string content = await ReadMemoryText(store, "user:profile");
+        string content = await ReadMemoryText(store, "agent:profile");
         content.Should().Contain("autonomy_level: low",
-            "user:profile should contain content from the second call (overwrite semantics)");
+            "agent:profile should contain content from the second call (overwrite semantics)");
         content.Should().NotContain("autonomy_level: high",
-            "user:profile must not contain content from first call (archiveExisting: false means no version created AND content is replaced)");
+            "agent:profile must not contain content from first call (archiveExisting: false means no version created AND content is replaced)");
     }
 
     [Fact]
     public async Task PlanProfile_RespectsResponseCap()
     {
         // Act
-        string result = await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", CancellationToken.None);
+        string result = await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1673,8 +1677,8 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Assert — must mention learning memory topics and provenance keyword
         result.Should().Contain("learn:execution-outcomes",
             "guide() must mention learn:execution-outcomes learning memory topic");
-        result.Should().Contain("user:profile",
-            "guide() must mention user:profile learning memory topic");
+        result.Should().Contain("agent:profile",
+            "guide() must mention agent:profile learning memory topic");
         result.Should().Contain("provenance:agent",
             "guide() must mention provenance:agent keyword");
     }
@@ -1687,16 +1691,16 @@ public sealed class ProjectLifecycleTests : IDisposable
     /// </summary>
     private async Task SetupProjectWithCriteria(string phaseId)
     {
-        await _tools.ProjectInit("Goals: build a test project", CancellationToken.None);
-        await _tools.PlanRequirements("- CRIT-01: task storage\n- CRIT-02: verification support", CancellationToken.None);
+        await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- CRIT-01: task storage\n- CRIT-02: verification support", cancellationToken: CancellationToken.None);
         string roadmap =
             $"### Phase {int.Parse(phaseId)}: Foundation\n" +
             $"CRIT-01, CRIT-02\n\n" +
             $"**Success Criteria** (what must be TRUE):\n" +
             $"  1. All tasks complete in phase {phaseId}\n" +
             $"  2. Execution log exists and contains completion entries\n";
-        await _tools.PlanRoadmap(roadmap, CancellationToken.None);
-        await _tools.PlanTasks(phaseId, MakeTwoTaskInput(), CancellationToken.None);
+        await _tools.PlanRoadmap(roadmap, cancellationToken: CancellationToken.None);
+        await _tools.PlanTasks(phaseId, MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
     }
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)

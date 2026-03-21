@@ -26,10 +26,10 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchStart_StoresResearchMemory()
     {
         // Arrange — project:context must exist (prerequisite)
-        await _tools.ProjectInit("Goals: test research", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test research", cancellationToken: CancellationToken.None);
 
         // Act
-        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", CancellationToken.None);
+        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", cancellationToken: CancellationToken.None);
 
         // Assert — research:06-auth must exist in index
         var store = MemoryStoreContext.Current!;
@@ -43,10 +43,10 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchStart_HasStatusActiveKeyword()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: test research", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test research", cancellationToken: CancellationToken.None);
 
         // Act
-        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", CancellationToken.None);
+        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", cancellationToken: CancellationToken.None);
 
         // Assert — index entry must have status:active keyword
         var store = MemoryStoreContext.Current!;
@@ -62,10 +62,10 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchStart_HasPhaseKeyword()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: test research", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test research", cancellationToken: CancellationToken.None);
 
         // Act
-        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", CancellationToken.None);
+        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", cancellationToken: CancellationToken.None);
 
         // Assert — index entry must have phase:06 keyword
         var store = MemoryStoreContext.Current!;
@@ -80,10 +80,10 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchStart_ResponseContainsMemoryName()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: test research", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test research", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ResearchStart("06", "auth", "What auth patterns are used?", CancellationToken.None);
+        string result = await _tools.ResearchStart("06", "auth", "What auth patterns are used?", cancellationToken: CancellationToken.None);
 
         // Assert — response must contain the stored memory name
         result.Should().Contain("research:06-auth",
@@ -94,7 +94,7 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchStart_FailsWithoutProject()
     {
         // Act — no project_init called
-        string result = await _tools.ResearchStart("06", "auth", "Some questions", CancellationToken.None);
+        string result = await _tools.ResearchStart("06", "auth", "Some questions", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",
@@ -107,11 +107,11 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchComplete_OverwritesWithStatusComplete()
     {
         // Arrange — start research first
-        await _tools.ProjectInit("Goals: test research", CancellationToken.None);
-        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test research", cancellationToken: CancellationToken.None);
+        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", cancellationToken: CancellationToken.None);
 
         // Act
-        await _tools.ResearchComplete("06", "auth", "Findings: JWT is used everywhere.", CancellationToken.None);
+        await _tools.ResearchComplete("06", "auth", "Findings: JWT is used everywhere.", cancellationToken: CancellationToken.None);
 
         // Assert — keyword must be status:complete, not status:active
         var store = MemoryStoreContext.Current!;
@@ -129,12 +129,12 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchComplete_StoresFindings()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: test research", CancellationToken.None);
-        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test research", cancellationToken: CancellationToken.None);
+        await _tools.ResearchStart("06", "auth", "What auth patterns are used?", cancellationToken: CancellationToken.None);
 
         // Act
         string findings = "JWT is widely used. OAuth2 is the external auth pattern.";
-        await _tools.ResearchComplete("06", "auth", findings, CancellationToken.None);
+        await _tools.ResearchComplete("06", "auth", findings, cancellationToken: CancellationToken.None);
 
         // Assert — artifact content must contain findings
         var store = MemoryStoreContext.Current!;
@@ -147,10 +147,10 @@ public sealed class ResearchToolTests : IDisposable
     public async Task ResearchComplete_FailsWhenNoActiveResearch()
     {
         // Arrange — no research_start called
-        await _tools.ProjectInit("Goals: test research", CancellationToken.None);
+        await _tools.ProjectInit("Goals: test research", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ResearchComplete("06", "auth", "Some findings", CancellationToken.None);
+        string result = await _tools.ResearchComplete("06", "auth", "Some findings", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",

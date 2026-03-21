@@ -9,12 +9,18 @@ namespace Scrinia.Core.Embeddings;
 /// </summary>
 internal static class SafeTensorsReader
 {
+    private const long MaxHeaderBytes = 100_000_000; // 100 MB
+    private const long MaxTensorBytes = 1_000_000_000; // 1 GB
+
     /// <summary>Reads the JSON header and returns tensor metadata keyed by name.</summary>
     public static Dictionary<string, TensorMeta> ReadHeader(Stream stream)
     {
         Span<byte> lenBuf = stackalloc byte[8];
         stream.ReadExactly(lenBuf);
         long headerLen = BitConverter.ToInt64(lenBuf);
+
+        if (headerLen < 0 || headerLen > MaxHeaderBytes)
+            throw new FormatException($"SafeTensors header length out of bounds: {headerLen}");
 
         byte[] headerBytes = new byte[headerLen];
         stream.ReadExactly(headerBytes);
@@ -52,7 +58,9 @@ internal static class SafeTensorsReader
             throw new NotSupportedException($"Only F32 and F16 tensors are supported, got {meta.Dtype}.");
 
         long byteLen = meta.DataEnd - meta.DataStart;
-        int floatCount = (int)(byteLen / 4);
+        if (byteLen < 0 || byteLen > MaxTensorBytes)
+            throw new FormatException($"Tensor byte length out of bounds: {byteLen}");
+        int floatCount = checked((int)(byteLen / 4));
         var result = new float[floatCount];
 
         stream.Position = dataStart + meta.DataStart;
@@ -66,7 +74,9 @@ internal static class SafeTensorsReader
     private static float[] ReadF16Tensor(Stream stream, long dataStart, TensorMeta meta)
     {
         long byteLen = meta.DataEnd - meta.DataStart;
-        int halfCount = (int)(byteLen / 2);
+        if (byteLen < 0 || byteLen > MaxTensorBytes)
+            throw new FormatException($"Tensor byte length out of bounds: {byteLen}");
+        int halfCount = checked((int)(byteLen / 2));
         var result = new float[halfCount];
 
         stream.Position = dataStart + meta.DataStart;
@@ -94,6 +104,8 @@ internal static class SafeTensorsReader
         Span<byte> lenBuf = stackalloc byte[8];
         stream.ReadExactly(lenBuf);
         long headerLen = BitConverter.ToInt64(lenBuf);
+        if (headerLen < 0 || headerLen > MaxHeaderBytes)
+            throw new FormatException($"SafeTensors header length out of bounds: {headerLen}");
         return 8 + headerLen;
     }
 

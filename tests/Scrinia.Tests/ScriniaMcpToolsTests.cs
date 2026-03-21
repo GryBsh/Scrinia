@@ -311,35 +311,29 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public async Task Show_FileUri_SingleChunk_ExactOriginal()
     {
+        using var scope = new TestHelpers.StoreScope();
         string original = TestHelpers.Facts.Fact13;
         string artifact = Nmp2ChunkedEncoder.Encode(original);
-        string path = Path.Combine(Path.GetTempPath(), $"scrinia_test_{Guid.NewGuid():N}.nmp2");
+        string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
         await File.WriteAllTextAsync(path, artifact);
 
-        try
-        {
-            string restored = await Tools().Show($"file://{path}");
-            restored.Should().Be(original,
-                because: "Show must read and decode a single-chunk artifact from a file:// URI");
-        }
-        finally { File.Delete(path); }
+        string restored = await Tools().Show($"file://{path}");
+        restored.Should().Be(original,
+            because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
     }
 
     [Fact]
     public async Task Show_FileUri_MultiChunk_ExactOriginal()
     {
+        using var scope = new TestHelpers.StoreScope();
         string[] parts = ["Part A: alpha.", "Part B: bravo."];
         string artifact = Nmp2ChunkedEncoder.EncodeChunks(parts);
-        string path = Path.Combine(Path.GetTempPath(), $"scrinia_test_{Guid.NewGuid():N}.nmp2");
+        string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
         await File.WriteAllTextAsync(path, artifact);
 
-        try
-        {
-            string restored = await Tools().Show($"file://{path}");
-            restored.Should().Be(string.Concat(parts),
-                because: "Show must read and decode a multi-chunk artifact from a file:// URI");
-        }
-        finally { File.Delete(path); }
+        string restored = await Tools().Show($"file://{path}");
+        restored.Should().Be(string.Concat(parts),
+            because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
     }
 
     [Fact]
@@ -391,15 +385,22 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Show_NonExistentFileUri_ThrowsOrErrors()
+    public async Task Show_NonExistentFileUri_ReturnsError()
     {
+        using var scope = new TestHelpers.StoreScope();
         string badUri = $"file://{Path.GetTempPath()}scrinia_nonexistent_{Guid.NewGuid():N}.nmp2";
 
-        Func<Task<string>> act = () => Tools().Show(badUri);
-
-        // Should throw (FileNotFoundException) rather than silently returning empty
-        await act.Should().ThrowAsync<Exception>(
-            because: "a non-existent file:// URI must not silently return empty — it must throw");
+        // file:// URI outside workspace is blocked by sandbox — returns error or throws
+        try
+        {
+            string result = await Tools().Show(badUri);
+            result.Should().Contain("Error",
+                because: "file:// URI outside workspace must return an error");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Also acceptable — sandbox threw before Show could catch
+        }
     }
 
     // ── Show via memory name (2 tests) ─────────────────────────────────────
@@ -694,20 +695,22 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Forget_ByUri_RemovesFile()
+    public async Task Forget_ByUri_RemovesIndexedMemory()
     {
         using var scope = new TestHelpers.StoreScope();
-        // Write a temp artifact that is NOT registered in the index (simulates legacy file)
-        string tempPath = Path.Combine(scope.TempDir, "ephemeral.nmp2");
-        File.WriteAllText(tempPath, Nmp2ChunkedEncoder.Encode("hello"));
-        string uri = $"file://{tempPath}";
+        // Store a memory, then forget it by its file:// URI
+        string storeResult = await Tools().Store(["hello world"], "uri-test",
+            description: "test", tags: null, keywords: null);
+        storeResult.Should().Contain("uri-test");
+
+        // Build the file:// URI for the stored artifact
+        string artifactPath = Path.Combine(scope.TempDir, "uri-test.nmp2");
+        string uri = $"file://{artifactPath}";
 
         string result = await Tools().Forget(uri);
 
         result.Should().Contain("Forgot",
-            because: "Forget by URI must succeed for unregistered files too");
-        File.Exists(tempPath).Should().BeFalse(
-            because: "the file must be deleted even when not in the index");
+            because: "Forget by URI must succeed for indexed memories");
     }
 
     [Fact]
@@ -1757,57 +1760,6 @@ public sealed class ScriniaMcpToolsTests
         (c1 + c2 + c3).Should().Be(full);
     }
 
-    // ── Reflect tool (1 test) ────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Reflect_ReturnsChecklist()
-    {
-        var result = await Tools().Reflect();
-
-        result.Should().Contain("Session Reflection");
-        result.Should().Contain("Decisions Made");
-        result.Should().Contain("Patterns Discovered");
-        result.Should().Contain("Problems Solved");
-        result.Should().Contain("store()");
-    }
-
-    // ── Budget tool (3 tests) ────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Budget_NoAccess_ReturnsEmpty()
-    {
-        using var scope = new TestHelpers.StoreScope();
-
-        string result = await Tools().Budget();
-
-        result.Should().Contain("No memories loaded");
-    }
-
-    [Fact]
-    public async Task Budget_AfterShow_TracksAccess()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["some test content for budget tracking"], "budget-test");
-
-        await Tools().Show("budget-test");
-        string result = await Tools().Budget();
-
-        result.Should().Contain("budget-test");
-        result.Should().Contain("TOTAL");
-    }
-
-    [Fact]
-    public async Task Budget_AfterGetChunk_TracksAccess()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["chunk budget test content"], "chunk-budget");
-
-        await Tools().GetChunk("chunk-budget", 1);
-        string result = await Tools().Budget();
-
-        result.Should().Contain("chunk-budget");
-    }
-
     // ── Show budget recording (1 test) ───────────────────────────────────────
 
     [Fact]
@@ -1854,7 +1806,7 @@ public sealed class ScriniaMcpToolsTests
     // ── Guide update (1 test) ────────────────────────────────────────────────
 
     [Fact]
-    public async Task Guide_ContainsNewSections()
+    public async Task Guide_ContainsCoreSections()
     {
         string guide = await Tools().Guide();
 
@@ -1862,27 +1814,8 @@ public sealed class ScriniaMcpToolsTests
         guide.Should().Contain("append");
         guide.Should().Contain("Version history");
         guide.Should().Contain("Review conditions");
-        guide.Should().Contain("Budget tracking");
-        guide.Should().Contain("reflect()");
         guide.Should().Contain("checkpoint");
-        guide.Should().Contain("compaction");
-    }
-
-    // ── Ingest tool (1 test) ─────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Ingest_ReturnsDetailedInstructions()
-    {
-        string result = await Tools().Ingest();
-
-        result.Should().Contain("Phase 1");
-        result.Should().Contain("Phase 2");
-        result.Should().Contain("Phase 3");
-        result.Should().Contain("Phase 4");
-        result.Should().Contain("Phase 5");
-        result.Should().Contain("list()");
-        result.Should().Contain("show(");
-        result.Should().Contain("store(");
-        result.Should().Contain("forget(");
+        guide.Should().Contain("goal-driven");
+        guide.Should().Contain("project_init");
     }
 }

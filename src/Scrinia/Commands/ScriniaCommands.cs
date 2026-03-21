@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
@@ -678,7 +679,7 @@ public class ScriniaCommands
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
         {
             // Write topic index
-            string indexJson = JsonSerializer.Serialize(new BundleIndex(entries), ScriniaMcpTools.BundleJsonOptions);
+            string indexJson = JsonSerializer.Serialize(new Scrinia.Core.Bundles.BundleIndex(entries), Scrinia.Core.Bundles.BundleFormatService.DefaultJsonOptions);
             var indexEntry = zip.CreateEntry($"topics/{sanitizedTopic}/index.json");
             using (var writer = new StreamWriter(indexEntry.Open()))
                 writer.Write(indexJson);
@@ -693,8 +694,8 @@ public class ScriniaCommands
             }
 
             // Write manifest
-            var manifest = new BundleManifest(1, DateTimeOffset.UtcNow.ToString("o"), [sanitizedTopic], entries.Count);
-            string manifestJson = JsonSerializer.Serialize(manifest, ScriniaMcpTools.BundleJsonOptions);
+            var manifest = new Scrinia.Core.Bundles.BundleManifest(1, DateTimeOffset.UtcNow.ToString("o"), [sanitizedTopic], entries.Count);
+            string manifestJson = JsonSerializer.Serialize(manifest, Scrinia.Core.Bundles.BundleFormatService.DefaultJsonOptions);
             var manifestEntry = zip.CreateEntry("manifest.json");
             using (var writer = new StreamWriter(manifestEntry.Open()))
                 writer.Write(manifestJson);
@@ -734,7 +735,7 @@ public class ScriniaCommands
         Directory.CreateDirectory(modelDir);
 
         string[] files = ["model.safetensors", "vocab.txt"];
-        const string baseUrl = "https://huggingface.co/grybsh/m2v-MiniLM-L6-v2/resolve/main";
+        string baseUrl = Model2VecModelManager.ModelBaseUrl;
 
         bool allExist = files.All(f => File.Exists(Path.Combine(modelDir, f)));
         if (allExist)

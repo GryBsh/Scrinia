@@ -92,17 +92,18 @@ public sealed class OrganicAdoptionTests : IDisposable
     [Fact]
     public async Task PlanResume_HintsUnusedKnowledge()
     {
-        // Arrange — project init but no knowledge_add called
+        // Arrange — project init but no store of domain knowledge
         await InitProject();
 
         // Act
         string response = await _tools.PlanResume(CancellationToken.None);
 
-        // Assert — hint about unused knowledge/bok must appear
+        // Assert — hint about persisting knowledge must appear
         (response.Contains("knowledge", StringComparison.OrdinalIgnoreCase) ||
-         response.Contains("bok", StringComparison.OrdinalIgnoreCase))
+         response.Contains("store", StringComparison.OrdinalIgnoreCase) ||
+         response.Contains("topic", StringComparison.OrdinalIgnoreCase))
             .Should().BeTrue(
-                "plan_resume should surface a hint about unused knowledge tracking when knowledge_add has never been called");
+                "plan_resume should surface a hint about persisting domain knowledge");
     }
 
     [Fact]
@@ -222,10 +223,10 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("knowledge_add",
-            "guide() should mention the knowledge_add tool");
-        (guide.Contains("bok:*") || guide.Contains("bok"))
-            .Should().BeTrue("guide() should mention the bok: topic namespace");
+        guide.Should().Contain("store",
+            "guide() should mention store() for persisting knowledge");
+        guide.Should().Contain("skill_create",
+            "guide() should mention skill_create for reusable prompts");
     }
 
     [Fact]
@@ -233,8 +234,8 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("spawn_agent",
-            "guide() should mention the spawn_agent tool");
+        guide.Should().Contain("skill_create",
+            "guide() should mention the skill_create tool");
         guide.Should().Contain("skill_load",
             "guide() should mention the skill_load tool");
     }
@@ -257,8 +258,6 @@ public sealed class OrganicAdoptionTests : IDisposable
             "guide() should mention the research:* topic namespace");
         guide.Should().Contain("concern:*",
             "guide() should mention the concern:* topic namespace");
-        guide.Should().Contain("bok:*",
-            "guide() should mention the bok:* topic namespace");
         guide.Should().Contain("skill:*",
             "guide() should mention the skill:* topic namespace");
     }

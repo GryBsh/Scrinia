@@ -44,6 +44,8 @@ internal static partial class ScriniaArtifactStore
                 ? Directory.GetCurrentDirectory()
                 : Path.GetFullPath(workspaceRoot);
         }
+
+        FileMemoryStore.EnsureGitIgnore(WorkspaceRoot);
     }
 
     internal static void OverrideStoreDir(string? path) => _storeDirOverride.Value = path;

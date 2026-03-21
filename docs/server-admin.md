@@ -109,6 +109,8 @@ Each API key carries a set of granular permissions:
 | `import` | Import memories from bundles |
 | `manage_keys` | Create, list, and revoke API keys |
 | `manage_roles` | Manage roles (integration point for auth plugins) |
+| `health` | Access `/health/details` endpoint for detailed diagnostics |
+| `chat` | Use the agent chat endpoint to query store memories via LLM |
 
 ### Privilege Escalation Prevention
 
@@ -403,17 +405,57 @@ Soft-deletes the key (sets `revoked = true`). Revoked keys immediately stop auth
 
 The server exposes MCP Streamable HTTP at `/mcp`. This allows MCP clients that support HTTP transport to connect directly to the server without the CLI.
 
-All 30 MCP tools (18 memory + 12 planning) are available through this endpoint, authenticated with the same API key scheme.
+All 33 MCP tools (13 memory + 20 planning) are available through this endpoint, authenticated with the same API key scheme.
 
 ## Health Endpoints
 
 | Endpoint | Purpose | Auth Required |
 |----------|---------|---------------|
 | `GET /health/live` | Liveness probe (always 200) | No |
-| `GET /health/ready` | Readiness probe (503 if degraded) | No |
+| `GET /health/ready` | Readiness probe — status only (503 if degraded) | No |
 | `GET /health` | Backward-compatible alias for ready | No |
+| `GET /health/details` | Detailed diagnostics (store names, plugins, backend) | Yes |
 
-Readiness checks: SQLite connectivity, storage backend availability, per-store health, loaded plugins.
+Unauthenticated health endpoints return status only (`ok` or `degraded`). The `/health/details` endpoint requires authentication and returns the full check array including store names, plugin names, and backend info.
+
+### Agent Chat
+
+| Endpoint | Purpose | Auth Required |
+|----------|---------|---------------|
+| `POST /api/v1/stores/{store}/chat` | Stream an agent chat response (SSE) | Yes (`chat` permission) |
+| `GET /api/v1/stores/{store}/chat/providers` | List configured LLM providers | Yes (`chat` permission) |
+
+The chat endpoint runs a server-side agent that can search and recall memories from the selected store. Responses stream as Server-Sent Events (SSE) with event types: `chunk` (text), `tool-start`, `tool-result`, `done`, `error`.
+
+**Request body** (POST):
+```json
+{
+  "messages": [
+    { "role": "user", "content": "What do we know about auth?" }
+  ],
+  "provider": "anthropic"
+}
+```
+
+If `provider` is omitted, the first available provider is used. Returns 503 if no providers are configured.
+
+**Configuration** — add to `Scrinia:Chat` in appsettings.json:
+
+```json
+"Chat": {
+  "Providers": "anthropic,openai,gemini",
+  "AnthropicApiKey": "sk-ant-...",
+  "AnthropicModel": "claude-sonnet-4-20250514",
+  "OpenAiApiKey": "sk-...",
+  "OpenAiModel": "gpt-4o-mini",
+  "GeminiApiKey": "...",
+  "GeminiModel": "gemini-2.0-flash",
+  "MaxTokens": 4096,
+  "Temperature": 0.7
+}
+```
+
+Only providers with API keys configured are available. Set `"Providers": "none"` to disable the feature entirely.
 
 ## Web UI
 
@@ -457,8 +499,14 @@ Configuration via `appsettings.json` or environment variables:
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
 | `Scrinia:DataDir` | `Scrinia__DataDir` | `%LOCALAPPDATA%/scrinium` | Root data directory |
-| `Scrinia:CorsOrigins` | `Scrinia__CorsOrigins` | Allow any | Allowed CORS origins |
+| `Scrinia:CorsOrigins` | `Scrinia__CorsOrigins` | Deny all (empty) | Allowed CORS origins (`["*"]` for allow-all) |
 | `Scrinia:Stores` | (section) | `{"default": ""}` | Named stores with custom paths |
+| `Scrinia:RateLimit:PermitLimit` | `Scrinia__RateLimit__PermitLimit` | `100` | Requests per window per user/IP |
+| `Scrinia:RateLimit:WindowSeconds` | `Scrinia__RateLimit__WindowSeconds` | `60` | Rate limit window in seconds |
+| `Scrinia:Chat:Providers` | `Scrinia__Chat__Providers` | `none` | Comma-separated LLM providers (anthropic,openai,gemini) |
+| `Scrinia:Chat:AnthropicApiKey` | `Scrinia__Chat__AnthropicApiKey` | (none) | Anthropic API key |
+| `Scrinia:Chat:OpenAiApiKey` | `Scrinia__Chat__OpenAiApiKey` | (none) | OpenAI API key |
+| `Scrinia:Chat:GeminiApiKey` | `Scrinia__Chat__GeminiApiKey` | (none) | Google Gemini API key |
 
 ### Multi-Store Configuration
 
@@ -486,6 +534,9 @@ Map store names to filesystem paths. Empty string defaults to `{dataDir}/stores/
 | Rate limit | 100 requests/minute (sliding window) |
 | Memory name max length | 256 characters |
 | Per content element max | 5 MB |
+| Search query max length | 10 KB |
+| Search scopes param max length | 1 KB |
+| Search limit range | 1–1000 (clamped) |
 
 ## Security Hardening
 
@@ -514,6 +565,8 @@ The server includes production-ready security features:
 ```
 
 Each store is a full `.scrinia/` workspace with its own index, artifacts, topics, embeddings, and exports.
+
+**Vector data isolation:** Embedding vectors are stored per-store in `.scrinia/embeddings/` within each store's workspace directory — never shared across stores. The Model2Vec model binary lives at `{exeDir}/models/m2v-MiniLM-L6-v2/` (shared, read-only). Both the built-in Model2Vec and optional Vulkan plugin produce 384-dim vectors in the same MiniLM embedding space, so switching providers does not require reindexing.
 
 ## Server Plugins
 

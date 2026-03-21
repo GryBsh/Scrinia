@@ -8,10 +8,12 @@ namespace Scrinia.Plugin.Embeddings;
 /// </summary>
 public static class VulkanModelManager
 {
-    private const string DefaultModelUrl =
+    /// <summary>HuggingFace URL for the GGUF model file.</summary>
+    public const string DefaultModelUrl =
         "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/main/all-MiniLM-L6-v2-Q8_0.gguf";
 
-    private const string DefaultModelFile = "all-MiniLM-L6-v2-Q8_0.gguf";
+    /// <summary>GGUF model filename.</summary>
+    public const string DefaultModelFile = "all-MiniLM-L6-v2-Q8_0.gguf";
 
     /// <summary>Whether the GGUF model file exists.</summary>
     public static bool IsModelAvailable(string modelDir)

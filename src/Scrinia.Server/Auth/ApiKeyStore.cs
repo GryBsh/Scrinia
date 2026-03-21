@@ -11,6 +11,7 @@ namespace Scrinia.Server.Auth;
 public sealed class ApiKeyStore : IDisposable
 {
     private readonly SqliteConnection _db;
+    private readonly ReaderWriterLockSlim _lock = new();
 
     public ApiKeyStore(string dbPath)
     {
@@ -43,6 +44,21 @@ public sealed class ApiKeyStore : IDisposable
             """;
         cmd.ExecuteNonQuery();
 
+        // Migrate: add salt column for per-key salted hashing
+        using var colCheck = _db.CreateCommand();
+        colCheck.CommandText = "PRAGMA table_info(api_keys);";
+        bool hasSalt = false;
+        using (var reader = colCheck.ExecuteReader())
+            while (reader.Read())
+                if (reader.GetString(1) == "salt") { hasSalt = true; break; }
+
+        if (!hasSalt)
+        {
+            using var alter = _db.CreateCommand();
+            alter.CommandText = "ALTER TABLE api_keys ADD COLUMN salt TEXT;";
+            alter.ExecuteNonQuery();
+        }
+
         // Enable foreign keys
         using var fkCmd = _db.CreateCommand();
         fkCmd.CommandText = "PRAGMA foreign_keys = ON;";
@@ -60,39 +76,47 @@ public sealed class ApiKeyStore : IDisposable
         string rawKey = "scri_" + Convert.ToBase64String(randomBytes)
             .Replace('+', '-').Replace('/', '_').TrimEnd('=');
 
-        string keyHash = HashKey(rawKey);
+        byte[] salt = RandomNumberGenerator.GetBytes(16);
+        string saltHex = Convert.ToHexStringLower(salt);
+        string keyHash = HashKey(rawKey, salt);
         string keyId = Guid.NewGuid().ToString("N")[..16];
         string permissionsJson = JsonSerializer.Serialize(permissions ?? []);
 
-        using var transaction = _db.BeginTransaction();
-
-        using (var cmd = _db.CreateCommand())
+        _lock.EnterWriteLock();
+        try
         {
-            cmd.Transaction = transaction;
-            cmd.CommandText = """
-                INSERT INTO api_keys (id, key_hash, user_id, permissions, label, created_at)
-                VALUES ($id, $hash, $userId, $permissions, $label, $createdAt);
-                """;
-            cmd.Parameters.AddWithValue("$id", keyId);
-            cmd.Parameters.AddWithValue("$hash", keyHash);
-            cmd.Parameters.AddWithValue("$userId", userId);
-            cmd.Parameters.AddWithValue("$permissions", permissionsJson);
-            cmd.Parameters.AddWithValue("$label", (object?)label ?? DBNull.Value);
-            cmd.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("o"));
-            cmd.ExecuteNonQuery();
-        }
+            using var transaction = _db.BeginTransaction();
 
-        foreach (string store in stores)
-        {
-            using var storeCmd = _db.CreateCommand();
-            storeCmd.Transaction = transaction;
-            storeCmd.CommandText = "INSERT INTO key_stores (key_id, store_name) VALUES ($keyId, $store);";
-            storeCmd.Parameters.AddWithValue("$keyId", keyId);
-            storeCmd.Parameters.AddWithValue("$store", store);
-            storeCmd.ExecuteNonQuery();
-        }
+            using (var cmd = _db.CreateCommand())
+            {
+                cmd.Transaction = transaction;
+                cmd.CommandText = """
+                    INSERT INTO api_keys (id, key_hash, user_id, permissions, label, created_at, salt)
+                    VALUES ($id, $hash, $userId, $permissions, $label, $createdAt, $salt);
+                    """;
+                cmd.Parameters.AddWithValue("$id", keyId);
+                cmd.Parameters.AddWithValue("$hash", keyHash);
+                cmd.Parameters.AddWithValue("$userId", userId);
+                cmd.Parameters.AddWithValue("$permissions", permissionsJson);
+                cmd.Parameters.AddWithValue("$label", (object?)label ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("o"));
+                cmd.Parameters.AddWithValue("$salt", saltHex);
+                cmd.ExecuteNonQuery();
+            }
 
-        transaction.Commit();
+            foreach (string store in stores)
+            {
+                using var storeCmd = _db.CreateCommand();
+                storeCmd.Transaction = transaction;
+                storeCmd.CommandText = "INSERT INTO key_stores (key_id, store_name) VALUES ($keyId, $store);";
+                storeCmd.Parameters.AddWithValue("$keyId", keyId);
+                storeCmd.Parameters.AddWithValue("$store", store);
+                storeCmd.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+        finally { _lock.ExitWriteLock(); }
 
         return (rawKey, keyId, userId);
     }
@@ -105,54 +129,90 @@ public sealed class ApiKeyStore : IDisposable
     /// </summary>
     public KeyInfo? ValidateKey(string rawKey)
     {
-        string keyHash = HashKey(rawKey);
-
-        using var cmd = _db.CreateCommand();
+        _lock.EnterReadLock();
+        string? matchedKeyId = null;
+        string? matchedUserId = null;
+        string? matchedPermissionsJson = null;
+        try
+        {
+            using var cmd = _db.CreateCommand();
         cmd.CommandText = """
-            SELECT id, user_id, permissions, revoked
+            SELECT id, user_id, permissions, revoked, salt, key_hash
             FROM api_keys
-            WHERE key_hash = $hash;
+            WHERE revoked = 0;
             """;
-        cmd.Parameters.AddWithValue("$hash", keyHash);
 
         using var reader = cmd.ExecuteReader();
-        if (!reader.Read()) return null;
+        while (reader.Read())
+        {
+            string storedHash = reader.GetString(5);
+            string? saltHex = reader.IsDBNull(4) ? null : reader.GetString(4);
 
-        bool revoked = reader.GetInt64(3) != 0;
-        if (revoked) return null;
+            byte[]? salt = saltHex is not null ? Convert.FromHexString(saltHex) : null;
+            byte[] candidateHash = HashKeyBytes(rawKey, salt);
+            byte[] storedHashBytes = Convert.FromHexString(storedHash);
 
-        string keyId = reader.GetString(0);
-        string userId = reader.GetString(1);
-        string permissionsJson = reader.GetString(2);
+            if (!CryptographicOperations.FixedTimeEquals(candidateHash, storedHashBytes))
+                continue;
 
-        string[] permissions = JsonSerializer.Deserialize<string[]>(permissionsJson) ?? [];
-        string[] stores = GetStoresForKey(keyId);
+            matchedKeyId = reader.GetString(0);
+            matchedUserId = reader.GetString(1);
+            matchedPermissionsJson = reader.GetString(2);
+            break;
+        }
+        }
+        finally { _lock.ExitReadLock(); }
 
-        // Update last_used_at
-        using var updateCmd = _db.CreateCommand();
-        updateCmd.CommandText = "UPDATE api_keys SET last_used_at = $now WHERE id = $id;";
-        updateCmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
-        updateCmd.Parameters.AddWithValue("$id", keyId);
-        updateCmd.ExecuteNonQuery();
+        if (matchedKeyId is null) return null;
 
-        return new KeyInfo(keyId, userId, stores, permissions);
+        string[] permissions = JsonSerializer.Deserialize<string[]>(matchedPermissionsJson!) ?? [];
+
+        // GetStoresForKey under read lock to prevent race with concurrent key deletion
+        _lock.EnterReadLock();
+        string[] stores;
+        try { stores = GetStoresForKey(matchedKeyId); }
+        finally { _lock.ExitReadLock(); }
+
+        // Update last_used_at (write operation — needs write lock)
+        _lock.EnterWriteLock();
+        try
+        {
+            using var updateCmd = _db.CreateCommand();
+            updateCmd.CommandText = "UPDATE api_keys SET last_used_at = $now WHERE id = $id;";
+            updateCmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
+            updateCmd.Parameters.AddWithValue("$id", matchedKeyId);
+            updateCmd.ExecuteNonQuery();
+        }
+        finally { _lock.ExitWriteLock(); }
+
+        return new KeyInfo(matchedKeyId, matchedUserId!, stores, permissions);
     }
 
     /// <summary>Revokes a key by its ID.</summary>
     public bool RevokeKey(string keyId)
     {
-        using var cmd = _db.CreateCommand();
-        cmd.CommandText = "UPDATE api_keys SET revoked = 1 WHERE id = $id AND revoked = 0;";
-        cmd.Parameters.AddWithValue("$id", keyId);
-        return cmd.ExecuteNonQuery() > 0;
+        _lock.EnterWriteLock();
+        try
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE api_keys SET revoked = 1 WHERE id = $id AND revoked = 0;";
+            cmd.Parameters.AddWithValue("$id", keyId);
+            return cmd.ExecuteNonQuery() > 0;
+        }
+        finally { _lock.ExitWriteLock(); }
     }
 
     /// <summary>Returns true if any API keys exist (for bootstrap detection).</summary>
     public bool HasAnyKeys()
     {
-        using var cmd = _db.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM api_keys;";
-        return (long)cmd.ExecuteScalar()! > 0;
+        _lock.EnterReadLock();
+        try
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT COUNT(*) FROM api_keys;";
+            return (long)cmd.ExecuteScalar()! > 0;
+        }
+        finally { _lock.ExitReadLock(); }
     }
 
     public sealed record KeySummary(
@@ -162,47 +222,59 @@ public sealed class ApiKeyStore : IDisposable
     /// <summary>Lists all API keys (for management endpoints).</summary>
     public List<KeySummary> ListKeys()
     {
-        var result = new List<KeySummary>();
-        using var cmd = _db.CreateCommand();
-        cmd.CommandText = "SELECT id, user_id, permissions, label, created_at, last_used_at, revoked FROM api_keys ORDER BY created_at;";
-
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        _lock.EnterReadLock();
+        try
         {
-            string keyId = reader.GetString(0);
-            string userId = reader.GetString(1);
-            string[] permissions = JsonSerializer.Deserialize<string[]>(reader.GetString(2)) ?? [];
-            string? label = reader.IsDBNull(3) ? null : reader.GetString(3);
-            var createdAt = DateTimeOffset.Parse(reader.GetString(4));
-            DateTimeOffset? lastUsedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5));
-            bool revoked = reader.GetInt64(6) != 0;
-            string[] stores = GetStoresForKey(keyId);
+            var result = new List<KeySummary>();
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT id, user_id, permissions, label, created_at, last_used_at, revoked FROM api_keys ORDER BY created_at;";
 
-            result.Add(new KeySummary(keyId, userId, stores, permissions, label, createdAt, lastUsedAt, revoked));
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                string keyId = reader.GetString(0);
+                string userId = reader.GetString(1);
+                string[] permissions = JsonSerializer.Deserialize<string[]>(reader.GetString(2)) ?? [];
+                string? label = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var createdAt = DateTimeOffset.TryParse(reader.GetString(4), out var ca) ? ca : DateTimeOffset.UtcNow;
+                DateTimeOffset? lastUsedAt = reader.IsDBNull(5) ? null
+                    : DateTimeOffset.TryParse(reader.GetString(5), out var lu) ? lu : DateTimeOffset.UtcNow;
+                bool revoked = reader.GetInt64(6) != 0;
+                string[] stores = GetStoresForKey(keyId);
+
+                result.Add(new KeySummary(keyId, userId, stores, permissions, label, createdAt, lastUsedAt, revoked));
+            }
+
+            return result;
         }
-
-        return result;
+        finally { _lock.ExitReadLock(); }
     }
 
     /// <summary>Gets a single key's details by ID.</summary>
     public KeySummary? GetKey(string keyId)
     {
-        using var cmd = _db.CreateCommand();
-        cmd.CommandText = "SELECT id, user_id, permissions, label, created_at, last_used_at, revoked FROM api_keys WHERE id = $id;";
-        cmd.Parameters.AddWithValue("$id", keyId);
+        _lock.EnterReadLock();
+        try
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "SELECT id, user_id, permissions, label, created_at, last_used_at, revoked FROM api_keys WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", keyId);
 
-        using var reader = cmd.ExecuteReader();
-        if (!reader.Read()) return null;
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read()) return null;
 
-        string userId = reader.GetString(1);
-        string[] permissions = JsonSerializer.Deserialize<string[]>(reader.GetString(2)) ?? [];
-        string? label = reader.IsDBNull(3) ? null : reader.GetString(3);
-        var createdAt = DateTimeOffset.Parse(reader.GetString(4));
-        DateTimeOffset? lastUsedAt = reader.IsDBNull(5) ? null : DateTimeOffset.Parse(reader.GetString(5));
-        bool revoked = reader.GetInt64(6) != 0;
-        string[] stores = GetStoresForKey(keyId);
+            string userId = reader.GetString(1);
+            string[] permissions = JsonSerializer.Deserialize<string[]>(reader.GetString(2)) ?? [];
+            string? label = reader.IsDBNull(3) ? null : reader.GetString(3);
+            var createdAt = DateTimeOffset.TryParse(reader.GetString(4), out var ca2) ? ca2 : DateTimeOffset.UtcNow;
+            DateTimeOffset? lastUsedAt = reader.IsDBNull(5) ? null
+                : DateTimeOffset.TryParse(reader.GetString(5), out var lu2) ? lu2 : DateTimeOffset.UtcNow;
+            bool revoked = reader.GetInt64(6) != 0;
+            string[] stores = GetStoresForKey(keyId);
 
-        return new KeySummary(keyId, userId, stores, permissions, label, createdAt, lastUsedAt, revoked);
+            return new KeySummary(keyId, userId, stores, permissions, label, createdAt, lastUsedAt, revoked);
+        }
+        finally { _lock.ExitReadLock(); }
     }
 
     private string[] GetStoresForKey(string keyId)
@@ -218,14 +290,24 @@ public sealed class ApiKeyStore : IDisposable
         return stores.ToArray();
     }
 
-    internal static byte[] HashKeyBytes(string rawKey)
+    internal static byte[] HashKeyBytes(string rawKey, byte[]? salt = null)
     {
-        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(rawKey);
-        return SHA256.HashData(bytes);
+        byte[] keyBytes = System.Text.Encoding.UTF8.GetBytes(rawKey);
+        if (salt is null)
+            return SHA256.HashData(keyBytes);
+
+        byte[] salted = new byte[salt.Length + keyBytes.Length];
+        salt.CopyTo(salted, 0);
+        keyBytes.CopyTo(salted, salt.Length);
+        return SHA256.HashData(salted);
     }
 
-    private static string HashKey(string rawKey) =>
-        Convert.ToHexStringLower(HashKeyBytes(rawKey));
+    private static string HashKey(string rawKey, byte[]? salt = null) =>
+        Convert.ToHexStringLower(HashKeyBytes(rawKey, salt));
 
-    public void Dispose() => _db.Dispose();
+    public void Dispose()
+    {
+        _lock.Dispose();
+        _db.Dispose();
+    }
 }

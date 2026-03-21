@@ -10,65 +10,95 @@ using Scrinia.Core.Search;
 
 namespace Scrinia.Mcp;
 
-public sealed record BundleIndex(List<ArtifactEntry> Entries);
-public sealed record BundleManifest(int Version, string Exported, List<string> Topics, int TotalEntries);
-
-[JsonSourceGenerationOptions(
-    WriteIndented = true,
-    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
-[JsonSerializable(typeof(BundleIndex))]
-[JsonSerializable(typeof(BundleManifest))]
-public partial class BundleJsonContext : JsonSerializerContext;
-
 [McpServerToolType]
 public sealed class ScriniaMcpTools
 {
-    /// <summary>
-    /// Maximum tool response size in characters. MCP clients (notably VS Code Copilot)
-    /// silently truncate responses above ~10 KB. We cap at 8 KB to leave headroom.
-    /// </summary>
-    private const int MaxResponseChars = 8 * 1024;
-
-    public static readonly JsonSerializerOptions BundleJsonOptions = new()
-    {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        TypeInfoResolver = BundleJsonContext.Default,
-    };
 
     private static IMemoryStore CurrentStore =>
         MemoryStoreContext.Current ?? throw new InvalidOperationException(
             "No memory store configured. Call MemoryStoreContext.Current = ... before using MCP tools.");
 
     /// <summary>
-    /// Resolves inline NMP/2 artifacts and file:// URIs without requiring a configured store.
-    /// Returns null if the input requires store-based resolution (memory name, ephemeral, etc.).
+    /// Resolves inline NMP/2 artifacts without requiring a configured store.
+    /// Returns null if the input requires store-based resolution (memory name, file://, ephemeral, etc.).
+    /// file:// URIs are deliberately NOT handled here — they require store-based resolution
+    /// for workspace sandbox validation (see FileMemoryStore.ResolveArtifactAsync).
     /// </summary>
-    private static async Task<string?> TryResolveWithoutStore(string input, CancellationToken ct)
+    private static Task<string?> TryResolveWithoutStore(string input, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(input))
-            return null;
+            return Task.FromResult<string?>(null);
 
         // Inline NMP/2 artifact
         if (input.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
-            return input;
+            return Task.FromResult<string?>(input);
 
-        // file:// URI — direct file read
-        if (input.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
-            return await File.ReadAllTextAsync(input[7..], ct);
-
-        return null;
+        return Task.FromResult<string?>(null);
     }
 
     [McpServerTool(Name = "guide"), Description(
-        "Required reading for effective memory use — call once per session. " +
-        "Returns a concise playbook covering ephemeral memories, topic organization, " +
-        "chunked retrieval, context compression, cross-project sharing, and all planning tools " +
-        "(including research, concerns, knowledge, subagents, and goal management).")]
+        "Required reading — call at session start, then commit content to your project's agent file. " +
+        "If a project exists (.scrinia/ directory), check plan_status for active goals before starting new work. " +
+        "Covers memory patterns, the goal-driven planning workflow, and when to plan vs. just do.")]
     public Task<string> Guide(CancellationToken cancellationToken = default) =>
         Task.FromResult("""
-            # scrinia guide — patterns for effective scrinia memory use
+            # scrinia guide — cognitive toolset for LLM agents
+
+            Scrinia is built on three overlapping capabilities — use them fluidly, not just sequentially:
+
+            **Research** — know before you act. Search existing memories and skills (internal) or investigate
+            the codebase and domain (external). Form hypotheses. Build on what you already believe.
+
+            **Plan & Do** — structure work around goals. Decompose into parallel tasks, execute, verify
+            against your hypothesis. Get user input at judgment calls.
+
+            **Learn** — get better every time. Update beliefs after each phase. Evolve skills from experience.
+            Store what you figured out. The agent that finishes a goal should be smarter than the one that started it.
+
+            These aren't sequential phases — you can research during execution, learn during research,
+            and plan while doing. The tools support all three at any time.
+
+            ## First session setup
+            1. Commit this guide's content to your project's agent file (AGENTS.md, CLAUDE.md, or equivalent)
+            2. If a `.scrinia/` directory exists, call `plan_status()` to check for active goals
+            3. If a project exists but no active goal, ask the user what they'd like to work on → `goal_update(add)`
+            4. If no project exists, call `project_init` when the user's request warrants structured planning
+
+            ## When to plan vs. just do
+            Not every request needs planning. Use this guide:
+            - **Just do it**: single file change, clear fix, quick question, under ~3 focused edits
+            - **Set a goal**: multiple files, unclear scope, research needed, multi-step work, or the user says "add", "build", "refactor", "audit"
+            - **When in doubt**: ask the user — "This looks like it could be a few changes or a larger effort. Want me to plan this out?"
+            The cost of planning a small task is low. The cost of not planning a large one is high.
+
+            ## Memory habits — build knowledge every session
+            Whether or not you're in a planning workflow, proactively persist what you learn:
+            - **When you learn something** about the codebase, domain, or tooling → `store(content, "topic:subject")`
+            - **When you fix a bug** → store the root cause and fix pattern so it's not re-investigated
+            - **When you research something** → store the findings, even if the user didn't ask you to
+            - **When the user corrects you** → store the correction as a pattern to follow next time
+            - **When you discover a convention** → store it so future sessions follow it automatically
+            - **When starting work** → `search()` first to check if prior sessions already covered this ground
+            These aren't planning steps — they're habits that make every session smarter than the last.
+            Use topic naming to organize: `patterns:auth`, `bugs:sqlite-locking`, `conventions:naming`, etc.
+
+            **Scrinia is the single source of truth.** If your platform provides its own memory or note
+            system (Claude auto-memory, Cursor notes, Windsurf memories, etc.), do not use it for project
+            knowledge, behavioral feedback, or preferences. All persistence goes through scrinia so the
+            memory base stays whole and unfractured — accessible to any agent on this project, not locked
+            into one platform.
+
+            ## Skill habits — learn how to do things better
+            Skills capture *how you approach work* — methodology, not facts. Keep them lean:
+            - **Skills are methodology**: what to check, what order, what patterns matter, how to verify
+            - **Memories are knowledge**: what you found, what was fixed, what you believe about the domain
+            - **Skills reference memories**: a skill says `search("applied-fixes")`, not a hardcoded list of fixes
+            - **When you develop an effective approach** to a type of task → `skill_create` with the methodology
+            - **When the user validates your approach** ("that was exactly right") → capture it as a skill
+            - **When starting a familiar task** → `skill_load` to check if you've done this type of work before
+            - **When a skill doesn't work well** → update the methodology, not the facts (facts go in memories)
+            A skill that grows with every use is storing facts that belong in memories.
+            A good skill stays lean and gets smarter because the memories it references grow.
 
             ## Ephemeral scrinia memories (~name)
             Use `~` prefix for in-session working state that shouldn't persist:
@@ -114,14 +144,6 @@ public sealed class ScriniaMcpTools
             - `list()` shows a summary with topics, keywords, and stats
             - `list(mode="full")` shows all entries with `[stale]` or `[review?]` markers
 
-            ## Budget tracking
-            Monitor how much context you're consuming:
-            - `budget()` — shows per-scrinia-memory chars/tokens loaded via show()/get_chunk()
-            - Helps decide when to use chunked retrieval vs. full show()
-
-            ## Session-end reflection
-            Call `reflect()` at the end of a session for a checklist of knowledge to persist.
-
             ## Context preservation (~checkpoints)
             Long conversations get compressed by your host platform. Use ephemeral scrinia checkpoints to survive:
             - Before a large task or after a milestone, store your current state:
@@ -131,6 +153,8 @@ public sealed class ScriniaMcpTools
             - Update the checkpoint as you make progress — overwrite with fresh state
             - **When to checkpoint**: before large multi-step tasks, after completing milestones,
               when the conversation is getting long, or before operations that generate lots of output
+            - If you feel disoriented or can't remember what you were doing, call `plan_resume()`
+              — it rebuilds your full context from stored planning state
 
             ## Cross-project sharing
             Export topics as portable .scrinia-bundle files:
@@ -146,41 +170,140 @@ public sealed class ScriniaMcpTools
             other project changes.
 
             ## When to store vs. not store
-            **Store in scrinia:** stable patterns, architectural decisions, API conventions,
-            solutions to recurring problems, project-specific knowledge.
-            **Don't store:** session-specific state (use ~ephemeral instead).
+            **Store in scrinia:** anything you'd want to know if you started a fresh session tomorrow —
+            patterns, decisions, bug fixes, conventions, API behaviors, domain knowledge, user corrections.
+            **Don't store:** transient working state (use ~ephemeral instead).
             **Exception:** use `~checkpoint` to preserve working context across context compactions.
+            **Rule of thumb:** if you had to figure it out, store it. Future sessions shouldn't re-derive what you already know.
+
+            ## Memory granularity
+            - **One concept per memory**: `security:applied-fixes` not `everything-about-security`
+            - **Use append for accumulation**: `append(new_fix, "security:applied-fixes")` adds a chunk, keeps it searchable
+            - **Use store for replacement**: `store(updated_content, "arch:overview")` when the whole picture changed
+            - **Topics group related memories**: `security:applied-fixes`, `security:patterns`, `security:concerns` — not one giant `security` memory
+            - **Name for searchability**: will `search("auth fix")` find this? Use descriptive names and keywords
+            - **When in doubt, smaller is better**: two focused memories beat one sprawling one
 
             ## Project planning tools
-            Scrinia includes planning tools for structured project lifecycle management.
+            Scrinia includes 20 planning tools for structured project lifecycle management.
             Plans are stored as standard scrinia memories with reserved topic conventions.
+            The workflow is goal-driven — you initialize once, then cycle through goals.
 
-            **Lifecycle flow:**
-            `project_init` -> `plan_requirements` -> `plan_roadmap` -> `plan_tasks`
-            -> `task_next` -> (execute) -> `task_complete` -> `plan_verify`
-            -> (if gaps) `plan_gaps` -> `task_next` -> ...
-            -> `plan_retrospective`
+            ### One-time setup
+            `project_init(context)` — call once per workspace. In an existing codebase, this triggers
+            a pre-planning phase where you should scan for concerns and build knowledge before setting goals.
 
-            **Tools by stage:**
-            - Setup: `project_init`, `plan_requirements`, `plan_roadmap`
-            - Execution: `plan_tasks`, `task_next`, `task_complete`
-            - Verification: `plan_verify`, `plan_gaps`
-            - Recovery: `plan_resume`, `plan_status`
-            - Learning: `plan_retrospective`, `plan_profile`
-            - Research: `research_start`, `research_complete` — investigate before planning
-            - Concerns: `concern_add`, `concern_resolve`, `concern` — track risks across phases
-            - Knowledge: `knowledge_add` — store domain expertise in bok:* topic (searchable via `search(scopes='bok')`)
-            - Subagents: `spawn_agent`, `skill_load` — generate and reuse specialist prompts (skill:* topic)
-            - Goals: `goal_update` — add/complete/list goals dynamically without re-initialization
+            ### The goal-driven cycle
 
-            **Reserved topics:** `project:*`, `plan:*`, `task:*`, `learn:*`, `user:*`, `research:*`, `concern:*`, `bok:*`, `skill:*`
+            **1. Pre-plan** (existing codebase) — understand what you're working with:
+            - Scan the codebase for risks, tech debt, issues → `concern_add(description, severity, phaseScope)`
+            - Capture architecture patterns and conventions → `store(content, "topic:subject", keywords=[...])`
+            - Concerns and knowledge persist across goals — they accumulate over the project's lifetime.
+            Skip this step for greenfield projects or when you already have context.
+
+            **2. Set a goal** — what are we working toward?
+            - `goal_update(action:"add", description:"...")` — the goal drives everything that follows.
+            - Goals are the top-level unit of work. Requirements, roadmap, and tasks all serve the goal.
+            - **Before planning, clarify with the user**: scope (in/out), success criteria, constraints, priority.
+            Ambiguous goals lead to wasted work — invest in clarity upfront.
+
+            **3. Research & hypothesize** — investigate, then state what you believe will work:
+            - `research_start(phaseId, topic, question)` → investigate → `research_complete(phaseId, topic, findings, hypothesis)`
+            - The hypothesis states your proposed approach and what would invalidate it
+            - Research findings + hypothesis inform task decomposition
+            - **Produce a change manifest**: for modification tasks, identify exact change sites (file paths,
+            function names, line ranges, the pattern to apply). This enables specific task descriptions
+            and effective parallelism. For greenfield tasks, a spec is sufficient.
+            - Discover new concerns during research? → `concern_add`
+            - Skip research when the path is already clear.
+
+            **4. Plan** — define requirements and roadmap:
+            - `plan_requirements(requirements)` — REQ-IDs derived from the goal + research + concerns
+            - `plan_roadmap(roadmap)` — phases mapping to REQ-IDs with success criteria
+
+            **5. Decompose & execute** — break phases into tasks and work through them:
+            - `plan_tasks(phaseId, tasks)` — tasks with dependencies (waves computed automatically)
+            - **Tasks should be agent-executable**: specific enough that a focused agent can make the change
+            without exploring the codebase. For modifications: include file path, function/block, and
+            transformation. For new files: include spec and interfaces. Research found the details —
+            carry them through to tasks.
+            - `task_next(phaseId)` → spawn a parallel agent for each task → `task_complete(taskName, outcome)`
+            - `plan_status()` — check progress (computed live from task data)
+            - During execution: `concern_add` for new risks, `store()` for things you learn
+            - **Parallelize aggressively**: when task_next returns multiple tasks, spawn one agent per task.
+            Use worktree isolation for tasks that touch overlapping files. Use background execution
+            for long-running work so you can continue with other tasks.
+            Use `skill_load("planner")` for complex decompositions — it produces explicit agent specs
+            with file conflict detection and wave sequencing.
+            - **Agent SOS**: if a spawned agent hits a wall (needs expertise, needs a new skill, or
+            discovers the task needs decomposition), it returns an SOS signal rather than a poor result.
+            Use `skill_load("sos-handler")` to triage and replan.
+            - **Interrogate the design at each task**: don't just execute — ask "what's missing?" and
+            "what would a downstream consumer expect?" before marking complete. Surface gaps proactively.
+            - **Goals serve the project, not the other way around.** Task acceptance criteria won't capture
+            every project-level implication. During execution, maintain awareness: did this change introduce
+            a new permission, config setting, endpoint, or API surface? Does documentation, security posture,
+            or the project's public contract need updating? Don't leave work for a future audit to catch.
+
+            **6. Verify** — did the phase achieve its goal? Did your hypothesis hold?
+            - `plan_verify(phaseId)` — surfaces your hypothesis + criteria checklist, then record evidence
+            - Evaluate: did criteria pass AND does the evidence support your hypothesis?
+            - If gaps: `plan_gaps(phaseId, failedCriteria)` → fix tasks → re-verify
+            - If the hypothesis was wrong (approach fundamentally flawed, not just gaps):
+              stop, discuss with the user, revise the approach, and replan from step 3 (research).
+              Don't keep executing a plan built on a wrong assumption.
+            - `concern_resolve(concernName, resolution)` — close addressed concerns
+            - **Track findings with sequential IDs** (e.g. SEC-001, QAL-001, DOC-001) stored in a findings
+            registry (`audit:findings-registry`). Never reuse numbers. This enables regression tracking
+            across goals and consistent reference numbers in release document sets.
+            - **Remediate in parallel**: after validating findings, group by file and spawn one fix agent
+            per file group. The audit already identified exact locations — carry them through to fix agents.
+            This is not a judgment call; it is the procedure.
+
+            **7. Learn & distill** — record what happened and update your understanding:
+            - `plan_retrospective(phaseId, whatWorked, whatFailed, lessons, beliefsUpdated)` — accumulates across phases
+            - `beliefsUpdated`: what do you now understand differently? (auto-stored as topical memories)
+            - Update or create skills (`skill_create`) with lessons from this phase
+            - `plan_profile(profile)` — store project-level agent behavioral norms
+
+            **8. Complete the goal** — distill, report, then start the next one:
+            - Distill valuable findings into topical memories (`store`) so future goals start smarter
+            - Update skills with accumulated lessons — this is the learning loop
+            - `goal_update(action:"complete", goalId, outcome)` — mark the goal done
+            - **Offer a march report**: `skill_load("march-reporter")` — produce a human-readable goal
+            summary document for audit trail. Always produce one at milestone boundaries; ask for smaller goals.
+            - Planning artifacts (task:*, plan:*, research:*) can be cleaned up — the learnings live in memories and skills now
+            - Set the next goal → back to step 2
+
+            **Recovery** (at any point):
+            - `plan_resume()` — restore full context after context loss (rebuilds state if needed)
+            - `plan_status()` — quick progress check
+            - `concern(phaseFilter?)` — list active concerns
+
+            **Skills** (stored as skill:* memories, portable across sessions and projects):
+            - `skill_create(skillName, scaffold, instructions?, tools?)` — create a specialist skill with project-specific context
+            - `skill_load(skillName?)` — list available skills or load one for use as a subagent prompt
+            Skills evolve from experience: retrospective lessons feed back into skill updates.
+            Use skill_load before research to check for existing specialists.
+
+            **Reserved planning topics** — avoid using these prefixes for general knowledge:
+            - `project:*` — project context, requirements, state (e.g. `project:context`, `project:state`)
+            - `plan:*` — roadmaps (e.g. `plan:roadmap`)
+            - `task:*` — decomposed tasks with keyword metadata (e.g. `task:01-1-03`)
+            - `learn:*` — retrospectives, execution outcomes, and updated beliefs
+            - `agent:*` — project-level agent behavioral norms (e.g. `agent:profile`)
+            - `research:*` — investigation findings and hypotheses
+            - `concern:*` — tracked risks and issues
+            - `skill:*` — reusable specialist prompts
             Use `excludeTopics="plan,task,project,learn"` on `list`/`search` to hide planning from knowledge queries.
 
-            ## Agent learning memories
-            The planning tools create and maintain learning memories:
-            - `learn:execution-outcomes` — phase retrospectives (what worked, what failed, lessons)
-            - `user:profile` — user preferences (autonomy level, review depth, communication style)
-            Both topics are searchable — use `search("retrospective")` or `search("preferences")` to recall.
+            ## Agent learning
+            Learning happens through the full cycle, not just retrospectives:
+            - Phase retrospectives accumulate in `learn:execution-outcomes` (searchable, provenance:agent keyword)
+            - Skills evolve with each goal — update them after retrospectives
+            - Topical memories grow as you distill findings after each goal
+            - Agent behavioral norms persist in `agent:profile` across sessions
+            The result: each goal starts with better context than the last.
             Memories authored via plan_retrospective and plan_profile carry `provenance:agent` keyword.
             """);
 
@@ -711,27 +834,22 @@ public sealed class ScriniaMcpTools
             return $"Forgot: ~{key}";
         }
 
-        // Backward compat: handle file:// URIs silently
+        // Backward compat: resolve file:// URIs to their memory name, then delete by name
         if (nameOrUri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
         {
-            string filePath = nameOrUri[7..];
             string name = FileMemoryStore.NameFromUri(nameOrUri);
-            bool fileDeleted = false;
-
-            if (File.Exists(filePath))
-            {
-                try { File.Delete(filePath); fileDeleted = true; }
-                catch (Exception ex) { return $"Error: could not delete file: {ex.Message}"; }
-            }
 
             bool removedAny = false;
             foreach (string s in store.ResolveReadScopes())
+            {
+                store.DeleteArtifact(name, s);
                 removedAny |= store.Remove(name, s);
+            }
 
-            if (!removedAny && !fileDeleted)
+            if (!removedAny)
                 return $"Error: no artifact found with name or URI '{nameOrUri}'.";
 
-            try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(name, fileDeleted || removedAny, store, cancellationToken) ?? Task.CompletedTask); }
+            try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(name, removedAny, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
 
             return $"Forgot: {name}. Files in .scrinia/ were updated — these are your changes.";
@@ -779,57 +897,25 @@ public sealed class ScriniaMcpTools
         if (!bundleName.EndsWith(".scrinia-bundle", StringComparison.OrdinalIgnoreCase))
             bundleName += ".scrinia-bundle";
 
+        // Sanitize filename: strip control characters and path separators
+        bundleName = new string(bundleName.Where(c => !char.IsControl(c) && c != '/' && c != '\\').ToArray());
+        bundleName = Path.GetFileName(bundleName);
+
         string bundlePath = Path.Combine(exportsDir, bundleName);
 
-        int totalEntries = 0;
-        var exportedTopics = new List<string>();
+        List<string> exportedTopics;
+        int totalEntries;
 
         using (var stream = new FileStream(bundlePath, FileMode.Create, FileAccess.Write))
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
         {
-            foreach (string topic in topics)
+            (exportedTopics, totalEntries) = Scrinia.Core.Bundles.BundleFormatService.ExportTopicsToZip(zip, store, topics);
+
+            if (exportedTopics.Count == 0)
             {
-                string topicScope = $"local-topic:{store.SanitizeName(topic.Trim())}";
-                var artifacts = store.ListTopicArtifacts(topicScope);
-                var entries = store.LoadIndex(topicScope);
-
-                if (entries.Count == 0)
-                    continue;
-
-                string sanitizedTopic = store.SanitizeName(topic.Trim());
-                exportedTopics.Add(sanitizedTopic);
-
-                // Write index.json for this topic
-                string indexJson = JsonSerializer.Serialize(new BundleIndex(entries), BundleJsonOptions);
-                var indexEntry = zip.CreateEntry($"topics/{sanitizedTopic}/index.json");
-                using (var writer = new StreamWriter(indexEntry.Open()))
-                    writer.Write(indexJson);
-
-                // Write artifact files
-                foreach (var (name, filePath) in artifacts)
-                {
-                    string artifactContent = File.ReadAllText(filePath);
-                    string entryName = $"topics/{sanitizedTopic}/{store.SanitizeName(name)}.nmp2";
-                    var zipEntry = zip.CreateEntry(entryName);
-                    using var writer = new StreamWriter(zipEntry.Open());
-                    writer.Write(artifactContent);
-                    totalEntries++;
-                }
+                try { File.Delete(bundlePath); } catch { }
+                return Task.FromResult("Error: no entries found in the specified topics.");
             }
-
-            // Write manifest
-            var manifest = new BundleManifest(1, DateTimeOffset.UtcNow.ToString("o"), exportedTopics, totalEntries);
-            string manifestJson = JsonSerializer.Serialize(manifest, BundleJsonOptions);
-            var manifestEntry = zip.CreateEntry("manifest.json");
-            using (var writer = new StreamWriter(manifestEntry.Open()))
-                writer.Write(manifestJson);
-        }
-
-        if (exportedTopics.Count == 0)
-        {
-            // Clean up empty bundle
-            try { File.Delete(bundlePath); } catch { }
-            return Task.FromResult("Error: no entries found in the specified topics.");
         }
 
         long fileSize = new FileInfo(bundlePath).Length;
@@ -858,141 +944,24 @@ public sealed class ScriniaMcpTools
         if (!File.Exists(resolvedPath))
             return Task.FromResult($"Error: bundle file not found: {resolvedPath}");
 
-        int importedTopics = 0;
-        int importedEntries = 0;
-        var importedTopicNames = new List<string>();
-
-        using (var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read))
-        using (var zip = new ZipArchive(stream, ZipArchiveMode.Read))
+        try
         {
-            // Read manifest to discover topics
-            var manifestEntry = zip.GetEntry("manifest.json");
-            if (manifestEntry is null)
-                return Task.FromResult("Error: invalid bundle — manifest.json not found.");
+            using var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
 
-            string manifestJson;
-            using (var reader = new StreamReader(manifestEntry.Open()))
-                manifestJson = reader.ReadToEnd();
+            var (topicCount, entryCount, names) =
+                Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZip(zip, store, topics, overwrite);
 
-            using var manifestDoc = JsonDocument.Parse(manifestJson);
-            var root = manifestDoc.RootElement;
+            if (topicCount == 0)
+                return Task.FromResult("No topics were imported (empty bundle or all filtered out).");
 
-            if (!root.TryGetProperty("topics", out var topicsElement))
-                return Task.FromResult("Error: invalid bundle — no topics in manifest.");
-
-            var availableTopics = new List<string>();
-            foreach (var t in topicsElement.EnumerateArray())
-            {
-                string? topicName = t.GetString();
-                if (topicName is not null)
-                    availableTopics.Add(topicName);
-            }
-
-            // Filter topics if specified
-            var topicsToImport = topics is { Length: > 0 }
-                ? availableTopics.Where(t => topics.Any(f => f.Trim().Equals(t, StringComparison.OrdinalIgnoreCase))).ToList()
-                : availableTopics;
-
-            foreach (string topic in topicsToImport)
-            {
-                string topicScope = $"local-topic:{store.SanitizeName(topic)}";
-
-                // Read index from bundle
-                var indexZipEntry = zip.GetEntry($"topics/{topic}/index.json");
-                if (indexZipEntry is null)
-                    continue;
-
-                string indexJson;
-                using (var reader = new StreamReader(indexZipEntry.Open()))
-                    indexJson = reader.ReadToEnd();
-
-                using var indexDoc = JsonDocument.Parse(indexJson);
-                var indexRoot = indexDoc.RootElement;
-
-                if (!indexRoot.TryGetProperty("entries", out var entriesElement))
-                    continue;
-
-                var entries = new List<ArtifactEntry>();
-                var artifactContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var entryEl in entriesElement.EnumerateArray())
-                {
-                    string? name = entryEl.GetProperty("name").GetString();
-                    if (name is null) continue;
-
-                    long originalBytes = entryEl.TryGetProperty("originalBytes", out var ob) ? ob.GetInt64() : 0;
-                    int chunkCount = entryEl.TryGetProperty("chunkCount", out var cc) ? cc.GetInt32() : 1;
-                    string description = entryEl.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
-                    string? contentPreview = entryEl.TryGetProperty("contentPreview", out var cp) ? cp.GetString() : null;
-
-                    string[]? tags = null;
-                    if (entryEl.TryGetProperty("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Array)
-                        tags = tagsEl.EnumerateArray().Select(t => t.GetString() ?? "").Where(t => t.Length > 0).ToArray();
-
-                    DateTimeOffset createdAt = entryEl.TryGetProperty("createdAt", out var ca)
-                        ? DateTimeOffset.Parse(ca.GetString()!)
-                        : DateTimeOffset.UtcNow;
-
-                    // Parse chunk entries if present
-                    ChunkEntry[]? chunkEntries = null;
-                    if (entryEl.TryGetProperty("chunkEntries", out var ceEl) && ceEl.ValueKind == JsonValueKind.Array)
-                    {
-                        var ceList = new List<ChunkEntry>();
-                        foreach (var ce in ceEl.EnumerateArray())
-                        {
-                            int ci = ce.TryGetProperty("chunkIndex", out var ciEl) ? ciEl.GetInt32() : 0;
-                            string? cePrev = ce.TryGetProperty("contentPreview", out var cpEl) ? cpEl.GetString() : null;
-                            string[]? ceKw = null;
-                            if (ce.TryGetProperty("keywords", out var kwEl) && kwEl.ValueKind == JsonValueKind.Array)
-                                ceKw = kwEl.EnumerateArray().Select(k => k.GetString() ?? "").Where(k => k.Length > 0).ToArray();
-                            Dictionary<string, int>? ceTf = null;
-                            if (ce.TryGetProperty("termFrequencies", out var tfEl) && tfEl.ValueKind == JsonValueKind.Object)
-                            {
-                                ceTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                                foreach (var prop in tfEl.EnumerateObject())
-                                    if (prop.Value.TryGetInt32(out int v)) ceTf[prop.Name] = v;
-                            }
-                            ceList.Add(new ChunkEntry(ci, cePrev, ceKw, ceTf));
-                        }
-                        if (ceList.Count > 0) chunkEntries = ceList.ToArray();
-                    }
-
-                    entries.Add(new ArtifactEntry(
-                        Name: name,
-                        Uri: "",
-                        OriginalBytes: originalBytes,
-                        ChunkCount: chunkCount,
-                        CreatedAt: createdAt,
-                        Description: description,
-                        Tags: tags,
-                        ContentPreview: contentPreview,
-                        ChunkEntries: chunkEntries));
-
-                    // Read artifact content from zip
-                    string artifactEntryName = $"topics/{topic}/{store.SanitizeName(name)}.nmp2";
-                    var artifactZipEntry = zip.GetEntry(artifactEntryName);
-                    if (artifactZipEntry is not null)
-                    {
-                        using var reader = new StreamReader(artifactZipEntry.Open());
-                        artifactContents[name] = reader.ReadToEnd();
-                    }
-                }
-
-                if (entries.Count > 0)
-                {
-                    store.ImportTopicEntries(topicScope, entries, artifactContents, overwrite);
-                    importedTopics++;
-                    importedEntries += entries.Count;
-                    importedTopicNames.Add(topic);
-                }
-            }
+            return Task.FromResult(
+                $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}");
         }
-
-        if (importedTopics == 0)
-            return Task.FromResult("No topics were imported (empty bundle or all filtered out).");
-
-        return Task.FromResult(
-            $"Imported {importedTopics} topic(s) ({importedEntries} entries): {string.Join(", ", importedTopicNames)}");
+        catch (InvalidOperationException ex)
+        {
+            return Task.FromResult($"Error: {ex.Message}");
+        }
     }
 
     // ── Append/Reflect/Budget tools ─────────────────────────────────────────
@@ -1134,367 +1103,8 @@ public sealed class ScriniaMcpTools
         return $"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.";
     }
 
-    [McpServerTool(Name = "reflect"), Description(
-        "Returns a session-end reflection prompt to help decide what knowledge to persist. " +
-        "Call this at the end of a work session.")]
-    public Task<string> Reflect(CancellationToken cancellationToken = default) =>
-        Task.FromResult("""
-            # Scrinia Session Reflection Checklist
-
-            Before ending this session, consider persisting knowledge to scrinia from each category:
-
-            ## Decisions Made
-            - [ ] Were any architectural or design decisions made? Store rationale.
-            - [ ] Were any trade-offs evaluated? Record what was chosen and why.
-
-            ## Patterns Discovered
-            - [ ] Did you find any codebase patterns or conventions? Document them.
-            - [ ] Did you discover any API usage patterns? Save examples.
-
-            ## Problems Solved
-            - [ ] Did you debug a tricky issue? Save the root cause and fix.
-            - [ ] Did you find a workaround? Document it before you forget.
-
-            ## API/Library Knowledge
-            - [ ] Did you learn API behavior not in docs? Capture it.
-            - [ ] Did you find library gotchas? Record them.
-
-            ## Context for Future Sessions
-            - [ ] Is there in-progress work that needs context? Save state.
-            - [ ] Are there next steps someone should know? Document them.
-
-            ## Stale Knowledge Cleanup
-            - [ ] Are any stored scrinia memories now outdated? Update or forget them.
-            - [ ] Should any ephemeral (~) scrinia memories be promoted to persistent?
-
-            Use `store()` to persist, `append()` to add to existing, `forget()` to clean up.
-            Use `budget()` to see how much context you consumed this session.
-            """);
-
-    [McpServerTool(Name = "ingest"), Description(
-        "Instructs you to perform a thorough memory ingestion — read all available sources, " +
-        "review existing memories, and create or update memories as needed. " +
-        "Call this when starting a new project or doing a full knowledge capture pass.")]
-    public Task<string> Ingest(CancellationToken cancellationToken = default) =>
-        Task.FromResult("""
-            # Scrinia Memory Ingestion — Full Knowledge Capture
-
-            Follow these 5 phases to perform a thorough scrinia memory ingestion. Do not skip phases or take shortcuts.
-
-            ## Phase 1 — Inventory existing scrinia memories
-            1. Call `list()` for a summary of topics, keywords, and stats.
-            2. Call `list(mode="full")` to see all entry names, then `show("name")` to read content.
-               - For multi-chunk scrinia memories, use `chunk_count()` then `get_chunk()` for each chunk.
-            3. Note which scrinia memories exist, what they cover, and whether any look stale or incomplete.
-
-            ## Phase 2 — Read all available sources
-            Read ALL information sources you have access to. Be thorough — partial ingestion leads to gaps.
-
-            **Code and project files:**
-            - README, AGENTS.md, CLAUDE.md, CONTRIBUTING.md, and similar guide files
-            - Key source files, configuration, and infrastructure (CI, Docker, etc.)
-            - Package manifests, dependency files, build scripts
-
-            **Conversation and context:**
-            - Everything discussed in the current conversation
-            - Any files the user has shared or referenced
-            - Error messages, debugging sessions, decisions made
-
-            **Environment:**
-            - Git log (recent commits, branch structure)
-            - Directory structure and file organization
-            - Runtime configuration and environment details
-
-            ## Phase 3 — Analyze and plan
-            Compare what you read (Phase 2) against what's already stored (Phase 1):
-            - **Missing**: Important knowledge with no scrinia memory coverage
-            - **Outdated**: Scrinia memories that contradict current sources
-            - **Incomplete**: Scrinia memories that need additional detail
-            - **Redundant**: Duplicate or overlapping scrinia memories that should be consolidated
-            - **Misorganized**: Scrinia memories in wrong topics or with poor naming
-
-            Plan your updates before executing them.
-
-            ## Phase 4 — Store, update, and organize
-            Execute your plan using these tools:
-            - `store(content, "topic:subject")` — create new scrinia memories or overwrite outdated ones
-            - `append(content, "name")` — add to existing scrinia memories incrementally
-            - `forget("name")` — remove obsolete or redundant scrinia memories
-            - `copy("old-name", "new-name")` — reorganize into better topics
-
-            **Best practices for this phase:**
-            - Use topic:subject naming consistently (e.g., `arch:decisions`, `api:endpoints`)
-            - Add keywords for search discoverability: `store(content, name, keywords=["term1", "term2"])`
-            - Set review conditions on volatile knowledge: `store(content, name, reviewWhen="when X changes")`
-            - Keep each scrinia memory focused — one concept per scrinia memory, split large topics into multiple entries
-            - Use chunked storage for large content: `store(["section1", "section2", ...], name)`
-
-            ## Phase 5 — Verify and report
-            1. Call `list()` to confirm the final state of all scrinia memories (summary view).
-            2. Summarize what you did:
-               - Scrinia memories created (with names and brief descriptions)
-               - Scrinia memories updated (what changed)
-               - Scrinia memories deleted (why)
-               - Any gaps you identified but couldn't fill (missing information)
-            3. Report the summary to the user.
-            """);
-
-    [McpServerTool(Name = "ka"), Description(
-        "Knowledge analysis — inventory all persistent memories, read each one completely, " +
-        "perform gap analysis, and report findings to the user. Returns the inventory plus " +
-        "a playbook for thorough analysis. Use this before kt() or on its own for auditing.")]
-    public Task<string> Ka(
-        [Description("Optional comma-separated scope filter, e.g. 'local,api,research'. " +
-                     "Defaults to all persistent scopes. Ephemeral memories are always excluded.")] string? scopes = null,
-        CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // List all persistent entries, excluding ephemeral
-        var allEntries = store.ListScoped(scopes)
-            .Where(e => e.Scope != "ephemeral")
-            .ToList();
-
-        if (allEntries.Count == 0)
-            return Task.FromResult("No persistent memories found.");
-
-        // Group by scope label, sorted alphabetically
-        var grouped = allEntries
-            .GroupBy(e => MemoryNaming.FormatScopeLabel(e.Scope))
-            .OrderBy(g => g.Key)
-            .Select(g => (
-                Label: g.Key,
-                Entries: g.OrderBy(e => e.Entry.Name).ToList()))
-            .ToList();
-
-        long totalBytes = allEntries.Sum(e => e.Entry.OriginalBytes);
-        int topicCount = grouped.Count(g => g.Label != "local");
-
-        var sb = new System.Text.StringBuilder();
-
-        // ── Inventory ────────────────────────────────────────────────────
-        sb.AppendLine("# Knowledge Analysis — Memory Inventory");
-        sb.AppendLine();
-        sb.AppendLine($"**{allEntries.Count} {(allEntries.Count == 1 ? "memory" : "memories")}** across " +
-                       $"**{topicCount} {(topicCount == 1 ? "topic" : "topics")}** ({FormatBytes(totalBytes)} total)");
-        sb.AppendLine();
-
-        int staleCount = allEntries.Count(e => e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow);
-        int reviewCount = allEntries.Count(e => !string.IsNullOrEmpty(e.Entry.ReviewWhen)
-            && !(e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow));
-        if (staleCount > 0 || reviewCount > 0)
-        {
-            var markers = new List<string>();
-            if (staleCount > 0) markers.Add($"{staleCount} stale");
-            if (reviewCount > 0) markers.Add($"{reviewCount} need review");
-            sb.AppendLine($"⚠ {string.Join(", ", markers)}");
-            sb.AppendLine();
-        }
-
-        foreach (var (label, entries) in grouped)
-        {
-            string heading = label == "local" ? "Local" : $"Topic: {label}";
-            long groupBytes = entries.Sum(e => e.Entry.OriginalBytes);
-            sb.AppendLine($"### {heading} ({FormatBytes(groupBytes)})");
-            foreach (var item in entries)
-            {
-                var e = item.Entry;
-                string qualName = store.FormatQualifiedName(item.Scope, e.Name);
-                string marker = "";
-                if (e.ReviewAfter.HasValue && e.ReviewAfter.Value <= DateTimeOffset.UtcNow) marker = " [stale]";
-                else if (!string.IsNullOrEmpty(e.ReviewWhen)) marker = " [review?]";
-                sb.AppendLine($"- {qualName} ({FormatBytes(e.OriginalBytes)}, {e.ChunkCount}ch){marker}");
-            }
-            sb.AppendLine();
-        }
-
-        // ── Analysis Playbook ────────────────────────────────────────────
-        sb.AppendLine("""
-            ## Playbook
-
-            Perform a thorough knowledge analysis and **report the findings to the user**. Do not write KT documents yet — this is analysis only.
-
-            ### Step 1 — Read every scrinia memory completely
-            - Call `show("name")` for each scrinia memory listed above. Do NOT skip or skim any.
-            - For multi-chunk scrinia memories: call `chunk_count()` then `get_chunk()` for every chunk.
-            - Read them in the order listed (grouped by topic, alphabetical within each group).
-
-            ### Step 2 — Analyze each scrinia memory
-            As you read, evaluate each scrinia memory for:
-            - **Accuracy**: does the content match what you know about the codebase/project?
-            - **Completeness**: is important information missing from this scrinia memory?
-            - **Staleness**: has the content drifted from reality? Check review markers especially.
-            - **Cross-references**: what other scrinia memories does this one relate to or depend on?
-            - **Contradictions**: does this conflict with other scrinia memories or with the codebase?
-
-            ### Step 3 — Identify gaps
-            After reading ALL scrinia memories, identify knowledge areas that SHOULD exist but DON'T:
-            - Important project features or components with no scrinia memory coverage
-            - Decisions, patterns, or conventions that are undocumented
-            - Onboarding knowledge a new contributor would need
-            - Operational knowledge (deployment, debugging, monitoring) that's missing
-            - Relationships between components that aren't captured anywhere
-
-            ### Step 4 — Report to the user
-            Present a structured analysis report covering:
-
-            **Coverage summary**: What domains/topics are well-covered vs. sparse?
-
-            **Staleness audit**: List scrinia memories with review markers, suspected outdated content, or confirmed drift. Be specific about what's wrong.
-
-            **Gap analysis**: List missing knowledge areas, ordered by importance. For each gap, note:
-            - What should be documented
-            - Why it matters
-            - Which topic it belongs in
-
-            **Contradiction check**: Any conflicting information between scrinia memories?
-
-            **Recommended actions**: Concrete, prioritized list of:
-            - Scrinia memories to update (with what needs changing)
-            - Scrinia memories to create (with suggested names and content scope)
-            - Scrinia memories to delete or consolidate
-            - Scrinia memories to reorganize (wrong topic, poor naming)
-
-            ### Quality checklist
-            Before reporting, verify:
-            - [ ] Every scrinia memory from the inventory was fully read (no skipping)
-            - [ ] Multi-chunk scrinia memories were completely read (all chunks)
-            - [ ] Gap analysis considers the project holistically, not just what's stored
-            - [ ] Recommendations are specific and actionable (not vague suggestions)
-            - [ ] Staleness concerns cite specific evidence
-            """);
-
-        return Task.FromResult(sb.ToString().TrimEnd());
-    }
-
-    [McpServerTool(Name = "kt"), Description(
-        "Knowledge transfer — produce focused, per-topic KT documents from persistent memories. " +
-        "Runs knowledge analysis first (via ka()), then creates multiple smaller documents " +
-        "grouped by topic. Better quality than a single monolithic document.")]
-    public Task<string> Kt(
-        [Description("Optional comma-separated scope filter, e.g. 'local,api,research'. " +
-                     "Defaults to all persistent scopes. Ephemeral memories are always excluded.")] string? scopes = null,
-        CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // List all persistent entries, excluding ephemeral
-        var allEntries = store.ListScoped(scopes)
-            .Where(e => e.Scope != "ephemeral")
-            .ToList();
-
-        if (allEntries.Count == 0)
-            return Task.FromResult("No persistent memories found.");
-
-        // Group by scope label
-        var grouped = allEntries
-            .GroupBy(e => MemoryNaming.FormatScopeLabel(e.Scope))
-            .OrderBy(g => g.Key)
-            .Select(g => (
-                Label: g.Key,
-                Entries: g.OrderBy(e => e.Entry.Name).ToList()))
-            .ToList();
-
-        int topicCount = grouped.Count(g => g.Label != "local");
-
-        var sb = new System.Text.StringBuilder();
-
-        sb.AppendLine("# Knowledge Transfer — Multi-Document Playbook");
-        sb.AppendLine();
-        sb.AppendLine($"**{allEntries.Count} {(allEntries.Count == 1 ? "memory" : "memories")}** across " +
-                       $"**{topicCount} {(topicCount == 1 ? "topic" : "topics")}** to transfer.");
-        sb.AppendLine();
-        sb.AppendLine("## Documents to produce");
-        sb.AppendLine();
-
-        foreach (var (label, entries) in grouped)
-        {
-            string docName = label == "local" ? "Local Memories" : $"Topic: {label}";
-            long groupBytes = entries.Sum(e => e.Entry.OriginalBytes);
-            var names = entries.Select(e => store.FormatQualifiedName(e.Scope, e.Entry.Name));
-            sb.AppendLine($"- **{docName}** ({entries.Count} memories, {FormatBytes(groupBytes)}): {string.Join(", ", names)}");
-        }
-        sb.AppendLine();
-
-        sb.AppendLine("""
-            ## Playbook
-
-            ### Phase 1 — Analysis
-            Call `ka()` to perform a full knowledge analysis. Read every scrinia memory and review the analysis report before writing anything.
-
-            ### Phase 2 — Write one KT document per topic/group
-            For each group listed above, produce a **separate, focused markdown document**. Each document should be self-contained and useful on its own.
-
-            **Per-document structure:**
-
-            1. **Title and scope**: Which topic/group this document covers
-            2. **Summary**: 2-3 paragraph overview of what this knowledge area covers and why it matters
-            3. **Per-memory sections**: For each scrinia memory in the group:
-               - Heading with the qualified name
-               - Full content — preserve faithfully, reformat for readability
-               - Your annotations: cross-references, staleness notes, gaps
-            4. **Group-level notes**: Connections between scrinia memories in this group, patterns, and any missing coverage specific to this topic
-
-            **Writing guidelines:**
-            - Each document should make sense independently — a reader shouldn't need other KT documents to understand this one
-            - Preserve the actual knowledge faithfully — don't summarize away important details
-            - Add cross-references to other KT documents where relevant (e.g., "see also: api topic KT")
-            - Flag any issues found during the ka() analysis that are relevant to this group
-
-            ### Phase 3 — Write a transfer index
-            After all per-topic documents are written, produce a short **KT Index** document containing:
-            - List of all KT documents produced (with brief descriptions)
-            - Cross-cutting themes that span multiple topics
-            - The gap analysis and recommended actions from the ka() report
-            - Any contradictions or staleness concerns found
-
-            ### Phase 4 — Deliver
-            - Deliver each document separately (file, inline, or however the platform supports)
-            - The index document should be delivered last as the entry point
-            - Confirm delivery with the user
-
-            ## Quality checklist
-            Before delivering, verify:
-            - [ ] ka() was called and its analysis was incorporated
-            - [ ] Every scrinia memory from the inventory appears in exactly one KT document
-            - [ ] Multi-chunk scrinia memories were fully read (all chunks, not just the first)
-            - [ ] Each document is self-contained and readable independently
-            - [ ] Cross-references between documents are noted
-            - [ ] The index document summarizes all KT documents and includes gap analysis
-            """);
-
-        return Task.FromResult(sb.ToString().TrimEnd());
-    }
-
-    [McpServerTool(Name = "budget"), Description(
-        "Reports estimated token consumption for this session. " +
-        "Shows what you have loaded via show() and get_chunk(), " +
-        "with per-memory breakdown and total.")]
-    public Task<string> Budget(CancellationToken cancellationToken = default)
-    {
-        var breakdown = SessionBudget.Breakdown;
-        if (breakdown.Count == 0)
-            return Task.FromResult("No memories loaded this session.");
-
-        const int nameW = 20;
-        const int charsW = 10;
-        const int tokensW = 10;
-
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"{"name".PadRight(nameW)}  {"chars",charsW}  {"~tokens",tokensW}");
-        sb.AppendLine(new string('-', nameW + charsW + tokensW + 6));
-
-        foreach (var kvp in breakdown.OrderByDescending(k => k.Value.Chars))
-        {
-            string displayName = kvp.Key.Length > nameW ? kvp.Key[..nameW] : kvp.Key;
-            sb.AppendLine($"{displayName.PadRight(nameW)}  {kvp.Value.Chars,charsW}  {kvp.Value.EstTokens,tokensW}");
-        }
-
-        sb.AppendLine(new string('-', nameW + charsW + tokensW + 6));
-        sb.AppendLine($"{"TOTAL".PadRight(nameW)}  {SessionBudget.TotalCharsLoaded,charsW}  {SessionBudget.EstimatedTokensLoaded,tokensW}");
-
-        return Task.FromResult(sb.ToString().TrimEnd());
-    }
+    // kt removed — knowledge transfer is a learnable goal, not a fixed tool.
+    // The agent should treat "produce KT documents" as a goal, execute it, retrospect, and save a skill.
 
     private static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)
     {

@@ -13,5 +13,15 @@ public interface IEmbeddingProvider : IDisposable
     Task<float[]?> EmbedAsync(string text, CancellationToken ct = default);
 
     /// <summary>Generate embeddings for multiple texts in a batch.</summary>
-    Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default);
+    async Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
+    {
+        var results = new float[texts.Count][];
+        for (int i = 0; i < texts.Count; i++)
+        {
+            var vec = await EmbedAsync(texts[i], ct);
+            if (vec is null) return null;
+            results[i] = vec;
+        }
+        return results;
+    }
 }

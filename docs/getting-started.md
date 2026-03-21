@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to 30 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to 33 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -155,15 +155,15 @@ Memories are organized into three scopes:
 | `topic:subject` | Topic | `.scrinia/topics/topic/subject.nmp2` | Persistent |
 | `~subject` | Ephemeral | In-memory only | Dies with process |
 
-**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize project knowledge by domain. The planning tools use reserved topic prefixes: `project:*`, `plan:*`, `task:*`, `learn:*`, and `user:*`.
+**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize project knowledge by domain. The planning tools use reserved topic prefixes: `project:*`, `plan:*`, `task:*`, `learn:*`, and `agent:*`.
 
 **Ephemeral** memories are scratch space that disappears when the process exits. Useful for temporary context within a session.
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes 30 tools across two tool classes: 18 memory tools (`ScriniaMcpTools`) and 12 planning tools (`ScriniaProjectTools`).
+When connected via MCP, Scrinia exposes 33 tools across two tool classes: 13 memory tools (`ScriniaMcpTools`) and 20 planning tools (`ScriniaProjectTools`).
 
-### Memory Tools (18)
+### Memory Tools (13)
 
 | Tool | Purpose |
 |------|---------|
@@ -179,14 +179,9 @@ When connected via MCP, Scrinia exposes 30 tools across two tool classes: 18 mem
 | `get_chunk` | Decode a specific chunk |
 | `export` | Export topics to a portable bundle |
 | `import` | Import memories from a bundle |
-| `budget` | Show token consumption for this session |
 | `guide` | Session playbook (call once per session) |
-| `reflect` | End-of-session reflection prompt |
-| `ingest` | Full knowledge ingestion playbook |
-| `ka` | Knowledge analysis -- inventory, gap analysis, report to user |
-| `kt` | Knowledge transfer -- runs ka(), then produces per-topic KT documents |
 
-### Planning Tools (12)
+### Planning Tools (20)
 
 | Tool | Purpose |
 |------|---------|
@@ -201,13 +196,35 @@ When connected via MCP, Scrinia exposes 30 tools across two tool classes: 18 mem
 | `plan_verify` | Verify a phase achieved its goal using success criteria |
 | `plan_gaps` | Create gap closure tasks for failed verification criteria |
 | `plan_retrospective` | Store a structured phase retrospective in `learn:execution-outcomes` |
-| `plan_profile` | Store or update user preferences for agent behavior |
+| `plan_profile` | Store or update project-level agent behavioral norms |
+| `research_start` | Start a research investigation before task decomposition |
+| `research_complete` | Complete research with findings and sources |
+| `concern_add` | Add a project concern with severity level |
+| `concern_resolve` | Resolve a concern with resolution details |
+| `concern` | List active concerns, optionally filtered by phase |
+| `goal_update` | Manage project goals: add, complete, or list |
+| `skill_create` | Create a reusable specialist skill with project-specific context |
+| `skill_load` | Load a reusable agent skill/prompt template |
 
-Planning tools use dedicated topic conventions: `project:*` for project state, `plan:*` for roadmaps, `task:*` for individual tasks, `learn:*` for retrospective outcomes, and `user:*` for user preferences. The `list` and `search` memory tools support `excludeTopics` to filter planning topics out of general queries.
+**Built-in skills** ship with scrinia and are always available via `skill_load`:
+
+| Skill | Purpose |
+|-------|---------|
+| `march-reporter` | Produce human-readable goal summary documents for audit trails |
+| `auditor` | Systematic code, security, and documentation review with sequential finding IDs |
+| `debugger` | Scientific method debugging: observe, hypothesize, isolate, verify, store |
+| `chaos-engineer` | Probe operational resilience: failure domains, blast radius, recovery gaps |
+| `onboarder` | Build a codebase mental model for new agents and developers |
+| `planner` | Wave-aware execution planning: file conflict detection, agent specs, merge strategy |
+| `sos-handler` | Triage agent SOS signals: spawn specialists, create skills, replan waves |
+
+Built-in skills are evolvable — `skill_create` with the same name creates a project-specific override.
+
+Planning tools use dedicated topic conventions: `project:*` for project state, `plan:*` for roadmaps, `task:*` for individual tasks, `learn:*` for retrospective outcomes, and `agent:*` for agent behavioral norms. The `list` and `search` memory tools support `excludeTopics` to filter planning topics out of general queries.
 
 ## Planning Quick Start
 
-Scrinia's 12 planning tools let an agent manage a full project lifecycle. Here's a minimal flow:
+Scrinia's 20 planning tools let an agent manage a full project lifecycle. Here's a minimal flow:
 
 ```
 # 1. Initialize a project
@@ -220,7 +237,7 @@ plan_requirements(requirements: "## v1\n- AUTH-01: User registration\n- AUTH-02:
 plan_roadmap(roadmap: "## Phase 1: Auth\nRequirements: AUTH-01, AUTH-02\n## Phase 2: API\nRequirements: API-01")
 
 # 4. Decompose Phase 1 into tasks
-plan_tasks(phaseId: "01", tasks: "## Task 01\nWave: 1\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201")
+plan_tasks(phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201")
 
 # 5. Execute: get task → do the work → mark complete
 task_next(phaseId: "01")      # returns unblocked tasks
@@ -233,7 +250,7 @@ plan_verify(phaseId: "01")    # structured PASS/FAIL per criterion
 plan_resume()                 # restores full project state
 ```
 
-See [Planning Tools Guide](planning-tools.md) for full documentation of all 12 tools.
+See [Planning Tools Guide](planning-tools.md) for full documentation of all 20 tools.
 
 ## What's Next
 
