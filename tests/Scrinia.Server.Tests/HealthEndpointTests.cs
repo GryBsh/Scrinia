@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Scrinia.Core.Resilience;
 using Scrinia.Server.Models;
 using Xunit;
 
@@ -74,5 +75,36 @@ public sealed class HealthEndpointTests : IClassFixture<ScriniaServerFactory>
         var client = _factory.CreateClient(); // no auth
         var resp = await client.GetAsync("/health/details");
         resp.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Health_details_includes_circuit_breaker_state()
+    {
+        // Register a test circuit breaker
+        var cb = new CircuitBreaker(new CircuitBreakerOptions(Threshold: 2));
+        CircuitBreakerRegistry.Register("test:health-check", cb);
+        try
+        {
+            var client = _factory.CreateAuthenticatedClient();
+            var resp = await client.GetAsync("/health/details");
+            resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            var body = await resp.Content.ReadFromJsonAsync<HealthResponse>();
+            body.Should().NotBeNull();
+            body!.Checks.Should().Contain(c => c.Name == "circuit-breaker:test:health-check" && c.Status == "closed");
+
+            // Trip the circuit breaker
+            cb.RecordFailure();
+            cb.RecordFailure();
+            cb.State.Should().Be(CircuitState.Open);
+
+            var resp2 = await client.GetAsync("/health/details");
+            var body2 = await resp2.Content.ReadFromJsonAsync<HealthResponse>();
+            body2!.Checks.Should().Contain(c => c.Name == "circuit-breaker:test:health-check" && c.Status == "open");
+        }
+        finally
+        {
+            CircuitBreakerRegistry.Remove("test:health-check");
+        }
     }
 }

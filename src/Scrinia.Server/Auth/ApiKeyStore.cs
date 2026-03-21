@@ -18,7 +18,34 @@ public sealed class ApiKeyStore : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
         _db = new SqliteConnection($"Data Source={dbPath}");
         _db.Open();
+        EnableWalMode();
         Initialize();
+    }
+
+    private void EnableWalMode()
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode=WAL;";
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Retries an operation up to 3 times on SQLITE_BUSY.</summary>
+    private T RetryOnBusy<T>(Func<T> operation)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try { return operation(); }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 5 && attempt < 3) // 5 = SQLITE_BUSY
+            {
+                Thread.Sleep(100 * (attempt + 1));
+            }
+        }
+    }
+
+    /// <summary>Retries a void operation up to 3 times on SQLITE_BUSY.</summary>
+    private void RetryOnBusy(Action operation)
+    {
+        RetryOnBusy<object?>(() => { operation(); return null; });
     }
 
     private void Initialize()
@@ -85,36 +112,39 @@ public sealed class ApiKeyStore : IDisposable
         _lock.EnterWriteLock();
         try
         {
-            using var transaction = _db.BeginTransaction();
-
-            using (var cmd = _db.CreateCommand())
+            RetryOnBusy(() =>
             {
-                cmd.Transaction = transaction;
-                cmd.CommandText = """
-                    INSERT INTO api_keys (id, key_hash, user_id, permissions, label, created_at, salt)
-                    VALUES ($id, $hash, $userId, $permissions, $label, $createdAt, $salt);
-                    """;
-                cmd.Parameters.AddWithValue("$id", keyId);
-                cmd.Parameters.AddWithValue("$hash", keyHash);
-                cmd.Parameters.AddWithValue("$userId", userId);
-                cmd.Parameters.AddWithValue("$permissions", permissionsJson);
-                cmd.Parameters.AddWithValue("$label", (object?)label ?? DBNull.Value);
-                cmd.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("o"));
-                cmd.Parameters.AddWithValue("$salt", saltHex);
-                cmd.ExecuteNonQuery();
-            }
+                using var transaction = _db.BeginTransaction();
 
-            foreach (string store in stores)
-            {
-                using var storeCmd = _db.CreateCommand();
-                storeCmd.Transaction = transaction;
-                storeCmd.CommandText = "INSERT INTO key_stores (key_id, store_name) VALUES ($keyId, $store);";
-                storeCmd.Parameters.AddWithValue("$keyId", keyId);
-                storeCmd.Parameters.AddWithValue("$store", store);
-                storeCmd.ExecuteNonQuery();
-            }
+                using (var cmd = _db.CreateCommand())
+                {
+                    cmd.Transaction = transaction;
+                    cmd.CommandText = """
+                        INSERT INTO api_keys (id, key_hash, user_id, permissions, label, created_at, salt)
+                        VALUES ($id, $hash, $userId, $permissions, $label, $createdAt, $salt);
+                        """;
+                    cmd.Parameters.AddWithValue("$id", keyId);
+                    cmd.Parameters.AddWithValue("$hash", keyHash);
+                    cmd.Parameters.AddWithValue("$userId", userId);
+                    cmd.Parameters.AddWithValue("$permissions", permissionsJson);
+                    cmd.Parameters.AddWithValue("$label", (object?)label ?? DBNull.Value);
+                    cmd.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("o"));
+                    cmd.Parameters.AddWithValue("$salt", saltHex);
+                    cmd.ExecuteNonQuery();
+                }
 
-            transaction.Commit();
+                foreach (string store in stores)
+                {
+                    using var storeCmd = _db.CreateCommand();
+                    storeCmd.Transaction = transaction;
+                    storeCmd.CommandText = "INSERT INTO key_stores (key_id, store_name) VALUES ($keyId, $store);";
+                    storeCmd.Parameters.AddWithValue("$keyId", keyId);
+                    storeCmd.Parameters.AddWithValue("$store", store);
+                    storeCmd.ExecuteNonQuery();
+                }
+
+                transaction.Commit();
+            });
         }
         finally { _lock.ExitWriteLock(); }
 
@@ -177,11 +207,14 @@ public sealed class ApiKeyStore : IDisposable
         _lock.EnterWriteLock();
         try
         {
-            using var updateCmd = _db.CreateCommand();
-            updateCmd.CommandText = "UPDATE api_keys SET last_used_at = $now WHERE id = $id;";
-            updateCmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
-            updateCmd.Parameters.AddWithValue("$id", matchedKeyId);
-            updateCmd.ExecuteNonQuery();
+            RetryOnBusy(() =>
+            {
+                using var updateCmd = _db.CreateCommand();
+                updateCmd.CommandText = "UPDATE api_keys SET last_used_at = $now WHERE id = $id;";
+                updateCmd.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
+                updateCmd.Parameters.AddWithValue("$id", matchedKeyId);
+                updateCmd.ExecuteNonQuery();
+            });
         }
         finally { _lock.ExitWriteLock(); }
 
@@ -194,10 +227,13 @@ public sealed class ApiKeyStore : IDisposable
         _lock.EnterWriteLock();
         try
         {
-            using var cmd = _db.CreateCommand();
-            cmd.CommandText = "UPDATE api_keys SET revoked = 1 WHERE id = $id AND revoked = 0;";
-            cmd.Parameters.AddWithValue("$id", keyId);
-            return cmd.ExecuteNonQuery() > 0;
+            return RetryOnBusy(() =>
+            {
+                using var cmd = _db.CreateCommand();
+                cmd.CommandText = "UPDATE api_keys SET revoked = 1 WHERE id = $id AND revoked = 0;";
+                cmd.Parameters.AddWithValue("$id", keyId);
+                return cmd.ExecuteNonQuery() > 0;
+            });
         }
         finally { _lock.ExitWriteLock(); }
     }

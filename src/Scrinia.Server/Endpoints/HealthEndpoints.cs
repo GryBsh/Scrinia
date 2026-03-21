@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Scrinia.Core.Resilience;
 using Scrinia.Plugin.Abstractions;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
@@ -21,7 +22,7 @@ public static class HealthEndpoints
             IReadOnlyList<IScriniaPlugin> plugins, ILoggerFactory loggerFactory) =>
         {
             var checks = RunReadinessChecks(keyStore, storeManager, plugins, loggerFactory.CreateLogger("Health"));
-            bool allOk = checks.All(c => c.Status == "ok");
+            bool allOk = checks.Where(c => !c.Name.StartsWith("circuit-breaker:")).All(c => c.Status == "ok");
 
             var response = new HealthResponse(allOk ? "ok" : "degraded", checks);
             return allOk ? Results.Ok(response) : Results.Json(response, statusCode: 503);
@@ -75,6 +76,10 @@ public static class HealthEndpoints
         // Loaded plugins
         foreach (var plugin in plugins)
             checks.Add(new HealthCheck($"plugin:{plugin.Name}", "ok"));
+
+        // Circuit breaker state
+        foreach (var (name, cb) in CircuitBreakerRegistry.GetAll())
+            checks.Add(new HealthCheck($"circuit-breaker:{name}", cb.State.ToString().ToLowerInvariant()));
 
         return checks.ToArray();
     }

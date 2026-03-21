@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.Core.Resilience;
 using Scrinia.Core.Search;
 
 namespace Scrinia;
@@ -18,12 +19,30 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     private readonly HttpClient _http;
     private readonly string _store;
     private readonly string _tempDir;
+    private readonly CircuitBreaker _circuitBreaker;
+    private readonly RetryOptions _retryOptions;
 
     /// <summary>
-    /// Sends a synchronous HTTP request using HttpClient.Send (avoids .GetAwaiter().GetResult() deadlocks).
+    /// Sends a synchronous HTTP request with retry + circuit breaker.
     /// </summary>
     private HttpResponseMessage SendSync(HttpRequestMessage request)
-        => _http.Send(request, HttpCompletionOption.ResponseContentRead);
+    {
+        _circuitBreaker.EnsureClosed();
+        var response = RetryPolicy.Execute(
+            () =>
+            {
+                // HttpRequestMessage can't be reused — clone essentials
+                var clone = new HttpRequestMessage(request.Method, request.RequestUri) { Content = request.Content };
+                return _http.Send(clone, HttpCompletionOption.ResponseContentRead);
+            },
+            resp => TransientDetector.IsTransient(resp),
+            _retryOptions);
+        if (response.IsSuccessStatusCode)
+            _circuitBreaker.RecordSuccess();
+        else if (TransientDetector.IsTransient(response))
+            _circuitBreaker.RecordFailure();
+        return response;
+    }
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeral = new(StringComparer.OrdinalIgnoreCase);
     private readonly FileMemoryStore _localHelper;
 
@@ -67,11 +86,15 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         TypeInfoResolver = HttpStoreJsonContext.Default,
     };
 
-    public HttpMemoryStore(HttpClient http, string store = "default", TimeSpan? timeout = null)
+    public HttpMemoryStore(HttpClient http, string store = "default", TimeSpan? timeout = null,
+        CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
     {
         _http = http;
         _http.Timeout = timeout ?? TimeSpan.FromSeconds(30);
         _store = store;
+        _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
+        _retryOptions = retryOptions ?? new RetryOptions();
+        CircuitBreakerRegistry.Register("http-memory-store", _circuitBreaker);
         // Use a temp dir for the helper — we only use it for naming/parsing
         _tempDir = Path.Combine(Path.GetTempPath(), $"scrinia-http-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
@@ -156,9 +179,18 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
         // Remote lookup via Show endpoint
         string encoded = Uri.EscapeDataString(nameOrArtifact);
-        var resp = await _http.GetAsync($"{BaseUrl}/memories/{encoded}", ct);
-        if (!resp.IsSuccessStatusCode)
+        _circuitBreaker.EnsureClosed();
+        var resp = await RetryPolicy.ExecuteAsync(
+            () => _http.GetAsync($"{BaseUrl}/memories/{encoded}", ct),
+            r => TransientDetector.IsTransient(r),
+            _retryOptions, logger: null, ct);
+        if (resp.IsSuccessStatusCode)
+            _circuitBreaker.RecordSuccess();
+        else
+        {
+            if (TransientDetector.IsTransient(resp)) _circuitBreaker.RecordFailure();
             throw new FileNotFoundException($"Memory '{nameOrArtifact}' not found.");
+        }
 
         var show = await resp.Content.ReadFromJsonAsync(HttpStoreJsonContext.Default.ShowApiResponse, ct);
         if (show is null)
@@ -396,7 +428,15 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         string qualifiedName = FormatQualifiedName(scope, subject);
         var req = new StoreApiRequest([text], qualifiedName);
         var content = JsonContent.Create(req, HttpStoreJsonContext.Default.StoreApiRequest);
-        await _http.PostAsync($"{BaseUrl}/memories", content, ct);
+        _circuitBreaker.EnsureClosed();
+        var resp = await RetryPolicy.ExecuteAsync(
+            () => _http.PostAsync($"{BaseUrl}/memories", content, ct),
+            r => TransientDetector.IsTransient(r),
+            _retryOptions, logger: null, ct);
+        if (resp.IsSuccessStatusCode)
+            _circuitBreaker.RecordSuccess();
+        else if (TransientDetector.IsTransient(resp))
+            _circuitBreaker.RecordFailure();
     }
 
     public async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)

@@ -471,12 +471,25 @@ public sealed class ScriniaProjectTools
             ? $" First wave has {firstWaveCount} independent tasks — spawn parallel agents, one per task."
             : "";
 
+        // Check if agent:execution-policy exists
+        string executionPolicyHint = "";
+        try
+        {
+            var (epScope, _) = store.ParseQualifiedName("agent:execution-policy");
+            var epEntries = store.LoadIndex(epScope);
+            if (epEntries.Any(e => e.Name == "execution-policy"))
+                executionPolicyHint = "\nAgent execution policy available — show('agent:execution-policy') for spawn requirements.";
+        }
+        catch { /* agent scope not created — skip silently */ }
+
         string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
         string response =
             $"Created {parsedTasks.Count} task(s) for phase {phaseId} in {waveCount} wave(s).\n" +
             $"Tasks stored:\n{taskList}\n" +
             $"Files in .scrinia/ were updated — these are your changes.\n" +
-            $"Next: run task_next to get the first pending tasks.{parallelHint}" +
+            $"Next: run task_next to get the first pending tasks.{parallelHint}\n" +
+            $"Spawn agents for all task execution — the primary agent orchestrates, it does not execute tasks directly." +
+            executionPolicyHint +
             patternNote;
 
         response = Truncate(response);
@@ -557,6 +570,16 @@ public sealed class ScriniaProjectTools
 
         if (!knowledgeUsed)
             capabilityHints += "\nHint: use store(content, \"topic:subject\") with keywords to persist domain knowledge across sessions.";
+
+        // Check if agent behavioral norms exist
+        try
+        {
+            var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
+            var agentEntries = store.LoadIndex(agentScope);
+            if (agentEntries.Count > 0)
+                capabilityHints += "\nAgent behavioral norms found — search('agent:') to load project-level norms.";
+        }
+        catch { /* agent scope not created — skip silently */ }
 
         response += capabilityHints;
 
@@ -738,6 +761,8 @@ public sealed class ScriniaProjectTools
         sb.AppendLine($"Phase {phaseId} — Wave {currentWave} — {unblockedEntries.Count} unblocked task(s):");
         if (unblockedEntries.Count > 1)
             sb.AppendLine($"These {unblockedEntries.Count} tasks are independent — spawn a parallel agent for each task.");
+        else
+            sb.AppendLine("Spawn an agent for this task — keep the primary agent available for SOS and user interaction.");
         sb.AppendLine();
 
         foreach (var entry in unblockedEntries)
@@ -1246,6 +1271,7 @@ public sealed class ScriniaProjectTools
                           $"- Summarize what you found and any concerns discovered\n" +
                           $"- Flag anything surprising or that changes the approach\n" +
                           $"- Ask if the user has additional context you may have missed\n" +
+                          $"Use `skill_load(\"planner\")` before plan_tasks to produce agent-executable task specs with file scoping and SOS criteria.\n" +
                           $"Once confirmed, call plan_tasks to decompose using these findings. " +
                           $"If this research revealed a recurring specialist need, consider skill_create to save a reusable prompt.";
 

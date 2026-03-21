@@ -14,22 +14,36 @@ public static class EmbeddingProviderFactory
             var retryOptions = new RetryOptions(options.MaxRetries, options.RetryBaseDelayMs);
             var cbOptions = new CircuitBreakerOptions(options.CircuitBreakerThreshold, options.CircuitBreakerCooldownSeconds);
 
-            return options.Provider.ToLowerInvariant() switch
+            var provider = options.Provider.ToLowerInvariant();
+            CircuitBreaker cb;
+
+            switch (provider)
             {
-                "model2vec" => CreateModel2Vec(modelsDir, logger),
-                "ollama" => new OllamaEmbeddingProvider(options.OllamaBaseUrl, options.OllamaModel, logger,
-                    new CircuitBreaker(cbOptions), retryOptions),
-                "openai" => new OpenAiEmbeddingProvider(options.OpenAiApiKey, options.OpenAiModel, options.OpenAiBaseUrl, logger,
-                    new CircuitBreaker(cbOptions), retryOptions),
-                "voyageai" => new VoyageAiEmbeddingProvider(options.VoyageAiApiKey, options.VoyageAiModel, options.VoyageAiBaseUrl, logger,
-                    new CircuitBreaker(cbOptions), retryOptions),
-                "azure" => new AzureAiEmbeddingProvider(options.AzureEndpoint, options.AzureApiKey, options.AzureDeployment, options.AzureModel, options.AzureApiVersion, options.AzureUseV1, logger,
-                    new CircuitBreaker(cbOptions), retryOptions),
-                "google" => new GoogleGeminiEmbeddingProvider(options.GoogleApiKey, options.GoogleModel, options.GoogleBaseUrl, options.GoogleDimensions, logger,
-                    new CircuitBreaker(cbOptions), retryOptions),
-                "none" => new NullEmbeddingProvider(),
-                _ => new NullEmbeddingProvider(),
-            };
+                case "model2vec":
+                    return CreateModel2Vec(modelsDir, logger);
+                case "ollama":
+                    cb = new CircuitBreaker(cbOptions);
+                    CircuitBreakerRegistry.Register("embedding:ollama", cb);
+                    return new OllamaEmbeddingProvider(options.OllamaBaseUrl, options.OllamaModel, logger, cb, retryOptions);
+                case "openai":
+                    cb = new CircuitBreaker(cbOptions);
+                    CircuitBreakerRegistry.Register("embedding:openai", cb);
+                    return new OpenAiEmbeddingProvider(options.OpenAiApiKey, options.OpenAiModel, options.OpenAiBaseUrl, logger, cb, retryOptions);
+                case "voyageai":
+                    cb = new CircuitBreaker(cbOptions);
+                    CircuitBreakerRegistry.Register("embedding:voyageai", cb);
+                    return new VoyageAiEmbeddingProvider(options.VoyageAiApiKey, options.VoyageAiModel, options.VoyageAiBaseUrl, logger, cb, retryOptions);
+                case "azure":
+                    cb = new CircuitBreaker(cbOptions);
+                    CircuitBreakerRegistry.Register("embedding:azure", cb);
+                    return new AzureAiEmbeddingProvider(options.AzureEndpoint, options.AzureApiKey, options.AzureDeployment, options.AzureModel, options.AzureApiVersion, options.AzureUseV1, logger, cb, retryOptions);
+                case "google":
+                    cb = new CircuitBreaker(cbOptions);
+                    CircuitBreakerRegistry.Register("embedding:google", cb);
+                    return new GoogleGeminiEmbeddingProvider(options.GoogleApiKey, options.GoogleModel, options.GoogleBaseUrl, options.GoogleDimensions, logger, cb, retryOptions);
+                default:
+                    return new NullEmbeddingProvider();
+            }
         }
         catch (Exception ex)
         {

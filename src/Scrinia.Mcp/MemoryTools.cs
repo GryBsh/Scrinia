@@ -228,13 +228,17 @@ public sealed class ScriniaMcpTools
             transformation. For new files: include spec and interfaces. Research found the details —
             carry them through to tasks.
             - `task_next(phaseId)` → spawn a parallel agent for each task → `task_complete(taskName, outcome)`
+            - The primary agent orchestrates (plan, spawn, monitor, handle SOS, verify) — it does not
+            execute tasks directly. Spawn an agent for every task, including single-task waves. This keeps
+            the primary available for user interaction and gives agents an SOS path.
             - `plan_status()` — check progress (computed live from task data)
             - During execution: `concern_add` for new risks, `store()` for things you learn
             - **Parallelize aggressively**: when task_next returns multiple tasks, spawn one agent per task.
             Use worktree isolation for tasks that touch overlapping files. Use background execution
             for long-running work so you can continue with other tasks.
-            Use `skill_load("planner")` for complex decompositions — it produces explicit agent specs
-            with file conflict detection and wave sequencing.
+            `skill_load("planner")` before `plan_tasks` — it produces agent specs with file scoping,
+            isolation decisions, and SOS criteria. Without it, task descriptions lack the detail that
+            execution agents need.
             - **Agent SOS**: if a spawned agent hits a wall (needs expertise, needs a new skill, or
             discovers the task needs decomposition), it returns an SOS signal rather than a poor result.
             Use `skill_load("sos-handler")` to triage and replan.
@@ -279,6 +283,8 @@ public sealed class ScriniaMcpTools
             - `plan_resume()` — restore full context after context loss (rebuilds state if needed)
             - `plan_status()` — quick progress check
             - `concern(phaseFilter?)` — list active concerns
+            - `search("agent:")` — load project behavioral norms (agent:profile, agent:execution-policy).
+            These evolve through retrospectives like skills do.
 
             **Skills** (stored as skill:* memories, portable across sessions and projects):
             - `skill_create(skillName, scaffold, instructions?, tools?)` — create a specialist skill with project-specific context

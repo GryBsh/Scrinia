@@ -443,3 +443,69 @@ public sealed class CircuitBreakerTests
         retryOpts.BaseDelayMs.Should().Be(200);
     }
 }
+
+public sealed class CircuitBreakerRegistryTests : IDisposable
+{
+    public CircuitBreakerRegistryTests() => CircuitBreakerRegistry.Clear();
+    public void Dispose() => CircuitBreakerRegistry.Clear();
+
+    [Fact]
+    public void Register_And_TryGet_RoundTrips()
+    {
+        var cb = new CircuitBreaker();
+        CircuitBreakerRegistry.Register("test-provider", cb);
+
+        CircuitBreakerRegistry.TryGet("test-provider", out var retrieved).Should().BeTrue();
+        retrieved.Should().BeSameAs(cb);
+    }
+
+    [Fact]
+    public void TryGet_Missing_ReturnsFalse()
+    {
+        CircuitBreakerRegistry.TryGet("nonexistent", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void GetAll_ReturnsAllRegistered()
+    {
+        var cb1 = new CircuitBreaker();
+        var cb2 = new CircuitBreaker();
+        CircuitBreakerRegistry.Register("provider-a", cb1);
+        CircuitBreakerRegistry.Register("provider-b", cb2);
+
+        var all = CircuitBreakerRegistry.GetAll();
+        all.Should().HaveCount(2);
+        all["provider-a"].Should().BeSameAs(cb1);
+        all["provider-b"].Should().BeSameAs(cb2);
+    }
+
+    [Fact]
+    public void Register_Overwrites_ExistingName()
+    {
+        var cb1 = new CircuitBreaker();
+        var cb2 = new CircuitBreaker();
+        CircuitBreakerRegistry.Register("same-name", cb1);
+        CircuitBreakerRegistry.Register("same-name", cb2);
+
+        CircuitBreakerRegistry.TryGet("same-name", out var retrieved).Should().BeTrue();
+        retrieved.Should().BeSameAs(cb2);
+    }
+
+    [Fact]
+    public void Remove_DeletesEntry()
+    {
+        CircuitBreakerRegistry.Register("to-remove", new CircuitBreaker());
+        CircuitBreakerRegistry.Remove("to-remove").Should().BeTrue();
+        CircuitBreakerRegistry.TryGet("to-remove", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CaseInsensitive_Lookup()
+    {
+        var cb = new CircuitBreaker();
+        CircuitBreakerRegistry.Register("Chat:OpenAI", cb);
+
+        CircuitBreakerRegistry.TryGet("chat:openai", out var retrieved).Should().BeTrue();
+        retrieved.Should().BeSameAs(cb);
+    }
+}
