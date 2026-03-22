@@ -776,4 +776,77 @@ public sealed class NewToolTests : IDisposable
         secondReconcile.Should().Contain("1 conflict(s) remaining",
             "after resolving one of two conflicts, reconcile should report 1 remaining");
     }
+
+    // ── project_init merge infrastructure scaffolding tests ──────────────────
+
+    [Fact]
+    public async Task ProjectInit_ScaffoldsGitattributes()
+    {
+        // Arrange — use the StoreScope's workspace directory (already set up by constructor)
+        // The StoreScope creates: {WorkspaceDir}/.scrinia/store/ and sets MemoryStoreContext.Current
+
+        // Act — initialize the project
+        await _projTools.ProjectInit("Goals: test gitattributes scaffolding",
+            cancellationToken: CancellationToken.None);
+
+        // Assert — .scrinia/.gitattributes should exist and contain the binary marker
+        string gitattributesPath = Path.Combine(_scope.WorkspaceDir, ".scrinia", ".gitattributes");
+        File.Exists(gitattributesPath).Should().BeTrue(
+            "project_init should scaffold .scrinia/.gitattributes");
+        string content = File.ReadAllText(gitattributesPath);
+        content.Should().Contain("*.nmp2 binary",
+            ".gitattributes should mark *.nmp2 files as binary for merge safety");
+    }
+
+    // ── setup_hooks tests ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task SetupHooks_CreatesHookFiles()
+    {
+        // Arrange — initialize project first so there's a valid .scrinia/ directory
+        await _projTools.ProjectInit("Goals: test setup_hooks",
+            cancellationToken: CancellationToken.None);
+
+        // Delete hooks that project_init created so we can test setup_hooks independently
+        string hooksDir = Path.Combine(_scope.WorkspaceDir, ".scrinia", "hooks");
+        if (Directory.Exists(hooksDir))
+            Directory.Delete(hooksDir, recursive: true);
+
+        // Act — call setup_hooks
+        await _projTools.SetupHooks(cancellationToken: CancellationToken.None);
+
+        // Assert — hook files should exist
+        string mergeDriver = Path.Combine(hooksDir, "scrinia-merge-meta.sh");
+        string postMerge = Path.Combine(hooksDir, "post-merge");
+
+        File.Exists(mergeDriver).Should().BeTrue(
+            "setup_hooks should create .scrinia/hooks/scrinia-merge-meta.sh");
+        File.Exists(postMerge).Should().BeTrue(
+            "setup_hooks should create .scrinia/hooks/post-merge");
+    }
+
+    [Fact]
+    public async Task SetupHooks_IdempotentSkipsExisting()
+    {
+        // Arrange — initialize project (creates hooks via ScaffoldMergeInfrastructure)
+        await _projTools.ProjectInit("Goals: test setup_hooks idempotency",
+            cancellationToken: CancellationToken.None);
+
+        // Modify a hook file's content to detect if it gets overwritten
+        string hooksDir = Path.Combine(_scope.WorkspaceDir, ".scrinia", "hooks");
+        string mergeDriver = Path.Combine(hooksDir, "scrinia-merge-meta.sh");
+        File.Exists(mergeDriver).Should().BeTrue(
+            "project_init should have created the merge driver hook");
+
+        string sentinel = "# SENTINEL — this content was added to test idempotency\n";
+        File.WriteAllText(mergeDriver, sentinel);
+
+        // Act — call setup_hooks again
+        await _projTools.SetupHooks(cancellationToken: CancellationToken.None);
+
+        // Assert — the modified file should NOT be overwritten (idempotent behavior)
+        string afterContent = File.ReadAllText(mergeDriver);
+        afterContent.Should().Be(sentinel,
+            "setup_hooks should not overwrite existing hook files (idempotent — skips existing)");
+    }
 }

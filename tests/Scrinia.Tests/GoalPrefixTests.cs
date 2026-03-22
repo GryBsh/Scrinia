@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Mcp;
@@ -123,5 +124,80 @@ public sealed class GoalPrefixTests : IDisposable
             "research_start should create a research memory with goal-prefixed name (research:gN-...)");
         result.Should().MatchRegex(@"research:g\d+-01-naming",
             "research memory name should follow pattern research:g{goalNum}-{phaseId}-{topic}");
+    }
+
+    // ── Test 4: Branch-safe goal IDs with hex suffix ─────────────────────────
+
+    [Fact]
+    public async Task GoalUpdate_Add_ProducesIdWithHexSuffix()
+    {
+        // Arrange — initialize a project so goal_update has the required context
+        await _projTools.ProjectInit("Goals: test branch-safe goal IDs",
+            cancellationToken: CancellationToken.None);
+
+        // Act — add a goal
+        string result = await _projTools.GoalUpdate("add", "test goal",
+            cancellationToken: CancellationToken.None);
+
+        // Assert — the response should contain a goal ID matching G-{num}-{hex3}
+        Regex.IsMatch(result, @"G-\d+-[a-f0-9]{3}").Should().BeTrue(
+            $"goal ID in response should match pattern G-N-xxx (3-char hex suffix), but got: {result}");
+    }
+
+    // ── Test 5: Two adds produce different IDs ───────────────────────────────
+
+    [Fact]
+    public async Task GoalUpdate_Add_TwoCallsProduceDifferentIds()
+    {
+        // Arrange — initialize a project
+        await _projTools.ProjectInit("Goals: test unique goal IDs",
+            cancellationToken: CancellationToken.None);
+
+        // Act — add two goals
+        string result1 = await _projTools.GoalUpdate("add", "first goal",
+            cancellationToken: CancellationToken.None);
+        string result2 = await _projTools.GoalUpdate("add", "second goal",
+            cancellationToken: CancellationToken.None);
+
+        // Extract goal IDs from both responses
+        var match1 = Regex.Match(result1, @"G-\d+-[a-f0-9]{3}");
+        var match2 = Regex.Match(result2, @"G-\d+-[a-f0-9]{3}");
+
+        match1.Success.Should().BeTrue("first goal_update(add) should produce a branch-safe goal ID");
+        match2.Success.Should().BeTrue("second goal_update(add) should produce a branch-safe goal ID");
+
+        // Assert — the two IDs should differ (different sequence numbers and hex suffixes)
+        match1.Value.Should().NotBe(match2.Value,
+            "two consecutive goal_update(add) calls must produce different goal IDs");
+    }
+
+    // ── Test 6: Complete accepts short-form ID ───────────────────────────────
+
+    [Fact]
+    public async Task GoalUpdate_Complete_AcceptsShortFormId()
+    {
+        // Arrange — initialize project and add a goal
+        await _projTools.ProjectInit("Goals: test short-form goal completion",
+            cancellationToken: CancellationToken.None);
+
+        string addResult = await _projTools.GoalUpdate("add", "goal for short-form completion",
+            cancellationToken: CancellationToken.None);
+
+        // Extract the full goal ID (e.g. G-1-a3f)
+        var fullIdMatch = Regex.Match(addResult, @"G-(\d+)-[a-f0-9]{3}");
+        fullIdMatch.Success.Should().BeTrue("goal_update(add) should return a full goal ID");
+        string fullId = fullIdMatch.Value;
+        string shortId = $"G-{fullIdMatch.Groups[1].Value}"; // e.g. "G-1"
+
+        // Act — complete using short-form ID (G-1 instead of G-1-a3f)
+        string completeResult = await _projTools.GoalUpdate("complete",
+            goalId: shortId, outcome: "done",
+            cancellationToken: CancellationToken.None);
+
+        // Assert — should succeed (not return an error)
+        completeResult.Should().NotStartWith("Error:",
+            $"completing with short-form ID '{shortId}' should match full ID '{fullId}'");
+        completeResult.Should().Contain("complete",
+            "response should confirm the goal was completed");
     }
 }

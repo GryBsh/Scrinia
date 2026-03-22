@@ -154,8 +154,15 @@ public sealed class ScriniaProjectTools
             nextStep: nextStep,
             cancellationToken);
 
+        // Scaffold merge infrastructure
+        ScaffoldMergeInfrastructure(scriniaDir);
+
         string response = $"Initialized project '{projectId}'. Stored: project:context, project:state. " +
                $"Files in .scrinia/ were updated — these are your changes.";
+
+        response += "\nMerge infrastructure created in .scrinia/hooks/. " +
+            "Configure the merge driver: git config merge.scrinia-meta.driver " +
+            "'.scrinia/hooks/scrinia-merge-meta.sh %O %A %B'";
 
         if (hasExistingCode)
             response += "\n\nExisting codebase detected. Recommended next steps:\n" +
@@ -410,7 +417,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (activeGoalId is not null)
         {
-            var m = Regex.Match(activeGoalId, @"G-(\d+)");
+            var m = Regex.Match(activeGoalId, @"G-(\d+)(?:-[a-f0-9]+)?");
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
 
@@ -1188,7 +1195,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (goalId is not null)
         {
-            var m = Regex.Match(goalId, @"G-(\d+)");
+            var m = Regex.Match(goalId, @"G-(\d+)(?:-[a-f0-9]+)?");
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
         string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
@@ -1299,7 +1306,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (goalId is not null)
         {
-            var m = Regex.Match(goalId, @"G-(\d+)");
+            var m = Regex.Match(goalId, @"G-(\d+)(?:-[a-f0-9]+)?");
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
         string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
@@ -1841,7 +1848,7 @@ public sealed class ScriniaProjectTools
     private static bool HasKeyword(ArtifactEntry e, string keyword) =>
         e.Keywords?.Contains(keyword, StringComparer.OrdinalIgnoreCase) == true;
 
-    /// <summary>Extracts the active goal ID (e.g., "G-14") from project:context goals section.</summary>
+    /// <summary>Extracts the active goal ID (e.g., "G-14" or "G-29-a3f") from project:context goals section.</summary>
     private static async Task<string?> GetActiveGoalIdAsync(IMemoryStore store, CancellationToken ct)
     {
         try
@@ -1851,8 +1858,8 @@ public sealed class ScriniaProjectTools
             var activeLine = goals.FirstOrDefault(g => g.Contains("[active]", StringComparison.OrdinalIgnoreCase));
             if (activeLine is null) return null;
 
-            // Extract G-N from "[G-14] [active] ..."
-            var match = System.Text.RegularExpressions.Regex.Match(activeLine, @"\[G-(\d+)\]");
+            // Extract full goal ID from "[G-14] ..." or "[G-29-a3f] ..."
+            var match = System.Text.RegularExpressions.Regex.Match(activeLine, @"\[G-(\d+(?:-[a-f0-9]+)?)\]");
             return match.Success ? $"G-{match.Groups[1].Value}" : null;
         }
         catch { return null; }
@@ -2197,7 +2204,7 @@ public sealed class ScriniaProjectTools
         string goalNum = "0";
         if (retroGoalId is not null)
         {
-            var gm = System.Text.RegularExpressions.Regex.Match(retroGoalId, @"G-(\d+)");
+            var gm = System.Text.RegularExpressions.Regex.Match(retroGoalId, @"G-(\d+)(?:-[a-f0-9]+)?");
             if (gm.Success) goalNum = gm.Groups[1].Value;
         }
         string retroMemoryName = $"learn:retro-g{goalNum}-{phaseId}";
@@ -2385,12 +2392,14 @@ public sealed class ScriniaProjectTools
                 int maxId = 0;
                 foreach (var goal in goals)
                 {
-                    var idMatch = Regex.Match(goal, @"\[G-(\d+)\]");
+                    var idMatch = Regex.Match(goal, @"\[G-(\d+)(?:-[a-f0-9]+)?\]");
                     if (idMatch.Success && int.TryParse(idMatch.Groups[1].Value, out int id) && id > maxId)
                         maxId = id;
                 }
                 int nextId = Math.Max(maxId, goals.Count) + 1;
-                string newGoalLine = $"- [G-{nextId}] [active] {description}";
+                string suffix = Guid.NewGuid().ToString("N")[..3];
+                string newGoalId = $"G-{nextId}-{suffix}";
+                string newGoalLine = $"- [{newGoalId}] [active] {description}";
                 goals.Add(newGoalLine);
 
                 // Rebuild goals section
@@ -2412,12 +2421,12 @@ public sealed class ScriniaProjectTools
 
                 await WriteStateAsync(store, addProjectName, addProjectId,
                     phase: addPhase, progressPct: addProgress,
-                    lastAction: $"Goal added: G-{nextId}",
+                    lastAction: $"Goal added: {newGoalId}",
                     blockers: "none",
                     nextStep: "clarify the goal with the user before planning",
                     cancellationToken);
 
-                return $"Goal added as G-{nextId}: {description}.\n" +
+                return $"Goal added as {newGoalId}: {description}.\n" +
                        $"project:context updated. Files in .scrinia/ were updated — these are your changes.\n\n" +
                        $"Check backlog:* for deferred items that could be grouped into this goal — search('backlog:').\n\n" +
                        $"Before planning, confirm the goal with the user:\n" +
@@ -2435,11 +2444,30 @@ public sealed class ScriniaProjectTools
 
                 var (goals, originalCount, contextWithoutGoals) = ParseGoalsSection(contextText);
 
-                // Find goal line matching goalId (case-insensitive)
+                // Find goal line matching goalId (case-insensitive).
+                // Supports both exact match (e.g. "G-4-a3f") and short form (e.g. "G-4"
+                // matches "G-4-a3f"). Short form matches by regex: [G-4(-[a-f0-9]+)?]
                 string searchId = goalId.Trim();
                 int matchIndex = goals.FindIndex(g =>
                     g.Contains($"[{searchId}]", StringComparison.OrdinalIgnoreCase) ||
                     g.Contains($"[{searchId.ToUpperInvariant()}]", StringComparison.OrdinalIgnoreCase));
+
+                // If exact match failed and searchId is short form (G-N), try regex match
+                if (matchIndex < 0 && Regex.IsMatch(searchId, @"^G-\d+$", RegexOptions.IgnoreCase))
+                {
+                    var shortPattern = new Regex(
+                        $@"\[{Regex.Escape(searchId)}(-[a-f0-9]+)?\]",
+                        RegexOptions.IgnoreCase);
+                    matchIndex = goals.FindIndex(g => shortPattern.IsMatch(g));
+
+                    // If found, update searchId to the full ID from the matched line
+                    if (matchIndex >= 0)
+                    {
+                        var fullIdMatch = Regex.Match(goals[matchIndex], @"\[(G-\d+(?:-[a-f0-9]+)?)\]", RegexOptions.IgnoreCase);
+                        if (fullIdMatch.Success)
+                            searchId = fullIdMatch.Groups[1].Value;
+                    }
+                }
 
                 if (matchIndex < 0)
                     return $"Error: goal '{goalId}' not found. Use goal_update(action:'list') to see all goal IDs.";
@@ -2556,7 +2584,7 @@ public sealed class ScriniaProjectTools
                     lineNum++;
                     string trimmedGoal = goal.TrimStart('-', '*', ' ');
                     // If the goal doesn't have a structured [G-N] ID, annotate as active
-                    if (!System.Text.RegularExpressions.Regex.IsMatch(trimmedGoal, @"^\[G-\d+\]"))
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(trimmedGoal, @"^\[G-\d+(?:-[a-f0-9]+)?\]"))
                     {
                         sb.AppendLine($"[active] {trimmedGoal}");
                     }
@@ -2715,7 +2743,7 @@ public sealed class ScriniaProjectTools
         string stripped = goalLine.TrimStart('-', '*', ' ');
         // Remove leading [G-N] and [status] brackets if present
         stripped = System.Text.RegularExpressions.Regex.Replace(
-            stripped, @"^\[G-\d+\]\s*\[[\w]+\]\s*", "").Trim();
+            stripped, @"^\[G-\d+(?:-[a-f0-9]+)?\]\s*\[[\w]+\]\s*", "").Trim();
         // Also strip trailing " | Outcome: ..." sections from previously completed lines
         int pipeIdx = stripped.IndexOf(" | Outcome:", StringComparison.OrdinalIgnoreCase);
         if (pipeIdx >= 0) stripped = stripped[..pipeIdx];
@@ -3074,6 +3102,27 @@ public sealed class ScriniaProjectTools
         }
 
         return content;
+    }
+
+    /// <summary>Create merge infrastructure files for multi-user workflows.</summary>
+    [McpServerTool(Name = "setup_hooks"), Description(
+        "Create merge infrastructure files in .scrinia/ for multi-user workflows. " +
+        "Creates .gitattributes and hook scripts if they don't exist.")]
+    public Task<string> SetupHooks(CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir)!;
+
+        ScaffoldMergeInfrastructure(scriniaDir);
+
+        return Task.FromResult(
+            "Merge infrastructure created in .scrinia/hooks/.\n" +
+            "Configure the merge driver:\n" +
+            "  bash: git config merge.scrinia-meta.driver '.scrinia/hooks/scrinia-merge-meta.sh %O %A %B'\n" +
+            "  pwsh: git config merge.scrinia-meta.driver 'pwsh .scrinia/hooks/scrinia-merge-meta.ps1 %O %A %B'\n" +
+            "Install post-merge hook:\n" +
+            "  cp .scrinia/hooks/post-merge .git/hooks/post-merge && chmod +x .git/hooks/post-merge");
     }
 
     private static readonly Dictionary<string, string> BuiltInSkills = new(StringComparer.OrdinalIgnoreCase)
@@ -3655,4 +3704,176 @@ public sealed class ScriniaProjectTools
 
         return result;
     }
+
+    // ── Merge infrastructure scaffolding ─────────────────────────────────────
+
+    private static void ScaffoldMergeInfrastructure(string scriniaDir)
+    {
+        // .gitattributes
+        string gitattributesPath = Path.Combine(scriniaDir, ".gitattributes");
+        if (!File.Exists(gitattributesPath))
+        {
+            File.WriteAllText(gitattributesPath,
+                "# Scrinia memory merge configuration\n" +
+                "*.nmp2 binary\n" +
+                "*.meta.json merge=scrinia-meta\n");
+        }
+
+        // hooks directory
+        string hooksDir = Path.Combine(scriniaDir, "hooks");
+        Directory.CreateDirectory(hooksDir);
+
+        // Merge driver - bash
+        string bashDriver = Path.Combine(hooksDir, "scrinia-merge-meta.sh");
+        if (!File.Exists(bashDriver))
+        {
+            File.WriteAllText(bashDriver, GetBashMergeDriverContent());
+        }
+
+        // Merge driver - PowerShell
+        string psDriver = Path.Combine(hooksDir, "scrinia-merge-meta.ps1");
+        if (!File.Exists(psDriver))
+        {
+            File.WriteAllText(psDriver, GetPowerShellMergeDriverContent());
+        }
+
+        // Post-merge hook
+        string postMerge = Path.Combine(hooksDir, "post-merge");
+        if (!File.Exists(postMerge))
+        {
+            File.WriteAllText(postMerge, GetPostMergeHookContent());
+        }
+    }
+
+    private static string GetBashMergeDriverContent() =>
+        """
+        #!/usr/bin/env bash
+        # scrinia .meta.json merge driver
+        # Unions keywords, takes latest updatedAt, max termFrequencies
+        # Usage: git config merge.scrinia-meta.driver ".scrinia/hooks/scrinia-merge-meta.sh %O %A %B"
+
+        set -euo pipefail
+
+        ANCESTOR="$1"  # %O — common ancestor
+        OURS="$2"      # %A — our version (result written here)
+        THEIRS="$3"    # %B — their version
+
+        # Requires jq for JSON processing
+        if ! command -v jq &>/dev/null; then
+            echo "scrinia merge driver: jq not found, falling back to git merge" >&2
+            exit 1
+        fi
+
+        # Union keywords from both sides (sorted, unique)
+        OURS_KW=$(jq -r '.keywords // [] | .[]' "$OURS" 2>/dev/null | sort -fu)
+        THEIRS_KW=$(jq -r '.keywords // [] | .[]' "$THEIRS" 2>/dev/null | sort -fu)
+        MERGED_KW=$(echo -e "${OURS_KW}\n${THEIRS_KW}" | sort -fu | grep -v '^$')
+
+        # Pick base: latest updatedAt wins
+        OURS_TS=$(jq -r '.updatedAt // .createdAt // ""' "$OURS" 2>/dev/null)
+        THEIRS_TS=$(jq -r '.updatedAt // .createdAt // ""' "$THEIRS" 2>/dev/null)
+
+        if [[ "$THEIRS_TS" > "$OURS_TS" ]]; then
+            BASE="$THEIRS"
+        else
+            BASE="$OURS"
+        fi
+
+        # Build merged keywords as JSON array
+        KW_JSON=$(echo "$MERGED_KW" | jq -R -s 'split("\n") | map(select(length > 0))')
+
+        # Merge termFrequencies: take max value for each key
+        TF_MERGED=$(jq -s '
+          .[0].termFrequencies // {} | to_entries | map({key: .key, value: .value}) as $a |
+          .[1].termFrequencies // {} | to_entries | map({key: .key, value: .value}) as $b |
+          ($a + $b) | group_by(.key) | map({key: .[0].key, value: ([.[].value] | max)}) |
+          from_entries
+        ' "$OURS" "$THEIRS" 2>/dev/null || echo '{}')
+
+        # Write result to OURS path (git expects result there)
+        jq --argjson kw "$KW_JSON" --argjson tf "$TF_MERGED" \
+          '.keywords = $kw | .termFrequencies = $tf' "$BASE" > "${OURS}.tmp" && mv "${OURS}.tmp" "$OURS"
+
+        exit 0
+        """;
+
+    private static string GetPowerShellMergeDriverContent() =>
+        """
+        #!/usr/bin/env pwsh
+        # scrinia .meta.json merge driver (PowerShell)
+        # Usage: git config merge.scrinia-meta.driver "pwsh .scrinia/hooks/scrinia-merge-meta.ps1 %O %A %B"
+
+        param(
+            [string]$Ancestor,  # %O
+            [string]$Ours,      # %A — result written here
+            [string]$Theirs     # %B
+        )
+
+        try {
+            $oursJson = Get-Content $Ours -Raw | ConvertFrom-Json
+            $theirsJson = Get-Content $Theirs -Raw | ConvertFrom-Json
+
+            # Pick base: latest updatedAt
+            $oursTs = if ($oursJson.updatedAt) { [DateTimeOffset]::Parse($oursJson.updatedAt) } else { [DateTimeOffset]::MinValue }
+            $theirsTs = if ($theirsJson.updatedAt) { [DateTimeOffset]::Parse($theirsJson.updatedAt) } else { [DateTimeOffset]::MinValue }
+
+            $base = if ($theirsTs -gt $oursTs) { $theirsJson } else { $oursJson }
+            $other = if ($theirsTs -gt $oursTs) { $oursJson } else { $theirsJson }
+
+            # Union keywords (sorted, case-insensitive unique)
+            $allKw = @()
+            if ($oursJson.keywords) { $allKw += $oursJson.keywords }
+            if ($theirsJson.keywords) { $allKw += $theirsJson.keywords }
+            $base.keywords = $allKw | Sort-Object -Unique
+
+            # Merge termFrequencies (max for shared keys)
+            if ($other.termFrequencies) {
+                $baseTf = @{}
+                if ($base.termFrequencies) {
+                    $base.termFrequencies.PSObject.Properties | ForEach-Object { $baseTf[$_.Name] = $_.Value }
+                }
+                $other.termFrequencies.PSObject.Properties | ForEach-Object {
+                    if ($baseTf.ContainsKey($_.Name)) {
+                        $baseTf[$_.Name] = [Math]::Max($baseTf[$_.Name], $_.Value)
+                    } else {
+                        $baseTf[$_.Name] = $_.Value
+                    }
+                }
+                $base.termFrequencies = [PSCustomObject]$baseTf
+            }
+
+            # Write result
+            $base | ConvertTo-Json -Depth 10 | Set-Content $Ours -Encoding UTF8
+            exit 0
+        }
+        catch {
+            Write-Error "scrinia merge driver failed: $_"
+            exit 1
+        }
+        """;
+
+    private static string GetPostMergeHookContent() =>
+        """
+        #!/usr/bin/env bash
+        # scrinia post-merge hook
+        # Scans .scrinia/ for unresolved merge conflicts after git merge/pull.
+        #
+        # Installation:
+        #   cp .scrinia/hooks/post-merge .git/hooks/post-merge
+        #   chmod +x .git/hooks/post-merge
+        #
+        # Or with symlink (updates automatically):
+        #   ln -s ../../.scrinia/hooks/post-merge .git/hooks/post-merge
+
+        # Check for conflict markers in .scrinia/ files
+        if grep -r -l "<<<<<<< " .scrinia/ 2>/dev/null | head -1 > /dev/null 2>&1; then
+            CONFLICTED=$(grep -r -l "<<<<<<< " .scrinia/ 2>/dev/null | wc -l)
+            echo ""
+            echo "⚠  scrinia: $CONFLICTED file(s) in .scrinia/ have unresolved merge conflicts."
+            echo "   Run reconcile() in your next agent session to resolve them."
+            echo "   Files with conflicts:"
+            grep -r -l "<<<<<<< " .scrinia/ 2>/dev/null | sed 's/^/     /'
+            echo ""
+        fi
+        """;
 }
