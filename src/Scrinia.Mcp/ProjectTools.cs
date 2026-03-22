@@ -3309,7 +3309,7 @@ public sealed class ScriniaProjectTools
             The agent should ask: "Want me to produce a march report for this goal?"
 
             ## Methodology
-            1. `search("findings-registry")` — load the findings registry for sequential IDs
+            1. `concern()` — query active concerns to see current state and determine next IDs
             2. `goal_update(action:"list")` — get all goals with outcomes for the reporting period
             3. `concern(statusFilter:"all")` — get all concerns (active + resolved)
             4. `search("applied-fixes")` — load fix summaries
@@ -3327,7 +3327,7 @@ public sealed class ScriniaProjectTools
 
             ### 3. Findings
             Table with columns: ID, Description, Severity, Status, Resolution
-            Pull from `audit:findings-registry`. Include ALL findings for this goal —
+            Query `concern()` for all findings. Include ALL findings for this goal —
             fixed, dismissed, and accepted. Dismissed findings need rationale.
 
             ### 4. Test Impact
@@ -3360,7 +3360,7 @@ public sealed class ScriniaProjectTools
             ## Methodology
 
             ### Before scanning
-            1. `search("findings-registry")` — load existing findings to get next IDs and avoid duplicates
+            1. `concern()` — query active concerns to see current findings state and determine next IDs
             2. `search("applied-fixes")` — know what's already been fixed
             3. `search("audit-false-positives")` — avoid known false positives
             4. Understand the project: `search("architecture")`, `search("patterns")`
@@ -3380,7 +3380,7 @@ public sealed class ScriniaProjectTools
             to removed features, examples match current API signatures, new features documented.
 
             ### Finding IDs
-            Assign sequential IDs from the findings registry. Never reuse numbers.
+            Use sequenced IDs registered via concern_add. Count existing concern:SEC-*, concern:QAL-*, concern:DOC-* entries via concern() to determine the next available ID. Never reuse numbers.
             - Security: SEC-NNN
             - Code quality: QAL-NNN
             - Documentation: DOC-NNN
@@ -3398,7 +3398,7 @@ public sealed class ScriniaProjectTools
 
             ### Output
             - Register each finding with `concern_add`
-            - Update `audit:findings-registry` with new entries
+            - Query `concern()` for current findings state
             - Present findings table to user with ID, severity, status, resolution
 
             ### Mandatory: Register all findings as concerns
