@@ -1569,10 +1569,10 @@ public sealed class ScriniaMcpToolsTests
     {
         string guide = await Tools().Guide();
 
-        guide.Should().Contain("Chunked retrieval");
+        guide.Should().Contain("Chunks as semantic boundaries");
         guide.Should().Contain("append");
-        guide.Should().Contain("Version history");
-        guide.Should().Contain("Review conditions");
+        guide.Should().Contain("Versioning, review, and context");
+        guide.Should().Contain("reviewAfter");
         guide.Should().Contain("checkpoint");
         guide.Should().Contain("goal-driven");
         guide.Should().Contain("project_init");

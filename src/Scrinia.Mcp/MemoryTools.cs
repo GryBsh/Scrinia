@@ -49,337 +49,116 @@ public sealed class ScriniaMcpTools
         Task.FromResult("""
             # scrinia guide — cognitive toolset for LLM agents
 
-            Scrinia is built on three overlapping capabilities — use them fluidly, not just sequentially:
-
-            **Research** — know before you act. Search existing memories and skills (internal) or investigate
-            the codebase and domain (external). Form hypotheses. Build on what you already believe.
-
-            **Plan & Do** — structure work around goals. Decompose into parallel tasks, execute, verify
-            against your hypothesis. Get user input at judgment calls.
-
-            **Learn** — get better every time. Update beliefs after each phase. Evolve skills from experience.
-            Store what you figured out. The agent that finishes a goal should be smarter than the one that started it.
-
-            These aren't sequential phases — you can research during execution, learn during research,
-            and plan while doing. The tools support all three at any time.
+            Scrinia gives you three capabilities — use them fluidly, not sequentially:
+            - **Research** — search memories and skills, investigate the codebase, form hypotheses
+            - **Plan & Do** — set goals, decompose into tasks, execute via spawned agents, verify
+            - **Learn** — update beliefs, evolve skills, store what you figured out
 
             ## First session setup
-            1. Commit this guide's content to your project's agent file (AGENTS.md, CLAUDE.md, or equivalent)
-            2. If a `.scrinia/` directory exists, call `plan_status()` to check for active goals
-            3. If a project exists but no active goal, ask the user what they'd like to work on → `goal_update(add)`
-            4. If no project exists, call `project_init` when the user's request warrants structured planning
+            1. Commit this guide to your project's agent file (AGENTS.md, CLAUDE.md, or equivalent)
+            2. If `.scrinia/` exists, call `plan_status()` to check for active goals
+            3. If a project exists but no active goal, ask the user what to work on → `goal_update(add)`
+            4. If no project exists, call `project_init` when the user's request warrants planning
 
             ## When to plan vs. just do
-            Not every request needs planning. Use this guide:
-            - **Just do it**: single file change, clear fix, quick question, under ~3 focused edits
-            - **Set a goal**: multiple files, unclear scope, research needed, multi-step work, or the user says "add", "build", "refactor", "audit"
-            - **When in doubt**: ask the user — "This looks like it could be a few changes or a larger effort. Want me to plan this out?"
-            The cost of planning a small task is low. The cost of not planning a large one is high.
+            - **Just do it**: single file change, clear fix, quick question, under ~3 edits
+            - **Set a goal**: multiple files, unclear scope, research needed, multi-step work
+            - **When in doubt**: ask the user
 
-            ## Memory habits — build knowledge every session
-            Whether or not you're in a planning workflow, proactively persist what you learn:
-            - **When you learn something** about the codebase, domain, or tooling → `store(content, "topic:subject")`
-            - **When you fix a bug** → store the root cause and fix pattern so it's not re-investigated
-            - **When you research something** → store the findings, even if the user didn't ask you to
-            - **When the user corrects you** → store the correction as a pattern to follow next time
-            - **When you discover a convention** → store it so future sessions follow it automatically
-            - **When starting work** → `search()` first to check if prior sessions already covered this ground
-            - **Maintain a session log** → `store` or `append` to `sessions:YYYY-MM-DD` as you complete phases
-              and goals. This running log feeds march reports and makes session handoffs seamless.
-            These aren't planning steps — they're habits that make every session smarter than the last.
-            Use topic naming to organize: `patterns:auth`, `bugs:sqlite-locking`, `conventions:naming`, etc.
-            After research-heavy phases or when many memories are created in a session,
-            `skill_load("cartographer")` to discover cross-domain connections that embedding search
-            alone would miss. The cartographer indexes bridges between unrelated vocabulary domains.
+            ## Memory habits
+            - **When you learn something** → `store(content, "topic:subject")`
+            - **When you fix a bug** → store the root cause and fix pattern
+            - **When the user corrects you** → store the correction as a pattern
+            - **When you discover a convention** → store it for future sessions
+            - **When starting work** → `search()` first to check prior sessions
+            - **Maintain a session log** → `store` or `append` to `sessions:YYYY-MM-DD`
+            One concept per chunk — each chunk is independently searchable with its own keywords.
+            Use multiple elements in `store()` to control semantic boundaries, not just size.
 
-            **Scrinia is the single source of truth.** If your platform provides its own memory or note
-            system (Claude auto-memory, Cursor notes, Windsurf memories, etc.), do not use it for project
-            knowledge, behavioral feedback, or preferences. All persistence goes through scrinia so the
-            memory base stays whole and unfractured — accessible to any agent on this project, not locked
-            into one platform.
+            **Scrinia is the single source of truth.** Do not use platform-specific memory systems
+            (Claude auto-memory, Cursor notes, etc.) for project knowledge. All persistence through scrinia.
 
-            ## Skill habits — learn how to do things better
-            Skills capture *how you approach work* — methodology, not facts. Keep them lean:
-            - **Skills are methodology**: what to check, what order, what patterns matter, how to verify
-            - **Memories are knowledge**: what you found, what was fixed, what you believe about the domain
-            - **Skills reference memories**: a skill says `search("applied-fixes")`, not a hardcoded list of fixes
-            - **When you develop an effective approach** to a type of task → `skill_create` with the methodology
-            - **When the user validates your approach** ("that was exactly right") → capture it as a skill
-            - **When starting a familiar task** → `skill_load` to check if you've done this type of work before
-            - **When a skill doesn't work well** → update the methodology, not the facts (facts go in memories)
-            A skill that grows with every use is storing facts that belong in memories.
-            A good skill stays lean and gets smarter because the memories it references grow.
+            ## Skill habits
+            - Skills are methodology (how to work), memories are knowledge (what you know)
+            - `skill_load()` lists available skills; `skill_load(name)` activates one
+            - `skill_create` to capture effective approaches as reusable methodology
+            - Built-in skills: planner, auditor, debugger, chaos-engineer, onboarder,
+              sos-handler, evolutionary, cartographer, march-reporter, merge-safety, qa
+            - **Precedence**: project memory overrides built-in. Built-in for universal features,
+              `skill_create` for project-specific evolution.
 
-            ## Ephemeral scrinia memories (~name)
-            Use `~` prefix for in-session working state that shouldn't persist:
-            - `store(["scratch data"], "~scratch")` — dies when process exits
-            - Great for intermediate results, draft summaries, working context
-            - Promote to persistent with `copy("~scratch", "topic:final-name")`
+            ## Ephemeral memories
+            `~` prefix for in-session working state: `store(["data"], "~scratch")`.
+            Dies on process exit. Promote via `copy("~scratch", "topic:name")`.
 
-            ## Topic organization
-            Use topic:subject naming to organize related scrinia memories:
-            - `store(["content"], "api:auth-flow")` — stored in api/ topic
-            - `store(["content"], "arch:decisions")` — stored in arch/ topic
-            - Topics are auto-discovered — no setup needed
+            ## Topics and naming
+            `topic:subject` organizes memories: `api:auth-flow`, `patterns:retry`, `bugs:sqlite`.
+            Auto-discovered — no setup needed. Names are auto-prefixed with goal ID when active
+            (e.g. `task:g36-4a2-01-1-01`). `search("task:g36")` scopes to one goal.
 
-            ## Chunked retrieval
-            For large scrinia memories, retrieve only what you need:
-            1. `chunk_count("my-memory")` — see how many chunks
-            2. `get_chunk("my-memory", 1)` — read just the first chunk
-            3. Process chunk by chunk to stay within context limits
+            ## Reserved planning topics
+            | Topic | Purpose |
+            |-------|---------|
+            | `project:*` | project context, requirements, state |
+            | `plan:*` | roadmaps |
+            | `task:*` | decomposed tasks (goal-prefixed) |
+            | `learn:*` | retrospectives, beliefs (per-phase files) |
+            | `agent:*` | behavioral norms |
+            | `research:*` | investigation findings (goal-prefixed) |
+            | `concern:*` | tracked risks |
+            | `skill:*` | reusable specialist prompts |
+            | `backlog:*` | deferred work and future ideas |
 
-            ## Incremental capture with append
-            Build up scrinia memories incrementally — each append adds a new independently retrievable chunk:
-            - `append("New finding here", "session-notes")` — adds as a new chunk
-            - Creates the scrinia memory if it doesn't exist yet
-            - Great for session journals, running logs, and incremental notes
-            - Each appended chunk is individually indexed for search
+            Use `excludeTopics="plan,task,project,learn,backlog"` to hide planning data.
 
-            ## Context compression
-            When you gather large amounts of information during research:
-            1. Summarize your findings into a concise document
-            2. `store([summary], "topic:finding-name")` — persist for future sessions
-            3. Later: `search("finding")` → `show("topic:finding-name")` to recall
-            This lets you carry knowledge across sessions without re-researching.
+            ## Chunks as semantic boundaries
+            Use `show(name)` for full content, `show(name, chunk=2)` for a specific chunk.
+            Each chunk in a multi-element `store()` call is independently retrievable and searchable.
+            Design chunks around concepts, not size.
 
-            ## Version history
-            When you overwrite an existing scrinia memory, the previous version is archived:
-            - Stored in `versions/` subdirectory with timestamp suffix
-            - No manual action needed — happens automatically on store/append
+            ## Versioning, review, and context
+            - Overwriting a memory auto-archives the previous version
+            - `store(..., reviewAfter="2026-06-01")` or `reviewWhen="when auth changes"` for staleness
+            - `store(["state..."], "~checkpoint")` before large tasks to survive context compression
 
-            ## Review conditions
-            Flag scrinia memories that may become stale:
-            - `store(["content"], "api:endpoints", reviewAfter="2026-06-01")` — date-based
-            - `store(["content"], "auth:flow", reviewWhen="when auth system changes")` — condition-based
-            - `list()` shows a summary with topics, keywords, and stats
-            - `list(mode="full")` shows all entries with `[stale]` or `[review?]` markers
-
-            ## Context preservation (~checkpoints)
-            Long conversations get compressed by your host platform. Use ephemeral scrinia checkpoints to survive:
-            - Before a large task or after a milestone, store your current state:
-              `store(["Task: ...\nKey findings: ...\nNext steps: ..."], "~checkpoint")`
-            - After context compaction, restore your bearings:
-              `list(scopes="ephemeral")` then `show("~checkpoint")`
-            - Update the checkpoint as you make progress — overwrite with fresh state
-            - **When to checkpoint**: before large multi-step tasks, after completing milestones,
-              when the conversation is getting long, or before operations that generate lots of output
-            - If you feel disoriented or can't remember what you were doing, call `plan_resume()`
-              — it rebuilds your full context from stored planning state
-
-            ## Cross-project sharing
-            Export topics as portable .scrinia-bundle files:
-            1. `export(["api", "arch"])` — creates a .scrinia-bundle in .scrinia/exports/
-            2. Copy the bundle to another project
-            3. `import("path/to/bundle.scrinia-bundle")` — restores all topics
-            Useful for sharing team conventions, API patterns, or onboarding knowledge.
+            ## When to store vs. not
+            Store: anything you'd want to know in a fresh session tomorrow.
+            Don't store: transient working state (use `~ephemeral`), things derivable from code/git.
+            Rule of thumb: if you had to figure it out, store it.
 
             ## Workspace changes
-            Scrinia tools (store, append, forget, import, copy) write to the `.scrinia/` directory
-            in the workspace root. These file changes are a direct result of your tool calls —
-            treat them as changes you made. Include `.scrinia/` changes in your commits alongside
-            other project changes.
+            Scrinia tools write to `.scrinia/` — treat those changes as yours. Include in commits.
 
-            ## When to store vs. not store
-            **Store in scrinia:** anything you'd want to know if you started a fresh session tomorrow —
-            patterns, decisions, bug fixes, conventions, API behaviors, domain knowledge, user corrections.
-            **Don't store:** transient working state (use ~ephemeral instead).
-            **Exception:** use `~checkpoint` to preserve working context across context compactions.
-            **Rule of thumb:** if you had to figure it out, store it. Future sessions shouldn't re-derive what you already know.
+            ## Project planning — the goal-driven cycle
 
-            ## Memory granularity
-            - **One concept per memory**: `security:applied-fixes` not `everything-about-security`
-            - **Use append for accumulation**: `append(new_fix, "security:applied-fixes")` adds a chunk, keeps it searchable
-            - **Use store for replacement**: `store(updated_content, "arch:overview")` when the whole picture changed
-            - **Topics group related memories**: `security:applied-fixes`, `security:patterns`, `security:concerns` — not one giant `security` memory
-            - **Name for searchability**: will `search("auth fix")` find this? Use descriptive names and keywords
-            - **When in doubt, smaller is better**: two focused memories beat one sprawling one
+            **1. Pre-plan** → scan codebase for concerns → `concern_add`
+            **2. Set a goal** → `goal_update(add)` — clarify scope with user first
+            **3. Research** → `research_start` → investigate → `research_complete` with hypothesis
+            **4. Plan** → `plan_requirements` → `plan_roadmap`
+            **5. Decompose & execute**:
+              - `skill_load("planner")` before `plan_tasks` — mandatory
+              - The primary agent orchestrates — it does not execute tasks directly
+              - Spawn an agent for every task, including single-task waves
+              - `task_next` → spawn agents → `task_complete`
+              - Use `run_in_background: true` for execution agents
+            **6. Verify** → `plan_verify` — record evidence (QA skill validates)
+            **7. Learn** → `plan_retrospective` — retrospectives stored per-phase
+            **8. Complete** → produce a march report (mandatory: `skill_load("march-reporter")` → docs/reports/)
+              → `goal_update(complete)` — auto-appends session log, warns if march report missing
 
-            ## Test count tracking
-            Use `codeRefs` on testing memories to point at test `.csproj` files.
-            When `check_drift()` flags a `.csproj` as changed, the evolutionary skill
-            knows to re-run `dotnet test` and update counts automatically.
-            Example: `store(content, "testing:infrastructure", codeRefs=["tests/Scrinia.Tests/Scrinia.Tests.csproj", ...])`
-
-            ## Project planning tools
-            Scrinia includes 22 planning tools for structured project lifecycle management.
-            Plans are stored as standard scrinia memories with reserved topic conventions.
-            The workflow is goal-driven — you initialize once, then cycle through goals.
-
-            ### One-time setup
-            `project_init(context)` — call once per workspace. In an existing codebase, this triggers
-            a pre-planning phase where you should scan for concerns and build knowledge before setting goals.
-
-            ### The goal-driven cycle
-
-            **1. Pre-plan** (existing codebase) — understand what you're working with:
-            - Scan the codebase for risks, tech debt, issues → `concern_add(description, severity, phaseScope)`
-            - Capture architecture patterns and conventions → `store(content, "topic:subject", keywords=[...])`
-            - Concerns and knowledge persist across goals — they accumulate over the project's lifetime.
-            Skip this step for greenfield projects or when you already have context.
-
-            **2. Set a goal** — what are we working toward?
-            - `goal_update(action:"add", description:"...")` — the goal drives everything that follows.
-            - Goals are the top-level unit of work. Requirements, roadmap, and tasks all serve the goal.
-            - **Before planning, clarify with the user**: scope (in/out), success criteria, constraints, priority.
-            Ambiguous goals lead to wasted work — invest in clarity upfront.
-
-            **3. Research & hypothesize** — investigate, then state what you believe will work:
-            - `research_start(phaseId, topic, question)` → investigate → `research_complete(phaseId, topic, findings, hypothesis)`
-            - The hypothesis states your proposed approach and what would invalidate it
-            - Research findings + hypothesis inform task decomposition
-            - **Produce a change manifest**: for modification tasks, identify exact change sites (file paths,
-            function names, line ranges, the pattern to apply). This enables specific task descriptions
-            and effective parallelism. For greenfield tasks, a spec is sufficient.
-            - Discover new concerns during research? → `concern_add`
-            - Skip research when the path is already clear.
-
-            **4. Plan** — define requirements and roadmap:
-            - `plan_requirements(requirements)` — REQ-IDs derived from the goal + research + concerns
-            - `plan_roadmap(roadmap)` — phases mapping to REQ-IDs with success criteria
-
-            **5. Decompose & execute** — break phases into tasks and work through them:
-            - `plan_tasks(phaseId, tasks)` — tasks with dependencies (waves computed automatically)
-            - **Tasks should be agent-executable**: specific enough that a focused agent can make the change
-            without exploring the codebase. For modifications: include file path, function/block, and
-            transformation. For new files: include spec and interfaces. Research found the details —
-            carry them through to tasks.
-            - `task_next(phaseId)` → spawn a parallel agent for each task → `task_complete(taskName, outcome)`
-            - The primary agent orchestrates (plan, spawn, monitor, handle SOS, verify) — it does not
-            execute tasks directly. Spawn an agent for every task, including single-task waves. This keeps
-            the primary available for user interaction and gives agents an SOS path.
-            - `plan_status()` — check progress (computed live from task data)
-            - During execution: `concern_add` for new risks, `store()` for things you learn
-            - **Parallelize aggressively**: when task_next returns multiple tasks, spawn one agent per task.
-            Use worktree isolation for tasks that touch overlapping files. Use background execution
-            for long-running work so you can continue with other tasks.
-            `skill_load("planner")` before `plan_tasks` — it produces agent specs with file scoping,
-            isolation decisions, and SOS criteria. Without it, task descriptions lack the detail that
-            execution agents need.
-            - **Agent SOS**: if a spawned agent hits a wall (needs expertise, needs a new skill, or
-            discovers the task needs decomposition), it returns an SOS signal rather than a poor result.
-            Use `skill_load("sos-handler")` to triage and replan.
-            - **Interrogate the design at each task**: don't just execute — ask "what's missing?" and
-            "what would a downstream consumer expect?" before marking complete. Surface gaps proactively.
-            - **Goals serve the project, not the other way around.** Task acceptance criteria won't capture
-            every project-level implication. During execution, maintain awareness: did this change introduce
-            a new permission, config setting, endpoint, or API surface? Does documentation, security posture,
-            or the project's public contract need updating? Don't leave work for a future audit to catch.
-
-            **6. Verify** — did the phase achieve its goal? Did your hypothesis hold?
-            - `plan_verify(phaseId)` — surfaces your hypothesis + criteria checklist, then record evidence
-            - Evaluate: did criteria pass AND does the evidence support your hypothesis?
-            - If gaps: `plan_gaps(phaseId, failedCriteria)` → fix tasks → re-verify
-            - If the hypothesis was wrong (approach fundamentally flawed, not just gaps):
-              stop, discuss with the user, revise the approach, and replan from step 3 (research).
-              Don't keep executing a plan built on a wrong assumption.
-            - `concern_resolve(concernName, resolution)` — close addressed concerns
-            - **Track findings with sequential IDs** (e.g. SEC-001, QAL-001, DOC-001) stored in a findings
-            registry (`audit:findings-registry`). Never reuse numbers. This enables regression tracking
-            across goals and consistent reference numbers in release document sets.
-            - **Remediate in parallel**: after validating findings, group by file and spawn one fix agent
-            per file group. The audit already identified exact locations — carry them through to fix agents.
-            This is not a judgment call; it is the procedure.
-            For multi-user workflows, split findings by category (audit:findings-sec, audit:findings-qal,
-            audit:findings-doc) rather than one monolithic registry, to prevent merge conflicts.
-
-            **7. Learn & distill** — record what happened and update your understanding:
-            - `plan_retrospective(phaseId, whatWorked, whatFailed, lessons, beliefsUpdated)` — accumulates across phases
-            - `beliefsUpdated`: what do you now understand differently? (auto-stored as topical memories)
-            - Update or create skills (`skill_create`) with lessons from this phase
-            - `plan_profile(profile)` — store project-level agent behavioral norms
-
-            **8. Complete the goal** — distill, report, then start the next one:
-            - Distill valuable findings into topical memories (`store`) so future goals start smarter
-            - Update skills with accumulated lessons — this is the learning loop
-            - `goal_update(action:"complete", goalId, outcome)` — mark the goal done
-            - **Produce a march report**: `skill_load("march-reporter")` — produce a human-readable goal
-            summary document in docs/reports/. This is mandatory, not optional — the report is the
-            audit trail. Update the session memory (`sessions:YYYY-MM-DD`) to match.
-            - Planning artifacts (task:*, plan:*, research:*) can be cleaned up — the learnings live in memories and skills now
-            - Set the next goal → back to step 2
-
-            **Recovery** (at any point):
-            - `plan_resume()` — restore full context after context loss (rebuilds state if needed)
+            ## Recovery
+            - `plan_resume()` — rebuild context after loss (warns if merge conflicts detected)
             - `plan_status()` — quick progress check
-            - `concern(phaseFilter?)` — list active concerns
-            - `search("agent:")` — load project behavioral norms (agent:profile, agent:execution-policy).
-            These evolve through retrospectives like skills do.
-
-            **Skills** (stored as skill:* memories, portable across sessions and projects):
-            - `skill_create(skillName, scaffold, instructions?, tools?)` — create a specialist skill with project-specific context
-            - `skill_load(skillName?)` — list available skills or load one for use as a subagent prompt
-            Skills evolve from experience: retrospective lessons feed back into skill updates.
-            Use skill_load before research to check for existing specialists.
-            Built-in skills (9): planner (wave execution), auditor (security/quality/docs/ops audit),
-            debugger (scientific method debugging), chaos-engineer (operational resilience probing),
-            onboarder (codebase mental model building), sos-handler (agent SOS triage),
-            evolutionary (proactive knowledge and skill improvement), cartographer (cross-domain connection indexing),
-            march-reporter (goal summary documents). Use `skill_load()` with no args to list all available skills.
-
-            ## Skill precedence
-            `skill_load(name)` checks .scrinia/ project memory first — if `skill:{name}` exists there,
-            it loads as a project override. Otherwise the built-in skill is used.
-            - **Built-in skills** are product features — all scrinia projects benefit from them.
-              Update these in the codebase (ProjectTools.cs BuiltInSkills) when the improvement is universal.
-            - **Project overrides** via `skill_create` are for project-specific behavioral evolution
-              (e.g., adding a backlog scan step to the evolutionary skill for this project only).
-            - **When in doubt**: if only this project needs the behavior, use `skill_create`. If all
-              projects would benefit, update the built-in and remove the override.
-
-            **Reserved planning topics** — avoid using these prefixes for general knowledge:
-            - `project:*` — project context, requirements, state (e.g. `project:context`, `project:state`)
-            - `plan:*` — roadmaps (e.g. `plan:roadmap`)
-            - `task:*` — decomposed tasks with goal prefix (e.g. `task:g4-01-1-03`)
-            - `learn:*` — retrospectives, execution outcomes, and updated beliefs
-            - `agent:*` — project-level agent behavioral norms (e.g. `agent:profile`)
-            - `research:*` — investigation findings with goal prefix (e.g. `research:g4-01-auth`)
-            - `concern:*` — tracked risks and issues
-            - `skill:*` — reusable specialist prompts
-            - `backlog:*` — deferred work and future ideas (e.g. `backlog:resilience`, `backlog:auth`, `backlog:scrinia`)
-            Use `excludeTopics="plan,task,project,learn,backlog"` on `list`/`search` to hide planning from knowledge queries.
-
-            Task and research memory names are auto-prefixed with the active goal ID
-            (e.g. `task:g4-01-1-01`, `research:g4-01-auth`). This makes every name
-            self-describing — `search("task:g4")` scopes instantly to one goal.
-
-            ## Backlog management
-            Use `backlog:*` to track deferred work, accepted low-priority findings, and future ideas.
-            - `store([description], "backlog:domain", keywords=[...])` to add items
-            - `search("backlog:")` to review before setting new goals
-            - Items promoted to goals via `goal_update(add)` — reference the backlog entry
-            - The evolutionary skill scans backlog for items unblocked by recent changes
-            Examples: `backlog:resilience` (deferred quality findings), `backlog:scrinia` (product improvements)
+            - `search("agent:")` — load behavioral norms (agent:profile, agent:execution-policy)
 
             ## Multi-user merge safety
-            When multiple developers work on the same repo, .scrinia/ files merge via git.
-            These conventions prevent merge conflicts:
-            - **Per-phase retrospectives**: `learn:retro-gN-phaseId` (one file per phase, not one growing monolith)
-            - **Per-category findings**: `audit:findings-sec`, `audit:findings-qal`, `audit:findings-doc` (split by domain)
-            - **Per-session logs**: `sessions:YYYY-MM-DD` (already one per session)
-            - **Sorted metadata**: keywords and term frequencies in .meta.json are sorted alphabetically
-              for deterministic git diffs — no noise from insertion order changes.
-            - **Per-file sidecars**: each memory has its own .meta.json, so different memories
-              modified by different developers never conflict.
-            Two developers modifying the *same* memory will still conflict — use `reconcile()` after merge.
+            Sorted metadata, per-phase retros, per-file sidecars prevent most conflicts.
+            After merging: `reconcile()` → resolve each conflict → verify clean.
+            For team setup (merge driver, hooks): see docs/multi-user-setup.md
 
-            After pulling/merging branches:
-            1. `reconcile()` — scans for conflicts, auto-resolves .meta.json where possible
-            2. For each remaining conflict: review the decoded content, then `resolve_conflict(id, "ours"|"theirs"|"merged")`
-            3. `reconcile()` again — verify 0 conflicts remaining
-            This workflow is mandatory after any merge that touches .scrinia/ files.
-            For team setup (merge driver, hooks, and workflow), see docs/multi-user-setup.md.
-
-            ## Agent learning
-            Learning happens through the full cycle, not just retrospectives:
-            - Phase retrospectives accumulate in `learn:execution-outcomes` (searchable, provenance:agent keyword)
-            - Skills evolve with each goal — update them after retrospectives
-            - Topical memories grow as you distill findings after each goal
-            - Agent behavioral norms persist in `agent:profile` across sessions
-            The result: each goal starts with better context than the last.
-            Memories authored via plan_retrospective and plan_profile carry `provenance:agent` keyword.
-            After completing a goal, `skill_load("evolutionary")` to proactively scan for stale memories,
-            skill drift, emergent patterns, and behavioral norm updates. Also run periodically on session
-            start to catch staleness from time passing between sessions.
+            ## Test count tracking
+            Use `codeRefs` on testing memories pointing to `.csproj` files.
+            `list(mode="drift")` flags when test projects change → evolutionary updates counts.
             """);
 
     [McpServerTool(Name = "show"), Description(

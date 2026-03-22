@@ -212,10 +212,10 @@ public sealed class OrganicAdoptionTests : IDisposable
 
         guide.Should().Contain("concern_add",
             "guide() should mention the concern_add tool");
-        guide.Should().Contain("concern_resolve",
-            "guide() should mention the concern_resolve tool");
+        guide.Should().Contain("tracked risks",
+            "guide() should describe concerns as tracked risks");
         guide.Should().Contain("concern",
-            "guide() should mention the concern query tool");
+            "guide() should mention the concern topic");
     }
 
     [Fact]

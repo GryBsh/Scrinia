@@ -1674,13 +1674,13 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         string result = await mcpTools.Guide(CancellationToken.None);
 
-        // Assert — must mention learning memory topics and provenance keyword
-        result.Should().Contain("learn:execution-outcomes",
-            "guide() must mention learn:execution-outcomes learning memory topic");
+        // Assert — must mention learning memory topics and retrospective tool
+        result.Should().Contain("learn:*",
+            "guide() must mention learn:* reserved planning topic");
         result.Should().Contain("agent:profile",
             "guide() must mention agent:profile learning memory topic");
-        result.Should().Contain("provenance:agent",
-            "guide() must mention provenance:agent keyword");
+        result.Should().Contain("plan_retrospective",
+            "guide() must mention plan_retrospective tool");
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────
