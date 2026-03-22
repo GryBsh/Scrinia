@@ -274,6 +274,8 @@ public sealed class ScriniaMcpTools
             - **Remediate in parallel**: after validating findings, group by file and spawn one fix agent
             per file group. The audit already identified exact locations — carry them through to fix agents.
             This is not a judgment call; it is the procedure.
+            For multi-user workflows, split findings by category (audit:findings-sec, audit:findings-qal,
+            audit:findings-doc) rather than one monolithic registry, to prevent merge conflicts.
 
             **7. Learn & distill** — record what happened and update your understanding:
             - `plan_retrospective(phaseId, whatWorked, whatFailed, lessons, beliefsUpdated)` — accumulates across phases
@@ -340,6 +342,18 @@ public sealed class ScriniaMcpTools
             - Items promoted to goals via `goal_update(add)` — reference the backlog entry
             - The evolutionary skill scans backlog for items unblocked by recent changes
             Examples: `backlog:resilience` (deferred quality findings), `backlog:scrinia` (product improvements)
+
+            ## Multi-user merge safety
+            When multiple developers work on the same repo, .scrinia/ files merge via git.
+            These conventions prevent merge conflicts:
+            - **Per-phase retrospectives**: `learn:retro-gN-phaseId` (one file per phase, not one growing monolith)
+            - **Per-category findings**: `audit:findings-sec`, `audit:findings-qal`, `audit:findings-doc` (split by domain)
+            - **Per-session logs**: `sessions:YYYY-MM-DD` (already one per session)
+            - **Sorted metadata**: keywords and term frequencies in .meta.json are sorted alphabetically
+              for deterministic git diffs — no noise from insertion order changes.
+            - **Per-file sidecars**: each memory has its own .meta.json, so different memories
+              modified by different developers never conflict.
+            Two developers modifying the *same* memory will still conflict — use `reconcile()` after merge.
 
             ## Agent learning
             Learning happens through the full cycle, not just retrospectives:

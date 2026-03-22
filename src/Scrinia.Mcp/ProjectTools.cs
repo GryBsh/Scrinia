@@ -2163,8 +2163,21 @@ public sealed class ScriniaProjectTools
             beliefsSection + "\n\n" +
             $"## Provenance\nAuthored by agent via plan_retrospective. Keyword: provenance:agent";
 
-        await AppendToExecutionLogAsync(store, "learn:execution-outcomes",
-            retroContent, keywords: ["provenance:agent"], cancellationToken);
+        // Fetch goal ID early so per-phase file name includes it
+        string? retroGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+
+        string goalNum = "0";
+        if (retroGoalId is not null)
+        {
+            var gm = System.Text.RegularExpressions.Regex.Match(retroGoalId, @"G-(\d+)");
+            if (gm.Success) goalNum = gm.Groups[1].Value;
+        }
+        string retroMemoryName = $"learn:retro-g{goalNum}-{phaseId}";
+
+        await WritePlanningMemoryAsync(store, retroMemoryName, retroContent,
+            archiveExisting: true,
+            keywords: ["provenance:agent", $"phase:{phaseId}", $"goal:{retroGoalId ?? "none"}"],
+            cancellationToken);
 
         // Auto-store beliefs as topical memories (Change 4: structural distillation)
         if (!string.IsNullOrWhiteSpace(beliefsUpdated))
@@ -2179,7 +2192,6 @@ public sealed class ScriniaProjectTools
         }
 
         // Determine next step: more phases to execute, or goal completion?
-        string? retroGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
         string retroNextStep = "";
         try
         {
@@ -2264,8 +2276,8 @@ public sealed class ScriniaProjectTools
             nextStep: retroNextStep.TrimStart('\n'),
             cancellationToken);
 
-        string response = $"Phase {phaseId} retrospective stored in learn:execution-outcomes. " +
-            "Searchable via standard search. Use get_chunk() to retrieve individual phase retrospectives.\n" +
+        string response = $"Phase {phaseId} retrospective stored in {retroMemoryName}. " +
+            "Searchable via standard search.\n" +
             "Update your session log: append to or store sessions:YYYY-MM-DD with this phase's outcome." +
             retroNextStep;
 

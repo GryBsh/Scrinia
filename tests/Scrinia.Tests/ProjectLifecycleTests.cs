@@ -1442,12 +1442,12 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", cancellationToken: CancellationToken.None);
 
-        // Assert — learn:execution-outcomes must exist in index
+        // Assert — per-phase retro file must exist in learn scope
         var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("learn:execution-outcomes");
+        var (scope, _) = store.ParseQualifiedName("learn:placeholder");
         var entries = store.LoadIndex(scope);
-        entries.Should().Contain(e => e.Name == subject,
-            "plan_retrospective should store learn:execution-outcomes memory");
+        entries.Should().Contain(e => e.Name.StartsWith("retro-g") && e.Name.EndsWith("-01"),
+            "plan_retrospective should store a per-phase learn:retro-g*-01 memory");
     }
 
     [Fact]
@@ -1461,7 +1461,7 @@ public sealed class ProjectLifecycleTests : IDisposable
 
         // Assert — content must contain all required section headers
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "learn:execution-outcomes");
+        string content = await ReadMemoryText(store, "learn:retro-g0-01");
         content.Should().Contain("## What Worked", "retrospective content must include '## What Worked' section");
         content.Should().Contain("## What Failed", "retrospective content must include '## What Failed' section");
         content.Should().Contain("## Lessons", "retrospective content must include '## Lessons' section");
@@ -1479,11 +1479,11 @@ public sealed class ProjectLifecycleTests : IDisposable
 
         // Assert — index entry Keywords must contain "provenance:agent"
         var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("learn:execution-outcomes");
+        var (scope, _) = store.ParseQualifiedName("learn:placeholder");
         var entries = store.LoadIndex(scope);
-        var entry = entries.First(e => e.Name == subject);
+        var entry = entries.First(e => e.Name.StartsWith("retro-g") && e.Name.EndsWith("-01"));
         entry.Keywords.Should().Contain("provenance:agent",
-            "learn:execution-outcomes must have provenance:agent keyword");
+            "per-phase retro must have provenance:agent keyword");
     }
 
     [Fact]
@@ -1492,17 +1492,17 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Arrange
         await SetupProjectAndRoadmap();
 
-        // Act — two calls for different phases
+        // Act — two calls for different phases produce separate files
         await _tools.PlanRetrospective("01", "Worked well", "Minor issues", "Lessons from 01", cancellationToken: CancellationToken.None);
         await _tools.PlanRetrospective("02", "Worked well", "Some failures", "Lessons from 02", cancellationToken: CancellationToken.None);
 
-        // Assert — artifact must have 2 chunks (append, not overwrite)
+        // Assert — each phase gets its own memory file
         var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("learn:execution-outcomes");
-        string artifact = await store.ReadArtifactAsync(subject, scope);
-        int chunkCount = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.GetChunkCount(artifact);
-        chunkCount.Should().Be(2,
-            "two plan_retrospective calls should produce a 2-chunk artifact (append, not overwrite)");
+        var (scope, _) = store.ParseQualifiedName("learn:placeholder");
+        var entries = store.LoadIndex(scope);
+        var retroEntries = entries.Where(e => e.Name.StartsWith("retro-g")).ToList();
+        retroEntries.Should().HaveCount(2,
+            "two plan_retrospective calls for different phases should produce two separate retro files");
     }
 
     [Fact]
@@ -1516,7 +1516,7 @@ public sealed class ProjectLifecycleTests : IDisposable
 
         // Assert — content must reference phase ID
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "learn:execution-outcomes");
+        string content = await ReadMemoryText(store, "learn:retro-g0-01");
         content.Should().ContainAny("Phase 01", "## Phase 01 Retrospective",
             "retrospective content must reference the phase ID '01'");
     }
@@ -1532,7 +1532,7 @@ public sealed class ProjectLifecycleTests : IDisposable
 
         // Assert — content must contain ISO 8601 date pattern YYYY-MM-DD
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "learn:execution-outcomes");
+        string content = await ReadMemoryText(store, "learn:retro-g0-01");
         content.Should().MatchRegex(@"\d{4}-\d{2}-\d{2}",
             "retrospective content must contain an ISO 8601 date pattern");
     }
@@ -1562,12 +1562,12 @@ public sealed class ProjectLifecycleTests : IDisposable
         var store = MemoryStoreContext.Current!;
         var results = store.SearchAll("retrospective", scopes: null, limit: 10);
 
-        // Assert — learn:execution-outcomes should appear in results
+        // Assert — per-phase retro file should appear in results
         bool found = results
             .OfType<Scrinia.Core.Search.EntryResult>()
-            .Any(er => er.Item.Entry.Name == "execution-outcomes");
+            .Any(er => er.Item.Entry.Name.StartsWith("retro-g"));
         found.Should().BeTrue(
-            "learn:execution-outcomes must be discoverable via standard search for 'retrospective'");
+            "per-phase retro file must be discoverable via standard search for 'retrospective'");
     }
 
     // -- plan_profile tests (LEARN-02) --
