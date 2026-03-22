@@ -406,6 +406,14 @@ public sealed class ScriniaProjectTools
         int waveCount = computedWaves.Values.DefaultIfEmpty(1).Max();
         var createdNames = new List<string>();
 
+        // Compute goal prefix once before the loop
+        string goalPrefix = "";
+        if (activeGoalId is not null)
+        {
+            var m = Regex.Match(activeGoalId, @"G-(\d+)");
+            if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
+        }
+
         foreach (var task in parsedTasks)
         {
             int wave = computedWaves[task.Id];
@@ -422,10 +430,10 @@ public sealed class ScriniaProjectTools
             foreach (string dep in task.DependsOn)
             {
                 // Store full task name as dependency for reliable resolution.
-                // If dep is a raw ID (e.g., "01"), resolve to full name "phaseId-wave-id".
-                // If dep is already a full name (e.g., "01-1-01"), pass through as-is.
+                // If dep is a raw ID (e.g., "01"), resolve to full name "{goalPrefix}phaseId-wave-id".
+                // If dep is already a full name (e.g., "g1-01-1-01"), pass through as-is.
                 if (computedWaves.TryGetValue(dep, out int depWave))
-                    keywords.Add($"depends_on:{phaseId}-{depWave}-{dep}");
+                    keywords.Add($"depends_on:{goalPrefix}{phaseId}-{depWave}-{dep}");
                 else
                     keywords.Add($"depends_on:{dep}"); // already full name or external ref
             }
@@ -435,8 +443,8 @@ public sealed class ScriniaProjectTools
                     keywords.Add($"files:{file.Trim()}");
             }
 
-            // Task naming: task:{phaseId}-{wave}-{id}
-            string taskName = $"task:{phaseId}-{wave}-{task.Id}";
+            // Task naming: task:{goalPrefix}{phaseId}-{wave}-{id}
+            string taskName = $"task:{goalPrefix}{phaseId}-{wave}-{task.Id}";
 
             await WritePlanningMemoryAsync(store, taskName, task.Content,
                 archiveExisting: false, keywords: [.. keywords], cancellationToken);
@@ -1148,7 +1156,14 @@ public sealed class ScriniaProjectTools
             return "Error: no project initialized. Run project_init first.";
         }
 
-        string memoryName = $"research:{phaseId}-{topic}";
+        string? goalId = await GetActiveGoalIdAsync(store, cancellationToken);
+        string goalPrefix = "";
+        if (goalId is not null)
+        {
+            var m = Regex.Match(goalId, @"G-(\d+)");
+            if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
+        }
+        string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
         string content =
             $"## Research Investigation\n" +
             $"Phase: {phaseId}\n" +
@@ -1251,8 +1266,15 @@ public sealed class ScriniaProjectTools
     {
         var store = CurrentStore;
 
-        // Verify research:{phaseId}-{topic} exists with status:active
-        string memoryName = $"research:{phaseId}-{topic}";
+        // Verify research:{goalPrefix}{phaseId}-{topic} exists with status:active
+        string? goalId = await GetActiveGoalIdAsync(store, cancellationToken);
+        string goalPrefix = "";
+        if (goalId is not null)
+        {
+            var m = Regex.Match(goalId, @"G-(\d+)");
+            if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
+        }
+        string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
         var (researchScope, researchSubject) = store.ParseQualifiedName(memoryName);
         var allEntries = store.LoadIndex(researchScope);
         var existing = allEntries.FirstOrDefault(e => e.Name == researchSubject);
@@ -2318,8 +2340,16 @@ public sealed class ScriniaProjectTools
                 // First mutation: lock original count if not yet set
                 int lockedOriginalCount = originalCount >= 0 ? originalCount : goals.Count;
 
-                // Assign sequential ID across all goals (raw init goals + structured goals)
-                int nextId = goals.Count + 1;
+                // Assign sequential ID: scan for highest existing G-N to avoid reuse after cleanup.
+                // Also use total goal count as a floor — init goals lack [G-N] markers.
+                int maxId = 0;
+                foreach (var goal in goals)
+                {
+                    var idMatch = Regex.Match(goal, @"\[G-(\d+)\]");
+                    if (idMatch.Success && int.TryParse(idMatch.Groups[1].Value, out int id) && id > maxId)
+                        maxId = id;
+                }
+                int nextId = Math.Max(maxId, goals.Count) + 1;
                 string newGoalLine = $"- [G-{nextId}] [active] {description}";
                 goals.Add(newGoalLine);
 

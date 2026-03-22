@@ -320,14 +320,18 @@ public sealed class ScriniaMcpTools
             **Reserved planning topics** — avoid using these prefixes for general knowledge:
             - `project:*` — project context, requirements, state (e.g. `project:context`, `project:state`)
             - `plan:*` — roadmaps (e.g. `plan:roadmap`)
-            - `task:*` — decomposed tasks with keyword metadata (e.g. `task:01-1-03`)
+            - `task:*` — decomposed tasks with goal prefix (e.g. `task:g4-01-1-03`)
             - `learn:*` — retrospectives, execution outcomes, and updated beliefs
             - `agent:*` — project-level agent behavioral norms (e.g. `agent:profile`)
-            - `research:*` — investigation findings and hypotheses
+            - `research:*` — investigation findings with goal prefix (e.g. `research:g4-01-auth`)
             - `concern:*` — tracked risks and issues
             - `skill:*` — reusable specialist prompts
             - `backlog:*` — deferred work and future ideas (e.g. `backlog:resilience`, `backlog:auth`, `backlog:scrinia`)
             Use `excludeTopics="plan,task,project,learn,backlog"` on `list`/`search` to hide planning from knowledge queries.
+
+            Task and research memory names are auto-prefixed with the active goal ID
+            (e.g. `task:g4-01-1-01`, `research:g4-01-auth`). This makes every name
+            self-describing — `search("task:g4")` scopes instantly to one goal.
 
             ## Backlog management
             Use `backlog:*` to track deferred work, accepted low-priority findings, and future ideas.
