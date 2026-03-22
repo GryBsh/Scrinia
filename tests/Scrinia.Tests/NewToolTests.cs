@@ -9,10 +9,12 @@ using Scrinia.Mcp;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Unit tests for three new MCP tools:
+/// Unit tests for MCP tools:
 ///   update_meta  — merge keywords and update description without re-encoding
 ///   plan_tasks   — file-conflict detection across same-wave tasks
-///   backlog_promote — promote a backlog entry to a new goal
+///   compact      — merge chunks into fewer chunks
+///   reconcile    — scan and resolve merge conflicts (including former resolve_conflict)
+///   skill version reconciliation
 /// </summary>
 public sealed class NewToolTests : IDisposable
 {
@@ -191,48 +193,6 @@ public sealed class NewToolTests : IDisposable
             "tasks should be created normally when no Files: lines are present");
     }
 
-    // ── backlog_promote tests ───────────────────────────────────────────────
-
-    [Fact]
-    public async Task BacklogPromote_PromotesBacklogEntryToGoal()
-    {
-        // Arrange — set up project context (required for goal_update)
-        await _projTools.ProjectInit("Goals: test backlog promotion", cancellationToken: CancellationToken.None);
-
-        // Store a backlog entry
-        await _memTools.Store(
-            ["Deferred resilience work"],
-            "backlog:test-promote",
-            description: "Test backlog item");
-
-        // Act
-        string result = await _projTools.BacklogPromote("backlog:test-promote",
-            cancellationToken: CancellationToken.None);
-
-        // Assert
-        result.Should().Contain("Promoted",
-            "backlog_promote should return a response containing 'Promoted'");
-        result.Should().MatchRegex(@"G-\d+",
-            "backlog_promote response should contain a goal ID like G-1");
-    }
-
-    [Fact]
-    public async Task BacklogPromote_MissingEntry_ReturnsError()
-    {
-        // Arrange — set up project context
-        await _projTools.ProjectInit("Goals: test backlog error", cancellationToken: CancellationToken.None);
-
-        // Act
-        string result = await _projTools.BacklogPromote("backlog:nonexistent",
-            cancellationToken: CancellationToken.None);
-
-        // Assert
-        result.Should().Contain("not found",
-            "backlog_promote on a missing entry must return an error containing 'not found'");
-        result.Should().StartWith("Error:",
-            "error responses should start with 'Error:'");
-    }
-
     // ── compact() tests ──────────────────────────────────────────────────────
 
     [Fact]
@@ -331,56 +291,6 @@ public sealed class NewToolTests : IDisposable
         // Assert — should indicate nothing to compact
         result.Should().Contain("single chunk",
             "compact on a single-chunk memory should indicate nothing to compact");
-    }
-
-    // ── suggest_patterns() tests ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task SuggestPatterns_FindsOverlap()
-    {
-        // Arrange — create 3+ concern:* entries sharing the "retry" keyword
-        await _memTools.Store(
-            ["Concern A: retry failures in network layer"],
-            "concern:issue-alpha",
-            keywords: ["retry", "network"]);
-        await _memTools.Store(
-            ["Concern B: retry timeout handling"],
-            "concern:issue-beta",
-            keywords: ["retry", "timeout"]);
-        await _memTools.Store(
-            ["Concern C: retry logic in provider"],
-            "concern:issue-gamma",
-            keywords: ["retry", "provider"]);
-
-        // Act
-        string result = await _memTools.SuggestPatterns();
-
-        // Assert — should detect "retry" appearing in 3+ entries
-        result.Should().Contain("retry",
-            "suggest_patterns should identify 'retry' as a recurring keyword");
-        result.Should().Contain("3",
-            "suggest_patterns should report that 3 entries share the keyword");
-    }
-
-    [Fact]
-    public async Task SuggestPatterns_NoOverlap()
-    {
-        // Arrange — create 2 concerns with unique keywords (no 3+ overlap)
-        await _memTools.Store(
-            ["Concern X: unique issue one"],
-            "concern:unique-one",
-            keywords: ["alpha-unique"]);
-        await _memTools.Store(
-            ["Concern Y: unique issue two"],
-            "concern:unique-two",
-            keywords: ["beta-unique"]);
-
-        // Act
-        string result = await _memTools.SuggestPatterns();
-
-        // Assert — no patterns should be detected
-        result.Should().Contain("No recurring patterns",
-            "suggest_patterns should report no patterns when fewer than 3 entries share a keyword");
     }
 
     // ── skill version reconciliation tests ───────────────────────────────────
@@ -663,7 +573,7 @@ public sealed class NewToolTests : IDisposable
     }
 
     [Fact]
-    public async Task ResolveConflict_Ours_ResolvesAndRemoves()
+    public async Task Reconcile_Ours_ResolvesAndRemoves()
     {
         // Arrange — write a .nmp2 file with conflict markers
         var store = (FileMemoryStore)MemoryStoreContext.Current!;
@@ -682,12 +592,12 @@ public sealed class NewToolTests : IDisposable
         match.Success.Should().BeTrue("reconcile should produce a CONFLICT-N ID");
         string conflictId = match.Value;
 
-        // Resolve with "ours"
-        string resolveResult = await _memTools.ResolveConflict(conflictId, "ours");
+        // Resolve with "ours" via reconcile(conflictId, choice)
+        string resolveResult = await _memTools.Reconcile(conflictId: conflictId, choice: "ours");
 
         // Assert — the file should no longer have conflict markers
         resolveResult.Should().Contain("Resolved",
-            "resolve_conflict should confirm resolution");
+            "reconcile(conflictId, choice:'ours') should confirm resolution");
         string fileContent = File.ReadAllText(filePath);
         fileContent.Should().NotContain("<<<<<<<",
             "resolved file must not contain git conflict markers");
@@ -699,7 +609,7 @@ public sealed class NewToolTests : IDisposable
     }
 
     [Fact]
-    public async Task ResolveConflict_Merged_WritesCustomContent()
+    public async Task Reconcile_Merged_WritesCustomContent()
     {
         // Arrange — write a .nmp2 file with conflict markers
         var store = (FileMemoryStore)MemoryStoreContext.Current!;
@@ -717,11 +627,11 @@ public sealed class NewToolTests : IDisposable
         string conflictId = match.Value;
 
         string mergedContent = "my merged content";
-        string resolveResult = await _memTools.ResolveConflict(conflictId, "merged", content: mergedContent);
+        string resolveResult = await _memTools.Reconcile(conflictId: conflictId, choice: "merged", content: mergedContent);
 
         // Assert — the file should contain the merged content re-encoded as NMP/2
         resolveResult.Should().Contain("Resolved",
-            "resolve_conflict should confirm resolution");
+            "reconcile(conflictId, choice:'merged', content) should confirm resolution");
 
         string fileContent = File.ReadAllText(filePath);
         fileContent.Should().NotContain("<<<<<<<",
@@ -735,14 +645,14 @@ public sealed class NewToolTests : IDisposable
     }
 
     [Fact]
-    public async Task ResolveConflict_InvalidId_ReturnsError()
+    public async Task Reconcile_InvalidId_ReturnsError()
     {
-        // Act — call resolve_conflict with a nonexistent conflict ID (no prior reconcile)
-        string result = await _memTools.ResolveConflict("CONFLICT-999", "ours");
+        // Act — call reconcile with a nonexistent conflict ID (no prior scan)
+        string result = await _memTools.Reconcile(conflictId: "CONFLICT-999", choice: "ours");
 
         // Assert — should return an error indicating the ID was not found
         result.Should().ContainAny(["not found", "Error"],
-            "resolve_conflict with an invalid ID must return an error");
+            "reconcile with an invalid conflictId must return an error");
     }
 
     [Fact]
@@ -769,7 +679,7 @@ public sealed class NewToolTests : IDisposable
         match.Success.Should().BeTrue("reconcile should produce at least one CONFLICT-N ID");
         string firstConflictId = match.Value;
 
-        await _memTools.ResolveConflict(firstConflictId, "ours");
+        await _memTools.Reconcile(conflictId: firstConflictId, choice: "ours");
 
         // Act — reconcile again (it re-scans from disk, so only the unresolved file remains)
         string secondReconcile = await _memTools.Reconcile();
@@ -798,55 +708,4 @@ public sealed class NewToolTests : IDisposable
             ".gitattributes should mark *.nmp2 files as binary for merge safety");
     }
 
-    // ── setup_hooks tests ────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task SetupHooks_CreatesHookFiles()
-    {
-        // Arrange — initialize project first so there's a valid .scrinia/ directory
-        await _projTools.ProjectInit("Goals: test setup_hooks",
-            cancellationToken: CancellationToken.None);
-
-        // Delete hooks that project_init created so we can test setup_hooks independently
-        string hooksDir = Path.Combine(_scope.WorkspaceDir, ".scrinia", "hooks");
-        if (Directory.Exists(hooksDir))
-            Directory.Delete(hooksDir, recursive: true);
-
-        // Act — call setup_hooks
-        await _projTools.SetupHooks(cancellationToken: CancellationToken.None);
-
-        // Assert — hook files should exist
-        string mergeDriver = Path.Combine(hooksDir, "scrinia-merge-meta.sh");
-        string postMerge = Path.Combine(hooksDir, "post-merge");
-
-        File.Exists(mergeDriver).Should().BeTrue(
-            "setup_hooks should create .scrinia/hooks/scrinia-merge-meta.sh");
-        File.Exists(postMerge).Should().BeTrue(
-            "setup_hooks should create .scrinia/hooks/post-merge");
-    }
-
-    [Fact]
-    public async Task SetupHooks_IdempotentSkipsExisting()
-    {
-        // Arrange — initialize project (creates hooks via ScaffoldMergeInfrastructure)
-        await _projTools.ProjectInit("Goals: test setup_hooks idempotency",
-            cancellationToken: CancellationToken.None);
-
-        // Modify a hook file's content to detect if it gets overwritten
-        string hooksDir = Path.Combine(_scope.WorkspaceDir, ".scrinia", "hooks");
-        string mergeDriver = Path.Combine(hooksDir, "scrinia-merge-meta.sh");
-        File.Exists(mergeDriver).Should().BeTrue(
-            "project_init should have created the merge driver hook");
-
-        string sentinel = "# SENTINEL — this content was added to test idempotency\n";
-        File.WriteAllText(mergeDriver, sentinel);
-
-        // Act — call setup_hooks again
-        await _projTools.SetupHooks(cancellationToken: CancellationToken.None);
-
-        // Assert — the modified file should NOT be overwritten (idempotent behavior)
-        string afterContent = File.ReadAllText(mergeDriver);
-        afterContent.Should().Be(sentinel,
-            "setup_hooks should not overwrite existing hook files (idempotent — skips existing)");
-    }
 }

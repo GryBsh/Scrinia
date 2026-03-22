@@ -8,18 +8,16 @@ using Scrinia.Mcp;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Comprehensive unit tests for the 11 NMP/2 MCP tools:
-///   Encode(content)                          → inline NMP/2 artifact
-///   ChunkCount(artifactOrName)               → int
-///   GetChunk(artifactOrName, chunkIndex)     → string chunk text
-///   Show(artifactOrName)                     → decoded string or error message
+/// Comprehensive unit tests for the NMP/2 MCP tools:
+///   Show(artifactOrName, chunk?)             → decoded string or error message (chunk param for individual chunk retrieval)
 ///   Store(content, name, description, tags)  → confirmation string
-///   List(scopes?)                            → index as formatted text
+///   List(scopes?, mode?)                     → index as formatted text (mode='drift' for code reference drift)
 ///   Search(query, scopes?, limit)            → scored results table
 ///   Copy(name, destination, overwrite)       → confirmation string
 ///   Forget(name)                             → confirmation string
 ///   Export(topics, filename?)                → confirmation string
 ///   Import(bundlePath, topics?, overwrite)   → confirmation string
+///   Append(content, name)                    → confirmation string
 ///
 /// All tests are offline — no LLM or external service required.
 /// Store/List/Forget tests use TestHelpers.StoreScope to isolate
@@ -29,15 +27,6 @@ public sealed class ScriniaMcpToolsTests
 {
     private static ScriniaMcpTools Tools() => new();
 
-    // Large content with paragraph breaks (≥ 25 000 chars, \n\n separated → multi-chunk)
-    private static string LargeContent(int approxChars = 40_000)
-    {
-        const string para = "The quick brown fox jumped over the lazy dog. Pack my box with five dozen liquor jugs.\n\n";
-        int reps = approxChars / para.Length + 2;
-        string raw = string.Concat(Enumerable.Repeat(para, reps));
-        return raw[..Math.Min(approxChars, raw.Length)];
-    }
-
     // Single-chunk content: under 20 000 chars threshold (no \n\n needed)
     private static string MediumContent(int approxChars = 18_000)
     {
@@ -45,225 +34,6 @@ public sealed class ScriniaMcpToolsTests
         int reps = approxChars / line.Length + 2;
         string raw = string.Concat(Enumerable.Repeat(line, reps));
         return raw[..Math.Min(approxChars, raw.Length)];
-    }
-
-    // ── Encode (7 tests) ─────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Encode_ShortProse_ReturnsInlineArtifact()
-    {
-        string result = await Tools().Encode([TestHelpers.Facts.Fact1]);
-
-        result.Should().StartWith("NMP/2 ",
-            because: "small artifacts must be returned inline as an NMP/2 artifact");
-    }
-
-    [Fact]
-    public async Task Encode_EmptyString_ReturnsNmp2Artifact()
-    {
-        string result = await Tools().Encode([string.Empty]);
-
-        result.Should().StartWith("NMP/2 ",
-            because: "even an empty string must produce a valid NMP/2 artifact");
-    }
-
-    [Fact]
-    public async Task Encode_UnicodeContent_StartsWithNmp2()
-    {
-        string content = "Hello 🌍 世界 مرحبا — Unicode roundtrip test.\nLine 2: emoji 🚀 CJK 日本語 RTL عربي.";
-        string result = await Tools().Encode([content]);
-
-        result.Should().StartWith("NMP/2 ",
-            because: "Unicode content must encode to a valid NMP/2 artifact");
-    }
-
-    [Fact]
-    public async Task Encode_SourceCodeWithSpecialChars_RoundTrips()
-    {
-        string content = """
-            public class Foo {
-                private readonly Dictionary<string, List<int>> _map = new();
-                // backticks `here`, braces {}, angle <T>, quotes "hello"
-                public Task<bool> Run(CancellationToken ct = default) => Task.FromResult(true);
-            }
-            """;
-        string artifact = await Tools().Encode([content]);
-        string restored = await Tools().Show(artifact);
-
-        restored.Should().Be(content,
-            because: "source code with special characters must roundtrip exactly");
-    }
-
-    [Fact]
-    public async Task Encode_AlwaysInline_NeverReturnsFileUri()
-    {
-        string content = TestHelpers.LoadFactsText()[..5_000];
-        string result = await Tools().Encode([content]);
-
-        result.Should().NotStartWith("file://",
-            because: "Encode must always return inline, never a file:// URI");
-        result.Should().StartWith("NMP/2 ");
-    }
-
-    [Fact]
-    public async Task Encode_LargeInput_ValidNmp2Artifact()
-    {
-        string content = MediumContent(); // 18 000 chars → single chunk
-        string result = await Tools().Encode([content]);
-
-        result.Should().StartWith("NMP/2 ",
-            because: "large single-chunk inputs must still produce valid NMP/2 artifacts");
-        result.Should().Contain("NMP/END",
-            because: "every NMP/2 artifact ends with NMP/END");
-    }
-
-    [Fact]
-    public async Task Encode_VeryLargeInput_SingleElement_ProducesSingleChunk()
-    {
-        string content = LargeContent(40_000);
-        string result = await Tools().Encode([content]);
-
-        result.Should().NotContain(" C:",
-            because: "single-element Encode always produces single-chunk regardless of size");
-    }
-
-    [Fact]
-    public async Task Encode_MultiElement_ProducesMultiChunkArtifact()
-    {
-        string result = await Tools().Encode(["Part A content.", "Part B content."]);
-
-        result.Should().Contain(" C:2",
-            because: "two-element Encode must produce a multi-chunk artifact with C:2 header");
-    }
-
-    // ── ChunkCount (3 tests) ──────────────────────────────────────────────────
-
-    [Fact]
-    public async Task ChunkCount_SmallInlineArtifact_ReturnsOne()
-    {
-        string artifact = await Tools().Encode([TestHelpers.Facts.Fact1]);
-        int count = await Tools().ChunkCount(artifact);
-
-        count.Should().Be(1,
-            because: "a single-chunk artifact must report chunk count = 1");
-    }
-
-    [Fact]
-    public async Task ChunkCount_MultiElementArtifact_ReturnsCorrectCount()
-    {
-        string artifact = await Tools().Encode(["Part A.", "Part B.", "Part C."]);
-        int count = await Tools().ChunkCount(artifact);
-
-        count.Should().Be(3,
-            because: "a three-element encode must produce three chunks");
-    }
-
-    [Fact]
-    public async Task ChunkCount_LargeSingleElement_ReturnsOne()
-    {
-        string content = LargeContent(40_000);
-        string artifact = await Tools().Encode([content]);
-        int count = await Tools().ChunkCount(artifact);
-
-        count.Should().Be(1,
-            because: "single-element Encode always produces single chunk");
-    }
-
-    // ── ChunkCount via memory name (2 tests) ─────────────────────────────────
-
-    [Fact]
-    public async Task ChunkCount_ByMemoryName_ResolvesAndReturnsCount()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        await Tools().Store([TestHelpers.Facts.Fact1], "chunk-count-test");
-
-        int count = await Tools().ChunkCount("chunk-count-test");
-
-        count.Should().Be(1,
-            because: "ChunkCount must resolve a memory name to its artifact");
-    }
-
-    [Fact]
-    public async Task ChunkCount_ByMemoryName_MultiElement_ReturnsCorrectCount()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["Part A.", "Part B."], "multi-chunk-test");
-
-        int count = await Tools().ChunkCount("multi-chunk-test");
-
-        count.Should().Be(2,
-            because: "a two-element stored artifact must report 2 chunks via name resolution");
-    }
-
-    // ── GetChunk (5 tests) ────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task GetChunk_SingleChunk_Index1_EqualsShowResult()
-    {
-        string content = TestHelpers.Facts.Fact50;
-        string artifact = await Tools().Encode([content]);
-
-        string chunk1 = await Tools().GetChunk(artifact, 1);
-        string unpacked = await Tools().Show(artifact);
-
-        chunk1.Should().Be(unpacked,
-            because: "for a single-chunk artifact, GetChunk(1) must equal the full Show result");
-    }
-
-    [Fact]
-    public async Task GetChunk_MultiElement_AllChunksConcatenated_EqualsShowResult()
-    {
-        string artifact = await Tools().Encode(["Part A content.", "Part B content.", "Part C content."]);
-
-        int count = await Tools().ChunkCount(artifact);
-        count.Should().Be(3);
-        var parts = new List<string>();
-        for (int i = 1; i <= count; i++)
-            parts.Add(await Tools().GetChunk(artifact, i));
-
-        string reassembled = string.Concat(parts);
-        string unpacked = await Tools().Show(artifact);
-
-        reassembled.Should().Be(unpacked,
-            because: "concatenating all chunks must equal the full Show result");
-    }
-
-    [Fact]
-    public async Task GetChunk_MultiElement_FirstAndLastChunkDiffer()
-    {
-        string artifact = await Tools().Encode(["First chunk content.", "Second chunk content."]);
-
-        int count = await Tools().ChunkCount(artifact);
-        count.Should().Be(2);
-
-        string first = await Tools().GetChunk(artifact, 1);
-        string last  = await Tools().GetChunk(artifact, count);
-
-        first.Should().NotBe(last,
-            because: "different chunks must contain different text");
-    }
-
-    [Fact]
-    public async Task GetChunk_IndexZero_ThrowsOrReturnsError()
-    {
-        string artifact = await Tools().Encode([TestHelpers.Facts.Fact1]);
-
-        Func<Task<string>> act = () => Tools().GetChunk(artifact, 0);
-
-        await act.Should().ThrowAsync<ArgumentOutOfRangeException>(
-            because: "chunk index 0 is invalid (chunks are 1-based)");
-    }
-
-    [Fact]
-    public async Task GetChunk_IndexBeyondCount_ThrowsOrReturnsError()
-    {
-        string artifact = await Tools().Encode([TestHelpers.Facts.Fact1]);
-        int count = await Tools().ChunkCount(artifact); // = 1
-
-        Func<Task<string>> act = () => Tools().GetChunk(artifact, count + 1);
-
-        await act.Should().ThrowAsync<ArgumentOutOfRangeException>(
-            because: "chunk index beyond count is invalid");
     }
 
     // ── Show (10 tests) ─────────────────────────────────────────────────────
@@ -304,8 +74,12 @@ public sealed class ScriniaMcpToolsTests
             because: "two-element EncodeChunks produces multi-chunk artifact");
 
         string restored = await Tools().Show(artifact);
-        restored.Should().Be(string.Concat(parts),
-            because: "multi-chunk Show must reassemble and restore exact original text");
+        // Multi-chunk Show prepends "(N chunks)\n\n" header
+        string expected = string.Concat(parts);
+        restored.Should().Contain(expected,
+            because: "multi-chunk Show must reassemble and contain the exact original text");
+        restored.Should().Contain("chunks)",
+            because: "multi-chunk Show should include a chunk count header");
     }
 
     [Fact]
@@ -332,7 +106,9 @@ public sealed class ScriniaMcpToolsTests
         await File.WriteAllTextAsync(path, artifact);
 
         string restored = await Tools().Show($"file://{path}");
-        restored.Should().Be(string.Concat(parts),
+        // Multi-chunk Show prepends "(N chunks)\n\n" header
+        string expected = string.Concat(parts);
+        restored.Should().Contain(expected,
             because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
     }
 
@@ -431,54 +207,6 @@ public sealed class ScriniaMcpToolsTests
             because: "the error must indicate the memory was not found");
         result.Should().Contain("nonexistent-memory",
             because: "the error must include the name that was not found");
-    }
-
-    // ── E2E workflows (3 tests) ──────────────────────────────────────────────
-
-    [Fact]
-    public async Task E2E_Encode_Show_Inline_ExactOriginal()
-    {
-        string original = TestHelpers.Facts.Excerpt;
-
-        string artifact = await Tools().Encode([original]);
-        string restored = await Tools().Show(artifact);
-
-        restored.Should().Be(original,
-            because: "Encode → Show inline pipeline must produce the exact original text");
-    }
-
-    [Fact]
-    public async Task E2E_Encode_ChunkCount_GetChunk_Concat_EqualsShow()
-    {
-        string original = LargeContent(40_000);
-
-        string artifact = await Tools().Encode([original]);
-        int count = await Tools().ChunkCount(artifact);
-
-        var parts = new List<string>();
-        for (int i = 1; i <= count; i++)
-            parts.Add(await Tools().GetChunk(artifact, i));
-
-        string reassembled = string.Concat(parts);
-        string unpacked = await Tools().Show(artifact);
-
-        reassembled.Should().Be(unpacked,
-            because: "concatenating GetChunk results must equal direct Show of the same artifact");
-        reassembled.Should().Be(original,
-            because: "the full pipeline must restore the exact original text");
-    }
-
-    [Fact]
-    public async Task E2E_VeryLargeInput_Encode_Show_ExactOriginal()
-    {
-        // 50 000 chars — well above the multi-chunk threshold
-        string original = LargeContent(50_000);
-
-        string artifact = await Tools().Encode([original]);
-        string restored = await Tools().Show(artifact);
-
-        restored.Should().Be(original,
-            because: "a 50 000-char input must roundtrip exactly through the full NMP/2 multi-chunk pipeline");
     }
 
     // ── Store (7 tests) ────────────────────────────────────────────────────
@@ -768,21 +496,26 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task E2E_Store_GetChunk_RoundTrip()
+    public async Task E2E_Store_ShowChunk_RoundTrip()
     {
         using var scope = new TestHelpers.StoreScope();
         string[] originals = ["Section A: auth flow.", "Section B: user endpoints.", "Section C: billing."];
 
         await Tools().Store(originals, "chunked-memory");
 
-        // Use memory name to resolve artifact
-        int count = await Tools().ChunkCount("chunked-memory");
-        count.Should().Be(3,
-            because: "a three-element store must produce three chunks");
+        // Use Show(chunk: N) to retrieve individual chunks
+        string chunk1Result = await Tools().Show("chunked-memory", chunk: 1);
+        chunk1Result.Should().Contain("Chunk 1/3",
+            because: "Show(chunk: 1) must report chunk 1 of 3 for a three-element artifact");
 
         var parts = new List<string>();
-        for (int i = 1; i <= count; i++)
-            parts.Add(await Tools().GetChunk("chunked-memory", i));
+        for (int i = 1; i <= 3; i++)
+        {
+            string chunkResult = await Tools().Show("chunked-memory", chunk: i);
+            // Extract chunk content after the "Chunk N/M\n\n" header
+            string chunkContent = chunkResult[(chunkResult.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+            parts.Add(chunkContent);
+        }
 
         string reassembled = string.Concat(parts);
         reassembled.Should().Be(string.Concat(originals),
@@ -1031,15 +764,17 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task ChunkCount_Ephemeral_ResolvesCorrectly()
+    public async Task ShowChunk_Ephemeral_ResolvesCorrectly()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["ephemeral chunk test"], "~chunk-eph");
 
-        int count = await Tools().ChunkCount("~chunk-eph");
+        string result = await Tools().Show("~chunk-eph", chunk: 1);
 
-        count.Should().Be(1,
+        result.Should().Contain("Chunk 1/1",
             because: "a small ephemeral memory must have 1 chunk");
+        result.Should().Contain("ephemeral chunk test",
+            because: "Show(chunk: 1) must return the chunk content");
     }
 
     [Fact]
@@ -1566,8 +1301,9 @@ public sealed class ScriniaMcpToolsTests
         result.Should().Contain("line one");
         result.Should().Contain("line two");
 
-        int count = await Tools().ChunkCount("append-test");
-        count.Should().Be(2);
+        string chunkResult = await Tools().Show("append-test", chunk: 1);
+        chunkResult.Should().Contain("Chunk 1/2",
+            because: "after append, memory should have 2 chunks");
     }
 
     [Fact]
@@ -1593,8 +1329,9 @@ public sealed class ScriniaMcpToolsTests
         result.Should().Contain("line A");
         result.Should().Contain("line B");
 
-        int count = await Tools().ChunkCount("~append-eph");
-        count.Should().Be(2);
+        string chunkResult = await Tools().Show("~append-eph", chunk: 1);
+        chunkResult.Should().Contain("Chunk 1/2",
+            because: "after append, ephemeral memory should have 2 chunks");
     }
 
     // ── Store with chunks (4 tests) ────────────────────────────────────────
@@ -1609,8 +1346,9 @@ public sealed class ScriniaMcpToolsTests
 
         result.Should().Contain("3 chunks");
 
-        int count = await Tools().ChunkCount("chunked-api");
-        count.Should().Be(3);
+        string chunkResult = await Tools().Show("chunked-api", chunk: 1);
+        chunkResult.Should().Contain("Chunk 1/3",
+            because: "a three-element store must produce three chunks");
     }
 
     [Fact]
@@ -1621,8 +1359,11 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Store(chunks, "chunk-rt");
 
-        string chunk1 = await Tools().GetChunk("chunk-rt", 1);
-        string chunk2 = await Tools().GetChunk("chunk-rt", 2);
+        string chunk1Result = await Tools().Show("chunk-rt", chunk: 1);
+        string chunk2Result = await Tools().Show("chunk-rt", chunk: 2);
+        // Extract chunk content after the "Chunk N/M\n\n" header
+        string chunk1 = chunk1Result[(chunk1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Section A content.");
         chunk2.Should().Be("Section B content.");
     }
@@ -1634,8 +1375,9 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Store(["Only one."], "single-chunk");
 
-        int count = await Tools().ChunkCount("single-chunk");
-        count.Should().Be(1);
+        string chunkResult = await Tools().Show("single-chunk", chunk: 1);
+        chunkResult.Should().Contain("Chunk 1/1",
+            because: "a single-element store must produce one chunk");
         string decoded = await Tools().Show("single-chunk");
         decoded.Should().Be("Only one.");
     }
@@ -1651,8 +1393,10 @@ public sealed class ScriniaMcpToolsTests
         result.Should().Contain("2 chunks");
         result.Should().Contain("[ephemeral]");
 
-        string chunk1 = await Tools().GetChunk("~eph-chunked", 1);
-        string chunk2 = await Tools().GetChunk("~eph-chunked", 2);
+        string chunk1Result = await Tools().Show("~eph-chunked", chunk: 1);
+        string chunk2Result = await Tools().Show("~eph-chunked", chunk: 2);
+        string chunk1 = chunk1Result[(chunk1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Eph chunk 1.");
         chunk2.Should().Be("Eph chunk 2.");
     }
@@ -1668,11 +1412,13 @@ public sealed class ScriniaMcpToolsTests
         string result = await Tools().Append("New entry.", "nc-test");
 
         result.Should().Contain("chunk 2");
-        int count = await Tools().ChunkCount("nc-test");
-        count.Should().Be(2);
+        string chunkResult = await Tools().Show("nc-test", chunk: 1);
+        chunkResult.Should().Contain("Chunk 1/2",
+            because: "after append, memory should have 2 chunks");
 
-        string chunk1 = await Tools().GetChunk("nc-test", 1);
-        string chunk2 = await Tools().GetChunk("nc-test", 2);
+        string chunk1 = chunkResult[(chunkResult.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk2Result = await Tools().Show("nc-test", chunk: 2);
+        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Original content.");
         chunk2.Should().Be("New entry.");
     }
@@ -1686,8 +1432,9 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Show("nc-new");
         result.Should().Be("First entry.");
-        int count = await Tools().ChunkCount("nc-new");
-        count.Should().Be(1);
+        string chunkResult = await Tools().Show("nc-new", chunk: 1);
+        chunkResult.Should().Contain("Chunk 1/1",
+            because: "a newly created memory from append should have 1 chunk");
     }
 
     [Fact]
@@ -1699,12 +1446,15 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("Day 2: Added auth.", "journal");
         await Tools().Append("Day 3: Fixed bugs.", "journal");
 
-        int count = await Tools().ChunkCount("journal");
-        count.Should().Be(3);
+        string chunkResult = await Tools().Show("journal", chunk: 1);
+        chunkResult.Should().Contain("Chunk 1/3",
+            because: "after two appends, memory should have 3 chunks");
 
-        string day1 = await Tools().GetChunk("journal", 1);
-        string day2 = await Tools().GetChunk("journal", 2);
-        string day3 = await Tools().GetChunk("journal", 3);
+        string day1 = chunkResult[(chunkResult.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string day2Result = await Tools().Show("journal", chunk: 2);
+        string day2 = day2Result[(day2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string day3Result = await Tools().Show("journal", chunk: 3);
+        string day3 = day3Result[(day3Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         day1.Should().Be("Day 1: Started project.");
         day2.Should().Be("Day 2: Added auth.");
         day3.Should().Be("Day 3: Fixed bugs.");
@@ -1734,8 +1484,10 @@ public sealed class ScriniaMcpToolsTests
 
         result.Should().Contain("chunk 2");
 
-        string chunk1 = await Tools().GetChunk("~nc-eph", 1);
-        string chunk2 = await Tools().GetChunk("~nc-eph", 2);
+        string chunk1Result = await Tools().Show("~nc-eph", chunk: 1);
+        string chunk2Result = await Tools().Show("~nc-eph", chunk: 2);
+        string chunk1 = chunk1Result[(chunk1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Eph line 1.");
         chunk2.Should().Be("Eph line 2.");
     }
@@ -1749,15 +1501,22 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Append("Charlie.", "nc-full");
 
-        // Full show should return all three chunks concatenated
+        // Full show should return all three chunks concatenated (with header for multi-chunk)
         string full = await Tools().Show("nc-full");
-        full.Should().Be("Alpha.Bravo.Charlie.");
+        // Multi-chunk Show prepends "(3 chunks)\n\n" header
+        string fullContent = full.Contains("chunks)\n\n")
+            ? full[(full.IndexOf("chunks)\n\n", StringComparison.Ordinal) + "chunks)\n\n".Length)..]
+            : full;
+        fullContent.Should().Be("Alpha.Bravo.Charlie.");
 
         // Individual chunks should match
-        string c1 = await Tools().GetChunk("nc-full", 1);
-        string c2 = await Tools().GetChunk("nc-full", 2);
-        string c3 = await Tools().GetChunk("nc-full", 3);
-        (c1 + c2 + c3).Should().Be(full);
+        string c1Result = await Tools().Show("nc-full", chunk: 1);
+        string c2Result = await Tools().Show("nc-full", chunk: 2);
+        string c3Result = await Tools().Show("nc-full", chunk: 3);
+        string c1 = c1Result[(c1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string c2 = c2Result[(c2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string c3 = c3Result[(c3Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        (c1 + c2 + c3).Should().Be(fullContent);
     }
 
     // ── Show budget recording (1 test) ───────────────────────────────────────

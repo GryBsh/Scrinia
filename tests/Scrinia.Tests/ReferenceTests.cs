@@ -222,7 +222,7 @@ public sealed class ReferenceTests : IDisposable
     }
 
     [Fact]
-    public async Task CheckDrift_NoDrift_ReportsOk()
+    public async Task ListDrift_NoDrift_ReportsOk()
     {
         // Arrange — create a temp file and store a memory with codeRefs
         string relPath = "src/stable.cs";
@@ -235,18 +235,18 @@ public sealed class ReferenceTests : IDisposable
             "drift-ok-test",
             codeRefs: [relPath]);
 
-        // Act — check drift without modifying the file
-        string result = await _tools.CheckDrift();
+        // Act — check drift via list(mode: "drift")
+        string result = await _tools.List(mode: "drift");
 
         // Assert — should report all references are current with no drift
         result.Should().Contain("current",
-            "check_drift should report 'current' when no files have changed");
+            "list(mode:'drift') should report 'current' when no files have changed");
         result.Should().NotContain("DRIFT",
-            "check_drift should not report DRIFT when files are unchanged");
+            "list(mode:'drift') should not report DRIFT when files are unchanged");
     }
 
     [Fact]
-    public async Task CheckDrift_FileChanged_DetectsDrift()
+    public async Task ListDrift_FileChanged_DetectsDrift()
     {
         // Arrange — create a temp file and store a memory with codeRefs
         string relPath = "src/changing.cs";
@@ -262,16 +262,16 @@ public sealed class ReferenceTests : IDisposable
         // Modify the file after storing
         await File.WriteAllTextAsync(fullPath, "// modified content — different hash");
 
-        // Act — check drift
-        string result = await _tools.CheckDrift();
+        // Act — check drift via list(mode: "drift")
+        string result = await _tools.List(mode: "drift");
 
         // Assert — should detect drift
         result.Should().Contain("DRIFT",
-            "check_drift should report DRIFT when a referenced file has been modified");
+            "list(mode:'drift') should report DRIFT when a referenced file has been modified");
     }
 
     [Fact]
-    public async Task CheckDrift_FileMissing_DetectsMissing()
+    public async Task ListDrift_FileMissing_DetectsMissing()
     {
         // Arrange — create a temp file and store a memory with codeRefs
         string relPath = "src/ephemeral.cs";
@@ -287,12 +287,12 @@ public sealed class ReferenceTests : IDisposable
         // Delete the file after storing
         File.Delete(fullPath);
 
-        // Act — check drift
-        string result = await _tools.CheckDrift();
+        // Act — check drift via list(mode: "drift")
+        string result = await _tools.List(mode: "drift");
 
         // Assert — should detect the file as missing
         result.Should().Contain("MISSING",
-            "check_drift should report MISSING when a referenced file has been deleted");
+            "list(mode:'drift') should report MISSING when a referenced file has been deleted");
     }
 
     [Fact]

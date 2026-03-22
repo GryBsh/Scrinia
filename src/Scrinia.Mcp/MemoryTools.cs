@@ -382,59 +382,15 @@ public sealed class ScriniaMcpTools
             start to catch staleness from time passing between sessions.
             """);
 
-    [McpServerTool(Name = "encode"), Description(
-        "Compress text into a chunk-addressable NMP/2 artifact (brotli). " +
-        "Returns the artifact inline. " +
-        "Use chunk_count() and get_chunk() to access the content chunk-by-chunk.")]
-    public Task<string> Encode(
-        [Description("The text to compress. " +
-                     "Pass a single element for a single-chunk artifact, or multiple elements to control " +
-                     "chunk boundaries — each element becomes one independently decodable chunk.")] string[] content,
-        CancellationToken cancellationToken = default)
-    {
-        string artifact = content.Length == 1
-            ? Nmp2ChunkedEncoder.Encode(content[0])
-            : Nmp2ChunkedEncoder.EncodeChunks(content);
-        return Task.FromResult(artifact);
-    }
-
-    [McpServerTool(Name = "chunk_count"), Description(
-        "Returns the number of independently decodable chunks in a compressed artifact. " +
-        "Single-chunk artifacts return 1.")]
-    public async Task<int> ChunkCount(
-        [Description("The artifact text, memory name, or file:// URI returned by Encode().")]
-        string artifactOrName,
-        CancellationToken cancellationToken = default)
-    {
-        var resolved = await TryResolveWithoutStore(artifactOrName, cancellationToken);
-        string artifact = resolved ?? await CurrentStore.ResolveArtifactAsync(artifactOrName, cancellationToken);
-        return Nmp2ChunkedEncoder.GetChunkCount(artifact);
-    }
-
-    [McpServerTool(Name = "get_chunk"), Description(
-        "Decodes and returns the text of one chunk from a compressed artifact. " +
-        "Chunks are 1-based. Call chunk_count() first to know the upper bound. " +
-        "Process chunks sequentially to reconstruct the full document.")]
-    public async Task<string> GetChunk(
-        [Description("The artifact text, memory name, or file:// URI returned by Encode().")]
-        string artifactOrName,
-        [Description("1-based chunk index.")] int chunkIndex,
-        CancellationToken cancellationToken = default)
-    {
-        var resolved = await TryResolveWithoutStore(artifactOrName, cancellationToken);
-        string artifact = resolved ?? await CurrentStore.ResolveArtifactAsync(artifactOrName, cancellationToken);
-        string chunk = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunkIndex);
-        SessionBudget.RecordAccess(artifactOrName, chunk.Length);
-        return chunk;
-    }
-
     [McpServerTool(Name = "show"), Description(
         "Unpack an NMP/2 artifact back to its original text content. " +
         "Accepts either the artifact text inline or a memory name. " +
+        "Pass chunk to retrieve a single chunk by 1-based index (also returns total chunk count). " +
         "Only NMP/2 artifacts are supported; other formats return an error string.")]
     public async Task<string> Show(
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
                      "Use the exact name shown by list() (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string artifactOrName,
+        [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
         CancellationToken cancellationToken = default)
     {
         string artifact;
@@ -465,9 +421,22 @@ public sealed class ScriniaMcpTools
         if (!artifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
             return "Error: only NMP/2 artifacts are supported by this tool.";
 
+        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+
+        if (chunk is not null)
+        {
+            string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
+            SessionBudget.RecordAccess(artifactOrName, chunkContent.Length);
+            return $"Chunk {chunk}/{chunkCount}\n\n{chunkContent}";
+        }
+
         byte[] bytes = new Nmp2Strategy().Decode(artifact);
         string decoded = System.Text.Encoding.UTF8.GetString(bytes);
         SessionBudget.RecordAccess(artifactOrName, decoded.Length);
+
+        if (chunkCount > 1)
+            return $"({chunkCount} chunks)\n\n{decoded}";
+
         return decoded;
     }
 
@@ -763,8 +732,7 @@ public sealed class ScriniaMcpTools
     public Task<string> List(
         [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
                      "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
-        [Description("'summary' (default) returns topics, top keywords, and stats. " +
-                     "'full' returns a paginated table of all entries.")] string mode = "summary",
+        [Description("'summary' (default), 'full' for paginated table, 'drift' for code reference drift check.")] string mode = "summary",
         [Description("Starting index for full mode (0-based). Ignored in summary mode.")] int offset = 0,
         [Description("Maximum entries to return in full mode (default 50). Ignored in summary mode.")] int limit = 50,
         [Description("Optional comma-separated topic names to exclude from results. " +
@@ -772,6 +740,10 @@ public sealed class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
+
+        if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
+            return BuildDriftList(store);
+
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
             return Task.FromResult("No memories stored.");
@@ -1421,12 +1393,8 @@ public sealed class ScriniaMcpTools
         return response;
     }
 
-    [McpServerTool(Name = "check_drift"), Description(
-        "Check if files referenced by memories have changed since the memory was written. " +
-        "Compares stored SHA-256 hashes against current file contents.")]
-    public Task<string> CheckDrift(CancellationToken cancellationToken = default)
+    private static Task<string> BuildDriftList(IMemoryStore store)
     {
-        var store = CurrentStore;
         string storeDir = store.GetStoreDirForScope("local");
         string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
         string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
@@ -1478,11 +1446,74 @@ public sealed class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "reconcile"), Description(
-        "Scan .scrinia/ for git merge conflicts after a branch merge. " +
-        "Auto-resolves .meta.json conflicts (union keywords, latest timestamps). " +
-        "Reports .nmp2 artifact conflicts with decoded content and conflict IDs for resolve_conflict().")]
-    public Task<string> Reconcile(CancellationToken cancellationToken = default)
+        "Scan .scrinia/ for git merge conflicts after a branch merge, or resolve a specific conflict. " +
+        "Without conflictId: scans and auto-resolves .meta.json conflicts (union keywords, latest timestamps), " +
+        "reports .nmp2 artifact conflicts with decoded content and conflict IDs. " +
+        "With conflictId: resolves that conflict using 'ours', 'theirs', or 'merged'.")]
+    public Task<string> Reconcile(
+        [Description("Conflict ID to resolve (from a prior reconcile scan). Omit to scan for conflicts.")] string? conflictId = null,
+        [Description("Resolution: 'ours', 'theirs', or 'merged'. Required when conflictId is provided.")] string? choice = null,
+        [Description("Content for 'merged' resolution.")] string? content = null,
+        CancellationToken cancellationToken = default)
     {
+        // ── Resolve mode: conflictId provided ─────────────────────────────
+        if (conflictId is not null)
+        {
+            if (string.IsNullOrWhiteSpace(choice))
+                return Task.FromResult("Error: 'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.");
+
+            if (!_activeConflicts.TryGetValue(conflictId, out var conflictEntry))
+                return Task.FromResult($"Error: conflict '{conflictId}' not found. Run reconcile() first to scan for conflicts.");
+
+            string? resolvedContent;
+            switch (choice.ToLowerInvariant())
+            {
+                case "ours":
+                    resolvedContent = conflictEntry.OursContent;
+                    if (resolvedContent is null)
+                        return Task.FromResult($"Error: no 'ours' content available for {conflictId}. Use 'merged' with explicit content instead.");
+                    break;
+                case "theirs":
+                    resolvedContent = conflictEntry.TheirsContent;
+                    if (resolvedContent is null)
+                        return Task.FromResult($"Error: no 'theirs' content available for {conflictId}. Use 'merged' with explicit content instead.");
+                    break;
+                case "merged":
+                    if (string.IsNullOrEmpty(content))
+                        return Task.FromResult("Error: 'merged' choice requires the content parameter.");
+                    if (conflictEntry.Type.Contains("meta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { System.Text.Json.Nodes.JsonNode.Parse(content!); }
+                        catch { return Task.FromResult("Error: merged content is not valid JSON for .meta.json conflict."); }
+                    }
+                    resolvedContent = content;
+                    break;
+                default:
+                    return Task.FromResult($"Error: invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.");
+            }
+
+            try
+            {
+                if (conflictEntry.Type == "nmp2")
+                {
+                    string artifact = Nmp2ChunkedEncoder.Encode(resolvedContent);
+                    File.WriteAllText(conflictEntry.FilePath, artifact);
+                }
+                else
+                {
+                    File.WriteAllText(conflictEntry.FilePath, resolvedContent);
+                }
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult($"Error writing resolved content to {conflictEntry.FilePath}: {ex.Message}");
+            }
+
+            _activeConflicts.TryRemove(conflictId, out _);
+            return Task.FromResult($"Resolved {conflictId} ({conflictEntry.Type}) with '{choice}'. {_activeConflicts.Count} conflict(s) remaining.");
+        }
+
+        // ── Scan mode: no conflictId ──────────────────────────────────────
         _activeConflicts.Clear();
 
         var store = CurrentStore;
@@ -1496,19 +1527,19 @@ public sealed class ScriniaMcpTools
         // Scan all files in .scrinia/ recursively
         foreach (var filePath in Directory.EnumerateFiles(scriniaDir, "*", SearchOption.AllDirectories))
         {
-            string content;
-            try { content = File.ReadAllText(filePath); }
+            string fileContent;
+            try { fileContent = File.ReadAllText(filePath); }
             catch { continue; }
 
             // Check for git conflict markers
-            if (!content.Contains("<<<<<<<")) continue;
+            if (!fileContent.Contains("<<<<<<<")) continue;
 
             string relativePath = Path.GetRelativePath(scriniaDir, filePath);
 
             if (filePath.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
             {
                 // Try auto-resolve .meta.json
-                if (TryAutoResolveMetaJson(filePath, content))
+                if (TryAutoResolveMetaJson(filePath, fileContent))
                 {
                     autoResolved.Add(relativePath);
                 }
@@ -1522,16 +1553,16 @@ public sealed class ScriniaMcpTools
             else if (filePath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase))
             {
                 // Extract ours and theirs raw content
-                int oursStart = content.IndexOf('\n', content.IndexOf("<<<<<<<")) + 1;
-                int separator = content.IndexOf("=======");
-                int theirsEnd = content.IndexOf(">>>>>>>");
+                int oursStart = fileContent.IndexOf('\n', fileContent.IndexOf("<<<<<<<")) + 1;
+                int separator = fileContent.IndexOf("=======");
+                int theirsEnd = fileContent.IndexOf(">>>>>>>");
 
                 if (separator < 0 || theirsEnd < 0) { needsManual.Add($"{relativePath} (.nmp2 — malformed conflict markers)"); continue; }
 
-                int theirsStart = content.IndexOf('\n', separator) + 1;
+                int theirsStart = fileContent.IndexOf('\n', separator) + 1;
 
-                string oursRaw = content[oursStart..separator].TrimEnd();
-                string theirsRaw = content[theirsStart..theirsEnd].TrimEnd();
+                string oursRaw = fileContent[oursStart..separator].TrimEnd();
+                string theirsRaw = fileContent[theirsStart..theirsEnd].TrimEnd();
 
                 // Try to decode NMP/2 content from each side
                 string? oursDecoded = null, theirsDecoded = null;
@@ -1544,7 +1575,7 @@ public sealed class ScriniaMcpTools
                 // Check for additional conflict regions after the first
                 string multiNote = "";
                 int afterFirstConflict = theirsEnd + ">>>>>>>".Length;
-                if (afterFirstConflict < content.Length && content.IndexOf("<<<<<<<", afterFirstConflict, StringComparison.Ordinal) >= 0)
+                if (afterFirstConflict < fileContent.Length && fileContent.IndexOf("<<<<<<<", afterFirstConflict, StringComparison.Ordinal) >= 0)
                     multiNote = " (file has additional conflict regions — resolve manually)";
 
                 needsManual.Add($"{id}: {relativePath} (.nmp2 artifact){multiNote}\n    OURS:\n    {Indent(oursDecoded)}\n    THEIRS:\n    {Indent(theirsDecoded)}");
@@ -1585,68 +1616,6 @@ public sealed class ScriniaMcpTools
         // Show first 500 chars to keep output manageable
         var truncated = text.Length > 500 ? text[..500] + "..." : text;
         return truncated.Replace("\n", "\n" + prefix);
-    }
-
-    [McpServerTool(Name = "resolve_conflict"), Description(
-        "Resolve a specific merge conflict identified by reconcile(). " +
-        "Choices: 'ours' (keep our version), 'theirs' (keep their version), 'merged' (provide merged content).")]
-    public Task<string> ResolveConflict(
-        [Description("Conflict ID from reconcile() output (e.g. 'CONFLICT-1').")] string conflictId,
-        [Description("Resolution choice: 'ours', 'theirs', or 'merged'.")] string choice,
-        [Description("Merged content (required when choice is 'merged').")] string? content = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (!_activeConflicts.TryGetValue(conflictId, out var entry))
-            return Task.FromResult($"Error: conflict '{conflictId}' not found. Run reconcile() first to scan for conflicts.");
-
-        string? resolvedContent;
-        switch (choice.ToLowerInvariant())
-        {
-            case "ours":
-                resolvedContent = entry.OursContent;
-                if (resolvedContent is null)
-                    return Task.FromResult($"Error: no 'ours' content available for {conflictId}. Use 'merged' with explicit content instead.");
-                break;
-            case "theirs":
-                resolvedContent = entry.TheirsContent;
-                if (resolvedContent is null)
-                    return Task.FromResult($"Error: no 'theirs' content available for {conflictId}. Use 'merged' with explicit content instead.");
-                break;
-            case "merged":
-                if (string.IsNullOrEmpty(content))
-                    return Task.FromResult("Error: 'merged' choice requires the content parameter.");
-                if (entry.Type.Contains("meta", StringComparison.OrdinalIgnoreCase))
-                {
-                    try { System.Text.Json.Nodes.JsonNode.Parse(content!); }
-                    catch { return Task.FromResult("Error: merged content is not valid JSON for .meta.json conflict."); }
-                }
-                resolvedContent = content;
-                break;
-            default:
-                return Task.FromResult($"Error: invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.");
-        }
-
-        try
-        {
-            if (entry.Type == "nmp2")
-            {
-                // Re-encode as NMP/2 artifact before writing
-                string artifact = Nmp2ChunkedEncoder.Encode(resolvedContent);
-                File.WriteAllText(entry.FilePath, artifact);
-            }
-            else
-            {
-                // Write content directly (meta.json or unknown)
-                File.WriteAllText(entry.FilePath, resolvedContent);
-            }
-        }
-        catch (Exception ex)
-        {
-            return Task.FromResult($"Error writing resolved content to {entry.FilePath}: {ex.Message}");
-        }
-
-        _activeConflicts.TryRemove(conflictId, out _);
-        return Task.FromResult($"Resolved {conflictId} ({entry.Type}) with '{choice}'. {_activeConflicts.Count} conflict(s) remaining.");
     }
 
     private static bool TryAutoResolveMetaJson(string filePath, string conflictedContent)
@@ -1814,63 +1783,6 @@ public sealed class ScriniaMcpTools
         string qualifiedName = store.FormatQualifiedName(scope, subject);
         int dropped = chunkCount - newChunkCount;
         return $"Compacted {qualifiedName}: {chunkCount} → {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived. Files in .scrinia/ were updated — these are your changes.";
-    }
-
-    [McpServerTool(Name = "suggest_patterns"), Description(
-        "Analyze concern:* entries for recurring themes. Suggests creating pattern " +
-        "memories when 3+ concerns share specific keywords.")]
-    public Task<string> SuggestPatterns(CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // Load concern entries from the concern topic scope
-        var (concernScope, _) = store.ParseQualifiedName("concern:placeholder");
-        List<ArtifactEntry> entries;
-        try
-        {
-            entries = store.LoadIndex(concernScope);
-        }
-        catch
-        {
-            return Task.FromResult("No concern entries found.");
-        }
-
-        if (entries.Count == 0)
-            return Task.FromResult("No concern entries found.");
-
-        // Noise prefixes to exclude from pattern detection
-        var noisePrefixes = new[] { "status:", "severity:", "phase:", "provenance:", "goal:", "ref:", "file:", "wave:", "depends_on:", "basedOn:", "type:" };
-
-        // Build keyword → entry names map
-        var keywordEntries = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in entries)
-        {
-            if (entry.Keywords is null) continue;
-            foreach (string kw in entry.Keywords)
-            {
-                if (noisePrefixes.Any(p => kw.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
-                    continue;
-
-                if (!keywordEntries.TryGetValue(kw, out var list))
-                {
-                    list = new List<string>();
-                    keywordEntries[kw] = list;
-                }
-                list.Add(entry.Name);
-            }
-        }
-
-        // Filter to keywords appearing in 3+ entries
-        var suggestions = keywordEntries
-            .Where(kvp => kvp.Value.Count >= 3)
-            .OrderByDescending(kvp => kvp.Value.Count)
-            .Select(kvp => $"Keyword '{kvp.Key}' appears in {kvp.Value.Count} concerns: {string.Join(", ", kvp.Value)}. Consider creating patterns:{kvp.Key}.")
-            .ToList();
-
-        if (suggestions.Count == 0)
-            return Task.FromResult("No recurring patterns detected (need 3+ concerns with shared keywords).");
-
-        return Task.FromResult(string.Join("\n", suggestions));
     }
 
     private static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)

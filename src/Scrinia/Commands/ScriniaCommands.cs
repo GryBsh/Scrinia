@@ -442,7 +442,7 @@ public class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Show(name, cancellationToken);
+        string result = await tools.Show(name, cancellationToken: cancellationToken);
 
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {

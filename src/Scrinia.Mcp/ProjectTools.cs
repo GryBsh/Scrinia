@@ -110,6 +110,33 @@ public sealed class ScriniaProjectTools
     /// </summary>
     private const int MaxResponseChars = 8 * 1024;
 
+    // ── Compiled regex patterns (single source of truth) ─────────────────────
+    private const string GoalIdCore = @"\d+(?:-[a-fA-F0-9]+)?";
+    private static readonly Regex GoalIdPattern = new($@"G-({GoalIdCore})", RegexOptions.Compiled);
+    private static readonly Regex BracketedGoalIdPattern = new($@"\[G-({GoalIdCore})\]", RegexOptions.Compiled);
+    private static readonly Regex BracketedGoalIdFullPattern = new($@"\[(G-{GoalIdCore})\]", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex GoalIdNumericPattern = new($@"\[G-(\d+)(?:-[a-fA-F0-9]+)?\]", RegexOptions.Compiled);
+    private static readonly Regex GoalIdStructuredPattern = new($@"^\[G-{GoalIdCore}\]", RegexOptions.Compiled);
+    private static readonly Regex ShortGoalIdPattern = new(@"^G-\d+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex PhaseHeadingPattern = new(@"^#{0,4}\s*Phase\s+0*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex PhaseDetectPattern = new(@"^#{0,4}\s*Phase\s+\d", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex PhaseNumberPattern = new(@"Phase\s+0*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex GoalsSectionPattern = new(@"^#{0,4}\s*Goals\s*:?\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex GoalsSectionAltPattern = new(@"^Goals\s*:", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex OriginalGoalsPattern = new(@"^[Oo]riginal goals?\s*:\s*\d+", RegexOptions.Compiled);
+    private static readonly Regex DependsOnPattern = new(@"^Depends\s+on:\s*(.+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    private static readonly Regex FilesFieldPattern = new(@"^Files:\s*(.+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    private static readonly Regex CompletedTimestampPattern = new(@"Completed:\s*(\S+)", RegexOptions.Compiled);
+    private static readonly Regex SectionHeadingPattern = new(@"^#{1,4}\s+\S", RegexOptions.Compiled);
+    private static readonly Regex AnyHeadingPattern = new(@"^#{1,4}\s+", RegexOptions.Compiled);
+    private static readonly Regex CriteriaHeadingPattern = new(@"^#{1,4}\s+(success\s+criteria|criteria|acceptance)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex CriteriaAltHeadingPattern = new(@"^\*{0,2}Success\s+Criteria", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex NumberedListPattern = new(@"^\d+\.\s+", RegexOptions.Compiled);
+    private static readonly Regex ReqIdPattern = new(@"\b([A-Z]+-\d+)\b", RegexOptions.Compiled);
+    private static readonly Regex TaskHeaderPattern = new(@"^##\s+Task\s+(\w+)", RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.IgnoreCase);
+    private static readonly Regex DigitPattern = new(@"\d+", RegexOptions.Compiled);
+    private static readonly Regex GoalStatusPrefixPattern = new($@"^\[G-{GoalIdCore}\]\s*\[[\w]+\]\s*", RegexOptions.Compiled);
+
     private static string Truncate(string text) =>
         text.Length <= MaxResponseChars ? text : text[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
 
@@ -245,12 +272,11 @@ public sealed class ScriniaProjectTools
         }
 
         // Extract REQ-IDs from requirements and roadmap
-        var reqPattern = new Regex(@"\b([A-Z]+-\d+)\b");
-        var reqIds = reqPattern.Matches(requirementsText)
+        var reqIds = ReqIdPattern.Matches(requirementsText)
             .Select(m => m.Groups[1].Value)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var roadmapIdList = reqPattern.Matches(roadmap)
+        var roadmapIdList = ReqIdPattern.Matches(roadmap)
             .Select(m => m.Groups[1].Value)
             .ToList();
 
@@ -417,7 +443,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (activeGoalId is not null)
         {
-            var m = Regex.Match(activeGoalId, @"G-(\d+(?:-[a-f0-9]+)?)");
+            var m = GoalIdPattern.Match(activeGoalId);
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
 
@@ -1195,7 +1221,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (goalId is not null)
         {
-            var m = Regex.Match(goalId, @"G-(\d+(?:-[a-f0-9]+)?)");
+            var m = GoalIdPattern.Match(goalId);
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
         string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
@@ -1306,7 +1332,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (goalId is not null)
         {
-            var m = Regex.Match(goalId, @"G-(\d+(?:-[a-f0-9]+)?)");
+            var m = GoalIdPattern.Match(goalId);
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
         string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
@@ -1585,8 +1611,7 @@ public sealed class ScriniaProjectTools
         foreach (string line in roadmap.Split('\n'))
         {
             string trimmed = line.Trim();
-            if (Regex.IsMatch(trimmed, @"^#{1,4}\s+Phase\s+\d", RegexOptions.IgnoreCase) ||
-                Regex.IsMatch(trimmed, @"^Phase\s+\d", RegexOptions.IgnoreCase))
+            if (PhaseDetectPattern.IsMatch(trimmed))
                 count++;
         }
         return count;
@@ -1601,7 +1626,7 @@ public sealed class ScriniaProjectTools
         foreach (string line in roadmap.Split('\n'))
         {
             string trimmed = line.Trim();
-            var match = Regex.Match(trimmed, @"^#{0,4}\s*Phase\s+0*(\d+)", RegexOptions.IgnoreCase);
+            var match = PhaseHeadingPattern.Match(trimmed);
             if (match.Success)
                 ids.Add(int.Parse(match.Groups[1].Value).ToString("D2"));
         }
@@ -1893,7 +1918,7 @@ public sealed class ScriniaProjectTools
             if (activeLine is null) return null;
 
             // Extract full goal ID from "[G-14] ..." or "[G-29-a3f] ..."
-            var match = System.Text.RegularExpressions.Regex.Match(activeLine, @"\[G-(\d+(?:-[a-f0-9]+)?)\]");
+            var match = BracketedGoalIdPattern.Match(activeLine);
             return match.Success ? $"G-{match.Groups[1].Value}" : null;
         }
         catch { return null; }
@@ -1931,15 +1956,13 @@ public sealed class ScriniaProjectTools
             string trimmed = line.Trim();
 
             // Detect Phase heading — matches "### Phase 1:" or "Phase 1" or "Phase 01"
-            bool isPhaseHeading = Regex.IsMatch(trimmed,
-                @"^#{1,4}\s+Phase\s+\d", RegexOptions.IgnoreCase) ||
-                Regex.IsMatch(trimmed, @"^Phase\s+\d", RegexOptions.IgnoreCase);
+            bool isPhaseHeading = PhaseDetectPattern.IsMatch(trimmed);
 
             if (isPhaseHeading)
             {
                 // Check if this heading matches our target phase
                 // Extract the number from the heading
-                var phaseNumMatch = Regex.Match(trimmed, @"Phase\s+0*(\d+)", RegexOptions.IgnoreCase);
+                var phaseNumMatch = PhaseNumberPattern.Match(trimmed);
                 if (phaseNumMatch.Success)
                 {
                     int headingNum = int.Parse(phaseNumMatch.Groups[1].Value);
@@ -1954,10 +1977,8 @@ public sealed class ScriniaProjectTools
             if (!inTargetPhase) continue;
 
             // Detect success criteria sub-heading
-            bool isCriteriaHeading = Regex.IsMatch(trimmed,
-                @"^#{1,4}\s+(success\s+criteria|criteria|acceptance)", RegexOptions.IgnoreCase) ||
-                Regex.IsMatch(trimmed,
-                @"^\*{0,2}Success\s+Criteria", RegexOptions.IgnoreCase);
+            bool isCriteriaHeading = CriteriaHeadingPattern.IsMatch(trimmed) ||
+                CriteriaAltHeadingPattern.IsMatch(trimmed);
 
             if (isCriteriaHeading)
             {
@@ -1966,7 +1987,7 @@ public sealed class ScriniaProjectTools
             }
 
             // A non-criteria heading while in target phase ends the criteria section
-            if (inCriteriaSection && Regex.IsMatch(trimmed, @"^#{1,4}\s+", RegexOptions.None))
+            if (inCriteriaSection && AnyHeadingPattern.IsMatch(trimmed))
             {
                 inCriteriaSection = false;
                 continue;
@@ -1979,10 +2000,10 @@ public sealed class ScriniaProjectTools
             {
                 criteria.Add(trimmed[2..].Trim());
             }
-            else if (Regex.IsMatch(trimmed, @"^\d+\.\s+"))
+            else if (NumberedListPattern.IsMatch(trimmed))
             {
                 // Numbered: "1. criterion text"
-                string criterionText = Regex.Replace(trimmed, @"^\d+\.\s+", "").Trim();
+                string criterionText = NumberedListPattern.Replace(trimmed, "").Trim();
                 if (criterionText.Length > 0)
                     criteria.Add(criterionText);
             }
@@ -2238,7 +2259,7 @@ public sealed class ScriniaProjectTools
         string goalNum = "0";
         if (retroGoalId is not null)
         {
-            var gm = System.Text.RegularExpressions.Regex.Match(retroGoalId, @"G-(\d+(?:-[a-f0-9]+)?)");
+            var gm = GoalIdPattern.Match(retroGoalId);
             if (gm.Success) goalNum = gm.Groups[1].Value;
         }
         string retroMemoryName = $"learn:retro-g{goalNum}-{phaseId}";
@@ -2431,7 +2452,7 @@ public sealed class ScriniaProjectTools
                 int maxId = 0;
                 foreach (var goal in goals)
                 {
-                    var idMatch = Regex.Match(goal, @"\[G-(\d+)(?:-[a-f0-9]+)?\]");
+                    var idMatch = GoalIdNumericPattern.Match(goal);
                     if (idMatch.Success && int.TryParse(idMatch.Groups[1].Value, out int id) && id > maxId)
                         maxId = id;
                 }
@@ -2485,24 +2506,24 @@ public sealed class ScriniaProjectTools
 
                 // Find goal line matching goalId (case-insensitive).
                 // Supports both exact match (e.g. "G-4-a3f") and short form (e.g. "G-4"
-                // matches "G-4-a3f"). Short form matches by regex: [G-4(-[a-f0-9]+)?]
+                // matches "G-4-a3f"). Short form matches by regex: [G-4(-[a-fA-F0-9]+)?]
                 string searchId = goalId.Trim();
                 int matchIndex = goals.FindIndex(g =>
                     g.Contains($"[{searchId}]", StringComparison.OrdinalIgnoreCase) ||
                     g.Contains($"[{searchId.ToUpperInvariant()}]", StringComparison.OrdinalIgnoreCase));
 
                 // If exact match failed and searchId is short form (G-N), try regex match
-                if (matchIndex < 0 && Regex.IsMatch(searchId, @"^G-\d+$", RegexOptions.IgnoreCase))
+                if (matchIndex < 0 && ShortGoalIdPattern.IsMatch(searchId))
                 {
                     var shortPattern = new Regex(
-                        $@"\[{Regex.Escape(searchId)}(-[a-f0-9]+)?\]",
+                        $@"\[{Regex.Escape(searchId)}(-[a-fA-F0-9]+)?\]",
                         RegexOptions.IgnoreCase);
                     matchIndex = goals.FindIndex(g => shortPattern.IsMatch(g));
 
                     // If found, update searchId to the full ID from the matched line
                     if (matchIndex >= 0)
                     {
-                        var fullIdMatch = Regex.Match(goals[matchIndex], @"\[(G-\d+(?:-[a-f0-9]+)?)\]", RegexOptions.IgnoreCase);
+                        var fullIdMatch = BracketedGoalIdFullPattern.Match(goals[matchIndex]);
                         if (fullIdMatch.Success)
                             searchId = fullIdMatch.Groups[1].Value;
                     }
@@ -2535,7 +2556,7 @@ public sealed class ScriniaProjectTools
                         string? completeGoalNum = null;
                         if (completeGoalId is not null)
                         {
-                            var gm = Regex.Match(completeGoalId, @"G-(\d+(?:-[a-f0-9]+)?)");
+                            var gm = GoalIdPattern.Match(completeGoalId);
                             if (gm.Success) completeGoalNum = gm.Groups[1].Value;
                         }
 
@@ -2676,7 +2697,7 @@ public sealed class ScriniaProjectTools
                     {
                         if (!goal.Contains("[complete]", StringComparison.OrdinalIgnoreCase)) continue;
                         // Extract timestamp from "Completed: 2026-03-21T..."
-                        var tsMatch = Regex.Match(goal, @"Completed:\s*(\S+)");
+                        var tsMatch = CompletedTimestampPattern.Match(goal);
                         if (tsMatch.Success && DateTimeOffset.TryParse(tsMatch.Groups[1].Value, out var completedAt))
                         {
                             if (completedAt > lastEvolActivity) goalsSinceEvol++;
@@ -2738,7 +2759,7 @@ public sealed class ScriniaProjectTools
                     lineNum++;
                     string trimmedGoal = goal.TrimStart('-', '*', ' ');
                     // If the goal doesn't have a structured [G-N] ID, annotate as active
-                    if (!System.Text.RegularExpressions.Regex.IsMatch(trimmedGoal, @"^\[G-\d+(?:-[a-f0-9]+)?\]"))
+                    if (!GoalIdStructuredPattern.IsMatch(trimmedGoal))
                     {
                         sb.AppendLine($"[active] {trimmedGoal}");
                     }
@@ -2762,47 +2783,6 @@ public sealed class ScriniaProjectTools
             default:
                 return $"Error: unknown action '{action}'. Valid actions: 'add', 'complete', 'list'.";
         }
-    }
-
-    /// <summary>Promote a backlog entry to a new goal.</summary>
-    [McpServerTool(Name = "backlog_promote"), Description(
-        "Promote a backlog entry to a new goal. Reads the backlog:* memory, " +
-        "extracts its description, and creates a new goal via goal_update(add).")]
-    public async Task<string> BacklogPromote(
-        [Description("Backlog entry name (e.g. 'backlog:resilience').")] string name,
-        CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // Read the backlog entry
-        string content;
-        try { content = await ReadMemoryAsync(store, name, cancellationToken); }
-        catch (FileNotFoundException)
-        {
-            return $"Error: backlog entry '{name}' not found.";
-        }
-
-        // Extract description — use the entry's metadata description,
-        // or fall back to first non-empty, non-header line of content
-        var (scope, subject) = store.ParseQualifiedName(name);
-        var entries = store.LoadIndex(scope);
-        var entry = entries.FirstOrDefault(e =>
-            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-
-        string goalDescription = entry?.Description ?? "";
-        if (string.IsNullOrWhiteSpace(goalDescription))
-        {
-            // Fall back to first content line
-            goalDescription = content.Split('\n')
-                .Select(l => l.Trim())
-                .FirstOrDefault(l => !string.IsNullOrEmpty(l) && !l.StartsWith('#'))
-                ?? name;
-        }
-
-        // Create the goal
-        string result = await GoalUpdate("add", goalDescription, cancellationToken: cancellationToken);
-
-        return $"Promoted '{name}' to goal.\n{result}";
     }
 
     /// <summary>
@@ -2829,10 +2809,8 @@ public sealed class ScriniaProjectTools
             if (goalsSectionStart < 0)
             {
                 // Detect goals section header
-                if (System.Text.RegularExpressions.Regex.IsMatch(trimmed,
-                        @"^#{0,4}\s*Goals\s*:?\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
-                    System.Text.RegularExpressions.Regex.IsMatch(trimmed,
-                        @"^Goals\s*:", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                if (GoalsSectionPattern.IsMatch(trimmed) ||
+                    GoalsSectionAltPattern.IsMatch(trimmed))
                 {
                     goalsSectionStart = i;
                 }
@@ -2840,17 +2818,16 @@ public sealed class ScriniaProjectTools
             else
             {
                 // Inside goals section — look for "Original goals: N" marker
-                if (System.Text.RegularExpressions.Regex.IsMatch(trimmed,
-                        @"^[Oo]riginal goals?\s*:\s*\d+"))
+                if (OriginalGoalsPattern.IsMatch(trimmed))
                 {
-                    var m = System.Text.RegularExpressions.Regex.Match(trimmed, @"\d+");
+                    var m = DigitPattern.Match(trimmed);
                     if (m.Success) originalCount = int.Parse(m.Value);
                     continue;
                 }
 
                 // Detect end of goals section: blank line followed by new non-goal content,
                 // OR a new section header (## or ###)
-                if (System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^#{1,4}\s+\S"))
+                if (SectionHeadingPattern.IsMatch(trimmed))
                 {
                     goalsSectionEnd = i;
                     break;
@@ -2896,8 +2873,7 @@ public sealed class ScriniaProjectTools
     {
         string stripped = goalLine.TrimStart('-', '*', ' ');
         // Remove leading [G-N] and [status] brackets if present
-        stripped = System.Text.RegularExpressions.Regex.Replace(
-            stripped, @"^\[G-\d+(?:-[a-f0-9]+)?\]\s*\[[\w]+\]\s*", "").Trim();
+        stripped = GoalStatusPrefixPattern.Replace(stripped, "").Trim();
         // Also strip trailing " | Outcome: ..." sections from previously completed lines
         int pipeIdx = stripped.IndexOf(" | Outcome:", StringComparison.OrdinalIgnoreCase);
         if (pipeIdx >= 0) stripped = stripped[..pipeIdx];
@@ -3256,27 +3232,6 @@ public sealed class ScriniaProjectTools
         }
 
         return content;
-    }
-
-    /// <summary>Create merge infrastructure files for multi-user workflows.</summary>
-    [McpServerTool(Name = "setup_hooks"), Description(
-        "Create merge infrastructure files in .scrinia/ for multi-user workflows. " +
-        "Creates .gitattributes and hook scripts if they don't exist.")]
-    public Task<string> SetupHooks(CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-        string storeDir = store.GetStoreDirForScope("local");
-        string scriniaDir = Path.GetDirectoryName(storeDir)!;
-
-        ScaffoldMergeInfrastructure(scriniaDir);
-
-        return Task.FromResult(
-            "Merge infrastructure created in .scrinia/hooks/.\n" +
-            "Configure the merge driver:\n" +
-            "  bash: git config merge.scrinia-meta.driver '.scrinia/hooks/scrinia-merge-meta.sh %O %A %B'\n" +
-            "  pwsh: git config merge.scrinia-meta.driver 'pwsh .scrinia/hooks/scrinia-merge-meta.ps1 %O %A %B'\n" +
-            "Install post-merge hook:\n" +
-            "  cp .scrinia/hooks/post-merge .git/hooks/post-merge && chmod +x .git/hooks/post-merge");
     }
 
     private static readonly Dictionary<string, string> BuiltInSkills = new(StringComparer.OrdinalIgnoreCase)
@@ -3730,7 +3685,14 @@ public sealed class ScriniaProjectTools
             code changes, or new capabilities have unblocked any items. If an item is now
             actionable, flag it for promotion to a goal in your output.
 
-            ### 6. Prune and consolidate
+            ### 6. Detect recurring patterns
+            Scan concern:* entries for keyword overlap. For each concern's keywords
+            (excluding noise: status:, severity:, phase:, provenance:, goal:, ref:,
+            file:, wave:, depends_on:, basedOn:, type:), count how many concerns
+            share each keyword. If 3+ concerns share a specific keyword, suggest
+            creating a `patterns:{keyword}` memory to capture the recurring theme.
+
+            ### 7. Prune and consolidate
             Merge memories that overlap significantly. Remove memories superseded by code changes.
             Promote ephemeral memories that proved valuable via `copy("~name", "topic:name")`.
 
@@ -3794,8 +3756,7 @@ public sealed class ScriniaProjectTools
     {
         var result = new List<ParsedTask>();
         // Split by task section headers: ## Task XX or ## Task XX (anything)
-        var taskHeaderPattern = new Regex(@"^##\s+Task\s+(\w+)", RegexOptions.Multiline | RegexOptions.IgnoreCase);
-        var headerMatches = taskHeaderPattern.Matches(tasks);
+        var headerMatches = TaskHeaderPattern.Matches(tasks);
 
         for (int i = 0; i < headerMatches.Count; i++)
         {
@@ -3815,7 +3776,7 @@ public sealed class ScriniaProjectTools
 
             // Parse Depends on
             string[] dependsOn = [];
-            var depsMatch = Regex.Match(section, @"^Depends\s+on:\s*(.+)$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            var depsMatch = DependsOnPattern.Match(section);
             if (depsMatch.Success)
             {
                 string depsValue = depsMatch.Groups[1].Value.Trim();
@@ -3829,7 +3790,7 @@ public sealed class ScriniaProjectTools
 
             // Parse Files
             string[]? files = null;
-            var filesMatch = Regex.Match(section, @"^Files:\s*(.+)$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+            var filesMatch = FilesFieldPattern.Match(section);
             if (filesMatch.Success)
             {
                 files = filesMatch.Groups[1].Value
@@ -3839,8 +3800,8 @@ public sealed class ScriniaProjectTools
 
             // Build content: Action + Acceptance criteria (everything except Depends on / Files lines)
             var contentLines = section.Split('\n')
-                .Where(line => !Regex.IsMatch(line.Trim(), @"^Depends\s+on:", RegexOptions.IgnoreCase))
-                .Where(line => !Regex.IsMatch(line.Trim(), @"^Files:", RegexOptions.IgnoreCase))
+                .Where(line => !DependsOnPattern.IsMatch(line.Trim()))
+                .Where(line => !FilesFieldPattern.IsMatch(line.Trim()))
                 .ToList();
 
             // Trim leading/trailing blank lines from content
