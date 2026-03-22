@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO.Compression;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
@@ -1474,6 +1475,156 @@ public sealed class ScriniaMcpTools
         string response = $"Code reference drift detected ({driftCount} drifted, {missingCount} missing, {okCount} ok):\n" +
             string.Join("\n", results);
         return Task.FromResult(response);
+    }
+
+    [McpServerTool(Name = "reconcile"), Description(
+        "Scan .scrinia/ for git merge conflicts after a branch merge. " +
+        "Auto-resolves .meta.json conflicts (union keywords, latest timestamps). " +
+        "Reports .nmp2 artifact conflicts for manual resolution.")]
+    public Task<string> Reconcile(CancellationToken cancellationToken = default)
+    {
+        var store = CurrentStore;
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir)!; // .scrinia/ directory
+
+        var autoResolved = new List<string>();
+        var needsManual = new List<string>();
+
+        // Scan all files in .scrinia/ recursively
+        foreach (var filePath in Directory.EnumerateFiles(scriniaDir, "*", SearchOption.AllDirectories))
+        {
+            string content;
+            try { content = File.ReadAllText(filePath); }
+            catch { continue; }
+
+            // Check for git conflict markers
+            if (!content.Contains("<<<<<<<")) continue;
+
+            string relativePath = Path.GetRelativePath(scriniaDir, filePath);
+
+            if (filePath.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            {
+                // Try auto-resolve .meta.json
+                if (TryAutoResolveMetaJson(filePath, content))
+                    autoResolved.Add(relativePath);
+                else
+                    needsManual.Add($"{relativePath} (.meta.json — auto-resolve failed)");
+            }
+            else if (filePath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase))
+            {
+                needsManual.Add($"{relativePath} (.nmp2 artifact — use store() to pick a version)");
+            }
+            else
+            {
+                needsManual.Add($"{relativePath} (unknown file type)");
+            }
+        }
+
+        if (autoResolved.Count == 0 && needsManual.Count == 0)
+            return Task.FromResult("No merge conflicts found in .scrinia/.");
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Merge conflict scan: {autoResolved.Count} auto-resolved, {needsManual.Count} need manual resolution.");
+
+        if (autoResolved.Count > 0)
+        {
+            sb.AppendLine("\nAuto-resolved:");
+            foreach (var f in autoResolved) sb.AppendLine($"  \u2713 {f}");
+        }
+        if (needsManual.Count > 0)
+        {
+            sb.AppendLine("\nNeeds manual resolution:");
+            foreach (var f in needsManual) sb.AppendLine($"  \u2717 {f}");
+        }
+
+        return Task.FromResult(sb.ToString());
+    }
+
+    private static bool TryAutoResolveMetaJson(string filePath, string conflictedContent)
+    {
+        try
+        {
+            // Extract "ours" and "theirs" sections
+            // Format: <<<<<<< HEAD\n{ours}\n=======\n{theirs}\n>>>>>>> {branch}
+            int oursStart = conflictedContent.IndexOf("<<<<<<<");
+            int separator = conflictedContent.IndexOf("=======");
+            int theirsEnd = conflictedContent.IndexOf(">>>>>>>");
+
+            if (oursStart < 0 || separator < 0 || theirsEnd < 0) return false;
+
+            // Extract the JSON from each side
+            string beforeConflict = conflictedContent[..oursStart];
+            string oursSection = conflictedContent[(conflictedContent.IndexOf('\n', oursStart) + 1)..separator];
+            string theirsSection = conflictedContent[(conflictedContent.IndexOf('\n', separator) + 1)..theirsEnd];
+            string afterConflict = conflictedContent[(conflictedContent.IndexOf('\n', theirsEnd) + 1)..];
+
+            // Try to reconstruct valid JSON from each side
+            string oursJson = beforeConflict + oursSection + afterConflict;
+            string theirsJson = beforeConflict + theirsSection + afterConflict;
+
+            // Parse both sides as mutable JSON
+            var oursNode = JsonNode.Parse(oursJson);
+            var theirsNode = JsonNode.Parse(theirsJson);
+            if (oursNode is null || theirsNode is null) return false;
+
+            // Pick base: latest updatedAt wins, fall back to theirs
+            var baseNode = theirsNode; // default to incoming
+            var otherNode = oursNode;
+
+            var oursUpdated = oursNode["updatedAt"]?.GetValue<string>();
+            var theirsUpdated = theirsNode["updatedAt"]?.GetValue<string>();
+            if (oursUpdated is not null && theirsUpdated is not null)
+            {
+                if (DateTimeOffset.TryParse(oursUpdated, out var odt) &&
+                    DateTimeOffset.TryParse(theirsUpdated, out var tdt) && odt > tdt)
+                {
+                    baseNode = oursNode;
+                    otherNode = theirsNode;
+                }
+            }
+
+            // Union keywords
+            var keywordSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (baseNode["keywords"] is JsonArray baseKw)
+                foreach (var k in baseKw) if (k?.GetValue<string>() is string s) keywordSet.Add(s);
+            if (otherNode["keywords"] is JsonArray otherKw)
+                foreach (var k in otherKw) if (k?.GetValue<string>() is string s) keywordSet.Add(s);
+
+            var sortedKw = new JsonArray();
+            foreach (var k in keywordSet.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+                sortedKw.Add(k);
+            baseNode["keywords"] = sortedKw;
+
+            // Union termFrequencies (max value for shared keys)
+            if (baseNode["termFrequencies"] is JsonObject baseTf &&
+                otherNode["termFrequencies"] is JsonObject otherTf)
+            {
+                foreach (var kvp in otherTf)
+                {
+                    if (baseTf.ContainsKey(kvp.Key))
+                    {
+                        int baseVal = baseTf[kvp.Key]?.GetValue<int>() ?? 0;
+                        int otherVal = kvp.Value?.GetValue<int>() ?? 0;
+                        baseTf[kvp.Key] = Math.Max(baseVal, otherVal);
+                    }
+                    else
+                    {
+                        baseTf[kvp.Key] = kvp.Value?.GetValue<int>() ?? 0;
+                    }
+                }
+            }
+
+            // Write resolved JSON
+            var writeOptions = new JsonSerializerOptions { WriteIndented = true };
+            string resolvedJson = baseNode.ToJsonString(writeOptions);
+            File.WriteAllText(filePath, resolvedJson);
+
+            return true;
+        }
+        catch
+        {
+            return false; // If anything fails, report as needing manual resolution
+        }
     }
 
     // ── Maintenance tools ──────────────────────────────────────────────────

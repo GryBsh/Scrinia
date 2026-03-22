@@ -538,4 +538,102 @@ public sealed class NewToolTests : IDisposable
         keys.Should().Equal(sortedKeys,
             "termFrequency keys in .meta.json must be sorted alphabetically (G-29 merge safety)");
     }
+
+    // ── reconcile() tests ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Reconcile_NoConflicts_ReportsClean()
+    {
+        // Arrange — store a valid memory so .scrinia/ has a clean .meta.json
+        await _memTools.Store(["Clean content, no conflicts."], "reconcile-clean-test");
+
+        // Act
+        string result = await _memTools.Reconcile();
+
+        // Assert
+        result.Should().Contain("No merge conflicts",
+            "reconcile on a clean .scrinia/ directory should report no conflicts");
+    }
+
+    [Fact]
+    public async Task Reconcile_MetaJsonConflict_AutoResolves()
+    {
+        // Arrange — write a .meta.json with realistic git conflict markers
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string storeDir = store.GetStoreDirForScope("local");
+
+        // Build the conflicted content line by line to avoid raw-string indentation issues
+        var sb = new StringBuilder();
+        sb.AppendLine("<<<<<<< HEAD");
+        sb.AppendLine("{");
+        sb.AppendLine("  \"name\": \"test\",");
+        sb.AppendLine("  \"uri\": \"file://test.nmp2\",");
+        sb.AppendLine("  \"originalBytes\": 100,");
+        sb.AppendLine("  \"chunkCount\": 1,");
+        sb.AppendLine("  \"createdAt\": \"2026-03-21T00:00:00Z\",");
+        sb.AppendLine("  \"description\": \"ours desc\",");
+        sb.AppendLine("  \"keywords\": [\"alpha\", \"shared\"],");
+        sb.AppendLine("  \"updatedAt\": \"2026-03-21T20:00:00Z\"");
+        sb.AppendLine("}");
+        sb.AppendLine("=======");
+        sb.AppendLine("{");
+        sb.AppendLine("  \"name\": \"test\",");
+        sb.AppendLine("  \"uri\": \"file://test.nmp2\",");
+        sb.AppendLine("  \"originalBytes\": 100,");
+        sb.AppendLine("  \"chunkCount\": 1,");
+        sb.AppendLine("  \"createdAt\": \"2026-03-21T00:00:00Z\",");
+        sb.AppendLine("  \"description\": \"theirs desc\",");
+        sb.AppendLine("  \"keywords\": [\"beta\", \"shared\"],");
+        sb.AppendLine("  \"updatedAt\": \"2026-03-21T21:00:00Z\"");
+        sb.AppendLine("}");
+        sb.AppendLine(">>>>>>> feature-branch");
+        string conflictedMeta = sb.ToString();
+
+        string metaPath = Path.Combine(storeDir, "test.meta.json");
+        File.WriteAllText(metaPath, conflictedMeta);
+
+        // Act
+        string result = await _memTools.Reconcile();
+
+        // Assert — response mentions auto-resolution
+        result.Should().Contain("auto-resolved",
+            "reconcile should report auto-resolved for .meta.json conflicts");
+
+        // The file should no longer contain conflict markers
+        string resolved = File.ReadAllText(metaPath);
+        resolved.Should().NotContain("<<<<<<<",
+            "resolved .meta.json must not contain git conflict markers");
+
+        // Keywords should be the union of both sides: alpha, beta, shared
+        using var doc = JsonDocument.Parse(resolved);
+        var keywords = doc.RootElement.GetProperty("keywords")
+            .EnumerateArray()
+            .Select(e => e.GetString()!)
+            .ToList();
+
+        keywords.Should().Contain("alpha",
+            "resolved keywords must include 'alpha' from ours");
+        keywords.Should().Contain("beta",
+            "resolved keywords must include 'beta' from theirs");
+        keywords.Should().Contain("shared",
+            "resolved keywords must include 'shared' from both sides");
+    }
+
+    [Fact]
+    public async Task Reconcile_Nmp2Conflict_ReportsManual()
+    {
+        // Arrange — write a .nmp2 file with fake conflict markers
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string storeDir = store.GetStoreDirForScope("local");
+
+        string conflictedNmp2 = "<<<<<<< HEAD\nsome binary data ours\n=======\nsome binary data theirs\n>>>>>>> feature-branch\n";
+        File.WriteAllText(Path.Combine(storeDir, "conflicted.nmp2"), conflictedNmp2);
+
+        // Act
+        string result = await _memTools.Reconcile();
+
+        // Assert — .nmp2 conflicts require manual resolution
+        result.Should().Contain("manual resolution",
+            "reconcile should report that .nmp2 conflicts need manual resolution");
+    }
 }
