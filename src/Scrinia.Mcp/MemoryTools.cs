@@ -365,6 +365,7 @@ public sealed class ScriniaMcpTools
             2. For each remaining conflict: review the decoded content, then `resolve_conflict(id, "ours"|"theirs"|"merged")`
             3. `reconcile()` again — verify 0 conflicts remaining
             This workflow is mandatory after any merge that touches .scrinia/ files.
+            For team setup (merge driver, hooks, and workflow), see docs/multi-user-setup.md.
 
             ## Agent learning
             Learning happens through the full cycle, not just retrospectives:
