@@ -550,6 +550,33 @@ public sealed class ScriniaProjectTools
     {
         var store = CurrentStore;
 
+        // Check for unresolved merge conflicts in .scrinia/
+        string conflictWarning = "";
+        try
+        {
+            string resumeStoreDir = store.GetStoreDirForScope("local");
+            string resumeScriniaDir = Path.GetDirectoryName(resumeStoreDir)!;
+            if (Directory.Exists(resumeScriniaDir))
+            {
+                bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
+                    .Any(f =>
+                    {
+                        try
+                        {
+                            // Quick check: read first 10KB of each file for conflict markers
+                            using var reader = new StreamReader(f);
+                            var buf = new char[10240];
+                            int read = reader.Read(buf, 0, buf.Length);
+                            return new string(buf, 0, read).Contains("<<<<<<<");
+                        }
+                        catch { return false; }
+                    });
+                if (hasConflicts)
+                    conflictWarning = "WARNING: .scrinia/ has unresolved merge conflicts. Run reconcile() before continuing.\n\n";
+            }
+        }
+        catch { /* best-effort check */ }
+
         string response;
         try
         {
@@ -625,6 +652,7 @@ public sealed class ScriniaProjectTools
 
         response += capabilityHints;
 
+        response = conflictWarning + response;
         response = Truncate(response);
 
         return response;

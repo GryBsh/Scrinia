@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO.Compression;
 using System.Text.Json;
@@ -14,6 +15,9 @@ namespace Scrinia.Mcp;
 [McpServerToolType]
 public sealed class ScriniaMcpTools
 {
+
+    private static readonly ConcurrentDictionary<string, ConflictEntry> _activeConflicts = new();
+    private sealed record ConflictEntry(string FilePath, string Type, string? OursContent, string? TheirsContent);
 
     private static IMemoryStore CurrentStore =>
         MemoryStoreContext.Current ?? throw new InvalidOperationException(
@@ -355,6 +359,12 @@ public sealed class ScriniaMcpTools
             - **Per-file sidecars**: each memory has its own .meta.json, so different memories
               modified by different developers never conflict.
             Two developers modifying the *same* memory will still conflict — use `reconcile()` after merge.
+
+            After pulling/merging branches:
+            1. `reconcile()` — scans for conflicts, auto-resolves .meta.json where possible
+            2. For each remaining conflict: review the decoded content, then `resolve_conflict(id, "ours"|"theirs"|"merged")`
+            3. `reconcile()` again — verify 0 conflicts remaining
+            This workflow is mandatory after any merge that touches .scrinia/ files.
 
             ## Agent learning
             Learning happens through the full cycle, not just retrospectives:
@@ -1480,9 +1490,11 @@ public sealed class ScriniaMcpTools
     [McpServerTool(Name = "reconcile"), Description(
         "Scan .scrinia/ for git merge conflicts after a branch merge. " +
         "Auto-resolves .meta.json conflicts (union keywords, latest timestamps). " +
-        "Reports .nmp2 artifact conflicts for manual resolution.")]
+        "Reports .nmp2 artifact conflicts with decoded content and conflict IDs for resolve_conflict().")]
     public Task<string> Reconcile(CancellationToken cancellationToken = default)
     {
+        _activeConflicts.Clear();
+
         var store = CurrentStore;
         string storeDir = store.GetStoreDirForScope("local");
         string scriniaDir = Path.GetDirectoryName(storeDir)!; // .scrinia/ directory
@@ -1506,17 +1518,41 @@ public sealed class ScriniaMcpTools
             {
                 // Try auto-resolve .meta.json
                 if (TryAutoResolveMetaJson(filePath, content))
+                {
                     autoResolved.Add(relativePath);
+                }
                 else
-                    needsManual.Add($"{relativePath} (.meta.json — auto-resolve failed)");
+                {
+                    var id = $"CONFLICT-{_activeConflicts.Count + 1}";
+                    _activeConflicts[id] = new ConflictEntry(filePath, "meta.json", null, null);
+                    needsManual.Add($"{id}: {relativePath} (.meta.json — auto-resolve failed)");
+                }
             }
             else if (filePath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase))
             {
-                needsManual.Add($"{relativePath} (.nmp2 artifact — use store() to pick a version)");
+                // Extract ours and theirs raw content
+                int oursStart = content.IndexOf('\n', content.IndexOf("<<<<<<<")) + 1;
+                int separator = content.IndexOf("=======");
+                int theirsStart = content.IndexOf('\n', separator) + 1;
+                int theirsEnd = content.IndexOf(">>>>>>>");
+
+                string oursRaw = content[oursStart..separator].TrimEnd();
+                string theirsRaw = content[theirsStart..theirsEnd].TrimEnd();
+
+                // Try to decode NMP/2 content from each side
+                string? oursDecoded = null, theirsDecoded = null;
+                try { oursDecoded = System.Text.Encoding.UTF8.GetString(new Scrinia.Core.Encoding.Nmp2Strategy().Decode(oursRaw)); } catch { oursDecoded = oursRaw; }
+                try { theirsDecoded = System.Text.Encoding.UTF8.GetString(new Scrinia.Core.Encoding.Nmp2Strategy().Decode(theirsRaw)); } catch { theirsDecoded = theirsRaw; }
+
+                var id = $"CONFLICT-{_activeConflicts.Count + 1}";
+                _activeConflicts[id] = new ConflictEntry(filePath, "nmp2", oursDecoded, theirsDecoded);
+                needsManual.Add($"{id}: {relativePath} (.nmp2 artifact)\n    OURS:\n    {Indent(oursDecoded)}\n    THEIRS:\n    {Indent(theirsDecoded)}");
             }
             else
             {
-                needsManual.Add($"{relativePath} (unknown file type)");
+                var id = $"CONFLICT-{_activeConflicts.Count + 1}";
+                _activeConflicts[id] = new ConflictEntry(filePath, "unknown", null, null);
+                needsManual.Add($"{id}: {relativePath} (unknown file type)");
             }
         }
 
@@ -1537,7 +1573,74 @@ public sealed class ScriniaMcpTools
             foreach (var f in needsManual) sb.AppendLine($"  \u2717 {f}");
         }
 
+        sb.Append($"\n{_activeConflicts.Count} conflict(s) remaining.");
+
         return Task.FromResult(sb.ToString());
+    }
+
+    private static string Indent(string? text, string prefix = "      ")
+    {
+        if (string.IsNullOrEmpty(text)) return "(empty)";
+        // Show first 500 chars to keep output manageable
+        var truncated = text.Length > 500 ? text[..500] + "..." : text;
+        return truncated.Replace("\n", "\n" + prefix);
+    }
+
+    [McpServerTool(Name = "resolve_conflict"), Description(
+        "Resolve a specific merge conflict identified by reconcile(). " +
+        "Choices: 'ours' (keep our version), 'theirs' (keep their version), 'merged' (provide merged content).")]
+    public Task<string> ResolveConflict(
+        [Description("Conflict ID from reconcile() output (e.g. 'CONFLICT-1').")] string conflictId,
+        [Description("Resolution choice: 'ours', 'theirs', or 'merged'.")] string choice,
+        [Description("Merged content (required when choice is 'merged').")] string? content = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_activeConflicts.TryGetValue(conflictId, out var entry))
+            return Task.FromResult($"Error: conflict '{conflictId}' not found. Run reconcile() first to scan for conflicts.");
+
+        string? resolvedContent;
+        switch (choice.ToLowerInvariant())
+        {
+            case "ours":
+                resolvedContent = entry.OursContent;
+                if (resolvedContent is null)
+                    return Task.FromResult($"Error: no 'ours' content available for {conflictId}. Use 'merged' with explicit content instead.");
+                break;
+            case "theirs":
+                resolvedContent = entry.TheirsContent;
+                if (resolvedContent is null)
+                    return Task.FromResult($"Error: no 'theirs' content available for {conflictId}. Use 'merged' with explicit content instead.");
+                break;
+            case "merged":
+                if (string.IsNullOrEmpty(content))
+                    return Task.FromResult("Error: 'merged' choice requires the content parameter.");
+                resolvedContent = content;
+                break;
+            default:
+                return Task.FromResult($"Error: invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.");
+        }
+
+        try
+        {
+            if (entry.Type == "nmp2")
+            {
+                // Re-encode as NMP/2 artifact before writing
+                string artifact = Nmp2ChunkedEncoder.Encode(resolvedContent);
+                File.WriteAllText(entry.FilePath, artifact);
+            }
+            else
+            {
+                // Write content directly (meta.json or unknown)
+                File.WriteAllText(entry.FilePath, resolvedContent);
+            }
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult($"Error writing resolved content to {entry.FilePath}: {ex.Message}");
+        }
+
+        _activeConflicts.TryRemove(conflictId, out _);
+        return Task.FromResult($"Resolved {conflictId} ({entry.Type}) with '{choice}'. {_activeConflicts.Count} conflict(s) remaining.");
     }
 
     private static bool TryAutoResolveMetaJson(string filePath, string conflictedContent)

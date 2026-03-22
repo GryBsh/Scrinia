@@ -636,4 +636,144 @@ public sealed class NewToolTests : IDisposable
         result.Should().Contain("manual resolution",
             "reconcile should report that .nmp2 conflicts need manual resolution");
     }
+
+    // ── structured reconciliation flow tests ─────────────────────────────────
+
+    [Fact]
+    public async Task Reconcile_AssignsConflictIds_ForNmp2()
+    {
+        // Arrange — write a .nmp2 file with conflict markers
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string storeDir = store.GetStoreDirForScope("local");
+
+        string conflictedNmp2 =
+            "<<<<<<< HEAD\nours side content\n=======\ntheirs side content\n>>>>>>> feature-branch\n";
+        File.WriteAllText(Path.Combine(storeDir, "id-test.nmp2"), conflictedNmp2);
+
+        // Act
+        string result = await _memTools.Reconcile();
+
+        // Assert — response must contain a CONFLICT- ID and decoded content from both sides
+        result.Should().Contain("CONFLICT-",
+            "reconcile should assign a CONFLICT-N ID to the .nmp2 conflict");
+        result.Should().Contain("ours side content",
+            "reconcile should show decoded/raw content from the ours side");
+        result.Should().Contain("theirs side content",
+            "reconcile should show decoded/raw content from the theirs side");
+    }
+
+    [Fact]
+    public async Task ResolveConflict_Ours_ResolvesAndRemoves()
+    {
+        // Arrange — write a .nmp2 file with conflict markers
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string storeDir = store.GetStoreDirForScope("local");
+        string filePath = Path.Combine(storeDir, "resolve-ours.nmp2");
+
+        string conflictedNmp2 =
+            "<<<<<<< HEAD\nours content here\n=======\ntheirs content here\n>>>>>>> feature-branch\n";
+        File.WriteAllText(filePath, conflictedNmp2);
+
+        // Act — reconcile to register the conflict, then extract the ID
+        string reconcileResult = await _memTools.Reconcile();
+
+        // Extract the CONFLICT-N ID from the reconcile response
+        var match = System.Text.RegularExpressions.Regex.Match(reconcileResult, @"CONFLICT-\d+");
+        match.Success.Should().BeTrue("reconcile should produce a CONFLICT-N ID");
+        string conflictId = match.Value;
+
+        // Resolve with "ours"
+        string resolveResult = await _memTools.ResolveConflict(conflictId, "ours");
+
+        // Assert — the file should no longer have conflict markers
+        resolveResult.Should().Contain("Resolved",
+            "resolve_conflict should confirm resolution");
+        string fileContent = File.ReadAllText(filePath);
+        fileContent.Should().NotContain("<<<<<<<",
+            "resolved file must not contain git conflict markers");
+
+        // Reconcile again — should report clean (0 remaining)
+        string secondReconcile = await _memTools.Reconcile();
+        secondReconcile.Should().Contain("No merge conflicts",
+            "after resolving the only conflict, reconcile should report no conflicts");
+    }
+
+    [Fact]
+    public async Task ResolveConflict_Merged_WritesCustomContent()
+    {
+        // Arrange — write a .nmp2 file with conflict markers
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string storeDir = store.GetStoreDirForScope("local");
+        string filePath = Path.Combine(storeDir, "resolve-merged.nmp2");
+
+        string conflictedNmp2 =
+            "<<<<<<< HEAD\nours for merge\n=======\ntheirs for merge\n>>>>>>> feature-branch\n";
+        File.WriteAllText(filePath, conflictedNmp2);
+
+        // Act — reconcile to register the conflict, then resolve with merged content
+        string reconcileResult = await _memTools.Reconcile();
+        var match = System.Text.RegularExpressions.Regex.Match(reconcileResult, @"CONFLICT-\d+");
+        match.Success.Should().BeTrue("reconcile should produce a CONFLICT-N ID");
+        string conflictId = match.Value;
+
+        string mergedContent = "my merged content";
+        string resolveResult = await _memTools.ResolveConflict(conflictId, "merged", content: mergedContent);
+
+        // Assert — the file should contain the merged content re-encoded as NMP/2
+        resolveResult.Should().Contain("Resolved",
+            "resolve_conflict should confirm resolution");
+
+        string fileContent = File.ReadAllText(filePath);
+        fileContent.Should().NotContain("<<<<<<<",
+            "resolved file must not contain git conflict markers");
+
+        // Decode the NMP/2 artifact and verify it contains the merged content
+        byte[] decoded = new Scrinia.Core.Encoding.Nmp2Strategy().Decode(fileContent);
+        string decodedText = Encoding.UTF8.GetString(decoded);
+        decodedText.Should().Be(mergedContent,
+            "resolved NMP/2 artifact should decode to the custom merged content");
+    }
+
+    [Fact]
+    public async Task ResolveConflict_InvalidId_ReturnsError()
+    {
+        // Act — call resolve_conflict with a nonexistent conflict ID (no prior reconcile)
+        string result = await _memTools.ResolveConflict("CONFLICT-999", "ours");
+
+        // Assert — should return an error indicating the ID was not found
+        result.Should().ContainAny(["not found", "Error"],
+            "resolve_conflict with an invalid ID must return an error");
+    }
+
+    [Fact]
+    public async Task Reconcile_ReportsRemainingCount()
+    {
+        // Arrange — write TWO .nmp2 files with conflict markers
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string storeDir = store.GetStoreDirForScope("local");
+
+        string conflict1 =
+            "<<<<<<< HEAD\nfirst ours\n=======\nfirst theirs\n>>>>>>> feature-branch\n";
+        string conflict2 =
+            "<<<<<<< HEAD\nsecond ours\n=======\nsecond theirs\n>>>>>>> feature-branch\n";
+        File.WriteAllText(Path.Combine(storeDir, "remaining-a.nmp2"), conflict1);
+        File.WriteAllText(Path.Combine(storeDir, "remaining-b.nmp2"), conflict2);
+
+        // Act — reconcile should find 2 conflicts
+        string firstReconcile = await _memTools.Reconcile();
+        firstReconcile.Should().Contain("2 conflict(s) remaining",
+            "reconcile should report 2 conflicts when two .nmp2 files have markers");
+
+        // Extract the first CONFLICT- ID and resolve it
+        var match = System.Text.RegularExpressions.Regex.Match(firstReconcile, @"CONFLICT-\d+");
+        match.Success.Should().BeTrue("reconcile should produce at least one CONFLICT-N ID");
+        string firstConflictId = match.Value;
+
+        await _memTools.ResolveConflict(firstConflictId, "ours");
+
+        // Act — reconcile again (it re-scans from disk, so only the unresolved file remains)
+        string secondReconcile = await _memTools.Reconcile();
+        secondReconcile.Should().Contain("1 conflict(s) remaining",
+            "after resolving one of two conflicts, reconcile should report 1 remaining");
+    }
 }
