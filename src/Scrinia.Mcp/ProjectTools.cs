@@ -2641,21 +2641,54 @@ public sealed class ScriniaProjectTools
                 string evolWarning = "";
                 try
                 {
-                    // Re-read context after completion to count completed goals
-                    string contextAfterCompletion = await ReadMemoryAsync(store, "project:context", cancellationToken);
-                    var (allGoals, _, _) = ParseGoalsSection(contextAfterCompletion);
-                    string todayStr = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
-                    int completedToday = allGoals.Count(g => g.Contains("[complete]", StringComparison.OrdinalIgnoreCase) &&
-                        g.Contains(todayStr));
+                    // Find last evolutionary activity (cartography:* or agent:profile updated)
+                    DateTimeOffset lastEvolActivity = DateTimeOffset.MinValue;
 
-                    // Check if evolutionary ran recently (look for cartography:* entries updated today)
-                    var (cartScope, _) = store.ParseQualifiedName("cartography:placeholder");
-                    var cartEntries = store.LoadIndex(cartScope);
-                    bool evolRanToday = cartEntries.Any(e => (e.UpdatedAt?.ToString("yyyy-MM-dd") == todayStr) ||
-                        e.CreatedAt.ToString("yyyy-MM-dd") == todayStr);
+                    try
+                    {
+                        var (cartScope, _) = store.ParseQualifiedName("cartography:placeholder");
+                        var cartEntries = store.LoadIndex(cartScope);
+                        var latestCart = cartEntries.OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt).FirstOrDefault();
+                        if (latestCart is not null)
+                            lastEvolActivity = latestCart.UpdatedAt ?? latestCart.CreatedAt;
+                    }
+                    catch { }
 
-                    if (completedToday >= 3 && !evolRanToday)
-                        evolWarning = "\u26a0 3+ goals completed without evolutionary/cartographer scan. Run skill_load(\"evolutionary\") to maintain knowledge health.\n";
+                    try
+                    {
+                        var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
+                        var agentEntries = store.LoadIndex(agentScope);
+                        var profile = agentEntries.FirstOrDefault(e => e.Name.Equals("profile", StringComparison.OrdinalIgnoreCase));
+                        if (profile is not null)
+                        {
+                            var profileDate = profile.UpdatedAt ?? profile.CreatedAt;
+                            if (profileDate > lastEvolActivity) lastEvolActivity = profileDate;
+                        }
+                    }
+                    catch { }
+
+                    // Count goals completed after last evolutionary activity
+                    // Parse completion timestamps from goal lines
+                    int goalsSinceEvol = 0;
+                    string contextForGoals = await ReadMemoryAsync(store, "project:context", cancellationToken);
+                    var (goalsForEvol, _, _) = ParseGoalsSection(contextForGoals);
+                    foreach (var goal in goalsForEvol)
+                    {
+                        if (!goal.Contains("[complete]", StringComparison.OrdinalIgnoreCase)) continue;
+                        // Extract timestamp from "Completed: 2026-03-21T..."
+                        var tsMatch = Regex.Match(goal, @"Completed:\s*(\S+)");
+                        if (tsMatch.Success && DateTimeOffset.TryParse(tsMatch.Groups[1].Value, out var completedAt))
+                        {
+                            if (completedAt > lastEvolActivity) goalsSinceEvol++;
+                        }
+                        else
+                        {
+                            goalsSinceEvol++; // Can't parse date — count it to be safe
+                        }
+                    }
+
+                    if (goalsSinceEvol >= 3)
+                        evolWarning = $"\u26a0 {goalsSinceEvol} goals completed since last evolutionary scan. Run skill_load(\"evolutionary\") to maintain knowledge health.\n";
                 }
                 catch { /* best-effort */ }
 
