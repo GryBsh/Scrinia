@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 33 MCP tools — 13 for memory and 20 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 43 MCP tools — 21 for memory and 22 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -145,7 +145,7 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-33 tools available via `scri serve` — 13 memory tools and 20 project planning tools.
+43 tools available via `scri serve` — 21 memory tools and 22 project planning tools.
 
 ### Memory tools
 

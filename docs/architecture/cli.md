@@ -80,7 +80,7 @@ builder.Services
     .WithTools<ScriniaProjectTools>();
 ```
 
-Both `ScriniaMcpTools` (13 memory tools) and `ScriniaProjectTools` (20 planning tools) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+Both `ScriniaMcpTools` (21 memory tools) and `ScriniaProjectTools` (22 planning tools) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
 
 `ScriniaProjectTools` uses dedicated topic conventions (`project:*`, `plan:*`, `task:*`, `learn:*`, `agent:*`) and maintains a `project:state` memory for tracking progress. It includes `PlanningJsonContext` for trimming-safe serialization of planning DTOs.
 
@@ -243,7 +243,7 @@ The CLI is safe for trimming because:
 
 ## Planning Data Flow
 
-The 20 planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write tool updates `project:state`:
+The 22 planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write tool updates `project:state`:
 
 ```
 project_init ──→ project:context + project:state
@@ -275,8 +275,8 @@ All CLI commands support a `--json` flag for machine-readable JSON output. A sou
 
 ## Test Coverage
 
-673 tests in `Scrinia.Tests` covering:
-- All 33 MCP tools (13 memory + 20 planning)
+786 tests in `Scrinia.Tests` covering:
+- All 43 MCP tools (21 memory + 22 planning)
 - Store operations and edge cases
 - Search ranking and scoring
 - Encoding and chunking

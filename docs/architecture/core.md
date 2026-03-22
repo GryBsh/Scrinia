@@ -241,6 +241,15 @@ public static class TextAnalysis
 
 Tokenization: split on non-alphanumeric characters, lowercase, filter stop words (~200 common English words), require minimum 2 characters.
 
+### ReferenceExtractor
+
+`ReferenceExtractor` in `Scrinia.Core.Search` uses source-generated regexes to extract structured references from memory content. It supports two extraction modes:
+
+- **`ExtractFileRefs(content)`** -- extracts file path references matching known extensions (.cs, .ts, .json, .md, .yaml, .csproj, .sln, etc.). Anchored to avoid matching inside URLs. Results are deduplicated case-insensitively.
+- **`ExtractMemoryRefs(content)`** -- extracts both persistent memory references (`topic:subject` pattern) and ephemeral references (`~name` pattern). Avoids matching URL-like patterns (e.g., `http://`).
+
+Used by the `references` and `link` memory tools to enable drift detection (`check_drift`) and cross-reference tracking between memories and source files.
+
 ## Storage
 
 ### IMemoryStore

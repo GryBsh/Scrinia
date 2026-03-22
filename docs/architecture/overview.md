@@ -11,8 +11,8 @@ Scrinia is structured as a set of .NET 10 projects with a shared core library, m
                                     |
                   +---------------------------------------------+
                   |              scri (CLI + MCP)                |
-                  |  ScriniaCommands | ScriniaMcpTools (13)      |
-                  |                  | ScriniaProjectTools (20)  |
+                  |  ScriniaCommands | ScriniaMcpTools (21)      |
+                  |                  | ScriniaProjectTools (22)  |
                   +--------+------------+------------------------+
                            |            |
               +------------+            +-----+
@@ -44,7 +44,7 @@ Scrinia is structured as a set of .NET 10 projects with a shared core library, m
 Scrinia.sln (11 projects)
   src/
     Scrinia.Core/                    Shared library: encoding, models, search, storage
-    Scrinia.Mcp/                     MCP tool definitions (33 tools: 13 memory + 20 planning)
+    Scrinia.Mcp/                     MCP tool definitions (43 tools: 21 memory + 22 planning)
     Scrinia/                         CLI executable (AssemblyName: scri)
     Scrinia.Server/                  ASP.NET Core HTTP API + Web UI
     Scrinia.AppHost/                 .NET Aspire orchestration
@@ -52,8 +52,8 @@ Scrinia.sln (11 projects)
     Scrinia.Plugin.Embeddings/       Optional Vulkan GPU acceleration (LLamaSharp)
     Scrinia.Plugin.Embeddings.Cli/   CLI plugin executable (Vulkan MCP server)
   tests/
-    Scrinia.Tests/                   673 tests (CLI + MCP + Core + Embeddings + Planning)
-    Scrinia.Server.Tests/            60 tests (HTTP API)
+    Scrinia.Tests/                   786 tests (CLI + MCP + Core + Embeddings + Planning)
+    Scrinia.Server.Tests/            61 tests (HTTP API)
     Scrinia.Plugin.Embeddings.Tests/ 12 tests (Vulkan plugin CLI + benchmarks)
   web/                               React 19 + Vite + Tailwind CSS SPA
 ```
@@ -76,7 +76,7 @@ Scrinia.Core  <--  Scrinia.Mcp  <--  Scrinia (CLI)
 
 Key constraints:
 - **Core** has no ASP.NET or native dependencies (only `System.IO.Hashing`). Includes built-in embeddings (Model2Vec, API providers, VectorStore, HybridReranker).
-- **Mcp** depends only on Core and `ModelContextProtocol`. Contains two sealed tool classes: `ScriniaMcpTools` (13 memory tools) and `ScriniaProjectTools` (20 planning tools), plus `PlanningJsonContext` for trimming safety
+- **Mcp** depends only on Core and `ModelContextProtocol`. Contains two sealed tool classes: `ScriniaMcpTools` (21 memory tools) and `ScriniaProjectTools` (22 planning tools), plus `PlanningJsonContext` for trimming safety
 - **CLI** is trimmed and single-file; plugins run as separate processes
 - **Server** references everything except the CLI plugin executable
 - **Plugin.Abstractions** uses `FrameworkReference` for ASP.NET (no package dependency)

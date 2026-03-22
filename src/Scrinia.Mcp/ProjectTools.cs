@@ -2202,7 +2202,7 @@ public sealed class ScriniaProjectTools
     }
 
     [McpServerTool(Name = "plan_retrospective"), Description(
-        "Store a structured phase retrospective in learn:execution-outcomes. " +
+        "Store a structured phase retrospective in learn:retro-gN-phaseId. " +
         "Call after a phase completes to record what worked, what failed, lessons learned, " +
         "and what you now understand differently about the domain. " +
         "Updated beliefs are automatically stored as topical memories.")]
@@ -2527,6 +2527,19 @@ public sealed class ScriniaProjectTools
                         string? completeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
 
                         // Check each phase for: incomplete tasks, missing verification, missing retrospective
+                        // Load learn topic index for per-phase retro detection (G-29 format: learn:retro-gN-phaseId)
+                        var (learnScope, _) = store.ParseQualifiedName("learn:placeholder");
+                        var learnEntries = store.LoadIndex(learnScope);
+
+                        // Extract goal number for retro file matching (e.g. "34-6d3" from "G-34-6d3")
+                        string? completeGoalNum = null;
+                        if (completeGoalId is not null)
+                        {
+                            var gm = Regex.Match(completeGoalId, @"G-(\d+(?:-[a-f0-9]+)?)");
+                            if (gm.Success) completeGoalNum = gm.Groups[1].Value;
+                        }
+
+                        // Backward-compat fallback: try legacy learn:execution-outcomes
                         string? retroText = null;
                         try { retroText = await ReadMemoryAsync(store, "learn:execution-outcomes", cancellationToken); }
                         catch (FileNotFoundException) { }
@@ -2559,8 +2572,16 @@ public sealed class ScriniaProjectTools
                             if (hasVerify && logText!.Contains($"VERIFY phase {pid}: ALL_FAIL", StringComparison.OrdinalIgnoreCase))
                                 warnings.Add($"phase {pid} verification failed — all criteria unmet");
 
-                            // Missing retrospective
-                            bool hasRetro = retroText?.Contains($"Phase {pid} Retrospective", StringComparison.OrdinalIgnoreCase) == true;
+                            // Missing retrospective — check per-phase retro files (G-29 format)
+                            bool hasRetro = learnEntries.Any(e =>
+                                e.Name.Contains("retro-", StringComparison.OrdinalIgnoreCase) &&
+                                e.Name.Contains($"-{pid}", StringComparison.OrdinalIgnoreCase) &&
+                                (completeGoalNum is null || e.Name.Contains($"g{completeGoalNum}", StringComparison.OrdinalIgnoreCase)));
+
+                            // Backward-compat fallback: check legacy learn:execution-outcomes
+                            if (!hasRetro)
+                                hasRetro = retroText?.Contains($"Phase {pid} Retrospective", StringComparison.OrdinalIgnoreCase) == true;
+
                             if (!hasRetro)
                                 warnings.Add($"phase {pid} has no plan_retrospective");
                         }

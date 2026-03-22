@@ -8,7 +8,7 @@ This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It descr
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 33 MCP tools (13 memory + 20 planning) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
+scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 43 MCP tools (21 memory + 22 planning) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
 
 ## Project Layout
 
@@ -30,6 +30,7 @@ scrinia/
         IMemorySearcher.cs        <- WeightedFieldScorer + BM25 hybrid search + result types
         TextAnalysis.cs           <- tokenizer, term frequency, keyword extraction/merge
         Bm25Scorer.cs             <- BM25 scoring (k1=1.5, b=0.75, IDF formula)
+        ReferenceExtractor.cs     <- regex-based file path and memory name reference extraction
       IMemoryStore.cs             <- interface for local/remote store dispatch
       IStorageBackend.cs          <- factory interface for creating IMemoryStore instances
       FilesystemBackend.cs        <- default IStorageBackend (creates FileMemoryStore)
@@ -38,8 +39,8 @@ scrinia/
       MemoryStoreContext.cs       <- AsyncLocal indirection: MCP tools read Current to dispatch
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
     Scrinia.Mcp/                  <- shared MCP tools library (net10.0 classlib, refs Core)
-      MemoryTools.cs              <- 13 memory MCP tools (sealed class, no constructor, no DI injection)
-      ProjectTools.cs             <- 20 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
+      MemoryTools.cs              <- 21 memory MCP tools (sealed class, no constructor, no DI injection)
+      ProjectTools.cs             <- 22 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
@@ -110,7 +111,7 @@ scrinia/
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 730 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 786 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
       Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
@@ -131,7 +132,8 @@ scrinia/
     getting-started.md            <- overview, installation, quick start
     cli-reference.md              <- 11 CLI commands, configuration, embedding providers, MCP client setup
     server-admin.md               <- deployment, authentication, REST API, web UI, Docker
-    planning-tools.md             <- complete guide for 20 planning tools with lifecycle and examples
+    planning-tools.md             <- complete guide for 22 planning tools with lifecycle and examples
+      multi-user-setup.md          <- multi-user merge safety and git hook setup
     architecture/
       overview.md                 <- system diagram, solution structure, dependency graph
       cli.md                      <- workspace discovery, plugin host, MCP tools
@@ -234,9 +236,9 @@ record ArtifactEntry(
 
 Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fields).
 
-### `ScriniaMcpTools` (13 memory tools)
+### `ScriniaMcpTools` (21 memory tools)
 
-13 memory MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
+21 memory MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
 
 | MCP name | Method | Description |
 |---|---|---|
@@ -253,17 +255,25 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `export` | Export() | Topic -> .scrinia-bundle |
 | `import` | Import() | .scrinia-bundle -> topic |
 | `append` | Append() | Append content as a new independently retrievable chunk |
+| `update_meta` | UpdateMeta() | Update metadata (description, keywords, review conditions) without re-encoding content |
+| `references` | References() | Extract file path and memory name references from a memory's content |
+| `link` | Link() | Add codeRefs (file paths) to a memory for drift detection |
+| `check_drift` | CheckDrift() | Check if files referenced by a memory have changed since last store |
+| `reconcile` | Reconcile() | Detect and list unresolved merge conflicts in .scrinia/ files |
+| `resolve_conflict` | ResolveConflict() | Resolve a merge conflict in a .scrinia/ file (ours/theirs/manual) |
+| `compact` | Compact() | Compact a multi-chunk memory by merging chunks and removing duplicates |
+| `suggest_patterns` | SuggestPatterns() | Analyze memory collection and suggest organizational improvements |
 
-### `ScriniaProjectTools` (20 planning tools)
+### `ScriniaProjectTools` (22 planning tools)
 
-20 planning MCP tools in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
+22 planning MCP tools in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
 
 | MCP name | Method | Description |
 |---|---|---|
 | `project_init` | ProjectInit(context) | One-time init: stores project:context + project:state, detects existing codebase (non-dotfiles), returns tailored next steps (scan→concerns→goal or goal→plan) |
 | `plan_requirements` | PlanRequirements(requirements) | Store requirements with REQ-IDs; validates project_init ran first |
 | `plan_roadmap` | PlanRoadmap(roadmap) | Store phased roadmap; validates all REQ-IDs from requirements appear exactly once |
-| `plan_tasks` | PlanTasks(phaseId, tasks) | Decompose phase into task memories with keyword metadata (status:pending, wave:N, phase:XX, depends_on:*) |
+| `plan_tasks` | PlanTasks(phaseId, tasks) | Decompose phase into task memories with keyword metadata (status:pending, wave:N, phase:XX, depends_on:*); detects file conflicts between same-wave tasks |
 | `task_next` | TaskNext(phaseId) | Keyword-only index scan returning all unblocked tasks in current wave |
 | `task_complete` | TaskComplete(taskName, outcome) | Update status keyword to complete + append to execution log |
 | `plan_resume` | PlanResume() | Return structured summary; rebuilds state from memories if corrupted |
@@ -280,8 +290,10 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `skill_load` | SkillLoad(skillName) | Load a reusable agent skill/prompt template |
 | `plan_retrospective` | PlanRetrospective(phaseId, whatWorked, whatFailed, lessons, beliefsUpdated?) | Append to learn:execution-outcomes with provenance:agent |
 | `plan_profile` | PlanProfile(profile) | Store agent:profile with full overwrite |
+| `backlog_promote` | BacklogPromote() | Promote a backlog entry to a new goal |
+| `setup_hooks` | SetupHooks() | Create merge infrastructure files in .scrinia/ for multi-user workflows |
 
-**Tool budget**: 33/50 (13 memory + 20 planning).
+**Tool budget**: 43/50 (21 memory + 22 planning).
 
 **Planning topic conventions**: Planning tools use topic-scoped memories with these prefixes:
 
@@ -630,7 +642,7 @@ The `list` command supports these flags:
 ## Running Tests
 
 ```bash
-# CLI + MCP + planning + embeddings tests (730 tests)
+# CLI + MCP + planning + embeddings tests (786 tests)
 cd tests/Scrinia.Tests
 dotnet test
 
@@ -643,7 +655,7 @@ cd tests/Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 803 tests total (730 + 61 + 12). Auth plugin adds 62 tests (distributed separately).
+Expected: 859 tests total (786 + 61 + 12). Auth plugin adds 62 tests (distributed separately).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 
@@ -774,7 +786,7 @@ MCP Streamable HTTP transport at `/mcp`, powered by `ModelContextProtocol.AspNet
 - **Auth**: Bearer token (same API key auth as REST endpoints)
 - **Store selection**: Query param `?store=default` resolves the `FileMemoryStore` for the session
 - **Session context**: `PerSessionExecutionContext = true` ensures `MemoryStoreContext.Current` (AsyncLocal) persists across MCP tool calls within a session
-- **Tools**: All 33 tools from `ScriniaMcpTools` (13 memory) + `ScriniaProjectTools` (20 planning), shared via `Scrinia.Mcp` library
+- **Tools**: All 43 tools from `ScriniaMcpTools` (21 memory) + `ScriniaProjectTools` (22 planning), shared via `Scrinia.Mcp` library
 
 MCP client config (HTTP transport):
 ```json

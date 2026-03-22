@@ -201,7 +201,7 @@ public sealed class ScriniaMcpTools
             Example: `store(content, "testing:infrastructure", codeRefs=["tests/Scrinia.Tests/Scrinia.Tests.csproj", ...])`
 
             ## Project planning tools
-            Scrinia includes 20 planning tools for structured project lifecycle management.
+            Scrinia includes 22 planning tools for structured project lifecycle management.
             Plans are stored as standard scrinia memories with reserved topic conventions.
             The workflow is goal-driven — you initialize once, then cycle through goals.
 
@@ -310,9 +310,11 @@ public sealed class ScriniaMcpTools
             - `skill_load(skillName?)` — list available skills or load one for use as a subagent prompt
             Skills evolve from experience: retrospective lessons feed back into skill updates.
             Use skill_load before research to check for existing specialists.
-            Built-in skills include: planner (wave execution), release-auditor (security/quality/docs/ops audit),
+            Built-in skills (9): planner (wave execution), auditor (security/quality/docs/ops audit),
+            debugger (scientific method debugging), chaos-engineer (operational resilience probing),
+            onboarder (codebase mental model building), sos-handler (agent SOS triage),
             evolutionary (proactive knowledge and skill improvement), cartographer (cross-domain connection indexing),
-            and others. Use `skill_load()` with no args to list all available skills.
+            march-reporter (goal summary documents). Use `skill_load()` with no args to list all available skills.
 
             ## Skill precedence
             `skill_load(name)` checks .scrinia/ project memory first — if `skill:{name}` exists there,
@@ -504,11 +506,7 @@ public sealed class ScriniaMcpTools
 
         // Extract file and memory references as prefixed keywords
         string rawContent = string.Join("\n", content);
-        var fileRefs = ReferenceExtractor.ExtractFileRefs(rawContent);
-        var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(rawContent);
-        var refKeywords = fileRefs.Select(f => $"file:{f}")
-            .Concat(memoryRefs.Select(m => $"ref:{m}"));
-        mergedKeywords = mergedKeywords.Concat(refKeywords).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        mergedKeywords = mergedKeywords.Concat(ExtractRefKeywords(rawContent)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
         // Boost keywords in TF: agent keywords +5, auto-extracted +2
         foreach (string kw in mergedKeywords)
@@ -608,13 +606,11 @@ public sealed class ScriniaMcpTools
             codeRefDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var refPath in codeRefs)
             {
-                var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, refPath.Trim()));
-                if (File.Exists(fullPath))
-                {
-                    var hash = Convert.ToHexStringLower(
-                        System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath)));
+                var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
+                if (fullPath is null || !File.Exists(fullPath)) continue;
+                var hash = ComputeFileHash(fullPath);
+                if (hash is not null)
                     codeRefDict[refPath.Trim()] = hash;
-                }
             }
         }
 
@@ -926,15 +922,14 @@ public sealed class ScriniaMcpTools
                 bool hasDrift = false;
                 foreach (var (path, storedHash) in e.CodeRefs)
                 {
-                    var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, path));
-                    if (!File.Exists(fullPath))
+                    var fullPath = ResolveWorkspacePath(workspaceRoot, path);
+                    if (fullPath is null || !File.Exists(fullPath))
                     {
                         hasDrift = true;
                         break;
                     }
-                    var currentHash = Convert.ToHexStringLower(
-                        System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath)));
-                    if (!currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
+                    var currentHash = ComputeFileHash(fullPath);
+                    if (currentHash is null || !currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
                     {
                         hasDrift = true;
                         break;
@@ -1268,11 +1263,7 @@ public sealed class ScriniaMcpTools
         var mergedKeywords = TextAnalysis.MergeKeywords(null, autoKeywords);
 
         // Extract file and memory references as prefixed keywords
-        var appendFileRefs = ReferenceExtractor.ExtractFileRefs(fullText);
-        var appendMemoryRefs = ReferenceExtractor.ExtractMemoryRefs(fullText);
-        var appendRefKeywords = appendFileRefs.Select(f => $"file:{f}")
-            .Concat(appendMemoryRefs.Select(m => $"ref:{m}"));
-        mergedKeywords = mergedKeywords.Concat(appendRefKeywords).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        mergedKeywords = mergedKeywords.Concat(ExtractRefKeywords(fullText)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
         foreach (string kw in mergedKeywords)
         {
@@ -1287,11 +1278,7 @@ public sealed class ScriniaMcpTools
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
 
         // Add ref keywords from the new chunk to its chunk-level keywords
-        var chunkFileRefs = ReferenceExtractor.ExtractFileRefs(content);
-        var chunkMemoryRefs = ReferenceExtractor.ExtractMemoryRefs(content);
-        var chunkRefKeywords = chunkFileRefs.Select(f => $"file:{f}")
-            .Concat(chunkMemoryRefs.Select(m => $"ref:{m}"));
-        newKw = newKw.Concat(chunkRefKeywords).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        newKw = newKw.Concat(ExtractRefKeywords(content)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
             ContentPreview: store.GenerateContentPreview(content),
@@ -1421,9 +1408,12 @@ public sealed class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         // Add ref:{to} keyword to {from}
-        await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
+        string result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
         // Add ref:{from} keyword to {to}
-        await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
+        string result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
+
+        if (result1.StartsWith("Error") || result2.StartsWith("Error"))
+            return $"Partial link failure:\n  {from}: {result1}\n  {to}: {result2}";
 
         string response = $"Linked '{from}' \u2194 '{to}'.";
         if (!string.IsNullOrWhiteSpace(reason))
@@ -1458,17 +1448,16 @@ public sealed class ScriniaMcpTools
 
             foreach (var (path, storedHash) in sa.Entry.CodeRefs)
             {
-                var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, path));
-                if (!File.Exists(fullPath))
+                var fullPath = ResolveWorkspacePath(workspaceRoot, path);
+                if (fullPath is null || !File.Exists(fullPath))
                 {
                     results.Add($"  {qualName} → {path} [MISSING]");
                     missingCount++;
                 }
                 else
                 {
-                    var currentHash = Convert.ToHexStringLower(
-                        System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath)));
-                    if (!currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
+                    var currentHash = ComputeFileHash(fullPath);
+                    if (currentHash is null || !currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
                     {
                         results.Add($"  {qualName} → {path} [DRIFT]");
                         driftCount++;
@@ -1502,6 +1491,7 @@ public sealed class ScriniaMcpTools
 
         var autoResolved = new List<string>();
         var needsManual = new List<string>();
+        int nextConflictId = 0;
 
         // Scan all files in .scrinia/ recursively
         foreach (var filePath in Directory.EnumerateFiles(scriniaDir, "*", SearchOption.AllDirectories))
@@ -1524,7 +1514,7 @@ public sealed class ScriniaMcpTools
                 }
                 else
                 {
-                    var id = $"CONFLICT-{_activeConflicts.Count + 1}";
+                    string id = $"CONFLICT-{++nextConflictId}";
                     _activeConflicts[id] = new ConflictEntry(filePath, "meta.json", null, null);
                     needsManual.Add($"{id}: {relativePath} (.meta.json — auto-resolve failed)");
                 }
@@ -1534,8 +1524,11 @@ public sealed class ScriniaMcpTools
                 // Extract ours and theirs raw content
                 int oursStart = content.IndexOf('\n', content.IndexOf("<<<<<<<")) + 1;
                 int separator = content.IndexOf("=======");
-                int theirsStart = content.IndexOf('\n', separator) + 1;
                 int theirsEnd = content.IndexOf(">>>>>>>");
+
+                if (separator < 0 || theirsEnd < 0) { needsManual.Add($"{relativePath} (.nmp2 — malformed conflict markers)"); continue; }
+
+                int theirsStart = content.IndexOf('\n', separator) + 1;
 
                 string oursRaw = content[oursStart..separator].TrimEnd();
                 string theirsRaw = content[theirsStart..theirsEnd].TrimEnd();
@@ -1545,13 +1538,20 @@ public sealed class ScriniaMcpTools
                 try { oursDecoded = System.Text.Encoding.UTF8.GetString(new Scrinia.Core.Encoding.Nmp2Strategy().Decode(oursRaw)); } catch { oursDecoded = oursRaw; }
                 try { theirsDecoded = System.Text.Encoding.UTF8.GetString(new Scrinia.Core.Encoding.Nmp2Strategy().Decode(theirsRaw)); } catch { theirsDecoded = theirsRaw; }
 
-                var id = $"CONFLICT-{_activeConflicts.Count + 1}";
+                string id = $"CONFLICT-{++nextConflictId}";
                 _activeConflicts[id] = new ConflictEntry(filePath, "nmp2", oursDecoded, theirsDecoded);
-                needsManual.Add($"{id}: {relativePath} (.nmp2 artifact)\n    OURS:\n    {Indent(oursDecoded)}\n    THEIRS:\n    {Indent(theirsDecoded)}");
+
+                // Check for additional conflict regions after the first
+                string multiNote = "";
+                int afterFirstConflict = theirsEnd + ">>>>>>>".Length;
+                if (afterFirstConflict < content.Length && content.IndexOf("<<<<<<<", afterFirstConflict, StringComparison.Ordinal) >= 0)
+                    multiNote = " (file has additional conflict regions — resolve manually)";
+
+                needsManual.Add($"{id}: {relativePath} (.nmp2 artifact){multiNote}\n    OURS:\n    {Indent(oursDecoded)}\n    THEIRS:\n    {Indent(theirsDecoded)}");
             }
             else
             {
-                var id = $"CONFLICT-{_activeConflicts.Count + 1}";
+                string id = $"CONFLICT-{++nextConflictId}";
                 _activeConflicts[id] = new ConflictEntry(filePath, "unknown", null, null);
                 needsManual.Add($"{id}: {relativePath} (unknown file type)");
             }
@@ -1615,6 +1615,11 @@ public sealed class ScriniaMcpTools
             case "merged":
                 if (string.IsNullOrEmpty(content))
                     return Task.FromResult("Error: 'merged' choice requires the content parameter.");
+                if (entry.Type.Contains("meta", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { System.Text.Json.Nodes.JsonNode.Parse(content!); }
+                    catch { return Task.FromResult("Error: merged content is not valid JSON for .meta.json conflict."); }
+                }
                 resolvedContent = content;
                 break;
             default:
@@ -1834,7 +1839,7 @@ public sealed class ScriniaMcpTools
             return Task.FromResult("No concern entries found.");
 
         // Noise prefixes to exclude from pattern detection
-        var noisePrefixes = new[] { "status:", "severity:", "phase:", "provenance:", "goal:" };
+        var noisePrefixes = new[] { "status:", "severity:", "phase:", "provenance:", "goal:", "ref:", "file:", "wave:", "depends_on:", "basedOn:", "type:" };
 
         // Build keyword → entry names map
         var keywordEntries = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -1883,6 +1888,25 @@ public sealed class ScriniaMcpTools
                 TermFrequencies: tf.Count > 0 ? tf : null);
         }
         return entries;
+    }
+
+    private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)
+    {
+        var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, relativePath.Trim()));
+        return fullPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase) ? fullPath : null;
+    }
+
+    private static string? ComputeFileHash(string fullPath)
+    {
+        try { return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath))); }
+        catch { return null; }
+    }
+
+    private static IEnumerable<string> ExtractRefKeywords(string text)
+    {
+        var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
+        var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
+        return fileRefs.Select(f => $"file:{f}").Concat(memoryRefs.Select(m => $"ref:{m}"));
     }
 
     public static string FormatBytes(long bytes) =>

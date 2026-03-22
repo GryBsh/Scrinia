@@ -328,7 +328,7 @@ The server exposes MCP Streamable HTTP at `/mcp` via `ModelContextProtocol.AspNe
 app.MapMcp("/mcp").RequireAuthorization();
 ```
 
-All 33 MCP tools from `ScriniaMcpTools` (13 memory) and `ScriniaProjectTools` (20 planning) are available (defined in `MemoryTools.cs` and `ProjectTools.cs` respectively). The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
+All 43 MCP tools from `ScriniaMcpTools` (21 memory) and `ScriniaProjectTools` (22 planning) are available (defined in `MemoryTools.cs` and `ProjectTools.cs` respectively). The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
 
 ## Web UI Integration
 

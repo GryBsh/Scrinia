@@ -405,7 +405,7 @@ Soft-deletes the key (sets `revoked = true`). Revoked keys immediately stop auth
 
 The server exposes MCP Streamable HTTP at `/mcp`. This allows MCP clients that support HTTP transport to connect directly to the server without the CLI.
 
-All 33 MCP tools (13 memory + 20 planning) are available through this endpoint, authenticated with the same API key scheme.
+All 43 MCP tools (21 memory + 22 planning) are available through this endpoint, authenticated with the same API key scheme. The 8 new memory tools (update_meta, references, link, check_drift, reconcile, resolve_conflict, compact, suggest_patterns) and 2 new planning tools (backlog_promote, setup_hooks) are fully supported.
 
 ## Health Endpoints
 

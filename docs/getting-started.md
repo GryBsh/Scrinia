@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to 33 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to 43 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -161,9 +161,9 @@ Memories are organized into three scopes:
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes 33 tools across two tool classes: 13 memory tools (`ScriniaMcpTools`) and 20 planning tools (`ScriniaProjectTools`).
+When connected via MCP, Scrinia exposes 43 tools across two tool classes: 21 memory tools (`ScriniaMcpTools`) and 22 planning tools (`ScriniaProjectTools`).
 
-### Memory Tools (13)
+### Memory Tools (21)
 
 | Tool | Purpose |
 |------|---------|
@@ -180,8 +180,16 @@ When connected via MCP, Scrinia exposes 33 tools across two tool classes: 13 mem
 | `export` | Export topics to a portable bundle |
 | `import` | Import memories from a bundle |
 | `guide` | Session playbook (call once per session) |
+| `update_meta` | Update metadata without re-encoding content |
+| `references` | Extract file path and memory name references |
+| `link` | Add codeRefs for drift detection |
+| `check_drift` | Check if referenced files have changed |
+| `reconcile` | Detect unresolved merge conflicts in .scrinia/ |
+| `resolve_conflict` | Resolve a merge conflict (ours/theirs/manual) |
+| `compact` | Compact a multi-chunk memory |
+| `suggest_patterns` | Suggest organizational improvements |
 
-### Planning Tools (20)
+### Planning Tools (22)
 
 | Tool | Purpose |
 |------|---------|
@@ -205,6 +213,8 @@ When connected via MCP, Scrinia exposes 33 tools across two tool classes: 13 mem
 | `goal_update` | Manage project goals: add, complete, or list |
 | `skill_create` | Create a reusable specialist skill with project-specific context |
 | `skill_load` | Load a reusable agent skill/prompt template |
+| `backlog_promote` | Promote a backlog entry to a new goal |
+| `setup_hooks` | Create merge infrastructure files for multi-user workflows |
 
 **Built-in skills** ship with scrinia and are always available via `skill_load`:
 
@@ -217,6 +227,8 @@ When connected via MCP, Scrinia exposes 33 tools across two tool classes: 13 mem
 | `onboarder` | Build a codebase mental model for new agents and developers |
 | `planner` | Wave-aware execution planning: file conflict detection, agent specs, merge strategy |
 | `sos-handler` | Triage agent SOS signals: spawn specialists, create skills, replan waves |
+| `evolutionary` | Proactive knowledge and skill improvement, stale memory scanning |
+| `cartographer` | Cross-domain connection indexing and bridge discovery |
 
 Built-in skills are evolvable — `skill_create` with the same name creates a project-specific override.
 
@@ -224,7 +236,7 @@ Planning tools use dedicated topic conventions: `project:*` for project state, `
 
 ## Planning Quick Start
 
-Scrinia's 20 planning tools let an agent manage a full project lifecycle. Here's a minimal flow:
+Scrinia's 22 planning tools let an agent manage a full project lifecycle. Here's a minimal flow:
 
 ```
 # 1. Initialize a project
