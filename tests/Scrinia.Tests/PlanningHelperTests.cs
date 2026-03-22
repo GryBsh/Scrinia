@@ -145,8 +145,8 @@ public sealed class PlanningHelperTests : IDisposable
         checklist.Should().Contain("Verification Checklist");
         checklist.Should().Contain("All tasks complete");
 
-        // With evidence: records results
-        var result = await _tools.PlanVerify("01", "PASS: All tasks complete — 1/1 tasks done", CancellationToken.None);
+        // With evidence: records results (include test output to pass QA gate)
+        var result = await _tools.PlanVerify("01", "PASS: All tasks complete — 1 passed, 0 failed", CancellationToken.None);
         result.Should().Contain("ALL_PASS");
     }
 }

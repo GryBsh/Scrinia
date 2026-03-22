@@ -1193,9 +1193,9 @@ public sealed class ProjectLifecycleTests : IDisposable
         await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
         await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
-        // Act — provide agent-verified evidence
+        // Act — provide agent-verified evidence (include test output to pass QA gate)
         string result = await _tools.PlanVerify("01",
-            "PASS: Auth endpoint created — tests pass\nPASS: Profile endpoint created — tests pass",
+            "PASS: Auth endpoint created — 5 passed, 0 failed\nPASS: Profile endpoint created — 3 passed, 0 failed",
             CancellationToken.None);
 
         // Assert — must contain evidence strings from the agent
@@ -1274,7 +1274,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanVerify_WarnsIfNoTestEvidence()
+    public async Task PlanVerify_RejectsIfNoTestEvidence()
     {
         // Arrange — full lifecycle with roadmap + tasks completed
         await SetupProjectWithCriteria("01");
@@ -1286,18 +1286,28 @@ public sealed class ProjectLifecycleTests : IDisposable
             "PASS: criterion 1 — I verified it looks good",
             CancellationToken.None);
 
-        // Assert — should warn about missing test results
+        // Assert — should hard reject (Error:) when evidence lacks test output
+        result.Should().StartWith("Error:",
+            "plan_verify should hard reject when evidence lacks test output indicators");
         result.Should().Contain("QA evidence",
-            "plan_verify should warn when evidence lacks test output indicators");
+            "rejection message should mention QA evidence");
+
+        // Verify evidence was NOT recorded — call plan_verify in checklist mode
+        string checklist = await _tools.PlanVerify("01",
+            cancellationToken: CancellationToken.None);
+        checklist.Should().Contain("Verification Checklist",
+            "checklist mode should still return the checklist after a QA rejection");
+        checklist.Should().Contain("[ ]",
+            "criteria should still show unchecked after a QA rejection — no evidence was stored");
 
         // Act — provide evidence WITH test output indicators
         string result2 = await _tools.PlanVerify("01",
             "PASS: criterion 1 — 759 passed, 0 failed, build clean",
             CancellationToken.None);
 
-        // Assert — no warning when test results are present
-        result2.Should().NotContain("QA evidence",
-            "plan_verify should not warn when evidence includes test output");
+        // Assert — should succeed when test results are present
+        result2.Should().NotStartWith("Error:",
+            "plan_verify should not reject when evidence includes test output");
     }
 
     // -- plan_gaps tests (VERI-03) --
@@ -1708,6 +1718,59 @@ public sealed class ProjectLifecycleTests : IDisposable
             "guide() must mention agent:profile learning memory topic");
         result.Should().Contain("plan_retrospective",
             "guide() must mention plan_retrospective tool");
+    }
+
+    // ── Gate tests ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task PlanVerify_RejectsIfOpenConcerns()
+    {
+        // Arrange — full lifecycle with roadmap + tasks completed + open high concern
+        await SetupProjectWithCriteria("01");
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+        await _tools.ConcernAdd("Risk: auth bypass vulnerability",
+            "high", "01", id: "auth-bypass", CancellationToken.None);
+
+        // Act — provide valid test evidence (would pass QA gate)
+        string result = await _tools.PlanVerify("01",
+            "PASS: criterion 1 — 42 passed, 0 failed, build clean",
+            CancellationToken.None);
+
+        // Assert — should hard reject due to open concern
+        result.Should().StartWith("Error:",
+            "plan_verify should reject when open high-severity concerns exist for the phase");
+        result.Should().Contain("auth-bypass",
+            "rejection message should mention the open concern name");
+    }
+
+    [Fact]
+    public async Task ConcernResolve_RequiresVerifiedBy()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals: test verifiedBy validation", cancellationToken: CancellationToken.None);
+        await _tools.ConcernAdd("Risk: test concern",
+            "medium", "01", id: "vb-test", CancellationToken.None);
+
+        // Act — try with invalid verifiedBy value
+        string errorResult = await _tools.ConcernResolve("concern:vb-test",
+            "Fixed it", verifiedBy: "invalid", CancellationToken.None);
+
+        // Assert — should reject invalid verifiedBy
+        errorResult.Should().StartWith("Error:",
+            "concern_resolve should reject invalid verifiedBy value");
+        errorResult.Should().Contain("invalid",
+            "error message should mention the invalid value");
+
+        // Act — resolve with valid verifiedBy
+        string successResult = await _tools.ConcernResolve("concern:vb-test",
+            "Fixed it properly", verifiedBy: "qa", CancellationToken.None);
+
+        // Assert — should succeed
+        successResult.Should().NotStartWith("Error:",
+            "concern_resolve should succeed with verifiedBy='qa'");
+        successResult.Should().Contain("resolved",
+            "success message should confirm resolution");
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────

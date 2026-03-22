@@ -89,7 +89,7 @@ public sealed class PlanningErrorPathTests : IDisposable
     [Fact]
     public async Task ConcernResolve_NonExistent_ReturnsError()
     {
-        var result = await _tools.ConcernResolve("nonexistent-concern", "resolved", CancellationToken.None);
+        var result = await _tools.ConcernResolve("nonexistent-concern", "resolved", verifiedBy: "manual", CancellationToken.None);
         result.Should().Contain("Error", because: "resolving non-existent concern should fail");
     }
 

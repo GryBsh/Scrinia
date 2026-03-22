@@ -173,7 +173,7 @@ public sealed class ConcernTrackingTests : IDisposable
 
         // Act
         await _tools.ConcernResolve("concern:auth-risk",
-            "Added refresh token rotation", CancellationToken.None);
+            "Added refresh token rotation", verifiedBy: "manual", CancellationToken.None);
 
         // Assert — status keyword should be "status:resolved", NOT "status:active"
         var store = MemoryStoreContext.Current!;
@@ -198,7 +198,7 @@ public sealed class ConcernTrackingTests : IDisposable
 
         // Act
         await _tools.ConcernResolve("concern:db-risk",
-            "Added connection pooling", CancellationToken.None);
+            "Added connection pooling", verifiedBy: "manual", CancellationToken.None);
 
         // Assert — severity and phase keywords must still be present
         var store = MemoryStoreContext.Current!;
@@ -228,7 +228,7 @@ public sealed class ConcernTrackingTests : IDisposable
             Path.GetFileName(storeDir)!);
 
         // Act
-        await _tools.ConcernResolve("concern:test-risk", "Resolved it", CancellationToken.None);
+        await _tools.ConcernResolve("concern:test-risk", "Resolved it", verifiedBy: "manual", CancellationToken.None);
 
         // Assert — no version files should be created for "test-risk"
         bool versionsExist = Directory.Exists(versionsDir) &&
@@ -245,7 +245,7 @@ public sealed class ConcernTrackingTests : IDisposable
 
         // Act — try to resolve a concern that was never added
         string result = await _tools.ConcernResolve("concern:nonexistent",
-            "Some resolution", CancellationToken.None);
+            "Some resolution", verifiedBy: "manual", CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",
@@ -264,7 +264,7 @@ public sealed class ConcernTrackingTests : IDisposable
 
         // Act
         await _tools.ConcernResolve("concern:auth-res",
-            "Extended token lifetime to 24 hours", CancellationToken.None);
+            "Extended token lifetime to 24 hours", verifiedBy: "qa", CancellationToken.None);
 
         // Assert — content after resolve must contain the resolution text
         var store = MemoryStoreContext.Current!;

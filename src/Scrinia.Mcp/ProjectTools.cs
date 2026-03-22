@@ -1015,17 +1015,40 @@ public sealed class ScriniaProjectTools
 
         // ── Recording mode (evidence provided) ──
 
-        // QA evidence check
+        // QA evidence gate — hard reject without test output
         bool hasTestEvidence = evidence.Contains("passed", StringComparison.OrdinalIgnoreCase) ||
             evidence.Contains("0 failed", StringComparison.OrdinalIgnoreCase) ||
             evidence.Contains("0 errors", StringComparison.OrdinalIgnoreCase) ||
             evidence.Contains("build clean", StringComparison.OrdinalIgnoreCase) ||
             evidence.Contains("dotnet test", StringComparison.OrdinalIgnoreCase);
-        string qaWarning = hasTestEvidence ? "" :
-            "⚠ QA evidence may be incomplete — no test results detected. Run skill_load(\"qa\") for structured verification.\n\n";
+        if (!hasTestEvidence)
+            return $"Error: QA evidence rejected — no test results detected in evidence. " +
+                $"Include test runner output (pass/fail counts) or run skill_load(\"qa\"). Evidence not recorded.";
+
+        // Concern gate — reject if open high/medium concerns for this phase
+        try
+        {
+            var (concernScope, _) = store.ParseQualifiedName("concern:placeholder");
+            var concernEntries = store.LoadIndex(concernScope);
+            var openConcerns = concernEntries
+                .Where(e => e.Keywords is not null &&
+                    e.Keywords.Any(k => k.Equals($"phase:{phaseId}", StringComparison.OrdinalIgnoreCase) ||
+                                        k.Equals("phase:all", StringComparison.OrdinalIgnoreCase)) &&
+                    e.Keywords.Any(k => k.Equals("status:active", StringComparison.OrdinalIgnoreCase)) &&
+                    e.Keywords.Any(k => k.StartsWith("severity:high", StringComparison.OrdinalIgnoreCase) ||
+                                        k.StartsWith("severity:medium", StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            if (openConcerns.Count > 0)
+            {
+                var names = string.Join(", ", openConcerns.Select(e => e.Name));
+                return $"Error: {openConcerns.Count} open high/medium concern(s) for phase {phaseId}: {names}. " +
+                    "Resolve them (concern_resolve with verifiedBy) before verification.";
+            }
+        }
+        catch { /* best-effort — don't block if concern scope doesn't exist */ }
 
         var sb2 = new System.Text.StringBuilder();
-        sb2.Append(qaWarning);
         sb2.AppendLine($"## Phase Verification: {phaseId}");
 
         // Parse evidence lines — match PASS:/FAIL: prefixes to criteria in order
@@ -2093,9 +2116,14 @@ public sealed class ScriniaProjectTools
     public async Task<string> ConcernResolve(
         [Description("Concern name (e.g. 'concern:auth-risk' or 'concern:20260319-143022').")] string concernName,
         [Description("Resolution notes.")] string resolution,
+        [Description("Who verified the resolution: 'debugger', 'qa', or 'manual'.")] string verifiedBy,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
+
+        var validVerifiers = new[] { "debugger", "qa", "manual" };
+        if (!validVerifiers.Contains(verifiedBy, StringComparer.OrdinalIgnoreCase))
+            return $"Error: verifiedBy must be 'debugger', 'qa', or 'manual'. Got: '{verifiedBy}'.";
 
         // Parse name to get scope and subject
         var (scope, subject) = store.ParseQualifiedName(concernName);
@@ -2134,7 +2162,7 @@ public sealed class ScriniaProjectTools
             $"\n\n## Resolution\n{resolution}\n**Resolved at:** {timestamp}\n";
 
         // Write updated content with resolved status (no archiving)
-        string[] resolvedKeywords = ["status:resolved", severityKw, phaseKw];
+        string[] resolvedKeywords = ["status:resolved", severityKw, phaseKw, $"verified_by:{verifiedBy.ToLowerInvariant()}"];
         await WritePlanningMemoryAsync(store, concernName, updatedContent,
             archiveExisting: false,
             keywords: resolvedKeywords,
@@ -2621,6 +2649,27 @@ public sealed class ScriniaProjectTools
                     }
                 }
                 catch { /* workflow check is best-effort — never block goal completion */ }
+
+                // Concern gate — block completion if open high/medium concerns
+                try
+                {
+                    var (concernScope, _) = store.ParseQualifiedName("concern:placeholder");
+                    var allConcerns = store.LoadIndex(concernScope);
+                    var openHighMed = allConcerns
+                        .Where(e => e.Keywords is not null &&
+                            e.Keywords.Any(k => k.Equals("status:active", StringComparison.OrdinalIgnoreCase)) &&
+                            e.Keywords.Any(k => k.StartsWith("severity:high", StringComparison.OrdinalIgnoreCase) ||
+                                                k.StartsWith("severity:medium", StringComparison.OrdinalIgnoreCase)))
+                        .ToList();
+
+                    if (openHighMed.Count > 0)
+                    {
+                        var names = string.Join(", ", openHighMed.Select(e => e.Name).Take(5));
+                        return $"Error: {openHighMed.Count} open high/medium concern(s) must be resolved before completing the goal: {names}. " +
+                            "Use concern_resolve(name, resolution, verifiedBy) for each.";
+                    }
+                }
+                catch { /* best-effort */ }
 
                 // Extract description from the matched line
                 string existingLine = goals[matchIndex];
@@ -3351,6 +3400,12 @@ public sealed class ScriniaProjectTools
             - Register each finding with `concern_add`
             - Update `audit:findings-registry` with new entries
             - Present findings table to user with ID, severity, status, resolution
+
+            ### Mandatory: Register all findings as concerns
+            Every finding MUST be registered via concern_add(description, severity, phaseScope, id: "SEC-xxx").
+            Findings that exist only in reports or tables are incomplete work.
+            The concern system is the single source of truth for findings tracking.
+            Do not maintain a separate findings registry — concerns ARE the registry.
             """,
 
         ["debugger"] = """
