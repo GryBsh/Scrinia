@@ -417,7 +417,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (activeGoalId is not null)
         {
-            var m = Regex.Match(activeGoalId, @"G-(\d+)(?:-[a-f0-9]+)?");
+            var m = Regex.Match(activeGoalId, @"G-(\d+(?:-[a-f0-9]+)?)");
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
 
@@ -1195,7 +1195,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (goalId is not null)
         {
-            var m = Regex.Match(goalId, @"G-(\d+)(?:-[a-f0-9]+)?");
+            var m = Regex.Match(goalId, @"G-(\d+(?:-[a-f0-9]+)?)");
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
         string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
@@ -1306,7 +1306,7 @@ public sealed class ScriniaProjectTools
         string goalPrefix = "";
         if (goalId is not null)
         {
-            var m = Regex.Match(goalId, @"G-(\d+)(?:-[a-f0-9]+)?");
+            var m = Regex.Match(goalId, @"G-(\d+(?:-[a-f0-9]+)?)");
             if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
         }
         string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
@@ -1770,6 +1770,40 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>
+    /// Checks whether the cartographer should be run based on memory growth
+    /// since the last cartography entry. Returns a warning string or empty.
+    /// </summary>
+    private static string CheckCartographerNeeded(IMemoryStore store)
+    {
+        try
+        {
+            var allEntries = store.ListScoped(null);
+            int totalMemories = allEntries.Count;
+
+            // Check last cartography entry
+            var (cartScope2, _) = store.ParseQualifiedName("cartography:placeholder");
+            var cartEntries2 = store.LoadIndex(cartScope2);
+            var lastCart = cartEntries2.OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt).FirstOrDefault();
+
+            if (lastCart is not null)
+            {
+                var lastCartDate = lastCart.UpdatedAt ?? lastCart.CreatedAt;
+                // Count memories created/modified after last cartography
+                int newSince = allEntries.Count(e => (e.Entry.UpdatedAt ?? e.Entry.CreatedAt) > lastCartDate);
+                if (newSince >= 10)
+                    return $"\u26a0 {newSince} memories created/modified since last cartographer run. Run skill_load(\"cartographer\") to index connections.\n";
+            }
+            else if (totalMemories >= 10)
+            {
+                return $"\u26a0 {totalMemories} memories exist with no cartographer run. Run skill_load(\"cartographer\") to index connections.\n";
+            }
+        }
+        catch { /* best-effort */ }
+
+        return "";
+    }
+
+    /// <summary>
     /// Appends an outcome entry to the named execution log memory using AppendChunk.
     /// Creates the log if it doesn't exist.
     /// </summary>
@@ -2204,7 +2238,7 @@ public sealed class ScriniaProjectTools
         string goalNum = "0";
         if (retroGoalId is not null)
         {
-            var gm = System.Text.RegularExpressions.Regex.Match(retroGoalId, @"G-(\d+)(?:-[a-f0-9]+)?");
+            var gm = System.Text.RegularExpressions.Regex.Match(retroGoalId, @"G-(\d+(?:-[a-f0-9]+)?)");
             if (gm.Success) goalNum = gm.Groups[1].Value;
         }
         string retroMemoryName = $"learn:retro-g{goalNum}-{phaseId}";
@@ -2315,6 +2349,11 @@ public sealed class ScriniaProjectTools
             "Searchable via standard search.\n" +
             "Update your session log: append to or store sessions:YYYY-MM-DD with this phase's outcome." +
             retroNextStep;
+
+        // Check memory growth for cartographer nudge (CART-02)
+        string retroCartWarning = CheckCartographerNeeded(store);
+        if (!string.IsNullOrEmpty(retroCartWarning))
+            response += "\n\n" + retroCartWarning.TrimEnd();
 
         response = Truncate(response);
 
@@ -2546,6 +2585,64 @@ public sealed class ScriniaProjectTools
 
                 await UpdateStateAfterGoalMutationAsync(store, $"Goal completed: {searchId}", cancellationToken);
 
+                // Auto-append to session log (AUTO-01)
+                try
+                {
+                    string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+                    string sessionEntry = $"- [{searchId.ToUpperInvariant()}] {goalDesc} | Outcome: {outcomeText}";
+                    await AppendToExecutionLogAsync(store, $"sessions:{today}", sessionEntry,
+                        keywords: ["session", "goal-complete"], cancellationToken);
+                }
+                catch { /* best-effort — don't block goal completion */ }
+
+                // Check for march report (GATE-01)
+                string marchWarning = "";
+                try
+                {
+                    string gwStoreDir = store.GetStoreDirForScope("local");
+                    string gwScriniaDir = Path.GetDirectoryName(gwStoreDir) ?? gwStoreDir;
+                    string workspaceRoot = Path.GetDirectoryName(gwScriniaDir) ?? gwScriniaDir;
+                    string reportsDir = Path.Combine(workspaceRoot, "docs", "reports");
+                    if (Directory.Exists(reportsDir))
+                    {
+                        string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+                        bool hasMarchReport = Directory.EnumerateFiles(reportsDir, "*.md")
+                            .Any(f => Path.GetFileName(f).Contains(today, StringComparison.OrdinalIgnoreCase));
+                        if (!hasMarchReport)
+                            marchWarning = "\u26a0 No march report found for today. Produce one: skill_load(\"march-reporter\") \u2192 docs/reports/\n";
+                    }
+                    else
+                        marchWarning = "\u26a0 No docs/reports/ directory found. Produce a march report: skill_load(\"march-reporter\") \u2192 docs/reports/\n";
+                }
+                catch { /* best-effort */ }
+
+                // Check evolutionary recency (EVOL-01)
+                string evolWarning = "";
+                try
+                {
+                    // Re-read context after completion to count completed goals
+                    string contextAfterCompletion = await ReadMemoryAsync(store, "project:context", cancellationToken);
+                    var (allGoals, _, _) = ParseGoalsSection(contextAfterCompletion);
+                    string todayStr = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+                    int completedToday = allGoals.Count(g => g.Contains("[complete]", StringComparison.OrdinalIgnoreCase) &&
+                        g.Contains(todayStr));
+
+                    // Check if evolutionary ran recently (look for cartography:* entries updated today)
+                    var (cartScope, _) = store.ParseQualifiedName("cartography:placeholder");
+                    var cartEntries = store.LoadIndex(cartScope);
+                    bool evolRanToday = cartEntries.Any(e => (e.UpdatedAt?.ToString("yyyy-MM-dd") == todayStr) ||
+                        e.CreatedAt.ToString("yyyy-MM-dd") == todayStr);
+
+                    if (completedToday >= 3 && !evolRanToday)
+                        evolWarning = "\u26a0 3+ goals completed without evolutionary/cartographer scan. Run skill_load(\"evolutionary\") to maintain knowledge health.\n";
+                }
+                catch { /* best-effort */ }
+
+                // Check memory growth for cartographer (CART-01)
+                string cartWarning = CheckCartographerNeeded(store);
+
+                string goalWarnings = marchWarning + evolWarning + cartWarning;
+
                 string response = $"Goal '{searchId}' marked complete. Outcome recorded. " +
                        $"project:context updated. Files in .scrinia/ were updated — these are your changes.";
 
@@ -2554,11 +2651,14 @@ public sealed class ScriniaProjectTools
                         string.Join("\n", warnings.Select(w => $"- {w}")) +
                         "\nConsider running plan_verify and plan_retrospective before moving on.";
 
+                if (!string.IsNullOrEmpty(goalWarnings))
+                    response += "\n\n" + goalWarnings.TrimEnd();
+
                 response += "\n\nPost-goal learning:\n" +
-                    "- Produce a march report: skill_load(\"march-reporter\") → write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
+                    "- Produce a march report: skill_load(\"march-reporter\") \u2192 write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
                     "- Distill valuable findings into topical memories (store) for future goals\n" +
                     "- Update or create skills (skill_create) with lessons learned\n" +
-                    "Planning artifacts (task:*, plan:*, research:*) can be cleaned up — " +
+                    "Planning artifacts (task:*, plan:*, research:*) can be cleaned up \u2014 " +
                     "the learnings live in your memories and skills now.";
 
                 return response;

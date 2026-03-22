@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Encoding;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -93,13 +94,13 @@ public sealed class GoalPrefixTests : IDisposable
         string result = await _projTools.PlanTasks("01", taskDef,
             cancellationToken: CancellationToken.None);
 
-        // Assert — the task name should include the goal prefix (e.g., "task:g1-01-1-01")
-        // The active goal from InitProject + goal_update(add) will be G-1 (init has no structured goals),
-        // so the prefix should be "g1-"
+        // Assert — the task name should include the goal prefix (e.g., "task:g1-abc-01-1-01")
+        // The active goal from InitProject + goal_update(add) will be G-1-xxx (init has no structured goals),
+        // so the prefix should be "g1-xxx-"
         result.Should().Contain("task:g",
             "plan_tasks should create task memories with goal-prefixed names (task:gN-...)");
-        result.Should().MatchRegex(@"task:g\d+-01-",
-            "task name should follow pattern task:g{goalNum}-{phaseId}-{wave}-{taskId}");
+        result.Should().MatchRegex(@"task:g\d+-[a-f0-9]+-01-",
+            "task name should follow pattern task:g{goalNum}-{hex}-{phaseId}-{wave}-{taskId}");
     }
 
     // ── Test 3: research_start creates goal-prefixed research names ───────────
@@ -119,11 +120,11 @@ public sealed class GoalPrefixTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Assert — the research memory name should include the goal prefix
-        // With active goal G-1, the name should be "research:g1-01-naming"
+        // With active goal G-1-xxx, the name should be "research:g1-xxx-01-naming"
         result.Should().Contain("research:g",
             "research_start should create a research memory with goal-prefixed name (research:gN-...)");
-        result.Should().MatchRegex(@"research:g\d+-01-naming",
-            "research memory name should follow pattern research:g{goalNum}-{phaseId}-{topic}");
+        result.Should().MatchRegex(@"research:g\d+-[a-f0-9]+-01-naming",
+            "research memory name should follow pattern research:g{goalNum}-{hex}-{phaseId}-{topic}");
     }
 
     // ── Test 4: Branch-safe goal IDs with hex suffix ─────────────────────────
@@ -199,5 +200,117 @@ public sealed class GoalPrefixTests : IDisposable
             $"completing with short-form ID '{shortId}' should match full ID '{fullId}'");
         completeResult.Should().Contain("complete",
             "response should confirm the goal was completed");
+    }
+
+    // ── Test 7: Complete auto-appends to session memory (AUTO-01) ──────────
+
+    [Fact]
+    public async Task GoalUpdate_Complete_AutoAppendsToSessionMemory()
+    {
+        // Arrange — initialize project and add a goal
+        await _projTools.ProjectInit("Goals: test session memory on completion",
+            cancellationToken: CancellationToken.None);
+
+        string addResult = await _projTools.GoalUpdate("add", "Test goal for session logging",
+            cancellationToken: CancellationToken.None);
+
+        // Extract goal ID from addResult
+        var idMatch = Regex.Match(addResult, @"G-\d+-[a-f0-9]{3}");
+        idMatch.Success.Should().BeTrue("goal_update(add) should return a goal ID");
+        string goalId = idMatch.Value;
+
+        // Act — complete the goal
+        string completeResult = await _projTools.GoalUpdate("complete",
+            goalId: goalId, outcome: "Done testing",
+            cancellationToken: CancellationToken.None);
+
+        completeResult.Should().NotStartWith("Error:",
+            "goal completion should succeed");
+
+        // Assert — a sessions:{today} memory should exist with the outcome text
+        string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+        var store = MemoryStoreContext.Current!;
+        var (sessScope, _) = store.ParseQualifiedName($"sessions:{today}");
+        var sessEntries = store.LoadIndex(sessScope);
+
+        sessEntries.Should().Contain(e => e.Name.Contains(today),
+            $"a sessions:{today} memory should be created when a goal is completed");
+
+        // Verify the session memory content includes the outcome text
+        string artifact = await store.ReadArtifactAsync(today, sessScope);
+        artifact.Should().NotBeNullOrEmpty("session memory artifact should have content");
+
+        // Decode the artifact to check it contains the outcome
+        byte[] decoded = new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact);
+        string content = System.Text.Encoding.UTF8.GetString(decoded);
+        content.Should().Contain("Done testing",
+            "session memory should contain the goal outcome text");
+    }
+
+    // ── Test 8: Complete warns if no march report (GATE-01) ─────────────────
+
+    [Fact]
+    public async Task GoalUpdate_Complete_WarnsIfNoMarchReport()
+    {
+        // Arrange — initialize project and add a goal
+        // The test temp dir won't have a docs/reports/ directory, triggering the warning
+        await _projTools.ProjectInit("Goals: test march report warning",
+            cancellationToken: CancellationToken.None);
+
+        string addResult = await _projTools.GoalUpdate("add", "Test goal for march report warning",
+            cancellationToken: CancellationToken.None);
+
+        var idMatch = Regex.Match(addResult, @"G-\d+-[a-f0-9]{3}");
+        idMatch.Success.Should().BeTrue("goal_update(add) should return a goal ID");
+        string goalId = idMatch.Value;
+
+        // Act — complete the goal without creating docs/reports/
+        string completeResult = await _projTools.GoalUpdate("complete",
+            goalId: goalId, outcome: "Done without report",
+            cancellationToken: CancellationToken.None);
+
+        // Assert — response should contain a march report warning
+        completeResult.Should().NotStartWith("Error:",
+            "goal completion should succeed");
+
+        // The warning can contain "march report" in the GATE-01 warning or the post-goal section
+        completeResult.Should().Contain("march report",
+            "completing a goal without docs/reports/ should warn about missing march report");
+    }
+
+    // ── Test 9: Complete warns after 3+ goals without evolutionary (EVOL-01) ─
+
+    [Fact]
+    public async Task GoalUpdate_Complete_WarnsAfterMultipleGoals()
+    {
+        // Arrange — initialize project
+        await _projTools.ProjectInit("Goals: test evolutionary warning",
+            cancellationToken: CancellationToken.None);
+
+        // Complete 3 goals in sequence (add + complete each)
+        for (int i = 1; i <= 3; i++)
+        {
+            string addResult = await _projTools.GoalUpdate("add", $"Goal number {i}",
+                cancellationToken: CancellationToken.None);
+
+            var idMatch = Regex.Match(addResult, @"G-\d+-[a-f0-9]{3}");
+            idMatch.Success.Should().BeTrue($"goal_update(add) for goal {i} should return a goal ID");
+            string gId = idMatch.Value;
+
+            string result = await _projTools.GoalUpdate("complete",
+                goalId: gId, outcome: $"Done goal {i}",
+                cancellationToken: CancellationToken.None);
+
+            result.Should().NotStartWith("Error:",
+                $"completing goal {i} should succeed");
+
+            // On the 3rd completion, check for evolutionary warning
+            if (i == 3)
+            {
+                result.Should().Contain("evolutionary",
+                    "completing 3+ goals without a cartography scan should trigger " +
+                    "an evolutionary/cartographer warning (EVOL-01)");
+            }
+        }
     }
 }
