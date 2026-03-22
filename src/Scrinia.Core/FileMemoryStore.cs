@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
@@ -448,7 +449,27 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private void WriteSidecar(ArtifactEntry entry, string storeDir)
     {
         string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
-        string json = JsonSerializer.Serialize(entry, _jsonOptions);
+
+        // Sort metadata for stable git diffs (G-29: multi-user merge safety)
+        var sorted = entry with
+        {
+            Keywords = entry.Keywords?.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray(),
+            TermFrequencies = entry.TermFrequencies?
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(kv => kv.Key, kv => kv.Value),
+            CodeRefs = entry.CodeRefs?
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(kv => kv.Key, kv => kv.Value),
+            ChunkEntries = entry.ChunkEntries?.Select(ce => ce with
+            {
+                Keywords = ce.Keywords?.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToArray(),
+                TermFrequencies = ce.TermFrequencies?
+                    .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(kv => kv.Key, kv => kv.Value)
+            }).ToArray()
+        };
+
+        string json = JsonSerializer.Serialize(sorted, _jsonOptions);
         string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
         File.WriteAllText(tmp, json);
         File.Move(tmp, metaPath, overwrite: true);

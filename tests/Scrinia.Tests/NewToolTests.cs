@@ -1,7 +1,9 @@
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -459,5 +461,81 @@ public sealed class NewToolTests : IDisposable
             "reconcile mode must show the 'Current Built-in' section");
         result.Should().Contain("Your Project Override",
             "reconcile mode must show the 'Your Project Override' section");
+    }
+
+    // ── WriteSidecar sorting tests ──────────────────────────────────────────
+
+    [Fact]
+    public async Task WriteSidecar_SortsKeywordsAlphabetically()
+    {
+        // Arrange & Act — store a memory with deliberately unsorted keywords
+        await _memTools.Store(
+            ["test content for keyword sorting"],
+            "sort-test",
+            keywords: ["zebra", "apple", "mango"]);
+
+        // Read the .meta.json file directly from disk
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string metaPath = store.MetaPath("sort-test");
+        string json = File.ReadAllText(metaPath);
+
+        // Deserialize and verify keywords are sorted alphabetically
+        var entry = JsonSerializer.Deserialize<ArtifactEntry>(json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        entry.Should().NotBeNull();
+        entry!.Keywords.Should().NotBeNullOrEmpty("stored entry should have keywords");
+
+        // Filter to just the user-supplied keywords to verify their relative order
+        var userKeywords = entry.Keywords!
+            .Where(k => k is "apple" or "mango" or "zebra")
+            .ToList();
+
+        userKeywords.Should().HaveCount(3, "all three user-supplied keywords should be present");
+        userKeywords.Should().BeInAscendingOrder(StringComparer.OrdinalIgnoreCase,
+            "keywords in .meta.json must be sorted alphabetically (G-29 merge safety)");
+
+        // Also verify via raw JSON that "apple" appears before "mango" appears before "zebra"
+        int appleIdx = json.IndexOf("\"apple\"", StringComparison.Ordinal);
+        int mangoIdx = json.IndexOf("\"mango\"", StringComparison.Ordinal);
+        int zebraIdx = json.IndexOf("\"zebra\"", StringComparison.Ordinal);
+
+        appleIdx.Should().BeLessThan(mangoIdx, "in raw JSON, 'apple' should appear before 'mango'");
+        mangoIdx.Should().BeLessThan(zebraIdx, "in raw JSON, 'mango' should appear before 'zebra'");
+    }
+
+    [Fact]
+    public async Task WriteSidecar_SortsTermFrequencyKeys()
+    {
+        // Arrange & Act — store content that will produce term frequencies
+        // Use words that will appear in TF and whose keys we can verify ordering on
+        await _memTools.Store(
+            ["zebra apple mango zebra apple mango zebra apple mango"],
+            "tf-sort-test");
+
+        // Read the .meta.json file directly from disk
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        string metaPath = store.MetaPath("tf-sort-test");
+        string json = File.ReadAllText(metaPath);
+
+        // Parse the JSON and extract the termFrequencies object
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        root.TryGetProperty("termFrequencies", out var tfElement).Should().BeTrue(
+            ".meta.json should contain a termFrequencies property");
+        tfElement.ValueKind.Should().Be(JsonValueKind.Object,
+            "termFrequencies should be a JSON object");
+
+        // Extract all keys and verify they are sorted alphabetically
+        var keys = tfElement.EnumerateObject()
+            .Select(p => p.Name)
+            .ToList();
+
+        keys.Should().HaveCountGreaterThan(0, "termFrequencies should have at least one key");
+
+        var sortedKeys = keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+        keys.Should().Equal(sortedKeys,
+            "termFrequency keys in .meta.json must be sorted alphabetically (G-29 merge safety)");
     }
 }
