@@ -4,6 +4,7 @@ using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
@@ -18,6 +19,10 @@ public sealed class ScriniaMcpTools
 
     private static readonly ConcurrentDictionary<string, ConflictEntry> _activeConflicts = new();
     private sealed record ConflictEntry(string FilePath, string Type, string? OursContent, string? TheirsContent);
+
+    private static readonly Regex CountPattern = new(
+        @"\b\d+\s+(tests?|tools?|skills?|endpoints?|routes?|models?|projects?|memories|concerns?|phases?|goals?)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static IMemoryStore CurrentStore =>
         MemoryStoreContext.Current ?? throw new InvalidOperationException(
@@ -135,19 +140,20 @@ public sealed class ScriniaMcpTools
             **2. Set a goal** → `goal_update(add)` — clarify scope with user first
             **3. Research** → `research_start` → investigate → `research_complete` with hypothesis
             **4. Plan** → `plan_requirements` → `plan_roadmap`
-            **5. Decompose & execute**:
-              - `skill_load("planner")` before `plan_tasks` — mandatory
+            **5. Execute** — the orchestrator's only loop is `task_next` → spawn → `task_complete`:
+              - `research_complete` auto-creates a planner task (wave 0)
+              - `task_next` surfaces the planner task first — spawn an agent for it
+              - The planner agent calls `plan_tasks` directly (it has MCP access)
+              - `task_next` then surfaces execution tasks — spawn agents for each
+              - `plan_tasks` auto-injects gate tasks: QA every phase, evolutionary/cartographer/march on last phase
               - The primary agent orchestrates — it does not execute tasks directly
-              - Spawn an agent for every task, including single-task waves
-              - `task_next` → spawn agents → `task_complete`
               - Use `run_in_background: true` for execution agents
-            **6. Verify** → `plan_verify` — record evidence (QA skill validates)
+            **6. Verify** → `plan_verify` — record evidence
             **7. Learn** → `plan_retrospective` — retrospectives stored per-phase
-            **8. Complete** → produce a march report (mandatory: `skill_load("march-reporter")` → docs/reports/)
-              → `goal_update(complete)` — auto-appends session log, warns if march report missing
+            **8. Complete** → `goal_update(complete)` — auto-appends session log + checkpoint
 
             ## Recovery
-            - `plan_resume()` — rebuild context after loss (warns if merge conflicts detected)
+            - `context_resume()` — rebuild context after loss (warns if merge conflicts detected)
             - `plan_status()` — quick progress check
             - `search("agent:")` — load behavioral norms (agent:profile, agent:execution-policy)
 
@@ -344,21 +350,34 @@ public sealed class ScriniaMcpTools
         if (!string.IsNullOrWhiteSpace(reviewAfter) && DateTimeOffset.TryParse(reviewAfter, out var ra))
             parsedReviewAfter = ra;
 
-        // Compute code reference hashes
-        Dictionary<string, string>? codeRefDict = null;
-        if (codeRefs is { Length: > 0 })
+        // Auto-set reviewWhen for content with count patterns (unless explicit reviewWhen provided)
+        if (string.IsNullOrWhiteSpace(reviewWhen) && !store.IsEphemeral(name))
         {
-            string storeDir = store.GetStoreDirForScope("local");
-            string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
-            string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
-            codeRefDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var refPath in codeRefs)
+            if (CountPattern.IsMatch(joined))
+                reviewWhen = "when counts in this memory change";
+        }
+
+        // Compute code reference hashes — explicit codeRefs + auto-detected file: keywords
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
+        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+
+        var allRefPaths = (codeRefs ?? [])
+            .Concat(mergedKeywords
+                .Where(k => k.StartsWith("file:", StringComparison.Ordinal))
+                .Select(k => k["file:".Length..]))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        Dictionary<string, string>? codeRefDict = null;
+        foreach (var refPath in allRefPaths)
+        {
+            var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
+            if (fullPath is null || !File.Exists(fullPath)) continue;
+            var hash = ComputeFileHash(fullPath);
+            if (hash is not null)
             {
-                var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
-                if (fullPath is null || !File.Exists(fullPath)) continue;
-                var hash = ComputeFileHash(fullPath);
-                if (hash is not null)
-                    codeRefDict[refPath.Trim()] = hash;
+                codeRefDict ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                codeRefDict[refPath.Trim()] = hash;
             }
         }
 

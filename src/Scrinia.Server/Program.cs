@@ -130,7 +130,7 @@ if (!pluginProvidesEmbeddings)
             builder.Services.AddSingleton<ISearchScoreContributor>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
             builder.Services.AddSingleton<IMemoryEventSink>(sp =>
-                sp.GetRequiredService<BuiltInEmbeddingsService>());
+                new CompositeEventSink([sp.GetRequiredService<BuiltInEmbeddingsService>(), new MaintenanceEventSink()]));
             builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
 
@@ -158,6 +158,7 @@ if (chatOptions.MaxTokens <= 0) chatOptions.MaxTokens = 4096;
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
 builder.Services.AddSingleton(sp =>
     new StoreManager(storePaths, sp.GetRequiredService<IStorageBackend>()));
+builder.Services.AddHostedService<MaintenanceCacheService>();
 
 builder.Services.AddSingleton<IReadOnlyList<IScriniaPlugin>>([.. loadedPlugins]);
 builder.Services.AddSingleton<PluginPipeline>();

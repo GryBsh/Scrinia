@@ -9,6 +9,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Scrinia.Tests" />
+    <InternalsVisibleTo Include="Scrinia.Server" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
   </ItemGroup>
 

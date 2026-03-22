@@ -13,11 +13,13 @@ public sealed class PlanningHelperTests : IDisposable
 {
     private readonly TestHelpers.StoreScope _scope;
     private readonly ScriniaProjectTools _tools;
+    private readonly ScriniaMcpTools _memTools;
 
     public PlanningHelperTests()
     {
         _scope = new TestHelpers.StoreScope();
         _tools = new ScriniaProjectTools();
+        _memTools = new ScriniaMcpTools();
     }
 
     public void Dispose() => _scope.Dispose();
@@ -45,7 +47,12 @@ public sealed class PlanningHelperTests : IDisposable
         await _tools.PlanRoadmap("## Phase 1\nRequirements: REQ-01\nSuccess Criteria:\n1. Done", CancellationToken.None);
         await _tools.PlanTasks("01",
             "## Task 01\nWave: 1\nDepends on: none\nAction: do it\nAcceptance criteria:\n- done", CancellationToken.None);
+        // Complete user task + all auto-injected gate tasks
         await _tools.TaskComplete("task:01-1-01", "completed", CancellationToken.None);
+        await _tools.TaskComplete("task:01-2-qa-gate", "completed", CancellationToken.None);
+        await _tools.TaskComplete("task:01-3-evolutionary-gate", "completed", CancellationToken.None);
+        await _tools.TaskComplete("task:01-3-cartographer-gate", "completed", CancellationToken.None);
+        await _tools.TaskComplete("task:01-3-march-gate", "completed", CancellationToken.None);
 
         var result = await _tools.PlanStatus(CancellationToken.None);
         result.Should().Contain("Progress: 100%", because: "all tasks complete = 100%");
@@ -63,7 +70,8 @@ public sealed class PlanningHelperTests : IDisposable
         await _tools.TaskComplete("task:01-1-01", "completed", CancellationToken.None);
 
         var result = await _tools.PlanStatus(CancellationToken.None);
-        result.Should().Contain("Progress: 50%", because: "1 of 2 tasks complete = 50%");
+        // 1 of 6 tasks complete (2 user + 4 auto-injected gates) = 17%
+        result.Should().Contain("Progress: 17%", because: "1 of 6 tasks complete (2 user + 4 gates) = 17%");
     }
 
     // ── ExtractPhaseIds + CountPhases (tested via plan_status roadmap note) ──
@@ -145,8 +153,12 @@ public sealed class PlanningHelperTests : IDisposable
         checklist.Should().Contain("Verification Checklist");
         checklist.Should().Contain("All tasks complete");
 
+        // Write qa:latest so the QA gate passes
+        await _memTools.Store(["## QA Report\nBuild: 0 errors\nTests: 1 passed, 0 failed"],
+            "qa:latest", cancellationToken: CancellationToken.None);
+
         // With evidence: records results (include test output to pass QA gate)
-        var result = await _tools.PlanVerify("01", "PASS: All tasks complete — 1 passed, 0 failed", CancellationToken.None);
+        var result = await _tools.PlanVerify("01", evidence: "PASS: All tasks complete — 1 passed, 0 failed", cancellationToken: CancellationToken.None);
         result.Should().Contain("ALL_PASS");
     }
 }

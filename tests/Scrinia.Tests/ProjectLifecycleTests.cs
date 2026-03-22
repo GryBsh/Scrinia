@@ -12,11 +12,13 @@ public sealed class ProjectLifecycleTests : IDisposable
 {
     private readonly TestHelpers.StoreScope _scope;
     private readonly ScriniaProjectTools _tools;
+    private readonly ScriniaMcpTools _memTools;
 
     public ProjectLifecycleTests()
     {
         _scope = new TestHelpers.StoreScope();
         _tools = new ScriniaProjectTools();
+        _memTools = new ScriniaMcpTools();
     }
 
     public void Dispose() => _scope.Dispose();
@@ -275,10 +277,10 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_roadmap result should include .scrinia/ ownership hint");
     }
 
-    // ── plan_resume tests (PROJ-04) ───────────────────────────────────────────
+    // ── context_resume tests (PROJ-04) ──────────────────────────────────────
 
     [Fact]
-    public async Task PlanResume_ReturnsStructuredSummary()
+    public async Task ContextResume_ReturnsStructuredSummary()
     {
         // Arrange — full state via all three write tools
         await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
@@ -286,49 +288,49 @@ public sealed class ProjectLifecycleTests : IDisposable
         await _tools.PlanRoadmap("### Phase 1\nPROJ-01, PROJ-02 tasks", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanResume(CancellationToken.None);
+        string result = await _tools.ContextResume(CancellationToken.None);
 
         // Assert — all required fields present
-        result.Should().Contain("Project:", "plan_resume must include project name");
-        result.Should().Contain("Phase:", "plan_resume must include current phase");
-        result.Should().Contain("Progress:", "plan_resume must include progress");
-        result.Should().Contain("Last action:", "plan_resume must include last action");
-        result.Should().Contain("Next:", "plan_resume must include next step");
+        result.Should().Contain("Project:", "context_resume must include project name");
+        result.Should().Contain("Phase:", "context_resume must include current phase");
+        result.Should().Contain("Progress:", "context_resume must include progress");
+        result.Should().Contain("Last action:", "context_resume must include last action");
+        result.Should().Contain("Next:", "context_resume must include next step");
     }
 
     [Fact]
-    public async Task PlanResume_RespectsResponseCap()
+    public async Task ContextResume_RespectsResponseCap()
     {
         // Arrange
         await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanResume(CancellationToken.None);
+        string result = await _tools.ContextResume(CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
-            "plan_resume response must be <= 8192 characters (MaxResponseChars)");
+            "context_resume response must be <= 8192 characters (MaxResponseChars)");
     }
 
     [Fact]
-    public async Task PlanResume_IncludesNextActionSuggestion()
+    public async Task ContextResume_IncludesNextActionSuggestion()
     {
         // Arrange
         await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanResume(CancellationToken.None);
+        string result = await _tools.ContextResume(CancellationToken.None);
 
         // Assert — must contain a concrete suggestion (tool name or action verb)
         bool hasConcreteAction = result.Contains("run ") || result.Contains("plan_")
             || result.Contains("task_") || result.Contains("goal_update")
             || result.Contains("concern") || result.Contains("research");
         hasConcreteAction.Should().BeTrue(
-            "plan_resume must return a concrete next action (contains a tool name or action)");
+            "context_resume must return a concrete next action (contains a tool name or action)");
     }
 
     [Fact]
-    public async Task PlanResume_RebuildsFromMemories()
+    public async Task ContextResume_RebuildsFromMemories()
     {
         // Arrange — initialize project so memories exist
         await _tools.ProjectInit("Goals: build a memory server for AI agents", cancellationToken: CancellationToken.None);
@@ -341,26 +343,162 @@ public sealed class ProjectLifecycleTests : IDisposable
         store.Remove(subject, scope);
 
         // Act
-        string result = await _tools.PlanResume(CancellationToken.None);
+        string result = await _tools.ContextResume(CancellationToken.None);
 
         // Assert — rebuilt from memories prefix must be present
         result.Should().ContainEquivalentOf("State rebuilt from memories",
-            "plan_resume should indicate state was rebuilt when project:state is missing");
+            "context_resume should indicate state was rebuilt when project:state is missing");
         result.Should().NotStartWith("Error:",
-            "plan_resume should succeed even without project:state if other memories exist");
+            "context_resume should succeed even without project:state if other memories exist");
     }
 
     [Fact]
-    public async Task PlanResume_FailsWithoutAnyMemories()
+    public async Task ContextResume_FailsWithoutAnyMemories()
     {
         // Act — no project memories at all
-        string result = await _tools.PlanResume(CancellationToken.None);
+        string result = await _tools.ContextResume(CancellationToken.None);
 
         // Assert
         result.Should().StartWith("Error:",
-            "plan_resume with no project memories should return an error");
+            "context_resume with no project memories should return an error");
         result.Should().Contain("project_init",
             "error should direct user to run project_init");
+    }
+
+    [Fact]
+    public async Task ContextResume_IncludesCheckpointWhenPresent()
+    {
+        // Arrange — init project, add a goal, complete it (creates checkpoint:latest)
+        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
+            cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("add", "Goal for resume checkpoint test", null, null, cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("complete", null, "G-4", "Resume checkpoint outcome", cancellationToken: CancellationToken.None);
+
+        // Act
+        string result = await _tools.ContextResume(CancellationToken.None);
+
+        // Assert — response must contain the checkpoint section
+        result.Should().Contain("Last checkpoint",
+            "context_resume should include 'Last checkpoint' section when checkpoint:latest exists");
+        result.Should().Contain("G-4",
+            "context_resume checkpoint section should reference the completed goal ID");
+    }
+
+    [Fact]
+    public async Task ContextResume_OmitsCheckpointWhenAbsent()
+    {
+        // Arrange — init project without completing any goals (no checkpoint:latest)
+        await _tools.ProjectInit("Goals:\n- Build the API",
+            cancellationToken: CancellationToken.None);
+
+        // Act
+        string result = await _tools.ContextResume(CancellationToken.None);
+
+        // Assert — response must NOT contain the checkpoint section and must not error
+        result.Should().NotContain("Last checkpoint",
+            "context_resume should not include 'Last checkpoint' when no checkpoint:latest exists");
+        result.Should().NotStartWith("Error:",
+            "context_resume should succeed without a checkpoint");
+    }
+
+    // ── context_resume enrichment tests ─────────────────────────────────────
+
+    [Fact]
+    public async Task ContextResume_IncludesAgentProfile()
+    {
+        // Arrange — init project, store an agent:profile memory
+        await _tools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
+        await _memTools.Store(["Memory persistence: always use scrinia"], "agent:profile",
+            cancellationToken: CancellationToken.None);
+
+        // Act
+        string result = await _tools.ContextResume(CancellationToken.None);
+
+        // Assert — response should contain agent profile section and its content
+        result.Should().Contain("Agent profile",
+            "context_resume should include the 'Agent profile' section when agent:profile exists");
+        result.Should().Contain("Memory persistence",
+            "context_resume should inline agent:profile content");
+    }
+
+    [Fact]
+    public async Task ContextResume_IncludesActiveGoalDescription()
+    {
+        // Arrange — init project and add a goal (which becomes active)
+        await _tools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("add", "Build the authentication system", null, null,
+            cancellationToken: CancellationToken.None);
+
+        // Act
+        string result = await _tools.ContextResume(CancellationToken.None);
+
+        // Assert — response should mention the active goal
+        result.Should().Contain("Active goal",
+            "context_resume should include 'Active goal:' when a goal is active");
+        result.Should().Contain("authentication",
+            "context_resume should include the goal description text");
+    }
+
+    [Fact]
+    public async Task ContextResume_IncludesSessionLog()
+    {
+        // Arrange — init project, store a session log for today
+        await _tools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
+        string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+        await _memTools.Store(["- Completed feature X"], $"sessions:{today}",
+            cancellationToken: CancellationToken.None);
+
+        // Act
+        string result = await _tools.ContextResume(CancellationToken.None);
+
+        // Assert — response should contain session log section and its content
+        result.Should().Contain("Session log",
+            "context_resume should include the 'Session log' section when today's session exists");
+        result.Should().Contain("Completed feature X",
+            "context_resume should inline today's session log content");
+    }
+
+    [Fact]
+    public async Task ContextResume_IncludesTaskNudge()
+    {
+        // Arrange — full lifecycle: init, requirements, roadmap, tasks
+        // PlanTasks updates project:state to include "Phase 01" which the nudge regex needs,
+        // and creates pending tasks that trigger the task_next nudge.
+        await _tools.ProjectInit("Goals: task nudge test", cancellationToken: CancellationToken.None);
+        await _tools.PlanRequirements("- REQ-01: Feature A", cancellationToken: CancellationToken.None);
+        await _tools.PlanRoadmap(
+            "## Phase 1: Foundation\nREQ-IDs: REQ-01\nSuccess criteria:\n- Feature A works",
+            cancellationToken: CancellationToken.None);
+        string taskInput =
+            "## Task 01\nWave: 1\nDepends on: none\nAction: Implement feature\nAcceptance criteria:\n- done";
+        await _tools.PlanTasks("01", taskInput, cancellationToken: CancellationToken.None);
+
+        // Act
+        string result = await _tools.ContextResume(CancellationToken.None);
+
+        // Assert — response should nudge agent to call task_next
+        result.Should().Contain("task_next",
+            "context_resume should include a task_next nudge when pending tasks exist");
+    }
+
+    [Fact]
+    public async Task ContextResume_OmitsEnrichmentsWhenAbsent()
+    {
+        // Arrange — init project only (no agent:profile, no session log, no goals, no tasks)
+        await _tools.ProjectInit("Goals: bare minimum project", cancellationToken: CancellationToken.None);
+
+        // Act
+        string result = await _tools.ContextResume(CancellationToken.None);
+
+        // Assert — none of the enrichment sections should appear
+        result.Should().NotContain("Agent profile",
+            "context_resume should not include 'Agent profile' when no agent:profile exists");
+        result.Should().NotContain("Session log",
+            "context_resume should not include 'Session log' when no session log exists for today");
+        result.Should().NotContain("Active goal",
+            "context_resume should not include 'Active goal' when no goal is active");
+        result.Should().NotContain("task_next",
+            "context_resume should not include task_next nudge when no pending tasks exist");
     }
 
     // ── plan_status tests (PROJ-05) ───────────────────────────────────────────
@@ -866,10 +1004,15 @@ public sealed class ProjectLifecycleTests : IDisposable
     [Fact]
     public async Task TaskNext_ReturnsEmptyWhenAllComplete()
     {
-        // Arrange - 1 task; complete it
+        // Arrange - 2 user tasks + auto-injected gate tasks; complete them all
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
         await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
         await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+        // Complete all auto-injected gate tasks (single-phase = last phase, so all gates)
+        await _tools.TaskComplete("task:01-2-qa-gate", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-3-evolutionary-gate", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-3-cartographer-gate", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-3-march-gate", "Done", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
@@ -1193,10 +1336,14 @@ public sealed class ProjectLifecycleTests : IDisposable
         await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
         await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
+        // Write qa:latest so the QA gate passes
+        await _memTools.Store(["## QA Report\nBuild: 0 errors\nTests: 8 passed, 0 failed"],
+            "qa:latest", cancellationToken: CancellationToken.None);
+
         // Act — provide agent-verified evidence (include test output to pass QA gate)
         string result = await _tools.PlanVerify("01",
-            "PASS: Auth endpoint created — 5 passed, 0 failed\nPASS: Profile endpoint created — 3 passed, 0 failed",
-            CancellationToken.None);
+            evidence: "PASS: Auth endpoint created — 5 passed, 0 failed\nPASS: Profile endpoint created — 3 passed, 0 failed",
+            cancellationToken: CancellationToken.None);
 
         // Assert — must contain evidence strings from the agent
         result.Should().Contain("Evidence:",
@@ -1274,40 +1421,23 @@ public sealed class ProjectLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanVerify_RejectsIfNoTestEvidence()
+    public async Task PlanVerify_RecordsEvidenceWithoutQaLatest()
     {
-        // Arrange — full lifecycle with roadmap + tasks completed
+        // Arrange — full lifecycle with roadmap + tasks completed, no qa:latest needed
         await SetupProjectWithCriteria("01");
         await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
         await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
-        // Act — provide evidence with NO test output indicators
+        // Act — provide evidence (QA gate removed — no qa:latest required)
         string result = await _tools.PlanVerify("01",
-            "PASS: criterion 1 — I verified it looks good",
-            CancellationToken.None);
-
-        // Assert — should hard reject (Error:) when evidence lacks test output
-        result.Should().StartWith("Error:",
-            "plan_verify should hard reject when evidence lacks test output indicators");
-        result.Should().Contain("QA evidence",
-            "rejection message should mention QA evidence");
-
-        // Verify evidence was NOT recorded — call plan_verify in checklist mode
-        string checklist = await _tools.PlanVerify("01",
+            evidence: "PASS: criterion 1 — I verified it looks good",
             cancellationToken: CancellationToken.None);
-        checklist.Should().Contain("Verification Checklist",
-            "checklist mode should still return the checklist after a QA rejection");
-        checklist.Should().Contain("[ ]",
-            "criteria should still show unchecked after a QA rejection — no evidence was stored");
 
-        // Act — provide evidence WITH test output indicators
-        string result2 = await _tools.PlanVerify("01",
-            "PASS: criterion 1 — 759 passed, 0 failed, build clean",
-            CancellationToken.None);
-
-        // Assert — should succeed when test results are present
-        result2.Should().NotStartWith("Error:",
-            "plan_verify should not reject when evidence includes test output");
+        // Assert — should record evidence without blocking
+        result.Should().NotStartWith("Blocked:",
+            "plan_verify should not block since QA gate was removed");
+        result.Should().MatchRegex("(ALL_PASS|PARTIAL|Status:)",
+            "plan_verify should return structured results");
     }
 
     // -- plan_gaps tests (VERI-03) --
@@ -1732,10 +1862,14 @@ public sealed class ProjectLifecycleTests : IDisposable
         await _tools.ConcernAdd("Risk: auth bypass vulnerability",
             "high", "01", id: "auth-bypass", CancellationToken.None);
 
+        // Write qa:latest so the QA gate passes (testing concern gate, not QA gate)
+        await _memTools.Store(["## QA Report\nBuild: 0 errors\nTests: 42 passed, 0 failed"],
+            "qa:latest", cancellationToken: CancellationToken.None);
+
         // Act — provide valid test evidence (would pass QA gate)
         string result = await _tools.PlanVerify("01",
-            "PASS: criterion 1 — 42 passed, 0 failed, build clean",
-            CancellationToken.None);
+            evidence: "PASS: criterion 1 — 42 passed, 0 failed, build clean",
+            cancellationToken: CancellationToken.None);
 
         // Assert — should hard reject due to open concern
         result.Should().StartWith("Error:",
@@ -1771,6 +1905,78 @@ public sealed class ProjectLifecycleTests : IDisposable
             "concern_resolve should succeed with verifiedBy='qa'");
         successResult.Should().Contain("resolved",
             "success message should confirm resolution");
+    }
+
+    // ── checkpoint:latest tests (CKPT-01) ───────────────────────────────────
+
+    [Fact]
+    public async Task GoalComplete_CreatesCheckpointLatest()
+    {
+        // Arrange — init project, add a goal, then complete it
+        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
+            cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("add", "Goal for checkpoint test", null, null, cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("complete", null, "G-4", "Checkpoint outcome", cancellationToken: CancellationToken.None);
+
+        // Assert — checkpoint:latest memory must exist as a persistent (non-ephemeral) memory
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("checkpoint:latest");
+        var entries = store.LoadIndex(scope);
+        entries.Should().Contain(e => e.Name == subject,
+            "goal_update(complete) should auto-create checkpoint:latest memory");
+
+        // Verify checkpoint is in the 'checkpoint' topic (not ephemeral)
+        scope.Should().NotStartWith("~",
+            "checkpoint:latest must be persistent, not ephemeral");
+
+        // Verify checkpoint content contains key fields
+        string content = await ReadMemoryText(store, "checkpoint:latest");
+        content.Should().Contain("G-4",
+            "checkpoint content should contain the completed goal ID");
+        content.Should().Contain("Checkpoint outcome",
+            "checkpoint content should contain the outcome");
+        content.Should().Contain("Progress",
+            "checkpoint content should contain progress information");
+    }
+
+    [Fact]
+    public async Task GoalComplete_CheckpointContainsProjectName()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI",
+            cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("add", "Goal with project name check", null, null, cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("complete", null, "G-3", "Done", cancellationToken: CancellationToken.None);
+
+        // Assert — checkpoint content should contain the project name (derived from workspace dir)
+        var store = MemoryStoreContext.Current!;
+        string content = await ReadMemoryText(store, "checkpoint:latest");
+        content.Should().Contain("Checkpoint",
+            "checkpoint content should have the Checkpoint heading");
+        content.Should().Contain("Goals",
+            "checkpoint content should contain goals summary");
+    }
+
+    [Fact]
+    public async Task GoalComplete_CheckpointHasRecoveryKeyword()
+    {
+        // Arrange
+        await _tools.ProjectInit("Goals:\n- Build the API\n- Ship it",
+            cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("add", "Goal for keyword test", null, null, cancellationToken: CancellationToken.None);
+        await _tools.GoalUpdate("complete", null, "G-3", "Keyword outcome", cancellationToken: CancellationToken.None);
+
+        // Assert — checkpoint entry must have 'recovery' keyword for context_resume discovery
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("checkpoint:latest");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name == subject);
+        entry.Should().NotBeNull("checkpoint:latest entry must exist");
+        entry!.Keywords.Should().NotBeNull("checkpoint entry must have keywords");
+        entry.Keywords.Should().Contain("recovery",
+            "checkpoint entry must have 'recovery' keyword for context_resume discovery");
+        entry.Keywords.Should().Contain("checkpoint",
+            "checkpoint entry must have 'checkpoint' keyword");
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────

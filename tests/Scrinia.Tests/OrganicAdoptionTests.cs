@@ -8,7 +8,7 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Tests for organic adoption signals (ADOPT-01, ADOPT-03) and learning feedback:
 /// - guide() text covers all v2.0 tools and topic namespaces (ADOPT-01)
-/// - plan_resume surfaces unused capability hints (ADOPT-03)
+/// - context_resume surfaces unused capability hints (ADOPT-03)
 /// - plan_roadmap and plan_tasks query learn:patterns before responding
 /// </summary>
 public sealed class OrganicAdoptionTests : IDisposable
@@ -71,55 +71,55 @@ public sealed class OrganicAdoptionTests : IDisposable
         store.Upsert(entry, scope);
     }
 
-    // ── ADOPT-03: plan_resume capability hints ────────────────────────────────
+    // ── ADOPT-03: context_resume capability hints ────────────────────────────────
 
     [Fact]
-    public async Task PlanResume_HintsUnusedConcernTracking()
+    public async Task ContextResume_HintsUnusedConcernTracking()
     {
         // Arrange — project init but no concern_add called
         await InitProject();
 
         // Act
-        string response = await _tools.PlanResume(CancellationToken.None);
+        string response = await _tools.ContextResume(CancellationToken.None);
 
         // Assert — hint about unused concern tracking must appear
         (response.Contains("hint", StringComparison.OrdinalIgnoreCase) ||
          response.Contains("concern", StringComparison.OrdinalIgnoreCase))
             .Should().BeTrue(
-                "plan_resume should surface a hint about unused concern tracking when concern_add has never been called");
+                "context_resume should surface a hint about unused concern tracking when concern_add has never been called");
     }
 
     [Fact]
-    public async Task PlanResume_HintsUnusedKnowledge()
+    public async Task ContextResume_HintsUnusedKnowledge()
     {
         // Arrange — project init but no store of domain knowledge
         await InitProject();
 
         // Act
-        string response = await _tools.PlanResume(CancellationToken.None);
+        string response = await _tools.ContextResume(CancellationToken.None);
 
         // Assert — hint about persisting knowledge must appear
         (response.Contains("knowledge", StringComparison.OrdinalIgnoreCase) ||
          response.Contains("store", StringComparison.OrdinalIgnoreCase) ||
          response.Contains("topic", StringComparison.OrdinalIgnoreCase))
             .Should().BeTrue(
-                "plan_resume should surface a hint about persisting domain knowledge");
+                "context_resume should surface a hint about persisting domain knowledge");
     }
 
     [Fact]
-    public async Task PlanResume_NoHintWhenConcernsExist()
+    public async Task ContextResume_NoHintWhenConcernsExist()
     {
         // Arrange — init project and add a concern
         await InitProject();
         await _tools.ConcernAdd("Test risk", "low", "01", id: "test-risk", CancellationToken.None);
 
         // Act
-        string response = await _tools.PlanResume(CancellationToken.None);
+        string response = await _tools.ContextResume(CancellationToken.None);
 
         // Assert — unused-concern hint text must NOT appear
         response.Should().NotContain(
             "concern tracking is available",
-            "plan_resume should NOT show an unused concern hint when concerns have been logged");
+            "context_resume should NOT show an unused concern hint when concerns have been logged");
     }
 
     // ── Learning feed-in: plan_roadmap queries learn:patterns ─────────────────

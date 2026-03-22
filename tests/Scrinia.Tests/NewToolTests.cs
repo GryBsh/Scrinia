@@ -189,8 +189,9 @@ public sealed class NewToolTests : IDisposable
         // Assert — no conflict warning when no Files: lines present
         result.Should().NotContainEquivalentOf("conflict",
             "plan_tasks without Files: lines should not produce any conflict warnings");
-        result.Should().Contain("Created 2 task(s)",
-            "tasks should be created normally when no Files: lines are present");
+        result.Should().Contain("Created 6 task(s)",
+            "tasks should be created normally when no Files: lines are present " +
+            "(2 user tasks + 4 auto-injected gate tasks for last phase)");
     }
 
     // ── compact() tests ──────────────────────────────────────────────────────

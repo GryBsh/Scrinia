@@ -1,10 +1,12 @@
 using System.ComponentModel;
+using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 
 namespace Scrinia.Mcp;
 
@@ -354,6 +356,7 @@ public sealed class ScriniaProjectTools
     [McpServerTool(Name = "plan_tasks"), Description(
         "Decompose a phase into task memories with keyword-based metadata for status, wave, phase, and dependencies. " +
         "Call research_complete to store research:{phaseId}-{topic} findings before decomposing tasks. " +
+        "Task definitions should be produced by a spawned planner agent (skill_load('planner')), not written inline by the orchestrator. " +
         "Each task is stored as task:{phaseId}-{wave}-{id} with keywords: " +
         "status:pending, wave:N, phase:XX, and depends_on:{subject} for each dependency. " +
         "Requires plan:roadmap to exist (run plan_roadmap first). " +
@@ -373,10 +376,11 @@ public sealed class ScriniaProjectTools
     {
         var store = CurrentStore;
 
-        // Prerequisite check: plan:roadmap must exist
+        // Read roadmap for prerequisite check and last-phase detection
+        string roadmapText;
         try
         {
-            await ReadMemoryAsync(store, "plan:roadmap", cancellationToken);
+            roadmapText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken);
         }
         catch (FileNotFoundException)
         {
@@ -387,6 +391,50 @@ public sealed class ScriniaProjectTools
         var parsedTasks = ParseTaskSections(tasks);
         if (parsedTasks.Count == 0)
             return "Error: no tasks found. Provide tasks using '## Task {id}' section headers.";
+
+        // Auto-inject gate tasks
+        var allUserTaskIds = parsedTasks.Select(t => t.Id).ToArray();
+
+        // QA gate — always injected, depends on all user tasks
+        parsedTasks.Add(new ParsedTask(
+            Id: "qa-gate",
+            DependsOn: allUserTaskIds,
+            Content: "## QA Gate\nAction: Spawn a QA agent via skill_load(\"qa\"). " +
+                "The QA agent runs the full test suite, verifies the build, checks acceptance criteria, " +
+                "and writes qa:latest memory with structured results.\n" +
+                "Acceptance criteria:\n- qa:latest memory exists with current test pass/fail counts\n" +
+                "- Build passes with 0 errors\n- All phase acceptance criteria verified by QA agent"));
+
+        // Last-phase gates — only if this is the final phase in the roadmap
+        var phaseIds = ExtractPhaseIds(roadmapText);
+        bool isLastPhase = phaseIds.Count > 0 &&
+            phaseIds[^1].Equals(phaseId, StringComparison.OrdinalIgnoreCase);
+
+        if (isLastPhase)
+        {
+            parsedTasks.Add(new ParsedTask(
+                Id: "evolutionary-gate",
+                DependsOn: ["qa-gate"],
+                Content: "## Evolutionary Gate\nAction: Spawn an evolutionary agent via skill_load(\"evolutionary\"). " +
+                    "Run a knowledge base scan to update stale memories, detect skill drift, and surface emergent patterns.\n" +
+                    "Acceptance criteria:\n- Evolutionary scan completed\n- Stale memories updated\n" +
+                    "- Session stored as sessions:evolutionary-gNN"));
+
+            parsedTasks.Add(new ParsedTask(
+                Id: "cartographer-gate",
+                DependsOn: ["qa-gate"],
+                Content: "## Cartographer Gate\nAction: Spawn a cartographer agent via skill_load(\"cartographer\"). " +
+                    "Map knowledge connections, link orphans, identify gaps.\n" +
+                    "Acceptance criteria:\n- Cartography scan completed\n- New links created for orphaned memories\n" +
+                    "- Report stored as cartography:YYYY-MM-DD"));
+
+            parsedTasks.Add(new ParsedTask(
+                Id: "march-gate",
+                DependsOn: ["qa-gate"],
+                Content: "## March Report Gate\nAction: Spawn a march reporter agent via skill_load(\"march-reporter\"). " +
+                    "Produce a goal summary document in docs/reports/.\n" +
+                    "Acceptance criteria:\n- March report written to docs/reports/\n- Session log updated"));
+        }
 
         // Resolve active goal for task scoping
         string? activeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
@@ -475,6 +523,8 @@ public sealed class ScriniaProjectTools
                 foreach (string file in task.Files)
                     keywords.Add($"files:{file.Trim()}");
             }
+            if (task.Id.EndsWith("-gate", StringComparison.OrdinalIgnoreCase))
+                keywords.Add($"gate:{task.Id.Replace("-gate", "", StringComparison.OrdinalIgnoreCase)}");
 
             // Task naming: task:{goalPrefix}{phaseId}-{wave}-{id}
             string taskName = $"task:{goalPrefix}{phaseId}-{wave}-{task.Id}";
@@ -572,14 +622,13 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
-    /// <summary>Resume project context after context loss.</summary>
-    [McpServerTool(Name = "plan_resume"), Description(
-        "Resume project context after context loss. Returns a structured summary of current project " +
-        "state including project name, current phase, progress, last action, blockers, and a concrete " +
-        "next-step suggestion. If project state is missing or corrupted, attempts to rebuild from " +
-        "existing project memories. " +
+    /// <summary>Resume full agent context after context loss or session start.</summary>
+    [McpServerTool(Name = "context_resume"), Description(
+        "Resume full agent context after context loss or session start. Returns project state, agent " +
+        "behavioral profile, active goal description, today's session log, and a task_next nudge when " +
+        "pending tasks exist. " +
         "Note: reads from .scrinia/ in the workspace.")]
-    public async Task<string> PlanResume(CancellationToken cancellationToken = default)
+    public async Task<string> ContextResume(CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
 
@@ -610,6 +659,17 @@ public sealed class ScriniaProjectTools
         }
         catch { /* best-effort check */ }
 
+        // Read checkpoint:latest for recovery context
+        string? checkpointContent = null;
+        try
+        {
+            checkpointContent = await ReadMemoryAsync(store, "checkpoint:latest", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            // No checkpoint exists — normal for first-time projects
+        }
+
         string response;
         try
         {
@@ -622,6 +682,31 @@ public sealed class ScriniaProjectTools
                 return "Error: no project found. Run project_init first.";
             response = rebuilt;
         }
+
+        // Active goal description
+        string activeGoalDesc = "";
+        try
+        {
+            string ctxText = await ReadMemoryAsync(store, "project:context", cancellationToken);
+            var (goals, _, _) = ParseGoalsSection(ctxText);
+            var activeLine = goals.FirstOrDefault(g => g.Contains("[active]", StringComparison.OrdinalIgnoreCase));
+            if (activeLine is not null)
+            {
+                // Extract description: everything after "[active] " and before " | Outcome:"
+                var statusMatch = Regex.Match(
+                    activeLine.TrimStart('-', '*', ' '),
+                    @"\]\s*\[active\]\s*",
+                    RegexOptions.IgnoreCase);
+                if (statusMatch.Success)
+                {
+                    string desc = activeLine.TrimStart('-', '*', ' ')[(statusMatch.Index + statusMatch.Length)..];
+                    activeGoalDesc = $"\nActive goal: {desc.Trim()}";
+                }
+            }
+        }
+        catch { /* no project:context or no active goal — skip */ }
+
+        response += activeGoalDesc;
 
         // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
         string concernNote = "";
@@ -673,17 +758,76 @@ public sealed class ScriniaProjectTools
         if (!knowledgeUsed)
             capabilityHints += "\nHint: use store(content, \"topic:subject\") with keywords to persist domain knowledge across sessions.";
 
-        // Check if agent behavioral norms exist
+        response += capabilityHints;
+
+        // Inline agent:profile content
         try
         {
-            var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
-            var agentEntries = store.LoadIndex(agentScope);
-            if (agentEntries.Count > 0)
-                capabilityHints += "\nAgent behavioral norms found — search('agent:') to load project-level norms.";
+            string profileContent = await ReadMemoryAsync(store, "agent:profile", cancellationToken);
+            response += "\n\n## Agent profile\n" + profileContent;
         }
-        catch { /* agent scope not created — skip silently */ }
+        catch (FileNotFoundException) { /* no profile — skip silently */ }
 
-        response += capabilityHints;
+        if (checkpointContent is not null)
+            response += "\n\n## Last checkpoint\n" + checkpointContent;
+
+        // Today's session log
+        try
+        {
+            string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+            string sessionContent = await ReadMemoryAsync(store, $"sessions:{today}", cancellationToken);
+            response += "\n\n## Session log\n" + sessionContent;
+        }
+        catch (FileNotFoundException) { /* no session log for today — skip */ }
+
+        // Staleness & drift alerts — use cache if available, fall back to live scan
+        int rsStale, rsReview, rsDrift, rsMissing;
+        string rsCacheNote = "";
+        if (MaintenanceCache.TryReadCache(store, out var rsCached) && rsCached is not null)
+        {
+            rsStale = rsCached.StaleCount;
+            rsReview = rsCached.ReviewCount;
+            rsDrift = rsCached.DriftCount;
+            rsMissing = rsCached.MissingCount;
+            int cacheAge = (int)(DateTimeOffset.UtcNow - rsCached.ComputedAt).TotalMinutes;
+            rsCacheNote = $" (cached {cacheAge} min ago)";
+        }
+        else
+        {
+            (rsStale, rsReview) = ScanStaleness(store);
+            (rsDrift, rsMissing) = ScanDrift(store);
+        }
+
+        if (rsStale > 0) response += $"\n⚠ {rsStale} memory(s) have passed their review date.{rsCacheNote}";
+        if (rsReview > 0) response += $"\nℹ {rsReview} memory(s) have review conditions set.{rsCacheNote}";
+        if (rsDrift > 0) response += $"\n⚠ {rsDrift} code reference(s) have drifted (files changed since stored).{rsCacheNote}";
+        if (rsMissing > 0) response += $"\n⚠ {rsMissing} code reference(s) point to missing files.{rsCacheNote}";
+
+        // Task nudge — rational lensing: nudge agent into the task loop
+        try
+        {
+            // Extract phase number from state
+            string phaseId = "";
+            var phaseMatch = PhaseNumberPattern.Match(response);
+            if (phaseMatch.Success)
+                phaseId = int.Parse(phaseMatch.Groups[1].Value).ToString("D2");
+
+            if (!string.IsNullOrEmpty(phaseId))
+            {
+                string? nudgeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+                var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+                var taskEntries = store.LoadIndex(taskScope);
+                var pendingTasks = taskEntries
+                    .Where(e => HasKeyword(e, $"phase:{phaseId}"))
+                    .Where(e => nudgeGoalId is null || HasKeyword(e, $"goal:{nudgeGoalId}"))
+                    .Where(e => HasKeyword(e, "status:pending"))
+                    .ToList();
+
+                if (pendingTasks.Count > 0)
+                    response += $"\n\nRun task_next(\"{phaseId}\") to continue.";
+            }
+        }
+        catch { /* best-effort — skip nudge silently */ }
 
         response = conflictWarning + response;
         response = Truncate(response);
@@ -795,6 +939,29 @@ public sealed class ScriniaProjectTools
             $"Blockers: {blockers}\n" +
             $"Next: {next}" +
             roadmapNote + concernNote + goalNote + idleNote;
+
+        // Staleness & drift alerts — use cache if available, fall back to live scan
+        int psStale, psReview, psDrift, psMissing;
+        string psCacheNote = "";
+        if (MaintenanceCache.TryReadCache(store, out var psCached) && psCached is not null)
+        {
+            psStale = psCached.StaleCount;
+            psReview = psCached.ReviewCount;
+            psDrift = psCached.DriftCount;
+            psMissing = psCached.MissingCount;
+            int cacheAge = (int)(DateTimeOffset.UtcNow - psCached.ComputedAt).TotalMinutes;
+            psCacheNote = $" (cached {cacheAge} min ago)";
+        }
+        else
+        {
+            (psStale, psReview) = ScanStaleness(store);
+            (psDrift, psMissing) = ScanDrift(store);
+        }
+
+        if (psStale > 0) response += $"\n⚠ {psStale} memory(s) have passed their review date.{psCacheNote}";
+        if (psReview > 0) response += $"\nℹ {psReview} memory(s) have review conditions set.{psCacheNote}";
+        if (psDrift > 0) response += $"\n⚠ {psDrift} code reference(s) have drifted (files changed since stored).{psCacheNote}";
+        if (psMissing > 0) response += $"\n⚠ {psMissing} code reference(s) point to missing files.{psCacheNote}";
 
         response = Truncate(response);
 
@@ -1014,16 +1181,6 @@ public sealed class ScriniaProjectTools
         }
 
         // ── Recording mode (evidence provided) ──
-
-        // QA evidence gate — hard reject without test output
-        bool hasTestEvidence = evidence.Contains("passed", StringComparison.OrdinalIgnoreCase) ||
-            evidence.Contains("0 failed", StringComparison.OrdinalIgnoreCase) ||
-            evidence.Contains("0 errors", StringComparison.OrdinalIgnoreCase) ||
-            evidence.Contains("build clean", StringComparison.OrdinalIgnoreCase) ||
-            evidence.Contains("dotnet test", StringComparison.OrdinalIgnoreCase);
-        if (!hasTestEvidence)
-            return $"Error: QA evidence rejected — no test results detected in evidence. " +
-                $"Include test runner output (pass/fail counts) or run skill_load(\"qa\"). Evidence not recorded.";
 
         // Concern gate — reject if open high/medium concerns for this phase
         try
@@ -1416,16 +1573,27 @@ public sealed class ScriniaProjectTools
             nextStep: $"share research findings with the user before decomposing into tasks",
             cancellationToken);
 
+        // Auto-create planner seed task (wave 0 — surfaces before execution tasks)
+        string plannerTaskName = $"task:{goalPrefix}{phaseId}-0-planner";
+        var plannerKeywords = new List<string> { "status:pending", "wave:0", $"phase:{phaseId}", "gate:planner" };
+        if (goalId is not null) plannerKeywords.Add($"goal:{goalId}");
+        string plannerContent =
+            $"## Planner Task\n" +
+            $"Action: Load the planner skill via skill_load(\"planner\"). Read the research findings " +
+            $"from {memoryName}. Read plan:roadmap for phase {phaseId} success criteria. " +
+            $"Produce task definitions and call plan_tasks(\"{phaseId}\", tasks) directly.\n" +
+            $"Acceptance criteria:\n" +
+            $"- plan_tasks called with task definitions for phase {phaseId}\n" +
+            $"- Tasks created with proper dependencies and acceptance criteria";
+        await WritePlanningMemoryAsync(store, plannerTaskName, plannerContent,
+            archiveExisting: false, keywords: [.. plannerKeywords], cancellationToken);
+
         string response = $"Research complete. {memoryName} updated with findings and status:complete. " +
-                          $"Files in .scrinia/ were updated — these are your changes.\n\n" +
-                          $"Check backlog:* for related deferred work that research may have unblocked.\n\n" +
-                          $"Before decomposing into tasks, share your findings with the user:\n" +
-                          $"- Summarize what you found and any concerns discovered\n" +
-                          $"- Flag anything surprising or that changes the approach\n" +
-                          $"- Ask if the user has additional context you may have missed\n" +
-                          $"Use `skill_load(\"planner\")` before plan_tasks to produce agent-executable task specs with file scoping and SOS criteria.\n" +
-                          $"Once confirmed, call plan_tasks to decompose using these findings. " +
-                          $"If this research revealed a recurring specialist need, consider skill_create to save a reusable prompt.";
+            $"Files in .scrinia/ were updated — these are your changes.\n\n" +
+            $"Planner task created: {plannerTaskName}\n" +
+            $"Run task_next(\"{phaseId}\") to get the planner task. " +
+            $"The planner agent will call plan_tasks to create execution tasks.\n\n" +
+            $"Check backlog:* for related deferred work that research may have unblocked.";
 
         response = Truncate(response);
 
@@ -1863,6 +2031,34 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>
+    /// Returns the number of memories created/modified since the last cartography entry.
+    /// If no cartography exists, returns total memory count. Returns 0 on error.
+    /// </summary>
+    private static int CountMemoriesSinceLastCartography(IMemoryStore store)
+    {
+        try
+        {
+            var allEntries = store.ListScoped(null);
+            int totalMemories = allEntries.Count;
+
+            var (cartScope2, _) = store.ParseQualifiedName("cartography:placeholder");
+            var cartEntries2 = store.LoadIndex(cartScope2);
+            var lastCart = cartEntries2.OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt).FirstOrDefault();
+
+            if (lastCart is not null)
+            {
+                var lastCartDate = lastCart.UpdatedAt ?? lastCart.CreatedAt;
+                return allEntries.Count(e => (e.Entry.UpdatedAt ?? e.Entry.CreatedAt) > lastCartDate);
+            }
+            else
+            {
+                return totalMemories;
+            }
+        }
+        catch { return 0; }
+    }
+
+    /// <summary>
     /// Appends an outcome entry to the named execution log memory using AppendChunk.
     /// Creates the log if it doesn't exist.
     /// </summary>
@@ -2083,10 +2279,60 @@ public sealed class ScriniaProjectTools
             $"**Added:** {DateTimeOffset.UtcNow:o}\n";
 
         string qualifiedName = $"concern:{concernId}";
+
+        // Extract keywords from description and merge with explicit keywords
+        var (autoKeywords, _) = TextAnalysis.AnalyzeText(description);
+        string[] explicitKeywords = ["status:active", $"severity:{severity}", $"phase:{phaseScope}"];
+        string[] mergedKeywords = TextAnalysis.MergeKeywords(explicitKeywords, autoKeywords);
+
         await WritePlanningMemoryAsync(store, qualifiedName, content,
             archiveExisting: false,
-            keywords: ["status:active", $"severity:{severity}", $"phase:{phaseScope}"],
+            keywords: mergedKeywords,
             cancellationToken);
+
+        // Detect concern keyword patterns
+        string patternSuggestion = "";
+        try
+        {
+            var (concernScope, _) = store.ParseQualifiedName("concern:placeholder");
+            var allConcerns = store.LoadIndex(concernScope);
+
+            // Noise prefixes to exclude from pattern matching
+            var noisePrefixes = new[] { "status:", "severity:", "phase:", "provenance:",
+                "goal:", "ref:", "file:", "wave:", "depends_on:", "basedOn:", "type:" };
+
+            // Count keyword frequency across active concerns
+            var keywordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in allConcerns)
+            {
+                if (entry.Keywords is null) continue;
+                if (!entry.Keywords.Any(k => k.Equals("status:active", StringComparison.OrdinalIgnoreCase)))
+                    continue; // only count active concerns
+
+                foreach (var kw in entry.Keywords)
+                {
+                    if (kw.Equals("orphan", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (noisePrefixes.Any(p => kw.StartsWith(p, StringComparison.OrdinalIgnoreCase))) continue;
+
+                    keywordCounts.TryGetValue(kw, out int count);
+                    keywordCounts[kw] = count + 1;
+                }
+            }
+
+            // Find keywords shared by 3+ concerns
+            var patterns = keywordCounts
+                .Where(kv => kv.Value >= 3)
+                .OrderByDescending(kv => kv.Value)
+                .Take(3)
+                .ToList();
+
+            if (patterns.Count > 0)
+            {
+                patternSuggestion = "\n" + string.Join("\n", patterns.Select(p =>
+                    $"Pattern detected: {p.Value} concerns share keyword '{p.Key}'. Consider creating a patterns:{p.Key} memory."));
+            }
+        }
+        catch { /* best-effort */ }
 
         // Update project state
         string stateText;
@@ -2106,7 +2352,7 @@ public sealed class ScriniaProjectTools
             nextStep: "run concern to list active concerns, or concern_resolve when addressed",
             cancellationToken);
 
-        return $"Stored as {qualifiedName}. Files in .scrinia/ were updated — these are your changes.";
+        return $"Stored as {qualifiedName}. Files in .scrinia/ were updated — these are your changes." + patternSuggestion;
     }
 
     /// <summary>Resolve a tracked concern with resolution notes.</summary>
@@ -2450,11 +2696,11 @@ public sealed class ScriniaProjectTools
 
     /// <summary>Manage project goals dynamically.</summary>
     [McpServerTool(Name = "goal_update"), Description(
-        "Manage project goals dynamically. Actions: 'add' (new goal), 'complete' (mark done with outcome), 'list' (show all goals with status). " +
+        "Manage project goals dynamically. Actions: 'add' (new goal), 'edit' (update description), 'complete' (mark done with outcome), 'list' (show all goals with status). " +
         "Goals modify project:context in-place — no re-initialization needed. " +
         "Original goal count is preserved for scope drift detection by plan_status.")]
     public async Task<string> GoalUpdate(
-        [Description("Action to perform: 'add', 'complete', or 'list'.")] string action,
+        [Description("Action to perform: 'add', 'edit', 'complete', or 'list'.")] string action,
         [Description("Goal description (required for 'add' action).")] string? description = null,
         [Description("Goal ID to complete (e.g. 'G-1'); required for 'complete' action.")] string? goalId = null,
         [Description("Outcome note; required for 'complete' action.")] string? outcome = null,
@@ -2526,9 +2772,56 @@ public sealed class ScriniaProjectTools
                     nextStep: "clarify the goal with the user before planning",
                     cancellationToken);
 
+                // Search backlog for related items
+                string backlogSection = "";
+                try
+                {
+                    var (backlogScope, _) = store.ParseQualifiedName("backlog:placeholder");
+                    var backlogEntries = store.LoadIndex(backlogScope);
+                    if (backlogEntries.Count > 0)
+                    {
+                        // Extract words from goal description for matching
+                        var descWords = new HashSet<string>(
+                            description.ToLowerInvariant()
+                                .Split([' ', ',', '.', ':', ';', '-', '(', ')', '[', ']', '\n', '\r'],
+                                    StringSplitOptions.RemoveEmptyEntries)
+                                .Where(w => w.Length > 3),
+                            StringComparer.OrdinalIgnoreCase);
+
+                        // Score each backlog entry by keyword/description overlap
+                        var scored = backlogEntries
+                            .Select(e =>
+                            {
+                                int score = 0;
+                                if (e.Keywords is not null)
+                                    score += e.Keywords.Count(k => descWords.Contains(k));
+                                if (!string.IsNullOrEmpty(e.Description))
+                                {
+                                    var entryWords = e.Description.ToLowerInvariant()
+                                        .Split([' ', ',', '.', ':', ';', '-'], StringSplitOptions.RemoveEmptyEntries);
+                                    score += entryWords.Count(w => w.Length > 3 && descWords.Contains(w));
+                                }
+                                return (Entry: e, Score: score);
+                            })
+                            .Where(x => x.Score > 0)
+                            .OrderByDescending(x => x.Score)
+                            .Take(3)
+                            .ToList();
+
+                        if (scored.Count > 0)
+                        {
+                            backlogSection = "Related backlog items:\n" +
+                                string.Join("\n", scored.Select(x =>
+                                    $"- backlog:{x.Entry.Name}: {x.Entry.Description ?? "(no description)"}")) +
+                                "\n\n";
+                        }
+                    }
+                }
+                catch { /* backlog topic may not exist */ }
+
                 return $"Goal added as {newGoalId}: {description}.\n" +
                        $"project:context updated. Files in .scrinia/ were updated — these are your changes.\n\n" +
-                       $"Check backlog:* for deferred items that could be grouped into this goal — search('backlog:').\n\n" +
+                       backlogSection +
                        $"Before planning, confirm the goal with the user:\n" +
                        $"- **Scope**: What's included? What's explicitly out of scope?\n" +
                        $"- **Success criteria**: How will we know the goal is achieved?\n" +
@@ -2675,6 +2968,8 @@ public sealed class ScriniaProjectTools
                 string existingLine = goals[matchIndex];
                 string goalDesc = ExtractGoalDescription(existingLine);
                 string outcomeText = outcome ?? "(no outcome recorded)";
+
+                // --- Mark goal complete ---
                 string timestamp = DateTimeOffset.UtcNow.ToString("o");
 
                 goals[matchIndex] =
@@ -2698,97 +2993,47 @@ public sealed class ScriniaProjectTools
                 }
                 catch { /* best-effort — don't block goal completion */ }
 
-                // Check for march report (GATE-01)
-                string marchWarning = "";
+                // Auto-create checkpoint:latest for context_resume recovery
                 try
                 {
-                    string gwStoreDir = store.GetStoreDirForScope("local");
-                    string gwScriniaDir = Path.GetDirectoryName(gwStoreDir) ?? gwStoreDir;
-                    string workspaceRoot = Path.GetDirectoryName(gwScriniaDir) ?? gwScriniaDir;
-                    string reportsDir = Path.Combine(workspaceRoot, "docs", "reports");
-                    if (Directory.Exists(reportsDir))
-                    {
-                        string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
-                        bool hasMarchReport = Directory.EnumerateFiles(reportsDir, "*.md")
-                            .Any(f => Path.GetFileName(f).Contains(today, StringComparison.OrdinalIgnoreCase));
-                        if (!hasMarchReport)
-                            marchWarning = "\u26a0 No march report found for today. Produce one: skill_load(\"march-reporter\") \u2192 docs/reports/\n";
-                    }
-                    else
-                        marchWarning = "\u26a0 No docs/reports/ directory found. Produce a march report: skill_load(\"march-reporter\") \u2192 docs/reports/\n";
-                }
-                catch { /* best-effort */ }
+                    string cpStateText;
+                    try { cpStateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
+                    catch (FileNotFoundException) { cpStateText = ""; }
 
-                // Check evolutionary recency (EVOL-01)
-                string evolWarning = "";
-                try
-                {
-                    // Find last evolutionary activity (cartography:* or agent:profile updated)
-                    DateTimeOffset lastEvolActivity = DateTimeOffset.MinValue;
+                    string cpProjectName = ExtractStateField(cpStateText, "Project:") ?? "Unknown Project";
+                    string cpProjectId = ExtractStateField(cpStateText, "ID:") ?? DeriveProjectId(store);
+                    string cpPhase = ExtractStateField(cpStateText, "Phase:") ?? "Not started";
+                    string cpProgress = ExtractStateField(cpStateText, "Progress:")?.TrimEnd('%') ?? "0";
 
+                    int cpActiveConcerns = 0;
                     try
                     {
-                        var (cartScope, _) = store.ParseQualifiedName("cartography:placeholder");
-                        var cartEntries = store.LoadIndex(cartScope);
-                        var latestCart = cartEntries.OrderByDescending(e => e.UpdatedAt ?? e.CreatedAt).FirstOrDefault();
-                        if (latestCart is not null)
-                            lastEvolActivity = latestCart.UpdatedAt ?? latestCart.CreatedAt;
+                        var (cpConcernScope, _) = store.ParseQualifiedName("concern:placeholder");
+                        var cpAllConcerns = store.LoadIndex(cpConcernScope);
+                        cpActiveConcerns = cpAllConcerns
+                            .Count(e => e.Keywords is not null &&
+                                e.Keywords.Any(k => k.Equals("status:active", StringComparison.OrdinalIgnoreCase)));
                     }
                     catch { }
 
-                    try
-                    {
-                        var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
-                        var agentEntries = store.LoadIndex(agentScope);
-                        var profile = agentEntries.FirstOrDefault(e => e.Name.Equals("profile", StringComparison.OrdinalIgnoreCase));
-                        if (profile is not null)
-                        {
-                            var profileDate = profile.UpdatedAt ?? profile.CreatedAt;
-                            if (profileDate > lastEvolActivity) lastEvolActivity = profileDate;
-                        }
-                    }
-                    catch { }
-
-                    // Count goals completed after last evolutionary activity
-                    // Parse completion timestamps from goal lines
-                    int goalsSinceEvol = 0;
-                    string contextForGoals = await ReadMemoryAsync(store, "project:context", cancellationToken);
-                    var (goalsForEvol, _, _) = ParseGoalsSection(contextForGoals);
-                    foreach (var goal in goalsForEvol)
-                    {
-                        if (!goal.Contains("[complete]", StringComparison.OrdinalIgnoreCase)) continue;
-                        // Extract timestamp from "Completed: 2026-03-21T..."
-                        var tsMatch = CompletedTimestampPattern.Match(goal);
-                        if (tsMatch.Success && DateTimeOffset.TryParse(tsMatch.Groups[1].Value, out var completedAt))
-                        {
-                            if (completedAt > lastEvolActivity) goalsSinceEvol++;
-                        }
-                        else
-                        {
-                            goalsSinceEvol++; // Can't parse date — count it to be safe
-                        }
-                    }
-
-                    if (goalsSinceEvol >= 3)
-                        evolWarning = $"\u26a0 {goalsSinceEvol} goals completed since last evolutionary scan. Run skill_load(\"evolutionary\") to maintain knowledge health.\n";
+                    string checkpointContent = BuildCheckpointContent(
+                        cpProjectName, cpProjectId, searchId, goalDesc, outcomeText,
+                        goals, originalCount, cpPhase, cpProgress,
+                        cpActiveConcerns, warnings);
+                    await WritePlanningMemoryAsync(store, "checkpoint:latest", checkpointContent,
+                        archiveExisting: true,
+                        keywords: ["checkpoint", "recovery", $"goal:{searchId}"],
+                        cancellationToken);
                 }
-                catch { /* best-effort */ }
-
-                // Check memory growth for cartographer (CART-01)
-                string cartWarning = CheckCartographerNeeded(store);
-
-                string goalWarnings = marchWarning + evolWarning + cartWarning;
+                catch { /* best-effort — don't block goal completion */ }
 
                 string response = $"Goal '{searchId}' marked complete. Outcome recorded. " +
-                       $"project:context updated. Files in .scrinia/ were updated — these are your changes.";
+                       $"project:context updated. Files in .scrinia/ were updated \u2014 these are your changes.";
 
                 if (warnings.Count > 0)
                     response += "\n\nWorkflow steps you may have skipped:\n" +
                         string.Join("\n", warnings.Select(w => $"- {w}")) +
                         "\nConsider running plan_verify and plan_retrospective before moving on.";
-
-                if (!string.IsNullOrEmpty(goalWarnings))
-                    response += "\n\n" + goalWarnings.TrimEnd();
 
                 response += "\n\nPost-goal learning:\n" +
                     "- Run QA if not already done: skill_load(\"qa\") for structured verification\n" +
@@ -2799,6 +3044,65 @@ public sealed class ScriniaProjectTools
                     "the learnings live in your memories and skills now.";
 
                 return response;
+            }
+
+            case "edit":
+            {
+                if (string.IsNullOrWhiteSpace(goalId))
+                    return "Error: 'edit' action requires a goalId.";
+                if (string.IsNullOrWhiteSpace(description))
+                    return "Error: 'edit' action requires a description.";
+
+                var (goals, originalCount, contextWithoutGoals) = ParseGoalsSection(contextText);
+
+                string searchId = goalId.Trim();
+                int matchIndex = goals.FindIndex(g =>
+                    g.Contains($"[{searchId}]", StringComparison.OrdinalIgnoreCase) ||
+                    g.Contains($"[{searchId.ToUpperInvariant()}]", StringComparison.OrdinalIgnoreCase));
+
+                if (matchIndex < 0 && ShortGoalIdPattern.IsMatch(searchId))
+                {
+                    var shortPattern = new Regex(
+                        $@"\[{Regex.Escape(searchId)}(-[a-fA-F0-9]+)?\]",
+                        RegexOptions.IgnoreCase);
+                    matchIndex = goals.FindIndex(g => shortPattern.IsMatch(g));
+                    if (matchIndex >= 0)
+                    {
+                        var fullIdMatch = BracketedGoalIdFullPattern.Match(goals[matchIndex]);
+                        if (fullIdMatch.Success)
+                            searchId = fullIdMatch.Groups[1].Value;
+                    }
+                }
+
+                if (matchIndex < 0)
+                    return $"Error: goal '{goalId}' not found. Use goal_update(action:'list') to see all goals.";
+
+                string oldLine = goals[matchIndex];
+                string trimmed = oldLine.TrimStart('-', '*', ' ');
+
+                // Find where description starts (after [G-N-xxx] [status])
+                var statusMatch = Regex.Match(trimmed, @"\]\s*\[(active|complete)\]\s*");
+                if (!statusMatch.Success)
+                    return $"Error: could not parse goal line format for '{goalId}'.";
+
+                int descStart = statusMatch.Index + statusMatch.Length;
+                string afterStatus = trimmed[descStart..];
+
+                // Split off any " | Outcome:" suffix (present on completed goals)
+                int outcomeSep = afterStatus.IndexOf(" | Outcome:", StringComparison.Ordinal);
+                string oldDesc = outcomeSep >= 0 ? afterStatus[..outcomeSep] : afterStatus;
+                string suffix = outcomeSep >= 0 ? afterStatus[outcomeSep..] : "";
+
+                // Rebuild goal line with new description
+                string prefix = trimmed[..descStart];
+                goals[matchIndex] = $"- {prefix}{description}{suffix}";
+
+                string goalsSection = BuildGoalsSection(goals, originalCount >= 0 ? originalCount : goals.Count);
+                string updatedContext = contextWithoutGoals.TrimEnd() + "\n\n" + goalsSection;
+                await WritePlanningMemoryAsync(store, "project:context", updatedContext,
+                    archiveExisting: true, cancellationToken);
+
+                return $"Goal '{searchId}' updated.\nOld: {oldDesc.Trim()}\nNew: {description}\nproject:context updated. Files in .scrinia/ were updated — these are your changes.";
             }
 
             case "list":
@@ -2843,7 +3147,7 @@ public sealed class ScriniaProjectTools
             }
 
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'add', 'complete', 'list'.";
+                return $"Error: unknown action '{action}'. Valid actions: 'add', 'edit', 'complete', 'list'.";
         }
     }
 
@@ -2928,6 +3232,32 @@ public sealed class ScriniaProjectTools
         foreach (string goal in goals)
             sb.AppendLine(goal);
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Builds a structured checkpoint snapshot for context_resume recovery.</summary>
+    private static string BuildCheckpointContent(
+        string projectName, string projectId, string goalId, string goalDescription, string outcome,
+        List<string> goals, int originalCount, string currentPhase, string progressPct,
+        int activeConcernCount, List<string> warnings)
+    {
+        int completedCount = goals.Count(g => g.Contains("[complete]", StringComparison.OrdinalIgnoreCase));
+        int totalCount = goals.Count;
+        string warningText = warnings.Count > 0
+            ? string.Join("; ", warnings)
+            : "none";
+
+        return $"""
+            ## Checkpoint — {projectName}
+            **Project ID**: {projectId}
+            **Completed**: {goalId} — {goalDescription}
+            **Outcome**: {outcome}
+            **Progress**: {progressPct}% | Phase: {currentPhase}
+            **Goals**: {completedCount}/{totalCount} complete (originally {originalCount})
+            **Active concerns**: {activeConcernCount}
+            **Warnings**: {warningText}
+            **Timestamp**: {DateTimeOffset.UtcNow:o}
+            **Next steps**: Review post-goal guidance, check for new goals, run evolutionary if overdue
+            """.ReplaceLineEndings("\n");
     }
 
     /// <summary>Extracts the description text from a goal line, stripping ID and status brackets.</summary>
@@ -3026,7 +3356,7 @@ public sealed class ScriniaProjectTools
         "A skill should say 'search for X' not list X inline. " +
         "Built-in scaffolds: researcher, reviewer, domain-expert, or custom.")]
     public async Task<string> SkillCreate(
-        [Description("Skill name slug (e.g. 'api-reviewer', 'auth-researcher').")] string skillName,
+        [Description("Skill name slug (e.g. 'api-reviewer', 'auth-researcher').")] string name,
         [Description("Built-in scaffold: researcher, reviewer, domain-expert, or custom.")] string scaffold,
         [Description("Additional context or instructions to embed in the prompt.")] string? instructions = null,
         [Description("Comma-separated tool names the agent should use (for custom scaffold).")] string? tools = null,
@@ -3092,7 +3422,6 @@ public sealed class ScriniaProjectTools
 
                 promptContent =
                     $"## Role: Custom Specialist\n" +
-                    $"{instructionsSection}\n\n" +
                     toolSection +
                     $"## Instructions\n" +
                     $"{instructionsSection}\n\n" +
@@ -3104,12 +3433,12 @@ public sealed class ScriniaProjectTools
         // Build capability list for keywords
         string capabilityList = string.IsNullOrWhiteSpace(tools) ? scaffoldLower : tools;
 
-        // Store via WritePlanningMemoryAsync with skill:{skillName} qualified name
-        string qualifiedName = $"skill:{skillName}";
+        // Store via WritePlanningMemoryAsync with skill:{name} qualified name
+        string qualifiedName = $"skill:{name}";
         var skillKeywords = new List<string> { $"role:{role}", $"capabilities:{capabilityList}" };
 
         // If this skill overrides a built-in, record the built-in's hash so we can detect staleness
-        if (BuiltInSkills.TryGetValue(skillName, out string? builtInText))
+        if (BuiltInSkills.TryGetValue(name, out string? builtInText))
         {
             var builtInHash = Convert.ToHexStringLower(
                 System.Security.Cryptography.SHA256.HashData(
@@ -3150,17 +3479,17 @@ public sealed class ScriniaProjectTools
     /// <summary>List or load stored specialist skills.</summary>
     [McpServerTool(Name = "skill_load"), Description(
         "List or load stored specialist skills. " +
-        "Call with no skillName to list available skills. " +
-        "Call with a skillName to load the full prompt for activation. " +
+        "Call with no name to list available skills. " +
+        "Call with a name to load the full prompt for activation. " +
         "Skills created by skill_create.")]
     public Task<string> SkillLoad(
-        [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? skillName = null,
+        [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? name = null,
         [Description("Set to true to show both built-in and override for reconciliation.")] bool reconcile = false,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
 
-        if (string.IsNullOrWhiteSpace(skillName))
+        if (string.IsNullOrWhiteSpace(name))
         {
             // List mode: synchronous index-only scan, no artifact decode
             var (scope, _) = store.ParseQualifiedName("skill:placeholder");
@@ -3180,12 +3509,12 @@ public sealed class ScriniaProjectTools
             sb.AppendLine();
 
             // Built-in skills (always available, project version overrides if exists)
-            foreach (string name in BuiltInSkills.Keys)
+            foreach (string skillKey in BuiltInSkills.Keys)
             {
-                if (projectNames.Contains(name))
+                if (projectNames.Contains(skillKey))
                 {
                     // Check if the override is stale (basedOn hash mismatch)
-                    var overrideEntry = entries.FirstOrDefault(e => e.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                    var overrideEntry = entries.FirstOrDefault(e => e.Name.Equals(skillKey, StringComparison.OrdinalIgnoreCase));
                     string tag = "override";
                     if (overrideEntry?.Keywords is not null)
                     {
@@ -3195,16 +3524,16 @@ public sealed class ScriniaProjectTools
                             string storedHash = basedOnKw["basedOn:".Length..];
                             string currentHash = Convert.ToHexStringLower(
                                 System.Security.Cryptography.SHA256.HashData(
-                                    System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[name])));
+                                    System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
                             if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                                 tag = "stale base";
                         }
                     }
-                    sb.AppendLine($"- skill:{name} [{tag}]");
+                    sb.AppendLine($"- skill:{skillKey} [{tag}]");
                 }
                 else
                 {
-                    sb.AppendLine($"- skill:{name} [built-in]");
+                    sb.AppendLine($"- skill:{skillKey} [built-in]");
                 }
             }
 
@@ -3234,7 +3563,7 @@ public sealed class ScriniaProjectTools
         }
 
         // Load mode: async artifact read
-        return LoadSkillAsync(store, skillName, reconcile, cancellationToken);
+        return LoadSkillAsync(store, name, reconcile, cancellationToken);
     }
 
     private static async Task<string> LoadSkillAsync(
@@ -3300,6 +3629,7 @@ public sealed class ScriniaProjectTools
     {
         ["march-reporter"] = """
             ## Role: Goal March Reporter
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("march-reporter")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You produce human-readable goal summary documents that report the march toward project
             objectives. These documents serve as audit trails for stakeholders and future agents.
 
@@ -3500,7 +3830,7 @@ public sealed class ScriniaProjectTools
             What if the value is the wrong type? What if config changes at runtime?
 
             ### 5. Document findings
-            Use the findings registry pattern (SEC/QAL IDs) for tracking.
+            Use concern IDs (SEC/QAL/DOC/OPS) for tracking via concern_add.
             For each gap, document: the scenario, what currently happens, what should happen,
             and the recommended fix.
 
@@ -3560,14 +3890,16 @@ public sealed class ScriniaProjectTools
 
         ["planner"] = """
             ## Role: Wave Execution Planner
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("planner")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You decompose validated work into parallel execution waves with explicit agent specifications.
             You don't do the work — you plan how agents will do it. The primary agent NEVER executes tasks.
 
-            ## MANDATORY: This skill must be loaded before plan_tasks
-            The primary agent must `skill_load("planner")` before decomposing any phase into tasks.
-            The planner produces agent-executable task specs. Without it, task descriptions
-            lack file scoping, isolation decisions, and SOS criteria — and the primary agent will
-            default to executing tasks itself, which blocks user interaction.
+            ## MANDATORY: Spawn a planner agent before plan_tasks
+            The primary agent must spawn a planner agent with `skill_load("planner")` output as its prompt.
+            Pass research findings and phase requirements to the planner agent. The planner agent
+            produces the task definitions — the orchestrator feeds its output directly to plan_tasks.
+            Do not plan inline — the orchestrator lacks the focus to do proper file conflict analysis,
+            isolation decisions, and SOS criteria while also managing user interaction.
 
             ## MANDATORY: All tasks execute via spawned agents
             Every task — even a single-task wave — must be executed by a spawned Agent tool call.
@@ -3655,6 +3987,19 @@ public sealed class ScriniaProjectTools
             - **Every agent gets the exact change spec.** No agent should need to explore.
             - **Build + test between waves.** Never start wave N+1 on a broken build.
             - **Single-task waves still spawn an agent.** The cost is low; the SOS capability is valuable.
+
+            ## Output Format
+            Your output must be directly usable as the `tasks` parameter to plan_tasks. Use this exact format:
+
+            ## Task {id}
+            Depends on: {comma-separated task IDs, or 'none'}
+            Action: {detailed change description with file paths, line numbers, exact transformations}
+            Acceptance criteria:
+            - criterion 1
+            - criterion 2
+
+            Produce one section per task. The orchestrator will pass your entire output to plan_tasks
+            without modification.
             """,
 
         ["sos-handler"] = """
@@ -3715,6 +4060,7 @@ public sealed class ScriniaProjectTools
 
         ["evolutionary"] = """
             ## Role: Evolutionary Agent
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("evolutionary")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You proactively improve the project's knowledge base, skills, and behavioral norms.
             You don't wait to be asked — you scan, identify drift, and propose improvements.
 
@@ -3773,6 +4119,7 @@ public sealed class ScriniaProjectTools
 
         ["cartographer"] = """
             ## Role: Knowledge Cartographer
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("cartographer")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You discover and index connections between memories that embedding similarity
             alone would miss. You map the knowledge landscape and build bridges.
 
@@ -3819,7 +4166,7 @@ public sealed class ScriniaProjectTools
 
             ## When to activate
             - After `git pull` or `git merge` that touches `.scrinia/` files
-            - When `plan_resume()` warns about merge conflicts
+            - When `context_resume()` warns about merge conflicts
             - When a teammate reports merge issues
 
             ## Methodology
@@ -3860,6 +4207,8 @@ public sealed class ScriniaProjectTools
 
         ["qa"] = """
             ## Role: Quality Assurance Agent
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("qa")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
+
             You verify that completed work actually delivers what was promised.
             Run this before plan_verify — evidence without verification is rubber-stamping.
 
@@ -3898,6 +4247,13 @@ public sealed class ScriniaProjectTools
             PASS: criterion 2 — build: 0 errors, 0 warnings
             FAIL: criterion 3 — expected X but found Y
             ```
+
+            ## Persist results
+            After completing verification, write your findings to qa:latest via store():
+            ```
+            store(["## QA Report\n**Build**: 0 errors, N warnings\n**Tests**: N passed, 0 failed, 0 skipped\n**Criteria**: N/N passed\n\n{detailed PASS/FAIL evidence}"], "qa:latest", keywords: ["qa", "verification"])
+            ```
+            This memory is read by plan_verify as the QA gate — without it, plan_verify blocks.
 
             ## Key rules
             - **Run tests, don't claim results** — the test runner is the source of truth
@@ -4151,4 +4507,82 @@ public sealed class ScriniaProjectTools
             echo ""
         fi
         """;
+
+    // ── Staleness / Drift scanning helpers ───────────────────────────────────
+
+    /// <summary>
+    /// Scans all memory entries for staleness indicators.
+    /// Returns count of date-stale entries (ReviewAfter in the past) and
+    /// conditional-review entries (ReviewWhen set but not already date-stale).
+    /// Index-only scan — does not decode artifacts.
+    /// </summary>
+    internal static (int StaleCount, int ReviewCount) ScanStaleness(IMemoryStore store)
+    {
+        var allEntries = store.ListScoped(null);
+        int staleCount = 0;
+        int reviewCount = 0;
+
+        foreach (var sa in allEntries)
+        {
+            bool isDateStale = sa.Entry.ReviewAfter.HasValue
+                && sa.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow;
+
+            if (isDateStale)
+                staleCount++;
+            else if (!string.IsNullOrEmpty(sa.Entry.ReviewWhen))
+                reviewCount++;
+        }
+
+        return (staleCount, reviewCount);
+    }
+
+    /// <summary>
+    /// Scans all memory entries with CodeRefs for drift (hash mismatch) or missing files.
+    /// Index-only scan — does not decode artifacts.
+    /// </summary>
+    internal static (int DriftCount, int MissingCount) ScanDrift(IMemoryStore store)
+    {
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
+        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+
+        var allEntries = store.ListScoped(null);
+        int driftCount = 0, missingCount = 0;
+
+        foreach (var sa in allEntries)
+        {
+            if (sa.Entry.CodeRefs is null or { Count: 0 }) continue;
+
+            foreach (var (path, storedHash) in sa.Entry.CodeRefs)
+            {
+                var fullPath = ResolveDriftPath(workspaceRoot, path);
+                if (fullPath is null || !File.Exists(fullPath))
+                {
+                    missingCount++;
+                }
+                else
+                {
+                    var currentHash = ComputeDriftHash(fullPath);
+                    if (currentHash is null || !currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
+                        driftCount++;
+                }
+            }
+        }
+
+        return (driftCount, missingCount);
+    }
+
+    /// <summary>Resolves a relative path against the workspace root, ensuring it stays within bounds.</summary>
+    private static string? ResolveDriftPath(string workspaceRoot, string relativePath)
+    {
+        var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, relativePath.Trim()));
+        return fullPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase) ? fullPath : null;
+    }
+
+    /// <summary>Computes SHA-256 hex hash of a file for drift detection.</summary>
+    private static string? ComputeDriftHash(string fullPath)
+    {
+        try { return Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(fullPath))); }
+        catch { return null; }
+    }
 }

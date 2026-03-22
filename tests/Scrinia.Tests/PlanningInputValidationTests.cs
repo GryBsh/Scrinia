@@ -127,7 +127,7 @@ public sealed class PlanningInputValidationTests : IDisposable
     [Fact]
     public async Task GoalUpdate_AddWithoutDescription_ReturnsError()
     {
-        var result = await _tools.GoalUpdate("add", null, null, null, CancellationToken.None);
+        var result = await _tools.GoalUpdate("add", null, null, null, cancellationToken: CancellationToken.None);
         result.Should().Contain("Error", because: "add without description should fail");
     }
 
@@ -135,14 +135,14 @@ public sealed class PlanningInputValidationTests : IDisposable
     public async Task GoalUpdate_CompleteNonExistentGoal_ReturnsError()
     {
         await _tools.ProjectInit("Goals: test", CancellationToken.None);
-        var result = await _tools.GoalUpdate("complete", null, "G-99", "done", CancellationToken.None);
+        var result = await _tools.GoalUpdate("complete", null, "G-99", "done", cancellationToken: CancellationToken.None);
         result.Should().Contain("Error", because: "completing non-existent goal should fail");
     }
 
     [Fact]
     public async Task GoalUpdate_InvalidAction_ReturnsError()
     {
-        var result = await _tools.GoalUpdate("invalid", null, null, null, CancellationToken.None);
+        var result = await _tools.GoalUpdate("invalid", null, null, null, cancellationToken: CancellationToken.None);
         result.Should().Contain("Error", because: "invalid action should be rejected");
     }
 

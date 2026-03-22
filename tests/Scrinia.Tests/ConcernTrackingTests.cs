@@ -451,20 +451,20 @@ public sealed class ConcernTrackingTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanResume_IncludesConcernSummary()
+    public async Task ContextResume_IncludesConcernSummary()
     {
         // Arrange — project with 1 active concern
         await InitProject();
         await _tools.ConcernAdd("Risk: gamma", "high", "06", id: "pr-c1", CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanResume(CancellationToken.None);
+        string result = await _tools.ContextResume(CancellationToken.None);
 
-        // Assert — plan_resume response should mention concern(s)
+        // Assert — context_resume response should mention concern(s)
         bool hasConcernInfo = result.Contains("Concerns:", StringComparison.OrdinalIgnoreCase)
             || result.Contains("concern", StringComparison.OrdinalIgnoreCase);
         hasConcernInfo.Should().BeTrue(
-            "plan_resume should include concern summary when active concerns exist");
+            "context_resume should include concern summary when active concerns exist");
     }
 
     [Fact]

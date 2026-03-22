@@ -8,7 +8,7 @@ This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It descr
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 43 MCP tools (21 memory + 22 planning) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
+scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 35 MCP tools (15 memory + 20 planning) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
 
 ## Project Layout
 
@@ -39,8 +39,8 @@ scrinia/
       MemoryStoreContext.cs       <- AsyncLocal indirection: MCP tools read Current to dispatch
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
     Scrinia.Mcp/                  <- shared MCP tools library (net10.0 classlib, refs Core)
-      MemoryTools.cs              <- 21 memory MCP tools (sealed class, no constructor, no DI injection)
-      ProjectTools.cs             <- 22 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
+      MemoryTools.cs              <- 15 memory MCP tools (sealed class, no constructor, no DI injection)
+      ProjectTools.cs             <- 20 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
@@ -132,7 +132,7 @@ scrinia/
     getting-started.md            <- overview, installation, quick start
     cli-reference.md              <- 11 CLI commands, configuration, embedding providers, MCP client setup
     server-admin.md               <- deployment, authentication, REST API, web UI, Docker
-    planning-tools.md             <- complete guide for 22 planning tools with lifecycle and examples
+    planning-tools.md             <- complete guide for 20 planning tools with lifecycle and examples
       multi-user-setup.md          <- multi-user merge safety and git hook setup
     architecture/
       overview.md                 <- system diagram, solution structure, dependency graph
@@ -236,64 +236,56 @@ record ArtifactEntry(
 
 Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fields).
 
-### `ScriniaMcpTools` (21 memory tools)
+### `ScriniaMcpTools` (15 memory tools)
 
-21 memory MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
+15 memory MCP tools exposed via `[McpServerTool(Name = "snake_case")]`:
 
 | MCP name | Method | Description |
 |---|---|---|
 | `guide` | Guide() | Cognitive toolset guide: three-rings model, memory/skill habits, goal-driven planning |
-| `encode` | Encode() | Compress text into NMP/2 artifact; 1 element = single-chunk, N = agent-directed |
-| `chunk_count` | ChunkCount() | Count chunks in an artifact |
-| `get_chunk` | GetChunk() | Decode one chunk (1-based); records budget |
-| `show` | Show() | Unpack artifact to original text; records budget |
-| `store` | Store() | Compress + persist; content[] for agent-directed chunking, keywords, review |
-| `list` | List() | Summary mode (default): topics, keywords, stats. Full mode: paginated table with ~tokens and review markers. `list(mode="full", offset=0, limit=50)` |
-| `search` | Search() | BM25 + weighted field hybrid search with ~tokens; returns entry/chunk/topic results |
-| `copy` | Copy() | Copy between scopes (ephemeral promotion supported) |
-| `forget` | Forget() | Delete memory |
-| `export` | Export() | Topic -> .scrinia-bundle |
-| `import` | Import() | .scrinia-bundle -> topic |
-| `append` | Append() | Append content as a new independently retrievable chunk |
-| `update_meta` | UpdateMeta() | Update metadata (description, keywords, review conditions) without re-encoding content |
-| `references` | References() | Extract file path and memory name references from a memory's content |
-| `link` | Link() | Add codeRefs (file paths) to a memory for drift detection |
-| `check_drift` | CheckDrift() | Check if files referenced by a memory have changed since last store |
-| `reconcile` | Reconcile() | Detect and list unresolved merge conflicts in .scrinia/ files |
-| `resolve_conflict` | ResolveConflict() | Resolve a merge conflict in a .scrinia/ file (ours/theirs/manual) |
-| `compact` | Compact() | Compact a multi-chunk memory by merging chunks and removing duplicates |
-| `suggest_patterns` | SuggestPatterns() | Analyze memory collection and suggest organizational improvements |
+| `show` | Show(artifactOrName, chunk?) | Unpack artifact to original text; accepts name or inline artifact, optional chunk index |
+| `store` | Store(name, content[], keywords?, codeRefs?, reviewAfter?, reviewWhen?) | Compress + persist; content[] for agent-directed chunking |
+| `list` | List(mode?, scopes?, excludeTopics?) | Summary (default), full (paginated), or drift mode |
+| `search` | Search(query, scopes?, excludeTopics?) | BM25 + weighted field hybrid search with ~tokens |
+| `copy` | Copy(source, target) | Copy between scopes (ephemeral promotion supported) |
+| `forget` | Forget(name) | Delete memory |
+| `export` | Export(topic) | Topic -> .scrinia-bundle |
+| `import` | Import(bundle) | .scrinia-bundle -> topic |
+| `append` | Append(name, content) | Append content as a new independently retrievable chunk |
+| `update_meta` | UpdateMeta(name, keywords?, description?, reviewAfter?, reviewWhen?) | Update metadata without re-encoding content |
+| `references` | References(name) | Extract file path and memory name references from content |
+| `link` | Link(name, codeRefs) | Add codeRefs (file paths) to a memory for drift detection |
+| `compact` | Compact(name, keepRecent?) | Merge chunks; keepRecent=N retains only N most recent |
+| `reconcile` | Reconcile(conflictId?, choice?, content?) | Scan for merge conflicts, or resolve a specific conflict |
 
-### `ScriniaProjectTools` (22 planning tools)
+### `ScriniaProjectTools` (20 planning tools)
 
-22 planning MCP tools in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
+20 planning MCP tools in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
 
 | MCP name | Method | Description |
 |---|---|---|
-| `project_init` | ProjectInit(context) | One-time init: stores project:context + project:state, detects existing codebase (non-dotfiles), returns tailored next steps (scan→concerns→goal or goal→plan) |
+| `project_init` | ProjectInit(context) | One-time init: stores project:context + project:state, detects existing codebase |
 | `plan_requirements` | PlanRequirements(requirements) | Store requirements with REQ-IDs; validates project_init ran first |
-| `plan_roadmap` | PlanRoadmap(roadmap) | Store phased roadmap; validates all REQ-IDs from requirements appear exactly once |
-| `plan_tasks` | PlanTasks(phaseId, tasks) | Decompose phase into task memories with keyword metadata (status:pending, wave:N, phase:XX, depends_on:*); detects file conflicts between same-wave tasks |
+| `plan_roadmap` | PlanRoadmap(roadmap) | Store phased roadmap; validates all REQ-IDs from requirements appear |
+| `plan_tasks` | PlanTasks(phaseId, tasks) | Decompose phase into task memories with keyword metadata; detects file conflicts |
 | `task_next` | TaskNext(phaseId) | Keyword-only index scan returning all unblocked tasks in current wave |
 | `task_complete` | TaskComplete(taskName, outcome) | Update status keyword to complete + append to execution log |
-| `plan_resume` | PlanResume() | Return structured summary; rebuilds state from memories if corrupted |
+| `context_resume` | ContextResume() | Return structured summary; rebuilds state from memories if corrupted |
 | `plan_status` | PlanStatus() | Return current phase, progress %, blockers (computed live from task data) |
-| `plan_verify` | PlanVerify(phaseId) | Structured pass/fail per success criterion from plan:roadmap |
+| `plan_verify` | PlanVerify(phaseId, evidence) | Structured pass/fail per success criterion; hard-rejects without test evidence |
 | `plan_gaps` | PlanGaps(phaseId, failedCriteria) | Create gap closure tasks, re-open phase status |
-| `research_start` | ResearchStart(phaseId, topic, question) | Start a research investigation before task decomposition |
+| `research_start` | ResearchStart(phaseId, topic, questions) | Start a research investigation before task decomposition |
 | `research_complete` | ResearchComplete(phaseId, topic, findings, hypothesis?) | Complete research with findings and hypothesis |
 | `concern_add` | ConcernAdd(description, severity, phaseScope, id?) | Add a project concern with severity (low/medium/high) |
-| `concern_resolve` | ConcernResolve(concernName, resolution) | Resolve a concern with resolution details |
+| `concern_resolve` | ConcernResolve(concernName, resolution, verifiedBy) | Resolve a concern; requires verifiedBy (debugger/qa/manual) |
 | `concern` | Concern(phaseFilter?) | List active concerns, optionally filtered by phase |
 | `goal_update` | GoalUpdate(action, description?, goalId?, outcome?) | Manage project goals: add, complete, or list |
-| `skill_create` | SkillCreate(skillName, scaffold, instructions?, tools?) | Create a reusable specialist skill with project-specific context (stored as skill:*) |
-| `skill_load` | SkillLoad(skillName) | Load a reusable agent skill/prompt template |
-| `plan_retrospective` | PlanRetrospective(phaseId, whatWorked, whatFailed, lessons, beliefsUpdated?) | Append to learn:execution-outcomes with provenance:agent |
+| `skill_create` | SkillCreate(name, scaffold, instructions?, tools?) | Create a reusable specialist skill (stored as skill:*) |
+| `skill_load` | SkillLoad(name?, reconcile?) | List skills (no name) or load a skill's full prompt |
+| `plan_retrospective` | PlanRetrospective(phaseId, whatWorked, whatFailed, lessons, beliefsUpdated?) | Append to learn:execution-outcomes |
 | `plan_profile` | PlanProfile(profile) | Store agent:profile with full overwrite |
-| `backlog_promote` | BacklogPromote() | Promote a backlog entry to a new goal |
-| `setup_hooks` | SetupHooks() | Create merge infrastructure files in .scrinia/ for multi-user workflows |
 
-**Tool budget**: 43/50 (21 memory + 22 planning).
+**Tool budget**: 35/50 (15 memory + 20 planning).
 
 **Planning topic conventions**: Planning tools use topic-scoped memories with these prefixes:
 
@@ -353,7 +345,7 @@ plan_gaps(phaseId: "01", failedCriteria: "## Gap 01\nFailed: Rate limiting\nFix:
 
 **Recovery:**
 ```
-plan_resume()
+context_resume()
 → "Project: my-app\nPhase: Phase 01\nProgress: 50%\nNext: run task_next..."
 
 plan_status()
@@ -422,7 +414,7 @@ AsyncLocal indirection in `Scrinia.Core`. MCP tools read `MemoryStoreContext.Cur
 
 ### `SessionBudget`
 
-In `Scrinia.Core`. Tracks chars loaded via `show()` and `get_chunk()` per session.
+In `Scrinia.Core`. Tracks chars loaded via `show()` per session.
 
 - `RecordAccess(memoryName, charsLoaded)` — accumulates across multiple accesses
 - `TotalCharsLoaded` / `EstimatedTokensLoaded` — session totals
@@ -480,16 +472,15 @@ No auto-chunking — single-element content always produces a single chunk, rega
 Multi-chunk only via explicit multiple elements or `append()`.
 
 Use chunked access to stay within context limits:
-1. `chunk_count("api:large-doc")` — how many chunks?
-2. `get_chunk("api:large-doc", 1)` — read just the first chunk
-3. Process chunk-by-chunk instead of loading everything at once
+1. `show("api:large-doc", chunk=1)` — read just the first chunk (also returns total count)
+2. Process chunk-by-chunk instead of loading everything at once
 
 #### Maximize context with pre-chunked storage
 You control how content is split — organize by semantic boundaries:
 - `store(["## Auth\n...", "## Users\n...", "## Billing\n..."], "api:endpoints")`
 - Each element becomes one independently retrievable chunk
 - Each chunk is individually indexed (keywords, TF, preview) for chunk-level search
-- `search("oauth")` returns `chunk` results pointing to specific chunks — call `get_chunk(N)` directly
+- `search("oauth")` returns `chunk` results pointing to specific chunks — call `show(name, chunk=N)` directly
 
 #### Strategies for effective chunking
 - **One concept per chunk**: split by function, endpoint, topic, or section header
@@ -786,7 +777,7 @@ MCP Streamable HTTP transport at `/mcp`, powered by `ModelContextProtocol.AspNet
 - **Auth**: Bearer token (same API key auth as REST endpoints)
 - **Store selection**: Query param `?store=default` resolves the `FileMemoryStore` for the session
 - **Session context**: `PerSessionExecutionContext = true` ensures `MemoryStoreContext.Current` (AsyncLocal) persists across MCP tool calls within a session
-- **Tools**: All 43 tools from `ScriniaMcpTools` (21 memory) + `ScriniaProjectTools` (22 planning), shared via `Scrinia.Mcp` library
+- **Tools**: All 35 tools from `ScriniaMcpTools` (15 memory) + `ScriniaProjectTools` (20 planning), shared via `Scrinia.Mcp` library
 
 MCP client config (HTTP transport):
 ```json

@@ -247,70 +247,31 @@ public sealed class GoalPrefixTests : IDisposable
             "session memory should contain the goal outcome text");
     }
 
-    // ── Test 8: Complete warns if no march report (GATE-01) ─────────────────
+    // ── Test 8: Complete mentions march report in post-goal guidance ─────────
 
     [Fact]
-    public async Task GoalUpdate_Complete_WarnsIfNoMarchReport()
+    public async Task GoalUpdate_Complete_MentionsMarchReport()
     {
         // Arrange — initialize project and add a goal
-        // The test temp dir won't have a docs/reports/ directory, triggering the warning
-        await _projTools.ProjectInit("Goals: test march report warning",
+        await _projTools.ProjectInit("Goals: test march report mention",
             cancellationToken: CancellationToken.None);
 
-        string addResult = await _projTools.GoalUpdate("add", "Test goal for march report warning",
+        string addResult = await _projTools.GoalUpdate("add", "Test goal for march report mention",
             cancellationToken: CancellationToken.None);
 
         var idMatch = Regex.Match(addResult, @"G-\d+-[a-f0-9]{3}");
         idMatch.Success.Should().BeTrue("goal_update(add) should return a goal ID");
         string goalId = idMatch.Value;
 
-        // Act — complete the goal without creating docs/reports/
+        // Act — complete the goal
         string completeResult = await _projTools.GoalUpdate("complete",
-            goalId: goalId, outcome: "Done without report",
+            goalId: goalId, outcome: "Done",
             cancellationToken: CancellationToken.None);
 
-        // Assert — response should contain a march report warning
+        // Assert — response should complete and mention march report in post-goal guidance
         completeResult.Should().NotStartWith("Error:",
             "goal completion should succeed");
-
-        // The warning can contain "march report" in the GATE-01 warning or the post-goal section
         completeResult.Should().Contain("march report",
-            "completing a goal without docs/reports/ should warn about missing march report");
-    }
-
-    // ── Test 9: Complete warns after 3+ goals without evolutionary (EVOL-01) ─
-
-    [Fact]
-    public async Task GoalUpdate_Complete_WarnsAfterMultipleGoals()
-    {
-        // Arrange — initialize project
-        await _projTools.ProjectInit("Goals: test evolutionary warning",
-            cancellationToken: CancellationToken.None);
-
-        // Complete 3 goals in sequence (add + complete each)
-        for (int i = 1; i <= 3; i++)
-        {
-            string addResult = await _projTools.GoalUpdate("add", $"Goal number {i}",
-                cancellationToken: CancellationToken.None);
-
-            var idMatch = Regex.Match(addResult, @"G-\d+-[a-f0-9]{3}");
-            idMatch.Success.Should().BeTrue($"goal_update(add) for goal {i} should return a goal ID");
-            string gId = idMatch.Value;
-
-            string result = await _projTools.GoalUpdate("complete",
-                goalId: gId, outcome: $"Done goal {i}",
-                cancellationToken: CancellationToken.None);
-
-            result.Should().NotStartWith("Error:",
-                $"completing goal {i} should succeed");
-
-            // On the 3rd completion, check for evolutionary warning
-            if (i == 3)
-            {
-                result.Should().Contain("evolutionary",
-                    "completing 3+ goals without a cartography scan should trigger " +
-                    "an evolutionary/cartographer warning (EVOL-01)");
-            }
-        }
+            "post-goal guidance should mention producing a march report");
     }
 }

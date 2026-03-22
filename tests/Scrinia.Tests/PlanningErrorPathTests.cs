@@ -53,10 +53,10 @@ public sealed class PlanningErrorPathTests : IDisposable
         result.Should().Contain("Error", because: "no roadmap exists");
     }
 
-    // ── plan_resume rebuilds state ──
+    // ── context_resume rebuilds state ──
 
     [Fact]
-    public async Task PlanResume_WithContextButNoState_RebuildsState()
+    public async Task ContextResume_WithContextButNoState_RebuildsState()
     {
         // Create project context but delete state
         await _tools.ProjectInit("Goals: test project\nConstraints: none", CancellationToken.None);
@@ -66,7 +66,7 @@ public sealed class PlanningErrorPathTests : IDisposable
         store.Remove(stateSubject, stateScope);
         store.DeleteArtifact(stateSubject, stateScope);
 
-        var result = await _tools.PlanResume(CancellationToken.None);
+        var result = await _tools.ContextResume(CancellationToken.None);
         result.Should().Contain("Project:", because: "resume should rebuild from project:context");
         result.Should().NotContain("Error");
     }

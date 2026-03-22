@@ -65,7 +65,7 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
 
                 SearchContributorContext.Default = reranker;
-                MemoryEventSinkContext.Default = eventHandler;
+                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings ready " +
@@ -130,7 +130,7 @@ internal static class WorkspaceSetup
             if (host.HasSearchCapability)
                 SearchContributorContext.Default = host;
             if (host.HasEventSinkCapability)
-                MemoryEventSinkContext.Default = host;
+                MemoryEventSinkContext.Default = new CompositeEventSink([host, new MaintenanceEventSink()]);
 
             _pluginHost = host;
 
