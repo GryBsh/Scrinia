@@ -380,4 +380,84 @@ public sealed class NewToolTests : IDisposable
         result.Should().Contain("No recurring patterns",
             "suggest_patterns should report no patterns when fewer than 3 entries share a keyword");
     }
+
+    // ── skill version reconciliation tests ───────────────────────────────────
+
+    /// <summary>Sets up a project so skill_create prerequisite check passes.</summary>
+    private async Task InitProject()
+    {
+        await _projTools.ProjectInit("Goals: test skill versioning", cancellationToken: CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task SkillCreate_OverridingBuiltIn_StoresBasedOnHash()
+    {
+        // Arrange — initialize project so skill_create prerequisite passes
+        await InitProject();
+
+        // Act — create a skill that overrides the built-in "planner" skill
+        await _projTools.SkillCreate("planner", "custom", "test override", null, CancellationToken.None);
+
+        // Assert — the stored index entry should have a basedOn: keyword
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("skill:planner");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name.Equals("planner", StringComparison.OrdinalIgnoreCase));
+
+        entry.Keywords.Should().NotBeNull("skill entry should have keywords");
+        entry.Keywords.Should().Contain(k => k.StartsWith("basedOn:", StringComparison.Ordinal),
+            "overriding a built-in skill must record the built-in's hash as a basedOn: keyword");
+    }
+
+    [Fact]
+    public async Task SkillCreate_NoBuiltIn_NoBasedOnHash()
+    {
+        // Arrange
+        await InitProject();
+
+        // Act — create a skill that does NOT match any built-in name
+        await _projTools.SkillCreate("my-custom-skill", "custom", "totally custom", null, CancellationToken.None);
+
+        // Assert — the stored entry should NOT have a basedOn: keyword
+        var store = MemoryStoreContext.Current!;
+        var (scope, _) = store.ParseQualifiedName("skill:my-custom-skill");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e => e.Name.Equals("my-custom-skill", StringComparison.OrdinalIgnoreCase));
+
+        entry.Keywords.Should().NotBeNull("skill entry should have keywords");
+        entry.Keywords.Should().NotContain(k => k.StartsWith("basedOn:", StringComparison.Ordinal),
+            "a skill that does not override a built-in should not have a basedOn: keyword");
+    }
+
+    [Fact]
+    public async Task SkillLoad_FreshOverride_NoWarning()
+    {
+        // Arrange — create a fresh override of the built-in "planner" skill
+        await InitProject();
+        await _projTools.SkillCreate("planner", "custom", "fresh override", null, CancellationToken.None);
+
+        // Act — load the skill immediately (hash should match current built-in)
+        string result = await _projTools.SkillLoad("planner", cancellationToken: CancellationToken.None);
+
+        // Assert — no stale warning because the basedOn hash matches the current built-in
+        result.Should().NotContain("WARNING",
+            "loading a freshly-created override should not produce a stale warning");
+    }
+
+    [Fact]
+    public async Task SkillLoad_Reconcile_ShowsBothVersions()
+    {
+        // Arrange — create an override of a built-in skill
+        await InitProject();
+        await _projTools.SkillCreate("planner", "custom", "project-specific planner", null, CancellationToken.None);
+
+        // Act — load with reconcile=true
+        string result = await _projTools.SkillLoad("planner", reconcile: true, cancellationToken: CancellationToken.None);
+
+        // Assert — response must contain both the built-in and override sections
+        result.Should().Contain("Current Built-in",
+            "reconcile mode must show the 'Current Built-in' section");
+        result.Should().Contain("Your Project Override",
+            "reconcile mode must show the 'Your Project Override' section");
+    }
 }

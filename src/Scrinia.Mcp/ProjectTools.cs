@@ -2846,9 +2846,20 @@ public sealed class ScriniaProjectTools
 
         // Store via WritePlanningMemoryAsync with skill:{skillName} qualified name
         string qualifiedName = $"skill:{skillName}";
+        var skillKeywords = new List<string> { $"role:{role}", $"capabilities:{capabilityList}" };
+
+        // If this skill overrides a built-in, record the built-in's hash so we can detect staleness
+        if (BuiltInSkills.TryGetValue(skillName, out string? builtInText))
+        {
+            var builtInHash = Convert.ToHexStringLower(
+                System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(builtInText)));
+            skillKeywords.Add($"basedOn:{builtInHash}");
+        }
+
         await WritePlanningMemoryAsync(store, qualifiedName, promptContent,
             archiveExisting: true,
-            keywords: [$"role:{role}", $"capabilities:{capabilityList}"],
+            keywords: [.. skillKeywords],
             cancellationToken);
 
         // Update project:state
@@ -2884,6 +2895,7 @@ public sealed class ScriniaProjectTools
         "Skills created by skill_create.")]
     public Task<string> SkillLoad(
         [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? skillName = null,
+        [Description("Set to true to show both built-in and override for reconciliation.")] bool reconcile = false,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -2910,8 +2922,30 @@ public sealed class ScriniaProjectTools
             // Built-in skills (always available, project version overrides if exists)
             foreach (string name in BuiltInSkills.Keys)
             {
-                string tag = projectNames.Contains(name) ? "override" : "built-in";
-                sb.AppendLine($"- skill:{name} [{tag}]");
+                if (projectNames.Contains(name))
+                {
+                    // Check if the override is stale (basedOn hash mismatch)
+                    var overrideEntry = entries.FirstOrDefault(e => e.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                    string tag = "override";
+                    if (overrideEntry?.Keywords is not null)
+                    {
+                        var basedOnKw = overrideEntry.Keywords.FirstOrDefault(k => k.StartsWith("basedOn:", StringComparison.Ordinal));
+                        if (basedOnKw is not null)
+                        {
+                            string storedHash = basedOnKw["basedOn:".Length..];
+                            string currentHash = Convert.ToHexStringLower(
+                                System.Security.Cryptography.SHA256.HashData(
+                                    System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[name])));
+                            if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
+                                tag = "stale base";
+                        }
+                    }
+                    sb.AppendLine($"- skill:{name} [{tag}]");
+                }
+                else
+                {
+                    sb.AppendLine($"- skill:{name} [built-in]");
+                }
             }
 
             // Project-only skills (not built-in)
@@ -2940,19 +2974,35 @@ public sealed class ScriniaProjectTools
         }
 
         // Load mode: async artifact read
-        return LoadSkillAsync(store, skillName, cancellationToken);
+        return LoadSkillAsync(store, skillName, reconcile, cancellationToken);
     }
 
     private static async Task<string> LoadSkillAsync(
-        IMemoryStore store, string skillName, CancellationToken ct)
+        IMemoryStore store, string skillName, bool reconcile, CancellationToken ct)
     {
         string qualifiedName = $"skill:{skillName}";
-        string content;
+        string? overrideContent = null;
         try
         {
-            content = await ReadMemoryAsync(store, qualifiedName, ct);
+            overrideContent = await ReadMemoryAsync(store, qualifiedName, ct);
         }
         catch (FileNotFoundException)
+        {
+            // No project override exists
+        }
+
+        // Reconcile mode: show both built-in and override side by side
+        if (reconcile && overrideContent is not null && BuiltInSkills.TryGetValue(skillName, out string? reconBuiltIn))
+        {
+            return Truncate(
+                $"## Current Built-in\n{reconBuiltIn}\n\n" +
+                $"## Your Project Override\n{overrideContent}\n\n" +
+                "## Instructions\n" +
+                "Merge your project-specific additions with the updated built-in base,\n" +
+                "then call skill_create to save the reconciled version.\n");
+        }
+
+        if (overrideContent is null)
         {
             // Fall back to built-in skills
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
@@ -2960,8 +3010,28 @@ public sealed class ScriniaProjectTools
             return $"Error: skill '{skillName}' not found. Use skill_load (no name) to list available skills.";
         }
 
-        content = Truncate(content);
+        string content = Truncate(overrideContent);
         content = "[Loaded from project override]\n" + content;
+
+        // Check for stale base — warn if the built-in has changed since this override was created
+        var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+        var entries = store.LoadIndex(scope);
+        var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (entry?.Keywords is not null && BuiltInSkills.TryGetValue(skillName, out string? currentBuiltIn))
+        {
+            var basedOnKw = entry.Keywords.FirstOrDefault(k => k.StartsWith("basedOn:", StringComparison.Ordinal));
+            if (basedOnKw is not null)
+            {
+                string storedHash = basedOnKw["basedOn:".Length..];
+                string currentHash = Convert.ToHexStringLower(
+                    System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(currentBuiltIn)));
+                if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    content = $"[WARNING: built-in skill has changed since this override was created. Review with skill_load(\"{skillName}\", reconcile: true)]\n" + content;
+                }
+            }
+        }
 
         return content;
     }
@@ -3399,6 +3469,9 @@ public sealed class ScriniaProjectTools
             Load each skill via `skill_load()`. Compare its methodology against recent
             retrospective lessons (`show("learn:execution-outcomes")`). If a skill's approach
             was contradicted or improved by experience, update it via `skill_create`.
+            Check for [stale base] markers on skill overrides via `skill_load()` listing.
+            If found, the built-in has been updated — use `skill_load(name, reconcile: true)`
+            to review both versions and merge project-specific additions with the new base.
 
             ### 3. Surface emergent patterns
             Compare findings across multiple goals. Are there recurring themes — same bug type,

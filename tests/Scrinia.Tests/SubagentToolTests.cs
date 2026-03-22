@@ -193,7 +193,7 @@ public sealed class SubagentToolTests : IDisposable
         await _tools.SkillCreate("auth-researcher", "researcher", null, null, CancellationToken.None);
 
         // Act — list mode (no skillName)
-        string result = await _tools.SkillLoad(null, CancellationToken.None);
+        string result = await _tools.SkillLoad(null, cancellationToken: CancellationToken.None);
 
         // Assert — both skill names should appear
         result.Should().Contain("api-reviewer",
@@ -210,7 +210,7 @@ public sealed class SubagentToolTests : IDisposable
         await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Act — load mode (skillName provided)
-        string result = await _tools.SkillLoad("test-reviewer", CancellationToken.None);
+        string result = await _tools.SkillLoad("test-reviewer", cancellationToken: CancellationToken.None);
 
         // Assert — returns full prompt content with "## Role"
         result.Should().Contain("## Role",
@@ -226,7 +226,7 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act — list mode with no project skills
-        string result = await _tools.SkillLoad(null, CancellationToken.None);
+        string result = await _tools.SkillLoad(null, cancellationToken: CancellationToken.None);
 
         // Assert — built-in skills should always appear
         result.Should().Contain("march-reporter",
@@ -242,7 +242,7 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act — load mode for a skill that does not exist
-        string result = await _tools.SkillLoad("nonexistent", CancellationToken.None);
+        string result = await _tools.SkillLoad("nonexistent", cancellationToken: CancellationToken.None);
 
         // Assert — must return Error: or informative message
         bool isErrorOrInformative =
