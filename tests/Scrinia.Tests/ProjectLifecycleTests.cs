@@ -1273,6 +1273,33 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_verify before execution should not return an error");
     }
 
+    [Fact]
+    public async Task PlanVerify_WarnsIfNoTestEvidence()
+    {
+        // Arrange — full lifecycle with roadmap + tasks completed
+        await SetupProjectWithCriteria("01");
+        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+
+        // Act — provide evidence with NO test output indicators
+        string result = await _tools.PlanVerify("01",
+            "PASS: criterion 1 — I verified it looks good",
+            CancellationToken.None);
+
+        // Assert — should warn about missing test results
+        result.Should().Contain("QA evidence",
+            "plan_verify should warn when evidence lacks test output indicators");
+
+        // Act — provide evidence WITH test output indicators
+        string result2 = await _tools.PlanVerify("01",
+            "PASS: criterion 1 — 759 passed, 0 failed, build clean",
+            CancellationToken.None);
+
+        // Assert — no warning when test results are present
+        result2.Should().NotContain("QA evidence",
+            "plan_verify should not warn when evidence includes test output");
+    }
+
     // -- plan_gaps tests (VERI-03) --
 
     [Fact]

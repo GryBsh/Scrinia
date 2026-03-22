@@ -1014,7 +1014,18 @@ public sealed class ScriniaProjectTools
         }
 
         // ── Recording mode (evidence provided) ──
+
+        // QA evidence check
+        bool hasTestEvidence = evidence.Contains("passed", StringComparison.OrdinalIgnoreCase) ||
+            evidence.Contains("0 failed", StringComparison.OrdinalIgnoreCase) ||
+            evidence.Contains("0 errors", StringComparison.OrdinalIgnoreCase) ||
+            evidence.Contains("build clean", StringComparison.OrdinalIgnoreCase) ||
+            evidence.Contains("dotnet test", StringComparison.OrdinalIgnoreCase);
+        string qaWarning = hasTestEvidence ? "" :
+            "⚠ QA evidence may be incomplete — no test results detected. Run skill_load(\"qa\") for structured verification.\n\n";
+
         var sb2 = new System.Text.StringBuilder();
+        sb2.Append(qaWarning);
         sb2.AppendLine($"## Phase Verification: {phaseId}");
 
         // Parse evidence lines — match PASS:/FAIL: prefixes to criteria in order
@@ -2332,6 +2343,7 @@ public sealed class ScriniaProjectTools
 
                 if (allPhasesDone)
                     retroNextStep = "\nAll phases complete. Before completing the goal:\n" +
+                        "0. Run QA: skill_load(\"qa\") → verify tests pass, build clean, criteria met\n" +
                         "1. Produce a march report: skill_load(\"march-reporter\") → docs/reports/ + sessions:YYYY-MM-DD memory\n" +
                         "2. Distill valuable learnings into topical memories (store) so future goals start smarter\n" +
                         "3. Update existing skills or create new ones (skill_create) with lessons from this goal" +
@@ -2730,6 +2742,7 @@ public sealed class ScriniaProjectTools
                     response += "\n\n" + goalWarnings.TrimEnd();
 
                 response += "\n\nPost-goal learning:\n" +
+                    "- Run QA if not already done: skill_load(\"qa\") for structured verification\n" +
                     "- Produce a march report: skill_load(\"march-reporter\") \u2192 write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
                     "- Distill valuable findings into topical memories (store) for future goals\n" +
                     "- Update or create skills (skill_create) with lessons learned\n" +
@@ -3788,6 +3801,53 @@ public sealed class ScriniaProjectTools
             - **Always reconcile after merge** — don't skip even if git reports clean
             - **Never manually edit .nmp2 files** — use scrinia tools (store, reconcile)
             - **Archive before modifying** — the reconcile tool does this automatically
+            """,
+
+        ["qa"] = """
+            ## Role: Quality Assurance Agent
+            You verify that completed work actually delivers what was promised.
+            Run this before plan_verify — evidence without verification is rubber-stamping.
+
+            ## When to activate
+            - Before plan_verify — mandatory
+            - When the user asks "does this work?" or "verify this"
+
+            ## Methodology
+
+            ### 1. Run the test suite
+            Execute the project's test command (e.g., `dotnet test`).
+            Record exact pass/fail/skip counts from the test runner output.
+            This is not optional — claimed results without running tests are rejected.
+
+            ### 2. Verify build
+            Run the build command. Confirm 0 errors. Record warning count.
+
+            ### 3. Check acceptance criteria
+            For each criterion from the task definition:
+            - Read the changed code to confirm the change was made
+            - Run a specific test or command that exercises the change
+            - Show the evidence — don't just claim PASS
+
+            ### 4. Check for regressions
+            Run `list(mode="drift")` to detect stale memories from code changes.
+            Run the full test suite, not just new tests.
+
+            ### 5. Validate against task description
+            Compare what was asked (task action) with what was delivered (outcome).
+            Flag any deviations or scope creep.
+
+            ## Output format
+            Return structured evidence for plan_verify:
+            ```
+            PASS: criterion 1 — test output: 759 passed, 0 failed
+            PASS: criterion 2 — build: 0 errors, 0 warnings
+            FAIL: criterion 3 — expected X but found Y
+            ```
+
+            ## Key rules
+            - **Run tests, don't claim results** — the test runner is the source of truth
+            - **Evidence over assertion** — "I verified" is not evidence; test output is
+            - **Check the actual code** — don't assume the agent's outcome report is accurate
             """,
     };
 
