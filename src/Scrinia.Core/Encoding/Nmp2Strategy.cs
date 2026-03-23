@@ -22,6 +22,8 @@ namespace Scrinia.Core.Encoding;
 /// </summary>
 public sealed class Nmp2Strategy : IEncodingStrategy
 {
+    public static readonly Nmp2Strategy Instance = new();
+
     public string StrategyId => "nmp/2";
     public string Description => "nmp/2 brotli+base64 — maximum LLM density, ~60-90 bits/token on code";
 

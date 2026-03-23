@@ -87,7 +87,8 @@ public sealed class AnthropicChatProvider : IChatProvider, IDisposable
                     _circuitBreaker.RecordFailure();
                 string body = "";
                 try { body = await response.Content.ReadAsStringAsync(ct); } catch { }
-                yield return new ChatEvent("error", Error: $"Provider returned {(int)response.StatusCode}: {response.ReasonPhrase}");
+                var detail = body.Length > 500 ? body[..500] + "..." : body;
+                yield return new ChatEvent("error", Error: $"Provider returned {(int)response.StatusCode}: {detail}");
                 yield break;
             }
 
@@ -98,10 +99,9 @@ public sealed class AnthropicChatProvider : IChatProvider, IDisposable
             string? currentToolName = null;
             var currentToolArgs = new StringBuilder();
 
-            while (!reader.EndOfStream)
+            while (await reader.ReadLineAsync(ct) is { } line)
             {
-                string? line = await reader.ReadLineAsync(ct);
-                if (line is null || !line.StartsWith("data: ")) continue;
+                if (!line.StartsWith("data: ")) continue;
 
                 string data = line["data: ".Length..];
                 JsonDocument? doc;

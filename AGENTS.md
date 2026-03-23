@@ -111,11 +111,11 @@ scrinia/
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 786 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 821 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
       Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
-    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 61 tests
+    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 63 tests
       ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
     Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 12 tests (Vulkan plugin CLI + benchmark tests)
       EmbeddingsPluginCliTests.cs <- core type integration tests (EmbeddingOptions, Factory, VectorStore)
@@ -133,7 +133,9 @@ scrinia/
     cli-reference.md              <- 11 CLI commands, configuration, embedding providers, MCP client setup
     server-admin.md               <- deployment, authentication, REST API, web UI, Docker
     planning-tools.md             <- complete guide for 6 planning tools with lifecycle and examples
-      multi-user-setup.md          <- multi-user merge safety and git hook setup
+    multi-user-setup.md           <- multi-user merge safety and git hook setup
+    troubleshooting.md            <- common issues and solutions
+    web-ui-guide.md               <- web UI usage guide
     architecture/
       overview.md                 <- system diagram, solution structure, dependency graph
       cli.md                      <- workspace discovery, plugin host, MCP tools
@@ -231,7 +233,8 @@ record ArtifactEntry(
     DateTimeOffset? UpdatedAt = null,
     DateTimeOffset? ReviewAfter = null,             // date-based staleness
     string? ReviewWhen = null,                      // condition-based staleness
-    ChunkEntry[]? ChunkEntries = null);             // per-chunk indexing
+    ChunkEntry[]? ChunkEntries = null,             // per-chunk indexing
+    Dictionary<string, string>? CodeRefs = null);  // file path references
 ```
 
 Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fields).
@@ -595,11 +598,11 @@ The `list` command supports these flags:
 ## Running Tests
 
 ```bash
-# CLI + MCP + planning + embeddings tests (786 tests)
+# CLI + MCP + planning + embeddings tests (821 tests)
 cd tests/Scrinia.Tests
 dotnet test
 
-# Server API tests (61 tests)
+# Server API tests (63 tests)
 cd tests/Scrinia.Server.Tests
 dotnet test
 
@@ -608,7 +611,7 @@ cd tests/Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 859 tests total (786 + 61 + 12). Auth plugin adds 62 tests (distributed separately).
+Expected: 896 tests total (821 + 63 + 12). Auth plugin adds 62 tests (distributed separately).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 

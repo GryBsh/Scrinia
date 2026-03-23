@@ -27,7 +27,7 @@ public static class MemoryOrchestrator
         }
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
-            ? ComputeChunkEntries(store, req.Content)
+            ? TextAnalysis.ComputeChunkEntries(store, req.Content)
             : null;
 
         // ── Ephemeral path ───────────────────────────────────────────────
@@ -115,7 +115,16 @@ public static class MemoryOrchestrator
             ReviewWhen: string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen,
             ChunkEntries: chunkEntries);
 
-        store.Upsert(entry, scope);
+        try
+        {
+            store.Upsert(entry, scope);
+        }
+        catch
+        {
+            // Rollback: remove orphaned artifact
+            try { store.DeleteArtifact(subject, scope); } catch { }
+            throw;
+        }
 
         return new StoreResponse(subject, qualifiedName, chunkCount, originalBytes,
             $"Remembered: {qualifiedName} ({chunkCount} chunk(s), {originalBytes} B)");
@@ -142,7 +151,7 @@ public static class MemoryOrchestrator
 
         string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, content);
 
-        byte[] fullBytes = new Nmp2Strategy().Decode(newArtifact);
+        byte[] fullBytes = Nmp2Strategy.Instance.Decode(newArtifact);
         string fullText = System.Text.Encoding.UTF8.GetString(fullBytes);
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
         long originalBytes = fullBytes.LongLength;
@@ -227,7 +236,16 @@ public static class MemoryOrchestrator
                 ReviewWhen: existingEntry?.ReviewWhen,
                 ChunkEntries: updatedChunks);
 
-            store.Upsert(entry, scope);
+            try
+            {
+                store.Upsert(entry, scope);
+            }
+            catch
+            {
+                // Rollback: remove orphaned artifact
+                try { store.DeleteArtifact(subject, scope); } catch { }
+                throw;
+            }
         }
 
         return new AppendResponse(qualifiedName, chunkCount, originalBytes,
@@ -250,7 +268,7 @@ public static class MemoryOrchestrator
         if (!artifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
             return null;
 
-        byte[] bytes = new Nmp2Strategy().Decode(artifact);
+        byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
         string decoded = System.Text.Encoding.UTF8.GetString(bytes);
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
@@ -267,25 +285,9 @@ public static class MemoryOrchestrator
         }
 
         var (scope, subject) = store.ParseQualifiedName(name);
-        bool deleted = store.DeleteArtifact(subject, scope);
         bool removed = store.Remove(subject, scope);
+        bool deleted = store.DeleteArtifact(subject, scope);
         return deleted || removed;
     }
 
-    private static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)
-    {
-        var entries = new ChunkEntry[chunks.Length];
-        for (int i = 0; i < chunks.Length; i++)
-        {
-            var (kw, tf2) = TextAnalysis.AnalyzeText(chunks[i]);
-            foreach (string k in kw) { tf2.TryGetValue(k, out int c); tf2[k] = c + 2; }
-            string preview = store.GenerateContentPreview(chunks[i]);
-            entries[i] = new ChunkEntry(
-                ChunkIndex: i + 1,
-                ContentPreview: string.IsNullOrEmpty(preview) ? null : preview,
-                Keywords: kw.Length > 0 ? kw : null,
-                TermFrequencies: tf2.Count > 0 ? tf2 : null);
-        }
-        return entries;
-    }
 }

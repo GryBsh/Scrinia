@@ -222,13 +222,24 @@ public sealed class ScriniaMcpTools
         switch (act)
         {
             case "store":
+                const int MaxNameLength = 256;
+                const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
                 if (content is null || content.Length == 0) return "Error: memory('store') requires 'content' parameter.";
                 if (string.IsNullOrWhiteSpace(name)) return "Error: memory('store') requires 'name' parameter.";
+                if (name.Length > MaxNameLength)
+                    return $"Error: name exceeds {MaxNameLength} characters.";
+                foreach (var element in content)
+                {
+                    if (element != null && System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
+                        return $"Error: content element exceeds {MaxContentBytesPerElement / (1024 * 1024)} MB limit.";
+                }
                 return await Store(content, name, description ?? "", tags, keywords, reviewAfter, reviewWhen, codeRefs, cancellationToken);
 
             case "append":
                 if (string.IsNullOrWhiteSpace(appendContent)) return "Error: memory('append') requires 'appendContent' parameter.";
                 if (string.IsNullOrWhiteSpace(name)) return "Error: memory('append') requires 'name' parameter.";
+                if (appendContent != null && System.Text.Encoding.UTF8.GetByteCount(appendContent) > 5 * 1024 * 1024)
+                    return "Error: append content exceeds 5 MB limit.";
                 return await Append(appendContent, name, cancellationToken);
 
             case "show":
@@ -323,7 +334,7 @@ public sealed class ScriniaMcpTools
             return $"Chunk {chunk}/{chunkCount}\n\n{chunkContent}";
         }
 
-        byte[] bytes = new Nmp2Strategy().Decode(artifact);
+        byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
         string decoded = System.Text.Encoding.UTF8.GetString(bytes);
         SessionBudget.RecordAccess(artifactOrName, decoded.Length);
 
@@ -370,7 +381,7 @@ public sealed class ScriniaMcpTools
         }
 
         ChunkEntry[]? chunkEntries = content.Length > 1
-            ? ComputeChunkEntries(store, content)
+            ? TextAnalysis.ComputeChunkEntries(store, content)
             : null;
 
         // ── Ephemeral path (~name) ───────────────────────────────────────
@@ -1092,7 +1103,7 @@ public sealed class ScriniaMcpTools
         string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, content);
 
         // Decode full result for metadata
-        byte[] fullBytes = new Nmp2Strategy().Decode(newArtifact);
+        byte[] fullBytes = Nmp2Strategy.Instance.Decode(newArtifact);
         string fullText = System.Text.Encoding.UTF8.GetString(fullBytes);
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
         long originalBytes = fullBytes.LongLength;
@@ -1623,7 +1634,7 @@ public sealed class ScriniaMcpTools
         if (keepRecent <= 0)
         {
             // Merge all chunks into one: decode entire artifact, re-encode as single chunk
-            byte[] allBytes = new Nmp2Strategy().Decode(artifact);
+            byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
             string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
             compacted = Nmp2ChunkedEncoder.Encode(fullText);
             newChunkCount = 1;
@@ -1656,7 +1667,7 @@ public sealed class ScriniaMcpTools
         if (existingEntry is not null)
         {
             long newBytes = System.Text.Encoding.UTF8.GetByteCount(
-                System.Text.Encoding.UTF8.GetString(new Nmp2Strategy().Decode(compacted)));
+                System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(compacted)));
             var updatedEntry = existingEntry with
             {
                 ChunkCount = newChunkCount,
@@ -1670,23 +1681,6 @@ public sealed class ScriniaMcpTools
         string qualifiedName = store.FormatQualifiedName(scope, subject);
         int dropped = chunkCount - newChunkCount;
         return $"Compacted {qualifiedName}: {chunkCount} → {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived. Files in .scrinia/ were updated — these are your changes.";
-    }
-
-    private static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)
-    {
-        var entries = new ChunkEntry[chunks.Length];
-        for (int i = 0; i < chunks.Length; i++)
-        {
-            var (kw, tf) = TextAnalysis.AnalyzeText(chunks[i]);
-            foreach (string k in kw) { tf.TryGetValue(k, out int c); tf[k] = c + 2; }
-            string preview = store.GenerateContentPreview(chunks[i]);
-            entries[i] = new ChunkEntry(
-                ChunkIndex: i + 1,
-                ContentPreview: string.IsNullOrEmpty(preview) ? null : preview,
-                Keywords: kw.Length > 0 ? kw : null,
-                TermFrequencies: tf.Count > 0 ? tf : null);
-        }
-        return entries;
     }
 
     private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)

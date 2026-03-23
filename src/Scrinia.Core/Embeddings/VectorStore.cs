@@ -39,6 +39,8 @@ public sealed class VectorStore : IDisposable
     private SemaphoreSlim GetLock(string scope) =>
         _scopeLocks.GetOrAdd(scope, _ => new SemaphoreSlim(1, 1));
 
+    private static string GetVectorLockPath(string vectorPath) => vectorPath + ".lock";
+
     /// <summary>Loads vectors for a scope (from disk if persistent, from cache if already loaded).</summary>
     public IReadOnlyList<VectorEntry> GetVectors(string scope)
     {
@@ -175,6 +177,7 @@ public sealed class VectorStore : IDisposable
 
         try
         {
+            using var fileLock = FileLock.AcquireShared(GetVectorLockPath(path));
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var reader = new BinaryReader(fs);
 
@@ -255,6 +258,8 @@ public sealed class VectorStore : IDisposable
         Directory.CreateDirectory(dir);
         string tmp = $"{path}.{Environment.ProcessId}.tmp";
 
+        using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
+
         await using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
         await using (var writer = new BinaryWriter(fs))
         {
@@ -283,6 +288,8 @@ public sealed class VectorStore : IDisposable
     /// <summary>Appends a single add operation to an SVF2 file.</summary>
     private static async Task AppendAddOpAsync(string path, string name, int? chunkIndex, float[] vector, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
         await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
         await using var writer = new BinaryWriter(fs);
 
@@ -298,6 +305,8 @@ public sealed class VectorStore : IDisposable
     /// <summary>Appends a single delete operation to an SVF2 file.</summary>
     private static async Task AppendDeleteOpAsync(string path, string name, int? chunkIndex, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
         await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
         await using var writer = new BinaryWriter(fs);
 

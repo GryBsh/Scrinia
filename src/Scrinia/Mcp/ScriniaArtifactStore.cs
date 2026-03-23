@@ -546,7 +546,7 @@ internal static partial class ScriniaArtifactStore
         {
             string artifactText = File.ReadAllText(destPathP);
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifactText);
-            long originalBytes = new Nmp2Strategy().Decode(artifactText).LongLength;
+            long originalBytes = Nmp2Strategy.Instance.Decode(artifactText).LongLength;
 
             destinationEntry = new ArtifactEntry(
                 Name: persistDstSubject,

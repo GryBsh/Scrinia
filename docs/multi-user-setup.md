@@ -13,7 +13,7 @@ When multiple developers use scrinia on the same repository, memory files in `.s
 | File type | Conflict risk | Resolution |
 |-----------|--------------|------------|
 | `.meta.json` | Medium — keywords/timestamps may diverge | Auto-resolved by merge driver (keyword union) |
-| `.nmp2` | Low — per-file sidecars mean different memories don't conflict | Manual via `resolve_conflict()` |
+| `.nmp2` | Low — per-file sidecars mean different memories don't conflict | Manual via `memory('reconcile', { conflictId, choice })` |
 | `versions/` | None — timestamped archives never collide | N/A |
 
 ## Merge Driver Setup
@@ -61,9 +61,9 @@ When pulling or merging a branch that touches `.scrinia/`:
 
 1. **Pull/merge** — git applies the merge driver for `.meta.json` files automatically
 2. **Check for warnings** — the post-merge hook reports any remaining conflicts
-3. **`reconcile()`** — run in your agent session to scan for and resolve remaining conflicts
-4. **`resolve_conflict(id, choice)`** — resolve each conflict: `"ours"`, `"theirs"`, or `"merged"` with custom content
-5. **`reconcile()`** again — verify 0 conflicts remaining
+3. **`memory('reconcile')`** — run in your agent session to scan for and resolve remaining conflicts
+4. **`memory('reconcile', { conflictId, choice })`** — resolve each conflict: `"ours"`, `"theirs"`, or `"merged"` with custom content
+5. **`memory('reconcile')`** again — verify 0 conflicts remaining
 6. **Commit** — commit the resolved `.scrinia/` files
 
 ## Structural Prevention
@@ -80,6 +80,6 @@ Scrinia's architecture minimizes conflicts by design:
 
 **"jq not found"** — Install jq: `brew install jq` (macOS), `apt install jq` (Ubuntu), `choco install jq` (Windows).
 
-**Conflicts after driver runs** — The merge driver handles single-conflict .meta.json files. Multiple conflict regions in one file (rare) fall through to manual resolution via `reconcile()`.
+**Conflicts after driver runs** — The merge driver handles single-conflict .meta.json files. Multiple conflict regions in one file (rare) fall through to manual resolution via `memory('reconcile')`.
 
-**Stale memories after merge** — Run `check_drift()` to detect memories referencing files that changed on the other branch.
+**Stale memories after merge** — Run `memory('list', { mode: "drift" })` to detect memories referencing files that changed on the other branch.

@@ -26,7 +26,7 @@ Memories persist in a `.scrinia/` directory alongside your project (like `.git/`
 Requires [.NET 10 SDK](https://dotnet.microsoft.com/download).
 
 ```bash
-git clone https://github.com/yourusername/scrinia.git
+git clone https://github.com/nickd-scrinia/scrinia.git
 cd scrinia
 dotnet build
 ```
@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to 43 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to 9 MCP tools for persistent memory and project planning (3 memory + 6 planning). See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -161,108 +161,77 @@ Memories are organized into three scopes:
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes 43 tools across two tool classes: 21 memory tools (`ScriniaMcpTools`) and 22 planning tools (`ScriniaProjectTools`).
+When connected via MCP, Scrinia exposes 9 tools using a noun-action pattern: 3 memory tools and 6 planning tools.
 
-### Memory Tools (21)
+### Memory Tools (3)
 
-| Tool | Purpose |
-|------|---------|
-| `store` | Compress and persist text as a named memory |
-| `show` | Retrieve and decode a memory's full content |
-| `append` | Add a chunk to an existing memory |
-| `list` | Summary of memories (default) or paginated full listing |
-| `search` | Hybrid BM25 + semantic search across memories |
-| `forget` | Delete a memory |
-| `copy` | Copy a memory between scopes |
-| `encode` | Compress text to an NMP/2 artifact (inline) |
-| `chunk_count` | Count chunks in a multi-chunk artifact |
-| `get_chunk` | Decode a specific chunk |
-| `export` | Export topics to a portable bundle |
-| `import` | Import memories from a bundle |
-| `guide` | Session playbook (call once per session) |
-| `update_meta` | Update metadata without re-encoding content |
-| `references` | Extract file path and memory name references |
-| `link` | Add codeRefs for drift detection |
-| `check_drift` | Check if referenced files have changed |
-| `reconcile` | Detect unresolved merge conflicts in .scrinia/ |
-| `resolve_conflict` | Resolve a merge conflict (ours/theirs/manual) |
-| `compact` | Compact a multi-chunk memory |
-| `suggest_patterns` | Suggest organizational improvements |
+| Tool | Actions | Purpose |
+|------|---------|---------|
+| `memory` | `store`, `show`, `append`, `list`, `search`, `forget`, `copy`, `restore`, `reconcile`, `resolve` | Core memory operations: persist, retrieve, search, and manage memories |
+| `guide` | *(none — standalone)* | Session playbook (call once per session) |
+| `bundle` | `export`, `import` | Export/import memory bundles for portability |
 
-### Planning Tools (22)
+### Planning Tools (6)
 
-| Tool | Purpose |
-|------|---------|
-| `project_init` | Initialize a project with goals, context, and constraints |
-| `plan_requirements` | Store categorized requirements with REQ-IDs |
-| `plan_roadmap` | Store a phased roadmap mapping requirements to phases |
-| `plan_tasks` | Decompose a phase into task memories with wave/dependency metadata |
-| `plan_resume` | Resume project context after context loss |
-| `plan_status` | Query current project status, phase, and blockers |
-| `task_next` | Get all unblocked tasks in the current wave for a phase |
-| `task_complete` | Mark a task complete with outcome metadata |
-| `plan_verify` | Verify a phase achieved its goal using success criteria |
-| `plan_gaps` | Create gap closure tasks for failed verification criteria |
-| `plan_retrospective` | Store a structured phase retrospective in `learn:execution-outcomes` |
-| `plan_profile` | Store or update project-level agent behavioral norms |
-| `research_start` | Start a research investigation before task decomposition |
-| `research_complete` | Complete research with findings and sources |
-| `concern_add` | Add a project concern with severity level |
-| `concern_resolve` | Resolve a concern with resolution details |
-| `concern` | List active concerns, optionally filtered by phase |
-| `goal_update` | Manage project goals: add, complete, or list |
-| `skill_create` | Create a reusable specialist skill with project-specific context |
-| `skill_load` | Load a reusable agent skill/prompt template |
-| `backlog_promote` | Promote a backlog entry to a new goal |
-| `setup_hooks` | Create merge infrastructure files for multi-user workflows |
+| Tool | Actions | Purpose |
+|------|---------|---------|
+| `plan` | `init`, `tasks`, `verify`, `gaps`, `retro`, `profile`, `status` | Project lifecycle: initialize, decompose, verify, and review |
+| `requirement` | `add`, `list` | Define and list categorized requirements with REQ-IDs |
+| `goal` | `add`, `complete`, `list` | Manage project goals |
+| `task` | `next`, `complete` | Execute tasks: get unblocked work and mark complete |
+| `concern` | `add`, `resolve`, `list` | Track and resolve project concerns |
+| `skill` | `create`, `load` | Create and load reusable specialist skills |
 
-**Built-in skills** ship with scrinia and are always available via `skill_load`:
+**Built-in skills** (12) ship with scrinia and are always available via `skill('load')`:
 
 | Skill | Purpose |
 |-------|---------|
-| `march-reporter` | Produce human-readable goal summary documents for audit trails |
+| `planner` | Wave-aware execution planning: file conflict detection, agent specs, merge strategy |
 | `auditor` | Systematic code, security, and documentation review with sequential finding IDs |
 | `debugger` | Scientific method debugging: observe, hypothesize, isolate, verify, store |
 | `chaos-engineer` | Probe operational resilience: failure domains, blast radius, recovery gaps |
 | `onboarder` | Build a codebase mental model for new agents and developers |
-| `planner` | Wave-aware execution planning: file conflict detection, agent specs, merge strategy |
 | `sos-handler` | Triage agent SOS signals: spawn specialists, create skills, replan waves |
 | `evolutionary` | Proactive knowledge and skill improvement, stale memory scanning |
 | `cartographer` | Cross-domain connection indexing and bridge discovery |
+| `march-reporter` | Produce human-readable goal summary documents for audit trails |
+| `merge-safety` | Multi-user merge conflict prevention and resolution guidance |
+| `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |
+| `self-reflector` | Agent self-assessment: identify blind spots, biases, and improvement opportunities |
 
-Built-in skills are evolvable — `skill_create` with the same name creates a project-specific override.
+Built-in skills are evolvable — `skill('create')` with the same name creates a project-specific override.
 
-Planning tools use dedicated topic conventions: `project:*` for project state, `plan:*` for roadmaps, `task:*` for individual tasks, `learn:*` for retrospective outcomes, and `agent:*` for agent behavioral norms. The `list` and `search` memory tools support `excludeTopics` to filter planning topics out of general queries.
+Planning tools use dedicated topic conventions: `project:*` for project state, `plan:*` for roadmaps, `task:*` for individual tasks, `learn:*` for retrospective outcomes, and `agent:*` for agent behavioral norms. The `memory('list')` and `memory('search')` actions support `excludeTopics` to filter planning topics out of general queries.
 
 ## Planning Quick Start
 
-Scrinia's 22 planning tools let an agent manage a full project lifecycle. Here's a minimal flow:
+Scrinia's 6 planning tools (with their actions) let an agent manage a full project lifecycle. Here's a minimal flow:
 
 ```
 # 1. Initialize a project
-project_init(context: "Build a REST API for user management with JWT auth")
+plan('init', context: "Build a REST API for user management with JWT auth")
 
 # 2. Define requirements
-plan_requirements(requirements: "## v1\n- AUTH-01: User registration\n- AUTH-02: JWT login\n- API-01: CRUD endpoints")
+requirement('add', requirements: "## v1\n- AUTH-01: User registration\n- AUTH-02: JWT login\n- API-01: CRUD endpoints")
 
-# 3. Create a phased roadmap (every REQ-ID must appear exactly once)
-plan_roadmap(roadmap: "## Phase 1: Auth\nRequirements: AUTH-01, AUTH-02\n## Phase 2: API\nRequirements: API-01")
+# 3. Set a goal (auto-creates researcher → auditor → planner seed tasks)
+goal('add', title: "Build auth and API", description: "Implement user management with JWT")
 
 # 4. Decompose Phase 1 into tasks
-plan_tasks(phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201")
+plan('tasks', phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201")
 
 # 5. Execute: get task → do the work → mark complete
-task_next(phaseId: "01")      # returns unblocked tasks
-task_complete(taskName: "task:01-1-01", outcome: "Registration endpoint created. Tests pass.")
+task('next', phaseId: "01")      # returns unblocked tasks
+task('complete', taskName: "task:01-1-01", outcome: "Registration endpoint created. Tests pass.")
 
-# 6. Verify the phase achieved its goal
-plan_verify(phaseId: "01")    # structured PASS/FAIL per criterion
+# 6. Check project status anytime
+plan('status')                   # current phase, progress, blockers
 
 # 7. Resume anytime after context loss
-plan_resume()                 # restores full project state
+memory('restore')                # restores full project state
 ```
 
-See [Planning Tools Guide](planning-tools.md) for full documentation of all 20 tools.
+See [Planning Tools Guide](planning-tools.md) for full documentation of all 6 planning tools.
 
 ## What's Next
 

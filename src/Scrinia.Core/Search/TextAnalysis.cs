@@ -1,3 +1,5 @@
+using Scrinia.Core.Models;
+
 namespace Scrinia.Core.Search;
 
 /// <summary>
@@ -162,5 +164,26 @@ public static class TextAnalysis
             .ToArray();
 
         return (keywords, tf);
+    }
+
+    /// <summary>
+    /// Computes per-chunk keywords, term frequencies, and content previews for multi-chunk artifacts.
+    /// Shared by both MCP and REST store paths.
+    /// </summary>
+    public static ChunkEntry[] ComputeChunkEntries(IMemoryStore store, string[] chunks)
+    {
+        var entries = new ChunkEntry[chunks.Length];
+        for (int i = 0; i < chunks.Length; i++)
+        {
+            var (kw, tf) = AnalyzeText(chunks[i]);
+            foreach (string k in kw) { tf.TryGetValue(k, out int c); tf[k] = c + 2; }
+            string preview = store.GenerateContentPreview(chunks[i]);
+            entries[i] = new ChunkEntry(
+                ChunkIndex: i + 1,
+                ContentPreview: string.IsNullOrEmpty(preview) ? null : preview,
+                Keywords: kw.Length > 0 ? kw : null,
+                TermFrequencies: tf.Count > 0 ? tf : null);
+        }
+        return entries;
     }
 }

@@ -35,7 +35,14 @@ public static class ChatProviderFactory
                     return new GeminiChatProvider(options.GeminiApiKey!, options.GeminiModel,
                         options.GeminiBaseUrl, options.MaxTokens, options.Temperature, cb, retryOptions);
 
+                case "anthropic":
+                case "openai":
+                case "gemini":
+                    logger.LogWarning("Chat provider '{Provider}' is not configured — API key missing or provider name unrecognized", providerName);
+                    return null;
+
                 default:
+                    logger.LogWarning("Chat provider '{Provider}' is not configured — API key missing or provider name unrecognized", providerName);
                     return null;
             }
         }

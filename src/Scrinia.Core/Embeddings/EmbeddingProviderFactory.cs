@@ -42,6 +42,7 @@ public static class EmbeddingProviderFactory
                     CircuitBreakerRegistry.Register("embedding:google", cb);
                     return new GoogleGeminiEmbeddingProvider(options.GoogleApiKey, options.GoogleModel, options.GoogleBaseUrl, options.GoogleDimensions, logger, cb, retryOptions);
                 default:
+                    logger.LogWarning("Embedding provider '{Provider}' is not configured — provider name unrecognized, falling back to null", options.Provider);
                     return new NullEmbeddingProvider();
             }
         }

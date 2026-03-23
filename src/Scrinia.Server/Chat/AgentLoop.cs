@@ -72,7 +72,6 @@ public static class AgentLoop
             // Collect all events from the provider
             var chunks = new List<string>();
             var toolCalls = new List<(string Id, string Name, string Args)>();
-            bool done = false;
 
             await foreach (var evt in provider.StreamChatAsync(
                 conversation.ToArray(), ToolDefinitions, ct))
@@ -87,10 +86,6 @@ public static class AgentLoop
                     case "tool-call":
                         toolCalls.Add((evt.ToolCallId ?? $"call_{toolCalls.Count}",
                             evt.ToolName ?? "unknown", evt.Content ?? "{}"));
-                        break;
-
-                    case "done":
-                        done = true;
                         break;
 
                     case "error":

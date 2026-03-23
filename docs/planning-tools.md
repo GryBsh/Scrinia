@@ -1,140 +1,90 @@
 # Planning Tools Guide
 
-Scrinia includes 20 MCP tools for structured project planning, execution, and learning. Plans are stored as standard scrinia memories using reserved topic conventions — no separate database or file format.
+Scrinia's planning system uses 6 MCP tools with noun('action') dispatch syntax.
 
-The workflow is **goal-driven** — you initialize once, then cycle through goals.
-
-## Lifecycle Overview
+## Goal-Driven Lifecycle
 
 ```
-project_init (one-time)
-  ↓
-Pre-plan: scan codebase → concern_add
-  ↓
-goal_update(add) ← ← ← ← ← ← ← ← ← ← ← ← ← (next goal)
-  ↓                                                   ↑
-research_start → research_complete                    |
-  ↓                                                   |
-plan_requirements → plan_roadmap → plan_tasks         |
-  ↓                                                   |
-task_next → (execute) → task_complete                 |
-  ↓                                                   |
-plan_verify → (if gaps) plan_gaps → task_next → ...   |
-  ↓                                                   |
-concern_resolve + plan_retrospective                  |
-  ↓                                                   |
-goal_update(complete) → → → → → → → → → → → → → → → ↑
+plan('init') (one-time)
+  |
+Pre-plan: scan codebase -> concern('add')
+  |
+goal('add') <--------------------------------------- (next goal)
+  |                                                       ^
+auto-creates: researcher (wave 0) -> auditor (wave 1)    |
+  -> planner (wave 2) seed tasks                         |
+  |                                                       |
+task('next') -> spawn agent -> task('complete')           |
+  |                                                       |
+concern('resolve') + gate tasks (QA, self-reflector)      |
+  |                                                       |
+goal('complete') -----------------------------------------+
 ```
 
-**Recovery at any point:** `plan_resume` / `plan_status` / `concern()`
-**Agent behavioral norms:** `plan_profile`
+**Recovery at any point:** `memory('restore')` / `plan('status')`
+**Agent behavioral norms:** stored via `memory('store')` in `agent:profile`
+
+### Absorbed capabilities
+
+These old standalone tools no longer exist. Their functionality is provided by other mechanisms:
+
+| Old tool | Replacement |
+|---|---|
+| `plan_verify` | qa built-in skill (auto-injected gate task) |
+| `plan_retrospective` | self-reflector built-in skill (auto-injected gate task) |
+| `plan_profile` | `agent:profile` memory (stored via `memory('store')`) |
+| `plan_roadmap` | auto-created by `goal('add')` |
+| `plan_requirements` | `requirement('add')` |
+| `plan_resume` | `memory('restore')` |
+| `plan_gaps` | gap tasks created directly via `plan('tasks')` |
+| `research_start` / `research_complete` | researcher seed task pattern (auto-created by `goal('add')`) |
 
 ### One-time setup
 
-`project_init(context)` — call once per workspace. In an existing codebase (any non-dotfile in the workspace), this returns guidance to scan for concerns and build knowledge before setting goals. In an empty workspace, it directs you to set a goal immediately.
+`plan('init', { context: "..." })` — call once per workspace. In an existing codebase, this returns guidance to scan for concerns and build knowledge before setting goals. In an empty workspace, it directs you to set a goal immediately.
 
 ### Pre-planning (existing codebases)
 
 Before setting your first goal, scan the codebase to build understanding:
-- `concern_add(description, severity, phaseScope)` — track risks, tech debt, issues
+- `concern('add', { description, severity, phaseScope })` — track risks, tech debt, issues
 
 Concerns persist across goals — they accumulate over the project's lifetime and inform future planning.
 
 ### The goal cycle
 
-Goals are the top-level unit of work. Each goal drives a requirements → roadmap → execution → verification cycle. After completing a goal, set the next one. Accumulated concerns and knowledge carry forward.
+Goals are the top-level unit of work. Each goal auto-creates researcher, auditor, and planner seed tasks. After completing a goal, set the next one. Accumulated concerns and knowledge carry forward.
 
 ---
 
-## Project Setup
+## Tools
 
-### project_init
+### plan
 
-Initialize a project with goals, context, and constraints.
+Actions: `init`, `tasks`, `status`
+
+#### plan('init')
+
+Initialize a new project. Creates `project:context` and `project:state` memories.
 
 **Parameters:**
 - `context` (string, required) — Free-text describing project goals, context, constraints, and scope
 
 **Example call:**
 ```
-project_init(context: "# My API Project\n\n## Goals\nBuild a REST API for user management\n\n## Constraints\n- Must use PostgreSQL\n- Deploy to AWS")
-```
-
-**Response:**
-```
-Initialized project 'my-api-project'. Stored: project:context, project:state.
-Files in .scrinia/ were updated — these are your changes.
+plan('init', { context: "Build a REST API for user management. Must use PostgreSQL. Deploy to AWS." })
 ```
 
 **What it stores:**
 - `project:context` — the full context text
 - `project:state` — tracking state (phase, progress, last action, next step)
 
----
+#### plan('tasks')
 
-### plan_requirements
-
-Define project requirements with categories and REQ-IDs.
+Create task definitions from planner output. Auto-injects gate tasks: QA + self-reflector per phase; evolutionary, cartographer, march-reporter on last phase.
 
 **Parameters:**
-- `requirements` (string, required) — Requirements organized by category with REQ-IDs and v1/v2 scope labels
-
-**Prerequisite:** `project_init` must be called first.
-
-**Example call:**
-```
-plan_requirements(requirements: "## v1 Requirements\n\n### Auth\n- AUTH-01: User registration with email/password\n- AUTH-02: JWT-based session management\n\n### API\n- API-01: CRUD endpoints for users\n- API-02: Rate limiting (100 req/min)")
-```
-
-**Response:**
-```
-Stored: project:requirements. Files in .scrinia/ were updated — these are your changes.
-```
-
-**Tips:**
-- Use `v1` / `v2` labels to scope requirements across milestones
-- Every REQ-ID must appear in exactly one phase in the roadmap (validated by `plan_roadmap`)
-- Format: `PREFIX-NN: description` (e.g., `AUTH-01`, `API-02`)
-
----
-
-### plan_roadmap
-
-Create a phased execution plan that maps every requirement to a phase.
-
-**Parameters:**
-- `roadmap` (string, required) — Phased roadmap referencing REQ-IDs
-
-**Prerequisite:** `plan_requirements` must be called first.
-
-**Validation:**
-- Every REQ-ID from `project:requirements` must appear in exactly one phase
-- Duplicate REQ-IDs across phases are rejected
-- Extra REQ-IDs (in roadmap but not in requirements) produce a warning but are accepted
-
-**Example call:**
-```
-plan_roadmap(roadmap: "## Phase 1: Auth Foundation\nRequirements: AUTH-01, AUTH-02\nGoal: Users can register and authenticate\nSuccess Criteria:\n1. Registration endpoint returns JWT\n2. Protected routes reject unauthenticated requests\n\n## Phase 2: API Layer\nRequirements: API-01, API-02\nGoal: Full CRUD with rate limiting")
-```
-
-**Response:**
-```
-Stored: plan:roadmap. Files in .scrinia/ were updated — these are your changes.
-```
-
----
-
-## Execution
-
-### plan_tasks
-
-Decompose a phase into individual tasks with dependencies. Waves are computed automatically from the dependency graph — tasks with no dependencies run in wave 1, tasks depending on wave N tasks run in wave N+1.
-
-**Parameters:**
-- `phaseId` (string, required) — Two-digit phase number (e.g., `"01"`)
 - `tasks` (string, required) — Free-text task definitions in structured format
-
-**Prerequisite:** `plan_roadmap` must be called first.
+- `phaseId` (string, optional) — Two-digit phase number (e.g., `"01"`)
 
 **Task format:**
 ```
@@ -159,179 +109,16 @@ Acceptance criteria:
 - Register, login, access protected route in one test
 ```
 
-**Response:**
-```
-Created 3 task(s) for phase 01 in 2 wave(s).
-Tasks stored: task:01-1-01, task:01-1-02, task:01-2-03
-```
-
 **Key concepts:**
 - **Waves** are computed from the dependency graph — no need to specify them
-- Tasks with no dependencies → wave 1 (can run in parallel). Tasks depending on wave N → wave N+1
+- Tasks with no dependencies go to wave 1 (can run in parallel). Tasks depending on wave N go to wave N+1
 - **Dependencies** reference task IDs (e.g., `01`, `02`), not qualified names
 - Task metadata stored as keywords: `status:pending`, `wave:1`, `phase:01`, `goal:G-14`, `depends_on:01-1-01`
+- Gate tasks (QA, self-reflector, etc.) are auto-injected — do not define them manually
 
----
+#### plan('status')
 
-### task_next
-
-Get all unblocked tasks in the current wave.
-
-**Parameters:**
-- `phaseId` (string, required) — Two-digit phase number
-
-**Example call:**
-```
-task_next(phaseId: "01")
-```
-
-**Response:**
-```
-Phase 01 — Wave 1 — 2 unblocked task(s):
-
-## task:01-1-01
-Action: Create user registration endpoint...
-Acceptance criteria:
-- POST /api/users returns 201 with JWT
-...
-
-## task:01-1-02
-Action: Create JWT middleware...
-```
-
-**How it works:**
-- Keyword-only index scan (no artifact decode during filtering) — fast even with hundreds of tasks
-- Filters: `phase:{phaseId}` → `status:pending` → lowest wave → unblocked dependencies
-- Returns ALL unblocked tasks — the agent decides which to execute and in what order
-
----
-
-### task_complete
-
-Mark a task as done with outcome metadata.
-
-**Parameters:**
-- `taskName` (string, required) — Qualified task name (e.g., `"task:01-1-01"`)
-- `outcome` (string, required) — What was done, any deviations
-
-**Example call:**
-```
-task_complete(taskName: "task:01-1-01", outcome: "Created registration endpoint at POST /api/users. Added email uniqueness check. Tests pass.")
-```
-
-**Response:**
-```
-Task 'task:01-1-01' marked complete. Execution log updated. Run task_next for next task.
-```
-
-**What happens:**
-- Updates `status:pending` → `status:complete` keyword via record with-expression + `Upsert`
-- Appends outcome to `task:{phaseId}-execution-log` as a new chunk
-- Updates `project:state` with last action and computed progress
-
-**No-archiving design:** Both `task_complete` and `project:state` updates deliberately skip `ArchiveVersion`:
-- **task_complete**: Status keyword changes are frequent, mechanical updates — archiving every status flip would create massive version bloat with no useful history.
-- **project:state**: Updated by every planning tool call (progress, last action, next step). Archiving would produce dozens of near-identical snapshots per session. State can always be rebuilt from `project:context` + `plan:roadmap` + task index via `plan_resume`.
-
----
-
-## Verification
-
-### plan_verify
-
-Check whether a phase achieved its goal using success criteria from the roadmap.
-
-**Parameters:**
-- `phaseId` (string, required) — Two-digit phase number
-
-**Example call:**
-```
-plan_verify(phaseId: "01")
-```
-
-**Response:**
-```
-Phase 01 Verification — 2 criteria:
-
-1. PASS — Registration endpoint returns JWT
-   Evidence: task:01-1-01 completed — "Created registration endpoint"
-
-2. FAIL — Protected routes reject unauthenticated requests
-   Evidence: No completed task addresses this criterion
-```
-
-**Key behavior:**
-- Reads success criteria from `plan:roadmap` (scoped to the target phase)
-- Checks task completion status and execution log for evidence
-- Returns structured PASS/FAIL per criterion — not a narrative assessment
-- Can be called before execution starts (for plan quality check — all criteria will FAIL)
-
----
-
-### plan_gaps
-
-Create fix tasks for failed verification criteria.
-
-**Parameters:**
-- `phaseId` (string, required) — Two-digit phase number
-- `failedCriteria` (string, required) — Description of what failed and needs fixing
-
-**Example call:**
-```
-plan_gaps(phaseId: "01", failedCriteria: "## Gap 01\nFailed: Protected routes reject unauthenticated requests\nFix: Add integration test covering unauthenticated access returns 401")
-```
-
-**Response:**
-```
-Created 1 gap closure task(s) for phase 01.
-```
-
-**What happens:**
-- Creates `task:{phaseId}-gap-{id}` memories with `gap_closure:true` keyword
-- Re-opens the phase status in `project:state`
-- New tasks appear in `task_next` — the agent can execute them and re-verify
-
-**The gap closure loop:**
-```
-plan_verify → finds gaps → plan_gaps → task_next → execute → task_complete → plan_verify again
-```
-
----
-
-## Recovery
-
-### plan_resume
-
-Restore project context after context loss (new session, context window compaction).
-
-**Parameters:** None
-
-**Example call:**
-```
-plan_resume()
-```
-
-**Response:**
-```
-Project: my-api-project
-ID: my-api-project
-Phase: Phase 01 — Auth Foundation
-Progress: 50%
-Last action: Completed task:01-1-01
-Blockers: none
-Next: run task_next to get the next pending task
-```
-
-**Key behavior:**
-- Returns structured summary within 8KB response cap
-- If `project:state` is missing/corrupted, rebuilds from `project:context` + `plan:roadmap` + task memories
-- Includes concrete next-step suggestion
-
----
-
-### plan_status
-
-Quick status query — lighter than plan_resume.
+Show project progress, active goal, blockers, and next action.
 
 **Parameters:** None
 
@@ -342,82 +129,254 @@ Phase: Phase 01 — Auth Foundation
 Progress: 50%
 Last action: Completed task:01-1-01
 Blockers: none
-Next: run task_next to get the next pending task
+Next: run task('next') to get the next pending task
 Roadmap: 2 phase(s) defined
 ```
 
 ---
 
-## Learning
+### task
 
-### plan_retrospective
+Actions: `next`, `complete`
 
-Record what worked, what failed, and lessons learned after a phase completes.
+#### task('next')
+
+Get the next unblocked task(s) for the active goal. Returns wave information and spawn guidance.
 
 **Parameters:**
-- `phaseId` (string, required) — Two-digit phase number
-- `whatWorked` (string, required) — What went well
-- `whatFailed` (string, required) — What was problematic
-- `lessons` (string, required) — Lessons for future phases
+- `phaseId` (string, optional) — Two-digit phase number. Auto-detects if omitted.
 
 **Example call:**
 ```
-plan_retrospective(
-  phaseId: "01",
-  whatWorked: "TDD approach caught two edge cases early. JWT library was straightforward.",
-  whatFailed: "Forgot to add rate limiting middleware — had to retrofit.",
-  lessons: "Always check non-functional requirements before marking phase complete. Add middleware early."
-)
+task('next')
+task('next', { phaseId: "01" })
 ```
 
 **Response:**
 ```
-Phase 01 retrospective stored in learn:execution-outcomes.
-Searchable via standard search. Use get_chunk() to retrieve individual phase retrospectives.
+Phase 01 — Wave 1 — 2 unblocked task(s):
+
+## task:g14-01-1-01
+Action: Create user registration endpoint...
+Acceptance criteria:
+- POST /api/users returns 201 with JWT
+...
+
+## task:g14-01-1-02
+Action: Create JWT middleware...
 ```
 
-**Key behavior:**
-- Appends to `learn:execution-outcomes` as a new chunk (outcomes accumulate across phases)
-- Tagged with `provenance:agent` keyword — distinguishes agent-authored from external content
-- Searchable via standard `search()` — surfaces automatically in future planning sessions
+**How it works:**
+- Keyword-only index scan (no artifact decode during filtering) — fast even with hundreds of tasks
+- Filters: `phase:{phaseId}` -> `status:pending` -> lowest wave -> unblocked dependencies
+- Returns ALL unblocked tasks — the agent decides which to execute and in what order
+
+#### task('complete')
+
+Mark a task as done with outcome metadata.
+
+**Parameters:**
+- `taskName` (string, required) — Qualified task name (e.g., `"task:g14-01-1-01"`)
+- `outcome` (string, required) — What was done, any deviations
+
+**Example call:**
+```
+task('complete', { taskName: "task:g14-01-1-01", outcome: "Created registration endpoint at POST /api/users. Added email uniqueness check. Tests pass." })
+```
+
+**What happens:**
+- Updates `status:pending` -> `status:complete` keyword via record with-expression + `Upsert`
+- Appends outcome to execution log as a new chunk
+- Updates `project:state` with last action and computed progress
+
+**No-archiving design:** Both `task('complete')` and `project:state` updates deliberately skip `ArchiveVersion`:
+- **task('complete')**: Status keyword changes are frequent, mechanical updates — archiving every status flip would create massive version bloat with no useful history.
+- **project:state**: Updated by every planning tool call (progress, last action, next step). Archiving would produce dozens of near-identical snapshots per session. State can always be rebuilt from `project:context` + task index via `plan('status')`.
 
 ---
 
-### plan_profile
+### goal
 
-Store project-level agent behavioral norms.
+Actions: `add`, `edit`, `complete`, `list`
+
+#### goal('add')
+
+Create a new goal. Auto-creates researcher (wave 0) -> auditor (wave 1) -> planner (wave 2) seed tasks.
 
 **Parameters:**
-- `profile` (string, required) — Key-value norms, one per line
+- `description` (string, required) — Goal description
 
 **Example call:**
 ```
-plan_profile(profile: "response_style: terse\nreview_depth: detailed\nmemory_persistence: use scrinia only")
+goal('add', { description: "Implement JWT authentication for all API endpoints" })
 ```
 
-**Response:**
+**What happens:**
+- Creates a goal with sequential ID (G-1, G-2, ...)
+- Auto-creates three seed tasks: researcher, auditor, planner
+- The orchestrator executes these via `task('next')` -> spawn -> `task('complete')`
+
+#### goal('complete')
+
+Complete the active goal. Blocks on open concerns. Auto-appends session log and checkpoint.
+
+**Parameters:**
+- `goalId` (string, optional) — Goal ID to complete. Uses active goal if omitted.
+- `outcome` (string, optional) — Outcome note
+
+**Example call:**
 ```
-Agent profile stored in agent:profile. Norms persist across sessions and are searchable via standard search.
+goal('complete', { outcome: "All auth endpoints implemented and tested." })
 ```
 
-**Key behavior:**
-- Full overwrite on each call (not merge)
-- Persists in `agent:profile` across sessions
-- Tagged with `provenance:agent` keyword
+#### goal('list')
+
+List all goals with status.
+
+**Parameters:** None
+
+#### goal('edit')
+
+Update goal description.
+
+**Parameters:**
+- `goalId` (string, optional) — Goal ID to update
+- `description` (string, optional) — Updated description
+
+---
+
+### concern
+
+Actions: `add`, `resolve`, `list`
+
+#### concern('add')
+
+Track a risk or issue. Sequential IDs by category: SEC-NNN, QAL-NNN, DOC-NNN.
+
+**Parameters:**
+- `description` (string, required) — Concern description
+- `severity` (string, optional) — `high`, `medium`, or `low`
+- `phaseScope` (string, optional) — Phase this concern applies to
+- `id` (string, optional) — Custom concern ID (auto-generated if omitted)
+
+**Example call:**
+```
+concern('add', { description: "No input validation on user registration", severity: "high", phaseScope: "01" })
+```
+
+#### concern('resolve')
+
+Mark a concern resolved.
+
+**Parameters:**
+- `concernName` (string, required) — Concern name to resolve
+- `resolution` (string, optional) — Resolution notes
+- `verifiedBy` (string, optional) — Who verified: `debugger`, `qa`, `manual`
+
+**Example call:**
+```
+concern('resolve', { concernName: "SEC-001", resolution: "Added input validation middleware", verifiedBy: "qa" })
+```
+
+#### concern('list')
+
+List active concerns, optionally filtered by phase.
+
+**Parameters:**
+- `phaseFilter` (string, optional) — Filter by phase
+
+---
+
+### skill
+
+Actions: `load`, `create`
+
+#### skill('load')
+
+Load a built-in or project skill. Without `name`, lists all available skills.
+
+**Parameters:**
+- `name` (string, optional) — Skill name to load. Omit to list available skills.
+- `reconcile` (boolean, optional) — Show both built-in and override for reconciliation
+
+**12 built-in skills:** planner, auditor, debugger, chaos-engineer, onboarder, sos-handler, evolutionary, cartographer, march-reporter, merge-safety, qa, self-reflector
+
+**Example calls:**
+```
+skill('load')                          # list available skills
+skill('load', { name: "planner" })     # load a specific skill
+```
+
+#### skill('create')
+
+Create a project-specific skill from a scaffold.
+
+**Parameters:**
+- `name` (string, required) — Skill name
+- `scaffold` (string, optional) — Scaffold type: `researcher`, `reviewer`, `domain-expert`, `custom`
+- `instructions` (string, optional) — Additional instructions for the skill
+- `tools` (string, optional) — Comma-separated tool names (for `custom` scaffold)
+
+**Example call:**
+```
+skill('create', { name: "api-reviewer", scaffold: "reviewer", instructions: "Focus on REST conventions and error handling" })
+```
+
+**Precedence:** Project skills override built-in skills of the same name. Use `skill('load', { reconcile: true })` to compare.
+
+---
+
+### requirement
+
+Actions: `add`, `resolve`, `list`
+
+#### requirement('add')
+
+Register requirements with REQ-IDs and acceptance criteria.
+
+**Parameters:**
+- `requirements` (string, required) — Free-text requirements with REQ-IDs
+
+**Example call:**
+```
+requirement('add', { requirements: "## Auth\n- AUTH-01: User registration with email/password\n- AUTH-02: JWT-based session management\n\n## API\n- API-01: CRUD endpoints for users" })
+```
+
+#### requirement('resolve')
+
+Mark a requirement as fulfilled.
+
+**Parameters:**
+- `id` (string, required) — Requirement ID to resolve
+- `evidence` (string, optional) — Evidence of fulfillment
+
+**Example call:**
+```
+requirement('resolve', { id: "AUTH-01", evidence: "Registration endpoint implemented and tested in task:g14-01-1-01" })
+```
+
+#### requirement('list')
+
+List all requirements for the active goal.
+
+**Parameters:** None
 
 ---
 
 ## Planning Topic Conventions
 
-Planning tools use 5 reserved topic prefixes. These are standard scrinia topics — they use the same storage, search, and versioning as knowledge memories.
+Planning tools use reserved topic prefixes. These are standard scrinia topics — they use the same storage, search, and versioning as knowledge memories.
 
 | Topic Prefix | Scope Resolution | Purpose | Example |
 |---|---|---|---|
 | `project:*` | `local-topic:project` | Project context, requirements, state | `project:context`, `project:state` |
 | `plan:*` | `local-topic:plan` | Roadmaps and phase plans | `plan:roadmap` |
-| `task:*` | `local-topic:task` | Individual tasks with keyword metadata | `task:01-1-01`, `task:01-execution-log` |
+| `task:*` | `local-topic:task` | Individual tasks with keyword metadata | `task:g14-01-1-01`, `task:01-execution-log` |
 | `learn:*` | `local-topic:learn` | Execution outcomes and retrospectives | `learn:execution-outcomes` |
 | `agent:*` | `local-topic:agent` | Project-level agent behavioral norms | `agent:profile` |
+| `research:*` | `local-topic:research` | Investigation findings (goal-prefixed) | `research:g14-auth-flow` |
+| `concern:*` | `local-topic:concern` | Tracked risks | `concern:SEC-001` |
+| `backlog:*` | `local-topic:backlog` | Deferred work and future ideas | `backlog:nice-to-have` |
 
 ### Scope Filtering with excludeTopics
 
@@ -425,79 +384,78 @@ The `list` and `search` memory tools support an `excludeTopics` parameter to fil
 
 ```
 # Knowledge-only query (excludes all planning topics)
-list(excludeTopics: "plan,task,project,learn")
-search(query: "authentication", excludeTopics: "plan,task,project,learn")
+memory('list', { excludeTopics: "plan,task,project,learn,backlog" })
+memory('search', { query: "authentication", excludeTopics: "plan,task,project,learn,backlog" })
 
 # Default behavior (no excludeTopics) — shows everything including planning
-list()
-search(query: "authentication")
+memory('list')
+memory('search', { query: "authentication" })
 ```
 
 **Important:** `learn:*` memories are searchable by default. They are only excluded when explicitly included in `excludeTopics`. This is by design — learned patterns should surface during future planning.
 
-### Task Keyword Metadata
+## Task Keyword Metadata
 
 Tasks store structured metadata as keywords on `ArtifactEntry`, queryable without decoding the artifact content:
 
 | Keyword | Purpose | Example |
 |---|---|---|
-| `status:pending` | Task not yet started | Set by `plan_tasks` |
-| `status:complete` | Task finished | Set by `task_complete` |
-| `wave:1` | Execution wave (parallel group) | Set by `plan_tasks` |
-| `phase:01` | Phase membership | Set by `plan_tasks` |
-| `depends_on:01-1-01` | Dependency on another task (full task name) | Set by `plan_tasks` |
-| `goal:G-14` | Goal scoping (prevents cross-goal collisions) | Set by `plan_tasks` |
-| `gap_closure:true` | Task created by `plan_gaps` | Set by `plan_gaps` |
-| `provenance:agent` | Content authored by agent | Set by `plan_retrospective`, `plan_profile` |
+| `status:pending` | Task not yet started | Set by `plan('tasks')` |
+| `status:complete` | Task finished | Set by `task('complete')` |
+| `wave:1` | Execution wave (parallel group) | Set by `plan('tasks')` |
+| `phase:01` | Phase membership | Set by `plan('tasks')` |
+| `depends_on:01-1-01` | Dependency on another task (full task name) | Set by `plan('tasks')` |
+| `goal:G-14` | Goal scoping (prevents cross-goal collisions) | Set by `plan('tasks')` |
+| `provenance:agent` | Content authored by agent | Set by built-in skills |
 
 ---
 
+## Recovery
+
+- `memory('restore')` — full context restoration (project state, agent profile, session log, task nudge)
+- `plan('status')` — quick progress check
+- `memory('search', { query: "agent:" })` — load behavioral norms
+
 ## Full Lifecycle Walkthrough
 
-Here's a complete flow from project initialization through learning:
-
 ```
-# 1. Initialize
-project_init(context: "Build a todo app with React frontend and Express API")
+# 1. Initialize (one-time)
+plan('init', { context: "Build a todo app with React frontend and Express API" })
 
-# 2. Define requirements
-plan_requirements(requirements: "## v1\n### API\n- API-01: CRUD endpoints\n### UI\n- UI-01: Task list view")
+# 2. Pre-plan: scan codebase for concerns
+concern('add', { description: "No test coverage", severity: "medium" })
 
-# 3. Create roadmap
-plan_roadmap(roadmap: "## Phase 1: API\nRequirements: API-01\n...\n## Phase 2: UI\nRequirements: UI-01\n...")
+# 3. Define requirements
+requirement('add', { requirements: "## API\n- API-01: CRUD endpoints\n## UI\n- UI-01: Task list view" })
 
-# 4. Decompose Phase 1 into tasks
-plan_tasks(phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create Express server with CRUD routes\n...")
+# 4. Set a goal
+goal('add', { description: "Implement core API with CRUD endpoints" })
+# -> auto-creates researcher, auditor, planner seed tasks
 
-# 5. Get next task
-task_next(phaseId: "01")
-# → Returns all unblocked Wave 1 tasks
+# 5. Execute seed tasks (researcher -> auditor -> planner)
+task('next')
+# -> spawn researcher agent -> task('complete')
+# -> spawn auditor agent -> task('complete')
+# -> spawn planner agent (calls plan('tasks')) -> task('complete')
 
-# 6. Execute the task (agent does the work)
-# ... write code, run tests, commit ...
+# 6. Execute implementation tasks
+task('next')
+# -> returns unblocked Wave 1 tasks
+# -> spawn agent for each task
+# -> agent does the work (write code, run tests, commit)
+task('complete', { taskName: "task:g1-01-1-01", outcome: "Created Express server with CRUD routes. Tests pass." })
 
-# 7. Mark complete
-task_complete(taskName: "task:01-1-01", outcome: "Created Express server with GET/POST/PUT/DELETE routes. Tests pass.")
+# 7. Repeat step 6 until all tasks done
+# Gate tasks (QA, self-reflector) auto-execute at phase boundaries
 
-# 8. Repeat 5-7 until all tasks done
+# 8. Complete the goal
+goal('complete', { outcome: "API CRUD implemented and verified." })
 
-# 9. Verify phase goal
-plan_verify(phaseId: "01")
-# → PASS/FAIL per criterion
-
-# 10. If gaps found:
-plan_gaps(phaseId: "01", failedCriteria: "## Gap 01\nFailed: ...\nFix: ...")
-# → Creates fix tasks, re-opens phase
-# → Back to step 5
-
-# 11. Record lessons
-plan_retrospective(phaseId: "01", whatWorked: "...", whatFailed: "...", lessons: "...")
-
-# 12. Move to Phase 2
-plan_tasks(phaseId: "02", tasks: "...")
+# 9. Set next goal
+goal('add', { description: "Build React frontend with task list view" })
 # ... repeat ...
 
-# At any point — check status or resume after context loss:
-plan_status()
-plan_resume()
+# At any point — check status or restore after context loss:
+plan('status')
+memory('restore')
 ```

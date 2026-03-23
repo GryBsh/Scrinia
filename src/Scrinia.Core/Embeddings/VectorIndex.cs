@@ -43,23 +43,12 @@ public static class VectorIndex
 
     /// <summary>
     /// Finds the top-k most similar vectors to the query, returning (entry, similarity) pairs.
-    /// Uses flat scan for small collections or when no HNSW index is available.
+    /// Uses flat scan (fast enough for typical memory counts).
     /// </summary>
     public static IReadOnlyList<(VectorEntry Entry, float Similarity)> Search(
         ReadOnlySpan<float> query,
         IReadOnlyList<VectorEntry> entries,
         int topK)
-        => Search(query, entries, topK, hnsw: null);
-
-    /// <summary>
-    /// Finds the top-k most similar vectors. Uses HNSW when available and entries >= 1000,
-    /// flat scan otherwise.
-    /// </summary>
-    public static IReadOnlyList<(VectorEntry Entry, float Similarity)> Search(
-        ReadOnlySpan<float> query,
-        IReadOnlyList<VectorEntry> entries,
-        int topK,
-        HnswIndex? hnsw)
     {
         if (entries.Count == 0)
             return [];

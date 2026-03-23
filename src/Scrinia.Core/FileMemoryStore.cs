@@ -19,6 +19,7 @@ namespace Scrinia.Core;
 /// </summary>
 public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 {
+    private const int MaxEphemeralEntries = 1000;
     private readonly string _workspaceRoot;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -187,12 +188,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string gitIgnorePath = Path.Combine(scriniaDir, ".gitignore");
         if (File.Exists(gitIgnorePath)) return;
 
-        File.WriteAllText(gitIgnorePath, """
+        AtomicWriteAllText(gitIgnorePath, """
             # Lock files (runtime artifacts from cross-process file locking)
             **/.lock
 
             # Export bundles (generated, can be re-exported)
             exports/
+
+            # Archived versions (auto-pruned, not source-controlled)
+            **/versions/
 
             # Temporary files from interrupted writes
             **/*.tmp
@@ -258,8 +262,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public static string StripEphemeralPrefix(string name) =>
         MemoryNaming.StripEphemeralPrefix(name);
 
-    public void RememberEphemeral(string key, EphemeralEntry entry) =>
+    public void RememberEphemeral(string key, EphemeralEntry entry)
+    {
         _ephemeralStore[key] = entry;
+
+        if (_ephemeralStore.Count > MaxEphemeralEntries)
+        {
+            // Evict oldest by CreatedAt
+            var oldest = _ephemeralStore.OrderBy(e => e.Value.CreatedAt).First();
+            _ephemeralStore.TryRemove(oldest.Key, out _);
+        }
+    }
 
     public bool ForgetEphemeral(string key) =>
         _ephemeralStore.TryRemove(key, out _);
@@ -475,6 +488,35 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         File.Move(tmp, metaPath, overwrite: true);
     }
 
+    private static void AtomicWriteAllText(string path, string content)
+    {
+        string tmp = $"{path}.{Environment.ProcessId}.tmp";
+        File.WriteAllText(tmp, content);
+        File.Move(tmp, path, overwrite: true);
+    }
+
+    private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
+    {
+        string tmp = $"{path}.{Environment.ProcessId}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(tmp, content, ct);
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
+    }
+
+    private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
+    {
+        string tmp = $"{destPath}.{Environment.ProcessId}.tmp";
+        File.Copy(sourcePath, tmp, overwrite: true);
+        File.Move(tmp, destPath, overwrite: overwrite);
+    }
+
     private void DeleteSidecar(string name, string storeDir)
     {
         string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
@@ -598,7 +640,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         string path = ArtifactPath(subject, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(path, artifactText, ct);
+        await AtomicWriteAllTextAsync(path, artifactText, ct);
         _artifactCache.Invalidate($"{scope}|{subject}|");
     }
 
@@ -820,7 +862,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-            File.WriteAllText(destPath, entry.Artifact);
+            AtomicWriteAllText(destPath, entry.Artifact);
 
             var destEntry = new ArtifactEntry(
                 Name: dstSubject,
@@ -894,7 +936,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(destPathP)!);
-        File.Copy(sourcePath, destPathP, overwrite);
+        AtomicFileCopy(sourcePath, destPathP, overwrite);
 
         ArtifactEntry? sourceEntry = LoadIndex(srcScope).FirstOrDefault(e => e.Name == srcSubject);
         ArtifactEntry destinationEntry;
@@ -912,7 +954,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             string artifactText = File.ReadAllText(destPathP);
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifactText);
-            long originalBytes = new Nmp2Strategy().Decode(artifactText).LongLength;
+            long originalBytes = Nmp2Strategy.Instance.Decode(artifactText).LongLength;
 
             destinationEntry = new ArtifactEntry(
                 Name: persistDstSubject,
@@ -942,7 +984,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string archiveName = $"{SanitizeName(subject)}_{timestamp}.nmp2";
         string archivePath = Path.Combine(versionsDir, archiveName);
 
-        File.Copy(currentPath, archivePath, overwrite: true);
+        AtomicFileCopy(currentPath, archivePath);
+
+        // Prune old versions — keep only the 10 most recent
+        var versionFiles = Directory.GetFiles(versionsDir, $"{SanitizeName(subject)}_*.nmp2")
+            .OrderByDescending(f => f)
+            .Skip(10)
+            .ToList();
+        foreach (var old in versionFiles)
+        {
+            try { File.Delete(old); } catch { /* best-effort cleanup */ }
+        }
     }
 
     // ── Content utility ──────────────────────────────────────────────────────
@@ -1034,7 +1086,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (artifactContents.TryGetValue(entry.Name, out string? content))
             {
                 string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
-                File.WriteAllText(filePath, content);
+                AtomicWriteAllText(filePath, content);
             }
 
             var updatedEntry = entry with

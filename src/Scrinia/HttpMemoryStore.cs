@@ -81,6 +81,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             _circuitBreaker.RecordFailure();
         return response;
     }
+    private const int MaxEphemeralEntries = 1000;
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeral = new(StringComparer.OrdinalIgnoreCase);
     private readonly FileMemoryStore _localHelper;
 
@@ -157,8 +158,17 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     // ── Ephemeral (stays client-side) ───────────────────────────────────────
 
-    public void RememberEphemeral(string key, EphemeralEntry entry) =>
+    public void RememberEphemeral(string key, EphemeralEntry entry)
+    {
         _ephemeral[key] = entry;
+
+        if (_ephemeral.Count > MaxEphemeralEntries)
+        {
+            // Evict oldest by CreatedAt
+            var oldest = _ephemeral.OrderBy(e => e.Value.CreatedAt).First();
+            _ephemeral.TryRemove(oldest.Key, out _);
+        }
+    }
 
     public bool ForgetEphemeral(string key) =>
         _ephemeral.TryRemove(key, out _);
@@ -461,7 +471,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default)
     {
         // Decode the NMP/2 artifact back to text, then store via the API
-        byte[] bytes = new Nmp2Strategy().Decode(artifactText);
+        byte[] bytes = Nmp2Strategy.Instance.Decode(artifactText);
         string text = System.Text.Encoding.UTF8.GetString(bytes);
         string qualifiedName = FormatQualifiedName(scope, subject);
         var req = new StoreApiRequest([text], qualifiedName);

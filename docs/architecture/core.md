@@ -108,7 +108,8 @@ public sealed record ArtifactEntry(
     DateTimeOffset? UpdatedAt = null,              // v3
     DateTimeOffset? ReviewAfter = null,            // v3: staleness date
     string? ReviewWhen = null,                     // v3: staleness condition
-    ChunkEntry[]? ChunkEntries = null);            // v3: per-chunk metadata
+    ChunkEntry[]? ChunkEntries = null,            // v3: per-chunk metadata
+    Dictionary<string, string>? CodeRefs = null); // v3: source file references
 ```
 
 ### ChunkEntry
@@ -248,7 +249,7 @@ Tokenization: split on non-alphanumeric characters, lowercase, filter stop words
 - **`ExtractFileRefs(content)`** -- extracts file path references matching known extensions (.cs, .ts, .json, .md, .yaml, .csproj, .sln, etc.). Anchored to avoid matching inside URLs. Results are deduplicated case-insensitively.
 - **`ExtractMemoryRefs(content)`** -- extracts both persistent memory references (`topic:subject` pattern) and ephemeral references (`~name` pattern). Avoids matching URL-like patterns (e.g., `http://`).
 
-Used by the `references` and `link` memory tools to enable drift detection (`check_drift`) and cross-reference tracking between memories and source files.
+Used by the `references` and `link` memory tools to enable drift detection (`memory('list', { mode: "drift" })`) and cross-reference tracking between memories and source files.
 
 ## Storage
 
@@ -335,7 +336,7 @@ Both `FileMemoryStore` and `ScriniaArtifactStore` use file locks for all index a
 
 ### Planning Tool Task Queries
 
-The `task_next` planning tool demonstrates an important performance pattern — keyword-only index scan:
+The `task('next')` planning tool demonstrates an important performance pattern — keyword-only index scan:
 
 1. `store.LoadIndex("local-topic:task")` — loads index entries (O(1) via CachedIndex)
 2. Filter by `phase:{phaseId}` keyword — no artifact decode
@@ -344,9 +345,9 @@ The `task_next` planning tool demonstrates an important performance pattern — 
 5. Check `depends_on:{subject}` against completed task set
 6. Only then decode artifact content for the unblocked result set
 
-This means `task_next` with 100 tasks scans keywords only, decoding perhaps 3-5 artifacts for the current wave — not all 100.
+This means `task('next')` with 100 tasks scans keywords only, decoding perhaps 3-5 artifacts for the current wave — not all 100.
 
-`task_complete` updates status keywords via record `with`-expression + `Upsert` — no `ArchiveVersion` call (prevents version bloat from frequent status updates).
+`task('complete')` updates status keywords via record `with`-expression + `Upsert` — no `ArchiveVersion` call (prevents version bloat from frequent status updates).
 
 ### Version Archiving
 

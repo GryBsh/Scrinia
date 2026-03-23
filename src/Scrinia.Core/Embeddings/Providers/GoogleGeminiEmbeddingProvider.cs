@@ -6,77 +6,51 @@ using Scrinia.Core.Resilience;
 namespace Scrinia.Core.Embeddings.Providers;
 
 /// <summary>Embedding provider using the Google Gemini embedContent API.</summary>
-public sealed class GoogleGeminiEmbeddingProvider : IEmbeddingProvider
+public sealed class GoogleGeminiEmbeddingProvider : ResilientEmbeddingProvider
 {
-    private readonly HttpClient _http;
-    private readonly string _model;
     private readonly string _requestUrl;
     private readonly int _configuredDimensions;
-    private readonly ILogger _logger;
-    private readonly CircuitBreaker _circuitBreaker;
-    private readonly RetryOptions _retryOptions;
-    private int _dimensions;
 
-    public bool IsAvailable => true;
-    public int Dimensions => _dimensions > 0 ? _dimensions : (_configuredDimensions > 0 ? _configuredDimensions : 3072);
+    public override int Dimensions => ObservedDimensions > 0 ? ObservedDimensions : (_configuredDimensions > 0 ? _configuredDimensions : 3072);
+    protected override string ProviderName => "Google Gemini";
 
     public GoogleGeminiEmbeddingProvider(string? apiKey, string model, string baseUrl, int dimensions, ILogger logger,
         CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
+        : base(CreateHttpClient(apiKey), logger, circuitBreaker, retryOptions)
+    {
+        _configuredDimensions = dimensions;
+
+        var url = baseUrl.TrimEnd('/');
+        _requestUrl = $"{url}/v1beta/models/{model}:embedContent";
+    }
+
+    private static HttpClient CreateHttpClient(string? apiKey)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
             throw new ArgumentException("Google API key is required for the Google Gemini embedding provider.", nameof(apiKey));
 
-        _http = new HttpClient();
-        _http.Timeout = TimeSpan.FromSeconds(30);
-        _model = model;
-        _configuredDimensions = dimensions;
-        _logger = logger;
-        _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
-        _retryOptions = retryOptions ?? new RetryOptions();
-
-        var url = baseUrl.TrimEnd('/');
-        _requestUrl = $"{url}/v1beta/models/{model}:embedContent?key={apiKey}";
+        var http = new HttpClient();
+        http.Timeout = TimeSpan.FromSeconds(30);
+        http.DefaultRequestHeaders.Add("x-goog-api-key", apiKey);
+        return http;
     }
 
-    public async Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)
+    protected override async Task<HttpResponseMessage> SendEmbedRequestAsync(string text, CancellationToken ct)
     {
-        try
-        {
-            _circuitBreaker.EnsureClosed();
-
-            var request = new GeminiEmbedRequest(
-                new GeminiContent([new GeminiPart(text)]),
-                "RETRIEVAL_DOCUMENT",
-                _configuredDimensions > 0 ? _configuredDimensions : null);
-            var response = await RetryPolicy.ExecuteAsync(
-                async () => await _http.PostAsJsonAsync(_requestUrl, request, GeminiJsonContext.Default.GeminiEmbedRequest, ct),
-                resp => TransientDetector.IsTransient(resp),
-                _retryOptions,
-                _logger,
-                ct);
-            response.EnsureSuccessStatusCode();
-
-            var result = await response.Content.ReadFromJsonAsync(GeminiJsonContext.Default.GeminiEmbedResponse, ct);
-            if (result?.Embedding?.Values is { Length: > 0 })
-            {
-                var vec = result.Embedding.Values;
-                if (_dimensions == 0)
-                    _dimensions = vec.Length;
-                VectorMath.L2Normalize(vec);
-                _circuitBreaker.RecordSuccess();
-                return vec;
-            }
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _circuitBreaker.RecordFailure();
-            _logger.LogWarning(ex, "Google Gemini embedding failed");
-            return null;
-        }
+        var request = new GeminiEmbedRequest(
+            new GeminiContent([new GeminiPart(text)]),
+            "RETRIEVAL_DOCUMENT",
+            _configuredDimensions > 0 ? _configuredDimensions : null);
+        return await Http.PostAsJsonAsync(_requestUrl, request, GeminiJsonContext.Default.GeminiEmbedRequest, ct);
     }
 
-    public void Dispose() => _http.Dispose();
+    protected override async Task<float[]?> ParseEmbeddingResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var result = await response.Content.ReadFromJsonAsync(GeminiJsonContext.Default.GeminiEmbedResponse, ct);
+        if (result?.Embedding?.Values is { Length: > 0 })
+            return result.Embedding.Values;
+        return null;
+    }
 }
 
 internal sealed record GeminiPart(

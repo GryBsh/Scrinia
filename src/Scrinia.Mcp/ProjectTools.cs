@@ -1320,7 +1320,7 @@ public sealed class ScriniaProjectTools
         IMemoryStore store, string qualifiedName, CancellationToken ct)
     {
         string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
-        byte[] decoded = new Nmp2Strategy().Decode(artifact);
+        byte[] decoded = Nmp2Strategy.Instance.Decode(artifact);
         return System.Text.Encoding.UTF8.GetString(decoded);
     }
 

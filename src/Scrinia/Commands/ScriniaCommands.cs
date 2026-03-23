@@ -299,7 +299,7 @@ public class ScriniaCommands
                     er.Score, (int)(er.Item.Entry.OriginalBytes / 4),
                     er.Item.Entry.Description, null, null),
                 TopicResult tr => new CliSearchResult("topic",
-                    ScriniaArtifactStore.FormatScopeLabel(tr.Scope),
+                    MemoryNaming.FormatScopeLabel(tr.Scope),
                     tr.Score, 0, tr.Description, null, null),
                 _ => new CliSearchResult("unknown", "", 0, 0, "", null, null),
             }).ToArray();
@@ -343,7 +343,7 @@ public class ScriniaCommands
             }
             else if (match is TopicResult tr)
             {
-                string label = ScriniaArtifactStore.FormatScopeLabel(tr.Scope);
+                string label = MemoryNaming.FormatScopeLabel(tr.Scope);
                 string desc = tr.Description.Replace('\n', ' ').Replace('\r', ' ');
                 if (desc.Length > 60) desc = desc[..57] + "...";
 

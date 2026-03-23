@@ -154,6 +154,8 @@ var chatOptions = new Scrinia.Server.Chat.ChatOptions();
 builder.Configuration.GetSection("Scrinia:Chat").Bind(chatOptions);
 chatOptions.Temperature = Math.Clamp(chatOptions.Temperature, 0.0, 2.0);
 if (chatOptions.MaxTokens <= 0) chatOptions.MaxTokens = 4096;
+builder.Services.AddSingleton(chatOptions);
+builder.Services.AddSingleton<Scrinia.Server.Chat.ChatProviderCache>();
 
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
 builder.Services.AddSingleton(sp =>
@@ -254,6 +256,12 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+var corsOrigins = builder.Configuration.GetSection("Scrinia:CorsOrigins").Get<string[]>();
+if (corsOrigins is ["*"])
+{
+    app.Logger.LogWarning("CORS is configured with wildcard origin '*'. This allows any origin to access the API. Restrict CorsOrigins in production.");
+}
+
 // ── Bootstrap key ────────────────────────────────────────────────────────────
 
 if (!keyStore.HasAnyKeys())
@@ -262,7 +270,7 @@ if (!keyStore.HasAnyKeys())
     var (rawKey, keyId, _) = keyStore.CreateKey(
         "admin", storeManager.StoreNames.ToArray(),
         ["read", "search", "store", "append", "forget", "copy",
-         "export", "import", "manage_keys", "manage_roles"], "bootstrap");
+         "export", "import", "manage_keys"], "bootstrap");
 
     // Write bootstrap key to a file (read once, then delete)
     string keyFile = Path.Combine(dataDir, "BOOTSTRAP_KEY");
@@ -390,7 +398,9 @@ app.MapHealthEndpoints();
 app.MapChatEndpoints(chatOptions);
 
 // Plugin endpoints
-var pluginGroup = app.MapGroup("/api/v1/plugins");
+var pluginGroup = app.MapGroup("/api/v1/plugins")
+    .RequireAuthorization()
+    .RequireRateLimiting("api");
 foreach (var plugin in loadedPlugins)
     plugin.MapEndpoints(pluginGroup);
 
@@ -436,8 +446,11 @@ if (!pluginProvidesEmbeddings)
     });
 }
 
-app.MapOpenApi();
-app.MapScalarApiReference();
+if (app.Environment.IsDevelopment() || app.Configuration.GetValue("Scrinia:ExposeOpenApi", false))
+{
+    app.MapOpenApi();
+    app.MapScalarApiReference();
+}
 
 app.MapMcp("/mcp").RequireAuthorization().RequireRateLimiting("api");
 
@@ -449,7 +462,7 @@ app.MapFallbackToFile("index.html");
 app.Lifetime.ApplicationStopping.Register(() =>
 {
     app.Logger.LogInformation("Shutting down — disposing resources…");
-    keyStore.Dispose();
+    app.Services.GetRequiredService<Scrinia.Server.Chat.ChatProviderCache>().Dispose();
 });
 
 await app.RunAsync();

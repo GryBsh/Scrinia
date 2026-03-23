@@ -328,7 +328,7 @@ The server exposes MCP Streamable HTTP at `/mcp` via `ModelContextProtocol.AspNe
 app.MapMcp("/mcp").RequireAuthorization();
 ```
 
-All 43 MCP tools from `ScriniaMcpTools` (21 memory) and `ScriniaProjectTools` (22 planning) are available (defined in `MemoryTools.cs` and `ProjectTools.cs` respectively). The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
+All 9 MCP tools from `ScriniaMcpTools` (3 memory) and `ScriniaProjectTools` (6 planning) are available (defined in `MemoryTools.cs` and `ProjectTools.cs` respectively). The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
 
 ## Web UI Integration
 
@@ -342,7 +342,7 @@ The server generates an OpenAPI spec at `/openapi/v1.json` and hosts a Scalar AP
 
 ## Test Coverage
 
-61 tests in `Scrinia.Server.Tests` using:
+63 tests in `Scrinia.Server.Tests` using:
 - `WebApplicationFactory` for in-process HTTP testing
 - In-memory SQLite for key storage
 - FluentAssertions for readable assertions

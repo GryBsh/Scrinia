@@ -8,7 +8,7 @@ namespace Scrinia.Server.Services;
 /// Each configured store name maps to a resolved filesystem path.
 /// Storage creation is delegated to the <see cref="IStorageBackend"/>.
 /// </summary>
-public sealed class StoreManager
+public sealed class StoreManager : IDisposable
 {
     private readonly Dictionary<string, string> _storePaths;
     private readonly IStorageBackend _backend;
@@ -42,4 +42,16 @@ public sealed class StoreManager
 
     /// <summary>The storage backend used to create stores.</summary>
     public IStorageBackend Backend => _backend;
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        foreach (var store in _stores.Values)
+        {
+            if (store is IDisposable disposable)
+                disposable.Dispose();
+        }
+
+        _stores.Clear();
+    }
 }

@@ -14,10 +14,28 @@ public static class ChatEndpoints
             .RequireRateLimiting("api");
 
         group.MapPost("/", async (string store, ChatRequest req, RequestContext ctx,
-            ILoggerFactory loggerFactory, CancellationToken ct) =>
+            ChatProviderCache providerCache, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
             if (!ctx.HasPermission("chat"))
                 return Results.Json(new ErrorResponse("Permission 'chat' required."), statusCode: 403);
+
+            // ── Input validation (SEC-051) ──────────────────────────────────
+            const int MaxMessages = 1000;
+            const int MaxContentBytes = 1_048_576; // 1 MB per message
+            const int MaxToolCalls = 100;
+
+            if (req.Messages is null || req.Messages.Length == 0)
+                return Results.BadRequest(new ErrorResponse("messages is required."));
+            if (req.Messages.Length > MaxMessages)
+                return Results.BadRequest(new ErrorResponse($"Too many messages (max {MaxMessages})."));
+
+            foreach (var msg in req.Messages)
+            {
+                if (msg.Content != null && System.Text.Encoding.UTF8.GetByteCount(msg.Content) > MaxContentBytes)
+                    return Results.BadRequest(new ErrorResponse($"Message content exceeds {MaxContentBytes / (1024 * 1024)} MB limit."));
+                if (msg.ToolCalls != null && msg.ToolCalls.Length > MaxToolCalls)
+                    return Results.BadRequest(new ErrorResponse($"Too many tool calls in a single message (max {MaxToolCalls})."));
+            }
 
             var available = chatOptions.GetAvailableProviders();
             if (available.Length == 0)
@@ -30,7 +48,7 @@ public static class ChatEndpoints
                 return Results.Json(new ErrorResponse($"Provider '{providerName}' is not configured."), statusCode: 400);
 
             var logger = loggerFactory.CreateLogger("Scrinia.Chat");
-            var provider = ChatProviderFactory.Create(providerName, chatOptions, logger);
+            var provider = providerCache.GetOrCreate(providerName);
             if (provider is null)
                 return Results.Json(new ErrorResponse($"Failed to create provider '{providerName}'."), statusCode: 503);
 
@@ -53,10 +71,6 @@ public static class ChatEndpoints
                         new ChatEvent("error", Error: "An internal error occurred."),
                         ChatJsonContext.Default.ChatEvent);
                     try { await writer.WriteAsync($"data: {errorJson}\n\n"); } catch { /* best-effort */ }
-                }
-                finally
-                {
-                    if (provider is IDisposable d) d.Dispose();
                 }
             });
         });

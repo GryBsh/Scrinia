@@ -35,7 +35,7 @@ public static class Nmp2ChunkedEncoder
     public static string Encode(string text)
     {
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
-        return new Nmp2Strategy().Encode(bytes, new EncodingOptions(CharsPerLine)).Artifact;
+        return Nmp2Strategy.Instance.Encode(bytes, new EncodingOptions(CharsPerLine)).Artifact;
     }
 
     /// <summary>
@@ -53,7 +53,7 @@ public static class Nmp2ChunkedEncoder
         if (chunks.Length == 1)
         {
             byte[] bytes = System.Text.Encoding.UTF8.GetBytes(chunks[0]);
-            return new Nmp2Strategy().Encode(bytes, new EncodingOptions(CharsPerLine)).Artifact;
+            return Nmp2Strategy.Instance.Encode(bytes, new EncodingOptions(CharsPerLine)).Artifact;
         }
 
         return EncodeMultiChunkFromParts(chunks);
@@ -75,7 +75,7 @@ public static class Nmp2ChunkedEncoder
         if (!Nmp2Strategy.IsMultiChunk(existingArtifact))
         {
             // Single-chunk → decode existing, promote to 2-chunk
-            byte[] decoded = new Nmp2Strategy().Decode(existingArtifact);
+            byte[] decoded = Nmp2Strategy.Instance.Decode(existingArtifact);
             string existingText = System.Text.Encoding.UTF8.GetString(decoded);
             return EncodeMultiChunkFromParts([existingText, newChunkText]);
         }
@@ -88,7 +88,7 @@ public static class Nmp2ChunkedEncoder
         var existingChunkSections = ExtractRawChunkSections(existingArtifact, oldCount);
 
         // Parse existing header for CRC and byte count — no need to decode existing chunks
-        var metadata = new Nmp2Strategy().ParseHeader(existingArtifact);
+        var metadata = Nmp2Strategy.Instance.ParseHeader(existingArtifact);
         uint existingCrc = metadata.Crc32 ?? 0;
         int existingBytes = metadata.OriginalBytes;
 
@@ -312,7 +312,7 @@ public static class Nmp2ChunkedEncoder
         if (!Nmp2Strategy.IsMultiChunk(artifact))
         {
             // Single-chunk: decode the entire artifact (chunkIndex must be 1, already validated)
-            bytes = new Nmp2Strategy().Decode(artifact);
+            bytes = Nmp2Strategy.Instance.Decode(artifact);
         }
         else
         {

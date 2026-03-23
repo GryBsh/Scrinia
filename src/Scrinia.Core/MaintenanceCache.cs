@@ -28,7 +28,9 @@ public static class MaintenanceCache
             Directory.CreateDirectory(cacheDir);
             string cachePath = Path.Combine(cacheDir, CacheFileName);
             string json = JsonSerializer.Serialize(data, MaintenanceCacheJsonContext.Default.MaintenanceCacheData);
-            File.WriteAllText(cachePath, json);
+            string tmp = $"{cachePath}.{Environment.ProcessId}.tmp";
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, cachePath, overwrite: true);
         }
         catch (Exception ex)
         {

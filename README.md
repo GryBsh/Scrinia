@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 43 MCP tools — 21 for memory and 22 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 9 MCP tools — 3 for memory and 6 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -145,52 +145,34 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-43 tools available via `scri serve` — 21 memory tools and 22 project planning tools.
+9 tools available via `scri serve` — 3 memory tools and 6 project planning tools. All tools use noun('action') dispatch.
 
-### Memory tools
+### Memory tools (3)
 
-| Tool | Description |
-|---|---|
-| `guide` | Session playbook (call once per session) |
-| `store` / `append` | Persist or incrementally add to memories |
-| `show` / `get_chunk` | Retrieve full content or individual chunks |
-| `list` / `search` | Browse (summary by default) and search with BM25 + semantic scoring |
-| `copy` / `forget` | Move between scopes or delete |
-| `export` / `import` | Portable .scrinia-bundle files |
-| `encode` / `chunk_count` | Low-level NMP/2 encoding |
+| Tool | Actions | Description |
+|---|---|---|
+| `guide` | (none) | Returns the scrinia guide for agent onboarding |
+| `memory` | store, append, show, search, list, forget, copy, compact, update, link, references, restore, reconcile | Unified memory operations |
+| `bundle` | export, import | Bundle export/import for memory portability |
 
-### Planning tools (ScriniaProjectTools)
+### Planning tools (6)
 
 Full project lifecycle — ideation, planning, execution, verification, and learning.
 
-| Tool | Description |
-|---|---|
-| `project_init` | Initialize a new project with goals and scope |
-| `plan_requirements` | Capture and refine project requirements |
-| `plan_roadmap` | Generate a phased roadmap from requirements |
-| `plan_resume` | Resume a previously started plan |
-| `plan_status` | View current plan progress and health |
-| `plan_tasks` | List tasks with filtering and status |
-| `task_next` | Get the next actionable task |
-| `task_complete` | Mark a task as done with outcome details |
-| `plan_verify` | Verify plan completion and quality |
-| `plan_gaps` | Identify gaps and risks in the plan |
-| `plan_retrospective` | Record execution outcomes and lessons learned |
-| `plan_profile` | Store and retrieve user/agent preferences |
-| `research_start` | Start a research investigation before task decomposition |
-| `research_complete` | Complete research with findings and sources |
-| `concern_add` | Add a project concern with severity level |
-| `concern_resolve` | Resolve a concern with resolution details |
-| `concern` | List active concerns, optionally filtered by phase |
-| `goal_update` | Manage project goals: add, complete, or list |
-| `skill_create` | Create a reusable specialist skill with project-specific context |
-| `skill_load` | Load a reusable agent skill/prompt template |
+| Tool | Actions | Description |
+|---|---|---|
+| `plan` | init, tasks, status | Project initialization, task decomposition, progress tracking |
+| `task` | next, complete | Task queue management |
+| `goal` | add, complete, list, update | Goal lifecycle management |
+| `concern` | add, resolve, list | Risk and issue tracking |
+| `skill` | load, create | Specialist methodology management |
+| `requirement` | add, resolve, list | Requirement registration and tracking |
 
-Seven **built-in skills** ship with scrinia: `march-reporter`, `auditor`, `debugger`, `chaos-engineer`, `onboarder`, `planner`, `sos-handler`. Call `skill_load()` to list them. Projects can override any built-in with `skill_create`.
+Twelve **built-in skills** ship with scrinia: `planner`, `auditor`, `debugger`, `chaos-engineer`, `onboarder`, `sos-handler`, `evolutionary`, `cartographer`, `march-reporter`, `merge-safety`, `qa`, `self-reflector`. Call `skill('load')` to list them. Projects can override any built-in with `skill('create')`.
 
-Plans are stored as topic-scoped memories (`plan:*`, `task:*`, `project:*`, `learn:*`, `agent:*`) — no separate database. All planning data is searchable via the standard `search` tool. The `excludeTopics` parameter on `list` and `search` lets agents separate knowledge from planning data when needed.
+Plans are stored as topic-scoped memories (`plan:*`, `task:*`, `project:*`, `learn:*`, `agent:*`) — no separate database. All planning data is searchable via the standard `memory('search')` tool. The `excludeTopics` parameter on `memory('list')` and `memory('search')` lets agents separate knowledge from planning data when needed.
 
-Agent learning is built in: `plan_retrospective` stores execution outcomes with the `provenance:agent` keyword, and `plan_profile` stores agent behavioral norms — both discoverable via standard search.
+Agent learning is built in: the `self-reflector` skill stores execution outcomes and lessons learned, and `agent:profile` memories store agent behavioral norms — both discoverable via standard search.
 
 ## Documentation
 
@@ -215,8 +197,8 @@ Agent learning is built in: `plan_retrospective` stores execution outcomes with 
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 673 CLI + MCP + planning + embeddings tests
-dotnet test tests/Scrinia.Server.Tests      # 60 server tests
+dotnet test tests/Scrinia.Tests             # 821 CLI + MCP + planning + embeddings tests
+dotnet test tests/Scrinia.Server.Tests      # 63 server tests
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
 ```
 
