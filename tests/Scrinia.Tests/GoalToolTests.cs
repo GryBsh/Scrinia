@@ -258,16 +258,20 @@ public sealed class GoalToolTests : IDisposable
     // ── ADOPT-02 context signal test ──────────────────────────────────────────
 
     [Fact]
-    public async Task GoalUpdate_DescriptionContainsContextSignals()
+    public void GoalUpdate_DescriptionContainsContextSignals()
     {
-        // Arrange — get the [Description] attribute text for GoalUpdate via reflection
-        var method = typeof(ScriniaProjectTools).GetMethod("GoalUpdate",
+        // After consolidation, GoalUpdate is an internal method called by the Goal dispatcher.
+        // Verify the Goal dispatcher exists and its description references all action keywords.
+        var internalMethod = typeof(ScriniaProjectTools).GetMethod("GoalUpdate",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        internalMethod.Should().NotBeNull("GoalUpdate must exist as an internal method");
+
+        var dispatcher = typeof(ScriniaProjectTools).GetMethod("Goal",
             BindingFlags.Public | BindingFlags.Instance);
+        dispatcher.Should().NotBeNull("Goal dispatcher must exist on ScriniaProjectTools");
 
-        method.Should().NotBeNull("GoalUpdate method must exist on ScriniaProjectTools");
-
-        var descAttr = method!.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>();
-        descAttr.Should().NotBeNull("GoalUpdate must have a [Description] attribute");
+        var descAttr = dispatcher!.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>();
+        descAttr.Should().NotBeNull("Goal dispatcher must have a [Description] attribute");
 
         string descText = descAttr!.Description;
 

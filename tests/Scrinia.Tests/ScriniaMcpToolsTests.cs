@@ -1575,6 +1575,6 @@ public sealed class ScriniaMcpToolsTests
         guide.Should().Contain("reviewAfter");
         guide.Should().Contain("checkpoint");
         guide.Should().Contain("goal-driven");
-        guide.Should().Contain("project_init");
+        guide.Should().Contain("plan('init')");
     }
 }

@@ -48,10 +48,11 @@ public sealed class ScriniaMcpTools
 
     [McpServerTool(Name = "guide"), Description(
         "Required reading — call at session start, then commit content to your project's agent file. " +
-        "If a project exists (.scrinia/ directory), check plan_status for active goals before starting new work. " +
+        "If a project exists (.scrinia/ directory), check plan('status') for active goals before starting new work. " +
         "Covers memory patterns, the goal-driven planning workflow, and when to plan vs. just do.")]
     public Task<string> Guide(CancellationToken cancellationToken = default) =>
         Task.FromResult("""
+            [INSTRUCTION]
             # scrinia guide — cognitive toolset for LLM agents
 
             Scrinia gives you three capabilities — use them fluidly, not sequentially:
@@ -61,51 +62,61 @@ public sealed class ScriniaMcpTools
 
             ## First session setup
             1. Commit this guide to your project's agent file (AGENTS.md, CLAUDE.md, or equivalent)
-            2. If `.scrinia/` exists, call `plan_status()` to check for active goals
-            3. If a project exists but no active goal, ask the user what to work on → `goal_update(add)`
-            4. If no project exists, call `project_init` when the user's request warrants planning
+            2. If `.scrinia/` exists, call `plan('status')` to check for active goals
+            3. If a project exists but no active goal, ask the user what to work on → `goal('add')`
+            4. If no project exists, call `plan('init')` when the user's request warrants planning
+
+            ## Before you start any work
+            Always call memory('search') before answering questions or performing work.
+            Check prior sessions, existing knowledge, and agent behavioral norms.
+            This is not optional — context from prior work prevents redundant investigation
+            and ensures consistency with established patterns and decisions.
+
+            Proactively create memories as you work — don't wait to be asked.
+            When you learn something, discover a pattern, or figure out a non-obvious solution,
+            store it immediately. The goal is a knowledge base that makes the next session smarter.
 
             ## When to plan vs. just do
-            - **Just do it**: single file change, clear fix, quick question, under ~3 edits
-            - **Set a goal**: multiple files, unclear scope, research needed, multi-step work
-            - **When in doubt**: ask the user
+            - **Every goal** goes through the full workflow: goal('add') → task('next') → spawn → task('complete')
+            - **Questions and quick lookups** don't need a goal — just answer using memory('search') first
+            - **When in doubt**: set a goal — the auditor will right-size the scope
 
             ## Memory habits
-            - **When you learn something** → `store(content, "topic:subject")`
+            - **When you learn something** → `memory('store', { name: "topic:subject", content: [...] })`
             - **When you fix a bug** → store the root cause and fix pattern
             - **When the user corrects you** → store the correction as a pattern
             - **When you discover a convention** → store it for future sessions
-            - **When starting work** → `search()` first to check prior sessions
-            - **Maintain a session log** → `store` or `append` to `sessions:YYYY-MM-DD`
+            - **When starting work** → `memory('search')` first to check prior sessions
+            - **Maintain a session log** → `memory('store')` or `memory('append')` to `sessions:YYYY-MM-DD`
             One concept per chunk — each chunk is independently searchable with its own keywords.
-            Use multiple elements in `store()` to control semantic boundaries, not just size.
+            Use multiple elements in `memory('store')` to control semantic boundaries, not just size.
 
             **Scrinia is the single source of truth.** Do not use platform-specific memory systems
             (Claude auto-memory, Cursor notes, etc.) for project knowledge. All persistence through scrinia.
 
             ## Skill habits
             - Skills are methodology (how to work), memories are knowledge (what you know)
-            - `skill_load()` lists available skills; `skill_load(name)` activates one
-            - `skill_create` to capture effective approaches as reusable methodology
+            - `skill('load')` lists available skills; `skill('load', { name: "..." })` activates one
+            - `skill('create')` to capture effective approaches as reusable methodology
             - Built-in skills: planner, auditor, debugger, chaos-engineer, onboarder,
-              sos-handler, evolutionary, cartographer, march-reporter, merge-safety, qa
+              sos-handler, evolutionary, cartographer, march-reporter, merge-safety, qa, self-reflector
             - **Precedence**: project memory overrides built-in. Built-in for universal features,
-              `skill_create` for project-specific evolution.
+              `skill('create')` for project-specific evolution.
 
             ## Ephemeral memories
-            `~` prefix for in-session working state: `store(["data"], "~scratch")`.
-            Dies on process exit. Promote via `copy("~scratch", "topic:name")`.
+            `~` prefix for in-session working state: `memory('store', { name: "~scratch", content: ["data"] })`.
+            Dies on process exit. Promote via `memory('copy', { name: "~scratch", destination: "topic:name" })`.
 
             ## Topics and naming
             `topic:subject` organizes memories: `api:auth-flow`, `patterns:retry`, `bugs:sqlite`.
             Auto-discovered — no setup needed. Names are auto-prefixed with goal ID when active
-            (e.g. `task:g36-4a2-01-1-01`). `search("task:g36")` scopes to one goal.
+            (e.g. `task:g36-4a2-01-1-01`). `memory('search', { query: "task:g36" })` scopes to one goal.
 
             ## Reserved planning topics
             | Topic | Purpose |
             |-------|---------|
             | `project:*` | project context, requirements, state |
-            | `plan:*` | roadmaps |
+            | `plan:*` | planning state |
             | `task:*` | decomposed tasks (goal-prefixed) |
             | `learn:*` | retrospectives, beliefs (per-phase files) |
             | `agent:*` | behavioral norms |
@@ -117,14 +128,14 @@ public sealed class ScriniaMcpTools
             Use `excludeTopics="plan,task,project,learn,backlog"` to hide planning data.
 
             ## Chunks as semantic boundaries
-            Use `show(name)` for full content, `show(name, chunk=2)` for a specific chunk.
-            Each chunk in a multi-element `store()` call is independently retrievable and searchable.
+            Use `memory('show', { name: "..." })` for full content, `memory('show', { name: "...", chunk: 2 })` for a specific chunk.
+            Each chunk in a multi-element `memory('store')` call is independently retrievable and searchable.
             Design chunks around concepts, not size.
 
             ## Versioning, review, and context
             - Overwriting a memory auto-archives the previous version
-            - `store(..., reviewAfter="2026-06-01")` or `reviewWhen="when auth changes"` for staleness
-            - `store(["state..."], "~checkpoint")` before large tasks to survive context compression
+            - `memory('store', { ..., reviewAfter: "2026-06-01" })` or `reviewWhen: "when auth changes"` for staleness
+            - `memory('store', { name: "~checkpoint", content: ["state..."] })` before large tasks to survive context compression
 
             ## When to store vs. not
             Store: anything you'd want to know in a fresh session tomorrow.
@@ -136,43 +147,140 @@ public sealed class ScriniaMcpTools
 
             ## Project planning — the goal-driven cycle
 
-            **1. Pre-plan** → scan codebase for concerns → `concern_add`
-            **2. Set a goal** → `goal_update(add)` — clarify scope with user first
-            **3. Research** → `research_start` → investigate → `research_complete` with hypothesis
-            **4. Plan** → `plan_requirements` → `plan_roadmap`
-            **5. Execute** — the orchestrator's only loop is `task_next` → spawn → `task_complete`:
-              - `research_complete` auto-creates a planner task (wave 0)
-              - `task_next` surfaces the planner task first — spawn an agent for it
-              - The planner agent calls `plan_tasks` directly (it has MCP access)
-              - `task_next` then surfaces execution tasks — spawn agents for each
-              - `plan_tasks` auto-injects gate tasks: QA every phase, evolutionary/cartographer/march on last phase
+            **1. Pre-plan** → scan codebase for concerns → `concern('add')`
+            **2. Set a goal** → `goal('add')` — auto-creates researcher → auditor → planner seed tasks
+            **3. Execute** — the orchestrator's only loop is `task('next')` → spawn → `task('complete')`:
+              - `goal('add')` auto-creates researcher (wave 0) → auditor (wave 1) → planner (wave 2)
+              - Researcher explores codebase and stores findings via `memory('store')`
+              - Auditor reads research, calls `requirement('add')` + `concern('add')` with full context
+              - Planner reads research + requirements, calls `plan('tasks')` directly
+              - `plan('tasks')` auto-injects gate tasks: QA + self-reflector every phase, evolutionary/cartographer/march on last phase
               - The primary agent orchestrates — it does not execute tasks directly
               - Use `run_in_background: true` for execution agents
-            **6. Verify** → `plan_verify` — record evidence
-            **7. Learn** → `plan_retrospective` — retrospectives stored per-phase
-            **8. Complete** → `goal_update(complete)` — auto-appends session log + checkpoint
+            **4. Complete** → `goal('complete')` — auto-appends session log + checkpoint
 
             ## Recovery
-            - `context_resume()` — rebuild context after loss (warns if merge conflicts detected)
-            - `plan_status()` — quick progress check
-            - `search("agent:")` — load behavioral norms (agent:profile, agent:execution-policy)
+            - `memory('restore')` — full context restoration (project state, agent profile, session log, task nudge)
+            - `plan('status')` — quick progress check
+            - `memory('search', { query: "agent:" })` — load behavioral norms
 
             ## Multi-user merge safety
             Sorted metadata, per-phase retros, per-file sidecars prevent most conflicts.
-            After merging: `reconcile()` → resolve each conflict → verify clean.
+            After merging: `memory('reconcile')` → resolve each conflict → verify clean.
             For team setup (merge driver, hooks): see docs/multi-user-setup.md
 
             ## Test count tracking
             Use `codeRefs` on testing memories pointing to `.csproj` files.
-            `list(mode="drift")` flags when test projects change → evolutionary updates counts.
+            `memory('list', { mode: "drift" })` flags when test projects change → evolutionary updates counts.
+            [/INSTRUCTION]
             """);
 
-    [McpServerTool(Name = "show"), Description(
-        "Unpack an NMP/2 artifact back to its original text content. " +
-        "Accepts either the artifact text inline or a memory name. " +
-        "Pass chunk to retrieve a single chunk by 1-based index (also returns total chunk count). " +
-        "Only NMP/2 artifacts are supported; other formats return an error string.")]
-    public async Task<string> Show(
+    /// <summary>Unified memory tool — dispatches to action-specific handlers.</summary>
+    [McpServerTool(Name = "memory"), Description(
+        "Unified memory operations. Actions: " +
+        "'store' (persist content with keywords/review/codeRefs), " +
+        "'append' (add chunk to existing memory), " +
+        "'show' (read/decode memory content, optional chunk), " +
+        "'search' (find memories by query), " +
+        "'list' (browse memories — summary/full/drift modes), " +
+        "'forget' (delete memory), " +
+        "'copy' (copy between scopes), " +
+        "'compact' (merge chunks in a memory), " +
+        "'update' (update metadata without re-encoding), " +
+        "'link' (add codeRefs to a memory), " +
+        "'references' (find what references a memory), " +
+        "'restore' (resume full agent context — project state, agent profile, session log, task nudge), " +
+        "'reconcile' (scan for merge conflicts or resolve a specific conflict).")]
+    public async Task<string> Memory(
+        [Description("Action to perform: 'store', 'append', 'show', 'search', 'list', 'forget', 'copy', 'compact', 'update', 'link', 'references', 'restore', 'reconcile'.")] string action,
+        [Description("Memory name (store/append/show/forget/compact/update/link/references).")] string? name = null,
+        [Description("Content array — each element becomes one chunk (store).")] string[]? content = null,
+        [Description("Text content to append as new chunk (append).")] string? appendContent = null,
+        [Description("Search query string (search).")] string? query = null,
+        [Description("Destination name for copy, or 'to' name for link.")] string? destination = null,
+        [Description("Optional description (store, update).")] string? description = null,
+        [Description("Optional tags (store).")] string[]? tags = null,
+        [Description("Optional keywords for search — merged with auto-extracted (store, update).")] string[]? keywords = null,
+        [Description("ISO 8601 review date (store, update).")] string? reviewAfter = null,
+        [Description("Free-text review condition (store, update).")] string? reviewWhen = null,
+        [Description("File paths this memory depends on (store).")] string[]? codeRefs = null,
+        [Description("Chunk index to retrieve, 1-based (show).")] int? chunk = null,
+        [Description("Comma-separated scope order (list, search).")] string? scopes = null,
+        [Description("List mode: 'summary', 'full', or 'drift' (list).")] string? mode = null,
+        [Description("Starting index for full mode (list).")] int offset = 0,
+        [Description("Max results (list default 50, search default 20).")] int limit = 50,
+        [Description("Comma-separated topics to exclude (list, search).")] string? excludeTopics = null,
+        [Description("Overwrite existing on copy (copy).")] bool overwrite = false,
+        [Description("Keep only N recent chunks, 0 = merge all (compact).")] int keepRecent = 0,
+        [Description("Reason for linking (link).")] string? reason = null,
+        [Description("Conflict ID to resolve (reconcile).")] string? conflictId = null,
+        [Description("Resolution: 'ours', 'theirs', or 'merged' (reconcile).")] string? choice = null,
+        [Description("Content for 'merged' resolution (reconcile).")] string? mergedContent = null,
+        CancellationToken cancellationToken = default)
+    {
+        string act = action.Trim().ToLowerInvariant();
+        switch (act)
+        {
+            case "store":
+                if (content is null || content.Length == 0) return "Error: memory('store') requires 'content' parameter.";
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('store') requires 'name' parameter.";
+                return await Store(content, name, description ?? "", tags, keywords, reviewAfter, reviewWhen, codeRefs, cancellationToken);
+
+            case "append":
+                if (string.IsNullOrWhiteSpace(appendContent)) return "Error: memory('append') requires 'appendContent' parameter.";
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('append') requires 'name' parameter.";
+                return await Append(appendContent, name, cancellationToken);
+
+            case "show":
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('show') requires 'name' parameter.";
+                return await Show(name, chunk, cancellationToken);
+
+            case "search":
+                if (string.IsNullOrWhiteSpace(query)) return "Error: memory('search') requires 'query' parameter.";
+                return await Search(query, scopes, limit, excludeTopics, cancellationToken);
+
+            case "list":
+                return await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken);
+
+            case "forget":
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('forget') requires 'name' parameter.";
+                return await Forget(name, cancellationToken);
+
+            case "copy":
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('copy') requires 'name' parameter.";
+                if (string.IsNullOrWhiteSpace(destination)) return "Error: memory('copy') requires 'destination' parameter.";
+                return await Copy(name, destination, overwrite, cancellationToken);
+
+            case "compact":
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('compact') requires 'name' parameter.";
+                return await Compact(name, keepRecent, cancellationToken);
+
+            case "update":
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('update') requires 'name' parameter.";
+                return await UpdateMeta(name, keywords, description, reviewAfter, reviewWhen, cancellationToken);
+
+            case "link":
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('link') requires 'name' parameter.";
+                if (string.IsNullOrWhiteSpace(destination)) return "Error: memory('link') requires 'destination' parameter.";
+                return await Link(name, destination, reason, cancellationToken);
+
+            case "references":
+                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('references') requires 'name' parameter.";
+                return await References(name, cancellationToken);
+
+            case "restore":
+                return await Restore(cancellationToken);
+
+            case "reconcile":
+                return await Reconcile(conflictId, choice, mergedContent, cancellationToken);
+
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: store, append, show, search, list, forget, copy, compact, update, link, references, restore, reconcile.";
+        }
+    }
+
+    /// <summary>Unpack an NMP/2 artifact back to its original text content.</summary>
+    internal async Task<string> Show(
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
                      "Use the exact name shown by list() (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string artifactOrName,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
@@ -227,16 +335,8 @@ public sealed class ScriniaMcpTools
 
     // ── Persistent memory tools ───────────────────────────────────────────────
 
-    [McpServerTool(Name = "store"), Description(
-        "Compress text and persist it as a named artifact in a memory scope. " +
-        "Use proactively to save important findings, decisions, patterns, and solutions as you work. " +
-        "Knowledge saved here persists across sessions and travels with the code. " +
-        "Use topic:subject naming to organize into local topics " +
-        "(e.g. 'api:auth-flow', 'arch:decisions'). " +
-        "Prefix with ~ for ephemeral in-memory storage (e.g. '~scratch'). " +
-        "Flag memories that may become stale with optional review conditions. " +
-        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> Store(
+    /// <summary>Compress text and persist it as a named artifact in a memory scope.</summary>
+    internal async Task<string> Store(
         [Description("The text content to compress and store. " +
                      "Pass a single element for a single-chunk artifact, or multiple elements to control " +
                      "chunk boundaries — each element becomes one independently retrievable chunk.")] string[] content,
@@ -407,13 +507,8 @@ public sealed class ScriniaMcpTools
         return $"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.";
     }
 
-    [McpServerTool(Name = "update_meta"), Description(
-        "Update metadata (keywords, description, review conditions) on an existing memory " +
-        "without re-encoding its content. Preferred over store() when only metadata needs changing. " +
-        "Keywords are merged with existing (not replaced). Description and review conditions are " +
-        "replaced if provided. " +
-        "Note: this modifies .scrinia/ in the workspace — treat those file changes as your own.")]
-    public Task<string> UpdateMeta(
+    /// <summary>Update metadata on an existing memory without re-encoding its content.</summary>
+    internal Task<string> UpdateMeta(
         [Description("Memory name (e.g. 'api:auth-flow', 'session-notes').")] string name,
         [Description("Keywords to add (merged with existing, not replaced).")] string[]? keywords = null,
         [Description("New description (replaces existing if provided).")] string? description = null,
@@ -522,12 +617,8 @@ public sealed class ScriniaMcpTools
             "Files in .scrinia/ were updated — these are your changes.");
     }
 
-    [McpServerTool(Name = "list"), Description(
-        "Returns a summary or full listing of persisted memories. " +
-        "Call this when starting a session to orient on available project knowledge. " +
-        "Default mode is 'summary' — returns topics, top keywords, and stats without flooding context. " +
-        "Use mode='full' with offset/limit to page through entries.")]
-    public Task<string> List(
+    /// <summary>Returns a summary or full listing of persisted memories.</summary>
+    internal Task<string> List(
         [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
                      "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
         [Description("'summary' (default), 'full' for paginated table, 'drift' for code reference drift check.")] string mode = "summary",
@@ -723,12 +814,8 @@ public sealed class ScriniaMcpTools
         return sb.ToString().TrimEnd();
     }
 
-    [McpServerTool(Name = "search"), Description(
-        "Search this first before starting research or problem-solving — " +
-        "relevant knowledge may already exist from prior sessions. " +
-        "Finds memories across local and topic scopes using a name/description query. " +
-        "Searches both entries and topics.")]
-    public async Task<string> Search(
+    /// <summary>Search memories across local and topic scopes using a query.</summary>
+    internal async Task<string> Search(
         [Description("Search term matched against memory names and descriptions.")] string query,
         [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
                      "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
@@ -811,11 +898,8 @@ public sealed class ScriniaMcpTools
         return sb.ToString().TrimEnd();
     }
 
-    [McpServerTool(Name = "copy"), Description(
-        "Copies a memory artifact from one scope to another. " +
-        "Use to move between topics, promote ephemeral to persistent, " +
-        "or reorganize project knowledge.")]
-    public Task<string> Copy(
+    /// <summary>Copies a memory artifact from one scope to another.</summary>
+    internal Task<string> Copy(
         [Description("Memory name or file:// URI to copy.")] string nameOrUri,
         [Description("Destination as qualified name (e.g. 'api:auth-flow' or 'my-notes'). " +
                      "Use '~name' for ephemeral destination.")] string destination,
@@ -827,12 +911,8 @@ public sealed class ScriniaMcpTools
         return Task.FromResult(msg);
     }
 
-    [McpServerTool(Name = "forget"), Description(
-        "Removes a stored artifact and its index entry. " +
-        "Use to clean up outdated or incorrect memories. " +
-        "Accepts a qualified name (e.g. 'session-notes', 'api:auth-flow', '~scratch'). " +
-        "Note: this modifies .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> Forget(
+    /// <summary>Removes a stored artifact and its index entry.</summary>
+    internal async Task<string> Forget(
         [Description("The artifact name (e.g. \"session-notes\", \"api:auth\", \"~scratch\") or its file:// URI.")] string nameOrUri,
         CancellationToken cancellationToken = default)
     {
@@ -891,11 +971,8 @@ public sealed class ScriniaMcpTools
 
     // ── Export/Import tools ───────────────────────────────────────────────────
 
-    [McpServerTool(Name = "export"), Description(
-        "Export one or more local topics into a portable .scrinia-bundle file. " +
-        "Use to share project knowledge across workspaces or with teammates. " +
-        "The bundle contains all entries from the specified topics.")]
-    public Task<string> Export(
+    /// <summary>Export one or more local topics into a portable .scrinia-bundle file.</summary>
+    internal Task<string> Export(
         [Description("Topic names to export (e.g. [\"api\", \"arch\"]).")] string[] topics,
         [Description("Output filename (saved to .scrinia/exports/). Defaults to auto-generated name.")] string? filename = null,
         CancellationToken cancellationToken = default)
@@ -940,11 +1017,8 @@ public sealed class ScriniaMcpTools
             $"Exported {exportedTopics.Count} topic(s) ({totalEntries} entries, {FormatBytes(fileSize)}) to {bundlePath}");
     }
 
-    [McpServerTool(Name = "import"), Description(
-        "Import topics from a .scrinia-bundle file into the local workspace. " +
-        "Use to bring in shared knowledge from other projects or teammates. " +
-        "Optionally filter which topics to import.")]
-    public Task<string> Import(
+    /// <summary>Import topics from a .scrinia-bundle file into the local workspace.</summary>
+    internal Task<string> Import(
         [Description("Path to the .scrinia-bundle file (relative to workspace or absolute).")] string bundlePath,
         [Description("Optional topic names to import. If empty, imports all topics in the bundle.")] string[]? topics = null,
         [Description("When true, replaces existing entries if they conflict.")] bool overwrite = false,
@@ -990,13 +1064,8 @@ public sealed class ScriniaMcpTools
 
     // ── Append/Reflect/Budget tools ─────────────────────────────────────────
 
-    [McpServerTool(Name = "append"), Description(
-        "Append content as a new independently retrievable chunk to an existing memory, " +
-        "or create it if it does not exist. " +
-        "Useful for incremental capture — build up session journals entry by entry " +
-        "without recomposing the full document each time. " +
-        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> Append(
+    /// <summary>Append content as a new chunk to an existing memory, or create it if it does not exist.</summary>
+    internal async Task<string> Append(
         [Description("The text content to append.")] string content,
         [Description("Memory name to append to (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string name,
         CancellationToken cancellationToken = default)
@@ -1137,10 +1206,8 @@ public sealed class ScriniaMcpTools
     // kt removed — knowledge transfer is a learnable goal, not a fixed tool.
     // The agent should treat "produce KT documents" as a goal, execute it, retrospect, and save a skill.
 
-    [McpServerTool(Name = "references"), Description(
-        "Find all memories that reference a file path or memory name. " +
-        "Returns a list of memory names whose content mentions the target.")]
-    public Task<string> References(
+    /// <summary>Find all memories that reference a file path or memory name.</summary>
+    internal Task<string> References(
         [Description("Target to search for — a file path (e.g. 'FileMemoryStore.cs') or memory name (e.g. 'api:auth-flow').")] string target,
         CancellationToken cancellationToken = default)
     {
@@ -1168,10 +1235,8 @@ public sealed class ScriniaMcpTools
         return Task.FromResult(result);
     }
 
-    [McpServerTool(Name = "link"), Description(
-        "Create a bidirectional relationship between two memories. " +
-        "Adds ref: keywords to both entries so searching for one finds the other.")]
-    public async Task<string> Link(
+    /// <summary>Create a bidirectional relationship between two memories.</summary>
+    internal async Task<string> Link(
         [Description("Source memory name.")] string from,
         [Description("Target memory name.")] string to,
         [Description("Reason for the connection.")] string? reason = null,
@@ -1243,12 +1308,38 @@ public sealed class ScriniaMcpTools
         return Task.FromResult(response);
     }
 
-    [McpServerTool(Name = "reconcile"), Description(
-        "Scan .scrinia/ for git merge conflicts after a branch merge, or resolve a specific conflict. " +
-        "Without conflictId: scans and auto-resolves .meta.json conflicts (union keywords, latest timestamps), " +
-        "reports .nmp2 artifact conflicts with decoded content and conflict IDs. " +
-        "With conflictId: resolves that conflict using 'ours', 'theirs', or 'merged'.")]
-    public Task<string> Reconcile(
+    /// <summary>Bundle operations — export and import memory topics.</summary>
+    [McpServerTool(Name = "bundle"), Description(
+        "Export or import memory topic bundles. Actions: " +
+        "'export' (topic → .scrinia-bundle file), " +
+        "'import' (.scrinia-bundle file → topic).")]
+    public async Task<string> Bundle(
+        [Description("Action: 'export' or 'import'.")] string action,
+        [Description("Topic names to export, or topic filter for import.")] string[]? topics = null,
+        [Description("Bundle file path (required for import, optional filename for export).")] string? bundlePath = null,
+        [Description("Overwrite existing on import (default false).")] bool overwrite = false,
+        CancellationToken cancellationToken = default)
+    {
+        string act = action.Trim().ToLowerInvariant();
+        switch (act)
+        {
+            case "export":
+                if (topics is null || topics.Length == 0)
+                    return "Error: bundle('export') requires 'topics' parameter.";
+                return await Export(topics, bundlePath, cancellationToken);
+
+            case "import":
+                if (string.IsNullOrWhiteSpace(bundlePath))
+                    return "Error: bundle('import') requires 'bundlePath' parameter.";
+                return await Import(bundlePath, topics, overwrite, cancellationToken);
+
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: 'export', 'import'.";
+        }
+    }
+
+    /// <summary>Scan for merge conflicts or resolve a specific conflict.</summary>
+    internal Task<string> Reconcile(
         [Description("Conflict ID to resolve (from a prior reconcile scan). Omit to scan for conflicts.")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged'. Required when conflictId is provided.")] string? choice = null,
         [Description("Content for 'merged' resolution.")] string? content = null,
@@ -1505,10 +1596,8 @@ public sealed class ScriniaMcpTools
 
     // ── Maintenance tools ──────────────────────────────────────────────────
 
-    [McpServerTool(Name = "compact"), Description(
-        "Compact a multi-chunk memory by merging chunks. Archives the original version. " +
-        "Use keepRecent to retain only the N most recent chunks. Default merges all into one.")]
-    public async Task<string> Compact(
+    /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version.</summary>
+    internal async Task<string> Compact(
         [Description("Memory name to compact.")] string name,
         [Description("Keep only the N most recent chunks. 0 = merge all into one (default).")] int keepRecent = 0,
         CancellationToken cancellationToken = default)
@@ -1617,6 +1706,223 @@ public sealed class ScriniaMcpTools
         var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
         var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
         return fileRefs.Select(f => $"file:{f}").Concat(memoryRefs.Select(m => $"ref:{m}"));
+    }
+
+    /// <summary>Resume full agent context after context loss or session start.</summary>
+    internal async Task<string> Restore(CancellationToken cancellationToken)
+    {
+        var store = CurrentStore;
+
+        // Check for unresolved merge conflicts in .scrinia/
+        string conflictWarning = "";
+        try
+        {
+            string resumeStoreDir = store.GetStoreDirForScope("local");
+            string resumeScriniaDir = Path.GetDirectoryName(resumeStoreDir)!;
+            if (Directory.Exists(resumeScriniaDir))
+            {
+                bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
+                    .Any(f =>
+                    {
+                        try
+                        {
+                            // Quick check: read first 10KB of each file for conflict markers
+                            using var reader = new StreamReader(f);
+                            var buf = new char[10240];
+                            int read = reader.Read(buf, 0, buf.Length);
+                            return new string(buf, 0, read).Contains("<<<<<<<");
+                        }
+                        catch { return false; }
+                    });
+                if (hasConflicts)
+                    conflictWarning = "WARNING: .scrinia/ has unresolved merge conflicts. Run reconcile() before continuing.\n\n";
+            }
+        }
+        catch { /* best-effort check */ }
+
+        // Read checkpoint:latest for recovery context
+        string? checkpointContent = null;
+        try
+        {
+            checkpointContent = await ScriniaProjectTools.ReadMemoryAsync(store, "checkpoint:latest", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            // No checkpoint exists — normal for first-time projects
+        }
+
+        string response;
+        try
+        {
+            response = await ScriniaProjectTools.ReadMemoryAsync(store, "project:state", cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            string? rebuilt = await ScriniaProjectTools.RebuildStateFromMemoriesAsync(store, cancellationToken);
+            if (rebuilt is null)
+                return "Error: no project found. Run plan('init') first.";
+            response = rebuilt;
+        }
+
+        // Replace stale progress with computed value
+        try
+        {
+            string? restoreGoalId = await ScriniaProjectTools.GetActiveGoalIdAsync(store, cancellationToken);
+            string computedProgress = ScriniaProjectTools.CalculateProgress(store, restoreGoalId);
+            response = Regex.Replace(response, @"(?m)^Progress:\s*\d+%?$", $"Progress: {computedProgress}%");
+        }
+        catch { /* best-effort — if progress computation fails, show raw state */ }
+
+        // Active goal description
+        string activeGoalDesc = "";
+        try
+        {
+            string ctxText = await ScriniaProjectTools.ReadMemoryAsync(store, "project:context", cancellationToken);
+            var (goals, _, _) = ScriniaProjectTools.ParseGoalsSection(ctxText);
+            var activeLine = goals.FirstOrDefault(g => g.Contains("[active]", StringComparison.OrdinalIgnoreCase));
+            if (activeLine is not null)
+            {
+                // Extract description: everything after "[active] " and before " | Outcome:"
+                var statusMatch = Regex.Match(
+                    activeLine.TrimStart('-', '*', ' '),
+                    @"\]\s*\[active\]\s*",
+                    RegexOptions.IgnoreCase);
+                if (statusMatch.Success)
+                {
+                    string desc = activeLine.TrimStart('-', '*', ' ')[(statusMatch.Index + statusMatch.Length)..];
+                    activeGoalDesc = $"\nActive goal: {desc.Trim()}";
+                }
+            }
+        }
+        catch { /* no project:context or no active goal — skip */ }
+
+        response += activeGoalDesc;
+
+        // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
+        string concernNote = "";
+        try
+        {
+            var (cs, _) = store.ParseQualifiedName("concern:placeholder");
+            var entries = store.LoadIndex(cs);
+            int activeCount = entries.Count(e => ScriniaProjectTools.HasKeyword(e, "status:active"));
+            if (activeCount > 0)
+            {
+                int highCount = entries.Count(e =>
+                    ScriniaProjectTools.HasKeyword(e, "status:active") &&
+                    ScriniaProjectTools.HasKeyword(e, "severity:high"));
+                concernNote = highCount > 0
+                    ? $"\nConcerns: {activeCount} active ({highCount} high-severity)"
+                    : $"\nConcerns: {activeCount} active";
+            }
+        }
+        catch { /* concern scope not yet created — skip silently */ }
+
+        response += concernNote;
+
+        // Optionally surface unused capability hints (ADOPT-03)
+        string capabilityHints = "";
+
+        // Check if concern tracking has been used (scope exists with entries)
+        bool concernsUsed = false;
+        try
+        {
+            var (cs2, _) = store.ParseQualifiedName("concern:placeholder");
+            var cEntries = store.LoadIndex(cs2);
+            concernsUsed = cEntries.Count > 0;
+        }
+        catch { /* scope not created — concerns not used */ }
+
+        if (!concernsUsed)
+            capabilityHints += "\nHint: concern tracking is available — use concern('add') to track risks and issues across phases.";
+
+        // Check if knowledge (bok) has been used
+        bool knowledgeUsed = false;
+        try
+        {
+            var (bs, _) = store.ParseQualifiedName("bok:placeholder");
+            var bEntries = store.LoadIndex(bs);
+            knowledgeUsed = bEntries.Count > 0;
+        }
+        catch { /* scope not created — knowledge not used */ }
+
+        if (!knowledgeUsed)
+            capabilityHints += "\nHint: use store(content, \"topic:subject\") with keywords to persist domain knowledge across sessions.";
+
+        response += capabilityHints;
+
+        // Inline agent:profile content
+        try
+        {
+            string profileContent = await ScriniaProjectTools.ReadMemoryAsync(store, "agent:profile", cancellationToken);
+            response += "\n\n## Agent profile\n" + profileContent;
+        }
+        catch (FileNotFoundException) { /* no profile — skip silently */ }
+
+        if (checkpointContent is not null)
+            response += "\n\n## Last checkpoint\n" + checkpointContent;
+
+        // Today's session log
+        try
+        {
+            string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+            string sessionContent = await ScriniaProjectTools.ReadMemoryAsync(store, $"sessions:{today}", cancellationToken);
+            response += "\n\n## Session log\n" + sessionContent;
+        }
+        catch (FileNotFoundException) { /* no session log for today — skip */ }
+
+        // Staleness & drift alerts — use cache if available, fall back to live scan
+        int rsStale, rsReview, rsDrift, rsMissing;
+        string rsCacheNote = "";
+        if (MaintenanceCache.TryReadCache(store, out var rsCached) && rsCached is not null)
+        {
+            rsStale = rsCached.StaleCount;
+            rsReview = rsCached.ReviewCount;
+            rsDrift = rsCached.DriftCount;
+            rsMissing = rsCached.MissingCount;
+            int cacheAge = (int)(DateTimeOffset.UtcNow - rsCached.ComputedAt).TotalMinutes;
+            rsCacheNote = $" (cached {cacheAge} min ago)";
+        }
+        else
+        {
+            (rsStale, rsReview) = ScriniaProjectTools.ScanStaleness(store);
+            (rsDrift, rsMissing) = ScriniaProjectTools.ScanDrift(store);
+        }
+
+        if (rsStale > 0) response += $"\n⚠ {rsStale} memory(s) have passed their review date.{rsCacheNote}";
+        if (rsReview > 0) response += $"\nℹ {rsReview} memory(s) have review conditions set.{rsCacheNote}";
+        if (rsDrift > 0) response += $"\n⚠ {rsDrift} code reference(s) have drifted (files changed since stored).{rsCacheNote}";
+        if (rsMissing > 0) response += $"\n⚠ {rsMissing} code reference(s) point to missing files.{rsCacheNote}";
+
+        // Task nudge — rational lensing: nudge agent into the task loop
+        try
+        {
+            // Extract phase number from state
+            string phaseId = "";
+            var phaseMatch = ScriniaProjectTools.PhaseNumberPattern.Match(response);
+            if (phaseMatch.Success)
+                phaseId = int.Parse(phaseMatch.Groups[1].Value).ToString("D2");
+
+            if (!string.IsNullOrEmpty(phaseId))
+            {
+                string? nudgeGoalId = await ScriniaProjectTools.GetActiveGoalIdAsync(store, cancellationToken);
+                var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+                var taskEntries = store.LoadIndex(taskScope);
+                var pendingTasks = taskEntries
+                    .Where(e => ScriniaProjectTools.HasKeyword(e, $"phase:{phaseId}"))
+                    .Where(e => nudgeGoalId is null || ScriniaProjectTools.HasKeyword(e, $"goal:{nudgeGoalId}"))
+                    .Where(e => ScriniaProjectTools.HasKeyword(e, "status:pending"))
+                    .ToList();
+
+                if (pendingTasks.Count > 0)
+                    response += $"\n\nRun task('next', {{ phaseId: \"{phaseId}\" }}) to continue.";
+            }
+        }
+        catch { /* best-effort — skip nudge silently */ }
+
+        response = conflictWarning + response;
+        response = ScriniaProjectTools.Truncate(response);
+
+        return response;
     }
 
     public static string FormatBytes(long bytes) =>

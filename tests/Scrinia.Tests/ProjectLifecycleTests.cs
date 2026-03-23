@@ -158,134 +158,14 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_requirements result should include .scrinia/ ownership hint");
     }
 
-    // ── plan_roadmap tests (PROJ-03) ──────────────────────────────────────────
-
-    [Fact]
-    public async Task PlanRoadmap_StoresRoadmap()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
-
-        // Act
-        string roadmap = "### Phase 1\nPROJ-01, PROJ-02\n- implement init";
-        await _tools.PlanRoadmap(roadmap, cancellationToken: CancellationToken.None);
-
-        // Assert
-        var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("plan:roadmap");
-        var entries = store.LoadIndex(scope);
-        entries.Should().Contain(e => e.Name == subject,
-            "plan_roadmap should store a plan:roadmap memory");
-    }
-
-    [Fact]
-    public async Task PlanRoadmap_ValidatesReqIds()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
-
-        // Act — roadmap contains all required REQ-IDs
-        string roadmap = "### Phase 1\nPROJ-01 and PROJ-02 tasks here";
-        string result = await _tools.PlanRoadmap(roadmap, cancellationToken: CancellationToken.None);
-
-        // Assert — should succeed (not an error)
-        result.Should().NotStartWith("Error:",
-            "plan_roadmap with all REQ-IDs present should succeed");
-        result.Should().Contain("plan:roadmap",
-            "successful plan_roadmap should reference the stored memory");
-    }
-
-    [Fact]
-    public async Task PlanRoadmap_RejectsMissingReqIds()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
-
-        // Act — roadmap is missing PROJ-02
-        string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 tasks only", cancellationToken: CancellationToken.None);
-
-        // Assert
-        result.Should().StartWith("Error:",
-            "plan_roadmap with missing REQ-IDs should return an error");
-        result.Should().Contain("missing",
-            "error should mention 'missing' REQ-IDs");
-
-        // Verify nothing was stored
-        var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("plan:roadmap");
-        var entries = store.LoadIndex(scope);
-        entries.Should().NotContain(e => e.Name == subject,
-            "plan_roadmap should store nothing when REQ-IDs are missing");
-    }
-
-    [Fact]
-    public async Task PlanRoadmap_AcceptsExtraReqIds()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements(
-            "- PROJ-01: init", cancellationToken: CancellationToken.None);
-
-        // Act — roadmap has PROJ-01 (required) plus NEW-99 (not in requirements)
-        string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 and NEW-99 tasks", cancellationToken: CancellationToken.None);
-
-        // Assert — extra REQ-IDs are allowed (agent may define new ones)
-        result.Should().NotStartWith("Error:",
-            "plan_roadmap with extra REQ-IDs should succeed (with optional warning)");
-    }
-
-    [Fact]
-    public async Task PlanRoadmap_UpdatesState()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
-
-        // Act
-        await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01, PROJ-02", cancellationToken: CancellationToken.None);
-
-        // Assert — state should be updated
-        var store = MemoryStoreContext.Current!;
-        string stateText = await ReadMemoryText(store, "project:state");
-        stateText.Should().Contain("Roadmap",
-            "project:state should reference roadmap after plan_roadmap");
-    }
-
-    [Fact]
-    public async Task PlanRoadmap_IncludesOwnershipHint()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init", cancellationToken: CancellationToken.None);
-
-        // Act
-        string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 tasks", cancellationToken: CancellationToken.None);
-
-        // Assert
-        result.Should().Contain(".scrinia/",
-            "plan_roadmap result should include .scrinia/ ownership hint");
-    }
-
     // ── context_resume tests (PROJ-04) ──────────────────────────────────────
 
     [Fact]
     public async Task ContextResume_ReturnsStructuredSummary()
     {
-        // Arrange — full state via all three write tools
+        // Arrange — full state via init + requirements
         await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
-        await _tools.PlanRoadmap("### Phase 1\nPROJ-01, PROJ-02 tasks", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.ContextResume(CancellationToken.None);
@@ -361,8 +241,8 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Assert
         result.Should().StartWith("Error:",
             "context_resume with no project memories should return an error");
-        result.Should().Contain("project_init",
-            "error should direct user to run project_init");
+        result.Should().Contain("plan('init')",
+            "error should direct user to run plan('init')");
     }
 
     [Fact]
@@ -461,14 +341,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     [Fact]
     public async Task ContextResume_IncludesTaskNudge()
     {
-        // Arrange — full lifecycle: init, requirements, roadmap, tasks
+        // Arrange — full lifecycle: init, requirements, tasks
         // PlanTasks updates project:state to include "Phase 01" which the nudge regex needs,
         // and creates pending tasks that trigger the task_next nudge.
         await _tools.ProjectInit("Goals: task nudge test", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- REQ-01: Feature A", cancellationToken: CancellationToken.None);
-        await _tools.PlanRoadmap(
-            "## Phase 1: Foundation\nREQ-IDs: REQ-01\nSuccess criteria:\n- Feature A works",
-            cancellationToken: CancellationToken.None);
         string taskInput =
             "## Task 01\nWave: 1\nDepends on: none\nAction: Implement feature\nAcceptance criteria:\n- done";
         await _tools.PlanTasks("01", taskInput, cancellationToken: CancellationToken.None);
@@ -509,7 +386,6 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Arrange
         await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- PROJ-01: init", cancellationToken: CancellationToken.None);
-        await _tools.PlanRoadmap("### Phase 1\nPROJ-01 tasks", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.PlanStatus(CancellationToken.None);
@@ -563,69 +439,27 @@ public sealed class ProjectLifecycleTests : IDisposable
             "plan_status must include a Blockers field (even if value is 'none')");
     }
 
-    // ── Gap closure tests (02-03) ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task PlanRoadmap_RejectsDuplicateReqIdsAcrossPhases()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
-
-        // Act — PROJ-01 appears in both Phase 1 and Phase 2 (duplicate across phases)
-        string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 tasks\n### Phase 2\nPROJ-01 and PROJ-02 tasks",
-            CancellationToken.None);
-
-        // Assert — must return error with duplicate/more-than-once language
-        result.Should().StartWith("Error:",
-            "plan_roadmap with a REQ-ID in multiple phases should return an error");
-        result.Should().MatchRegex("(?i)(duplicate|more than once|more than one phase)",
-            "error should mention duplicate or 'more than once'");
-
-        // Verify nothing was stored (all-or-nothing semantics)
-        var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("plan:roadmap");
-        var entries = store.LoadIndex(scope);
-        entries.Should().NotContain(e => e.Name == subject,
-            "plan_roadmap should store nothing when a REQ-ID appears in multiple phases");
-    }
-
-    [Fact]
-    public async Task PlanRoadmap_AcceptsSameReqIdMentionedOncePerPhase()
-    {
-        // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements(
-            "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
-
-        // Act — each REQ-ID appears in exactly one phase (valid)
-        string result = await _tools.PlanRoadmap(
-            "### Phase 1\nPROJ-01 tasks\n### Phase 2\nPROJ-02 tasks",
-            CancellationToken.None);
-
-        // Assert — should succeed
-        result.Should().NotStartWith("Error:",
-            "plan_roadmap with each REQ-ID in exactly one phase should succeed");
-    }
-
     [Fact]
     public void PlanRequirements_DescriptionMentionsScope()
     {
-        // Verify via reflection that the Description attribute on PlanRequirements
-        // mentions v1/v2 scope labels — this is a contract test for agent guidance.
-        var method = typeof(ScriniaProjectTools).GetMethod("PlanRequirements");
-        method.Should().NotBeNull("PlanRequirements method must exist");
+        // After consolidation, PlanRequirements is an internal method called by RequirementDispatch.
+        // Verify the method exists and still has a parameter-level [Description] mentioning v1/v2 scope.
+        var method = typeof(ScriniaProjectTools).GetMethod("PlanRequirements",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        method.Should().NotBeNull("PlanRequirements must exist as an internal method");
 
-        var descAttr = method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+        // Check parameter-level [Description] on the 'requirements' parameter for v1 scope guidance
+        var reqParam = method!.GetParameters().FirstOrDefault(p => p.Name == "requirements");
+        reqParam.Should().NotBeNull("PlanRequirements must have a 'requirements' parameter");
+
+        var descAttr = reqParam!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
             .Cast<System.ComponentModel.DescriptionAttribute>()
             .FirstOrDefault();
-        descAttr.Should().NotBeNull("PlanRequirements must have a [Description] attribute");
+        descAttr.Should().NotBeNull("PlanRequirements 'requirements' parameter must have a [Description] attribute");
 
         string descText = descAttr!.Description;
         descText.Should().ContainEquivalentOf("v1",
-            "PlanRequirements description must mention 'v1' so agents know to include v1/v2 scope labels");
+            "PlanRequirements parameter description must mention 'v1' so agents know to include v1/v2 scope labels");
     }
 
     // -- plan_tasks tests (PLAN-01, PLAN-02, PLAN-04) --
@@ -684,7 +518,6 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- PLAN-01: task storage\n- PLAN-02: research guidance", cancellationToken: CancellationToken.None);
-        await _tools.PlanRoadmap("### Phase 1\nPLAN-01, PLAN-02 tasks", cancellationToken: CancellationToken.None);
     }
 
     [Fact]
@@ -818,7 +651,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanTasks_FailsWithoutRoadmap()
+    public async Task PlanTasks_SucceedsWithoutRoadmap()
     {
         // Arrange — no roadmap (just init)
         await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
@@ -826,10 +659,9 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         string result = await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
-        // Assert — should return error mentioning plan_roadmap
-        result.Should().StartWith("Error:", "plan_tasks without roadmap should return Error:");
-        result.Should().ContainEquivalentOf("plan_roadmap",
-            "error message should mention plan_roadmap");
+        // Assert — should succeed (roadmap is no longer a prerequisite)
+        result.Should().NotStartWith("Error:", "plan_tasks should succeed without a roadmap");
+        result.Should().Contain("Created", "plan_tasks should confirm task creation");
     }
 
     [Fact]
@@ -854,18 +686,24 @@ public sealed class ProjectLifecycleTests : IDisposable
     [Fact]
     public void PlanTasks_DescriptionAdvicesResearch()
     {
-        // Reflection test — verify [Description] attribute on PlanTasks contains "research" (PLAN-02)
-        var method = typeof(ScriniaProjectTools).GetMethod("PlanTasks");
-        method.Should().NotBeNull("PlanTasks method must exist");
+        // After consolidation, PlanTasks is an internal method called by PlanDispatch.
+        // The research cueing is now handled by roadmap guidance text, not the tool description.
+        // Verify the method exists and the plan dispatcher description references 'tasks' (PLAN-02).
+        var method = typeof(ScriniaProjectTools).GetMethod("PlanTasks",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        method.Should().NotBeNull("PlanTasks must exist as an internal method");
 
-        var descAttr = method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+        var dispatcher = typeof(ScriniaProjectTools).GetMethod("PlanDispatch");
+        dispatcher.Should().NotBeNull("PlanDispatch dispatcher must exist");
+
+        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
             .Cast<System.ComponentModel.DescriptionAttribute>()
             .FirstOrDefault();
-        descAttr.Should().NotBeNull("PlanTasks must have a [Description] attribute");
+        descAttr.Should().NotBeNull("PlanDispatch must have a [Description] attribute");
 
         string descText = descAttr!.Description;
-        descText.Should().ContainEquivalentOf("research",
-            "PlanTasks description must advise agent to 'research' domain before planning (PLAN-02)");
+        descText.Should().ContainEquivalentOf("tasks",
+            "PlanDispatch description must reference 'tasks' action for phase decomposition (PLAN-02)");
     }
 
     [Fact]
@@ -1006,13 +844,30 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange - 2 user tasks + auto-injected gate tasks; complete them all
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
+
+        // Provide gate artifacts so gate validation passes
+        await _memTools.Store(content: ["## QA Report\nAll pass"], name: "qa:latest", cancellationToken: CancellationToken.None);
+        await _memTools.Store(content: ["## Retro\nLessons learned"], name: "learn:retro-01", cancellationToken: CancellationToken.None);
+        await _memTools.Store(content: ["## Evolutionary scan complete"], name: "sessions:evolutionary-g0", cancellationToken: CancellationToken.None);
+        await _memTools.Store(content: ["## Cartography report"], name: "cartography:2026-01-01", cancellationToken: CancellationToken.None);
+
+        // Create docs/reports/ with a march report so march-gate validation passes
+        var store = MemoryStoreContext.Current!;
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
+        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+        string reportsDir = Path.Combine(workspaceRoot, "docs", "reports");
+        Directory.CreateDirectory(reportsDir);
+        await File.WriteAllTextAsync(Path.Combine(reportsDir, "march-report.md"), "# March Report\nGoal complete.");
+
         await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
         await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
-        // Complete all auto-injected gate tasks (single-phase = last phase, so all gates)
+        // Complete all auto-injected gate tasks
         await _tools.TaskComplete("task:01-2-qa-gate", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-3-evolutionary-gate", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-3-cartographer-gate", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-3-march-gate", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-3-self-reflector-gate", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-4-evolutionary-gate", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-4-cartographer-gate", "Done", cancellationToken: CancellationToken.None);
+        await _tools.TaskComplete("task:01-4-march-gate", "Done", cancellationToken: CancellationToken.None);
 
         // Act
         string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
@@ -1263,19 +1118,19 @@ public sealed class ProjectLifecycleTests : IDisposable
     // -- plan_verify tests (PLAN-03, VERI-01, VERI-02) --
 
     [Fact]
-    public async Task PlanVerify_ReturnsStructuredPassFail()
+    public async Task PlanVerify_ReturnsVerificationChecklist()
     {
-        // Arrange — full lifecycle with roadmap success criteria + all tasks complete
+        // Arrange — full lifecycle with criteria tasks + all tasks complete
         await SetupProjectWithCriteria("01");
         await _tools.TaskComplete("task:01-1-01", "Implemented auth", cancellationToken: CancellationToken.None);
         await _tools.TaskComplete("task:01-1-02", "Implemented profile", cancellationToken: CancellationToken.None);
 
-        // Act
+        // Act — no evidence → checklist mode
         string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
-        // Assert — must contain PASS or FAIL structured markers
-        result.Should().MatchRegex("(PASS|FAIL):",
-            "plan_verify must return structured PASS/FAIL markers");
+        // Assert — must contain the verification checklist header
+        result.Should().Contain("Verification Checklist",
+            "plan_verify without evidence returns a checklist showing criteria to verify");
     }
 
     [Fact]
@@ -1289,11 +1144,11 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
-        // Assert — both criteria should appear in output
-        result.Should().Contain("All tasks complete",
-            "plan_verify should check task completion criterion");
-        result.Should().ContainEquivalentOf("execution log",
-            "plan_verify should check execution log criterion");
+        // Assert — both requirement criteria should appear in output
+        result.Should().Contain("CRIT-01",
+            "plan_verify should include the CRIT-01 requirement criterion");
+        result.Should().Contain("CRIT-02",
+            "plan_verify should include the CRIT-02 requirement criterion");
     }
 
     [Fact]
@@ -1354,29 +1209,33 @@ public sealed class ProjectLifecycleTests : IDisposable
     [Fact]
     public async Task PlanVerify_ScopesToTargetPhase()
     {
-        // Arrange — roadmap with criteria for phase 01 AND phase 02
+        // Arrange — requirements for two phases; tasks in phase 01 reference SCOPE-01 only,
+        // tasks in phase 02 reference SCOPE-02 only. plan_verify("01") should scope to phase 01.
         await _tools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- SCOPE-01: phase one req\n- SCOPE-02: phase two req", cancellationToken: CancellationToken.None);
-        string roadmapWithTwoPhases =
-            "### Phase 1\nSCOPE-01\n\n**Success Criteria** (what must be TRUE):\n- Criterion for phase one only\n\n" +
-            "### Phase 2\nSCOPE-02\n\n**Success Criteria** (what must be TRUE):\n- Criterion for phase two only";
-        await _tools.PlanRoadmap(roadmapWithTwoPhases, cancellationToken: CancellationToken.None);
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        // Phase 01 task references SCOPE-01
+        await _tools.PlanTasks("01",
+            "## Task 01\nWave: 1\nDepends on: none\nAction: Implement SCOPE-01 — phase one work\nAcceptance criteria:\n- phase one done",
+            cancellationToken: CancellationToken.None);
+        // Phase 02 task references SCOPE-02
+        await _tools.PlanTasks("02",
+            "## Task 01\nWave: 1\nDepends on: none\nAction: Implement SCOPE-02 — phase two work\nAcceptance criteria:\n- phase two done",
+            cancellationToken: CancellationToken.None);
 
         // Act — verify only phase 01
         string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
-        // Assert — phase 02 criterion must NOT appear
-        result.Should().Contain("phase one only",
-            "plan_verify('01') should include phase 01 criteria");
-        result.Should().NotContain("phase two only",
-            "plan_verify('01') must NOT include phase 02 criteria");
+        // Assert — only SCOPE-01 should appear; SCOPE-02 must NOT appear
+        result.Should().Contain("SCOPE-01",
+            "plan_verify('01') should include phase 01 criteria (SCOPE-01)");
+        result.Should().NotContain("SCOPE-02",
+            "plan_verify('01') must NOT include phase 02 criteria (SCOPE-02)");
     }
 
     [Fact]
-    public async Task PlanVerify_FailsWithoutRoadmap()
+    public async Task PlanVerify_FailsWithoutRequirements()
     {
-        // Arrange — only init, no roadmap
+        // Arrange — only init, no requirements
         await _tools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
 
         // Act
@@ -1384,7 +1243,7 @@ public sealed class ProjectLifecycleTests : IDisposable
 
         // Assert
         result.Should().StartWith("Error:",
-            "plan_verify without roadmap should return an error");
+            "plan_verify without requirements should return an error");
     }
 
     [Fact]
@@ -1406,16 +1265,16 @@ public sealed class ProjectLifecycleTests : IDisposable
     [Fact]
     public async Task PlanVerify_WorksBeforeExecution()
     {
-        // Arrange — roadmap + plan_tasks but NO task_complete calls
+        // Arrange — requirements + plan_tasks but NO task_complete calls
         await SetupProjectWithCriteria("01");
         // No task_complete calls — testing pre-execution quality check (PLAN-03)
 
         // Act
         string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
-        // Assert — should return pass/fail (with failures for incomplete tasks), not an error
-        result.Should().MatchRegex("(PASS|FAIL):",
-            "plan_verify should work before execution and report task completion status");
+        // Assert — should return checklist (no evidence), not an error
+        result.Should().Contain("Verification Checklist",
+            "plan_verify before execution should return a verification checklist");
         result.Should().NotStartWith("Error:",
             "plan_verify before execution should not return an error");
     }
@@ -1841,13 +1700,13 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         string result = await mcpTools.Guide(CancellationToken.None);
 
-        // Assert — must mention learning memory topics and retrospective tool
+        // Assert — must mention learning memory topics and self-reflector skill
         result.Should().Contain("learn:*",
             "guide() must mention learn:* reserved planning topic");
-        result.Should().Contain("agent:profile",
-            "guide() must mention agent:profile learning memory topic");
-        result.Should().Contain("plan_retrospective",
-            "guide() must mention plan_retrospective tool");
+        result.Should().Contain("agent:*",
+            "guide() must mention agent:* reserved planning topic for behavioral norms");
+        result.Should().Contain("self-reflector",
+            "guide() must mention self-reflector skill for retrospectives");
     }
 
     // ── Gate tests ─────────────────────────────────────────────────────────────
@@ -1989,14 +1848,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- CRIT-01: task storage\n- CRIT-02: verification support", cancellationToken: CancellationToken.None);
-        string roadmap =
-            $"### Phase {int.Parse(phaseId)}: Foundation\n" +
-            $"CRIT-01, CRIT-02\n\n" +
-            $"**Success Criteria** (what must be TRUE):\n" +
-            $"  1. All tasks complete in phase {phaseId}\n" +
-            $"  2. Execution log exists and contains completion entries\n";
-        await _tools.PlanRoadmap(roadmap, cancellationToken: CancellationToken.None);
-        await _tools.PlanTasks(phaseId, MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        // Tasks reference CRIT-01 and CRIT-02 so plan_verify can discover the criteria
+        string taskInput =
+            $"## Task 01\nWave: 1\nDepends on: none\nAction: Implement CRIT-01 — authentication\nAcceptance criteria:\n- Users can log in\n- JWT tokens are returned\n\n" +
+            $"## Task 02\nWave: 1\nDepends on: none\nAction: Implement CRIT-02 — user profile\nAcceptance criteria:\n- Profile data is stored";
+        await _tools.PlanTasks(phaseId, taskInput, cancellationToken: CancellationToken.None);
     }
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)

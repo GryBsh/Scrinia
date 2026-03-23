@@ -26,11 +26,12 @@ public sealed class QaGateTests : IDisposable
     [Fact]
     public async Task PlanVerify_ChecklistModeStillWorks()
     {
-        // Arrange — init project with roadmap, no evidence
+        // Arrange — init project with requirements and a task referencing CRIT-01, no evidence
         await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- CRIT-01: task storage", cancellationToken: CancellationToken.None);
-        await _tools.PlanRoadmap(
-            "### Phase 1: Foundation\nCRIT-01\n\n**Success Criteria** (what must be TRUE):\n  1. All tasks complete in phase 01\n",
+        // Create a task that references CRIT-01 so plan_verify can discover the criterion
+        await _tools.PlanTasks("01",
+            "## Task 01\nDepends on: none\nAction: Implement CRIT-01 — task storage\nAcceptance criteria:\n- tasks stored",
             cancellationToken: CancellationToken.None);
 
         // Act — call plan_verify with no evidence

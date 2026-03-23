@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="scri" />
     <InternalsVisibleTo Include="Scrinia.Tests" />
     <InternalsVisibleTo Include="Scrinia.Server" />
   </ItemGroup>

@@ -284,7 +284,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await _tools.ConcernAdd("Risk: db", "medium", "07", id: "c2", CancellationToken.None);
 
         // Act
-        string result = await _tools.Concern(phaseFilter: null, statusFilter: null, CancellationToken.None);
+        string result = await _tools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
 
         // Assert — both active concerns should appear
         result.Should().Contain("c1", "active concern 'c1' should appear in query result");
@@ -300,7 +300,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await _tools.ConcernAdd("Risk: phase07 only", "low", "07", id: "p07-risk", CancellationToken.None);
 
         // Act
-        string result = await _tools.Concern(phaseFilter: "06", statusFilter: null, CancellationToken.None);
+        string result = await _tools.ConcernList(phaseFilter: "06", statusFilter: null, CancellationToken.None);
 
         // Assert — only phase:06 concern should appear
         result.Should().Contain("p06-risk",
@@ -316,7 +316,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        string result = await _tools.Concern(phaseFilter: null, statusFilter: null, CancellationToken.None);
+        string result = await _tools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
 
         // Assert
         result.Should().ContainEquivalentOf("no active concerns",
@@ -332,7 +332,7 @@ public sealed class ConcernTrackingTests : IDisposable
             "high", "06", id: "sentinel", CancellationToken.None);
 
         // Act — query active concerns
-        string result = await _tools.Concern(phaseFilter: null, statusFilter: null, CancellationToken.None);
+        string result = await _tools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
 
         // The query returns index-only data (names, keywords).
         // The concern content "UNIQUE_SENTINEL_CONTENT_12345" should NOT appear in the result
@@ -348,58 +348,70 @@ public sealed class ConcernTrackingTests : IDisposable
     [Fact]
     public void ConcernAdd_DescriptionContainsContextSignals()
     {
-        // Reflection test: [Description] on ConcernAdd should reference concern_resolve or concern
-        var method = typeof(ScriniaProjectTools).GetMethod("ConcernAdd");
-        method.Should().NotBeNull("ConcernAdd method must exist");
+        // After consolidation, ConcernAdd is an internal method called by ConcernDispatch.
+        // Verify the method exists and the concern dispatcher description references 'add' and 'resolve'.
+        var method = typeof(ScriniaProjectTools).GetMethod("ConcernAdd",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        method.Should().NotBeNull("ConcernAdd must exist as an internal method");
 
-        var descAttr = method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+        var dispatcher = typeof(ScriniaProjectTools).GetMethod("ConcernDispatch");
+        dispatcher.Should().NotBeNull("ConcernDispatch dispatcher must exist");
+
+        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
             .Cast<System.ComponentModel.DescriptionAttribute>()
             .FirstOrDefault();
-        descAttr.Should().NotBeNull("ConcernAdd must have a [Description] attribute");
+        descAttr.Should().NotBeNull("ConcernDispatch must have a [Description] attribute");
 
         string descText = descAttr!.Description;
-        bool hasContextSignal = descText.Contains("concern_resolve", StringComparison.OrdinalIgnoreCase)
+        bool hasContextSignal = descText.Contains("add", StringComparison.OrdinalIgnoreCase)
             || descText.Contains("concern", StringComparison.OrdinalIgnoreCase);
         hasContextSignal.Should().BeTrue(
-            "ConcernAdd description must contain context signals referencing 'concern_resolve' or 'concern'");
+            "ConcernDispatch description must contain context signals referencing 'add' or 'concern'");
     }
 
     [Fact]
     public void ConcernResolve_DescriptionContainsContextSignals()
     {
-        // Reflection test: [Description] on ConcernResolve should reference concern_add or "after"
-        var method = typeof(ScriniaProjectTools).GetMethod("ConcernResolve");
-        method.Should().NotBeNull("ConcernResolve method must exist");
+        // After consolidation, ConcernResolve is an internal method called by ConcernDispatch.
+        // Verify the method exists and the concern dispatcher description references 'resolve'.
+        var method = typeof(ScriniaProjectTools).GetMethod("ConcernResolve",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        method.Should().NotBeNull("ConcernResolve must exist as an internal method");
 
-        var descAttr = method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+        var dispatcher = typeof(ScriniaProjectTools).GetMethod("ConcernDispatch");
+        dispatcher.Should().NotBeNull("ConcernDispatch dispatcher must exist");
+
+        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
             .Cast<System.ComponentModel.DescriptionAttribute>()
             .FirstOrDefault();
-        descAttr.Should().NotBeNull("ConcernResolve must have a [Description] attribute");
+        descAttr.Should().NotBeNull("ConcernDispatch must have a [Description] attribute");
 
         string descText = descAttr!.Description;
-        bool hasContextSignal = descText.Contains("concern_add", StringComparison.OrdinalIgnoreCase)
-            || descText.Contains("after", StringComparison.OrdinalIgnoreCase);
+        bool hasContextSignal = descText.Contains("resolve", StringComparison.OrdinalIgnoreCase)
+            || descText.Contains("concern", StringComparison.OrdinalIgnoreCase);
         hasContextSignal.Should().BeTrue(
-            "ConcernResolve description must contain context signals referencing 'concern_add' or 'after'");
+            "ConcernDispatch description must contain context signals referencing 'resolve' or 'concern'");
     }
 
     [Fact]
     public void ConcernQuery_DescriptionContainsContextSignals()
     {
-        // Reflection test: [Description] on Concern should reference concern_add or plan_status
-        var method = typeof(ScriniaProjectTools).GetMethod("Concern");
-        method.Should().NotBeNull("Concern (query) method must exist");
+        // After consolidation, the Concern query method is now ConcernDispatch (MCP name: "concern").
+        // Verify the dispatcher exists and its description references 'list' (the query action)
+        // and 'add' (so agents know how to add concerns).
+        var dispatcher = typeof(ScriniaProjectTools).GetMethod("ConcernDispatch");
+        dispatcher.Should().NotBeNull("ConcernDispatch dispatcher must exist");
 
-        var descAttr = method!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
+        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
             .Cast<System.ComponentModel.DescriptionAttribute>()
             .FirstOrDefault();
-        descAttr.Should().NotBeNull("Concern (query) must have a [Description] attribute");
+        descAttr.Should().NotBeNull("ConcernDispatch must have a [Description] attribute");
 
         string descText = descAttr!.Description;
-        bool hasContextSignal = descText.Contains("concern_add", StringComparison.OrdinalIgnoreCase)
-            || descText.Contains("plan_status", StringComparison.OrdinalIgnoreCase);
+        bool hasContextSignal = descText.Contains("add", StringComparison.OrdinalIgnoreCase)
+            || descText.Contains("list", StringComparison.OrdinalIgnoreCase);
         hasContextSignal.Should().BeTrue(
-            "Concern (query) description must contain context signals referencing 'concern_add' or 'plan_status'");
+            "ConcernDispatch description must contain context signals referencing 'add' or 'list'");
     }
 
     // ── plan_status concern enrichment tests (CONC-04) ────────────────────────

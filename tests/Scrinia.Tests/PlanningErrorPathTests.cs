@@ -30,11 +30,11 @@ public sealed class PlanningErrorPathTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanVerify_NoRoadmap_ReturnsError()
+    public async Task PlanVerify_NoRequirements_ReturnsError()
     {
         await _tools.ProjectInit("Goals: test", CancellationToken.None);
         var result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
-        result.Should().Contain("Error", because: "no roadmap exists");
+        result.Should().Contain("Error", because: "no project:requirements exists");
     }
 
     [Fact]
@@ -46,11 +46,12 @@ public sealed class PlanningErrorPathTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanTasks_NoRoadmap_ReturnsError()
+    public async Task PlanTasks_SucceedsWithoutRoadmap()
     {
         await _tools.ProjectInit("Goals: test", CancellationToken.None);
         var result = await _tools.PlanTasks("01", "## Task 01\nWave: 1\nDepends on: none\nAction: test\nAcceptance criteria:\n- done", CancellationToken.None);
-        result.Should().Contain("Error", because: "no roadmap exists");
+        result.Should().NotStartWith("Error:", because: "roadmap is no longer a prerequisite for plan_tasks");
+        result.Should().Contain("Created", because: "tasks should be created successfully");
     }
 
     // ── context_resume rebuilds state ──
@@ -78,7 +79,6 @@ public sealed class PlanningErrorPathTests : IDisposable
     {
         await _tools.ProjectInit("Goals: test", CancellationToken.None);
         await _tools.PlanRequirements("## v1\n- REQ-01: Test", CancellationToken.None);
-        await _tools.PlanRoadmap("## Phase 1\nRequirements: REQ-01\nSuccess Criteria:\n1. Done", CancellationToken.None);
 
         var result = await _tools.PlanGaps("01", "", CancellationToken.None);
         result.Should().Contain("Error", because: "empty failed criteria should be rejected");
@@ -93,16 +93,15 @@ public sealed class PlanningErrorPathTests : IDisposable
         result.Should().Contain("Error", because: "resolving non-existent concern should fail");
     }
 
-    // ── plan_verify with no success criteria for phase ──
+    // ── plan_verify with no tasks referencing REQ-IDs for phase ──
 
     [Fact]
     public async Task PlanVerify_NoCriteriaForPhase_ReturnsMessage()
     {
         await _tools.ProjectInit("Goals: test", CancellationToken.None);
         await _tools.PlanRequirements("## v1\n- REQ-01: Test", CancellationToken.None);
-        await _tools.PlanRoadmap("## Phase 1\nRequirements: REQ-01\nSuccess Criteria:\n1. Done", CancellationToken.None);
 
         var result = await _tools.PlanVerify("99", cancellationToken: CancellationToken.None);
-        result.Should().Contain("No success criteria", because: "phase 99 has no criteria in roadmap");
+        result.Should().Contain("No requirements found", because: "phase 99 has no tasks with REQ-IDs");
     }
 }

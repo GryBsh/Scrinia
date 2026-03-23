@@ -120,9 +120,7 @@ public sealed class ScriniaProjectTools
     private static readonly Regex GoalIdNumericPattern = new($@"\[G-(\d+)(?:-[a-fA-F0-9]+)?\]", RegexOptions.Compiled);
     private static readonly Regex GoalIdStructuredPattern = new($@"^\[G-{GoalIdCore}\]", RegexOptions.Compiled);
     private static readonly Regex ShortGoalIdPattern = new(@"^G-\d+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex PhaseHeadingPattern = new(@"^#{0,4}\s*Phase\s+0*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex PhaseDetectPattern = new(@"^#{0,4}\s*Phase\s+\d", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex PhaseNumberPattern = new(@"Phase\s+0*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    internal static readonly Regex PhaseNumberPattern = new(@"Phase\s+0*(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex GoalsSectionPattern = new(@"^#{0,4}\s*Goals\s*:?\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex GoalsSectionAltPattern = new(@"^Goals\s*:", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex OriginalGoalsPattern = new(@"^[Oo]riginal goals?\s*:\s*\d+", RegexOptions.Compiled);
@@ -130,16 +128,12 @@ public sealed class ScriniaProjectTools
     private static readonly Regex FilesFieldPattern = new(@"^Files:\s*(.+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
     private static readonly Regex CompletedTimestampPattern = new(@"Completed:\s*(\S+)", RegexOptions.Compiled);
     private static readonly Regex SectionHeadingPattern = new(@"^#{1,4}\s+\S", RegexOptions.Compiled);
-    private static readonly Regex AnyHeadingPattern = new(@"^#{1,4}\s+", RegexOptions.Compiled);
-    private static readonly Regex CriteriaHeadingPattern = new(@"^#{1,4}\s+(success\s+criteria|criteria|acceptance)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex CriteriaAltHeadingPattern = new(@"^\*{0,2}Success\s+Criteria", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex NumberedListPattern = new(@"^\d+\.\s+", RegexOptions.Compiled);
     private static readonly Regex ReqIdPattern = new(@"\b([A-Z]+-\d+)\b", RegexOptions.Compiled);
     private static readonly Regex TaskHeaderPattern = new(@"^##\s+Task\s+(\w+)", RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.IgnoreCase);
     private static readonly Regex DigitPattern = new(@"\d+", RegexOptions.Compiled);
     private static readonly Regex GoalStatusPrefixPattern = new($@"^\[G-{GoalIdCore}\]\s*\[[\w]+\]\s*", RegexOptions.Compiled);
 
-    private static string Truncate(string text) =>
+    internal static string Truncate(string text) =>
         text.Length <= MaxResponseChars ? text : text[..MaxResponseChars] + "\n[... truncated to 8KB limit]";
 
     private static IMemoryStore CurrentStore =>
@@ -148,13 +142,125 @@ public sealed class ScriniaProjectTools
 
     // ── MCP Tools ────────────────────────────────────────────────────────────
 
+    // ── Dispatchers ──────────────────────────────────────────────────────────
+
+    /// <summary>Dispatcher for plan_tasks, plan_status, and project_init.</summary>
+    [McpServerTool(Name = "plan"), Description(
+        "Project planning operations. Actions: 'tasks' (decompose phase into tasks), " +
+        "'status' (project progress and state), 'init' (initialize new project).")]
+    public async Task<string> PlanDispatch(
+        [Description("Action: 'tasks', 'status', 'init'.")] string action,
+        [Description("Phase ID for task decomposition (tasks).")] string? phaseId = null,
+        [Description("Free-text task definitions (tasks).")] string? tasks = null,
+        [Description("Project context description (init).")] string? context = null,
+        CancellationToken cancellationToken = default)
+    {
+        string act = action.Trim().ToLowerInvariant();
+        switch (act)
+        {
+            case "tasks":
+                if (string.IsNullOrWhiteSpace(phaseId))
+                    return "Error: plan('tasks') requires 'phaseId' parameter.";
+                if (string.IsNullOrWhiteSpace(tasks))
+                    return "Error: plan('tasks') requires 'tasks' parameter.";
+                return await PlanTasks(phaseId, tasks, cancellationToken);
+            case "status":
+                return await PlanStatus(cancellationToken);
+            case "init":
+                if (string.IsNullOrWhiteSpace(context))
+                    return "Error: plan('init') requires 'context' parameter.";
+                return await ProjectInit(context, cancellationToken);
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: 'tasks', 'status', 'init'.";
+        }
+    }
+
+    /// <summary>Dispatcher for plan_requirements.</summary>
+    [McpServerTool(Name = "requirement"), Description(
+        "Manage project requirements. Actions: 'add' (store requirements with REQ-IDs), " +
+        "'resolve' (mark a requirement fulfilled), 'list' (show all requirements).")]
+    public async Task<string> RequirementDispatch(
+        [Description("Action: 'add', 'resolve', or 'list'.")] string action,
+        [Description("Free-text requirements with REQ-IDs (add).")] string? requirements = null,
+        [Description("Requirement ID to resolve (resolve).")] string? id = null,
+        [Description("Evidence of requirement fulfillment (resolve).")] string? evidence = null,
+        CancellationToken cancellationToken = default)
+    {
+        string act = action.Trim().ToLowerInvariant();
+        switch (act)
+        {
+            case "add":
+                if (string.IsNullOrWhiteSpace(requirements))
+                    return "Error: requirement('add') requires 'requirements' parameter.";
+                return await PlanRequirements(requirements, cancellationToken);
+            case "resolve":
+                if (string.IsNullOrWhiteSpace(id))
+                    return "Error: requirement('resolve') requires 'id' parameter (e.g., 'REQ-01').";
+                if (string.IsNullOrWhiteSpace(evidence))
+                    return "Error: requirement('resolve') requires 'evidence' parameter.";
+                try
+                {
+                    var store = CurrentStore;
+                    string reqText = await ReadMemoryAsync(store, "project:requirements", cancellationToken);
+                    string marker = $"[RESOLVED: {evidence}]";
+                    string updated = reqText.Replace(id, $"{id} {marker}");
+                    await WritePlanningMemoryAsync(store, "project:requirements", updated,
+                        archiveExisting: true, cancellationToken);
+                    return $"Requirement '{id}' resolved: {evidence}. project:requirements updated.";
+                }
+                catch (FileNotFoundException)
+                {
+                    return "Error: no requirements found. Call requirement('add') first.";
+                }
+            case "list":
+                try
+                {
+                    var store = CurrentStore;
+                    string reqText = await ReadMemoryAsync(store, "project:requirements", cancellationToken);
+                    return reqText;
+                }
+                catch (FileNotFoundException)
+                {
+                    return "No requirements found. Call requirement('add') to add requirements.";
+                }
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: 'add', 'resolve', 'list'.";
+        }
+    }
+
+    /// <summary>Dispatcher for skill_load and skill_create.</summary>
+    [McpServerTool(Name = "skill"), Description(
+        "Manage specialist skills. Actions: 'load' (list or load a skill), " +
+        "'create' (create a reusable skill from scaffold).")]
+    public async Task<string> SkillDispatch(
+        [Description("Action: 'load' or 'create'.")] string action,
+        [Description("Skill name (load — optional for listing, create — required).")] string? name = null,
+        [Description("Scaffold type: researcher/reviewer/domain-expert/custom (create).")] string? scaffold = null,
+        [Description("Additional instructions (create).")] string? instructions = null,
+        [Description("Comma-separated tool names (create, custom scaffold).")] string? tools = null,
+        [Description("Show both built-in and override for reconciliation (load).")] bool reconcile = false,
+        CancellationToken cancellationToken = default)
+    {
+        string act = action.Trim().ToLowerInvariant();
+        switch (act)
+        {
+            case "load":
+                return await SkillLoad(name, reconcile, cancellationToken);
+            case "create":
+                if (string.IsNullOrWhiteSpace(name))
+                    return "Error: skill('create') requires 'name' parameter.";
+                if (string.IsNullOrWhiteSpace(scaffold))
+                    return "Error: skill('create') requires 'scaffold' parameter.";
+                return await SkillCreate(name, scaffold, instructions, tools, cancellationToken);
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: 'load', 'create'.";
+        }
+    }
+
+    // ── Internals ────────────────────────────────────────────────────────────
+
     /// <summary>Initialize a project by storing goals, context, and constraints.</summary>
-    [McpServerTool(Name = "project_init"), Description(
-        "One-time project initialization. Call when you first encounter a workspace without an existing project, " +
-        "or when the user's request warrants structured planning. Detects whether the workspace has " +
-        "an existing codebase and returns tailored next steps. " +
-        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> ProjectInit(
+    internal async Task<string> ProjectInit(
         [Description("Free-text describing the project goals, context, constraints, and scope.")] string context,
         CancellationToken cancellationToken = default)
     {
@@ -183,6 +289,27 @@ public sealed class ScriniaProjectTools
             nextStep: nextStep,
             cancellationToken);
 
+        // Auto-create onboarder seed task when existing code detected
+        if (hasExistingCode)
+        {
+            try
+            {
+                string onboarderContent =
+                    "## Onboarder Task\n" +
+                    "Action: Load the onboarder skill via skill('load', { name: \"onboarder\" }). " +
+                    "Explore the existing codebase structure, conventions, and patterns. " +
+                    "Store findings as project knowledge via memory('store').\n" +
+                    "Acceptance criteria:\n" +
+                    "- Codebase structure documented\n" +
+                    "- Key patterns and conventions stored";
+                await WritePlanningMemoryAsync(store, "task:init-0-onboarder", onboarderContent,
+                    archiveExisting: false,
+                    keywords: ["status:pending", "wave:0", "phase:init", "gate:onboarder"],
+                    cancellationToken);
+            }
+            catch { /* best-effort */ }
+        }
+
         // Scaffold merge infrastructure
         ScaffoldMergeInfrastructure(scriniaDir);
 
@@ -194,24 +321,20 @@ public sealed class ScriniaProjectTools
             "'.scrinia/hooks/scrinia-merge-meta.sh %O %A %B'";
 
         if (hasExistingCode)
-            response += "\n\nExisting codebase detected. Recommended next steps:\n" +
-                "1. Scan the codebase for concerns, risks, and tech debt → concern_add\n" +
-                "2. Capture key architecture patterns and conventions → store(content, \"topic:subject\")\n" +
-                "3. Set a goal for what you want to achieve → goal_update(action:'add')\n" +
-                "4. Then proceed to research → requirements → roadmap → execution";
+            response += "\n\nExisting codebase detected. Onboarder task created.\n" +
+                "Recommended next steps:\n" +
+                "1. Run task('next') to start the onboarder\n" +
+                "2. Set a goal for what you want to achieve → goal('add')\n" +
+                "3. Then proceed to research → requirements → execution";
         else
-            response += "\n\nEmpty workspace. Set a goal with goal_update(action:'add'), " +
-                "then define requirements and a roadmap.";
+            response += "\n\nEmpty workspace. Set a goal with goal('add'), " +
+                "then define requirements.";
 
         return response;
     }
 
     /// <summary>Store project requirements with category grouping and REQ-IDs.</summary>
-    [McpServerTool(Name = "plan_requirements"), Description(
-        "Store project requirements with category grouping and REQ-IDs. " +
-        "The agent formats categories (e.g. Foundation, API, UI) and REQ-IDs with v1/v2 scope labels in the requirements text. " +
-        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> PlanRequirements(
+    internal async Task<string> PlanRequirements(
         [Description("Free-text requirements organized by category with REQ-IDs and v1/v2 scope labels (e.g. '## v1 Requirements\\n### Auth\\n- AUTH-01: Login via email').")] string requirements,
         CancellationToken cancellationToken = default)
     {
@@ -243,125 +366,20 @@ public sealed class ScriniaProjectTools
             progressPct: "10",
             lastAction: "Requirements defined",
             blockers: "none",
-            nextStep: "review requirements with the user before creating roadmap",
+            nextStep: "review requirements with the user before starting execution",
             cancellationToken);
 
         return "Stored: project:requirements. Files in .scrinia/ were updated — these are your changes.\n\n" +
-               "Before creating a roadmap, review these requirements with the user:\n" +
+               "Review these requirements with the user:\n" +
                "- Are all requirements captured? Anything missing?\n" +
                "- Are the REQ-IDs scoped correctly (too broad? too narrow?)?\n" +
                "- Are priorities clear — what's essential vs. nice-to-have?\n" +
-               "Once confirmed, run plan_roadmap to create a phased roadmap.";
+               "Once confirmed, set a goal with goal('add') to start execution.";
     }
 
-    /// <summary>Store a phased roadmap that maps requirements to phases.</summary>
-    [McpServerTool(Name = "plan_roadmap"), Description(
-        "Store a phased roadmap that maps requirements to phases. " +
-        "Validates that every REQ-ID from project:requirements appears in exactly one phase. " +
-        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> PlanRoadmap(
-        [Description("Free-text phased roadmap. Each phase should reference the REQ-IDs it covers.")] string roadmap,
-        CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // Read requirements to extract REQ-IDs
-        string requirementsText;
-        try { requirementsText = await ReadMemoryAsync(store, "project:requirements", cancellationToken); }
-        catch (FileNotFoundException)
-        {
-            return "Error: no requirements found. Run plan_requirements first.";
-        }
-
-        // Extract REQ-IDs from requirements and roadmap
-        var reqIds = ReqIdPattern.Matches(requirementsText)
-            .Select(m => m.Groups[1].Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var roadmapIdList = ReqIdPattern.Matches(roadmap)
-            .Select(m => m.Groups[1].Value)
-            .ToList();
-
-        // Detect duplicate REQ-IDs across phases (same ID in multiple phases)
-        var duplicates = roadmapIdList
-            .GroupBy(id => id, StringComparer.OrdinalIgnoreCase)
-            .Where(g => g.Count() > 1)
-            .Select(g => g.Key)
-            .OrderBy(id => id)
-            .ToList();
-
-        if (duplicates.Count > 0)
-        {
-            return $"Error: REQ-IDs appear in more than one phase: {string.Join(", ", duplicates)}. " +
-                   "Every requirement must appear in exactly one phase.";
-        }
-
-        var roadmapIds = roadmapIdList.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        // Validate: every REQ-ID from requirements must appear in roadmap
-        var missingIds = reqIds.Where(id => !roadmapIds.Contains(id)).OrderBy(id => id).ToList();
-        if (missingIds.Count > 0)
-        {
-            return $"Error: roadmap is missing required REQ-IDs: {string.Join(", ", missingIds)}. " +
-                   $"Every requirement must appear in exactly one phase.";
-        }
-
-        // Extra IDs in roadmap not in requirements: allowed — agent may define new ones
-        var extraIds = roadmapIds.Where(id => !reqIds.Contains(id)).OrderBy(id => id).ToList();
-        string extraNote = extraIds.Count > 0
-            ? $" Note: {extraIds.Count} REQ-ID(s) in the roadmap are not in project:requirements: {string.Join(", ", extraIds)}."
-            : "";
-
-        await WritePlanningMemoryAsync(store, "plan:roadmap", roadmap, archiveExisting: true, cancellationToken);
-
-        // Count phases (lines starting with "### Phase" or "Phase \d")
-        int phaseCount = CountPhases(roadmap);
-
-        // Update state
-        string stateText;
-        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
-        catch (FileNotFoundException) { stateText = ""; }
-
-        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
-        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
-
-        await WriteStateAsync(store, projectName, projectId,
-            phase: phaseCount > 0 ? $"Roadmap created ({phaseCount} phases)" : "Roadmap created",
-            progressPct: "20",
-            lastAction: "Roadmap created",
-            blockers: "none",
-            nextStep: "review the roadmap with the user before starting execution",
-            cancellationToken);
-
-        // Optionally surface learn:patterns as a hint for the roadmap author
-        string patternNote = "";
-        try
-        {
-            string patterns = await ReadMemoryAsync(store, "learn:patterns", cancellationToken);
-            string hint = patterns.Length > 300 ? patterns[..300] + "..." : patterns;
-            patternNote = $" Patterns from prior phases: {hint}";
-        }
-        catch { /* no learn:patterns yet — skip silently */ }
-
-        return $"Stored: plan:roadmap.{extraNote}{patternNote} " +
-               "Files in .scrinia/ were updated — these are your changes.\n\n" +
-               "Before starting execution, review this roadmap with the user:\n" +
-               "- Are the phases in the right order? Any dependencies between them?\n" +
-               "- Are the success criteria measurable and specific?\n" +
-               "- Is the scope per phase reasonable (not too large, not too small)?\n" +
-               "Once confirmed, run research_start for phase 01 to investigate before decomposing into tasks.";
-    }
 
     /// <summary>Decompose a phase into task memories with keyword-based metadata.</summary>
-    [McpServerTool(Name = "plan_tasks"), Description(
-        "Decompose a phase into task memories with keyword-based metadata for status, wave, phase, and dependencies. " +
-        "Call research_complete to store research:{phaseId}-{topic} findings before decomposing tasks. " +
-        "Task definitions should be produced by a spawned planner agent (skill_load('planner')), not written inline by the orchestrator. " +
-        "Each task is stored as task:{phaseId}-{wave}-{id} with keywords: " +
-        "status:pending, wave:N, phase:XX, and depends_on:{subject} for each dependency. " +
-        "Requires plan:roadmap to exist (run plan_roadmap first). " +
-        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> PlanTasks(
+    internal async Task<string> PlanTasks(
         [Description("Two-digit phase number (e.g. '01').")] string phaseId,
         [Description(
             "Free-text task definitions. Each task section uses this format:\n" +
@@ -374,18 +392,10 @@ public sealed class ScriniaProjectTools
             "Waves are computed automatically from the dependency graph — no need to specify them.")] string tasks,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        if (string.IsNullOrWhiteSpace(phaseId))
+            return "Error: phaseId is required.";
 
-        // Read roadmap for prerequisite check and last-phase detection
-        string roadmapText;
-        try
-        {
-            roadmapText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            return "Error: no roadmap found. Run plan_roadmap first.";
-        }
+        var store = CurrentStore;
 
         // Parse task sections from free-text input
         var parsedTasks = ParseTaskSections(tasks);
@@ -399,42 +409,44 @@ public sealed class ScriniaProjectTools
         parsedTasks.Add(new ParsedTask(
             Id: "qa-gate",
             DependsOn: allUserTaskIds,
-            Content: "## QA Gate\nAction: Spawn a QA agent via skill_load(\"qa\"). " +
+            Content: "## QA Gate\nAction: Spawn a QA agent via skill('load', { name: \"qa\" }). " +
                 "The QA agent runs the full test suite, verifies the build, checks acceptance criteria, " +
                 "and writes qa:latest memory with structured results.\n" +
                 "Acceptance criteria:\n- qa:latest memory exists with current test pass/fail counts\n" +
                 "- Build passes with 0 errors\n- All phase acceptance criteria verified by QA agent"));
 
-        // Last-phase gates — only if this is the final phase in the roadmap
-        var phaseIds = ExtractPhaseIds(roadmapText);
-        bool isLastPhase = phaseIds.Count > 0 &&
-            phaseIds[^1].Equals(phaseId, StringComparison.OrdinalIgnoreCase);
+        // Self-reflector gate — always injected, after QA
+        parsedTasks.Add(new ParsedTask(
+            Id: "self-reflector-gate",
+            DependsOn: ["qa-gate"],
+            Content: "## Self-Reflector Gate\nAction: Spawn a self-reflector agent via skill('load', { name: \"self-reflector\" }). " +
+                "Read execution logs and QA findings. Compare plan vs reality. " +
+                "Store retrospective and belief updates.\n" +
+                "Acceptance criteria:\n- Retrospective stored as learn:retro-*\n- Beliefs updated if applicable"));
 
-        if (isLastPhase)
-        {
-            parsedTasks.Add(new ParsedTask(
-                Id: "evolutionary-gate",
-                DependsOn: ["qa-gate"],
-                Content: "## Evolutionary Gate\nAction: Spawn an evolutionary agent via skill_load(\"evolutionary\"). " +
-                    "Run a knowledge base scan to update stale memories, detect skill drift, and surface emergent patterns.\n" +
-                    "Acceptance criteria:\n- Evolutionary scan completed\n- Stale memories updated\n" +
-                    "- Session stored as sessions:evolutionary-gNN"));
+        // Evolutionary, cartographer, and march gates — always injected (after QA + self-reflector)
+        parsedTasks.Add(new ParsedTask(
+            Id: "evolutionary-gate",
+            DependsOn: ["qa-gate", "self-reflector-gate"],
+            Content: "## Evolutionary Gate\nAction: Spawn an evolutionary agent via skill('load', { name: \"evolutionary\" }). " +
+                "Run a knowledge base scan to update stale memories, detect skill drift, and surface emergent patterns.\n" +
+                "Acceptance criteria:\n- Evolutionary scan completed\n- Stale memories updated\n" +
+                "- Session stored as sessions:evolutionary-gNN"));
 
-            parsedTasks.Add(new ParsedTask(
-                Id: "cartographer-gate",
-                DependsOn: ["qa-gate"],
-                Content: "## Cartographer Gate\nAction: Spawn a cartographer agent via skill_load(\"cartographer\"). " +
-                    "Map knowledge connections, link orphans, identify gaps.\n" +
-                    "Acceptance criteria:\n- Cartography scan completed\n- New links created for orphaned memories\n" +
-                    "- Report stored as cartography:YYYY-MM-DD"));
+        parsedTasks.Add(new ParsedTask(
+            Id: "cartographer-gate",
+            DependsOn: ["qa-gate", "self-reflector-gate"],
+            Content: "## Cartographer Gate\nAction: Spawn a cartographer agent via skill('load', {{ name: \"cartographer\" }}). " +
+                "Map knowledge connections, link orphans, identify gaps.\n" +
+                "Acceptance criteria:\n- Cartography scan completed\n- New links created for orphaned memories\n" +
+                "- Report stored as cartography:YYYY-MM-DD"));
 
-            parsedTasks.Add(new ParsedTask(
-                Id: "march-gate",
-                DependsOn: ["qa-gate"],
-                Content: "## March Report Gate\nAction: Spawn a march reporter agent via skill_load(\"march-reporter\"). " +
-                    "Produce a goal summary document in docs/reports/.\n" +
-                    "Acceptance criteria:\n- March report written to docs/reports/\n- Session log updated"));
-        }
+        parsedTasks.Add(new ParsedTask(
+            Id: "march-gate",
+            DependsOn: ["qa-gate", "self-reflector-gate"],
+            Content: "## March Report Gate\nAction: Spawn a march reporter agent via skill('load', { name: \"march-reporter\" }). " +
+                "Produce a goal summary document in docs/reports/.\n" +
+                "Acceptance criteria:\n- March report written to docs/reports/\n- Session log updated"));
 
         // Resolve active goal for task scoping
         string? activeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
@@ -525,6 +537,14 @@ public sealed class ScriniaProjectTools
             }
             if (task.Id.EndsWith("-gate", StringComparison.OrdinalIgnoreCase))
                 keywords.Add($"gate:{task.Id.Replace("-gate", "", StringComparison.OrdinalIgnoreCase)}");
+
+            // Extract REQ-IDs from task content for requirement traceability
+            foreach (Match reqMatch in ReqIdPattern.Matches(task.Content))
+            {
+                string reqKw = $"req:{reqMatch.Groups[1].Value}";
+                if (!keywords.Contains(reqKw, StringComparer.OrdinalIgnoreCase))
+                    keywords.Add(reqKw);
+            }
 
             // Task naming: task:{goalPrefix}{phaseId}-{wave}-{id}
             string taskName = $"task:{goalPrefix}{phaseId}-{wave}-{task.Id}";
@@ -622,225 +642,12 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
-    /// <summary>Resume full agent context after context loss or session start.</summary>
-    [McpServerTool(Name = "context_resume"), Description(
-        "Resume full agent context after context loss or session start. Returns project state, agent " +
-        "behavioral profile, active goal description, today's session log, and a task_next nudge when " +
-        "pending tasks exist. " +
-        "Note: reads from .scrinia/ in the workspace.")]
-    public async Task<string> ContextResume(CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // Check for unresolved merge conflicts in .scrinia/
-        string conflictWarning = "";
-        try
-        {
-            string resumeStoreDir = store.GetStoreDirForScope("local");
-            string resumeScriniaDir = Path.GetDirectoryName(resumeStoreDir)!;
-            if (Directory.Exists(resumeScriniaDir))
-            {
-                bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
-                    .Any(f =>
-                    {
-                        try
-                        {
-                            // Quick check: read first 10KB of each file for conflict markers
-                            using var reader = new StreamReader(f);
-                            var buf = new char[10240];
-                            int read = reader.Read(buf, 0, buf.Length);
-                            return new string(buf, 0, read).Contains("<<<<<<<");
-                        }
-                        catch { return false; }
-                    });
-                if (hasConflicts)
-                    conflictWarning = "WARNING: .scrinia/ has unresolved merge conflicts. Run reconcile() before continuing.\n\n";
-            }
-        }
-        catch { /* best-effort check */ }
-
-        // Read checkpoint:latest for recovery context
-        string? checkpointContent = null;
-        try
-        {
-            checkpointContent = await ReadMemoryAsync(store, "checkpoint:latest", cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            // No checkpoint exists — normal for first-time projects
-        }
-
-        string response;
-        try
-        {
-            response = await ReadMemoryAsync(store, "project:state", cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            string? rebuilt = await RebuildStateFromMemoriesAsync(store, cancellationToken);
-            if (rebuilt is null)
-                return "Error: no project found. Run project_init first.";
-            response = rebuilt;
-        }
-
-        // Active goal description
-        string activeGoalDesc = "";
-        try
-        {
-            string ctxText = await ReadMemoryAsync(store, "project:context", cancellationToken);
-            var (goals, _, _) = ParseGoalsSection(ctxText);
-            var activeLine = goals.FirstOrDefault(g => g.Contains("[active]", StringComparison.OrdinalIgnoreCase));
-            if (activeLine is not null)
-            {
-                // Extract description: everything after "[active] " and before " | Outcome:"
-                var statusMatch = Regex.Match(
-                    activeLine.TrimStart('-', '*', ' '),
-                    @"\]\s*\[active\]\s*",
-                    RegexOptions.IgnoreCase);
-                if (statusMatch.Success)
-                {
-                    string desc = activeLine.TrimStart('-', '*', ' ')[(statusMatch.Index + statusMatch.Length)..];
-                    activeGoalDesc = $"\nActive goal: {desc.Trim()}";
-                }
-            }
-        }
-        catch { /* no project:context or no active goal — skip */ }
-
-        response += activeGoalDesc;
-
-        // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
-        string concernNote = "";
-        try
-        {
-            var (cs, _) = store.ParseQualifiedName("concern:placeholder");
-            var entries = store.LoadIndex(cs);
-            int activeCount = entries.Count(e => HasKeyword(e, "status:active"));
-            if (activeCount > 0)
-            {
-                int highCount = entries.Count(e =>
-                    HasKeyword(e, "status:active") &&
-                    HasKeyword(e, "severity:high"));
-                concernNote = highCount > 0
-                    ? $"\nConcerns: {activeCount} active ({highCount} high-severity)"
-                    : $"\nConcerns: {activeCount} active";
-            }
-        }
-        catch { /* concern scope not yet created — skip silently */ }
-
-        response += concernNote;
-
-        // Optionally surface unused capability hints (ADOPT-03)
-        string capabilityHints = "";
-
-        // Check if concern tracking has been used (scope exists with entries)
-        bool concernsUsed = false;
-        try
-        {
-            var (cs2, _) = store.ParseQualifiedName("concern:placeholder");
-            var cEntries = store.LoadIndex(cs2);
-            concernsUsed = cEntries.Count > 0;
-        }
-        catch { /* scope not created — concerns not used */ }
-
-        if (!concernsUsed)
-            capabilityHints += "\nHint: concern tracking is available — use concern_add to track risks and issues across phases.";
-
-        // Check if knowledge (bok) has been used
-        bool knowledgeUsed = false;
-        try
-        {
-            var (bs, _) = store.ParseQualifiedName("bok:placeholder");
-            var bEntries = store.LoadIndex(bs);
-            knowledgeUsed = bEntries.Count > 0;
-        }
-        catch { /* scope not created — knowledge not used */ }
-
-        if (!knowledgeUsed)
-            capabilityHints += "\nHint: use store(content, \"topic:subject\") with keywords to persist domain knowledge across sessions.";
-
-        response += capabilityHints;
-
-        // Inline agent:profile content
-        try
-        {
-            string profileContent = await ReadMemoryAsync(store, "agent:profile", cancellationToken);
-            response += "\n\n## Agent profile\n" + profileContent;
-        }
-        catch (FileNotFoundException) { /* no profile — skip silently */ }
-
-        if (checkpointContent is not null)
-            response += "\n\n## Last checkpoint\n" + checkpointContent;
-
-        // Today's session log
-        try
-        {
-            string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
-            string sessionContent = await ReadMemoryAsync(store, $"sessions:{today}", cancellationToken);
-            response += "\n\n## Session log\n" + sessionContent;
-        }
-        catch (FileNotFoundException) { /* no session log for today — skip */ }
-
-        // Staleness & drift alerts — use cache if available, fall back to live scan
-        int rsStale, rsReview, rsDrift, rsMissing;
-        string rsCacheNote = "";
-        if (MaintenanceCache.TryReadCache(store, out var rsCached) && rsCached is not null)
-        {
-            rsStale = rsCached.StaleCount;
-            rsReview = rsCached.ReviewCount;
-            rsDrift = rsCached.DriftCount;
-            rsMissing = rsCached.MissingCount;
-            int cacheAge = (int)(DateTimeOffset.UtcNow - rsCached.ComputedAt).TotalMinutes;
-            rsCacheNote = $" (cached {cacheAge} min ago)";
-        }
-        else
-        {
-            (rsStale, rsReview) = ScanStaleness(store);
-            (rsDrift, rsMissing) = ScanDrift(store);
-        }
-
-        if (rsStale > 0) response += $"\n⚠ {rsStale} memory(s) have passed their review date.{rsCacheNote}";
-        if (rsReview > 0) response += $"\nℹ {rsReview} memory(s) have review conditions set.{rsCacheNote}";
-        if (rsDrift > 0) response += $"\n⚠ {rsDrift} code reference(s) have drifted (files changed since stored).{rsCacheNote}";
-        if (rsMissing > 0) response += $"\n⚠ {rsMissing} code reference(s) point to missing files.{rsCacheNote}";
-
-        // Task nudge — rational lensing: nudge agent into the task loop
-        try
-        {
-            // Extract phase number from state
-            string phaseId = "";
-            var phaseMatch = PhaseNumberPattern.Match(response);
-            if (phaseMatch.Success)
-                phaseId = int.Parse(phaseMatch.Groups[1].Value).ToString("D2");
-
-            if (!string.IsNullOrEmpty(phaseId))
-            {
-                string? nudgeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
-                var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
-                var taskEntries = store.LoadIndex(taskScope);
-                var pendingTasks = taskEntries
-                    .Where(e => HasKeyword(e, $"phase:{phaseId}"))
-                    .Where(e => nudgeGoalId is null || HasKeyword(e, $"goal:{nudgeGoalId}"))
-                    .Where(e => HasKeyword(e, "status:pending"))
-                    .ToList();
-
-                if (pendingTasks.Count > 0)
-                    response += $"\n\nRun task_next(\"{phaseId}\") to continue.";
-            }
-        }
-        catch { /* best-effort — skip nudge silently */ }
-
-        response = conflictWarning + response;
-        response = Truncate(response);
-
-        return response;
-    }
+    /// <summary>Resume full agent context after context loss or session start. Delegates to ScriniaMcpTools.Restore.</summary>
+    internal Task<string> ContextResume(CancellationToken cancellationToken = default)
+        => new ScriniaMcpTools().Restore(cancellationToken);
 
     /// <summary>Query current project status.</summary>
-    [McpServerTool(Name = "plan_status"), Description(
-        "Query current project status. Returns current phase, progress percentage, and any blockers. " +
-        "Works with partial project state (e.g., only project:context exists with no roadmap yet). " +
-        "Note: reads from .scrinia/ in the workspace.")]
-    public async Task<string> PlanStatus(CancellationToken cancellationToken = default)
+    internal async Task<string> PlanStatus(CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
 
@@ -864,20 +671,9 @@ public sealed class ScriniaProjectTools
         string next = ExtractStateField(stateText, "Next:") ?? "(not set)";
         string lastAction = ExtractStateField(stateText, "Last action:") ?? "(not set)";
 
-        // Compute progress from roadmap + task data (not from stale stored value)
-        string? roadmapText = null;
-        string roadmapNote = "";
-        try
-        {
-            roadmapText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken);
-            int phaseCount = CountPhases(roadmapText);
-            if (phaseCount > 0)
-                roadmapNote = $"\nRoadmap: {phaseCount} phase(s) defined";
-        }
-        catch (FileNotFoundException) { /* roadmap not yet created — skip silently */ }
-
+        // Compute progress from task data (scoped to active goal)
         string? statusGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
-        string progress = CalculateProgress(store, roadmapText, statusGoalId) + "%";
+        string progress = CalculateProgress(store, statusGoalId) + "%";
 
         // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
         string concernNote = "";
@@ -927,9 +723,9 @@ public sealed class ScriniaProjectTools
 
         string idleNote = "";
         if (!hasActiveGoal && progress == "100%")
-            idleNote = "\nNo active goal. Ask the user what to work on next → goal_update(action:'add')";
+            idleNote = "\nNo active goal. Ask the user what to work on next → goal('add')";
         else if (!hasActiveGoal && progress == "0%")
-            idleNote = "\nNo active goal. Set one with goal_update(action:'add') to start planning.";
+            idleNote = "\nNo active goal. Set one with goal('add') to start planning.";
 
         string response =
             $"Project: {projectName}\n" +
@@ -938,7 +734,7 @@ public sealed class ScriniaProjectTools
             $"Last action: {lastAction}\n" +
             $"Blockers: {blockers}\n" +
             $"Next: {next}" +
-            roadmapNote + concernNote + goalNote + idleNote;
+            concernNote + goalNote + idleNote;
 
         // Staleness & drift alerts — use cache if available, fall back to live scan
         int psStale, psReview, psDrift, psMissing;
@@ -968,11 +764,66 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
+    /// <summary>Thin dispatcher for task operations — delegates to TaskNext/TaskComplete.</summary>
+    [McpServerTool(Name = "task"), Description(
+        "Task operations. Actions: 'next' (get next pending task), 'complete' (mark task done).")]
+    public async Task<string> TaskDispatch(
+        [Description("Action: 'next' or 'complete'.")] string action,
+        [Description("Phase ID (next — optional, auto-detects if omitted).")] string? phaseId = null,
+        [Description("Task name to complete (complete).")] string? taskName = null,
+        [Description("Outcome description (complete).")] string? outcome = null,
+        CancellationToken cancellationToken = default)
+    {
+        string act = action.Trim().ToLowerInvariant();
+        switch (act)
+        {
+            case "next":
+                if (string.IsNullOrWhiteSpace(phaseId))
+                {
+                    // Auto-detect phase from active goal's pending tasks
+                    try
+                    {
+                        var store = CurrentStore;
+                        string? activeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+                        var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+                        var allEntries = store.LoadIndex(taskScope);
+                        var pendingEntries = allEntries
+                            .Where(e => HasKeyword(e, "status:pending"))
+                            .Where(e => activeGoalId is null || HasKeyword(e, $"goal:{activeGoalId}"));
+
+                        // Find first phase with pending tasks
+                        foreach (var entry in pendingEntries)
+                        {
+                            var phaseKw = entry.Keywords?.FirstOrDefault(k =>
+                                k.StartsWith("phase:", StringComparison.OrdinalIgnoreCase));
+                            if (phaseKw is not null)
+                            {
+                                phaseId = phaseKw["phase:".Length..];
+                                break;
+                            }
+                        }
+
+                        if (string.IsNullOrWhiteSpace(phaseId))
+                            return "No pending tasks found for the active goal.";
+                    }
+                    catch { return "Error: could not auto-detect phase. Provide phaseId parameter."; }
+                }
+                return await TaskNext(phaseId, cancellationToken);
+
+            case "complete":
+                if (string.IsNullOrWhiteSpace(taskName))
+                    return "Error: task('complete') requires 'taskName' parameter.";
+                if (string.IsNullOrWhiteSpace(outcome))
+                    return "Error: task('complete') requires 'outcome' parameter.";
+                return await TaskComplete(taskName, outcome, cancellationToken);
+
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: 'next', 'complete'.";
+        }
+    }
+
     /// <summary>Returns all unblocked tasks in the current wave for a phase.</summary>
-    [McpServerTool(Name = "task_next"), Description(
-        "Returns all unblocked tasks in the current wave for a phase. " +
-        "The agent decides which to execute and in what order. Call task_complete when done.")]
-    public async Task<string> TaskNext(
+    internal async Task<string> TaskNext(
         [Description("Two-digit phase number (e.g. '01').")] string phaseId,
         CancellationToken cancellationToken = default)
     {
@@ -1069,14 +920,9 @@ public sealed class ScriniaProjectTools
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
         string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
 
-        // Compute progress live from roadmap + task data
-        string? tnRoadmap = null;
-        try { tnRoadmap = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken); }
-        catch (FileNotFoundException) { }
-
         await WriteStateAsync(store, projectName, projectId,
             phase: currentPhase,
-            progressPct: CalculateProgress(store, tnRoadmap, activeGoalId),
+            progressPct: CalculateProgress(store, activeGoalId),
             lastAction: $"task_next called for phase {phaseId} wave {currentWave}",
             blockers: "none",
             nextStep: unblockedEntries.Count > 1
@@ -1090,38 +936,42 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
-    /// <summary>Verify a phase achieved its goal using success criteria from the roadmap.</summary>
-    [McpServerTool(Name = "plan_verify"), Description(
-        "Record verification results for a phase. Call WITHOUT evidence to see the criteria checklist. " +
-        "Call WITH evidence after you have verified the work yourself (run tests, reviewed changes, confirmed behavior). " +
-        "The agent is responsible for actual verification — this tool records the results.")]
-    public async Task<string> PlanVerify(
-        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
-        [Description("Your verification evidence — one line per criterion in order, " +
-                     "each starting with PASS: or FAIL: followed by what you observed. " +
-                     "Omit to see the criteria checklist without recording results.")] string? evidence = null,
+    /// <summary>Verify a phase achieved its goal using acceptance criteria from requirements.</summary>
+    internal async Task<string> PlanVerify(
+        string phaseId,
+        string? evidence = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
 
-        // Read plan:roadmap — required
-        string roadmapText;
-        try { roadmapText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken); }
+        // Discover REQ-IDs referenced by tasks in this phase
+        string? verifyGoalId0 = await GetActiveGoalIdAsync(store, cancellationToken);
+        var (taskScope0, _) = store.ParseQualifiedName("task:placeholder");
+        var allEntries0 = store.LoadIndex(taskScope0);
+        var phaseReqIds = allEntries0
+            .Where(e => HasKeyword(e, $"phase:{phaseId}"))
+            .Where(e => verifyGoalId0 is null || HasKeyword(e, $"goal:{verifyGoalId0}"))
+            .SelectMany(e => e.Keywords ?? [])
+            .Where(k => k.StartsWith("req:", StringComparison.OrdinalIgnoreCase))
+            .Select(k => k["req:".Length..])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Read requirements and extract matching entries as criteria
+        string requirementsText;
+        try { requirementsText = await ReadMemoryAsync(store, "project:requirements", cancellationToken); }
         catch (FileNotFoundException)
         {
-            return "Error: no roadmap found. Run plan_roadmap first.";
+            return "Error: no requirements found. Call requirement('add') first.";
         }
 
-        // Extract success criteria scoped to target phase
-        var criteria = ExtractPhaseCriteria(roadmapText, phaseId);
+        var criteria = ExtractRequirementCriteria(requirementsText, phaseReqIds);
         if (criteria.Count == 0)
-            return $"No success criteria found for phase {phaseId}.";
+            return $"No requirements found for phase {phaseId}. Ensure tasks reference REQ-IDs in their content.";
 
         // Load task summary for context (scoped to active goal)
-        string? verifyGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
-        var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
-        var allEntries = store.LoadIndex(taskScope);
-        var phaseEntries = allEntries
+        string? verifyGoalId = verifyGoalId0;
+        var phaseEntries = allEntries0
             .Where(e => HasKeyword(e, $"phase:{phaseId}"))
             .Where(e => verifyGoalId is null || HasKeyword(e, $"goal:{verifyGoalId}"))
             .ToList();
@@ -1167,7 +1017,7 @@ public sealed class ScriniaProjectTools
 
             sb.AppendLine("Verify each criterion yourself (run tests, review code, confirm behavior), then call:");
             sb.AppendLine($"```");
-            sb.AppendLine($"plan_verify(\"{phaseId}\", evidence: \"PASS: criterion 1 — your evidence\\nPASS: criterion 2 — your evidence\")");
+            sb.AppendLine($"plan('verify', {{ phaseId: \"{phaseId}\", evidence: \"PASS: criterion 1 — your evidence\\nPASS: criterion 2 — your evidence\")");
             sb.AppendLine($"```");
             sb.AppendLine();
 
@@ -1263,7 +1113,7 @@ public sealed class ScriniaProjectTools
         string projectName2 = ExtractStateField(stateText2, "Project:") ?? "Unknown Project";
         string projectId2 = ExtractStateField(stateText2, "ID:") ?? DeriveProjectId(store);
         string currentPhase2 = ExtractStateField(stateText2, "Phase:") ?? $"Phase {phaseId}";
-        string progressPct2 = CalculateProgress(store, roadmapText, verifyGoalId);
+        string progressPct2 = CalculateProgress(store, verifyGoalId);
 
         // Build next step guidance based on verification result
         string verifyNextStep;
@@ -1310,14 +1160,9 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>Create gap closure tasks for failed verification criteria and re-open the phase.</summary>
-    [McpServerTool(Name = "plan_gaps"), Description(
-        "Create gap closure tasks for failed verification criteria. " +
-        "Re-opens the phase for another execution cycle. " +
-        "Call after plan_verify identifies failures. " +
-        "Note: this writes to .scrinia/ in the workspace — treat those file changes as your own.")]
-    public async Task<string> PlanGaps(
-        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
-        [Description("Newline-separated list of failed criterion texts (from plan_verify output).")] string failedCriteria,
+    internal async Task<string> PlanGaps(
+        string phaseId,
+        string failedCriteria,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -1365,7 +1210,7 @@ public sealed class ScriniaProjectTools
 
         string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
-        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "50";
+        string progressPct = CalculateProgress(store, gapGoalId);
 
         await WriteStateAsync(store, projectName, projectId,
             phase: $"Phase {phaseId} (re-opened for gap closure)",
@@ -1385,221 +1230,6 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
-    /// <summary>Open a research investigation and store questions under research:{phaseId}-{topic}.</summary>
-    [McpServerTool(Name = "research_start"), Description(
-        "Open a research investigation before plan_tasks. " +
-        "Stores research:{phaseId}-{topic} with status:active. " +
-        "Call research_complete when findings are ready, then call plan_tasks.")]
-    public async Task<string> ResearchStart(
-        [Description("Two-digit phase number (e.g. '06').")] string phaseId,
-        [Description("Research topic slug — used as the memory name suffix (e.g. 'auth', 'storage').")] string topic,
-        [Description("Questions to investigate during this research session.")] string questions,
-        CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // Prerequisite check: project:context must exist
-        try
-        {
-            await ReadMemoryAsync(store, "project:context", cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            return "Error: no project initialized. Run project_init first.";
-        }
-
-        string? goalId = await GetActiveGoalIdAsync(store, cancellationToken);
-        string goalPrefix = "";
-        if (goalId is not null)
-        {
-            var m = GoalIdPattern.Match(goalId);
-            if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
-        }
-        string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
-        string content =
-            $"## Research Investigation\n" +
-            $"Phase: {phaseId}\n" +
-            $"Topic: {topic}\n\n" +
-            $"## Questions\n{questions}";
-
-        await WritePlanningMemoryAsync(store, memoryName, content,
-            archiveExisting: true,
-            keywords: ["status:active", $"phase:{phaseId}"],
-            cancellationToken);
-
-        // Update project:state
-        string stateText;
-        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
-        catch (FileNotFoundException) { stateText = ""; }
-
-        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
-        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
-        string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
-        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
-
-        await WriteStateAsync(store, projectName, projectId,
-            phase: currentPhase,
-            progressPct: progressPct,
-            lastAction: $"Research started: {memoryName}",
-            blockers: "none",
-            nextStep: $"investigate questions, then call research_complete(\"{phaseId}\", \"{topic}\", findings)",
-            cancellationToken);
-
-        // Check for existing knowledge to build on (internal research before external)
-        var researchHints = new List<string>();
-
-        // Existing skills
-        try
-        {
-            var (skillScope, _) = store.ParseQualifiedName("skill:placeholder");
-            var skillEntries = store.LoadIndex(skillScope);
-            if (skillEntries.Count > 0)
-            {
-                var names = skillEntries.Select(e => $"skill:{e.Name}").Take(5);
-                researchHints.Add($"Skills available: {string.Join(", ", names)} — use skill_load for specialist prompts");
-            }
-        }
-        catch { /* skill scope not yet created — skip silently */ }
-
-        // Prior beliefs from retrospectives
-        try
-        {
-            var (learnScope, _) = store.ParseQualifiedName("learn:placeholder");
-            var learnEntries = store.LoadIndex(learnScope);
-            var beliefEntries = learnEntries.Where(e => HasKeyword(e, "type:beliefs")).ToList();
-            if (beliefEntries.Count > 0)
-            {
-                var names = beliefEntries.Select(e => $"learn:{e.Name}").Take(3);
-                researchHints.Add($"Prior beliefs: {string.Join(", ", names)} — search or show to build on what you already understand");
-            }
-        }
-        catch { /* learn scope not yet created — skip silently */ }
-
-        // Prior research on related topics
-        try
-        {
-            var (resScope, _) = store.ParseQualifiedName("research:placeholder");
-            var resEntries = store.LoadIndex(resScope);
-            var priorResearch = resEntries.Where(e => HasKeyword(e, "status:complete")).ToList();
-            if (priorResearch.Count > 0)
-            {
-                var names = priorResearch.Select(e => $"research:{e.Name}").Take(3);
-                researchHints.Add($"Prior research: {string.Join(", ", names)} — check for relevant findings and hypotheses");
-            }
-        }
-        catch { /* research scope not yet created — skip silently */ }
-
-        string hintsText = researchHints.Count > 0
-            ? "\n\nBuild on existing knowledge before investigating externally:\n" +
-              string.Join("\n", researchHints.Select(h => $"- {h}"))
-            : "";
-
-        string response = $"Research investigation started. Stored as {memoryName} with status:active. " +
-                          $"Files in .scrinia/ were updated — these are your changes. " +
-                          $"Call research_complete when you have findings.{hintsText}";
-
-        response = Truncate(response);
-
-        return response;
-    }
-
-    /// <summary>Complete a research investigation with findings and a hypothesis.</summary>
-    [McpServerTool(Name = "research_complete"), Description(
-        "Complete a research investigation with findings and a hypothesis. " +
-        "The hypothesis states what approach you believe will work and why, based on your findings. " +
-        "This hypothesis will be surfaced during plan_verify so you can evaluate whether it held. " +
-        "Call after research_start, before plan_tasks.")]
-    public async Task<string> ResearchComplete(
-        [Description("Two-digit phase number (e.g. '06').")] string phaseId,
-        [Description("Research topic slug — must match the topic used in research_start.")] string topic,
-        [Description("Findings from the research investigation.")] string findings,
-        [Description("Your hypothesis: what approach will work and why? What would invalidate it?")] string? hypothesis = null,
-        CancellationToken cancellationToken = default)
-    {
-        var store = CurrentStore;
-
-        // Verify research:{goalPrefix}{phaseId}-{topic} exists with status:active
-        string? goalId = await GetActiveGoalIdAsync(store, cancellationToken);
-        string goalPrefix = "";
-        if (goalId is not null)
-        {
-            var m = GoalIdPattern.Match(goalId);
-            if (m.Success) goalPrefix = $"g{m.Groups[1].Value}-";
-        }
-        string memoryName = $"research:{goalPrefix}{phaseId}-{topic}";
-        var (researchScope, researchSubject) = store.ParseQualifiedName(memoryName);
-        var allEntries = store.LoadIndex(researchScope);
-        var existing = allEntries.FirstOrDefault(e => e.Name == researchSubject);
-
-        if (existing is null || !HasKeyword(existing, "status:active"))
-        {
-            return $"Error: no active research found for '{memoryName}'. Call research_start first.";
-        }
-
-        // Build updated content with findings
-        string existingContent;
-        try { existingContent = await ReadMemoryAsync(store, memoryName, cancellationToken); }
-        catch (FileNotFoundException) { existingContent = ""; }
-
-        string hypothesisSection = !string.IsNullOrWhiteSpace(hypothesis)
-            ? $"\n\n## Hypothesis\n{hypothesis}"
-            : "";
-
-        string updatedContent =
-            existingContent.TrimEnd() + "\n\n" +
-            $"## Findings\n{findings}" +
-            hypothesisSection;
-
-        await WritePlanningMemoryAsync(store, memoryName, updatedContent,
-            archiveExisting: true,
-            keywords: ["status:complete", $"phase:{phaseId}"],
-            cancellationToken);
-
-        // Update project:state
-        string stateText;
-        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
-        catch (FileNotFoundException) { stateText = ""; }
-
-        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
-        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
-        string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
-        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
-
-        await WriteStateAsync(store, projectName, projectId,
-            phase: currentPhase,
-            progressPct: progressPct,
-            lastAction: $"Research complete: {memoryName}",
-            blockers: "none",
-            nextStep: $"share research findings with the user before decomposing into tasks",
-            cancellationToken);
-
-        // Auto-create planner seed task (wave 0 — surfaces before execution tasks)
-        string plannerTaskName = $"task:{goalPrefix}{phaseId}-0-planner";
-        var plannerKeywords = new List<string> { "status:pending", "wave:0", $"phase:{phaseId}", "gate:planner" };
-        if (goalId is not null) plannerKeywords.Add($"goal:{goalId}");
-        string plannerContent =
-            $"## Planner Task\n" +
-            $"Action: Load the planner skill via skill_load(\"planner\"). Read the research findings " +
-            $"from {memoryName}. Read plan:roadmap for phase {phaseId} success criteria. " +
-            $"Produce task definitions and call plan_tasks(\"{phaseId}\", tasks) directly.\n" +
-            $"Acceptance criteria:\n" +
-            $"- plan_tasks called with task definitions for phase {phaseId}\n" +
-            $"- Tasks created with proper dependencies and acceptance criteria";
-        await WritePlanningMemoryAsync(store, plannerTaskName, plannerContent,
-            archiveExisting: false, keywords: [.. plannerKeywords], cancellationToken);
-
-        string response = $"Research complete. {memoryName} updated with findings and status:complete. " +
-            $"Files in .scrinia/ were updated — these are your changes.\n\n" +
-            $"Planner task created: {plannerTaskName}\n" +
-            $"Run task_next(\"{phaseId}\") to get the planner task. " +
-            $"The planner agent will call plan_tasks to create execution tasks.\n\n" +
-            $"Check backlog:* for related deferred work that research may have unblocked.";
-
-        response = Truncate(response);
-
-        return response;
-    }
-
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -1607,7 +1237,7 @@ public sealed class ScriniaProjectTools
     /// Returns rebuilt state text prefixed with "[State rebuilt from memories]", or null if no
     /// project memories exist at all.
     /// </summary>
-    private static async Task<string?> RebuildStateFromMemoriesAsync(
+    internal static async Task<string?> RebuildStateFromMemoriesAsync(
         IMemoryStore store, CancellationToken ct)
     {
         // Step 1: Try project:context for project name
@@ -1624,36 +1254,26 @@ public sealed class ScriniaProjectTools
         if (projectName is null)
             return null; // No project memories at all
 
-        // Step 2: Try plan:roadmap for phase info
+        // Step 2: Check for requirements and compute progress from tasks
         string phase = "Not started";
-        string progressPct = "0";
+        string? rebuildGoalId = await GetActiveGoalIdAsync(store, ct);
+        string progressPct = CalculateProgress(store, rebuildGoalId);
         try
         {
-            string roadmap = await ReadMemoryAsync(store, "plan:roadmap", ct);
-            int phaseCount = CountPhases(roadmap);
-            phase = phaseCount > 0 ? $"Roadmap created ({phaseCount} phases)" : "Roadmap created";
-            progressPct = "20";
+            await ReadMemoryAsync(store, "project:requirements", ct);
+            phase = "Requirements defined";
         }
-        catch (FileNotFoundException) { /* no roadmap yet */ }
+        catch (FileNotFoundException) { /* no requirements yet */ }
 
-        // Step 3: Count plan:* memories for progress estimate
-        try
-        {
-            var planMemories = store.ListScoped("plan");
-            if (planMemories.Count > 1) // more than just roadmap
-                progressPct = "30";
-        }
-        catch { /* listing failed — skip */ }
-
-        // Step 4: Derive project ID
+        // Step 3: Derive project ID
         string projectId = DeriveProjectId(store);
         string projectDisplayName = ToProjectName(projectId);
 
-        // Step 5: Write the rebuilt state for future calls (avoids repeated rebuilds)
+        // Step 4: Write the rebuilt state for future calls (avoids repeated rebuilds)
         string rebuiltNote = "[State rebuilt from memories]\n";
-        string nextStep = phase.Contains("Roadmap")
-            ? "run plan_tasks for phase 1"
-            : "run plan_requirements to define project requirements";
+        string nextStep = phase == "Requirements defined"
+            ? "set a goal with goal('add') to start planning"
+            : "run requirement('add') to define project requirements";
 
         await WriteStateAsync(store, projectDisplayName, projectId,
             phase: phase,
@@ -1696,7 +1316,7 @@ public sealed class ScriniaProjectTools
     /// Reads and decodes a named memory artifact.
     /// Throws FileNotFoundException if the memory does not exist.
     /// </summary>
-    private static async Task<string> ReadMemoryAsync(
+    internal static async Task<string> ReadMemoryAsync(
         IMemoryStore store, string qualifiedName, CancellationToken ct)
     {
         string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
@@ -1763,7 +1383,7 @@ public sealed class ScriniaProjectTools
     /// Writes a structured project:state memory with current planning status.
     /// Uses archiveExisting: false to avoid version bloat on frequent state updates.
     /// </summary>
-    private static async Task WriteStateAsync(
+    internal static async Task WriteStateAsync(
         IMemoryStore store,
         string projectName,
         string projectId,
@@ -1792,7 +1412,7 @@ public sealed class ScriniaProjectTools
     /// Extracts a field value from state text (e.g. "Project: MyProj" → "MyProj").
     /// Returns null if not found.
     /// </summary>
-    private static string? ExtractStateField(string stateText, string fieldPrefix)
+    internal static string? ExtractStateField(string stateText, string fieldPrefix)
     {
         if (string.IsNullOrWhiteSpace(stateText)) return null;
         foreach (string line in stateText.Split('\n'))
@@ -1805,53 +1425,34 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>
-    /// Counts phases in a roadmap text using common heading patterns.
+    /// Discovers distinct phase IDs from task keywords (e.g. "phase:01" → "01").
+    /// Optionally scoped to a specific goal.
     /// </summary>
-    private static int CountPhases(string roadmap)
+    private static List<string> DiscoverPhaseIds(IReadOnlyList<ArtifactEntry> taskEntries, string? goalId = null)
     {
-        int count = 0;
-        foreach (string line in roadmap.Split('\n'))
-        {
-            string trimmed = line.Trim();
-            if (PhaseDetectPattern.IsMatch(trimmed))
-                count++;
-        }
-        return count;
+        return taskEntries
+            .Where(e => goalId is null || HasKeyword(e, $"goal:{goalId}"))
+            .SelectMany(e => e.Keywords ?? [])
+            .Where(k => k.StartsWith("phase:", StringComparison.OrdinalIgnoreCase))
+            .Select(k => k["phase:".Length..])
+            .Where(p => p != "init") // exclude init phase
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     /// <summary>
-    /// Extracts two-digit phase IDs from roadmap headings (e.g. "## Phase 1" → "01").
-    /// </summary>
-    private static List<string> ExtractPhaseIds(string roadmap)
-    {
-        var ids = new List<string>();
-        foreach (string line in roadmap.Split('\n'))
-        {
-            string trimmed = line.Trim();
-            var match = PhaseHeadingPattern.Match(trimmed);
-            if (match.Success)
-                ids.Add(int.Parse(match.Groups[1].Value).ToString("D2"));
-        }
-        return ids;
-    }
-
-    /// <summary>
-    /// Calculates overall progress percentage from roadmap phases and task completion data.
+    /// Calculates overall progress percentage from task completion data.
     /// Each phase contributes equally. Within a phase, progress = completed / total tasks.
-    /// A phase with no tasks counts as 0% (not yet decomposed).
     /// </summary>
-    private static string CalculateProgress(IMemoryStore store, string? roadmapText, string? goalId = null)
+    internal static string CalculateProgress(IMemoryStore store, string? goalId = null)
     {
-        if (string.IsNullOrWhiteSpace(roadmapText))
-            return "0";
-
-        var phaseIds = ExtractPhaseIds(roadmapText);
-        if (phaseIds.Count == 0)
-            return "0";
-
-        // Load task index once (filter by goal if available)
         var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
         var allTaskEntries = store.LoadIndex(taskScope);
+
+        var phaseIds = DiscoverPhaseIds(allTaskEntries, goalId);
+        if (phaseIds.Count == 0)
+            return "0";
 
         double totalProgress = 0;
         foreach (string phaseId in phaseIds)
@@ -1862,7 +1463,7 @@ public sealed class ScriniaProjectTools
                 .ToList();
 
             if (phaseEntries.Count == 0)
-                continue; // phase not yet decomposed into tasks
+                continue;
 
             int complete = phaseEntries.Count(e => HasKeyword(e, "status:complete"));
             totalProgress += (double)complete / phaseEntries.Count;
@@ -1873,10 +1474,7 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>Mark a task complete with outcome metadata. Appends to execution log.</summary>
-    [McpServerTool(Name = "task_complete"), Description(
-        "Mark a task complete with outcome metadata. Appends to execution log. " +
-        "Call task_next to get the next task.")]
-    public async Task<string> TaskComplete(
+    internal async Task<string> TaskComplete(
         [Description("Qualified task name (e.g. 'task:01-1-01').")] string taskName,
         [Description("Free-text describing what was done, any deviations or outcomes.")] string outcome,
         CancellationToken cancellationToken = default)
@@ -1892,6 +1490,146 @@ public sealed class ScriniaProjectTools
 
         if (existing is null)
             return $"Error: task '{taskName}' not found.";
+
+        // Gate task validation — block completion if required artifact missing
+        if (existing.Keywords is not null)
+        {
+            string? activeGoal = await GetActiveGoalIdAsync(store, cancellationToken);
+
+            foreach (var kw in existing.Keywords.Where(k => k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase)))
+            {
+                string gateType = kw["gate:".Length..];
+                string? validationError = null;
+
+                switch (gateType.ToLowerInvariant())
+                {
+                    case "qa":
+                        try { await ReadMemoryAsync(store, "qa:latest", cancellationToken); }
+                        catch (FileNotFoundException) { validationError = "qa:latest memory not found. The QA agent must write qa:latest before this gate can complete."; }
+                        break;
+
+                    case "self-reflector":
+                        try
+                        {
+                            // Check for learn:retro-* for this goal
+                            var (learnScope, _) = store.ParseQualifiedName("learn:placeholder");
+                            var learnEntries = store.LoadIndex(learnScope);
+                            string goalShort = "";
+                            if (activeGoal is not null)
+                            {
+                                var gm = GoalIdPattern.Match(activeGoal);
+                                if (gm.Success) goalShort = $"g{gm.Groups[1].Value}";
+                            }
+                            bool hasRetro = learnEntries.Any(e => e.Name.StartsWith($"retro-{goalShort}", StringComparison.OrdinalIgnoreCase));
+                            if (!hasRetro)
+                                validationError = $"No learn:retro-{goalShort}-* memory found. The self-reflector agent must store a retrospective before this gate can complete.";
+                        }
+                        catch { }
+                        break;
+
+                    case "auditor":
+                        try
+                        {
+                            try { await ReadMemoryAsync(store, "project:requirements", cancellationToken); }
+                            catch (FileNotFoundException) { validationError = "No requirements found. The auditor must call requirement('add') before this gate can complete."; }
+                        }
+                        catch { }
+                        break;
+
+                    case "researcher":
+                        try
+                        {
+                            var (resScope, _) = store.ParseQualifiedName("research:placeholder");
+                            var resEntries = store.LoadIndex(resScope);
+                            string resGoalShort = "";
+                            if (activeGoal is not null)
+                            {
+                                var rgm = GoalIdPattern.Match(activeGoal);
+                                if (rgm.Success) resGoalShort = $"g{rgm.Groups[1].Value}";
+                            }
+                            bool hasResearch = resEntries.Any(e =>
+                                string.IsNullOrEmpty(resGoalShort) ||
+                                e.Name.StartsWith(resGoalShort, StringComparison.OrdinalIgnoreCase));
+                            if (!hasResearch)
+                                validationError = "No research:* memories found. The researcher must store findings before this gate can complete.";
+                        }
+                        catch { }
+                        break;
+
+                    case "planner":
+                        try
+                        {
+                            var (ptScope, _) = store.ParseQualifiedName("task:placeholder");
+                            var ptEntries = store.LoadIndex(ptScope);
+                            // Check for non-seed tasks (tasks that don't have gate: keyword — i.e., execution tasks)
+                            string ptGoalShort = "";
+                            if (activeGoal is not null)
+                            {
+                                var pgm = GoalIdPattern.Match(activeGoal);
+                                if (pgm.Success) ptGoalShort = $"g{pgm.Groups[1].Value}";
+                            }
+                            bool hasExecutionTasks = ptEntries.Any(e =>
+                                (string.IsNullOrEmpty(ptGoalShort) || HasKeyword(e, $"goal:{activeGoal}")) &&
+                                e.Keywords is not null && !e.Keywords.Any(k => k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase)));
+                            if (!hasExecutionTasks)
+                                validationError = "No execution tasks found. The planner must call plan('tasks') before this gate can complete.";
+                        }
+                        catch { }
+                        break;
+
+                    case "evolutionary":
+                        try
+                        {
+                            var (evoScope, _) = store.ParseQualifiedName("sessions:placeholder");
+                            var evoEntries = store.LoadIndex(evoScope);
+                            bool hasEvoSession = evoEntries.Any(e =>
+                                e.Name.StartsWith("evolutionary-", StringComparison.OrdinalIgnoreCase));
+                            if (!hasEvoSession)
+                                validationError = "No sessions:evolutionary-* memory found. The evolutionary agent must complete its scan.";
+                        }
+                        catch { }
+                        break;
+
+                    case "cartographer":
+                        try
+                        {
+                            var (cartoScope, _) = store.ParseQualifiedName("cartography:placeholder");
+                            var cartoEntries = store.LoadIndex(cartoScope);
+                            if (cartoEntries.Count == 0)
+                                validationError = "No cartography:* memory found. The cartographer agent must complete its scan.";
+                        }
+                        catch { }
+                        break;
+
+                    case "march":
+                        try
+                        {
+                            string gwStoreDir = store.GetStoreDirForScope("local");
+                            string gwScriniaDir = Path.GetDirectoryName(gwStoreDir) ?? gwStoreDir;
+                            string workspaceRoot = Path.GetDirectoryName(gwScriniaDir) ?? gwScriniaDir;
+                            string reportsDir = Path.Combine(workspaceRoot, "docs", "reports");
+                            if (!Directory.Exists(reportsDir) || !Directory.EnumerateFiles(reportsDir, "*.md").Any())
+                                validationError = "No march report found in docs/reports/. The march reporter must produce a report.";
+                        }
+                        catch { }
+                        break;
+                }
+
+                if (validationError is not null)
+                    return $"Error: gate '{gateType}' validation failed — {validationError}";
+            }
+        }
+
+        // Read task content to surface acceptance criteria
+        string acceptanceCriteria = "";
+        try
+        {
+            string taskContent = await ReadMemoryAsync(store, taskName, cancellationToken);
+            int acIdx = taskContent.IndexOf("Acceptance criteria:", StringComparison.OrdinalIgnoreCase);
+            if (acIdx >= 0)
+                acceptanceCriteria = taskContent[(acIdx + "Acceptance criteria:".Length)..].Trim();
+        }
+        catch { /* best-effort */ }
 
         // Replace status keyword: remove status:* and add status:complete
         var newKeywords = (existing.Keywords ?? [])
@@ -1926,12 +1664,9 @@ public sealed class ScriniaProjectTools
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
         string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
 
-        // Compute progress from roadmap + task data (scoped to active goal)
+        // Compute progress from task data (scoped to active goal)
         string? tcGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
-        string? roadmapText = null;
-        try { roadmapText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken); }
-        catch (FileNotFoundException) { /* no roadmap yet */ }
-        string progressPct = CalculateProgress(store, roadmapText, tcGoalId);
+        string progressPct = CalculateProgress(store, tcGoalId);
 
         // Check if this was the last pending task in the phase (scoped to goal)
         var updatedEntries = store.LoadIndex(scope);
@@ -1969,7 +1704,7 @@ public sealed class ScriniaProjectTools
         {
             response = $"Task '{taskName}' marked complete. All phase {phaseId} tasks done.\n" +
                 $"Next: verify the work yourself (run tests, review changes, confirm behavior), " +
-                $"then call plan_verify(\"{phaseId}\") to record your verification results.";
+                $"then call plan('verify', {{ phaseId: \"{phaseId}\" }}) to record your verification results.";
         }
         else
         {
@@ -1990,6 +1725,9 @@ public sealed class ScriniaProjectTools
             else
                 response = $"Task '{taskName}' marked complete. Wave {thisWave} done. Run task_next to get wave {thisWave + 1} tasks ({totalRemaining} pending).";
         }
+
+        if (!string.IsNullOrWhiteSpace(acceptanceCriteria))
+            response += $"\nAcceptance criteria for this task:\n{acceptanceCriteria}";
 
         response = Truncate(response);
 
@@ -2018,11 +1756,11 @@ public sealed class ScriniaProjectTools
                 // Count memories created/modified after last cartography
                 int newSince = allEntries.Count(e => (e.Entry.UpdatedAt ?? e.Entry.CreatedAt) > lastCartDate);
                 if (newSince >= 10)
-                    return $"\u26a0 {newSince} memories created/modified since last cartographer run. Run skill_load(\"cartographer\") to index connections.\n";
+                    return $"\u26a0 {newSince} memories created/modified since last cartographer run. Run skill('load', {{ name: \"cartographer\" }}) to index connections.\n";
             }
             else if (totalMemories >= 10)
             {
-                return $"\u26a0 {totalMemories} memories exist with no cartographer run. Run skill_load(\"cartographer\") to index connections.\n";
+                return $"\u26a0 {totalMemories} memories exist with no cartographer run. Run skill('load', {{ name: \"cartographer\" }}) to index connections.\n";
             }
         }
         catch { /* best-effort */ }
@@ -2134,11 +1872,11 @@ public sealed class ScriniaProjectTools
     // ── Keyword helpers (EXEC-01) ─────────────────────────────────────────────
 
     /// <summary>Returns true if the entry has the given keyword (case-insensitive).</summary>
-    private static bool HasKeyword(ArtifactEntry e, string keyword) =>
+    internal static bool HasKeyword(ArtifactEntry e, string keyword) =>
         e.Keywords?.Contains(keyword, StringComparer.OrdinalIgnoreCase) == true;
 
     /// <summary>Extracts the active goal ID (e.g., "G-14" or "G-29-a3f") from project:context goals section.</summary>
-    private static async Task<string?> GetActiveGoalIdAsync(IMemoryStore store, CancellationToken ct)
+    internal static async Task<string?> GetActiveGoalIdAsync(IMemoryStore store, CancellationToken ct)
     {
         try
         {
@@ -2170,85 +1908,74 @@ public sealed class ScriniaProjectTools
         ?? Enumerable.Empty<string>();
 
     /// <summary>
-    /// Extracts success criteria from the roadmap text scoped to the specified phase section.
-    /// Handles numbered lists (1. ...), bulleted lists (- ..., * ...).
-    /// Stops extracting when a new Phase section heading is reached.
+    /// Extracts requirement entries from requirements text, filtered to the given REQ-IDs.
+    /// Each matching "REQ-NNN: description" line becomes one criterion.
     /// </summary>
-    private static List<string> ExtractPhaseCriteria(string roadmapText, string phaseId)
+    private static List<string> ExtractRequirementCriteria(string requirementsText, HashSet<string> reqIds)
     {
         var criteria = new List<string>();
-        bool inTargetPhase = false;
-        bool inCriteriaSection = false;
-
-        foreach (string rawLine in roadmapText.Split('\n'))
+        foreach (string rawLine in requirementsText.Split('\n'))
         {
-            string line = rawLine.TrimEnd();
-            string trimmed = line.Trim();
-
-            // Detect Phase heading — matches "### Phase 1:" or "Phase 1" or "Phase 01"
-            bool isPhaseHeading = PhaseDetectPattern.IsMatch(trimmed);
-
-            if (isPhaseHeading)
+            string trimmed = rawLine.Trim();
+            var match = ReqIdPattern.Match(trimmed);
+            if (match.Success && reqIds.Contains(match.Groups[1].Value))
             {
-                // Check if this heading matches our target phase
-                // Extract the number from the heading
-                var phaseNumMatch = PhaseNumberPattern.Match(trimmed);
-                if (phaseNumMatch.Success)
-                {
-                    int headingNum = int.Parse(phaseNumMatch.Groups[1].Value);
-                    int targetNum = int.TryParse(phaseId.TrimStart('0').Length > 0
-                        ? phaseId.TrimStart('0') : "0", out int n) ? n : 0;
-                    inTargetPhase = headingNum == targetNum;
-                    inCriteriaSection = false; // reset on new phase
-                }
-                continue;
-            }
-
-            if (!inTargetPhase) continue;
-
-            // Detect success criteria sub-heading
-            bool isCriteriaHeading = CriteriaHeadingPattern.IsMatch(trimmed) ||
-                CriteriaAltHeadingPattern.IsMatch(trimmed);
-
-            if (isCriteriaHeading)
-            {
-                inCriteriaSection = true;
-                continue;
-            }
-
-            // A non-criteria heading while in target phase ends the criteria section
-            if (inCriteriaSection && AnyHeadingPattern.IsMatch(trimmed))
-            {
-                inCriteriaSection = false;
-                continue;
-            }
-
-            if (!inCriteriaSection) continue;
-
-            // Collect bulleted or numbered list items
-            if (trimmed.StartsWith("- ") || trimmed.StartsWith("* "))
-            {
-                criteria.Add(trimmed[2..].Trim());
-            }
-            else if (NumberedListPattern.IsMatch(trimmed))
-            {
-                // Numbered: "1. criterion text"
-                string criterionText = NumberedListPattern.Replace(trimmed, "").Trim();
-                if (criterionText.Length > 0)
-                    criteria.Add(criterionText);
+                // Use the full REQ line as the criterion (e.g. "REQ-001: description")
+                criteria.Add(trimmed);
             }
         }
-
         return criteria;
     }
 
     // ── Concern tracking tools (CONC-01, CONC-02, CONC-03) ───────────────────
 
+    /// <summary>Thin dispatcher for concern operations — delegates to ConcernAdd/ConcernResolve/ConcernList.</summary>
+    [McpServerTool(Name = "concern"), Description(
+        "Track project concerns. Actions: 'add' (new concern), 'resolve' (mark resolved), " +
+        "'list' (show concerns by status/phase).")]
+    public async Task<string> ConcernDispatch(
+        [Description("Action: 'add', 'resolve', 'list'. Defaults to 'list'.")] string action = "list",
+        [Description("Concern description (add).")] string? description = null,
+        [Description("Severity: high/medium/low (add).")] string? severity = null,
+        [Description("Phase scope (add).")] string? phaseScope = null,
+        [Description("Concern ID (add — optional, resolve — as concernName).")] string? id = null,
+        [Description("Concern name to resolve (resolve).")] string? concernName = null,
+        [Description("Resolution notes (resolve).")] string? resolution = null,
+        [Description("Who verified: debugger/qa/manual (resolve).")] string? verifiedBy = null,
+        [Description("Phase filter (list).")] string? phaseFilter = null,
+        CancellationToken cancellationToken = default)
+    {
+        string act = action.Trim().ToLowerInvariant();
+        switch (act)
+        {
+            case "add":
+                if (string.IsNullOrWhiteSpace(description))
+                    return "Error: concern('add') requires 'description' parameter.";
+                if (string.IsNullOrWhiteSpace(severity))
+                    return "Error: concern('add') requires 'severity' parameter.";
+                if (string.IsNullOrWhiteSpace(phaseScope))
+                    return "Error: concern('add') requires 'phaseScope' parameter.";
+                return await ConcernAdd(description, severity, phaseScope, id, cancellationToken);
+
+            case "resolve":
+                if (string.IsNullOrWhiteSpace(concernName))
+                    return "Error: concern('resolve') requires 'concernName' parameter.";
+                if (string.IsNullOrWhiteSpace(resolution))
+                    return "Error: concern('resolve') requires 'resolution' parameter.";
+                if (string.IsNullOrWhiteSpace(verifiedBy))
+                    return "Error: concern('resolve') requires 'verifiedBy' parameter.";
+                return await ConcernResolve(concernName, resolution, verifiedBy, cancellationToken);
+
+            case "list":
+                return await ConcernList(phaseFilter, statusFilter: null, cancellationToken);
+
+            default:
+                return $"Error: unknown action '{action}'. Valid actions: 'add', 'resolve', 'list'.";
+        }
+    }
+
     /// <summary>Track a risk or concern with severity and phase scope.</summary>
-    [McpServerTool(Name = "concern_add"), Description(
-        "Track a risk or issue with severity and phase scope. " +
-        "Call concern_resolve when addressed. Query active concerns with concern tool.")]
-    public async Task<string> ConcernAdd(
+    internal async Task<string> ConcernAdd(
         [Description("Concern description.")] string description,
         [Description("Severity: high, medium, or low.")] string severity,
         [Description("Phase scope, e.g. '06' or 'all'.")] string phaseScope,
@@ -2342,7 +2069,8 @@ public sealed class ScriniaProjectTools
         string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
         string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
-        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+        string? concernGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+        string progressPct = CalculateProgress(store, concernGoalId);
 
         await WriteStateAsync(store, projectName, projectId,
             phase: currentPhase,
@@ -2356,10 +2084,7 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>Resolve a tracked concern with resolution notes.</summary>
-    [McpServerTool(Name = "concern_resolve"), Description(
-        "Resolve a tracked concern with resolution notes. " +
-        "Call after concern_add when the issue is addressed.")]
-    public async Task<string> ConcernResolve(
+    internal async Task<string> ConcernResolve(
         [Description("Concern name (e.g. 'concern:auth-risk' or 'concern:20260319-143022').")] string concernName,
         [Description("Resolution notes.")] string resolution,
         [Description("Who verified the resolution: 'debugger', 'qa', or 'manual'.")] string verifiedBy,
@@ -2422,7 +2147,8 @@ public sealed class ScriniaProjectTools
         string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
         string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
-        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+        string? resolveGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+        string progressPct = CalculateProgress(store, resolveGoalId);
 
         await WriteStateAsync(store, projectName, projectId,
             phase: currentPhase,
@@ -2436,10 +2162,7 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>List tracked concerns by status and phase (index-only, no artifact decoding).</summary>
-    [McpServerTool(Name = "concern"), Description(
-        "List tracked concerns by status and phase. Returns index-only summary (no artifact decoding). " +
-        "Use concern_add to add concerns, concern_resolve to resolve them. Called by plan_status automatically.")]
-    public Task<string> Concern(
+    internal Task<string> ConcernList(
         [Description("Filter by phase (e.g. '06'); omit for all phases.")] string? phaseFilter = null,
         [Description("Filter by status; defaults to 'active'.")] string? statusFilter = null,
         CancellationToken cancellationToken = default)
@@ -2507,19 +2230,13 @@ public sealed class ScriniaProjectTools
         return Task.FromResult(response);
     }
 
-    [McpServerTool(Name = "plan_retrospective"), Description(
-        "Store a structured phase retrospective in learn:retro-gN-phaseId. " +
-        "Call after a phase completes to record what worked, what failed, lessons learned, " +
-        "and what you now understand differently about the domain. " +
-        "Updated beliefs are automatically stored as topical memories.")]
-    public async Task<string> PlanRetrospective(
-        [Description("Two-digit phase number (e.g. '01').")] string phaseId,
-        [Description("Free-text describing what worked well during this phase.")] string whatWorked,
-        [Description("Free-text describing what failed or was problematic.")] string whatFailed,
-        [Description("Free-text describing lessons learned for future phases.")] string lessons,
-        [Description("What do you now understand differently about this domain? " +
-                     "New patterns discovered, assumptions proven wrong, conventions clarified. " +
-                     "These get auto-stored as topical memories.")] string? beliefsUpdated = null,
+    /// <summary>Store a structured phase retrospective in learn:retro-gN-phaseId.</summary>
+    internal async Task<string> PlanRetrospective(
+        string phaseId,
+        string whatWorked,
+        string whatFailed,
+        string lessons,
+        string? beliefsUpdated = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -2570,15 +2287,13 @@ public sealed class ScriniaProjectTools
         string retroNextStep = "";
         try
         {
-            string? rmText = null;
-            try { rmText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken); }
-            catch (FileNotFoundException) { }
+            var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+            var allTasks = store.LoadIndex(taskScope);
 
-            if (rmText is not null)
+            // Discover phases from task keywords
+            var phaseIds = DiscoverPhaseIds(allTasks, retroGoalId);
+            if (phaseIds.Count > 0)
             {
-                var phaseIds = ExtractPhaseIds(rmText);
-                var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
-                var allTasks = store.LoadIndex(taskScope);
 
                 // Find next phase that has pending tasks or no tasks yet
                 string? nextPhase = null;
@@ -2617,14 +2332,14 @@ public sealed class ScriniaProjectTools
 
                 if (allPhasesDone)
                     retroNextStep = "\nAll phases complete. Before completing the goal:\n" +
-                        "0. Run QA: skill_load(\"qa\") → verify tests pass, build clean, criteria met\n" +
-                        "1. Produce a march report: skill_load(\"march-reporter\") → docs/reports/ + sessions:YYYY-MM-DD memory\n" +
+                        "0. Run QA: skill('load', { name: \"qa\" }) → verify tests pass, build clean, criteria met\n" +
+                        "1. Produce a march report: skill('load', { name: \"march-reporter\" }) → docs/reports/ + sessions:YYYY-MM-DD memory\n" +
                         "2. Distill valuable learnings into topical memories (store) so future goals start smarter\n" +
                         "3. Update existing skills or create new ones (skill_create) with lessons from this goal" +
                         skillNudge + "\n" +
-                        "4. Then run goal_update(action:'complete')";
+                        "4. Then run goal('complete')";
                 else if (nextPhase is not null)
-                    retroNextStep = $"\nNext: run research_start for phase {nextPhase} to investigate before decomposing into tasks." +
+                    retroNextStep = $"\nNext: investigate phase {nextPhase} — explore the codebase, store research findings, then plan tasks." +
                         skillNudge +
                         "\nTip: if this conversation is getting long, checkpoint your state: store([\"current context...\"], \"~checkpoint\")";
             }
@@ -2640,13 +2355,9 @@ public sealed class ScriniaProjectTools
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
         string currentPhase = ExtractStateField(stateText, "Phase:") ?? $"Phase {phaseId}";
 
-        string? roadmapForProgress = null;
-        try { roadmapForProgress = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken); }
-        catch (FileNotFoundException) { }
-
         await WriteStateAsync(store, projectName, projectId,
             phase: currentPhase,
-            progressPct: CalculateProgress(store, roadmapForProgress, retroGoalId),
+            progressPct: CalculateProgress(store, retroGoalId),
             lastAction: $"Retrospective for phase {phaseId}",
             blockers: "none",
             nextStep: retroNextStep.TrimStart('\n'),
@@ -2667,13 +2378,13 @@ public sealed class ScriniaProjectTools
         return response;
     }
 
-    [McpServerTool(Name = "plan_profile"), Description(
-        "Store or update project-level agent behavioral norms. " +
-        "Norms persist across sessions in agent:profile. " +
-        "Accepts key-value text (e.g. 'response_style: terse\\nreview_depth: detailed'). " +
-        "Each call fully overwrites the previous profile.")]
-    public async Task<string> PlanProfile(
-        [Description("Key-value norms text, one per line (e.g. 'response_style: terse').")] string profile,
+    /// <summary>Alias for AgentProfile — used by plan('profile') dispatcher.</summary>
+    internal Task<string> PlanProfile(string profile, CancellationToken cancellationToken = default)
+        => AgentProfile(profile, cancellationToken);
+
+    /// <summary>Store or update project-level agent behavioral norms.</summary>
+    internal async Task<string> AgentProfile(
+        string profile,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -2694,12 +2405,22 @@ public sealed class ScriniaProjectTools
 
     // -- Dynamic goal management (GOAL-01, GOAL-02, GOAL-04) ---------------------
 
+    /// <summary>Thin dispatcher for goal management — delegates to GoalUpdate.</summary>
+    [McpServerTool(Name = "goal"), Description(
+        "Manage project goals. Actions: 'add' (new goal), 'edit' (update description), " +
+        "'complete' (mark done with outcome), 'list' (show all goals with status).")]
+    public Task<string> Goal(
+        [Description("Action: 'add', 'edit', 'complete', 'list'.")] string action,
+        [Description("Goal description (add, edit).")] string? description = null,
+        [Description("Goal ID (edit, complete).")] string? goalId = null,
+        [Description("Outcome note (complete).")] string? outcome = null,
+        CancellationToken cancellationToken = default)
+    {
+        return GoalUpdate(action, description, goalId, outcome, cancellationToken);
+    }
+
     /// <summary>Manage project goals dynamically.</summary>
-    [McpServerTool(Name = "goal_update"), Description(
-        "Manage project goals dynamically. Actions: 'add' (new goal), 'edit' (update description), 'complete' (mark done with outcome), 'list' (show all goals with status). " +
-        "Goals modify project:context in-place — no re-initialization needed. " +
-        "Original goal count is preserved for scope drift detection by plan_status.")]
-    public async Task<string> GoalUpdate(
+    internal async Task<string> GoalUpdate(
         [Description("Action to perform: 'add', 'edit', 'complete', or 'list'.")] string action,
         [Description("Goal description (required for 'add' action).")] string? description = null,
         [Description("Goal ID to complete (e.g. 'G-1'); required for 'complete' action.")] string? goalId = null,
@@ -2763,7 +2484,7 @@ public sealed class ScriniaProjectTools
                 string addProjectName = ExtractStateField(addStateText, "Project:") ?? "Unknown Project";
                 string addProjectId = ExtractStateField(addStateText, "ID:") ?? DeriveProjectId(store);
                 string addPhase = ExtractStateField(addStateText, "Phase:") ?? "Not started";
-                string addProgress = ExtractStateField(addStateText, "Progress:")?.TrimEnd('%') ?? "0";
+                string addProgress = CalculateProgress(store, null);
 
                 await WriteStateAsync(store, addProjectName, addProjectId,
                     phase: addPhase, progressPct: addProgress,
@@ -2771,6 +2492,71 @@ public sealed class ScriniaProjectTools
                     blockers: "none",
                     nextStep: "clarify the goal with the user before planning",
                     cancellationToken);
+
+                // Compute goal prefix for seed task naming
+                string goalPrefix = "";
+                var gpMatch = GoalIdPattern.Match(newGoalId);
+                if (gpMatch.Success) goalPrefix = $"g{gpMatch.Groups[1].Value}-";
+
+                // Auto-create researcher seed task (wave 0 — research first for full context)
+                try
+                {
+                    string researcherTaskName = $"task:{goalPrefix}00-0-researcher";
+                    var researcherKeywords = new List<string> { "status:pending", "wave:0", "phase:00", "gate:researcher" };
+                    researcherKeywords.Add($"goal:{newGoalId}");
+                    string researcherContent =
+                        "## Researcher Task\n" +
+                        "Action: Investigate the goal scope by exploring the codebase and existing memories. " +
+                        "Understand what exists, what needs to change, and what risks are present. " +
+                        "Store findings via memory('store', { name: \"research:...\", content: [...] }).\n" +
+                        "Acceptance criteria:\n" +
+                        "- Research findings stored as research:* memories\n" +
+                        "- Scope and implementation approach documented";
+                    await WritePlanningMemoryAsync(store, researcherTaskName, researcherContent,
+                        archiveExisting: false, keywords: [.. researcherKeywords], cancellationToken);
+                }
+                catch { /* best-effort */ }
+
+                // Auto-create auditor seed task (wave 1, depends on researcher)
+                try
+                {
+                    string auditorTaskName = $"task:{goalPrefix}00-1-auditor";
+                    var auditorKeywords = new List<string> { "status:pending", "wave:1", "phase:00", "gate:auditor",
+                        $"depends_on:{goalPrefix}00-0-researcher" };
+                    auditorKeywords.Add($"goal:{newGoalId}");
+                    string auditorContent =
+                        "## Auditor Task\n" +
+                        "Action: Load the auditor skill via skill('load', { name: \"auditor\" }). " +
+                        "Read the research findings to understand full scope and context. " +
+                        "Call requirement('add') for each requirement discovered. " +
+                        "Call concern('add') for each risk or issue found.\n" +
+                        "Acceptance criteria:\n" +
+                        "- Requirements captured via requirement('add')\n" +
+                        "- Concerns raised via concern('add')";
+                    await WritePlanningMemoryAsync(store, auditorTaskName, auditorContent,
+                        archiveExisting: false, keywords: [.. auditorKeywords], cancellationToken);
+                }
+                catch { /* best-effort */ }
+
+                // Auto-create planner seed task (wave 2, depends on auditor)
+                try
+                {
+                    string plannerTaskName = $"task:{goalPrefix}00-2-planner";
+                    var plannerKeywords = new List<string> { "status:pending", "wave:2", "phase:00", "gate:planner",
+                        $"depends_on:{goalPrefix}00-1-auditor" };
+                    plannerKeywords.Add($"goal:{newGoalId}");
+                    string plannerContent =
+                        "## Planner Task\n" +
+                        "Action: Load the planner skill via skill('load', {{ name: \"planner\" }}). " +
+                        "Read research findings and requirements. " +
+                        "Produce task definitions and call plan('tasks') directly.\n" +
+                        "Acceptance criteria:\n" +
+                        "- plan('tasks') called with task definitions\n" +
+                        "- Tasks created with proper dependencies and acceptance criteria";
+                    await WritePlanningMemoryAsync(store, plannerTaskName, plannerContent,
+                        archiveExisting: false, keywords: [.. plannerKeywords], cancellationToken);
+                }
+                catch { /* best-effort */ }
 
                 // Search backlog for related items
                 string backlogSection = "";
@@ -2822,12 +2608,7 @@ public sealed class ScriniaProjectTools
                 return $"Goal added as {newGoalId}: {description}.\n" +
                        $"project:context updated. Files in .scrinia/ were updated — these are your changes.\n\n" +
                        backlogSection +
-                       $"Before planning, confirm the goal with the user:\n" +
-                       $"- **Scope**: What's included? What's explicitly out of scope?\n" +
-                       $"- **Success criteria**: How will we know the goal is achieved?\n" +
-                       $"- **Constraints**: Timeline, tech stack, dependencies, or other limits?\n" +
-                       $"- **Priority**: What matters most if trade-offs are needed?\n" +
-                       $"Once the goal is clear, run plan_requirements to define requirements.";
+                       $"Researcher task created. Auditor and planner seed tasks queued. Run task('next') to continue.";
             }
 
             case "complete":
@@ -2863,22 +2644,20 @@ public sealed class ScriniaProjectTools
                 }
 
                 if (matchIndex < 0)
-                    return $"Error: goal '{goalId}' not found. Use goal_update(action:'list') to see all goal IDs.";
+                    return $"Error: goal '{goalId}' not found. Use goal('list') to see all goal IDs.";
 
                 // Failsafe: actually verify criteria and check for retrospectives
                 var warnings = new List<string>();
                 try
                 {
-                    string? rmText = null;
-                    try { rmText = await ReadMemoryAsync(store, "plan:roadmap", cancellationToken); }
-                    catch (FileNotFoundException) { }
+                    var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+                    var allTasks = store.LoadIndex(taskScope);
+                    string? completeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
 
-                    if (rmText is not null)
+                    // Discover phases from task keywords
+                    var phaseIds = DiscoverPhaseIds(allTasks, completeGoalId);
+                    if (phaseIds.Count > 0)
                     {
-                        var phaseIds = ExtractPhaseIds(rmText);
-                        var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
-                        var allTasks = store.LoadIndex(taskScope);
-                        string? completeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
 
                         // Check each phase for: incomplete tasks, missing verification, missing retrospective
                         // Load learn topic index for per-phase retro detection (G-29 format: learn:retro-gN-phaseId)
@@ -2959,7 +2738,7 @@ public sealed class ScriniaProjectTools
                     {
                         var names = string.Join(", ", openHighMed.Select(e => e.Name).Take(5));
                         return $"Error: {openHighMed.Count} open high/medium concern(s) must be resolved before completing the goal: {names}. " +
-                            "Use concern_resolve(name, resolution, verifiedBy) for each.";
+                            "Use concern('resolve', { concernName, resolution, verifiedBy }) for each.";
                     }
                 }
                 catch { /* best-effort */ }
@@ -3003,7 +2782,8 @@ public sealed class ScriniaProjectTools
                     string cpProjectName = ExtractStateField(cpStateText, "Project:") ?? "Unknown Project";
                     string cpProjectId = ExtractStateField(cpStateText, "ID:") ?? DeriveProjectId(store);
                     string cpPhase = ExtractStateField(cpStateText, "Phase:") ?? "Not started";
-                    string cpProgress = ExtractStateField(cpStateText, "Progress:")?.TrimEnd('%') ?? "0";
+                    string? cpGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+                    string cpProgress = CalculateProgress(store, cpGoalId);
 
                     int cpActiveConcerns = 0;
                     try
@@ -3036,8 +2816,8 @@ public sealed class ScriniaProjectTools
                         "\nConsider running plan_verify and plan_retrospective before moving on.";
 
                 response += "\n\nPost-goal learning:\n" +
-                    "- Run QA if not already done: skill_load(\"qa\") for structured verification\n" +
-                    "- Produce a march report: skill_load(\"march-reporter\") \u2192 write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
+                    "- Run QA if not already done: skill('load', { name: \"qa\" }) for structured verification\n" +
+                    "- Produce a march report: skill('load', { name: \"march-reporter\" }) \u2192 write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
                     "- Distill valuable findings into topical memories (store) for future goals\n" +
                     "- Update or create skills (skill_create) with lessons learned\n" +
                     "Planning artifacts (task:*, plan:*, research:*) can be cleaned up \u2014 " +
@@ -3075,7 +2855,7 @@ public sealed class ScriniaProjectTools
                 }
 
                 if (matchIndex < 0)
-                    return $"Error: goal '{goalId}' not found. Use goal_update(action:'list') to see all goals.";
+                    return $"Error: goal '{goalId}' not found. Use goal('list') to see all goals.";
 
                 string oldLine = goals[matchIndex];
                 string trimmed = oldLine.TrimStart('-', '*', ' ');
@@ -3110,7 +2890,7 @@ public sealed class ScriniaProjectTools
                 var (goals, originalCount, _) = ParseGoalsSection(contextText);
 
                 if (goals.Count == 0)
-                    return "No structured goals found in project:context. Use goal_update(action:'add') to add goals.";
+                    return "No structured goals found in project:context. Use goal('add') to add goals.";
 
                 int locked = originalCount >= 0 ? originalCount : goals.Count;
                 int current = goals.Count;
@@ -3158,7 +2938,7 @@ public sealed class ScriniaProjectTools
     /// goalLines contains all goal lines (raw or structured) found in the goals section.
     /// contextWithoutGoals is the context text with the goals section stripped.
     /// </summary>
-    private static (List<string> Goals, int OriginalCount, string ContextWithoutGoals)
+    internal static (List<string> Goals, int OriginalCount, string ContextWithoutGoals)
         ParseGoalsSection(string contextText)
     {
         var goals = new List<string>();
@@ -3283,14 +3063,15 @@ public sealed class ScriniaProjectTools
         string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
         string phase = ExtractStateField(stateText, "Phase:") ?? "Not started";
-        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+        string? mutGoalId = await GetActiveGoalIdAsync(store, ct);
+        string progressPct = CalculateProgress(store, mutGoalId);
 
         await WriteStateAsync(store, projectName, projectId,
             phase: phase,
             progressPct: progressPct,
             lastAction: lastAction,
             blockers: "none",
-            nextStep: "run goal_update(action:'list') to see all goals with status",
+            nextStep: "run goal('list') to see all goals with status",
             ct);
     }
 
@@ -3300,15 +3081,14 @@ public sealed class ScriniaProjectTools
         "## Role: Researcher Specialist\n" +
         "You investigate technical questions and gather findings for the current project.\n\n" +
         "## Tools Available (if Scrinia MCP is active)\n" +
-        "- research_start: Open a research investigation with questions to investigate.\n" +
-        "- research_complete: Store findings once investigation is done.\n" +
-        "- search: Query stored knowledge and memories for related context.\n" +
-        "- show: Retrieve full artifact content for a named memory.\n\n" +
+        "- memory('search'): Query stored knowledge and memories for related context.\n" +
+        "- memory('show'): Retrieve full artifact content for a named memory.\n" +
+        "- memory('store'): Persist research findings as research:* memories.\n\n" +
         "## Instructions\n" +
-        "1. Call research_start with your phase and topic to register the investigation.\n" +
-        "2. Use search() to find existing knowledge before researching from scratch.\n" +
-        "3. Investigate thoroughly, then call research_complete with your findings.\n" +
-        "4. Store durable knowledge via store for reuse across sessions.\n\n" +
+        "1. Use memory('search') to find existing knowledge before researching from scratch.\n" +
+        "2. Explore the codebase to understand scope, patterns, and risks.\n" +
+        "3. Store findings via memory('store', { name: \"research:...\", content: [...] }).\n" +
+        "4. Document questions answered, sources consulted, and key conclusions.\n\n" +
         "## Fallback Instructions (if Scrinia MCP is not available)\n" +
         "Organize findings in markdown. Use file read/write operations to persist results.\n" +
         "Document questions answered, sources consulted, and key conclusions.\n";
@@ -3349,13 +3129,7 @@ public sealed class ScriniaProjectTools
     // -- Subagent creation tools (AGENT-01, AGENT-02, AGENT-03, AGENT-04) -------
 
     /// <summary>Create a reusable specialist skill prompt and store as skill:* memory.</summary>
-    [McpServerTool(Name = "skill_create"), Description(
-        "Create a reusable specialist skill and store as skill:* memory. " +
-        "Skills are methodology — how to approach a type of work, not what you know. " +
-        "Keep skills lean: put facts in memories (store), put approach in skills. " +
-        "A skill should say 'search for X' not list X inline. " +
-        "Built-in scaffolds: researcher, reviewer, domain-expert, or custom.")]
-    public async Task<string> SkillCreate(
+    internal async Task<string> SkillCreate(
         [Description("Skill name slug (e.g. 'api-reviewer', 'auth-researcher').")] string name,
         [Description("Built-in scaffold: researcher, reviewer, domain-expert, or custom.")] string scaffold,
         [Description("Additional context or instructions to embed in the prompt.")] string? instructions = null,
@@ -3459,7 +3233,8 @@ public sealed class ScriniaProjectTools
         string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
         string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
         string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
-        string progressPct = ExtractStateField(stateText, "Progress:")?.TrimEnd('%') ?? "0";
+        string? skillGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+        string progressPct = CalculateProgress(store, skillGoalId);
 
         await WriteStateAsync(store, projectName, projectId,
             phase: currentPhase,
@@ -3477,12 +3252,7 @@ public sealed class ScriniaProjectTools
     }
 
     /// <summary>List or load stored specialist skills.</summary>
-    [McpServerTool(Name = "skill_load"), Description(
-        "List or load stored specialist skills. " +
-        "Call with no name to list available skills. " +
-        "Call with a name to load the full prompt for activation. " +
-        "Skills created by skill_create.")]
-    public Task<string> SkillLoad(
+    internal Task<string> SkillLoad(
         [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? name = null,
         [Description("Set to true to show both built-in and override for reconciliation.")] bool reconcile = false,
         CancellationToken cancellationToken = default)
@@ -3617,7 +3387,7 @@ public sealed class ScriniaProjectTools
                         System.Text.Encoding.UTF8.GetBytes(currentBuiltIn)));
                 if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                 {
-                    content = $"[WARNING: built-in skill has changed since this override was created. Review with skill_load(\"{skillName}\", reconcile: true)]\n" + content;
+                    content = $"[WARNING: built-in skill has changed since this override was created. Review with skill('load', {{ name: \"{skillName}\", reconcile: true }})]\n" + content;
                 }
             }
         }
@@ -3629,7 +3399,7 @@ public sealed class ScriniaProjectTools
     {
         ["march-reporter"] = """
             ## Role: Goal March Reporter
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("march-reporter")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "march-reporter" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You produce human-readable goal summary documents that report the march toward project
             objectives. These documents serve as audit trails for stakeholders and future agents.
 
@@ -3639,10 +3409,10 @@ public sealed class ScriniaProjectTools
             The agent should ask: "Want me to produce a march report for this goal?"
 
             ## Methodology
-            1. `concern()` — query active concerns to see current state and determine next IDs
-            2. `goal_update(action:"list")` — get all goals with outcomes for the reporting period
-            3. `concern(statusFilter:"all")` — get all concerns (active + resolved)
-            4. `search("applied-fixes")` — load fix summaries
+            1. `concern('list')` — query active concerns to see current state and determine next IDs
+            2. `goal('list')` — get all goals with outcomes for the reporting period
+            3. `concern('list', { statusFilter: "all" })` — get all concerns (active + resolved)
+            4. `memory('search', { query: "applied-fixes" })` — load fix summaries
             5. Review git log for the period to capture file-level changes
 
             ## Document structure
@@ -3657,7 +3427,7 @@ public sealed class ScriniaProjectTools
 
             ### 3. Findings
             Table with columns: ID, Description, Severity, Status, Resolution
-            Query `concern()` for all findings. Include ALL findings for this goal —
+            Query `concern('list')` for all findings. Include ALL findings for this goal —
             fixed, dismissed, and accepted. Dismissed findings need rationale.
 
             ### 4. Test Impact
@@ -3690,10 +3460,10 @@ public sealed class ScriniaProjectTools
             ## Methodology
 
             ### Before scanning
-            1. `concern()` — query active concerns to see current findings state and determine next IDs
-            2. `search("applied-fixes")` — know what's already been fixed
-            3. `search("audit-false-positives")` — avoid known false positives
-            4. Understand the project: `search("architecture")`, `search("patterns")`
+            1. `concern('list')` — query active concerns to see current findings state and determine next IDs
+            2. `memory('search', { query: "applied-fixes" })` — know what's already been fixed
+            3. `memory('search', { query: "audit-false-positives" })` — avoid known false positives
+            4. Understand the project: `memory('search', { query: "architecture" })`, `memory('search', { query: "patterns" })`
 
             ### Scanning — three streams
             Run these in parallel when possible:
@@ -3710,7 +3480,7 @@ public sealed class ScriniaProjectTools
             to removed features, examples match current API signatures, new features documented.
 
             ### Finding IDs
-            Use sequenced IDs registered via concern_add. Count existing concern:SEC-*, concern:QAL-*, concern:DOC-* entries via concern() to determine the next available ID. Never reuse numbers.
+            Use sequenced IDs registered via concern('add'). Count existing concern:SEC-*, concern:QAL-*, concern:DOC-* entries via concern('list') to determine the next available ID. Never reuse numbers.
             - Security: SEC-NNN
             - Code quality: QAL-NNN
             - Documentation: DOC-NNN
@@ -3727,12 +3497,12 @@ public sealed class ScriniaProjectTools
             The audit identified exact locations — carry them through. This is not a judgment call.
 
             ### Output
-            - Register each finding with `concern_add`
-            - Query `concern()` for current findings state
+            - Register each finding with `concern('add')`
+            - Query `concern('list')` for current findings state
             - Present findings table to user with ID, severity, status, resolution
 
             ### Mandatory: Register all findings as concerns
-            Every finding MUST be registered via concern_add(description, severity, phaseScope, id: "SEC-xxx").
+            Every finding MUST be registered via concern('add', { description, severity, phaseScope, id: "SEC-xxx" }).
             Findings that exist only in reports or tables are incomplete work.
             The concern system is the single source of truth for findings tracking.
             Do not maintain a separate findings registry — concerns ARE the registry.
@@ -3749,7 +3519,7 @@ public sealed class ScriniaProjectTools
             - What is the exact error? (message, stack trace, repro steps)
             - When did it start? (`git log`, `git bisect` if needed)
             - What changed? (recent commits, config changes, dependency updates)
-            - `search("bugs:")` — has this been investigated before?
+            - `memory('search', { query: "bugs:" })` — has this been investigated before?
 
             ### 2. Hypothesize — state what you believe is wrong
             Write it down explicitly:
@@ -3774,7 +3544,7 @@ public sealed class ScriniaProjectTools
             - Check: is the fix consistent with the codebase's patterns?
 
             ### 6. Store — persist what you learned
-            - `store(["Root cause: ...\nFix: ...\nPattern: ..."], "bugs:{area}-{slug}")`
+            - `memory('store', { name: "bugs:{area}-{slug}", content: ["Root cause: ...\nFix: ...\nPattern: ..."] })`
             - Future sessions shouldn't re-investigate what you already know
             - If this bug class could recur, store the detection pattern
 
@@ -3830,7 +3600,7 @@ public sealed class ScriniaProjectTools
             What if the value is the wrong type? What if config changes at runtime?
 
             ### 5. Document findings
-            Use concern IDs (SEC/QAL/DOC/OPS) for tracking via concern_add.
+            Use concern IDs (SEC/QAL/DOC/OPS) for tracking via concern('add').
             For each gap, document: the scenario, what currently happens, what should happen,
             and the recommended fix.
 
@@ -3875,12 +3645,12 @@ public sealed class ScriniaProjectTools
 
             ### 5. Produce the walkthrough
             Store findings in scrinia for future sessions:
-            - `store([overview], "arch:overview")` — high-level architecture
-            - `store([patterns], "arch:patterns")` — conventions and patterns
-            - `store([pitfalls], "arch:pitfalls")` — things that will trip you up
-            - `store([testing], "testing:infrastructure")` — how to run and write tests
+            - `memory('store', { name: "arch:overview", content: [overview] })` — high-level architecture
+            - `memory('store', { name: "arch:patterns", content: [patterns] })` — conventions and patterns
+            - `memory('store', { name: "arch:pitfalls", content: [pitfalls] })` — things that will trip you up
+            - `memory('store', { name: "testing:infrastructure", content: [testing] })` — how to run and write tests
 
-            The goal: a future agent starting a fresh session can `search("architecture")`
+            The goal: a future agent starting a fresh session can `memory('search', { query: "architecture" })`
             and have enough context to start working without re-exploring the codebase.
 
             ## Key principle
@@ -3890,14 +3660,14 @@ public sealed class ScriniaProjectTools
 
         ["planner"] = """
             ## Role: Wave Execution Planner
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("planner")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "planner" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You decompose validated work into parallel execution waves with explicit agent specifications.
             You don't do the work — you plan how agents will do it. The primary agent NEVER executes tasks.
 
-            ## MANDATORY: Spawn a planner agent before plan_tasks
-            The primary agent must spawn a planner agent with `skill_load("planner")` output as its prompt.
+            ## MANDATORY: Spawn a planner agent before plan('tasks')
+            The primary agent must spawn a planner agent with `skill('load', { name: "planner" })` output as its prompt.
             Pass research findings and phase requirements to the planner agent. The planner agent
-            produces the task definitions — the orchestrator feeds its output directly to plan_tasks.
+            produces the task definitions — the orchestrator feeds its output directly to plan('tasks').
             Do not plan inline — the orchestrator lacks the focus to do proper file conflict analysis,
             isolation decisions, and SOS criteria while also managing user interaction.
 
@@ -3955,20 +3725,20 @@ public sealed class ScriniaProjectTools
               1. Spawn all agents in background (run_in_background: true, single message, parallel tool calls)
               2. Continue responding to user — you'll be notified when each agent completes
               3. Handle any SOS signals:
-                 - Skill needed → skill_create or skill_load, respawn
+                 - Skill needed → skill('create') or skill('load'), respawn
                  - Decomposition needed → split task, add to next wave
                  - Domain input needed → ask user, relay answer
               4. After all agents complete: build + test
-              5. Mark tasks complete (task_complete)
+              5. Mark tasks complete (task('complete'))
               6. Proceed to next wave
             ```
 
             ### 5. Handle SOS signals
             If an agent returns an SOS (needs specialist, needs skill, needs decomposition):
             - Assess the SOS request
-            - If skill needed: create it via `skill_create`, spawn specialist in next wave
+            - If skill needed: create it via `skill('create')`, spawn specialist in next wave
             - If decomposition needed: split the task, add sub-tasks to current or next wave
-            - If specialist needed: `skill_load` the relevant skill, spawn with its methodology
+            - If specialist needed: `skill('load')` the relevant skill, spawn with its methodology
             - If user input needed: ask the user, then respawn with the answer
             - Update the execution plan and continue
 
@@ -3989,7 +3759,7 @@ public sealed class ScriniaProjectTools
             - **Single-task waves still spawn an agent.** The cost is low; the SOS capability is valuable.
 
             ## Output Format
-            Your output must be directly usable as the `tasks` parameter to plan_tasks. Use this exact format:
+            Your output must be directly usable as the `tasks` parameter to plan('tasks'). Use this exact format:
 
             ## Task {id}
             Depends on: {comma-separated task IDs, or 'none'}
@@ -3998,7 +3768,7 @@ public sealed class ScriniaProjectTools
             - criterion 1
             - criterion 2
 
-            Produce one section per task. The orchestrator will pass your entire output to plan_tasks
+            Produce one section per task. The orchestrator will pass your entire output to plan('tasks')
             without modification.
             """,
 
@@ -4020,15 +3790,15 @@ public sealed class ScriniaProjectTools
 
             ### Type: needs-specialist
             The agent found something outside its expertise.
-            - Check available skills: `skill_load()` — is there already a specialist?
-            - If yes: spawn a new agent with `skill_load("{specialist}")` as its prompt
+            - Check available skills: `skill('load')` — is there already a specialist?
+            - If yes: spawn a new agent with `skill('load', { name: "{specialist}" })` as its prompt
             - If no: assess whether to create a new skill or handle inline
             - Feed the SOS context to the specialist as its starting point
 
             ### Type: needs-skill
             The agent identified a recurring pattern that should be a reusable skill.
             - Review the agent's context: what methodology would help?
-            - `skill_create` the new skill with the methodology
+            - `skill('create')` the new skill with the methodology
             - Spawn a new agent loaded with the skill
             - Store the skill creation in the execution log for the planner
 
@@ -4060,7 +3830,7 @@ public sealed class ScriniaProjectTools
 
         ["evolutionary"] = """
             ## Role: Evolutionary Agent
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("evolutionary")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "evolutionary" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You proactively improve the project's knowledge base, skills, and behavioral norms.
             You don't wait to be asked — you scan, identify drift, and propose improvements.
 
@@ -4073,16 +3843,16 @@ public sealed class ScriniaProjectTools
             ## Methodology
 
             ### 1. Scan for stale memories
-            `search()` broadly across topics. Check reviewAfter/reviewWhen conditions.
+            `memory('search')` broadly across topics. Check reviewAfter/reviewWhen conditions.
             Flag memories whose content may be outdated by recent code changes or goal outcomes.
             Verify against current codebase state before recommending updates.
 
             ### 2. Detect skill drift
-            Load each skill via `skill_load()`. Compare its methodology against recent
-            retrospective lessons (`show("learn:execution-outcomes")`). If a skill's approach
-            was contradicted or improved by experience, update it via `skill_create`.
-            Check for [stale base] markers on skill overrides via `skill_load()` listing.
-            If found, the built-in has been updated — use `skill_load(name, reconcile: true)`
+            Load each skill via `skill('load')`. Compare its methodology against recent
+            retrospective lessons (`memory('show', { name: "learn:execution-outcomes" })`). If a skill's approach
+            was contradicted or improved by experience, update it via `skill('create')`.
+            Check for [stale base] markers on skill overrides via `skill('load')` listing.
+            If found, the built-in has been updated — use `skill('load', { name, reconcile: true })`
             to review both versions and merge project-specific additions with the new base.
 
             ### 3. Surface emergent patterns
@@ -4095,7 +3865,7 @@ public sealed class ScriniaProjectTools
             Do the norms still match how work actually gets done? Propose updates with reasoning.
 
             ### 5. Scan backlog for unblocked items
-            `search("backlog:")` to review deferred work. Check if recent goal outcomes,
+            `memory('search', { query: "backlog:" })` to review deferred work. Check if recent goal outcomes,
             code changes, or new capabilities have unblocked any items. If an item is now
             actionable, flag it for promotion to a goal in your output.
 
@@ -4119,7 +3889,7 @@ public sealed class ScriniaProjectTools
 
         ["cartographer"] = """
             ## Role: Knowledge Cartographer
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("cartographer")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "cartographer" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
             You discover and index connections between memories that embedding similarity
             alone would miss. You map the knowledge landscape and build bridges.
 
@@ -4132,7 +3902,7 @@ public sealed class ScriniaProjectTools
             ## Methodology
 
             ### 1. Survey the landscape
-            `list(mode="full")` to see all memories. Group by topic. Note the vocabulary
+            `memory('list', { mode: "full" })` to see all memories. Group by topic. Note the vocabulary
             and domain each topic covers. Identify islands — topics with no connections.
 
             ### 2. Find unlinked connections
@@ -4150,7 +3920,7 @@ public sealed class ScriniaProjectTools
             3. **Create bridge memory** (e.g., "bridge:auth-resilience") only for rich connections
 
             ### 4. Validate bridges
-            For each bridge: `search("X")` — does Y appear in results? If not, strengthen
+            For each bridge: `memory('search', { query: "X" })` — does Y appear in results? If not, strengthen
             the keywords. The test is discoverability: future agents should find the connection.
 
             ## Key rules
@@ -4166,7 +3936,7 @@ public sealed class ScriniaProjectTools
 
             ## When to activate
             - After `git pull` or `git merge` that touches `.scrinia/` files
-            - When `context_resume()` warns about merge conflicts
+            - When `memory('restore')` warns about merge conflicts
             - When a teammate reports merge issues
 
             ## Methodology
@@ -4207,13 +3977,13 @@ public sealed class ScriniaProjectTools
 
         ["qa"] = """
             ## Role: Quality Assurance Agent
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill_load("qa")` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "qa" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
 
             You verify that completed work actually delivers what was promised.
-            Run this before plan_verify — evidence without verification is rubber-stamping.
+            Run this before the verification gate — evidence without verification is rubber-stamping.
 
             ## When to activate
-            - Before plan_verify — mandatory
+            - Before verification — mandatory
             - When the user asks "does this work?" or "verify this"
 
             ## Methodology
@@ -4233,7 +4003,7 @@ public sealed class ScriniaProjectTools
             - Show the evidence — don't just claim PASS
 
             ### 4. Check for regressions
-            Run `list(mode="drift")` to detect stale memories from code changes.
+            Run `memory('list', { mode: "drift" })` to detect stale memories from code changes.
             Run the full test suite, not just new tests.
 
             ### 5. Validate against task description
@@ -4241,7 +4011,7 @@ public sealed class ScriniaProjectTools
             Flag any deviations or scope creep.
 
             ## Output format
-            Return structured evidence for plan_verify:
+            Return structured evidence for verification:
             ```
             PASS: criterion 1 — test output: 759 passed, 0 failed
             PASS: criterion 2 — build: 0 errors, 0 warnings
@@ -4249,16 +4019,62 @@ public sealed class ScriniaProjectTools
             ```
 
             ## Persist results
-            After completing verification, write your findings to qa:latest via store():
+            After completing verification, write your findings to qa:latest via memory('store'):
             ```
-            store(["## QA Report\n**Build**: 0 errors, N warnings\n**Tests**: N passed, 0 failed, 0 skipped\n**Criteria**: N/N passed\n\n{detailed PASS/FAIL evidence}"], "qa:latest", keywords: ["qa", "verification"])
+            memory('store', { name: "qa:latest", content: ["## QA Report\n**Build**: 0 errors, N warnings\n**Tests**: N passed, 0 failed, 0 skipped\n**Criteria**: N/N passed\n\n{detailed PASS/FAIL evidence}"], keywords: ["qa", "verification"] })
             ```
-            This memory is read by plan_verify as the QA gate — without it, plan_verify blocks.
+            This memory is read by the verification gate — without it, verification blocks.
 
             ## Key rules
             - **Run tests, don't claim results** — the test runner is the source of truth
             - **Evidence over assertion** — "I verified" is not evidence; test output is
             - **Check the actual code** — don't assume the agent's outcome report is accurate
+            """,
+
+        ["self-reflector"] = """
+            ## Role: Self-Reflector Agent
+            You analyze completed work to extract lessons, validate hypotheses, and update beliefs.
+            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "self-reflector" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
+
+            ## When to activate
+            - After QA gate completes (auto-injected as gate task)
+            - When the user asks for a retrospective
+
+            ## Methodology
+
+            ### 1. Read execution context
+            - Load the execution log for the current phase: memory('show', { name: "task:{phaseId}-execution-log" })
+            - Load QA results: memory('show', { name: "qa:latest" })
+            - Load the research findings for context on what was planned
+
+            ### 2. Compare plan vs reality
+            - What was the hypothesis from research? Did it hold?
+            - Were there SOS signals, replanning, or deviations?
+            - Which tasks completed smoothly vs which needed iteration?
+
+            ### 3. Extract lessons
+            - What worked well? (approaches to repeat)
+            - What failed or was problematic? (approaches to avoid)
+            - What was surprising or non-obvious?
+
+            ### 4. Update beliefs
+            - What do you now understand differently about this domain?
+            - New patterns discovered, assumptions proven wrong, conventions clarified
+
+            ### 5. Persist findings
+            Store retrospective following the naming convention:
+            memory('store', { name: "learn:retro-{goalShort}-{phaseId}", content: ["## Retrospective..."] })
+
+            If beliefs were updated, store separately:
+            memory('store', { name: "learn:beliefs-phase-{phaseId}", content: ["## Beliefs..."] })
+
+            These naming conventions are used by goal('complete') to detect missing retrospectives.
+
+            ## Key rules
+            - **Read the logs, don't self-report** — execution logs are the source of truth
+            - **Compare plan vs reality** — the hypothesis validation is the most valuable output
+            - **One lesson per finding** — specific and actionable, not vague platitudes
+            - **Beliefs are durable** — only store beliefs you'd want a future agent to know
             """,
     };
 

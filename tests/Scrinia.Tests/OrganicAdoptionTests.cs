@@ -46,8 +46,6 @@ public sealed class OrganicAdoptionTests : IDisposable
         await _tools.PlanRequirements("## v1 Requirements\n- REQ-01: Core feature", CancellationToken.None);
     }
 
-    private static string SimpleRoadmap => "### Phase 1\nREQ-01: Core feature\nSuccess criteria:\n- Core feature shipped";
-
     private static string SimpleTasks =>
         "## Task 01\nWave: 1\nDepends on: none\nAction: do something\nAcceptance criteria:\n- criterion 1";
 
@@ -122,31 +120,13 @@ public sealed class OrganicAdoptionTests : IDisposable
             "context_resume should NOT show an unused concern hint when concerns have been logged");
     }
 
-    // ── Learning feed-in: plan_roadmap queries learn:patterns ─────────────────
-
-    [Fact]
-    public async Task PlanRoadmap_IncludesLearnPatterns()
-    {
-        // Arrange — store a learn:patterns memory, then call plan_roadmap
-        await InitProjectWithRequirements();
-        await StorePatternsMemory();
-
-        // Act
-        string response = await _tools.PlanRoadmap(SimpleRoadmap, CancellationToken.None);
-
-        // Assert — response must contain Pattern or Learn to indicate patterns were surfaced
-        (response.Contains("Pattern", StringComparison.OrdinalIgnoreCase) ||
-         response.Contains("Learn", StringComparison.OrdinalIgnoreCase))
-            .Should().BeTrue(
-                "plan_roadmap should surface learn:patterns content in its response when patterns exist");
-    }
+    // ── Learning feed-in: plan_tasks queries learn:patterns ──────────────────
 
     [Fact]
     public async Task PlanTasks_IncludesLearnPatterns()
     {
-        // Arrange — store learn:patterns plus a valid plan:roadmap
+        // Arrange — store learn:patterns, then call plan_tasks
         await InitProjectWithRequirements();
-        await _tools.PlanRoadmap(SimpleRoadmap, CancellationToken.None);
         await StorePatternsMemory();
 
         // Act
@@ -160,26 +140,10 @@ public sealed class OrganicAdoptionTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanRoadmap_NoErrorWhenNoPatternsExist()
-    {
-        // Arrange — no learn:patterns stored
-        await InitProjectWithRequirements();
-
-        // Act
-        string response = await _tools.PlanRoadmap(SimpleRoadmap, CancellationToken.None);
-
-        // Assert — must NOT return error or crash
-        response.Should().NotStartWith("Error:",
-            "plan_roadmap should not error when learn:patterns does not exist");
-        response.Should().NotBeNullOrWhiteSpace("plan_roadmap should always return a response");
-    }
-
-    [Fact]
     public async Task PlanTasks_NoErrorWhenNoPatternsExist()
     {
         // Arrange — no learn:patterns stored
         await InitProjectWithRequirements();
-        await _tools.PlanRoadmap(SimpleRoadmap, CancellationToken.None);
 
         // Act
         string response = await _tools.PlanTasks("01", SimpleTasks, CancellationToken.None);
@@ -198,11 +162,9 @@ public sealed class OrganicAdoptionTests : IDisposable
         // Arrange — guide() has no store dependency
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        // Assert
-        guide.Should().Contain("research_start",
-            "guide() should mention the research_start tool");
-        guide.Should().Contain("research_complete",
-            "guide() should mention the research_complete tool");
+        // Assert — research tools are now memory('store') based
+        guide.Should().Contain("memory('store')",
+            "guide() should mention memory('store') for persisting research findings");
     }
 
     [Fact]
@@ -210,8 +172,8 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("concern_add",
-            "guide() should mention the concern_add tool");
+        guide.Should().Contain("concern('add')",
+            "guide() should mention the concern('add') tool");
         guide.Should().Contain("tracked risks",
             "guide() should describe concerns as tracked risks");
         guide.Should().Contain("concern",
@@ -223,10 +185,10 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("store",
-            "guide() should mention store() for persisting knowledge");
-        guide.Should().Contain("skill_create",
-            "guide() should mention skill_create for reusable prompts");
+        guide.Should().Contain("memory('store')",
+            "guide() should mention memory('store') for persisting knowledge");
+        guide.Should().Contain("skill('create')",
+            "guide() should mention skill('create') for reusable prompts");
     }
 
     [Fact]
@@ -234,10 +196,10 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("skill_create",
-            "guide() should mention the skill_create tool");
-        guide.Should().Contain("skill_load",
-            "guide() should mention the skill_load tool");
+        guide.Should().Contain("skill('create')",
+            "guide() should mention the skill('create') tool");
+        guide.Should().Contain("skill('load')",
+            "guide() should mention the skill('load') tool");
     }
 
     [Fact]
@@ -245,8 +207,8 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("goal_update",
-            "guide() should mention the goal_update tool");
+        guide.Should().Contain("goal('add')",
+            "guide() should mention the goal('add') tool");
     }
 
     [Fact]

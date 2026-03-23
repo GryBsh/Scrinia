@@ -53,15 +53,6 @@ public sealed class PlanningInputValidationTests : IDisposable
         result.Should().Contain("Error", because: "requirements without project_init should fail");
     }
 
-    // ── plan_roadmap ──
-
-    [Fact]
-    public async Task PlanRoadmap_EmptyRoadmap_ReturnsError()
-    {
-        var result = await _tools.PlanRoadmap("", CancellationToken.None);
-        result.Should().Contain("Error", because: "empty roadmap should be rejected");
-    }
-
     // ── plan_tasks ──
 
     [Fact]
@@ -76,7 +67,6 @@ public sealed class PlanningInputValidationTests : IDisposable
     {
         await _tools.ProjectInit("Goals: test", CancellationToken.None);
         await _tools.PlanRequirements("## v1\n- REQ-01: Test", CancellationToken.None);
-        await _tools.PlanRoadmap("## Phase 1\nRequirements: REQ-01\nSuccess Criteria:\n1. Done", CancellationToken.None);
 
         var result = await _tools.PlanTasks("01", "", CancellationToken.None);
         result.Should().Contain("Error", because: "empty tasks text should be rejected");
@@ -97,20 +87,10 @@ public sealed class PlanningInputValidationTests : IDisposable
         // Setup: create a project with a task
         await _tools.ProjectInit("Goals: test", CancellationToken.None);
         await _tools.PlanRequirements("## v1\n- REQ-01: Test", CancellationToken.None);
-        await _tools.PlanRoadmap("## Phase 1\nRequirements: REQ-01\nSuccess Criteria:\n1. Done", CancellationToken.None);
         await _tools.PlanTasks("01", "## Task 01\nWave: 1\nDepends on: none\nAction: do something\nAcceptance criteria:\n- done", CancellationToken.None);
 
         var result = await _tools.TaskComplete("task:01-1-01", "", CancellationToken.None);
         result.Should().Contain("complete", because: "empty outcome should still mark complete");
-    }
-
-    // ── research_start ──
-
-    [Fact]
-    public async Task ResearchStart_WithoutProject_ReturnsError()
-    {
-        var result = await _tools.ResearchStart("01", "topic", "question?", CancellationToken.None);
-        result.Should().Contain("Error", because: "research without project should fail");
     }
 
     // ── concern_add ──

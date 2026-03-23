@@ -5,9 +5,9 @@ using Scrinia.Mcp;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Tests that PlanTasks auto-injects gate tasks (qa-gate, evolutionary-gate,
-/// cartographer-gate, march-gate) into the task plan so that gate compliance
-/// becomes mandatory.
+/// Tests that PlanTasks auto-injects gate tasks (qa-gate, self-reflector-gate,
+/// evolutionary-gate, cartographer-gate, march-gate) into the task plan so that
+/// gate compliance becomes mandatory.
 /// </summary>
 public sealed class AutoInjectedGateTaskTests : IDisposable
 {
@@ -27,30 +27,21 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Sets up a project with requirements and a single-phase roadmap.
-    /// Phase 01 is the last (and only) phase.
+    /// Sets up a project with requirements (no roadmap — roadmaps are eliminated).
     /// </summary>
     private async Task SetupSinglePhaseProject()
     {
         await _tools.ProjectInit("Goals: gate injection testing", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
-        await _tools.PlanRoadmap(
-            "## Phase 01\nREQ-IDs: REQ-01\nSuccess criteria:\n- Feature X works",
-            cancellationToken: CancellationToken.None);
     }
 
     /// <summary>
-    /// Sets up a project with requirements and a two-phase roadmap.
-    /// Phase 01 is NOT the last phase; phase 02 is.
+    /// Sets up a project with requirements for multi-phase testing.
     /// </summary>
     private async Task SetupTwoPhaseProject()
     {
         await _tools.ProjectInit("Goals: multi-phase gate testing", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("## v1\n- REQ-01: Feature X\n- REQ-02: Feature Y",
-            cancellationToken: CancellationToken.None);
-        await _tools.PlanRoadmap(
-            "## Phase 01\nREQ-IDs: REQ-01\nSuccess criteria:\n- Feature X works\n\n" +
-            "## Phase 02\nREQ-IDs: REQ-02\nSuccess criteria:\n- Feature Y works",
             cancellationToken: CancellationToken.None);
     }
 
@@ -126,8 +117,10 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         string result = await _tools.PlanTasks("01", SingleTaskInput(),
             cancellationToken: CancellationToken.None);
 
-        // Assert — all four gate tasks should be present
+        // Assert — all five gate tasks should be present
         result.Should().Contain("qa-gate", "QA gate should always be injected");
+        result.Should().Contain("self-reflector-gate",
+            "self-reflector gate should always be injected");
         result.Should().Contain("evolutionary-gate",
             "evolutionary gate should be injected for the last phase");
         result.Should().Contain("cartographer-gate",
@@ -136,10 +129,10 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
             "march gate should be injected for the last phase");
     }
 
-    // ── Test 4: Non-last phase only injects QA gate ───────────────────────────
+    // ── Test 4: All phases inject all gates (no last-phase distinction) ─────────
 
     [Fact]
-    public async Task PlanTasks_NonLastPhaseOnlyInjectsQaGate()
+    public async Task PlanTasks_AllPhasesInjectAllGates()
     {
         // Arrange — two-phase roadmap: phase 01 is NOT the last phase
         await SetupTwoPhaseProject();
@@ -148,15 +141,17 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         string result = await _tools.PlanTasks("01", SingleTaskInput(),
             cancellationToken: CancellationToken.None);
 
-        // Assert — only qa-gate should be present, not the last-phase gates
+        // Assert — all gates should be injected regardless of phase position
         result.Should().Contain("qa-gate",
             "QA gate should always be injected regardless of phase position");
-        result.Should().NotContain("evolutionary-gate",
-            "evolutionary gate should NOT be injected for a non-last phase");
-        result.Should().NotContain("cartographer-gate",
-            "cartographer gate should NOT be injected for a non-last phase");
-        result.Should().NotContain("march-gate",
-            "march gate should NOT be injected for a non-last phase");
+        result.Should().Contain("self-reflector-gate",
+            "self-reflector gate should always be injected regardless of phase position");
+        result.Should().Contain("evolutionary-gate",
+            "evolutionary gate should always be injected regardless of phase position");
+        result.Should().Contain("cartographer-gate",
+            "cartographer gate should always be injected regardless of phase position");
+        result.Should().Contain("march-gate",
+            "march gate should always be injected regardless of phase position");
     }
 
     // ── Test 5: Gate tasks have gate keyword ──────────────────────────────────

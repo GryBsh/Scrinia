@@ -78,9 +78,6 @@ public sealed class GoalPrefixTests : IDisposable
         await _projTools.PlanRequirements(
             "- REQ-01: verify task naming includes goal prefix",
             cancellationToken: CancellationToken.None);
-        await _projTools.PlanRoadmap(
-            "### Phase 01\nREQ-01 task naming verification\nSuccess criteria:\n- Tasks have goal-prefixed names",
-            cancellationToken: CancellationToken.None);
 
         string taskDef = """
             ## Task 01
@@ -103,31 +100,7 @@ public sealed class GoalPrefixTests : IDisposable
             "task name should follow pattern task:g{goalNum}-{hex}-{phaseId}-{wave}-{taskId}");
     }
 
-    // ── Test 3: research_start creates goal-prefixed research names ───────────
-
-    [Fact]
-    public async Task ResearchStart_GoalPrefixedName()
-    {
-        // Arrange — set up a project with an active goal
-        await _projTools.ProjectInit("Goals: test goal-prefixed research names",
-            cancellationToken: CancellationToken.None);
-        await _projTools.GoalUpdate("add", "Test goal for research prefix",
-            cancellationToken: CancellationToken.None);
-
-        // Act
-        string result = await _projTools.ResearchStart("01", "naming",
-            "How are research memories named with goal prefixes?",
-            cancellationToken: CancellationToken.None);
-
-        // Assert — the research memory name should include the goal prefix
-        // With active goal G-1-xxx, the name should be "research:g1-xxx-01-naming"
-        result.Should().Contain("research:g",
-            "research_start should create a research memory with goal-prefixed name (research:gN-...)");
-        result.Should().MatchRegex(@"research:g\d+-[a-f0-9]+-01-naming",
-            "research memory name should follow pattern research:g{goalNum}-{hex}-{phaseId}-{topic}");
-    }
-
-    // ── Test 4: Branch-safe goal IDs with hex suffix ─────────────────────────
+    // ── Test 3: Branch-safe goal IDs with hex suffix ─────────────────────────
 
     [Fact]
     public async Task GoalUpdate_Add_ProducesIdWithHexSuffix()

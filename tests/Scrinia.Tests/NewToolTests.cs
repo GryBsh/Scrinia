@@ -128,9 +128,6 @@ public sealed class NewToolTests : IDisposable
         await _projTools.PlanRequirements(
             "- REQ-01: task decomposition\n- REQ-02: conflict detection",
             cancellationToken: CancellationToken.None);
-        await _projTools.PlanRoadmap(
-            "### Phase 1\nREQ-01, REQ-02 tasks",
-            cancellationToken: CancellationToken.None);
     }
 
     [Fact]
@@ -189,9 +186,9 @@ public sealed class NewToolTests : IDisposable
         // Assert — no conflict warning when no Files: lines present
         result.Should().NotContainEquivalentOf("conflict",
             "plan_tasks without Files: lines should not produce any conflict warnings");
-        result.Should().Contain("Created 6 task(s)",
+        result.Should().Contain("Created 7 task(s)",
             "tasks should be created normally when no Files: lines are present " +
-            "(2 user tasks + 4 auto-injected gate tasks for last phase)");
+            "(2 user tasks + 5 auto-injected gate tasks for last phase)");
     }
 
     // ── compact() tests ──────────────────────────────────────────────────────
