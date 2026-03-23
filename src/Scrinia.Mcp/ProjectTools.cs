@@ -144,7 +144,7 @@ public sealed class ScriniaProjectTools
 
     // ── Dispatchers ──────────────────────────────────────────────────────────
 
-    /// <summary>Dispatcher for plan_tasks, plan_status, and project_init.</summary>
+    /// <summary>Dispatcher for plan('tasks'), plan('status'), and project_init.</summary>
     [McpServerTool(Name = "plan"), Description(
         "Project planning operations. Actions: 'tasks' (decompose phase into tasks), " +
         "'status' (project progress and state), 'init' (initialize new project).")]
@@ -175,7 +175,7 @@ public sealed class ScriniaProjectTools
         }
     }
 
-    /// <summary>Dispatcher for plan_requirements.</summary>
+    /// <summary>Dispatcher for requirement('add').</summary>
     [McpServerTool(Name = "requirement"), Description(
         "Manage project requirements. Actions: 'add' (store requirements with REQ-IDs), " +
         "'resolve' (mark a requirement fulfilled), 'list' (show all requirements).")]
@@ -228,7 +228,7 @@ public sealed class ScriniaProjectTools
         }
     }
 
-    /// <summary>Dispatcher for skill_load and skill_create.</summary>
+    /// <summary>Dispatcher for skill('load') and skill('create').</summary>
     [McpServerTool(Name = "skill"), Description(
         "Manage specialist skills. Actions: 'load' (list or load a skill), " +
         "'create' (create a reusable skill from scaffold).")]
@@ -278,8 +278,8 @@ public sealed class ScriniaProjectTools
             .Any(e => !Path.GetFileName(e).StartsWith('.'));
 
         string nextStep = hasExistingCode
-            ? "scan the existing codebase for concerns (concern_add) and capture patterns (store), then set a goal with goal_update"
-            : "set a goal with goal_update, then plan requirements";
+            ? "scan the existing codebase for concerns (concern('add')) and capture patterns (store), then set a goal with goal('add')"
+            : "set a goal with goal('add'), then plan requirements";
 
         await WriteStateAsync(store, projectName, projectId,
             phase: "Initialized",
@@ -594,7 +594,7 @@ public sealed class ScriniaProjectTools
             progressPct: "30",
             lastAction: $"Tasks created for phase {phaseId} ({parsedTasks.Count} tasks, {waveCount} wave(s))",
             blockers: "none",
-            nextStep: $"run task_next to get first task for phase {phaseId}",
+            nextStep: $"run task('next') to get first task for phase {phaseId}",
             cancellationToken);
 
         // Optionally surface learn:patterns as a hint for the task planner
@@ -631,7 +631,7 @@ public sealed class ScriniaProjectTools
             $"Created {parsedTasks.Count} task(s) for phase {phaseId} in {waveCount} wave(s).\n" +
             $"Tasks stored:\n{taskList}\n" +
             $"Files in .scrinia/ were updated — these are your changes.\n" +
-            $"Next: run task_next to get the first pending tasks.{parallelHint}\n" +
+            $"Next: run task('next') to get the first pending tasks.{parallelHint}\n" +
             $"Spawn agents for all task execution — the primary agent orchestrates, it does not execute tasks directly." +
             executionPolicyHint +
             conflictWarning +
@@ -923,11 +923,11 @@ public sealed class ScriniaProjectTools
         await WriteStateAsync(store, projectName, projectId,
             phase: currentPhase,
             progressPct: CalculateProgress(store, activeGoalId),
-            lastAction: $"task_next called for phase {phaseId} wave {currentWave}",
+            lastAction: $"task('next') called for phase {phaseId} wave {currentWave}",
             blockers: "none",
             nextStep: unblockedEntries.Count > 1
-                ? $"spawn {unblockedEntries.Count} parallel agents for wave {currentWave} tasks, call task_complete for each"
-                : $"execute wave {currentWave} task, then call task_complete",
+                ? $"spawn {unblockedEntries.Count} parallel agents for wave {currentWave} tasks, call task('complete') for each"
+                : $"execute wave {currentWave} task, then call task('complete')",
             cancellationToken);
 
         string response = sb.ToString();
@@ -1050,7 +1050,7 @@ public sealed class ScriniaProjectTools
             {
                 var names = string.Join(", ", openConcerns.Select(e => e.Name));
                 return $"Error: {openConcerns.Count} open high/medium concern(s) for phase {phaseId}: {names}. " +
-                    "Resolve them (concern_resolve with verifiedBy) before verification.";
+                    "Resolve them (concern('resolve') with verifiedBy) before verification.";
             }
         }
         catch { /* best-effort — don't block if concern scope doesn't exist */ }
@@ -1119,7 +1119,7 @@ public sealed class ScriniaProjectTools
         string verifyNextStep;
         if (passCount < criteria.Count)
         {
-            verifyNextStep = "run plan_gaps to create gap closure tasks";
+            verifyNextStep = "run plan('gaps') to create gap closure tasks";
         }
         else
         {
@@ -1136,14 +1136,14 @@ public sealed class ScriniaProjectTools
             catch { /* concern scope not yet created — skip silently */ }
 
             verifyNextStep = hasActiveConcerns
-                ? $"resolve addressed concerns (concern_resolve), then run plan_retrospective for phase {phaseId}"
-                : $"run plan_retrospective for phase {phaseId} to record lessons learned";
+                ? $"resolve addressed concerns (concern('resolve')), then run plan('retrospective') for phase {phaseId}"
+                : $"run plan('retrospective') for phase {phaseId} to record lessons learned";
         }
 
         await WriteStateAsync(store, projectName2, projectId2,
             phase: currentPhase2,
             progressPct: progressPct2,
-            lastAction: $"plan_verify for phase {phaseId}: {status}",
+            lastAction: $"plan('verify') for phase {phaseId}: {status}",
             blockers: passCount < criteria.Count ? $"{criteria.Count - passCount} criteria failed" : "none",
             nextStep: verifyNextStep,
             cancellationToken);
@@ -1217,12 +1217,12 @@ public sealed class ScriniaProjectTools
             progressPct: progressPct,
             lastAction: $"Gap closure: {criteria.Count} task(s) created for phase {phaseId}",
             blockers: "none",
-            nextStep: "run task_next to work on gap tasks",
+            nextStep: "run task('next') to work on gap tasks",
             cancellationToken);
 
         string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
         string response =
-            $"Created {criteria.Count} gap closure task(s) for phase {phaseId}. Phase re-opened. Run task_next to begin.\n" +
+            $"Created {criteria.Count} gap closure task(s) for phase {phaseId}. Phase re-opened. Run task('next') to begin.\n" +
             $"Gap tasks created:\n{taskList}";
 
         response = Truncate(response);
@@ -1678,7 +1678,7 @@ public sealed class ScriniaProjectTools
 
         string nextStep;
         if (phaseComplete)
-            nextStep = $"all phase {phaseId} tasks complete — verify the work (run tests, review changes), then run plan_verify to record results";
+            nextStep = $"all phase {phaseId} tasks complete — verify the work (run tests, review changes), then run plan('verify') to record results";
         else
         {
             var pendingCheck = goalScopedEntries
@@ -1688,7 +1688,7 @@ public sealed class ScriniaProjectTools
             int sameWaveCheck = pendingCheck.Count(e => ParseWave(e) == thisWaveCheck);
             nextStep = sameWaveCheck > 0
                 ? $"keep {sameWaveCheck} remaining wave {thisWaveCheck} parallel agents running"
-                : "run task_next to get the next wave's tasks";
+                : "run task('next') to get the next wave's tasks";
         }
 
         await WriteStateAsync(store, projectName, projectId,
@@ -1719,11 +1719,11 @@ public sealed class ScriniaProjectTools
             int totalRemaining = pendingInPhase.Count;
 
             if (sameWaveRemaining > 1)
-                response = $"Task '{taskName}' marked complete. {sameWaveRemaining} tasks remaining in wave {thisWave} — keep parallel agents running. Call task_complete for each as they finish.";
+                response = $"Task '{taskName}' marked complete. {sameWaveRemaining} tasks remaining in wave {thisWave} — keep parallel agents running. Call task('complete') for each as they finish.";
             else if (sameWaveRemaining == 1)
                 response = $"Task '{taskName}' marked complete. 1 task remaining in wave {thisWave}.";
             else
-                response = $"Task '{taskName}' marked complete. Wave {thisWave} done. Run task_next to get wave {thisWave + 1} tasks ({totalRemaining} pending).";
+                response = $"Task '{taskName}' marked complete. Wave {thisWave} done. Run task('next') to get wave {thisWave + 1} tasks ({totalRemaining} pending).";
         }
 
         if (!string.IsNullOrWhiteSpace(acceptanceCriteria))
@@ -2077,7 +2077,7 @@ public sealed class ScriniaProjectTools
             progressPct: progressPct,
             lastAction: $"Concern added: {qualifiedName} (severity:{severity})",
             blockers: "none",
-            nextStep: "run concern to list active concerns, or concern_resolve when addressed",
+            nextStep: "run concern to list active concerns, or concern('resolve') when addressed",
             cancellationToken);
 
         return $"Stored as {qualifiedName}. Files in .scrinia/ were updated — these are your changes." + patternSuggestion;
@@ -2253,7 +2253,7 @@ public sealed class ScriniaProjectTools
             $"## What Failed\n{whatFailed}\n\n" +
             $"## Lessons\n{lessons}" +
             beliefsSection + "\n\n" +
-            $"## Provenance\nAuthored by agent via plan_retrospective. Keyword: provenance:agent";
+            $"## Provenance\nAuthored by agent via plan('retrospective'). Keyword: provenance:agent";
 
         // Fetch goal ID early so per-phase file name includes it
         string? retroGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
@@ -2335,7 +2335,7 @@ public sealed class ScriniaProjectTools
                         "0. Run QA: skill('load', { name: \"qa\" }) → verify tests pass, build clean, criteria met\n" +
                         "1. Produce a march report: skill('load', { name: \"march-reporter\" }) → docs/reports/ + sessions:YYYY-MM-DD memory\n" +
                         "2. Distill valuable learnings into topical memories (store) so future goals start smarter\n" +
-                        "3. Update existing skills or create new ones (skill_create) with lessons from this goal" +
+                        "3. Update existing skills or create new ones (skill('create')) with lessons from this goal" +
                         skillNudge + "\n" +
                         "4. Then run goal('complete')";
                 else if (nextPhase is not null)
@@ -2697,11 +2697,11 @@ public sealed class ScriniaProjectTools
 
                             bool hasVerify = logText?.Contains($"VERIFY phase {pid}:", StringComparison.OrdinalIgnoreCase) == true;
                             if (!hasVerify)
-                                warnings.Add($"phase {pid} has no plan_verify record");
+                                warnings.Add($"phase {pid} has no plan('verify') record");
 
                             // Check for FAIL in verification results
                             if (hasVerify && logText!.Contains($"VERIFY phase {pid}: PARTIAL", StringComparison.OrdinalIgnoreCase))
-                                warnings.Add($"phase {pid} verification had failures — check plan_verify results");
+                                warnings.Add($"phase {pid} verification had failures — check plan('verify') results");
                             if (hasVerify && logText!.Contains($"VERIFY phase {pid}: ALL_FAIL", StringComparison.OrdinalIgnoreCase))
                                 warnings.Add($"phase {pid} verification failed — all criteria unmet");
 
@@ -2716,7 +2716,7 @@ public sealed class ScriniaProjectTools
                                 hasRetro = retroText?.Contains($"Phase {pid} Retrospective", StringComparison.OrdinalIgnoreCase) == true;
 
                             if (!hasRetro)
-                                warnings.Add($"phase {pid} has no plan_retrospective");
+                                warnings.Add($"phase {pid} has no plan('retrospective')");
                         }
                     }
                 }
@@ -2813,13 +2813,13 @@ public sealed class ScriniaProjectTools
                 if (warnings.Count > 0)
                     response += "\n\nWorkflow steps you may have skipped:\n" +
                         string.Join("\n", warnings.Select(w => $"- {w}")) +
-                        "\nConsider running plan_verify and plan_retrospective before moving on.";
+                        "\nConsider running plan('verify') and plan('retrospective') before moving on.";
 
                 response += "\n\nPost-goal learning:\n" +
                     "- Run QA if not already done: skill('load', { name: \"qa\" }) for structured verification\n" +
                     "- Produce a march report: skill('load', { name: \"march-reporter\" }) \u2192 write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
                     "- Distill valuable findings into topical memories (store) for future goals\n" +
-                    "- Update or create skills (skill_create) with lessons learned\n" +
+                    "- Update or create skills (skill('create')) with lessons learned\n" +
                     "Planning artifacts (task:*, plan:*, research:*) can be cleaned up \u2014 " +
                     "the learnings live in your memories and skills now.";
 
@@ -3099,11 +3099,11 @@ public sealed class ScriniaProjectTools
         "## Tools Available (if Scrinia MCP is active)\n" +
         "- search: Query memories for existing decisions, patterns, or prior art.\n" +
         "- show: Load full artifact content for review context.\n" +
-        "- concern_add: Track issues found during review with severity and phase scope.\n" +
-        "- concern_resolve: Mark concerns resolved when addressed.\n\n" +
+        "- concern('add'): Track issues found during review with severity and phase scope.\n" +
+        "- concern('resolve'): Mark concerns resolved when addressed.\n\n" +
         "## Instructions\n" +
         "1. Use search() to load relevant context before reviewing.\n" +
-        "2. For each issue found, call concern_add with severity (high/medium/low) and phase.\n" +
+        "2. For each issue found, call concern('add') with severity (high/medium/low) and phase.\n" +
         "3. Provide specific, actionable feedback — not just identification.\n" +
         "4. Summarize findings with a list of concerns added and recommendations.\n\n" +
         "## Fallback Instructions (if Scrinia MCP is not available)\n" +
@@ -3241,7 +3241,7 @@ public sealed class ScriniaProjectTools
             progressPct: progressPct,
             lastAction: $"Skill created: {qualifiedName} (role:{role})",
             blockers: "none",
-            nextStep: "use skill_load to retrieve stored skills",
+            nextStep: "use skill('load') to retrieve stored skills",
             cancellationToken);
 
         string response = $"Stored as {qualifiedName}. Files in .scrinia/ were updated -- these are your changes.";
@@ -3358,7 +3358,7 @@ public sealed class ScriniaProjectTools
                 $"## Your Project Override\n{overrideContent}\n\n" +
                 "## Instructions\n" +
                 "Merge your project-specific additions with the updated built-in base,\n" +
-                "then call skill_create to save the reconciled version.\n");
+                "then call skill('create') to save the reconciled version.\n");
         }
 
         if (overrideContent is null)
@@ -3366,7 +3366,7 @@ public sealed class ScriniaProjectTools
             // Fall back to built-in skills
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
                 return "[Loaded from built-in]\n" + Truncate(builtIn);
-            return $"Error: skill '{skillName}' not found. Use skill_load (no name) to list available skills.";
+            return $"Error: skill '{skillName}' not found. Use skill('load') (no name) to list available skills.";
         }
 
         string content = Truncate(overrideContent);
@@ -3864,19 +3864,26 @@ public sealed class ScriniaProjectTools
             Review `agent:profile` and `agent:execution-policy` against accumulated evidence.
             Do the norms still match how work actually gets done? Propose updates with reasoning.
 
-            ### 5. Scan backlog for unblocked items
-            `memory('search', { query: "backlog:" })` to review deferred work. Check if recent goal outcomes,
-            code changes, or new capabilities have unblocked any items. If an item is now
-            actionable, flag it for promotion to a goal in your output.
+            ### 5. Verify test counts
+            Run the project's test command (e.g., `dotnet test`) and capture pass/fail/skip counts.
+            Search for memories that track test counts (e.g., `memory('search', { query: "test count" })`).
+            If stored counts differ from actual, update them. This prevents stale test data
+            from misleading future QA and planning agents.
 
-            ### 6. Detect recurring patterns
+            ### 6. Scan backlog for unblocked and resolved items
+            `memory('search', { query: "backlog:" })` to review deferred work.
+            - **Unblocked**: Check if recent goals or code changes have unblocked any items. If actionable, flag for promotion.
+            - **Resolved**: Check if items were addressed by recent goals without being tracked. Update or remove completed entries.
+            - **Stale**: Flag items on the backlog for 3+ goals without progress for user review.
+
+            ### 7. Detect recurring patterns
             Scan concern:* entries for keyword overlap. For each concern's keywords
             (excluding noise: status:, severity:, phase:, provenance:, goal:, ref:,
             file:, wave:, depends_on:, basedOn:, type:), count how many concerns
             share each keyword. If 3+ concerns share a specific keyword, suggest
             creating a `patterns:{keyword}` memory to capture the recurring theme.
 
-            ### 7. Prune and consolidate
+            ### 8. Prune and consolidate
             Merge memories that overlap significantly. Remove memories superseded by code changes.
             Promote ephemeral memories that proved valuable via `copy("~name", "topic:name")`.
 
@@ -4009,6 +4016,12 @@ public sealed class ScriniaProjectTools
             ### 5. Validate against task description
             Compare what was asked (task action) with what was delivered (outcome).
             Flag any deviations or scope creep.
+
+            ### 6. Resolve addressed concerns
+            Run `concern('list')` to see active concerns scoped to this phase.
+            For each concern that your verification evidence shows is resolved:
+              concern('resolve', { concernName: "concern:ID", resolution: "evidence summary", verifiedBy: "qa" })
+            Do not resolve concerns you cannot provide evidence for.
 
             ## Output format
             Return structured evidence for verification:

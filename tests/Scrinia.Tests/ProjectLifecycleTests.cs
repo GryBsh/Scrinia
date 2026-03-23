@@ -294,9 +294,9 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         string result = await _tools.ContextResume(CancellationToken.None);
 
-        // Assert — response should contain agent profile section and its content
-        result.Should().Contain("Agent profile",
-            "context_resume should include the 'Agent profile' section when agent:profile exists");
+        // Assert — response should contain agent norms section and its content
+        result.Should().Contain("Agent norms",
+            "context_resume should include the 'Agent norms' section when agent:* memories exist");
         result.Should().Contain("Memory persistence",
             "context_resume should inline agent:profile content");
     }
@@ -343,7 +343,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — full lifecycle: init, requirements, tasks
         // PlanTasks updates project:state to include "Phase 01" which the nudge regex needs,
-        // and creates pending tasks that trigger the task_next nudge.
+        // and creates pending tasks that trigger the task('next') nudge.
         await _tools.ProjectInit("Goals: task nudge test", cancellationToken: CancellationToken.None);
         await _tools.PlanRequirements("- REQ-01: Feature A", cancellationToken: CancellationToken.None);
         string taskInput =
@@ -353,9 +353,9 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         string result = await _tools.ContextResume(CancellationToken.None);
 
-        // Assert — response should nudge agent to call task_next
-        result.Should().Contain("task_next",
-            "context_resume should include a task_next nudge when pending tasks exist");
+        // Assert — response should nudge agent to call task('next')
+        result.Should().Contain("task('next')",
+            "context_resume should include a task('next') nudge when pending tasks exist");
     }
 
     [Fact]
@@ -374,8 +374,8 @@ public sealed class ProjectLifecycleTests : IDisposable
             "context_resume should not include 'Session log' when no session log exists for today");
         result.Should().NotContain("Active goal",
             "context_resume should not include 'Active goal' when no goal is active");
-        result.Should().NotContain("task_next",
-            "context_resume should not include task_next nudge when no pending tasks exist");
+        result.Should().NotContain("task('next')",
+            "context_resume should not include task('next') nudge when no pending tasks exist");
     }
 
     // ── plan_status tests (PROJ-05) ───────────────────────────────────────────

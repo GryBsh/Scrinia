@@ -1844,13 +1844,47 @@ public sealed class ScriniaMcpTools
 
         response += capabilityHints;
 
-        // Inline agent:profile content
+        // Inline all agent:* memories
         try
         {
-            string profileContent = await ScriniaProjectTools.ReadMemoryAsync(store, "agent:profile", cancellationToken);
-            response += "\n\n## Agent profile\n" + profileContent;
+            var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
+            var agentEntries = store.LoadIndex(agentScope);
+            if (agentEntries.Count > 0)
+            {
+                response += "\n\n## Agent norms";
+                foreach (var entry in agentEntries)
+                {
+                    try
+                    {
+                        string content = await ScriniaProjectTools.ReadMemoryAsync(store, $"agent:{entry.Name}", cancellationToken);
+                        response += $"\n### {entry.Name}\n{content}";
+                    }
+                    catch { /* entry unreadable — skip */ }
+                }
+            }
         }
-        catch (FileNotFoundException) { /* no profile — skip silently */ }
+        catch { /* agent scope not yet created — skip silently */ }
+
+        // Inline all patterns:* memories
+        try
+        {
+            var (patternsScope, _) = store.ParseQualifiedName("patterns:placeholder");
+            var patternsEntries = store.LoadIndex(patternsScope);
+            if (patternsEntries.Count > 0)
+            {
+                response += "\n\n## Learned patterns";
+                foreach (var entry in patternsEntries)
+                {
+                    try
+                    {
+                        string content = await ScriniaProjectTools.ReadMemoryAsync(store, $"patterns:{entry.Name}", cancellationToken);
+                        response += $"\n### {entry.Name}\n{content}";
+                    }
+                    catch { /* entry unreadable — skip */ }
+                }
+            }
+        }
+        catch { /* patterns scope not yet created — skip silently */ }
 
         if (checkpointContent is not null)
             response += "\n\n## Last checkpoint\n" + checkpointContent;
