@@ -48,157 +48,36 @@ public sealed class ScriniaMcpTools
 
     [McpServerTool(Name = "guide"), Description(
         "Required reading — call at session start, then commit content to your project's agent file. " +
-        "If a project exists (.scrinia/ directory), check plan('status') for active goals before starting new work. " +
+        "If a project exists (.scrinia/ directory), check memory('recall', { path: '/project/status' }) for active goals before starting new work. " +
         "Covers memory patterns, the goal-driven planning workflow, and when to plan vs. just do.")]
     public Task<string> Guide(CancellationToken cancellationToken = default) =>
-        Task.FromResult("""
-            [INSTRUCTION]
-            # scrinia guide — cognitive toolset for LLM agents
-
-            Scrinia gives you three capabilities — use them fluidly, not sequentially:
-            - **Research** — search memories and skills, investigate the codebase, form hypotheses
-            - **Plan & Do** — set goals, decompose into tasks, execute via spawned agents, verify
-            - **Learn** — update beliefs, evolve skills, store what you figured out
-
-            ## First session setup
-            1. Commit this guide to your project's agent file (AGENTS.md, CLAUDE.md, or equivalent)
-            2. If `.scrinia/` exists, call `plan('status')` to check for active goals
-            3. If a project exists but no active goal, ask the user what to work on → `goal('add')`
-            4. If no project exists, call `plan('init')` when the user's request warrants planning
-
-            ## Before you start any work
-            Always call memory('search') before answering questions or performing work.
-            Check prior sessions, existing knowledge, and agent behavioral norms.
-            This is not optional — context from prior work prevents redundant investigation
-            and ensures consistency with established patterns and decisions.
-
-            Proactively create memories as you work — don't wait to be asked.
-            When you learn something, discover a pattern, or figure out a non-obvious solution,
-            store it immediately. The goal is a knowledge base that makes the next session smarter.
-
-            ## When to plan vs. just do
-            - **Every goal** goes through the full workflow: goal('add') → task('next') → spawn → task('complete')
-            - **Questions and quick lookups** don't need a goal — just answer using memory('search') first
-            - **When in doubt**: set a goal — the auditor will right-size the scope
-
-            ## Memory habits
-            - **When you learn something** → `memory('store', { name: "topic:subject", content: [...] })`
-            - **When you fix a bug** → store the root cause and fix pattern
-            - **When the user corrects you** → store the correction as a pattern
-            - **When you discover a convention** → store it for future sessions
-            - **When starting work** → `memory('search')` first to check prior sessions
-            - **Maintain a session log** → `memory('store')` or `memory('append')` to `sessions:YYYY-MM-DD`
-            One concept per chunk — each chunk is independently searchable with its own keywords.
-            Use multiple elements in `memory('store')` to control semantic boundaries, not just size.
-
-            **Scrinia is the single source of truth.** Do not use platform-specific memory systems
-            (Claude auto-memory, Cursor notes, etc.) for project knowledge. All persistence through scrinia.
-
-            ## Skill habits
-            - Skills are methodology (how to work), memories are knowledge (what you know)
-            - `skill('load')` lists available skills; `skill('load', { name: "..." })` activates one
-            - `skill('create')` to capture effective approaches as reusable methodology
-            - Built-in skills: planner, auditor, debugger, chaos-engineer, onboarder,
-              sos-handler, evolutionary, cartographer, march-reporter, merge-safety, qa, self-reflector
-            - **Precedence**: project memory overrides built-in. Built-in for universal features,
-              `skill('create')` for project-specific evolution.
-
-            ## Ephemeral memories
-            `~` prefix for in-session working state: `memory('store', { name: "~scratch", content: ["data"] })`.
-            Dies on process exit. Promote via `memory('copy', { name: "~scratch", destination: "topic:name" })`.
-
-            ## Topics and naming
-            `topic:subject` organizes memories: `api:auth-flow`, `patterns:retry`, `bugs:sqlite`.
-            Auto-discovered — no setup needed. Names are auto-prefixed with goal ID when active
-            (e.g. `task:g36-4a2-01-1-01`). `memory('search', { query: "task:g36" })` scopes to one goal.
-
-            ## Reserved planning topics
-            | Topic | Purpose |
-            |-------|---------|
-            | `project:*` | project context, requirements, state |
-            | `plan:*` | planning state |
-            | `task:*` | decomposed tasks (goal-prefixed) |
-            | `learn:*` | retrospectives, beliefs (per-phase files) |
-            | `agent:*` | behavioral norms |
-            | `research:*` | investigation findings (goal-prefixed) |
-            | `concern:*` | tracked risks |
-            | `skill:*` | reusable specialist prompts |
-            | `backlog:*` | deferred work and future ideas |
-
-            Use `excludeTopics="plan,task,project,learn,backlog"` to hide planning data.
-
-            ## Chunks as semantic boundaries
-            Use `memory('show', { name: "..." })` for full content, `memory('show', { name: "...", chunk: 2 })` for a specific chunk.
-            Each chunk in a multi-element `memory('store')` call is independently retrievable and searchable.
-            Design chunks around concepts, not size.
-
-            ## Versioning, review, and context
-            - Overwriting a memory auto-archives the previous version
-            - `memory('store', { ..., reviewAfter: "2026-06-01" })` or `reviewWhen: "when auth changes"` for staleness
-            - `memory('store', { name: "~checkpoint", content: ["state..."] })` before large tasks to survive context compression
-
-            ## When to store vs. not
-            Store: anything you'd want to know in a fresh session tomorrow.
-            Don't store: transient working state (use `~ephemeral`), things derivable from code/git.
-            Rule of thumb: if you had to figure it out, store it.
-
-            ## Workspace changes
-            Scrinia tools write to `.scrinia/` — treat those changes as yours. Include in commits.
-
-            ## Project planning — the goal-driven cycle
-
-            **1. Pre-plan** → scan codebase for concerns → `concern('add')`
-            **2. Set a goal** → `goal('add')` — auto-creates researcher → auditor → planner seed tasks
-            **3. Execute** — the orchestrator's only loop is `task('next')` → spawn → `task('complete')`:
-              - `goal('add')` auto-creates researcher (wave 0) → auditor (wave 1) → planner (wave 2)
-              - Researcher explores codebase and stores findings via `memory('store')`
-              - Auditor reads research, calls `requirement('add')` + `concern('add')` with full context
-              - Planner reads research + requirements, calls `plan('tasks')` directly
-              - `plan('tasks')` auto-injects gate tasks: QA + self-reflector every phase, evolutionary/cartographer/march on last phase
-              - The primary agent orchestrates — it does not execute tasks directly
-              - Use `run_in_background: true` for execution agents
-            **4. Complete** → `goal('complete')` — auto-appends session log + checkpoint
-
-            ## Recovery
-            - `memory('restore')` — full context restoration (project state, agent profile, session log, task nudge)
-            - `plan('status')` — quick progress check
-            - `memory('search', { query: "agent:" })` — load behavioral norms
-
-            ## Multi-user merge safety
-            Sorted metadata, per-phase retros, per-file sidecars prevent most conflicts.
-            After merging: `memory('reconcile')` → resolve each conflict → verify clean.
-            For team setup (merge driver, hooks): see docs/multi-user-setup.md
-
-            ## Test count tracking
-            Use `codeRefs` on testing memories pointing to `.csproj` files.
-            `memory('list', { mode: "drift" })` flags when test projects change → evolutionary updates counts.
-            [/INSTRUCTION]
-            """);
+        Task.FromResult(ResponseBuilder.Success(
+            EmbeddedPrompts.LoadGuide()
+            ?? throw new InvalidOperationException("Built-in guide not found in embedded resources"))
+            .WithAction("guide").ToYaml());
 
     /// <summary>Unified memory tool — dispatches to action-specific handlers.</summary>
     [McpServerTool(Name = "memory"), Description(
         "Unified memory operations. Actions: " +
-        "'store' (persist content with keywords/review/codeRefs), " +
-        "'append' (add chunk to existing memory), " +
-        "'show' (read/decode memory content, optional chunk), " +
+        "'remember' / 'store' (persist content with keywords/review/codeRefs), " +
+        "'recall' / 'show' (read/decode memory content, optional chunk), " +
+        "'forget' (delete memory), " +
         "'search' (find memories by query), " +
         "'list' (browse memories — summary/full/drift modes), " +
-        "'forget' (delete memory), " +
-        "'copy' (copy between scopes), " +
+        "'append' (add chunk to existing memory), " +
+        "'transition' (change entity state), " +
         "'compact' (merge chunks in a memory), " +
-        "'update' (update metadata without re-encoding), " +
         "'link' (add codeRefs to a memory), " +
-        "'references' (find what references a memory), " +
         "'restore' (resume full agent context — project state, agent profile, session log, task nudge), " +
         "'reconcile' (scan for merge conflicts or resolve a specific conflict).")]
     public async Task<string> Memory(
-        [Description("Action to perform: 'store', 'append', 'show', 'search', 'list', 'forget', 'copy', 'compact', 'update', 'link', 'references', 'restore', 'reconcile'.")] string action,
-        [Description("Memory name (store/append/show/forget/compact/update/link/references).")] string? name = null,
+        [Description("Action to perform: 'remember' (or 'store'), 'recall' (or 'show'), 'forget', 'search', 'list', 'append', 'transition', 'compact', 'link', 'restore', 'reconcile'.")] string action,
+        [Description("Memory path (e.g., '/goal/G-5/research/frontend' or 'topic:subject' for backward compat).")] string? path = null,
         [Description("Content array — each element becomes one chunk (store).")] string[]? content = null,
         [Description("Text content to append as new chunk (append).")] string? appendContent = null,
         [Description("Search query string (search).")] string? query = null,
-        [Description("Destination name for copy, or 'to' name for link.")] string? destination = null,
-        [Description("Optional description (store, update).")] string? description = null,
+        [Description("Target name for link.")] string? destination = null,
+        [Description("Optional description (store, update, create goal/concern/project).")] string? description = null,
         [Description("Optional tags (store).")] string[]? tags = null,
         [Description("Optional keywords for search — merged with auto-extracted (store, update).")] string[]? keywords = null,
         [Description("ISO 8601 review date (store, update).")] string? reviewAfter = null,
@@ -216,68 +95,107 @@ public sealed class ScriniaMcpTools
         [Description("Conflict ID to resolve (reconcile).")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged' (reconcile).")] string? choice = null,
         [Description("Content for 'merged' resolution (reconcile).")] string? mergedContent = null,
+        [Description("Entity ID for operations on existing entities.")] string? id = null,
+        [Description("Target state for transitions.")] string? to = null,
+        [Description("Concern severity: 'high', 'medium', 'low'.")] string? severity = null,
+        [Description("Phase scope for concerns.")] string? phase = null,
+        [Description("Requirements text with REQ-IDs.")] string? requirements = null,
+        [Description("Outcome note (complete goal).")] string? outcome = null,
+        [Description("Resolution description (resolve concern).")] string? resolution = null,
+        [Description("Verification method: 'debugger', 'qa', 'manual'.")] string? verifiedBy = null,
+        [Description("Evidence for requirement fulfillment.")] string? evidence = null,
+        [Description("Workflow name for goal creation.")] string? workflowRef = null,
+        [Description("Workflow definition JSON/YAML.")] string? definition = null,
+        [Description("Project context description.")] string? context = null,
+        [Description("Status filter for list.")] string? filter = null,
         CancellationToken cancellationToken = default)
     {
         string act = action.Trim().ToLowerInvariant();
+        // Map aliases to their response action names
+        string responseAction = act switch
+        {
+            "remember" => "remembered",
+            "recall" => "recalled",
+            _ => null! // null means use the handler's default
+        };
+
+        // ── Skill path routing ───────────────────────────────────────────────
+        // When `path` starts with "/skill/", route to SkillLoad/SkillCreate on
+        // ScriniaProjectTools. Handled before entity routing so "/skill/" doesn't
+        // fall through to entity dispatch (skill is not an entity type).
+        {
+            var skillResult = TryRouteToSkill(act, path, content, cancellationToken);
+            if (skillResult is not null)
+                return await skillResult;
+        }
+
+        // ── Entity path routing ──────────────────────────────────────────────
+        // When `path` starts with "/" and the first segment is a known entity type,
+        // route to EntityDispatch on ScriniaProjectTools — provided the action is
+        // one that has an entity equivalent AND required entity params are present.
+        // If required params are missing, fall through to standard memory storage.
+        {
+            var entityResult = TryRouteToEntity(act, path, description, id, to, severity,
+                phase, requirements, outcome, resolution, verifiedBy, evidence,
+                context, definition, workflowRef, query, filter, cancellationToken);
+            if (entityResult is not null)
+                return await entityResult;
+        }
+
         switch (act)
         {
+            case "remember":
             case "store":
                 const int MaxNameLength = 256;
                 const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
-                if (content is null || content.Length == 0) return "Error: memory('store') requires 'content' parameter.";
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('store') requires 'name' parameter.";
-                if (name.Length > MaxNameLength)
-                    return $"Error: name exceeds {MaxNameLength} characters.";
+                if (content is null || content.Length == 0) return ResponseBuilder.Error("memory('remember') requires 'content' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('remember') requires 'path' parameter.").ToYaml();
+                if (path.Length > MaxNameLength)
+                    return ResponseBuilder.Error($"path exceeds {MaxNameLength} characters.").ToYaml();
                 foreach (var element in content)
                 {
                     if (element != null && System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
-                        return $"Error: content element exceeds {MaxContentBytesPerElement / (1024 * 1024)} MB limit.";
+                        return ResponseBuilder.Error($"content element exceeds {MaxContentBytesPerElement / (1024 * 1024)} MB limit.").ToYaml();
                 }
-                return await Store(content, name, description ?? "", tags, keywords, reviewAfter, reviewWhen, codeRefs, cancellationToken);
+                {
+                    var result = await Store(content, path, description ?? "", tags, keywords, reviewAfter, reviewWhen, codeRefs, cancellationToken);
+                    return responseAction is not null ? result.Replace("action: stored", $"action: {responseAction}") : result;
+                }
 
             case "append":
-                if (string.IsNullOrWhiteSpace(appendContent)) return "Error: memory('append') requires 'appendContent' parameter.";
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('append') requires 'name' parameter.";
+                if (string.IsNullOrWhiteSpace(appendContent)) return ResponseBuilder.Error("memory('append') requires 'appendContent' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('append') requires 'path' parameter.").ToYaml();
                 if (appendContent != null && System.Text.Encoding.UTF8.GetByteCount(appendContent) > 5 * 1024 * 1024)
-                    return "Error: append content exceeds 5 MB limit.";
-                return await Append(appendContent, name, cancellationToken);
+                    return ResponseBuilder.Error("append content exceeds 5 MB limit.").ToYaml();
+                return await Append(appendContent!, path!, cancellationToken);
 
+            case "recall":
             case "show":
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('show') requires 'name' parameter.";
-                return await Show(name, chunk, cancellationToken);
+                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('recall') requires 'path' parameter.").ToYaml();
+                {
+                    var result = await Show(path, chunk, cancellationToken);
+                    return responseAction is not null ? result.Replace("action: shown", $"action: {responseAction}") : result;
+                }
 
             case "search":
-                if (string.IsNullOrWhiteSpace(query)) return "Error: memory('search') requires 'query' parameter.";
+                if (string.IsNullOrWhiteSpace(query)) return ResponseBuilder.Error("memory('search') requires 'query' parameter.").ToYaml();
                 return await Search(query, scopes, limit, excludeTopics, cancellationToken);
 
             case "list":
                 return await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken);
 
             case "forget":
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('forget') requires 'name' parameter.";
-                return await Forget(name, cancellationToken);
-
-            case "copy":
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('copy') requires 'name' parameter.";
-                if (string.IsNullOrWhiteSpace(destination)) return "Error: memory('copy') requires 'destination' parameter.";
-                return await Copy(name, destination, overwrite, cancellationToken);
+                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('forget') requires 'path' parameter.").ToYaml();
+                return await Forget(path, cancellationToken);
 
             case "compact":
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('compact') requires 'name' parameter.";
-                return await Compact(name, keepRecent, cancellationToken);
-
-            case "update":
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('update') requires 'name' parameter.";
-                return await UpdateMeta(name, keywords, description, reviewAfter, reviewWhen, cancellationToken);
+                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('compact') requires 'path' parameter.").ToYaml();
+                return await Compact(path, keepRecent, cancellationToken);
 
             case "link":
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('link') requires 'name' parameter.";
-                if (string.IsNullOrWhiteSpace(destination)) return "Error: memory('link') requires 'destination' parameter.";
-                return await Link(name, destination, reason, cancellationToken);
-
-            case "references":
-                if (string.IsNullOrWhiteSpace(name)) return "Error: memory('references') requires 'name' parameter.";
-                return await References(name, cancellationToken);
+                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('link') requires 'path' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(destination)) return ResponseBuilder.Error("memory('link') requires 'destination' parameter.").ToYaml();
+                return await Link(path, destination, reason, cancellationToken);
 
             case "restore":
                 return await Restore(cancellationToken);
@@ -285,18 +203,327 @@ public sealed class ScriniaMcpTools
             case "reconcile":
                 return await Reconcile(conflictId, choice, mergedContent, cancellationToken);
 
+            case "transition":
+                // Entity routing above handles /entity-type/id paths.
+                // If we reach here, the name wasn't an entity path — transition only works on entities.
+                return ResponseBuilder.Error("memory('transition') requires an entity path (e.g. path: '/goal/G-5', '/concern/SEC-1').").ToYaml();
+
             default:
-                return $"Error: unknown action '{action}'. Valid actions: store, append, show, search, list, forget, copy, compact, update, link, references, restore, reconcile.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: remember (store), recall (show), forget, search, list, append, transition, compact, link, restore, reconcile.").ToYaml();
         }
+    }
+
+    // ── Skill path routing ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Attempts to route a memory() call to <see cref="ScriniaProjectTools.SkillLoad"/>
+    /// or <see cref="ScriniaProjectTools.SkillCreate"/> when the <paramref name="path"/>
+    /// parameter starts with "/skill/".
+    /// Returns null when the call should fall through to standard memory behavior.
+    /// </summary>
+    private static Task<string>? TryRouteToSkill(
+        string act, string? path, string[]? content,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        // Check for "/skill/" prefix (case-insensitive)
+        if (!path.StartsWith("/skill/", StringComparison.OrdinalIgnoreCase) &&
+            !path.Equals("/skill", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        // Extract skill name from path: "/skill/qa" → "qa", "/skill/" → null (list)
+        string? skillName = null;
+        if (path.Length > "/skill/".Length)
+        {
+            skillName = path["/skill/".Length..].Trim().TrimEnd('/');
+            if (string.IsNullOrWhiteSpace(skillName))
+                skillName = null;
+        }
+
+        var projectTools = new ScriniaProjectTools();
+
+        switch (act)
+        {
+            case "recall":
+            case "show":
+                // Load a specific skill prompt (or list if no name)
+                return projectTools.SkillLoad(skillName, reconcile: false, cancellationToken);
+
+            case "remember":
+            case "store":
+                // Create/override a skill — use content[0] as instructions, default scaffold to "custom"
+                if (content is null || content.Length == 0)
+                    return Task.FromResult(ResponseBuilder.Error(
+                        "memory('remember', { path: '/skill/...' }) requires 'content' with at least one element (the skill instructions).").ToYaml());
+                if (string.IsNullOrWhiteSpace(skillName))
+                    return Task.FromResult(ResponseBuilder.Error(
+                        "memory('remember', { path: '/skill/{name}' }) requires a skill name in the path.").ToYaml());
+                return projectTools.SkillCreate(
+                    name: skillName,
+                    scaffold: "custom",
+                    instructions: string.Join("\n\n", content),
+                    tools: null,
+                    cancellationToken);
+
+            case "list":
+                // List all skills
+                return projectTools.SkillLoad(name: null, reconcile: false, cancellationToken);
+
+            default:
+                // Other actions (append, forget, copy, etc.) don't map to skill operations
+                return null;
+        }
+    }
+
+    // ── Entity path routing ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Built-in entity types routable through the memory() dispatcher.
+    /// Only types that EntityDispatch supports are included (not phase/task which
+    /// are handled via task() tool).
+    /// </summary>
+    private static readonly HashSet<string> BuiltInRoutableEntityTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "goal", "concern", "requirement", "project", "workflow", "file"
+    };
+
+    /// <summary>
+    /// Returns the full set of routable entity types (built-in + user-defined).
+    /// User-defined types are always routable.
+    /// </summary>
+    private static HashSet<string> GetRoutableEntityTypes(string? scriniaBaseDir)
+    {
+        var merged = EntityTypeRegistry.GetMergedTypes(scriniaBaseDir);
+        var routable = new HashSet<string>(BuiltInRoutableEntityTypes, StringComparer.OrdinalIgnoreCase);
+        // Add all user-defined types (they're not phase/task, so always routable)
+        foreach (var key in merged.Keys)
+        {
+            if (!EntityTypeRegistry.Types.ContainsKey(key))
+                routable.Add(key);
+        }
+        return routable;
+    }
+
+    /// <summary>
+    /// Attempts to route a memory() call to <see cref="ScriniaProjectTools.EntityDispatch"/>
+    /// when the <paramref name="path"/> parameter is a v2 entity path (starts with "/").
+    /// Returns null when the call should fall through to standard memory behavior:
+    /// - <paramref name="path"/> doesn't start with "/"
+    /// - First path segment isn't a routable entity type
+    /// - Action is remember/store but required entity params are missing (plain storage)
+    /// </summary>
+    private static Task<string>? TryRouteToEntity(
+        string act, string? path,
+        string? description, string? id, string? to, string? severity,
+        string? phase, string? requirements, string? outcome,
+        string? resolution, string? verifiedBy, string? evidence,
+        string? context, string? definition, string? workflowRef,
+        string? query, string? filter,
+        CancellationToken cancellationToken)
+    {
+        // Resolve scrinia base dir for user-defined entity type discovery
+        string? scriniaBaseDir = null;
+        var storeRef = MemoryStoreContext.Current;
+        if (storeRef is not null)
+        {
+            try { scriniaBaseDir = ScriniaProjectTools.GetScriniaBaseDir(storeRef); }
+            catch { /* ignore — no base dir available */ }
+        }
+
+        // Only handle paths (starting with "/")
+        if (string.IsNullOrWhiteSpace(path) || !path.StartsWith('/'))
+        {
+            // For search, check the query parameter for entity path prefixes
+            if (act == "search" && !string.IsNullOrWhiteSpace(query) && query.StartsWith('/'))
+                return TryRouteSearchToEntity(query, scriniaBaseDir, cancellationToken);
+
+            // For list with no path, check if query has entity type
+            return null;
+        }
+
+        // Parse the path using merged entity types (built-in + user-defined)
+        ParsedPath parsed;
+        try
+        {
+            var entityTypes = new HashSet<string>(
+                EntityTypeRegistry.GetMergedTypes(scriniaBaseDir).Keys,
+                StringComparer.OrdinalIgnoreCase);
+            parsed = PathParser.Parse(path, entityTypes);
+        }
+        catch (ArgumentException)
+        {
+            // Invalid path syntax — fall through to standard memory (may be a colon-separated name)
+            return null;
+        }
+
+        // Check first segment is a routable entity type
+        if (parsed.Segments.Count == 0) return null;
+        string firstSegment = parsed.Segments[0].Value.ToLowerInvariant();
+        var routableTypes = GetRoutableEntityTypes(scriniaBaseDir);
+        if (!routableTypes.Contains(firstSegment)) return null;
+
+        string entityType = firstSegment;
+
+        // Extract entity ID from path — either from EntityPairs or the second segment
+        string? entityId = id; // Explicit id param takes priority
+        if (string.IsNullOrWhiteSpace(entityId) && parsed.EntityPairs.Count > 0)
+            entityId = parsed.EntityPairs[0].Id;
+
+        // ── Route based on memory action → entity action ────────────────────
+
+        switch (act)
+        {
+            case "remember":
+            case "store":
+                // Only route to entity lifecycle when required params are present.
+                // Otherwise fall through to standard memory storage.
+                return HasRequiredCreateParams(entityType, description, severity, phase,
+                    requirements, context, definition)
+                    ? RouteToEntityDispatch("create", entityType, description, entityId, to, severity,
+                        phase, requirements, outcome, resolution, verifiedBy, filter, query,
+                        evidence, context, definition, workflowRef, cancellationToken)
+                    : null; // Fall through — plain memory storage
+
+            case "recall":
+            case "show":
+                return RouteToEntityDispatch("show", entityType, description, entityId, to, severity,
+                    phase, requirements, outcome, resolution, verifiedBy, filter, query,
+                    evidence, context, definition, workflowRef, cancellationToken);
+
+            case "list":
+                return RouteToEntityDispatch("list", entityType, description, entityId, to, severity,
+                    phase, requirements, outcome, resolution, verifiedBy, filter, query,
+                    evidence, context, definition, workflowRef, cancellationToken);
+
+            case "search":
+                return RouteToEntityDispatch("search", entityType, description, entityId, to, severity,
+                    phase, requirements, outcome, resolution, verifiedBy, filter, query,
+                    evidence, context, definition, workflowRef, cancellationToken);
+
+            case "transition":
+                // Transition always routes to entity (no plain-memory equivalent)
+                return RouteToEntityDispatch("transition", entityType, description, entityId, to, severity,
+                    phase, requirements, outcome, resolution, verifiedBy, filter, query,
+                    evidence, context, definition, workflowRef, cancellationToken);
+
+            default:
+                // Other actions (append, forget, copy, compact, update, link, etc.)
+                // don't have entity equivalents — fall through to standard memory.
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether required entity creation parameters are present for the given entity type.
+    /// When false, the memory() call should fall through to plain storage.
+    /// For user-defined types, always returns true (description is the only param,
+    /// and EntityDispatch will validate further).
+    /// </summary>
+    private static bool HasRequiredCreateParams(
+        string entityType, string? description, string? severity, string? phase,
+        string? requirements, string? context, string? definition) =>
+        entityType switch
+        {
+            "goal" => !string.IsNullOrWhiteSpace(description),
+            "concern" => !string.IsNullOrWhiteSpace(description) && !string.IsNullOrWhiteSpace(severity),
+            "requirement" => !string.IsNullOrWhiteSpace(requirements),
+            "project" => !string.IsNullOrWhiteSpace(description) || !string.IsNullOrWhiteSpace(context),
+            "workflow" => !string.IsNullOrWhiteSpace(definition),
+            "file" or "phase" or "task" => false, // never route creates
+            _ => !string.IsNullOrWhiteSpace(description) // user-defined types: route when description present
+        };
+
+    /// <summary>Delegates to <see cref="ScriniaProjectTools.EntityDispatch"/>.</summary>
+    private static Task<string> RouteToEntityDispatch(
+        string entityAction, string entityType,
+        string? description, string? id, string? to, string? severity,
+        string? phase, string? requirements, string? outcome,
+        string? resolution, string? verifiedBy, string? filter,
+        string? query, string? evidence, string? context,
+        string? definition, string? workflowRef,
+        CancellationToken cancellationToken)
+    {
+        var projectTools = new ScriniaProjectTools();
+        return projectTools.EntityDispatch(
+            action: entityAction,
+            type: entityType,
+            description: description,
+            id: id,
+            to: to,
+            severity: severity,
+            phase: phase,
+            requirements: requirements,
+            outcome: outcome,
+            resolution: resolution,
+            verifiedBy: verifiedBy,
+            filter: filter,
+            query: query,
+            evidence: evidence,
+            context: context,
+            definition: definition,
+            workflowRef: workflowRef,
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Routes a search with an entity-path query to entity search.
+    /// </summary>
+    private static Task<string>? TryRouteSearchToEntity(string query, string? scriniaBaseDir, CancellationToken cancellationToken)
+    {
+        // Parse the query to see if it starts with an entity type
+        ParsedPath parsed;
+        try
+        {
+            var entityTypes = new HashSet<string>(
+                EntityTypeRegistry.GetMergedTypes(scriniaBaseDir).Keys, StringComparer.OrdinalIgnoreCase);
+            parsed = PathParser.Parse(query, entityTypes);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+
+        if (parsed.Segments.Count == 0) return null;
+        string firstSegment = parsed.Segments[0].Value.ToLowerInvariant();
+        var routableTypes = GetRoutableEntityTypes(scriniaBaseDir);
+        if (!routableTypes.Contains(firstSegment)) return null;
+
+        var projectTools = new ScriniaProjectTools();
+        return projectTools.EntityDispatch(
+            action: "search",
+            type: firstSegment,
+            query: query,
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>Unpack an NMP/2 artifact back to its original text content.</summary>
     internal async Task<string> Show(
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
-                     "Use the exact name shown by list() (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string artifactOrName,
+                     "Use the exact name shown by memory('list') (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string artifactOrName,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
         CancellationToken cancellationToken = default)
     {
+        // ── Agent config: read .md file first, NMP/2 fallback ────────────
+        if (artifactOrName.StartsWith("agent:", StringComparison.OrdinalIgnoreCase))
+        {
+            var agentStore = MemoryStoreContext.Current;
+            if (agentStore is not null)
+            {
+                string agentSubject = artifactOrName["agent:".Length..].Trim();
+                string agentBaseDir = ScriniaProjectTools.GetScriniaBaseDir(agentStore);
+                string agentFilePath = Path.Combine(agentBaseDir, "agent", $"{agentSubject}.md");
+                if (File.Exists(agentFilePath))
+                {
+                    string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
+                    SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
+                    return ResponseBuilder.Success(mdContent).WithAction("shown").ToYaml();
+                }
+            }
+            // Fall through to NMP/2 resolution for legacy entries
+        }
+
         string artifact;
 
         // Fast path: inline NMP/2 artifacts and file:// URIs don't need a store
@@ -310,7 +537,7 @@ public sealed class ScriniaMcpTools
             // Store-based resolution (memory name, ephemeral, etc.)
             var store = MemoryStoreContext.Current;
             if (store is null)
-                return $"Error: memory '{artifactOrName}' not found. Use list() or search() to find available memories.";
+                return ResponseBuilder.Error($"Memory '{artifactOrName}' not found. Use memory('list') or memory('search') to find available memories.").ToYaml();
 
             try
             {
@@ -318,12 +545,12 @@ public sealed class ScriniaMcpTools
             }
             catch (FileNotFoundException)
             {
-                return $"Error: memory '{artifactOrName}' not found. Use list() or search() to find available memories.";
+                return ResponseBuilder.Error($"Memory '{artifactOrName}' not found. Use memory('list') or memory('search') to find available memories.").ToYaml();
             }
         }
 
         if (!artifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
-            return "Error: only NMP/2 artifacts are supported by this tool.";
+            return ResponseBuilder.Error("Only NMP/2 artifacts are supported by this tool.").ToYaml();
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
@@ -331,7 +558,7 @@ public sealed class ScriniaMcpTools
         {
             string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
             SessionBudget.RecordAccess(artifactOrName, chunkContent.Length);
-            return $"Chunk {chunk}/{chunkCount}\n\n{chunkContent}";
+            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction("shown").ToYaml();
         }
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
@@ -339,9 +566,9 @@ public sealed class ScriniaMcpTools
         SessionBudget.RecordAccess(artifactOrName, decoded.Length);
 
         if (chunkCount > 1)
-            return $"({chunkCount} chunks)\n\n{decoded}";
+            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction("shown").ToYaml();
 
-        return decoded;
+        return ResponseBuilder.Success(decoded).WithAction("shown").ToYaml();
     }
 
     // ── Persistent memory tools ───────────────────────────────────────────────
@@ -353,7 +580,7 @@ public sealed class ScriniaMcpTools
                      "chunk boundaries — each element becomes one independently retrievable chunk.")] string[] content,
         [Description("Human-readable name for this artifact (e.g. \"session-notes\", \"my-codebase\"). " +
                      "Invalid filename characters are replaced with '_'. " +
-                     "Naming: 'subject' (local store), 'topic:subject' (local topic), '~subject' (ephemeral).")] string name,
+                     "Naming: '/path/to/memory' (v2 path), 'topic:subject' (v1 compat), '~subject' (ephemeral).")] string name,
         [Description("Optional description. If empty, the first 200 characters of content are used.")] string description = "",
         [Description("Optional tags for categorization.")] string[]? tags = null,
         [Description("Optional keywords for search. Merged with auto-extracted content terms.")] string[]? keywords = null,
@@ -424,7 +651,39 @@ public sealed class ScriniaMcpTools
             try { await (sink?.OnStoredAsync($"~{key}", content, store, cancellationToken) ?? Task.CompletedTask); }
             catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
 
-            return $"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]";
+            return ResponseBuilder.Success($"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]")
+                .WithAction("stored").ToYaml();
+        }
+
+        // ── Agent config path (agent:* → .scrinia/agent/{name}.md) ──────
+        if (name.StartsWith("agent:", StringComparison.OrdinalIgnoreCase))
+        {
+            string agentSubject = name["agent:".Length..].Trim();
+            if (string.IsNullOrWhiteSpace(agentSubject))
+                return ResponseBuilder.Error("Agent config name required (e.g. 'agent:profile').").ToYaml();
+
+            string baseDir = ScriniaProjectTools.GetScriniaBaseDir(store);
+            string agentDir = Path.Combine(baseDir, "agent");
+            string filePath = Path.Combine(agentDir, $"{agentSubject}.md");
+            Directory.CreateDirectory(agentDir);
+
+            // Archive previous version if file exists
+            ScriniaProjectTools.ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
+
+            string agentContent = string.Join("\n", content);
+            await File.WriteAllTextAsync(filePath, agentContent, cancellationToken);
+
+            // Write sidecar metadata
+            string now = DateTimeOffset.UtcNow.ToString("o");
+            var existingMeta = ScriniaProjectTools.ReadSidecarMeta(filePath, PlanningJsonContext.Default.AgentFileMeta);
+            var meta = new AgentFileMeta(
+                CreatedAt: existingMeta?.CreatedAt ?? now,
+                UpdatedAt: now);
+            ScriniaProjectTools.WriteSidecarMeta(filePath, meta, PlanningJsonContext.Default.AgentFileMeta);
+
+            long agentBytes = System.Text.Encoding.UTF8.GetByteCount(agentContent);
+            return ResponseBuilder.Success($"Remembered: agent:{agentSubject} ({FormatBytes(agentBytes)}). Files in .scrinia/ were updated — these are your changes.")
+                .WithAction("stored").ToYaml();
         }
 
         // ── Persistent path ──────────────────────────────────────────────
@@ -515,7 +774,8 @@ public sealed class ScriniaMcpTools
         try { await (MemoryEventSinkContext.Current?.OnStoredAsync(qualifiedName, content, store, cancellationToken) ?? Task.CompletedTask); }
         catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
 
-        return $"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.";
+        return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.")
+            .WithAction("stored").ToYaml();
     }
 
     /// <summary>Update metadata on an existing memory without re-encoding its content.</summary>
@@ -530,7 +790,7 @@ public sealed class ScriniaMcpTools
         var store = CurrentStore;
 
         if (store.IsEphemeral(name))
-            return Task.FromResult("Error: update_meta does not support ephemeral memories. Use store() instead.");
+            return Task.FromResult(ResponseBuilder.Error("Update does not support ephemeral memories. Use memory('remember') instead.").ToYaml());
 
         var (scope, subject) = store.ParseQualifiedName(name);
 
@@ -539,7 +799,7 @@ public sealed class ScriniaMcpTools
         if (entry is null)
         {
             string qualName = store.FormatQualifiedName(scope, subject);
-            return Task.FromResult($"Error: memory '{qualName}' not found.");
+            return Task.FromResult(ResponseBuilder.Error($"Memory '{qualName}' not found.").ToYaml());
         }
 
         // Track what changed for the response message
@@ -589,7 +849,7 @@ public sealed class ScriniaMcpTools
         }
 
         if (changes.Count == 0)
-            return Task.FromResult("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen.");
+            return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen.").ToYaml());
 
         // Build the updated entry via term frequencies merge
         var updatedTf = entry.TermFrequencies;
@@ -624,8 +884,8 @@ public sealed class ScriniaMcpTools
 
         string qualifiedName = store.FormatQualifiedName(scope, subject);
         return Task.FromResult(
-            $"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}. " +
-            "Files in .scrinia/ were updated — these are your changes.");
+            ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}. Files in .scrinia/ were updated — these are your changes.")
+                .WithAction("updated").ToYaml());
     }
 
     /// <summary>Returns a summary or full listing of persisted memories.</summary>
@@ -646,14 +906,14 @@ public sealed class ScriniaMcpTools
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
-            return Task.FromResult("No memories stored.");
+            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed").ToYaml());
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
 
         if (!string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(BuildSummary(entries, store));
+            return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed").ToYaml());
 
-        return Task.FromResult(BuildFullList(entries, store, offset, limit));
+        return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed").ToYaml());
     }
 
     private static string BuildSummary(List<ScopedArtifact> entries, IMemoryStore store)
@@ -723,7 +983,7 @@ public sealed class ScriniaMcpTools
             sb.AppendLine();
         }
 
-        sb.Append("Use `list(mode=\"full\")` to see all entries, or `search(\"query\")` to find specific memories.");
+        sb.Append("Use `memory('list', { mode: 'full' })` to see all entries, or `memory('search', { query: '...' })` to find specific memories.");
         return sb.ToString();
     }
 
@@ -853,7 +1113,7 @@ public sealed class ScriniaMcpTools
                 .ToList()
             : store.SearchAll(query, scopes, limit, excludeTopics);
         if (matches.Count == 0)
-            return "No matching memories found.";
+            return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
 
         // Build qualified names first to compute dynamic column width (never truncate names)
         const int typeW = 6;
@@ -906,7 +1166,7 @@ public sealed class ScriniaMcpTools
             sb.AppendLine($"{type,-typeW}  {name.PadRight(nameW)}  {score,scoreW:F0}  {tokensStr,tokensW}  {desc}");
         }
 
-        return sb.ToString().TrimEnd();
+        return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("searched").ToYaml();
     }
 
     /// <summary>Copies a memory artifact from one scope to another.</summary>
@@ -918,8 +1178,8 @@ public sealed class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         bool ok = CurrentStore.CopyMemory(nameOrUri, destination, overwrite, out string msg);
-        if (!ok) return Task.FromResult(msg);
-        return Task.FromResult(msg);
+        if (!ok) return Task.FromResult(ResponseBuilder.Error(msg).ToYaml());
+        return Task.FromResult(ResponseBuilder.Success(msg).WithAction("copied").ToYaml());
     }
 
     /// <summary>Removes a stored artifact and its index entry.</summary>
@@ -934,12 +1194,12 @@ public sealed class ScriniaMcpTools
         {
             string key = MemoryNaming.StripEphemeralPrefix(nameOrUri);
             if (!store.ForgetEphemeral(key))
-                return $"Error: no ephemeral memory found with name '~{key}'.";
+                return ResponseBuilder.Error($"No ephemeral memory found with name '~{key}'.").ToYaml();
 
             try { await (MemoryEventSinkContext.Current?.OnForgottenAsync($"~{key}", true, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
 
-            return $"Forgot: ~{key}";
+            return ResponseBuilder.Success($"Forgot: ~{key}").WithAction("forgotten").ToYaml();
         }
 
         // Backward compat: resolve file:// URIs to their memory name, then delete by name
@@ -955,12 +1215,12 @@ public sealed class ScriniaMcpTools
             }
 
             if (!removedAny)
-                return $"Error: no artifact found with name or URI '{nameOrUri}'.";
+                return ResponseBuilder.Error($"No artifact found with name or URI '{nameOrUri}'.").ToYaml();
 
             try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(name, removedAny, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
 
-            return $"Forgot: {name}. Files in .scrinia/ were updated — these are your changes.";
+            return ResponseBuilder.Success($"Forgot: {name}. Files in .scrinia/ were updated — these are your changes.").WithAction("forgotten").ToYaml();
         }
 
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
@@ -972,12 +1232,12 @@ public sealed class ScriniaMcpTools
         // Remove index entry
         bool removed = store.Remove(subject, scope);
         if (!removed && !deleted)
-            return $"Error: no artifact found with name '{nameOrUri}'.";
+            return ResponseBuilder.Error($"No artifact found with name '{nameOrUri}'.").ToYaml();
 
         try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(qualifiedName, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block forget */ }
 
-        return $"Forgot: {qualifiedName}. Files in .scrinia/ were updated — these are your changes.";
+        return ResponseBuilder.Success($"Forgot: {qualifiedName}. Files in .scrinia/ were updated — these are your changes.").WithAction("forgotten").ToYaml();
     }
 
     // ── Export/Import tools ───────────────────────────────────────────────────
@@ -990,7 +1250,7 @@ public sealed class ScriniaMcpTools
     {
         var store = CurrentStore;
         if (topics is null || topics.Length == 0)
-            return Task.FromResult("Error: at least one topic name is required.");
+            return Task.FromResult(ResponseBuilder.Error("At least one topic name is required.").ToYaml());
 
         string exportsDir = Path.Combine(store.GetStoreDirForScope("local"), "..", "exports");
         exportsDir = Path.GetFullPath(exportsDir);
@@ -1019,13 +1279,14 @@ public sealed class ScriniaMcpTools
             if (exportedTopics.Count == 0)
             {
                 try { File.Delete(bundlePath); } catch { }
-                return Task.FromResult("Error: no entries found in the specified topics.");
+                return Task.FromResult(ResponseBuilder.Error("No entries found in the specified topics.").ToYaml());
             }
         }
 
         long fileSize = new FileInfo(bundlePath).Length;
         return Task.FromResult(
-            $"Exported {exportedTopics.Count} topic(s) ({totalEntries} entries, {FormatBytes(fileSize)}) to {bundlePath}");
+            ResponseBuilder.Success($"Exported {exportedTopics.Count} topic(s) ({totalEntries} entries, {FormatBytes(fileSize)}) to {bundlePath}")
+                .WithAction("exported").ToYaml());
     }
 
     /// <summary>Import topics from a .scrinia-bundle file into the local workspace.</summary>
@@ -1048,10 +1309,10 @@ public sealed class ScriniaMcpTools
 
         // SEC-041: prevent path traversal outside workspace
         if (!resolvedPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult("Error: bundle path must be within the workspace.");
+            return Task.FromResult(ResponseBuilder.Error("Bundle path must be within the workspace.").ToYaml());
 
         if (!File.Exists(resolvedPath))
-            return Task.FromResult($"Error: bundle file not found: {resolvedPath}");
+            return Task.FromResult(ResponseBuilder.Error($"Bundle file not found: {resolvedPath}").ToYaml());
 
         try
         {
@@ -1062,14 +1323,15 @@ public sealed class ScriniaMcpTools
                 Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZip(zip, store, topics, overwrite);
 
             if (topicCount == 0)
-                return Task.FromResult("No topics were imported (empty bundle or all filtered out).");
+                return Task.FromResult(ResponseBuilder.Warning("No topics were imported (empty bundle or all filtered out).").ToYaml());
 
             return Task.FromResult(
-                $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}");
+                ResponseBuilder.Success($"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}")
+                    .WithAction("imported").ToYaml());
         }
         catch (InvalidOperationException ex)
         {
-            return Task.FromResult($"Error: {ex.Message}");
+            return Task.FromResult(ResponseBuilder.Error(ex.Message).ToYaml());
         }
     }
 
@@ -1211,7 +1473,8 @@ public sealed class ScriniaMcpTools
         try { await (MemoryEventSinkContext.Current?.OnAppendedAsync(qualifiedName, content, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block append */ }
 
-        return $"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.";
+        return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}). Files in .scrinia/ were updated — these are your changes.")
+            .WithAction("appended").ToYaml();
     }
 
     // kt removed — knowledge transfer is a learnable goal, not a fixed tool.
@@ -1239,11 +1502,11 @@ public sealed class ScriniaMcpTools
             .ToList();
 
         if (matches.Count == 0)
-            return Task.FromResult($"No memories reference '{target}'.");
+            return Task.FromResult(ResponseBuilder.Success($"No memories reference '{target}'.").WithAction("searched").ToYaml());
 
         string result = $"Found {matches.Count} memory(s) referencing '{target}':\n" +
             string.Join("\n", matches.Select(m => $"- {m}"));
-        return Task.FromResult(result);
+        return Task.FromResult(ResponseBuilder.Success(result).WithAction("searched").ToYaml());
     }
 
     /// <summary>Create a bidirectional relationship between two memories.</summary>
@@ -1258,13 +1521,13 @@ public sealed class ScriniaMcpTools
         // Add ref:{from} keyword to {to}
         string result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
 
-        if (result1.StartsWith("Error") || result2.StartsWith("Error"))
-            return $"Partial link failure:\n  {from}: {result1}\n  {to}: {result2}";
+        if (result1.Contains("status: error") || result2.Contains("status: error"))
+            return ResponseBuilder.Error($"Partial link failure:\n  {from}: {result1}\n  {to}: {result2}").ToYaml();
 
-        string response = $"Linked '{from}' \u2194 '{to}'.";
+        string linkMsg = $"Linked '{from}' <-> '{to}'.";
         if (!string.IsNullOrWhiteSpace(reason))
-            response += $" Reason: {reason}";
-        return response;
+            linkMsg += $" Reason: {reason}";
+        return ResponseBuilder.Success(linkMsg).WithAction("linked").ToYaml();
     }
 
     private static Task<string> BuildDriftList(IMemoryStore store)
@@ -1310,20 +1573,24 @@ public sealed class ScriniaMcpTools
         }
 
         if (results.Count == 0)
-            return Task.FromResult(okCount > 0
+        {
+            string msg = okCount > 0
                 ? $"All {okCount} code references are current. No drift detected."
-                : "No memories have code references. Use codeRefs parameter on store() to track file dependencies.");
+                : "No memories have code references. Use codeRefs parameter on memory('remember') to track file dependencies.";
+            return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed").ToYaml());
+        }
 
-        string response = $"Code reference drift detected ({driftCount} drifted, {missingCount} missing, {okCount} ok):\n" +
+        string driftResponse = $"Code reference drift detected ({driftCount} drifted, {missingCount} missing, {okCount} ok):\n" +
             string.Join("\n", results);
-        return Task.FromResult(response);
+        var driftWarnings = new List<string>();
+        if (driftCount > 0) driftWarnings.Add($"{driftCount} code reference(s) have drifted (files changed since stored).");
+        if (missingCount > 0) driftWarnings.Add($"{missingCount} code reference(s) point to missing files.");
+        return Task.FromResult(
+            ResponseBuilder.Success(driftResponse).WithAction("listed").WithActionNeeded(driftWarnings.ToArray()).ToYaml());
     }
 
-    /// <summary>Bundle operations — export and import memory topics.</summary>
-    [McpServerTool(Name = "bundle"), Description(
-        "Export or import memory topic bundles. Actions: " +
-        "'export' (topic → .scrinia-bundle file), " +
-        "'import' (.scrinia-bundle file → topic).")]
+    /// <summary>Bundle operations — export and import memory topics.
+    /// No longer exposed as an MCP tool; available via CLI (scri export, scri import).</summary>
     public async Task<string> Bundle(
         [Description("Action: 'export' or 'import'.")] string action,
         [Description("Topic names to export, or topic filter for import.")] string[]? topics = null,
@@ -1336,16 +1603,16 @@ public sealed class ScriniaMcpTools
         {
             case "export":
                 if (topics is null || topics.Length == 0)
-                    return "Error: bundle('export') requires 'topics' parameter.";
+                    return ResponseBuilder.Error("bundle('export') requires 'topics' parameter.").ToYaml();
                 return await Export(topics, bundlePath, cancellationToken);
 
             case "import":
                 if (string.IsNullOrWhiteSpace(bundlePath))
-                    return "Error: bundle('import') requires 'bundlePath' parameter.";
+                    return ResponseBuilder.Error("bundle('import') requires 'bundlePath' parameter.").ToYaml();
                 return await Import(bundlePath, topics, overwrite, cancellationToken);
 
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'export', 'import'.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: 'export', 'import'.").ToYaml();
         }
     }
 
@@ -1360,10 +1627,10 @@ public sealed class ScriniaMcpTools
         if (conflictId is not null)
         {
             if (string.IsNullOrWhiteSpace(choice))
-                return Task.FromResult("Error: 'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.");
+                return Task.FromResult(ResponseBuilder.Error("'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.").ToYaml());
 
             if (!_activeConflicts.TryGetValue(conflictId, out var conflictEntry))
-                return Task.FromResult($"Error: conflict '{conflictId}' not found. Run reconcile() first to scan for conflicts.");
+                return Task.FromResult(ResponseBuilder.Error($"Conflict '{conflictId}' not found. Run memory('reconcile') first to scan for conflicts.").ToYaml());
 
             string? resolvedContent;
             switch (choice.ToLowerInvariant())
@@ -1371,25 +1638,25 @@ public sealed class ScriniaMcpTools
                 case "ours":
                     resolvedContent = conflictEntry.OursContent;
                     if (resolvedContent is null)
-                        return Task.FromResult($"Error: no 'ours' content available for {conflictId}. Use 'merged' with explicit content instead.");
+                        return Task.FromResult(ResponseBuilder.Error($"No 'ours' content available for {conflictId}. Use 'merged' with explicit content instead.").ToYaml());
                     break;
                 case "theirs":
                     resolvedContent = conflictEntry.TheirsContent;
                     if (resolvedContent is null)
-                        return Task.FromResult($"Error: no 'theirs' content available for {conflictId}. Use 'merged' with explicit content instead.");
+                        return Task.FromResult(ResponseBuilder.Error($"No 'theirs' content available for {conflictId}. Use 'merged' with explicit content instead.").ToYaml());
                     break;
                 case "merged":
                     if (string.IsNullOrEmpty(content))
-                        return Task.FromResult("Error: 'merged' choice requires the content parameter.");
+                        return Task.FromResult(ResponseBuilder.Error("'merged' choice requires the content parameter.").ToYaml());
                     if (conflictEntry.Type.Contains("meta", StringComparison.OrdinalIgnoreCase))
                     {
                         try { System.Text.Json.Nodes.JsonNode.Parse(content!); }
-                        catch { return Task.FromResult("Error: merged content is not valid JSON for .meta.json conflict."); }
+                        catch { return Task.FromResult(ResponseBuilder.Error("Merged content is not valid JSON for .meta.json conflict.").ToYaml()); }
                     }
                     resolvedContent = content;
                     break;
                 default:
-                    return Task.FromResult($"Error: invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.");
+                    return Task.FromResult(ResponseBuilder.Error($"Invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.").ToYaml());
             }
 
             try
@@ -1406,11 +1673,11 @@ public sealed class ScriniaMcpTools
             }
             catch (Exception ex)
             {
-                return Task.FromResult($"Error writing resolved content to {conflictEntry.FilePath}: {ex.Message}");
+                return Task.FromResult(ResponseBuilder.Error($"Writing resolved content to {conflictEntry.FilePath}: {ex.Message}").ToYaml());
             }
 
             _activeConflicts.TryRemove(conflictId, out _);
-            return Task.FromResult($"Resolved {conflictId} ({conflictEntry.Type}) with '{choice}'. {_activeConflicts.Count} conflict(s) remaining.");
+            return Task.FromResult(ResponseBuilder.Success($"Resolved {conflictId} ({conflictEntry.Type}) with '{choice}'. {_activeConflicts.Count} conflict(s) remaining.").WithAction("reconciled").ToYaml());
         }
 
         // ── Scan mode: no conflictId ──────────────────────────────────────
@@ -1489,7 +1756,7 @@ public sealed class ScriniaMcpTools
         }
 
         if (autoResolved.Count == 0 && needsManual.Count == 0)
-            return Task.FromResult("No merge conflicts found in .scrinia/.");
+            return Task.FromResult(ResponseBuilder.Success("No merge conflicts found in .scrinia/.").WithAction("reconciled").ToYaml());
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Merge conflict scan: {autoResolved.Count} auto-resolved, {needsManual.Count} need manual resolution.");
@@ -1497,17 +1764,21 @@ public sealed class ScriniaMcpTools
         if (autoResolved.Count > 0)
         {
             sb.AppendLine("\nAuto-resolved:");
-            foreach (var f in autoResolved) sb.AppendLine($"  \u2713 {f}");
+            foreach (var f in autoResolved) sb.AppendLine($"  OK {f}");
         }
         if (needsManual.Count > 0)
         {
             sb.AppendLine("\nNeeds manual resolution:");
-            foreach (var f in needsManual) sb.AppendLine($"  \u2717 {f}");
+            foreach (var f in needsManual) sb.AppendLine($"  FAIL {f}");
         }
 
         sb.Append($"\n{_activeConflicts.Count} conflict(s) remaining.");
 
-        return Task.FromResult(sb.ToString());
+        var reconcileWarnings = needsManual.Count > 0
+            ? new[] { $"{needsManual.Count} conflict(s) need manual resolution." }
+            : Array.Empty<string>();
+        return Task.FromResult(
+            ResponseBuilder.Success(sb.ToString()).WithAction("reconciled").WithActionNeeded(reconcileWarnings).ToYaml());
     }
 
     private static string Indent(string? text, string prefix = "      ")
@@ -1620,10 +1891,10 @@ public sealed class ScriniaMcpTools
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
         if (chunkCount <= 1)
-            return "Already a single chunk, nothing to compact.";
+            return ResponseBuilder.Success("Already a single chunk, nothing to compact.").WithAction("compacted").ToYaml();
 
         if (keepRecent > 0 && keepRecent >= chunkCount)
-            return $"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).";
+            return ResponseBuilder.Success($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).").WithAction("compacted").ToYaml();
 
         // Archive the original before modifying
         store.ArchiveVersion(subject, scope);
@@ -1680,7 +1951,8 @@ public sealed class ScriniaMcpTools
 
         string qualifiedName = store.FormatQualifiedName(scope, subject);
         int dropped = chunkCount - newChunkCount;
-        return $"Compacted {qualifiedName}: {chunkCount} → {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived. Files in .scrinia/ were updated — these are your changes.";
+        return ResponseBuilder.Success($"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived. Files in .scrinia/ were updated — these are your changes.")
+            .WithAction("compacted").ToYaml();
     }
 
     private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)
@@ -1706,9 +1978,13 @@ public sealed class ScriniaMcpTools
     internal async Task<string> Restore(CancellationToken cancellationToken)
     {
         var store = CurrentStore;
+        var warnings = new List<string>();
+        var info = new List<string>();
+        var contentSections = new List<string>();
+        var followUpNames = new List<string>();
+        string? instruction = null;
 
         // Check for unresolved merge conflicts in .scrinia/
-        string conflictWarning = "";
         try
         {
             string resumeStoreDir = store.GetStoreDirForScope("local");
@@ -1729,7 +2005,7 @@ public sealed class ScriniaMcpTools
                         catch { return false; }
                     });
                 if (hasConflicts)
-                    conflictWarning = "WARNING: .scrinia/ has unresolved merge conflicts. Run reconcile() before continuing.\n\n";
+                    warnings.Add(".scrinia/ has unresolved merge conflicts. Run memory('reconcile') before continuing.");
             }
         }
         catch { /* best-effort check */ }
@@ -1745,17 +2021,17 @@ public sealed class ScriniaMcpTools
             // No checkpoint exists — normal for first-time projects
         }
 
-        string response;
+        string projectState;
         try
         {
-            response = await ScriniaProjectTools.ReadMemoryAsync(store, "project:state", cancellationToken);
+            projectState = await ScriniaProjectTools.ReadMemoryAsync(store, "project:state", cancellationToken);
         }
         catch (FileNotFoundException)
         {
             string? rebuilt = await ScriniaProjectTools.RebuildStateFromMemoriesAsync(store, cancellationToken);
             if (rebuilt is null)
-                return "Error: no project found. Run plan('init') first.";
-            response = rebuilt;
+                return ResponseBuilder.Error("No project found. Run memory('remember', { path: '/project/...' }) first.").ToYaml();
+            projectState = rebuilt;
         }
 
         // Replace stale progress with computed value
@@ -1763,12 +2039,11 @@ public sealed class ScriniaMcpTools
         {
             string? restoreGoalId = await ScriniaProjectTools.GetActiveGoalIdAsync(store, cancellationToken);
             string computedProgress = ScriniaProjectTools.CalculateProgress(store, restoreGoalId);
-            response = Regex.Replace(response, @"(?m)^Progress:\s*\d+%?$", $"Progress: {computedProgress}%");
+            projectState = Regex.Replace(projectState, @"(?m)^Progress:\s*\d+%?$", $"Progress: {computedProgress}%");
         }
         catch { /* best-effort — if progress computation fails, show raw state */ }
 
         // Active goal description
-        string activeGoalDesc = "";
         try
         {
             string ctxText = await ScriniaProjectTools.ReadMemoryAsync(store, "project:context", cancellationToken);
@@ -1784,16 +2059,13 @@ public sealed class ScriniaMcpTools
                 if (statusMatch.Success)
                 {
                     string desc = activeLine.TrimStart('-', '*', ' ')[(statusMatch.Index + statusMatch.Length)..];
-                    activeGoalDesc = $"\nActive goal: {desc.Trim()}";
+                    projectState += $"\nActive goal: {desc.Trim()}";
                 }
             }
         }
         catch { /* no project:context or no active goal — skip */ }
 
-        response += activeGoalDesc;
-
         // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
-        string concernNote = "";
         try
         {
             var (cs, _) = store.ParseQualifiedName("concern:placeholder");
@@ -1804,17 +2076,16 @@ public sealed class ScriniaMcpTools
                 int highCount = entries.Count(e =>
                     ScriniaProjectTools.HasKeyword(e, "status:active") &&
                     ScriniaProjectTools.HasKeyword(e, "severity:high"));
-                concernNote = highCount > 0
+                projectState += highCount > 0
                     ? $"\nConcerns: {activeCount} active ({highCount} high-severity)"
                     : $"\nConcerns: {activeCount} active";
             }
         }
         catch { /* concern scope not yet created — skip silently */ }
 
-        response += concernNote;
+        contentSections.Add(projectState);
 
         // Optionally surface unused capability hints (ADOPT-03)
-        string capabilityHints = "";
 
         // Check if concern tracking has been used (scope exists with entries)
         bool concernsUsed = false;
@@ -1827,7 +2098,7 @@ public sealed class ScriniaMcpTools
         catch { /* scope not created — concerns not used */ }
 
         if (!concernsUsed)
-            capabilityHints += "\nHint: concern tracking is available — use concern('add') to track risks and issues across phases.";
+            info.Add("concern tracking is available — use memory('remember', { path: '/goal/G-X/concern/...' }) to track risks and issues across phases.");
 
         // Check if knowledge (bok) has been used
         bool knowledgeUsed = false;
@@ -1840,61 +2111,60 @@ public sealed class ScriniaMcpTools
         catch { /* scope not created — knowledge not used */ }
 
         if (!knowledgeUsed)
-            capabilityHints += "\nHint: use store(content, \"topic:subject\") with keywords to persist domain knowledge across sessions.";
+            info.Add("use memory('remember', { path: '/topic/subject', content: [...] }) to persist domain knowledge across sessions.");
 
-        response += capabilityHints;
-
-        // Inline all agent:* memories
+        // Collect agent:* names for followUp — .md files first, NMP/2 fallback
         try
         {
-            var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
-            var agentEntries = store.LoadIndex(agentScope);
-            if (agentEntries.Count > 0)
+            string agentBaseDir = ScriniaProjectTools.GetScriniaBaseDir(store);
+            string agentDir = Path.Combine(agentBaseDir, "agent");
+            bool usedMdFiles = false;
+
+            if (Directory.Exists(agentDir))
             {
-                response += "\n\n## Agent norms";
-                foreach (var entry in agentEntries)
+                var mdFiles = Directory.GetFiles(agentDir, "*.md");
+                if (mdFiles.Length > 0)
                 {
-                    try
+                    usedMdFiles = true;
+                    foreach (string mdFile in mdFiles)
                     {
-                        string content = await ScriniaProjectTools.ReadMemoryAsync(store, $"agent:{entry.Name}", cancellationToken);
-                        response += $"\n### {entry.Name}\n{content}";
+                        string agentName = Path.GetFileNameWithoutExtension(mdFile);
+                        followUpNames.Add($"agent:{agentName}");
                     }
-                    catch { /* entry unreadable — skip */ }
                 }
+            }
+
+            // NMP/2 fallback — only if no .md files found
+            if (!usedMdFiles)
+            {
+                var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
+                var agentEntries = store.LoadIndex(agentScope);
+                foreach (var entry in agentEntries)
+                    followUpNames.Add($"agent:{entry.Name}");
             }
         }
         catch { /* agent scope not yet created — skip silently */ }
 
-        // Inline all patterns:* memories
+        // Collect patterns:* names for followUp
         try
         {
             var (patternsScope, _) = store.ParseQualifiedName("patterns:placeholder");
             var patternsEntries = store.LoadIndex(patternsScope);
-            if (patternsEntries.Count > 0)
-            {
-                response += "\n\n## Learned patterns";
-                foreach (var entry in patternsEntries)
-                {
-                    try
-                    {
-                        string content = await ScriniaProjectTools.ReadMemoryAsync(store, $"patterns:{entry.Name}", cancellationToken);
-                        response += $"\n### {entry.Name}\n{content}";
-                    }
-                    catch { /* entry unreadable — skip */ }
-                }
-            }
+            foreach (var entry in patternsEntries)
+                followUpNames.Add($"patterns:{entry.Name}");
         }
         catch { /* patterns scope not yet created — skip silently */ }
 
         if (checkpointContent is not null)
-            response += "\n\n## Last checkpoint\n" + checkpointContent;
+            followUpNames.Add("checkpoint:latest");
 
-        // Today's session log
+        // Today's session log — add to followUp if it exists
         try
         {
             string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
-            string sessionContent = await ScriniaProjectTools.ReadMemoryAsync(store, $"sessions:{today}", cancellationToken);
-            response += "\n\n## Session log\n" + sessionContent;
+            // Verify the session log exists before adding to followUp
+            await ScriniaProjectTools.ReadMemoryAsync(store, $"sessions:{today}", cancellationToken);
+            followUpNames.Add($"sessions:{today}");
         }
         catch (FileNotFoundException) { /* no session log for today — skip */ }
 
@@ -1916,17 +2186,17 @@ public sealed class ScriniaMcpTools
             (rsDrift, rsMissing) = ScriniaProjectTools.ScanDrift(store);
         }
 
-        if (rsStale > 0) response += $"\n⚠ {rsStale} memory(s) have passed their review date.{rsCacheNote}";
-        if (rsReview > 0) response += $"\nℹ {rsReview} memory(s) have review conditions set.{rsCacheNote}";
-        if (rsDrift > 0) response += $"\n⚠ {rsDrift} code reference(s) have drifted (files changed since stored).{rsCacheNote}";
-        if (rsMissing > 0) response += $"\n⚠ {rsMissing} code reference(s) point to missing files.{rsCacheNote}";
+        if (rsStale > 0) warnings.Add($"{rsStale} memory(s) have passed their review date — verify content is still accurate.{rsCacheNote}");
+        if (rsDrift > 0) warnings.Add($"{rsDrift} code reference(s) have drifted (files changed since stored) — re-link or update.{rsCacheNote}");
+        if (rsMissing > 0) warnings.Add($"{rsMissing} code reference(s) point to missing files — unlink or correct.{rsCacheNote}");
+        if (rsReview > 0) info.Add($"{rsReview} memory(s) have review conditions set.{rsCacheNote}");
 
         // Task nudge — rational lensing: nudge agent into the task loop
         try
         {
-            // Extract phase number from state
+            // Extract phase number from projectState directly (no longer inlining other content)
             string phaseId = "";
-            var phaseMatch = ScriniaProjectTools.PhaseNumberPattern.Match(response);
+            var phaseMatch = ScriniaProjectTools.PhaseNumberPattern.Match(projectState);
             if (phaseMatch.Success)
                 phaseId = int.Parse(phaseMatch.Groups[1].Value).ToString("D2");
 
@@ -1942,15 +2212,22 @@ public sealed class ScriniaMcpTools
                     .ToList();
 
                 if (pendingTasks.Count > 0)
-                    response += $"\n\nRun task('next', {{ phaseId: \"{phaseId}\" }}) to continue.";
+                    instruction = $"call task('next', {{ phaseId: \"{phaseId}\" }}) to continue.";
             }
         }
         catch { /* best-effort — skip nudge silently */ }
 
-        response = conflictWarning + response;
-        response = ScriniaProjectTools.Truncate(response);
+        // Append followUp guidance to instruction
+        if (followUpNames.Count > 0)
+            instruction = (instruction ?? "") + " Then call memory('recall') for each item in followUp to load full context.";
 
-        return response;
+        return ResponseBuilder.Success(string.Join("\n\n", contentSections))
+            .WithAction("restored")
+            .WithActionNeeded(warnings.ToArray())
+            .WithInfo(info.ToArray())
+            .WithInstruction(instruction)
+            .WithFollowUp(followUpNames.ToArray())
+            .ToYaml();
     }
 
     public static string FormatBytes(long bytes) =>

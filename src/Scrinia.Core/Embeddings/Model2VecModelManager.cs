@@ -37,13 +37,20 @@ public static class Model2VecModelManager
             logger.LogInformation("Downloading {File} from {Url}...", file, url);
 
             string tmpPath = filePath + ".tmp";
-            using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            response.EnsureSuccessStatusCode();
+            try
+            {
+                using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                response.EnsureSuccessStatusCode();
 
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            await stream.CopyToAsync(fs, ct);
-
+                await using var stream = await response.Content.ReadAsStreamAsync(ct);
+                await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                await stream.CopyToAsync(fs, ct);
+            }
+            catch
+            {
+                try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best-effort cleanup */ }
+                throw;
+            }
             File.Move(tmpPath, filePath, overwrite: true);
             logger.LogInformation("Downloaded {File} ({Size:F1} MB)", file,
                 new FileInfo(filePath).Length / (1024.0 * 1024));

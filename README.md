@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 9 MCP tools — 3 for memory and 6 for project planning — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 3 MCP tools — each using noun('action') dispatch — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -145,7 +145,7 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-9 tools available via `scri serve` — 3 memory tools and 6 project planning tools. All tools use noun('action') dispatch.
+3 tools available via `scri serve` — all use noun('action') dispatch.
 
 ### Memory tools (3)
 
@@ -168,7 +168,7 @@ Full project lifecycle — ideation, planning, execution, verification, and lear
 | `skill` | load, create | Specialist methodology management |
 | `requirement` | add, resolve, list | Requirement registration and tracking |
 
-Twelve **built-in skills** ship with scrinia: `planner`, `auditor`, `debugger`, `chaos-engineer`, `onboarder`, `sos-handler`, `evolutionary`, `cartographer`, `march-reporter`, `merge-safety`, `qa`, `self-reflector`. Call `skill('load')` to list them. Projects can override any built-in with `skill('create')`.
+Thirteen **built-in skills** ship with scrinia: `agent-specialist`, `planner`, `auditor`, `debugger`, `chaos-engineer`, `onboarder`, `sos-handler`, `evolutionary`, `cartographer`, `march-reporter`, `merge-safety`, `qa`, `self-reflector`. Call `skill('load')` to list them. Projects can override any built-in with `skill('create')`.
 
 Plans are stored as topic-scoped memories (`plan:*`, `task:*`, `project:*`, `learn:*`, `agent:*`) — no separate database. All planning data is searchable via the standard `memory('search')` tool. The `excludeTopics` parameter on `memory('list')` and `memory('search')` lets agents separate knowledge from planning data when needed.
 
@@ -197,8 +197,8 @@ Agent learning is built in: the `self-reflector` skill stores execution outcomes
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 821 CLI + MCP + planning + embeddings tests
-dotnet test tests/Scrinia.Server.Tests      # 63 server tests
+dotnet test tests/Scrinia.Tests             # 1,206 CLI + MCP + planning + embeddings tests
+dotnet test tests/Scrinia.Server.Tests      # 86 server + 18 merge tests
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
 ```
 

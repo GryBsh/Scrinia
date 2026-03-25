@@ -9,13 +9,19 @@ namespace Scrinia.Core.Bundles;
 public sealed record BundleIndex(List<ArtifactEntry> Entries);
 
 /// <summary>Bundle manifest describing the archive contents.</summary>
-public sealed record BundleManifest(int Version, string Exported, List<string> Topics, int TotalEntries);
+public sealed record BundleManifest(
+    int Version,
+    string Exported,
+    List<string> Topics,
+    int TotalEntries,
+    Dictionary<string, List<string>>? FileEntities = null);
 
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(BundleIndex))]
 [JsonSerializable(typeof(BundleManifest))]
+[JsonSerializable(typeof(Dictionary<string, List<string>>))]
 public partial class BundleJsonContext : JsonSerializerContext;
 
 /// <summary>
@@ -24,6 +30,9 @@ public partial class BundleJsonContext : JsonSerializerContext;
 /// </summary>
 public static class BundleFormatService
 {
+    /// <summary>Disk-based meta-entity categories to include in bundles.</summary>
+    private static readonly string[] FileEntityCategories = ["workflows", "skills", "agent"];
+
     public static readonly JsonSerializerOptions DefaultJsonOptions = new()
     {
         WriteIndented = true,
@@ -44,7 +53,7 @@ public static class BundleFormatService
 
         foreach (string topic in topics)
         {
-            string topicScope = $"local-topic:{store.SanitizeName(topic.Trim())}";
+            string topicScope = MemoryNaming.BuildScopedTopicScope(store.SanitizeName(topic.Trim()));
             var artifacts = store.ListTopicArtifacts(topicScope);
             var entries = store.LoadIndex(topicScope);
 
@@ -72,8 +81,17 @@ public static class BundleFormatService
             }
         }
 
-        // Write manifest
-        var manifest = new BundleManifest(1, DateTimeOffset.UtcNow.ToString("o"), exportedTopics, totalEntries);
+        // Export disk-based file entities (workflows, skills, agent)
+        var fileEntities = ExportFileEntities(zip, store);
+
+        // Write manifest — use v2 when file entities are present
+        int version = fileEntities is { Count: > 0 } ? 2 : 1;
+        var manifest = new BundleManifest(
+            version,
+            DateTimeOffset.UtcNow.ToString("o"),
+            exportedTopics,
+            totalEntries,
+            fileEntities is { Count: > 0 } ? fileEntities : null);
         string manifestJson = JsonSerializer.Serialize(manifest, DefaultJsonOptions);
         var manifestEntry = zip.CreateEntry("manifest.json");
         using (var writer = new StreamWriter(manifestEntry.Open()))
@@ -124,7 +142,7 @@ public static class BundleFormatService
 
         foreach (string topic in topicsToImport)
         {
-            string topicScope = $"local-topic:{store.SanitizeName(topic)}";
+            string topicScope = MemoryNaming.BuildScopedTopicScope(store.SanitizeName(topic));
             string sanitizedTopic = store.SanitizeName(topic);
 
             var indexZipEntry = zip.GetEntry($"topics/{sanitizedTopic}/index.json");
@@ -215,6 +233,120 @@ public static class BundleFormatService
             }
         }
 
+        // Import disk-based file entities (v2 bundles; v1 bundles skip this)
+        ImportFileEntities(zip, root, store);
+
         return (importedTopics, importedEntries, importedTopicNames);
+    }
+
+    // ── File entity helpers ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Derives the .scrinia base directory from the store's scope directory.
+    /// <c>store.GetStoreDirForScope("local")</c> returns <c>{workspace}/.scrinia/store</c>,
+    /// so the parent is the .scrinia root.
+    /// </summary>
+    private static string GetScriniaBaseDir(IMemoryStore store) =>
+        Path.GetDirectoryName(store.GetStoreDirForScope("local"))!;
+
+    /// <summary>
+    /// Scans .scrinia/{category}/ directories for exportable files and writes them
+    /// into the zip under <c>files/{category}/{filename}</c>.
+    /// Skips the <c>versions/</c> subdirectory within each category.
+    /// </summary>
+    private static Dictionary<string, List<string>> ExportFileEntities(
+        ZipArchive zip, IMemoryStore store)
+    {
+        var fileEntities = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        string baseDir = GetScriniaBaseDir(store);
+
+        foreach (string category in FileEntityCategories)
+        {
+            string categoryDir = Path.Combine(baseDir, category);
+            if (!Directory.Exists(categoryDir))
+                continue;
+
+            var files = Directory.EnumerateFiles(categoryDir, "*.*", SearchOption.TopDirectoryOnly)
+                .Where(f =>
+                {
+                    string ext = Path.GetExtension(f);
+                    return ext.Equals(".json", StringComparison.OrdinalIgnoreCase)
+                        || ext.Equals(".md", StringComparison.OrdinalIgnoreCase);
+                })
+                .OrderBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (files.Count == 0)
+                continue;
+
+            var fileList = new List<string>();
+            foreach (string filePath in files)
+            {
+                string fileName = Path.GetFileName(filePath);
+                string zipEntryName = $"files/{category}/{fileName}";
+
+                var zipEntry = zip.CreateEntry(zipEntryName);
+                using var outStream = zipEntry.Open();
+                using var inStream = File.OpenRead(filePath);
+                inStream.CopyTo(outStream);
+
+                fileList.Add(fileName);
+            }
+
+            if (fileList.Count > 0)
+                fileEntities[category] = fileList;
+        }
+
+        return fileEntities;
+    }
+
+    /// <summary>
+    /// Imports disk-based file entities from a v2 bundle.
+    /// If the manifest has no <c>fileEntities</c> property (v1 bundles), this is a no-op.
+    /// </summary>
+    private static void ImportFileEntities(
+        ZipArchive zip, JsonElement manifestRoot, IMemoryStore store)
+    {
+        if (!manifestRoot.TryGetProperty("fileEntities", out var fileEntitiesEl)
+            || fileEntitiesEl.ValueKind != JsonValueKind.Object)
+            return;
+
+        string baseDir = GetScriniaBaseDir(store);
+
+        foreach (var categoryProp in fileEntitiesEl.EnumerateObject())
+        {
+            string category = categoryProp.Name;
+            if (categoryProp.Value.ValueKind != JsonValueKind.Array)
+                continue;
+
+            string categoryDir = Path.Combine(baseDir, category);
+            Directory.CreateDirectory(categoryDir);
+
+            foreach (var fileEl in categoryProp.Value.EnumerateArray())
+            {
+                string? fileName = fileEl.GetString();
+                if (string.IsNullOrWhiteSpace(fileName))
+                    continue;
+
+                // Guard against path traversal
+                if (fileName.Contains("..") || Path.IsPathRooted(fileName))
+                    continue;
+
+                string zipEntryName = $"files/{category}/{fileName}";
+                var zipEntry = zip.GetEntry(zipEntryName);
+                if (zipEntry is null)
+                    continue;
+
+                string destPath = Path.Combine(categoryDir, fileName);
+                string fullDest = Path.GetFullPath(destPath);
+                string fullCategory = Path.GetFullPath(categoryDir);
+                if (!fullDest.StartsWith(fullCategory, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                using var inStream = zipEntry.Open();
+                using var outStream = File.Create(destPath);
+                inStream.CopyTo(outStream);
+            }
+        }
     }
 }

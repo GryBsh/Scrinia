@@ -8,7 +8,7 @@ This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It descr
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 9 MCP tools (3 memory + 6 planning) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
+scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 3 MCP tools (guide, memory, task) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
 
 ## Project Layout
 
@@ -39,8 +39,8 @@ scrinia/
       MemoryStoreContext.cs       <- AsyncLocal indirection: MCP tools read Current to dispatch
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
     Scrinia.Mcp/                  <- shared MCP tools library (net10.0 classlib, refs Core)
-      MemoryTools.cs              <- 3 memory MCP tools (sealed class, no constructor, no DI injection)
-      ProjectTools.cs             <- 6 planning MCP tools + DTOs + PlanningJsonContext (sealed class, same pattern)
+      MemoryTools.cs              <- 3 MCP tools (sealed class, no constructor, no DI injection): guide, memory, task
+      ProjectTools.cs             <- planning DTOs + PlanningJsonContext (sealed class, same pattern)
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
       Commands/
@@ -111,11 +111,11 @@ scrinia/
     Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
       Program.cs                  <- Aspire entry point
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 821 tests
+    Scrinia.Tests/                <- xunit + FluentAssertions, 1,206 tests
       TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
       TestData/                   <- 6 embedded resource corpora
       Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
-    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 63 tests
+    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 86 server + 18 merge tests
       ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
     Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 12 tests (Vulkan plugin CLI + benchmark tests)
       EmbeddingsPluginCliTests.cs <- core type integration tests (EmbeddingOptions, Factory, VectorStore)
@@ -132,7 +132,7 @@ scrinia/
     getting-started.md            <- overview, installation, quick start
     cli-reference.md              <- 11 CLI commands, configuration, embedding providers, MCP client setup
     server-admin.md               <- deployment, authentication, REST API, web UI, Docker
-    planning-tools.md             <- complete guide for 6 planning tools with lifecycle and examples
+    planning-tools.md             <- complete guide for planning tools (entity, plan, task, skill) with lifecycle and examples
     multi-user-setup.md           <- multi-user merge safety and git hook setup
     troubleshooting.md            <- common issues and solutions
     web-ui-guide.md               <- web UI usage guide
@@ -249,20 +249,18 @@ Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fie
 | `memory` | store, append, show, search, list, forget, copy, compact, update, link, references, restore, reconcile | Unified memory operations |
 | `bundle` | export, import | Topic bundle import/export |
 
-### `ScriniaProjectTools` (6 planning tools)
+### `ScriniaProjectTools` (planning actions)
 
-6 planning MCP tools in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
+Planning actions dispatched through the `memory()` and `task()` tools, in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
 
 | MCP name | Actions | Description |
 |---|---|---|
-| `plan` | tasks, status, init | Project planning operations |
+| `entity` | create, update, transition, show, list, search | Unified entity operations (goals, concerns, requirements, projects, workflows) |
+| `plan` | tasks | Task decomposition with auto-injected gate tasks |
 | `task` | next, complete | Task execution loop |
-| `goal` | add, edit, complete, list | Goal management |
-| `concern` | add, resolve, list | Risk tracking |
 | `skill` | load, create | Specialist skills |
-| `requirement` | add | Requirements management |
 
-**Tool budget**: 9/50 (3 memory + 6 planning).
+**Tool budget**: 3/50 (guide, memory, task).
 
 **Planning topic conventions**: Planning tools use topic-scoped memories with these prefixes:
 
@@ -289,10 +287,10 @@ public sealed record TaskRecord(string Id, string Phase, string Name, string? De
 
 **Project Setup:**
 ```
-plan('init', { context: "# My App\n## Goals\nBuild a REST API\n## Constraints\nUse PostgreSQL" })
+entity('create', { type: "project", description: "# My App\n## Goals\nBuild a REST API\n## Constraints\nUse PostgreSQL" })
 → "Initialized project 'my-app'. Stored: project:context, project:state."
 
-requirement('add', { requirements: "## v1\n- AUTH-01: JWT login\n- API-01: CRUD endpoints" })
+entity('create', { type: "requirement", requirements: "## v1\n- AUTH-01: JWT login\n- API-01: CRUD endpoints" })
 → "Stored: project:requirements."
 ```
 
@@ -313,7 +311,7 @@ task('complete', { taskName: "task:01-1-01", outcome: "Auth endpoint created. Te
 memory('restore')
 → "Project: my-app\nPhase: Phase 01\nProgress: 50%\nNext: run task('next')..."
 
-plan('status')
+entity('show', { type: "project" })
 → "Project: my-app\nPhase: Phase 01\nProgress: 50%\nBlockers: none"
 ```
 
@@ -598,11 +596,11 @@ The `list` command supports these flags:
 ## Running Tests
 
 ```bash
-# CLI + MCP + planning + embeddings tests (821 tests)
+# CLI + MCP + planning + embeddings tests (1,206 tests)
 cd tests/Scrinia.Tests
 dotnet test
 
-# Server API tests (63 tests)
+# Server API + merge tests (86 + 18 tests)
 cd tests/Scrinia.Server.Tests
 dotnet test
 
@@ -611,7 +609,7 @@ cd tests/Scrinia.Plugin.Embeddings.Tests
 dotnet test
 ```
 
-Expected: 896 tests total (821 + 63 + 12). Auth plugin adds 62 tests (distributed separately).
+Expected: 1,322 tests total (1,206 + 86 + 18 + 12). Auth plugin adds 62 tests (distributed separately).
 
 Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
 
@@ -742,7 +740,7 @@ MCP Streamable HTTP transport at `/mcp`, powered by `ModelContextProtocol.AspNet
 - **Auth**: Bearer token (same API key auth as REST endpoints)
 - **Store selection**: Query param `?store=default` resolves the `FileMemoryStore` for the session
 - **Session context**: `PerSessionExecutionContext = true` ensures `MemoryStoreContext.Current` (AsyncLocal) persists across MCP tool calls within a session
-- **Tools**: All 9 tools from `ScriniaMcpTools` (3 memory) + `ScriniaProjectTools` (6 planning), shared via `Scrinia.Mcp` library
+- **Tools**: All 3 MCP tools (guide, memory, task), shared via `Scrinia.Mcp` library
 
 MCP client config (HTTP transport):
 ```json

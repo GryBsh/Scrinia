@@ -48,7 +48,8 @@ public sealed class VectorStore : IDisposable
             return cached;
 
         var lk = GetLock(scope);
-        lk.Wait();
+        if (!lk.Wait(TimeSpan.FromSeconds(30)))
+            throw new TimeoutException("VectorStore lock acquisition timed out after 30 seconds.");
         try
         {
             // Double-check after lock

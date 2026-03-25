@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to 9 MCP tools for persistent memory and project planning (3 memory + 6 planning). See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to 3 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -161,7 +161,7 @@ Memories are organized into three scopes:
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes 9 tools using a noun-action pattern: 3 memory tools and 6 planning tools.
+When connected via MCP, Scrinia exposes 3 tools using a noun-action pattern: guide, memory, and task.
 
 ### Memory Tools (3)
 
@@ -171,21 +171,20 @@ When connected via MCP, Scrinia exposes 9 tools using a noun-action pattern: 3 m
 | `guide` | *(none — standalone)* | Session playbook (call once per session) |
 | `bundle` | `export`, `import` | Export/import memory bundles for portability |
 
-### Planning Tools (6)
+### Planning Tools (4)
 
 | Tool | Actions | Purpose |
 |------|---------|---------|
-| `plan` | `init`, `tasks`, `verify`, `gaps`, `retro`, `profile`, `status` | Project lifecycle: initialize, decompose, verify, and review |
-| `requirement` | `add`, `list` | Define and list categorized requirements with REQ-IDs |
-| `goal` | `add`, `complete`, `list` | Manage project goals |
+| `entity` | `create`, `update`, `transition`, `show`, `list`, `search` | Unified entity operations for goals, concerns, requirements, projects, and workflows |
+| `plan` | `tasks` | Task decomposition with auto-injected gate tasks |
 | `task` | `next`, `complete` | Execute tasks: get unblocked work and mark complete |
-| `concern` | `add`, `resolve`, `list` | Track and resolve project concerns |
 | `skill` | `create`, `load` | Create and load reusable specialist skills |
 
-**Built-in skills** (12) ship with scrinia and are always available via `skill('load')`:
+**Built-in skills** (13) ship with scrinia and are always available via `skill('load')`:
 
 | Skill | Purpose |
 |-------|---------|
+| `agent-specialist` | Agent behavioral norms and profile bootstrapping |
 | `planner` | Wave-aware execution planning: file conflict detection, agent specs, merge strategy |
 | `auditor` | Systematic code, security, and documentation review with sequential finding IDs |
 | `debugger` | Scientific method debugging: observe, hypothesize, isolate, verify, store |
@@ -205,33 +204,33 @@ Planning tools use dedicated topic conventions: `project:*` for project state, `
 
 ## Planning Quick Start
 
-Scrinia's 6 planning tools (with their actions) let an agent manage a full project lifecycle. Here's a minimal flow:
+Scrinia's planning tools let an agent manage a full project lifecycle. The `entity()` tool is the unified interface for managing goals, concerns, requirements, and projects. Here's a minimal flow:
 
 ```
 # 1. Initialize a project
-plan('init', context: "Build a REST API for user management with JWT auth")
+entity('create', { type: "project", description: "Build a REST API for user management with JWT auth" })
 
 # 2. Define requirements
-requirement('add', requirements: "## v1\n- AUTH-01: User registration\n- AUTH-02: JWT login\n- API-01: CRUD endpoints")
+entity('create', { type: "requirement", requirements: "## v1\n- AUTH-01: User registration\n- AUTH-02: JWT login\n- API-01: CRUD endpoints" })
 
 # 3. Set a goal (auto-creates researcher → auditor → planner seed tasks)
-goal('add', title: "Build auth and API", description: "Implement user management with JWT")
+entity('create', { type: "goal", description: "Implement user management with JWT" })
 
 # 4. Decompose Phase 1 into tasks
-plan('tasks', phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201")
+plan('tasks', { phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201" })
 
 # 5. Execute: get task → do the work → mark complete
-task('next', phaseId: "01")      # returns unblocked tasks
-task('complete', taskName: "task:01-1-01", outcome: "Registration endpoint created. Tests pass.")
+task('next', { phaseId: "01" })      # returns unblocked tasks
+task('complete', { taskName: "task:01-1-01", outcome: "Registration endpoint created. Tests pass." })
 
 # 6. Check project status anytime
-plan('status')                   # current phase, progress, blockers
+entity('show', { type: "project" })  # current phase, progress, blockers
 
 # 7. Resume anytime after context loss
-memory('restore')                # restores full project state
+memory('restore')                    # restores full project state
 ```
 
-See [Planning Tools Guide](planning-tools.md) for full documentation of all 6 planning tools.
+See [Planning Tools Guide](planning-tools.md) for full documentation of all planning tools.
 
 ## What's Next
 

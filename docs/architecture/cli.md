@@ -80,9 +80,9 @@ builder.Services
     .WithTools<ScriniaProjectTools>();
 ```
 
-Both `ScriniaMcpTools` (3 memory tools) and `ScriniaProjectTools` (6 planning tools) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+The 3 MCP tools (guide, memory, task) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
 
-`ScriniaProjectTools` uses dedicated topic conventions (`project:*`, `plan:*`, `task:*`, `learn:*`, `agent:*`) and maintains a `project:state` memory for tracking progress. It includes `PlanningJsonContext` for trimming-safe serialization of planning DTOs.
+`ScriniaProjectTools` exposes the unified `entity()` tool (which dispatches to internal goal, concern, requirement, and project methods), plus `plan('tasks')`, `task()`, and `skill()`. It uses dedicated topic conventions (`project:*`, `plan:*`, `task:*`, `learn:*`, `agent:*`) and maintains a `project:state` memory for tracking progress. It includes `PlanningJsonContext` for trimming-safe serialization of planning DTOs.
 
 ### Remote Mode
 
@@ -243,31 +243,25 @@ The CLI is safe for trimming because:
 
 ## Planning Data Flow
 
-The 6 planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write tool updates `project:state`:
+The planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write operation updates `project:state`. The `entity()` tool is the unified entry point that dispatches to internal methods:
 
 ```
-plan('init') ────→ project:context + project:state
-                      ↓
-requirement('add') → project:requirements + project:state (updated)
-                      ↓
-plan('roadmap') ──→ plan:roadmap + project:state (updated)
-                      ↓
-plan('tasks') ────→ task:{phaseId}-{wave}-{id} memories + project:state
-                      ↓
-task('next') ─────→ reads LoadIndex("local-topic:task"), filters by keywords
-                   (status:pending → phase:{id} → min wave → unblocked deps)
-                   NO artifact decode during scan — keyword-only
-                      ↓
-task('complete') ─→ Upsert(entry with status:complete) + AppendChunk to execution log
-                      ↓
-plan('verify') ───→ reads plan:roadmap criteria + task index + execution log
-                   returns structured PASS/FAIL per criterion
-                      ↓
-plan('gaps') ─────→ creates task:{phaseId}-gap-{id} with gap_closure:true
-                   re-opens phase in project:state
+entity('create', { type: "project" }) ────→ project:context + project:state
+                                              ↓
+entity('create', { type: "requirement" }) ─→ project:requirements + project:state (updated)
+                                              ↓
+entity('create', { type: "goal" }) ────────→ auto-creates seed tasks + project:state (updated)
+                                              ↓
+plan('tasks') ─────────────────────────────→ task:{phaseId}-{wave}-{id} memories + project:state
+                                              ↓
+task('next') ──────────────────────────────→ reads LoadIndex("local-topic:task"), filters by keywords
+                                             (status:pending → phase:{id} → min wave → unblocked deps)
+                                             NO artifact decode during scan — keyword-only
+                                              ↓
+task('complete') ──────────────────────────→ Upsert(entry with status:complete) + AppendChunk to execution log
 ```
 
-`plan('resume')` and `plan('status')` read `project:state`. If missing, `RebuildStateFromMemoriesAsync` reconstructs from `project:context` + `plan:roadmap` + task index.
+`entity('show', { type: "project" })` reads `project:state`. If missing, `RebuildStateFromMemoriesAsync` reconstructs from `project:context` + task index.
 
 ## JSON CLI Output
 
@@ -275,8 +269,8 @@ All CLI commands support a `--json` flag for machine-readable JSON output. A sou
 
 ## Test Coverage
 
-821 tests in `Scrinia.Tests` covering:
-- All 9 MCP tools (3 memory + 6 planning)
+1,206 tests in `Scrinia.Tests` covering:
+- All 3 MCP tools (guide, memory, task)
 - Store operations and edge cases
 - Search ranking and scoring
 - Encoding and chunking

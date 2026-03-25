@@ -1,27 +1,28 @@
 # Planning Tools Guide
 
-Scrinia's planning system uses 6 MCP tools with noun('action') dispatch syntax.
+Scrinia's planning system is accessed through the `memory()` and `task()` MCP tools. Entity operations (goals, concerns, requirements, projects) route through `memory()`. `task()` handles task decomposition, execution, and specialist skills.
 
 ## Goal-Driven Lifecycle
 
 ```
-plan('init') (one-time)
+entity('create', { type: "project" }) (one-time)
   |
-Pre-plan: scan codebase -> concern('add')
+Pre-plan: scan codebase -> entity('create', { type: "concern" })
   |
-goal('add') <--------------------------------------- (next goal)
-  |                                                       ^
-auto-creates: researcher (wave 0) -> auditor (wave 1)    |
-  -> planner (wave 2) seed tasks                         |
-  |                                                       |
-task('next') -> spawn agent -> task('complete')           |
-  |                                                       |
-concern('resolve') + gate tasks (QA, self-reflector)      |
-  |                                                       |
-goal('complete') -----------------------------------------+
+entity('create', { type: "goal" }) <----------------------- (next goal)
+  |                                                               ^
+auto-creates: agent-specialist (wave 0) -> researcher (wave 1)    |
+  -> auditor (wave 2) -> planner (wave 3) seed tasks              |
+  |                                                               |
+task('next') -> spawn agent -> task('complete')                   |
+  |                                                               |
+entity('transition', { type: "concern", to: "resolved" })        |
+  + gate tasks (QA, self-reflector)                               |
+  |                                                               |
+entity('transition', { type: "goal", to: "complete" }) -----------+
 ```
 
-**Recovery at any point:** `memory('restore')` / `plan('status')`
+**Recovery at any point:** `memory('restore')` / `entity('show', { type: "project" })`
 **Agent behavioral norms:** stored via `memory('store')` in `agent:profile`
 
 ### Absorbed capabilities
@@ -33,50 +34,208 @@ These old standalone tools no longer exist. Their functionality is provided by o
 | `plan_verify` | qa built-in skill (auto-injected gate task) |
 | `plan_retrospective` | self-reflector built-in skill (auto-injected gate task) |
 | `plan_profile` | `agent:profile` memory (stored via `memory('store')`) |
-| `plan_roadmap` | auto-created by `goal('add')` |
-| `plan_requirements` | `requirement('add')` |
+| `plan_roadmap` | auto-created by `entity('create', { type: "goal" })` |
+| `plan_requirements` | `entity('create', { type: "requirement" })` |
 | `plan_resume` | `memory('restore')` |
 | `plan_gaps` | gap tasks created directly via `plan('tasks')` |
-| `research_start` / `research_complete` | researcher seed task pattern (auto-created by `goal('add')`) |
+| `research_start` / `research_complete` | researcher seed task pattern (auto-created by `entity('create', { type: "goal" })`) |
+| `goal()` | `entity('create/update/transition/list', { type: "goal" })` |
+| `concern()` | `entity('create/transition/list', { type: "concern" })` |
+| `requirement()` | `entity('create/transition/list', { type: "requirement" })` |
+| `plan('init')` | `entity('create', { type: "project" })` |
+| `plan('status')` | `entity('show', { type: "project" })` |
 
 ### One-time setup
 
-`plan('init', { context: "..." })` — call once per workspace. In an existing codebase, this returns guidance to scan for concerns and build knowledge before setting goals. In an empty workspace, it directs you to set a goal immediately.
+`entity('create', { type: "project", description: "..." })` — call once per workspace. In an existing codebase, this returns guidance to scan for concerns and build knowledge before setting goals. In an empty workspace, it directs you to set a goal immediately.
 
 ### Pre-planning (existing codebases)
 
 Before setting your first goal, scan the codebase to build understanding:
-- `concern('add', { description, severity, phaseScope })` — track risks, tech debt, issues
+- `entity('create', { type: "concern", description: "...", severity: "...", phase: "..." })` — track risks, tech debt, issues
 
 Concerns persist across goals — they accumulate over the project's lifetime and inform future planning.
 
 ### The goal cycle
 
-Goals are the top-level unit of work. Each goal auto-creates researcher, auditor, and planner seed tasks. After completing a goal, set the next one. Accumulated concerns and knowledge carry forward.
+Goals are the top-level unit of work. Each goal auto-creates agent-specialist, researcher, auditor, and planner seed tasks. After completing a goal, set the next one. Accumulated concerns and knowledge carry forward.
 
 ---
 
 ## Tools
 
-### plan
+### entity
 
-Actions: `init`, `tasks`, `status`
+The unified interface for managing goals, concerns, requirements, projects, and workflows.
 
-#### plan('init')
+Actions: `create`, `update`, `transition`, `show`, `list`, `search`
+
+Entity types: `goal`, `concern`, `requirement`, `project`, `workflow`
+
+#### entity('create', { type: "project" })
 
 Initialize a new project. Creates `project:context` and `project:state` memories.
 
 **Parameters:**
-- `context` (string, required) — Free-text describing project goals, context, constraints, and scope
+- `type` (string, required) — `"project"`
+- `description` or `context` (string, required) — Free-text describing project goals, context, constraints, and scope
 
 **Example call:**
 ```
-plan('init', { context: "Build a REST API for user management. Must use PostgreSQL. Deploy to AWS." })
+entity('create', { type: "project", description: "Build a REST API for user management. Must use PostgreSQL. Deploy to AWS." })
 ```
 
 **What it stores:**
 - `project:context` — the full context text
 - `project:state` — tracking state (phase, progress, last action, next step)
+
+#### entity('show', { type: "project" })
+
+Show project progress, active goal, blockers, and next action.
+
+**Parameters:**
+- `type` (string, required) — `"project"`
+
+**Response format:**
+```
+Project: my-api-project
+Phase: Phase 01 — Auth Foundation
+Progress: 50%
+Last action: Completed task:01-1-01
+Blockers: none
+Next: run task('next') to get the next pending task
+Roadmap: 2 phase(s) defined
+```
+
+#### entity('create', { type: "goal" })
+
+Create a new goal. Auto-creates agent-specialist (wave 0) -> researcher (wave 1) -> auditor (wave 2) -> planner (wave 3) seed tasks.
+
+**Parameters:**
+- `type` (string, required) — `"goal"`
+- `description` (string, required) — Goal description
+
+**Example call:**
+```
+entity('create', { type: "goal", description: "Implement JWT authentication for all API endpoints" })
+```
+
+**What happens:**
+- Creates a goal with sequential ID (G-1, G-2, ...)
+- Auto-creates four seed tasks: agent-specialist, researcher, auditor, planner
+- The orchestrator executes these via `task('next')` -> spawn -> `task('complete')`
+
+#### entity('transition', { type: "goal", to: "complete" })
+
+Complete the active goal. Blocks on open concerns. Auto-appends session log and checkpoint.
+
+**Parameters:**
+- `type` (string, required) — `"goal"`
+- `id` (string, required) — Goal ID to complete
+- `to` (string, required) — `"complete"`
+- `outcome` (string, optional) — Outcome note
+
+**Example call:**
+```
+entity('transition', { type: "goal", id: "G-1", to: "complete", outcome: "All auth endpoints implemented and tested." })
+```
+
+#### entity('list', { type: "goal" })
+
+List all goals with status.
+
+**Parameters:**
+- `type` (string, required) — `"goal"`
+
+#### entity('update', { type: "goal" })
+
+Update goal description.
+
+**Parameters:**
+- `type` (string, required) — `"goal"`
+- `id` (string, required) — Goal ID to update
+- `description` (string, required) — Updated description
+
+#### entity('create', { type: "concern" })
+
+Track a risk or issue. Sequential IDs by category: SEC-NNN, QAL-NNN, DOC-NNN.
+
+**Parameters:**
+- `type` (string, required) — `"concern"`
+- `description` (string, required) — Concern description
+- `severity` (string, required) — `high`, `medium`, or `low`
+- `phase` (string, required) — Phase this concern applies to
+- `id` (string, optional) — Custom concern ID (auto-generated if omitted)
+
+**Example call:**
+```
+entity('create', { type: "concern", description: "No input validation on user registration", severity: "high", phase: "01" })
+```
+
+#### entity('transition', { type: "concern", to: "resolved" })
+
+Mark a concern resolved.
+
+**Parameters:**
+- `type` (string, required) — `"concern"`
+- `id` (string, required) — Concern ID to resolve
+- `to` (string, required) — `"resolved"`
+- `resolution` (string, required) — Resolution notes
+- `verifiedBy` (string, required) — Who verified: `debugger`, `qa`, `manual`
+
+**Example call:**
+```
+entity('transition', { type: "concern", id: "SEC-001", to: "resolved", resolution: "Added input validation middleware", verifiedBy: "qa" })
+```
+
+#### entity('list', { type: "concern" })
+
+List active concerns, optionally filtered by phase.
+
+**Parameters:**
+- `type` (string, required) — `"concern"`
+- `filter` (string, optional) — Filter by phase
+
+#### entity('create', { type: "requirement" })
+
+Register requirements with REQ-IDs and acceptance criteria.
+
+**Parameters:**
+- `type` (string, required) — `"requirement"`
+- `requirements` (string, required) — Free-text requirements with REQ-IDs
+
+**Example call:**
+```
+entity('create', { type: "requirement", requirements: "## Auth\n- AUTH-01: User registration with email/password\n- AUTH-02: JWT-based session management\n\n## API\n- API-01: CRUD endpoints for users" })
+```
+
+#### entity('transition', { type: "requirement", to: "fulfilled" })
+
+Mark a requirement as fulfilled.
+
+**Parameters:**
+- `type` (string, required) — `"requirement"`
+- `id` (string, required) — Requirement ID to fulfill
+- `to` (string, required) — `"fulfilled"`
+- `evidence` (string, required) — Evidence of fulfillment
+
+**Example call:**
+```
+entity('transition', { type: "requirement", id: "AUTH-01", to: "fulfilled", evidence: "Registration endpoint implemented and tested in task:g14-01-1-01" })
+```
+
+#### entity('list', { type: "requirement" })
+
+List all requirements for the active goal.
+
+**Parameters:**
+- `type` (string, required) — `"requirement"`
+
+---
+
+### plan
+
+Actions: `tasks`
 
 #### plan('tasks')
 
@@ -115,23 +274,6 @@ Acceptance criteria:
 - **Dependencies** reference task IDs (e.g., `01`, `02`), not qualified names
 - Task metadata stored as keywords: `status:pending`, `wave:1`, `phase:01`, `goal:G-14`, `depends_on:01-1-01`
 - Gate tasks (QA, self-reflector, etc.) are auto-injected — do not define them manually
-
-#### plan('status')
-
-Show project progress, active goal, blockers, and next action.
-
-**Parameters:** None
-
-**Response format:**
-```
-Project: my-api-project
-Phase: Phase 01 — Auth Foundation
-Progress: 50%
-Last action: Completed task:01-1-01
-Blockers: none
-Next: run task('next') to get the next pending task
-Roadmap: 2 phase(s) defined
-```
 
 ---
 
@@ -191,99 +333,7 @@ task('complete', { taskName: "task:g14-01-1-01", outcome: "Created registration 
 
 **No-archiving design:** Both `task('complete')` and `project:state` updates deliberately skip `ArchiveVersion`:
 - **task('complete')**: Status keyword changes are frequent, mechanical updates — archiving every status flip would create massive version bloat with no useful history.
-- **project:state**: Updated by every planning tool call (progress, last action, next step). Archiving would produce dozens of near-identical snapshots per session. State can always be rebuilt from `project:context` + task index via `plan('status')`.
-
----
-
-### goal
-
-Actions: `add`, `edit`, `complete`, `list`
-
-#### goal('add')
-
-Create a new goal. Auto-creates researcher (wave 0) -> auditor (wave 1) -> planner (wave 2) seed tasks.
-
-**Parameters:**
-- `description` (string, required) — Goal description
-
-**Example call:**
-```
-goal('add', { description: "Implement JWT authentication for all API endpoints" })
-```
-
-**What happens:**
-- Creates a goal with sequential ID (G-1, G-2, ...)
-- Auto-creates three seed tasks: researcher, auditor, planner
-- The orchestrator executes these via `task('next')` -> spawn -> `task('complete')`
-
-#### goal('complete')
-
-Complete the active goal. Blocks on open concerns. Auto-appends session log and checkpoint.
-
-**Parameters:**
-- `goalId` (string, optional) — Goal ID to complete. Uses active goal if omitted.
-- `outcome` (string, optional) — Outcome note
-
-**Example call:**
-```
-goal('complete', { outcome: "All auth endpoints implemented and tested." })
-```
-
-#### goal('list')
-
-List all goals with status.
-
-**Parameters:** None
-
-#### goal('edit')
-
-Update goal description.
-
-**Parameters:**
-- `goalId` (string, optional) — Goal ID to update
-- `description` (string, optional) — Updated description
-
----
-
-### concern
-
-Actions: `add`, `resolve`, `list`
-
-#### concern('add')
-
-Track a risk or issue. Sequential IDs by category: SEC-NNN, QAL-NNN, DOC-NNN.
-
-**Parameters:**
-- `description` (string, required) — Concern description
-- `severity` (string, optional) — `high`, `medium`, or `low`
-- `phaseScope` (string, optional) — Phase this concern applies to
-- `id` (string, optional) — Custom concern ID (auto-generated if omitted)
-
-**Example call:**
-```
-concern('add', { description: "No input validation on user registration", severity: "high", phaseScope: "01" })
-```
-
-#### concern('resolve')
-
-Mark a concern resolved.
-
-**Parameters:**
-- `concernName` (string, required) — Concern name to resolve
-- `resolution` (string, optional) — Resolution notes
-- `verifiedBy` (string, optional) — Who verified: `debugger`, `qa`, `manual`
-
-**Example call:**
-```
-concern('resolve', { concernName: "SEC-001", resolution: "Added input validation middleware", verifiedBy: "qa" })
-```
-
-#### concern('list')
-
-List active concerns, optionally filtered by phase.
-
-**Parameters:**
-- `phaseFilter` (string, optional) — Filter by phase
+- **project:state**: Updated by every planning tool call (progress, last action, next step). Archiving would produce dozens of near-identical snapshots per session. State can always be rebuilt from `project:context` + task index via `entity('show', { type: "project" })`.
 
 ---
 
@@ -299,7 +349,7 @@ Load a built-in or project skill. Without `name`, lists all available skills.
 - `name` (string, optional) — Skill name to load. Omit to list available skills.
 - `reconcile` (boolean, optional) — Show both built-in and override for reconciliation
 
-**12 built-in skills:** planner, auditor, debugger, chaos-engineer, onboarder, sos-handler, evolutionary, cartographer, march-reporter, merge-safety, qa, self-reflector
+**13 built-in skills:** agent-specialist, planner, auditor, debugger, chaos-engineer, onboarder, sos-handler, evolutionary, cartographer, march-reporter, merge-safety, qa, self-reflector
 
 **Example calls:**
 ```
@@ -323,43 +373,6 @@ skill('create', { name: "api-reviewer", scaffold: "reviewer", instructions: "Foc
 ```
 
 **Precedence:** Project skills override built-in skills of the same name. Use `skill('load', { reconcile: true })` to compare.
-
----
-
-### requirement
-
-Actions: `add`, `resolve`, `list`
-
-#### requirement('add')
-
-Register requirements with REQ-IDs and acceptance criteria.
-
-**Parameters:**
-- `requirements` (string, required) — Free-text requirements with REQ-IDs
-
-**Example call:**
-```
-requirement('add', { requirements: "## Auth\n- AUTH-01: User registration with email/password\n- AUTH-02: JWT-based session management\n\n## API\n- API-01: CRUD endpoints for users" })
-```
-
-#### requirement('resolve')
-
-Mark a requirement as fulfilled.
-
-**Parameters:**
-- `id` (string, required) — Requirement ID to resolve
-- `evidence` (string, optional) — Evidence of fulfillment
-
-**Example call:**
-```
-requirement('resolve', { id: "AUTH-01", evidence: "Registration endpoint implemented and tested in task:g14-01-1-01" })
-```
-
-#### requirement('list')
-
-List all requirements for the active goal.
-
-**Parameters:** None
 
 ---
 
@@ -413,24 +426,24 @@ Tasks store structured metadata as keywords on `ArtifactEntry`, queryable withou
 ## Recovery
 
 - `memory('restore')` — full context restoration (project state, agent profile, session log, task nudge)
-- `plan('status')` — quick progress check
+- `entity('show', { type: "project" })` — quick progress check
 - `memory('search', { query: "agent:" })` — load behavioral norms
 
 ## Full Lifecycle Walkthrough
 
 ```
 # 1. Initialize (one-time)
-plan('init', { context: "Build a todo app with React frontend and Express API" })
+entity('create', { type: "project", description: "Build a todo app with React frontend and Express API" })
 
 # 2. Pre-plan: scan codebase for concerns
-concern('add', { description: "No test coverage", severity: "medium" })
+entity('create', { type: "concern", description: "No test coverage", severity: "medium", phase: "01" })
 
 # 3. Define requirements
-requirement('add', { requirements: "## API\n- API-01: CRUD endpoints\n## UI\n- UI-01: Task list view" })
+entity('create', { type: "requirement", requirements: "## API\n- API-01: CRUD endpoints\n## UI\n- UI-01: Task list view" })
 
 # 4. Set a goal
-goal('add', { description: "Implement core API with CRUD endpoints" })
-# -> auto-creates researcher, auditor, planner seed tasks
+entity('create', { type: "goal", description: "Implement core API with CRUD endpoints" })
+# -> auto-creates agent-specialist, researcher, auditor, planner seed tasks
 
 # 5. Execute seed tasks (researcher -> auditor -> planner)
 task('next')
@@ -449,13 +462,13 @@ task('complete', { taskName: "task:g1-01-1-01", outcome: "Created Express server
 # Gate tasks (QA, self-reflector) auto-execute at phase boundaries
 
 # 8. Complete the goal
-goal('complete', { outcome: "API CRUD implemented and verified." })
+entity('transition', { type: "goal", id: "G-1", to: "complete", outcome: "API CRUD implemented and verified." })
 
 # 9. Set next goal
-goal('add', { description: "Build React frontend with task list view" })
+entity('create', { type: "goal", description: "Build React frontend with task list view" })
 # ... repeat ...
 
 # At any point — check status or restore after context loss:
-plan('status')
+entity('show', { type: "project" })
 memory('restore')
 ```
