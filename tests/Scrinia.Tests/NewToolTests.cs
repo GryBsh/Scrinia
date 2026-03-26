@@ -46,7 +46,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.UpdateMeta("meta-kw-test", keywords: ["b", "c"]);
 
         // Assert — entry should now have ["a", "b", "c"] (union)
-        result.Should().Contain("keyword", "response should mention keywords changed");
+        ResponseParser.Parse(result).Content.Should().Contain("keyword", "response should mention keywords changed");
 
         var store = MemoryStoreContext.Current!;
         var (scope, subject) = store.ParseQualifiedName("meta-kw-test");
@@ -95,7 +95,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.UpdateMeta("meta-desc-test", description: "new desc");
 
         // Assert
-        result.Should().Contain("description updated",
+        ResponseParser.Parse(result).Content.Should().Contain("description updated",
             "response should confirm description was updated");
 
         var store = MemoryStoreContext.Current!;
@@ -113,10 +113,11 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.UpdateMeta("nonexistent", keywords: ["x"]);
 
         // Assert
-        result.Should().Contain("not found",
-            "update_meta on a missing memory must return an error containing 'not found'");
-        result.Should().StartWith("Error:",
-            "error responses should start with 'Error:'");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error",
+            "update_meta on a missing memory must return an error");
+        parsed.Error.Should().Contain("not found",
+            "error should contain 'not found'");
     }
 
     // ── plan_tasks file-conflict detection tests ────────────────────────────
@@ -153,10 +154,12 @@ public sealed class NewToolTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Assert — response must warn about the file conflict on Bar.cs
-        result.Should().ContainEquivalentOf("conflict",
-            "plan_tasks should detect and warn about file conflicts in same-wave tasks");
-        result.Should().ContainEquivalentOf("Bar.cs",
+        var parsed = ResponseParser.Parse(result);
+        string combined = (parsed.Content ?? "") + " " + string.Join(" ", parsed.ActionNeeded);
+        combined.Should().ContainEquivalentOf("Bar.cs",
             "file conflict warning should mention the conflicting file Bar.cs");
+        combined.Should().ContainEquivalentOf("modified by tasks",
+            "plan_tasks should detect and warn about file conflicts in same-wave tasks");
     }
 
     [Fact]
@@ -184,9 +187,10 @@ public sealed class NewToolTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Assert — no conflict warning when no Files: lines present
-        result.Should().NotContainEquivalentOf("conflict",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().NotContainEquivalentOf("conflict",
             "plan_tasks without Files: lines should not produce any conflict warnings");
-        result.Should().Contain("Created 7 task(s)",
+        content.Should().Contain("Created 7 task(s)",
             "tasks should be created normally when no Files: lines are present " +
             "(2 user tasks + 5 auto-injected gate tasks for last phase)");
     }
@@ -205,7 +209,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Compact("compact-merge-test");
 
         // Assert — response mentions compaction
-        result.Should().Contain("Compacted",
+        ResponseParser.Parse(result).Content.Should().Contain("Compacted",
             "compact response should confirm the memory was compacted");
 
         // Verify chunk count is now 1
@@ -242,7 +246,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Compact("compact-keep-test", keepRecent: 2);
 
         // Assert
-        result.Should().Contain("Compacted",
+        ResponseParser.Parse(result).Content.Should().Contain("Compacted",
             "compact response should confirm compaction occurred");
 
         var store = MemoryStoreContext.Current!;
@@ -264,7 +268,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Compact("compact-archive-test");
 
         // Assert — a version file should exist in the versions/ directory
-        result.Should().Contain("archived",
+        ResponseParser.Parse(result).Content.Should().Contain("archived",
             "compact response should mention the original was archived");
 
         var store = MemoryStoreContext.Current!;
@@ -287,7 +291,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Compact("compact-noop-test");
 
         // Assert — should indicate nothing to compact
-        result.Should().Contain("single chunk",
+        ResponseParser.Parse(result).Content.Should().Contain("single chunk",
             "compact on a single-chunk memory should indicate nothing to compact");
     }
 
@@ -308,15 +312,20 @@ public sealed class NewToolTests : IDisposable
         // Act — create a skill that overrides the built-in "planner" skill
         await _projTools.SkillCreate("planner", "custom", "test override", null, CancellationToken.None);
 
-        // Assert — the stored index entry should have a basedOn: keyword
+        // Assert — the sidecar .meta.json should have a BasedOn hash
         var store = MemoryStoreContext.Current!;
-        var (scope, _) = store.ParseQualifiedName("skill:planner");
-        var entries = store.LoadIndex(scope);
-        var entry = entries.First(e => e.Name.Equals("planner", StringComparison.OrdinalIgnoreCase));
-
-        entry.Keywords.Should().NotBeNull("skill entry should have keywords");
-        entry.Keywords.Should().Contain(k => k.StartsWith("basedOn:", StringComparison.Ordinal),
-            "overriding a built-in skill must record the built-in's hash as a basedOn: keyword");
+        string storeDir = store.GetStoreDirForScope("local");
+        var dir = new DirectoryInfo(storeDir);
+        while (dir is not null && dir.Name != ".scrinia")
+            dir = dir.Parent;
+        string baseDir = dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
+        string metaPath = Path.Combine(baseDir, "skills", "planner.meta.json");
+        File.Exists(metaPath).Should().BeTrue("sidecar .meta.json should exist");
+        string json = await File.ReadAllTextAsync(metaPath);
+        var meta = JsonSerializer.Deserialize(json, PlanningJsonContext.Default.SkillFileMeta);
+        meta.Should().NotBeNull("sidecar should deserialize");
+        meta!.BasedOn.Should().NotBeNullOrEmpty(
+            "overriding a built-in skill must record the built-in's hash in sidecar BasedOn");
     }
 
     [Fact]
@@ -328,15 +337,20 @@ public sealed class NewToolTests : IDisposable
         // Act — create a skill that does NOT match any built-in name
         await _projTools.SkillCreate("my-custom-skill", "custom", "totally custom", null, CancellationToken.None);
 
-        // Assert — the stored entry should NOT have a basedOn: keyword
+        // Assert — the sidecar should NOT have a BasedOn hash
         var store = MemoryStoreContext.Current!;
-        var (scope, _) = store.ParseQualifiedName("skill:my-custom-skill");
-        var entries = store.LoadIndex(scope);
-        var entry = entries.First(e => e.Name.Equals("my-custom-skill", StringComparison.OrdinalIgnoreCase));
-
-        entry.Keywords.Should().NotBeNull("skill entry should have keywords");
-        entry.Keywords.Should().NotContain(k => k.StartsWith("basedOn:", StringComparison.Ordinal),
-            "a skill that does not override a built-in should not have a basedOn: keyword");
+        string storeDir = store.GetStoreDirForScope("local");
+        var dir = new DirectoryInfo(storeDir);
+        while (dir is not null && dir.Name != ".scrinia")
+            dir = dir.Parent;
+        string baseDir = dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
+        string metaPath = Path.Combine(baseDir, "skills", "my-custom-skill.meta.json");
+        File.Exists(metaPath).Should().BeTrue("sidecar .meta.json should exist");
+        string json = await File.ReadAllTextAsync(metaPath);
+        var meta = JsonSerializer.Deserialize(json, PlanningJsonContext.Default.SkillFileMeta);
+        meta.Should().NotBeNull("sidecar should deserialize");
+        meta!.BasedOn.Should().BeNull(
+            "a skill that does not override a built-in should not have a BasedOn hash");
     }
 
     [Fact]
@@ -350,7 +364,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _projTools.SkillLoad("planner", cancellationToken: CancellationToken.None);
 
         // Assert — no stale warning because the basedOn hash matches the current built-in
-        result.Should().NotContain("WARNING",
+        ResponseParser.Parse(result).Content.Should().NotContain("WARNING",
             "loading a freshly-created override should not produce a stale warning");
     }
 
@@ -365,9 +379,10 @@ public sealed class NewToolTests : IDisposable
         string result = await _projTools.SkillLoad("planner", reconcile: true, cancellationToken: CancellationToken.None);
 
         // Assert — response must contain both the built-in and override sections
-        result.Should().Contain("Current Built-in",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("Current Built-in",
             "reconcile mode must show the 'Current Built-in' section");
-        result.Should().Contain("Your Project Override",
+        content.Should().Contain("Your Project Override",
             "reconcile mode must show the 'Your Project Override' section");
     }
 
@@ -459,7 +474,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Reconcile();
 
         // Assert
-        result.Should().Contain("No merge conflicts",
+        ResponseParser.Parse(result).Content.Should().Contain("No merge conflicts",
             "reconcile on a clean .scrinia/ directory should report no conflicts");
     }
 
@@ -504,7 +519,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Reconcile();
 
         // Assert — response mentions auto-resolution
-        result.Should().Contain("auto-resolved",
+        ResponseParser.Parse(result).Content.Should().Contain("auto-resolved",
             "reconcile should report auto-resolved for .meta.json conflicts");
 
         // The file should no longer contain conflict markers
@@ -541,7 +556,7 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Reconcile();
 
         // Assert — .nmp2 conflicts require manual resolution
-        result.Should().Contain("manual resolution",
+        ResponseParser.Parse(result).Content.Should().Contain("manual resolution",
             "reconcile should report that .nmp2 conflicts need manual resolution");
     }
 
@@ -562,11 +577,12 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Reconcile();
 
         // Assert — response must contain a CONFLICT- ID and decoded content from both sides
-        result.Should().Contain("CONFLICT-",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("CONFLICT-",
             "reconcile should assign a CONFLICT-N ID to the .nmp2 conflict");
-        result.Should().Contain("ours side content",
+        content.Should().Contain("ours side content",
             "reconcile should show decoded/raw content from the ours side");
-        result.Should().Contain("theirs side content",
+        content.Should().Contain("theirs side content",
             "reconcile should show decoded/raw content from the theirs side");
     }
 
@@ -584,9 +600,10 @@ public sealed class NewToolTests : IDisposable
 
         // Act — reconcile to register the conflict, then extract the ID
         string reconcileResult = await _memTools.Reconcile();
+        var reconcileContent = ResponseParser.Parse(reconcileResult).Content!;
 
         // Extract the CONFLICT-N ID from the reconcile response
-        var match = System.Text.RegularExpressions.Regex.Match(reconcileResult, @"CONFLICT-\d+");
+        var match = System.Text.RegularExpressions.Regex.Match(reconcileContent, @"CONFLICT-\d+");
         match.Success.Should().BeTrue("reconcile should produce a CONFLICT-N ID");
         string conflictId = match.Value;
 
@@ -594,7 +611,7 @@ public sealed class NewToolTests : IDisposable
         string resolveResult = await _memTools.Reconcile(conflictId: conflictId, choice: "ours");
 
         // Assert — the file should no longer have conflict markers
-        resolveResult.Should().Contain("Resolved",
+        ResponseParser.Parse(resolveResult).Content.Should().Contain("Resolved",
             "reconcile(conflictId, choice:'ours') should confirm resolution");
         string fileContent = File.ReadAllText(filePath);
         fileContent.Should().NotContain("<<<<<<<",
@@ -602,7 +619,7 @@ public sealed class NewToolTests : IDisposable
 
         // Reconcile again — should report clean (0 remaining)
         string secondReconcile = await _memTools.Reconcile();
-        secondReconcile.Should().Contain("No merge conflicts",
+        ResponseParser.Parse(secondReconcile).Content.Should().Contain("No merge conflicts",
             "after resolving the only conflict, reconcile should report no conflicts");
     }
 
@@ -620,7 +637,7 @@ public sealed class NewToolTests : IDisposable
 
         // Act — reconcile to register the conflict, then resolve with merged content
         string reconcileResult = await _memTools.Reconcile();
-        var match = System.Text.RegularExpressions.Regex.Match(reconcileResult, @"CONFLICT-\d+");
+        var match = System.Text.RegularExpressions.Regex.Match(ResponseParser.Parse(reconcileResult).Content!, @"CONFLICT-\d+");
         match.Success.Should().BeTrue("reconcile should produce a CONFLICT-N ID");
         string conflictId = match.Value;
 
@@ -628,7 +645,7 @@ public sealed class NewToolTests : IDisposable
         string resolveResult = await _memTools.Reconcile(conflictId: conflictId, choice: "merged", content: mergedContent);
 
         // Assert — the file should contain the merged content re-encoded as NMP/2
-        resolveResult.Should().Contain("Resolved",
+        ResponseParser.Parse(resolveResult).Content.Should().Contain("Resolved",
             "reconcile(conflictId, choice:'merged', content) should confirm resolution");
 
         string fileContent = File.ReadAllText(filePath);
@@ -649,8 +666,10 @@ public sealed class NewToolTests : IDisposable
         string result = await _memTools.Reconcile(conflictId: "CONFLICT-999", choice: "ours");
 
         // Assert — should return an error indicating the ID was not found
-        result.Should().ContainAny(["not found", "Error"],
-            "reconcile with an invalid conflictId must return an error");
+        var parsed = ResponseParser.Parse(result);
+        bool isError = parsed.Status == "error"
+            || (parsed.Content ?? "").Contains("not found", StringComparison.OrdinalIgnoreCase);
+        isError.Should().BeTrue("reconcile with an invalid conflictId must return an error");
     }
 
     [Fact]
@@ -669,11 +688,12 @@ public sealed class NewToolTests : IDisposable
 
         // Act — reconcile should find 2 conflicts
         string firstReconcile = await _memTools.Reconcile();
-        firstReconcile.Should().Contain("2 conflict(s) remaining",
+        var firstContent = ResponseParser.Parse(firstReconcile).Content!;
+        firstContent.Should().Contain("2 conflict(s) remaining",
             "reconcile should report 2 conflicts when two .nmp2 files have markers");
 
         // Extract the first CONFLICT- ID and resolve it
-        var match = System.Text.RegularExpressions.Regex.Match(firstReconcile, @"CONFLICT-\d+");
+        var match = System.Text.RegularExpressions.Regex.Match(firstContent, @"CONFLICT-\d+");
         match.Success.Should().BeTrue("reconcile should produce at least one CONFLICT-N ID");
         string firstConflictId = match.Value;
 
@@ -681,7 +701,7 @@ public sealed class NewToolTests : IDisposable
 
         // Act — reconcile again (it re-scans from disk, so only the unresolved file remains)
         string secondReconcile = await _memTools.Reconcile();
-        secondReconcile.Should().Contain("1 conflict(s) remaining",
+        ResponseParser.Parse(secondReconcile).Content.Should().Contain("1 conflict(s) remaining",
             "after resolving one of two conflicts, reconcile should report 1 remaining");
     }
 

@@ -60,14 +60,14 @@ public static class WorkflowEndpoints
         workflows.Add(new WorkflowSummary(
             defaultWf.Name,
             defaultWf.SeedActivities.Length,
-            defaultWf.GateActivities.Length,
+            defaultWf.PostPlanActivities.Length,
             IsBuiltIn: true));
 
         var quickFixWf = WorkflowDefinition.QuickFixWorkflow;
         workflows.Add(new WorkflowSummary(
             quickFixWf.Name,
             quickFixWf.SeedActivities.Length,
-            quickFixWf.GateActivities.Length,
+            quickFixWf.PostPlanActivities.Length,
             IsBuiltIn: true));
 
         // Scan .scrinia/workflows/ for overrides
@@ -118,7 +118,7 @@ public static class WorkflowEndpoints
                         workflows.Add(new WorkflowSummary(
                             parsed.Name,
                             parsed.SeedActivities?.Length ?? 0,
-                            parsed.GateActivities?.Length ?? 0,
+                            parsed.PostPlanActivities?.Length ?? 0,
                             IsBuiltIn: false));
                         continue;
                     }
@@ -454,9 +454,9 @@ public static class WorkflowEndpoints
             .FirstOrDefault(k => k.StartsWith("skill:", StringComparison.OrdinalIgnoreCase))
             ?["skill:".Length..];
 
-        string? gateType = entry.Keywords?
-            .FirstOrDefault(k => k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase))
-            ?["gate:".Length..];
+        string? tag = entry.Keywords?
+            .FirstOrDefault(k => k.StartsWith("tag:", StringComparison.OrdinalIgnoreCase))
+            ?["tag:".Length..];
 
         var dependsOn = entry.Keywords?
             .Where(k => k.StartsWith("depends:", StringComparison.OrdinalIgnoreCase))
@@ -469,7 +469,7 @@ public static class WorkflowEndpoints
             wave,
             skill,
             dependsOn,
-            gateType,
+            tag,
             entry.Description);
     }
 

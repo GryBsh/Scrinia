@@ -1,0 +1,306 @@
+name: goal-execution
+
+activities:
+  # Wave 0: Agent Specialist (seed)
+  - id: agent-specialist
+    type: agent
+    role: seed
+    phase: "00"
+    wave: 0
+    skill: "builtin:agent-specialist"
+    dependsOn: []
+    tag: agent-specialist
+    prompt: >-
+      ## Agent Specialist Task
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/agent-specialist' })
+      2. EXECUTE the skill: assess skill fit for this goal
+      3. STORE assessment with proposed agent assignments
+
+      Acceptance criteria:
+
+      - Skill fit assessment completed
+
+      - Agent assignments proposed (or confirmed as default)
+    validation:
+      checkType: memory-exists
+      target: "project:context"
+      errorTemplate: "No project context found."
+      instructionTemplate: "The agent-specialist must complete its assessment before this gate can complete — ensure the agent-specialist agent has run."
+    requiredOutputs:
+      - checkType: memory-exists
+        target: "project:context"
+        errorTemplate: "No project context found."
+        instructionTemplate: "Complete the skill fit assessment before completing."
+
+  # Wave 1: Researcher (seed)
+  - id: researcher
+    type: agent
+    role: seed
+    phase: "00"
+    wave: 1
+    skill: "builtin:researcher"
+    dependsOn:
+      - agent-specialist
+    tag: researcher
+    prompt: >-
+      ## Researcher Task
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/researcher' })
+      2. EXECUTE the loaded skill's methodology against this goal
+      3. STORE findings via memory('remember', { path: '/research/...', content: [...] })
+
+      Acceptance criteria:
+
+      - Research findings stored as research:* memories
+
+      - Scope and implementation approach documented
+    validation:
+      checkType: index-prefix
+      target: "research:{goalShort}"
+      errorTemplate: "No research:* memories found."
+      instructionTemplate: "The researcher must store findings before this gate can complete — ensure the researcher agent has run."
+    requiredOutputs:
+      - checkType: index-prefix
+        target: "research:{goalShort}"
+        errorTemplate: "No research findings stored."
+        instructionTemplate: "Store findings via memory('remember') before completing."
+
+  # Wave 2: Auditor (seed)
+  - id: auditor
+    type: agent
+    role: seed
+    phase: "00"
+    wave: 2
+    skill: "builtin:auditor"
+    dependsOn:
+      - researcher
+    tag: auditor
+    prompt: >-
+      ## Auditor Task
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/auditor' })
+      2. EXECUTE the loaded skill's methodology: read research findings, identify requirements and risks
+      3. STORE requirements via memory('remember', { path: '/requirement/...' }) and concerns via memory('remember', { path: '/goal/G-X/concern/...' })
+
+      Acceptance criteria:
+
+      - Requirements captured via memory('remember', { path: '/requirement/...' })
+
+      - Concerns raised via memory('remember', { path: '/goal/G-X/concern/...' })
+    validation:
+      checkType: memory-exists
+      target: "project:requirements"
+      errorTemplate: "No requirements found."
+      instructionTemplate: "The auditor must call memory('remember', { path: '/requirement/...' }) before this gate can complete — ensure the auditor agent has run."
+    requiredOutputs:
+      - checkType: memory-exists
+        target: "project:requirements"
+        errorTemplate: "No requirements found."
+        instructionTemplate: "Call memory('remember', { path: '/requirement/...' }) before completing."
+
+  # Wave 3: Planner (seed)
+  - id: planner
+    type: agent
+    role: seed
+    phase: "00"
+    wave: 3
+    skill: "builtin:planner"
+    dependsOn:
+      - auditor
+    tag: planner
+    prompt: >-
+      ## Planner Task
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/planner' })
+      2. EXECUTE the loaded skill's methodology: read research findings and requirements, produce task definitions
+      3. STORE plan by calling task('plan') directly with task definitions
+
+      Acceptance criteria:
+
+      - task('plan') called with task definitions
+
+      - Tasks created with proper dependencies and acceptance criteria
+    validation:
+      checkType: index-no-gate
+      target: "task:"
+      errorTemplate: "No execution tasks found."
+      instructionTemplate: "Spawn a planner agent via memory('recall', { path: '/skill/planner' }) — it must call task('plan') before this gate can complete."
+    requiredOutputs:
+      - checkType: index-no-gate
+        target: "task:"
+        errorTemplate: "No execution tasks found."
+        instructionTemplate: "Call task('plan') before completing."
+
+  # Implementation — executes the planner's output
+  - id: implementation
+    type: spawner
+    role: post-plan
+    phase: null
+    wave: null
+    skill: null
+    dependsOn:
+      - planner
+    tag: implementation
+    prompt: >-
+      Execute the planned tasks. The planner has decomposed the goal into
+      implementation tasks — this activity creates and coordinates their execution.
+    validation: null
+
+  # QA Gate (post-plan)
+  - id: qa-gate
+    type: agent
+    role: post-plan
+    phase: null
+    wave: null
+    skill: "builtin:qa"
+    dependsOn:
+      - "*"
+    tag: qa
+    prompt: >-
+      ## QA Gate
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/qa' })
+      2. EXECUTE the skill: run full test suite, verify build, check acceptance criteria
+      3. STORE results to qa:latest memory
+
+      Acceptance criteria:
+
+      - qa:latest memory exists with current test pass/fail counts
+
+      - Build passes with 0 errors
+
+      - All phase acceptance criteria verified by QA agent
+    validation:
+      checkType: memory-exists
+      target: "qa:latest"
+      errorTemplate: "qa:latest memory not found."
+      instructionTemplate: "Spawn a QA agent via memory('recall', { path: '/skill/qa' }) — it must write qa:latest before this gate can complete."
+
+  # Self-Reflector Gate (post-plan)
+  - id: self-reflector-gate
+    type: agent
+    role: post-plan
+    phase: null
+    wave: null
+    skill: "builtin:self-reflector"
+    dependsOn:
+      - qa-gate
+    tag: self-reflector
+    prompt: >-
+      ## Self-Reflector Gate
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/self-reflector' })
+      2. EXECUTE the skill: read execution logs and QA findings, compare plan vs reality
+      3. STORE retrospective and belief updates
+
+      Acceptance criteria:
+
+      - Retrospective stored as learn:retro-*
+
+      - Beliefs updated if applicable
+    validation:
+      checkType: index-prefix
+      target: "learn:retro-{goalShort}-"
+      errorTemplate: "No learn:retro-{goalShort}-* memory found."
+      instructionTemplate: "Spawn a self-reflector agent via memory('recall', { path: '/skill/self-reflector' }) — it must store a retrospective before this gate can complete."
+
+  # Evolutionary Gate (post-plan)
+  - id: evolutionary-gate
+    type: agent
+    role: post-plan
+    phase: null
+    wave: null
+    skill: "builtin:evolutionary"
+    dependsOn:
+      - qa-gate
+      - self-reflector-gate
+    tag: evolutionary
+    prompt: >-
+      ## Evolutionary Gate
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/evolutionary' })
+      2. EXECUTE the skill: run knowledge base scan, update stale memories, detect skill drift, surface emergent patterns
+      3. STORE session as sessions:evolutionary-gNN
+
+      Acceptance criteria:
+
+      - Evolutionary scan completed
+
+      - Stale memories updated
+
+      - Session stored as sessions:evolutionary-gNN
+    validation:
+      checkType: index-prefix
+      target: "sessions:evolutionary-"
+      errorTemplate: "No sessions:evolutionary-* memory found."
+      instructionTemplate: "Spawn an evolutionary agent via memory('recall', { path: '/skill/evolutionary' }) — it must complete its scan before this gate can complete."
+
+  # Cartographer Gate (post-plan)
+  - id: cartographer-gate
+    type: agent
+    role: post-plan
+    phase: null
+    wave: null
+    skill: "builtin:cartographer"
+    dependsOn:
+      - qa-gate
+      - self-reflector-gate
+    tag: cartographer
+    prompt: >-
+      ## Cartographer Gate
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/cartographer' })
+      2. EXECUTE the skill: map knowledge connections, link orphans, identify gaps
+      3. STORE report as cartography:YYYY-MM-DD
+
+      Acceptance criteria:
+
+      - Cartography scan completed
+
+      - New links created for orphaned memories
+
+      - Report stored as cartography:YYYY-MM-DD
+    validation:
+      checkType: index-prefix
+      target: "cartography:"
+      errorTemplate: "No cartography:* memory found."
+      instructionTemplate: "Spawn a cartographer agent via memory('recall', { path: '/skill/cartographer' }) — it must complete its scan before this gate can complete."
+
+  # March Report Gate (post-plan)
+  - id: march-gate
+    type: agent
+    role: post-plan
+    phase: null
+    wave: null
+    skill: "builtin:march-reporter"
+    dependsOn:
+      - qa-gate
+      - self-reflector-gate
+    tag: march
+    prompt: >-
+      ## March Report Gate
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/march-reporter' })
+      2. EXECUTE the skill: produce a goal summary document in docs/reports/
+      3. STORE report and update session log
+
+      Acceptance criteria:
+
+      - March report written to docs/reports/
+
+      - Session log updated
+    validation:
+      checkType: filesystem-glob
+      target: "docs/reports/*.md"
+      errorTemplate: "No march report found in docs/reports/."
+      instructionTemplate: "Spawn a march reporter agent via memory('recall', { path: '/skill/march-reporter' }) — it must produce a report before this gate can complete."

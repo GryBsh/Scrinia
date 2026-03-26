@@ -12,7 +12,7 @@ RUN dotnet restore src/Scrinia.Server/Scrinia.Server.csproj && \
 FROM node:25-slim AS web-build
 WORKDIR /web
 COPY web/package*.json ./
-RUN npm ci
+RUN npm install
 COPY web/ .
 RUN npx tsc -b && npx vite build --outDir dist
 

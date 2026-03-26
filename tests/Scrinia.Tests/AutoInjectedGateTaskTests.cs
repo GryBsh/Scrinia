@@ -65,7 +65,10 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Assert — response should list the qa-gate task
-        result.Should().Contain("qa-gate",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            "PlanTasks should succeed");
+        parsed.Content.Should().Contain("qa-gate",
             "PlanTasks should always inject a qa-gate task");
 
         // Verify the qa-gate task was actually stored
@@ -118,14 +121,15 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Assert — all five gate tasks should be present
-        result.Should().Contain("qa-gate", "QA gate should always be injected");
-        result.Should().Contain("self-reflector-gate",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("qa-gate", "QA gate should always be injected");
+        parsed.Content.Should().Contain("self-reflector-gate",
             "self-reflector gate should always be injected");
-        result.Should().Contain("evolutionary-gate",
+        parsed.Content.Should().Contain("evolutionary-gate",
             "evolutionary gate should be injected for the last phase");
-        result.Should().Contain("cartographer-gate",
+        parsed.Content.Should().Contain("cartographer-gate",
             "cartographer gate should be injected for the last phase");
-        result.Should().Contain("march-gate",
+        parsed.Content.Should().Contain("march-gate",
             "march gate should be injected for the last phase");
     }
 
@@ -142,15 +146,16 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Assert — all gates should be injected regardless of phase position
-        result.Should().Contain("qa-gate",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("qa-gate",
             "QA gate should always be injected regardless of phase position");
-        result.Should().Contain("self-reflector-gate",
+        parsed.Content.Should().Contain("self-reflector-gate",
             "self-reflector gate should always be injected regardless of phase position");
-        result.Should().Contain("evolutionary-gate",
+        parsed.Content.Should().Contain("evolutionary-gate",
             "evolutionary gate should always be injected regardless of phase position");
-        result.Should().Contain("cartographer-gate",
+        parsed.Content.Should().Contain("cartographer-gate",
             "cartographer gate should always be injected regardless of phase position");
-        result.Should().Contain("march-gate",
+        parsed.Content.Should().Contain("march-gate",
             "march gate should always be injected regardless of phase position");
     }
 
@@ -166,7 +171,7 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         await _tools.PlanTasks("01", SingleTaskInput(),
             cancellationToken: CancellationToken.None);
 
-        // Assert — qa-gate should have "gate:qa" keyword
+        // Assert — qa-gate should have "tag:qa" keyword
         var store = MemoryStoreContext.Current!;
         var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
         var entries = store.LoadIndex(taskScope);
@@ -174,7 +179,7 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         var qaGateEntry = entries.FirstOrDefault(e => e.Name.Contains("qa-gate"));
         qaGateEntry.Should().NotBeNull("qa-gate task should exist in index");
         qaGateEntry!.Keywords.Should().NotBeNull("qa-gate should have keywords");
-        qaGateEntry.Keywords.Should().Contain("gate:qa",
+        qaGateEntry.Keywords.Should().Contain("tag:qa",
             "qa-gate task should have a 'gate:qa' keyword for filtering and identification");
     }
 }

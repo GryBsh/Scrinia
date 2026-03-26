@@ -60,7 +60,13 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
                 _retryOptions,
                 Logger,
                 ct);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
+                Logger.LogWarning("{Provider} embedding request failed: HTTP {StatusCode} — {Body}",
+                    ProviderName, (int)response.StatusCode, errorBody.Length > 500 ? errorBody[..500] : errorBody);
+                response.EnsureSuccessStatusCode();
+            }
 
             var vec = await ParseEmbeddingResponseAsync(response, ct);
             if (vec != null)

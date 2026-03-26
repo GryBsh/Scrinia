@@ -28,7 +28,7 @@ export default function DashboardPage() {
               key={check.name}
               className="flex items-center gap-2 text-sm"
             >
-              {check.status === 'ok' ? (
+              {check.status === 'ok' || check.status === 'closed' ? (
                 <CheckCircle className="w-4 h-4 text-green-500" />
               ) : (
                 <AlertCircle className="w-4 h-4 text-red-500" />

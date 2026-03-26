@@ -185,3 +185,69 @@ export interface ChatRequest {
 export interface ChatProvidersResponse {
   providers: string[];
 }
+
+// ── Workflow dashboard ──────────────────────────────────────────────────────
+
+export interface WorkflowSummary {
+  name: string;
+  seedActivityCount: number;
+  gateActivityCount: number;
+  isBuiltIn: boolean;
+}
+
+export interface WorkflowListResponse {
+  workflows: WorkflowSummary[];
+}
+
+export interface WorkflowContent {
+  name: string;
+  yamlContent: string;
+}
+
+export interface GoalSummary {
+  id: string;
+  description: string;
+  status: string;
+  workflowRef: string | null;
+  progressPercent: number;
+}
+
+export interface GoalListResponse {
+  goals: GoalSummary[];
+}
+
+export interface TaskSummary {
+  name: string;
+  status: string;
+  wave: number;
+  skill: string | null;
+  dependsOn: string[];
+  gateType: string | null;
+  description: string | null;
+}
+
+export interface GoalDetailResponse {
+  id: string;
+  description: string;
+  status: string;
+  workflowRef: string | null;
+  progressPercent: number;
+  phases: PhaseGroup[];
+}
+
+export interface PhaseGroup {
+  phaseId: string;
+  tasks: TaskSummary[];
+}
+
+export interface TaskListResponse {
+  tasks: TaskSummary[];
+}
+
+export interface TaskEvent {
+  goalId: string;
+  taskName: string;
+  oldStatus: string;
+  newStatus: string;
+  timestamp: string;
+}

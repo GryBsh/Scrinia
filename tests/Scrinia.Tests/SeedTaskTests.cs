@@ -44,11 +44,11 @@ public sealed class SeedTaskTests : IDisposable
         researcherEntry.Should().NotBeNull("goal('add') should create a researcher seed task");
         researcherEntry!.Keywords.Should().Contain("status:pending",
             "researcher task must have status:pending keyword");
-        researcherEntry.Keywords.Should().Contain("wave:0",
-            "researcher task must be wave 0 to run first");
+        researcherEntry.Keywords.Should().Contain("wave:1",
+            "researcher task must be wave 1 to run after agent-specialist");
         researcherEntry.Keywords.Should().Contain("phase:00",
             "researcher task must have phase:00 keyword");
-        researcherEntry.Keywords.Should().Contain("gate:researcher",
+        researcherEntry.Keywords.Should().Contain("tag:researcher",
             "researcher task must have gate:researcher keyword");
     }
 
@@ -70,32 +70,41 @@ public sealed class SeedTaskTests : IDisposable
         var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
         var entries = store.LoadIndex(taskScope);
 
-        // Researcher (wave 0 — research first for full context)
+        // Agent-specialist (wave 0 — assess skill fit first)
+        var agentSpecialistEntry = entries.FirstOrDefault(e => e.Name.Contains("agent-specialist"));
+        agentSpecialistEntry.Should().NotBeNull("goal('add') should create an agent-specialist seed task");
+        agentSpecialistEntry!.Keywords.Should().Contain("wave:0");
+        agentSpecialistEntry.Keywords.Should().Contain("phase:00");
+        agentSpecialistEntry.Keywords.Should().Contain("tag:agent-specialist");
+
+        // Researcher (wave 1, depends on agent-specialist)
         var researcherEntry = entries.FirstOrDefault(e => e.Name.Contains("researcher"));
         researcherEntry.Should().NotBeNull("goal('add') should create a researcher seed task");
-        researcherEntry!.Keywords.Should().Contain("wave:0");
+        researcherEntry!.Keywords.Should().Contain("wave:1");
         researcherEntry.Keywords.Should().Contain("phase:00");
-        researcherEntry.Keywords.Should().Contain("gate:researcher");
+        researcherEntry.Keywords.Should().Contain("tag:researcher");
+        researcherEntry.Keywords.Should().Contain(k => k.StartsWith("depends_on:") && k.Contains("agent-specialist"),
+            "researcher task must depend on agent-specialist");
 
-        // Auditor (wave 1, depends on researcher)
+        // Auditor (wave 2, depends on researcher)
         var auditorEntry = entries.FirstOrDefault(e => e.Name.Contains("auditor"));
         auditorEntry.Should().NotBeNull("goal('add') should create an auditor seed task");
         auditorEntry!.Keywords.Should().Contain("status:pending");
-        auditorEntry.Keywords.Should().Contain("wave:1",
-            "auditor task must be wave 1 to run after researcher");
+        auditorEntry.Keywords.Should().Contain("wave:2",
+            "auditor task must be wave 2 to run after researcher");
         auditorEntry.Keywords.Should().Contain("phase:00");
-        auditorEntry.Keywords.Should().Contain("gate:auditor");
+        auditorEntry.Keywords.Should().Contain("tag:auditor");
         auditorEntry.Keywords.Should().Contain(k => k.StartsWith("depends_on:") && k.Contains("researcher"),
             "auditor task must depend on researcher");
 
-        // Planner (wave 2, depends on auditor)
+        // Planner (wave 3, depends on auditor)
         var plannerEntry = entries.FirstOrDefault(e => e.Name.Contains("planner"));
         plannerEntry.Should().NotBeNull("goal('add') should create a planner seed task");
         plannerEntry!.Keywords.Should().Contain("status:pending");
-        plannerEntry.Keywords.Should().Contain("wave:2",
-            "planner task must be wave 2 to run after auditor");
+        plannerEntry.Keywords.Should().Contain("wave:3",
+            "planner task must be wave 3 to run after auditor");
         plannerEntry.Keywords.Should().Contain("phase:00");
-        plannerEntry.Keywords.Should().Contain("gate:planner");
+        plannerEntry.Keywords.Should().Contain("tag:planner");
         plannerEntry.Keywords.Should().Contain(k => k.StartsWith("depends_on:") && k.Contains("auditor"),
             "planner task must depend on auditor");
     }
@@ -113,12 +122,19 @@ public sealed class SeedTaskTests : IDisposable
             null, null, cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().Contain("Researcher task created",
-            "goal('add') response must mention the researcher task was created");
-        result.Should().Contain("Auditor and planner seed tasks queued",
-            "goal('add') response must mention auditor and planner tasks were queued");
-        result.Should().Contain("task('next')",
-            "goal('add') response must mention task('next') to continue");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            "goal('add') response should be successful");
+        parsed.Content.Should().Contain("Seed tasks created",
+            "goal('add') response must mention seed tasks were created");
+        parsed.Content.Should().Contain("researcher",
+            "goal('add') response must mention the researcher seed task");
+        parsed.Content.Should().Contain("auditor",
+            "goal('add') response must mention the auditor seed task");
+        parsed.Content.Should().Contain("planner",
+            "goal('add') response must mention the planner seed task");
+        parsed.Instruction.Should().Contain("task('next')",
+            "goal('add') instruction must mention task('next') to continue");
     }
 
     // ── Onboarder seed task tests (plan 'init') ──────────────────────────────
@@ -148,7 +164,7 @@ public sealed class SeedTaskTests : IDisposable
             "onboarder task must be wave 0");
         onboarderEntry.Keywords.Should().Contain("phase:init",
             "onboarder task must have phase:init keyword");
-        onboarderEntry.Keywords.Should().Contain("gate:onboarder",
+        onboarderEntry.Keywords.Should().Contain("tag:onboarder",
             "onboarder task must have gate:onboarder keyword");
     }
 
@@ -183,7 +199,10 @@ public sealed class SeedTaskTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().Contain("Onboarder task created",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            "project_init response should be successful");
+        parsed.Content.Should().Contain("Onboarder task created",
             "project_init response with existing code must mention the onboarder task");
     }
 }

@@ -7,11 +7,137 @@ services:
       - "1754:8080"
     volumes:
       - scrinium-data:/data
+    env_file: .env
     environment:
+      # ── Data & Storage ─────────────────────────────────────────────────
       - Scrinia__DataDir=/data
-      # Uncomment to enable Vulkan GPU-accelerated embeddings (requires GPU passthrough)
+      # Custom store paths (default store auto-created at {DataDir}/stores/default)
+      # - Scrinia__Stores__default=/data/stores/default
+      # - Scrinia__Stores__project2=/data/stores/project2
+
+      # ── Plugins ─────────────────────────────────────────────────────────
+      # Plugin directory (default: {DataDir}/plugins)
+      # - Scrinia__PluginsDir=/data/plugins
+
+      # ── Embeddings ───────────────────────────────────────────────────────
+      # Provider: model2vec (default, local), ollama, openai, voyageai, azure, google, none
+      # - Scrinia__Embeddings__Provider=model2vec
+      #
+      # Semantic search weight (0.0 = keyword only, higher = more semantic, default: 50.0)
+      # - Scrinia__Embeddings__SemanticWeight=50.0
+      #
+      # Enable Vulkan GPU-accelerated embeddings (requires GPU passthrough below)
       # - Scrinia__Embeddings__Vulkan=true
+      #
+      # ── Ollama (local)
+      # - Scrinia__Embeddings__Provider=ollama
+      # - Scrinia__Embeddings__OllamaBaseUrl=http://host.docker.internal:11434
+      # - Scrinia__Embeddings__OllamaModel=all-minilm
+      #
+      # ── OpenAI
+      # - Scrinia__Embeddings__Provider=openai
+      # - Scrinia__Embeddings__OpenAiApiKey=sk-...
+      # - Scrinia__Embeddings__OpenAiModel=text-embedding-3-small
+      # - Scrinia__Embeddings__OpenAiBaseUrl=https://api.openai.com/v1
+      #
+      # ── Voyage AI
+      # - Scrinia__Embeddings__Provider=voyageai
+      # - Scrinia__Embeddings__VoyageAiApiKey=pa-...
+      # - Scrinia__Embeddings__VoyageAiModel=voyage-3.5
+      # - Scrinia__Embeddings__VoyageAiBaseUrl=https://api.voyageai.com/v1
+      #
+      # ── Azure AI Foundry
+      # - Scrinia__Embeddings__Provider=azure
+      # - Scrinia__Embeddings__AzureEndpoint=https://myresource.openai.azure.com
+      # - Scrinia__Embeddings__AzureApiKey=...
+      # - Scrinia__Embeddings__AzureDeployment=text-embedding-3-small
+      # - Scrinia__Embeddings__AzureModel=text-embedding-3-small
+      # - Scrinia__Embeddings__AzureApiVersion=2024-10-21
+      # - Scrinia__Embeddings__AzureUseV1=false
+      #
+      # ── Google Gemini
+      # - Scrinia__Embeddings__Provider=google
+      # - Scrinia__Embeddings__GoogleApiKey=AIza...
+      # - Scrinia__Embeddings__GoogleModel=gemini-embedding-001
+      # - Scrinia__Embeddings__GoogleBaseUrl=https://generativelanguage.googleapis.com
+      # - Scrinia__Embeddings__GoogleDimensions=0
+      #
+      # Embedding resilience settings
+      # - Scrinia__Embeddings__MaxRetries=3
+      # - Scrinia__Embeddings__RetryBaseDelayMs=200
+      # - Scrinia__Embeddings__CircuitBreakerThreshold=5
+      # - Scrinia__Embeddings__CircuitBreakerCooldownSeconds=30
+
+      # ── Chat Providers ─────────────────────────────────────────────────
+      # Available providers (comma-separated): anthropic, openai, gemini, none
+      # - Scrinia__Chat__Providers=none
+      #
+      # Anthropic (Claude)
+      # - Scrinia__Chat__AnthropicApiKey=sk-ant-...
+      # - Scrinia__Chat__AnthropicModel=claude-sonnet-4-20250514
+      # - Scrinia__Chat__AnthropicBaseUrl=https://api.anthropic.com
+      #
+      # OpenAI (GPT)
+      # - Scrinia__Chat__OpenAiApiKey=sk-...
+      # - Scrinia__Chat__OpenAiModel=gpt-4o-mini
+      # - Scrinia__Chat__OpenAiBaseUrl=https://api.openai.com/v1
+      #
+      # Google Gemini
+      # - Scrinia__Chat__GeminiApiKey=AIza...
+      # - Scrinia__Chat__GeminiModel=gemini-2.0-flash
+      # - Scrinia__Chat__GeminiBaseUrl=https://generativelanguage.googleapis.com
+      #
+      # Shared chat settings
+      # - Scrinia__Chat__MaxTokens=4096
+      # - Scrinia__Chat__Temperature=0.7
+
+      # ── Resilience ─────────────────────────────────────────────────────
+      # Chat provider retry and circuit breaker settings
+      # - Scrinia__Chat__MaxRetries=3
+      # - Scrinia__Chat__RetryBaseDelayMs=200
+      # - Scrinia__Chat__CircuitBreakerThreshold=5
+      # - Scrinia__Chat__CircuitBreakerCooldownSeconds=30
+
+      # ── Rate Limiting ──────────────────────────────────────────────────
+      # API rate limit (per client, fixed window)
+      # - Scrinia__RateLimit__PermitLimit=100
+      # - Scrinia__RateLimit__WindowSeconds=60
+
+      # ── CORS ───────────────────────────────────────────────────────────
+      # Allowed origins for cross-origin requests (array, semicolon in env)
+      # - Scrinia__CorsOrigins__0=http://localhost:5173
+      # - Scrinia__CorsOrigins__1=https://my-app.example.com
+
+      # ── OpenAPI ────────────────────────────────────────────────────────
+      # Expose Swagger/OpenAPI endpoint in production (default: dev only)
+      # - Scrinia__ExposeOpenApi=false
     restart: unless-stopped
 
+    # ── GPU Passthrough (for Vulkan embeddings) ────────────────────────
+    #
+    # NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    #
+    # Intel/AMD GPU (via /dev/dri):
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+
 volumes:
+  
+  # use local directory for easier access:
   scrinium-data:
+     driver: local
+     driver_opts:
+       type: none
+       device: ${Scrinia_DataPath}
+       o: bind
+

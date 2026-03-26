@@ -108,9 +108,7 @@ if (!pluginProvidesEmbeddings)
         Directory.CreateDirectory(embeddingsDir);
 
         var embeddingOptions = new EmbeddingOptions();
-        var weightStr = builder.Configuration["Scrinia:Embeddings:SemanticWeight"];
-        if (weightStr is not null && double.TryParse(weightStr, out double w))
-            embeddingOptions.SemanticWeight = w;
+        builder.Configuration.GetSection("Scrinia:Embeddings").Bind(embeddingOptions);
 
         var embeddingProvider = EmbeddingProviderFactory.Create(
             embeddingOptions, modelsDir,
@@ -156,6 +154,7 @@ chatOptions.Temperature = Math.Clamp(chatOptions.Temperature, 0.0, 2.0);
 if (chatOptions.MaxTokens <= 0) chatOptions.MaxTokens = 4096;
 builder.Services.AddSingleton(chatOptions);
 builder.Services.AddSingleton<Scrinia.Server.Chat.ChatProviderCache>();
+builder.Services.AddSingleton<TaskEventBroadcaster>();
 
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
 builder.Services.AddSingleton(sp =>
@@ -270,7 +269,7 @@ if (!keyStore.HasAnyKeys())
     var (rawKey, keyId, _) = keyStore.CreateKey(
         "admin", storeManager.StoreNames.ToArray(),
         ["read", "search", "store", "append", "forget", "copy",
-         "export", "import", "manage_keys"], "bootstrap");
+         "export", "import", "manage_keys", "health", "chat"], "bootstrap");
 
     // Write bootstrap key to a file (read once, then delete)
     string keyFile = Path.Combine(dataDir, "BOOTSTRAP_KEY");
@@ -396,6 +395,7 @@ app.MapMemoryEndpoints();
 app.MapKeyEndpoints();
 app.MapHealthEndpoints();
 app.MapChatEndpoints(chatOptions);
+app.MapWorkflowEndpoints();
 
 // Plugin endpoints
 var pluginGroup = app.MapGroup("/api/v1/plugins")

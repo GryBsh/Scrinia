@@ -1,12 +1,15 @@
 using System.ComponentModel;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using YamlDotNet.Serialization;
 
 namespace Scrinia.Mcp;
 
@@ -79,7 +82,8 @@ public sealed record GoalRecord(
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
-    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    NumberHandling = JsonNumberHandling.AllowReadingFromString)]
 [JsonSerializable(typeof(ProjectRecord))]
 [JsonSerializable(typeof(PlanRecord))]
 [JsonSerializable(typeof(TaskRecord))]
@@ -94,6 +98,15 @@ public sealed record GoalRecord(
 [JsonSerializable(typeof(SkillRecord[]))]
 [JsonSerializable(typeof(ResearchRecord[]))]
 [JsonSerializable(typeof(GoalRecord[]))]
+[JsonSerializable(typeof(WorkflowDefinition))]
+[JsonSerializable(typeof(WorkflowActivity))]
+[JsonSerializable(typeof(WorkflowActivity[]))]
+[JsonSerializable(typeof(GateValidation))]
+[JsonSerializable(typeof(GateValidation[]))]
+[JsonSerializable(typeof(SkillFileMeta))]
+[JsonSerializable(typeof(WorkflowFileMeta))]
+[JsonSerializable(typeof(AgentFileMeta))]
+[JsonSerializable(typeof(Dictionary<string,string>))]
 public partial class PlanningJsonContext : JsonSerializerContext;
 
 // ── Planning MCP tool class ──────────────────────────────────────────────────
@@ -144,15 +157,12 @@ public sealed class ScriniaProjectTools
 
     // ── Dispatchers ──────────────────────────────────────────────────────────
 
-    /// <summary>Dispatcher for plan('tasks'), plan('status'), and project_init.</summary>
-    [McpServerTool(Name = "plan"), Description(
-        "Project planning operations. Actions: 'tasks' (decompose phase into tasks), " +
-        "'status' (project progress and state), 'init' (initialize new project).")]
+    /// <summary>Dispatcher for task('plan'). Init and status moved to memory() dispatcher.
+    /// No longer exposed as an MCP tool; called internally via task('plan').</summary>
     public async Task<string> PlanDispatch(
-        [Description("Action: 'tasks', 'status', 'init'.")] string action,
+        [Description("Action: 'tasks'.")] string action,
         [Description("Phase ID for task decomposition (tasks).")] string? phaseId = null,
         [Description("Free-text task definitions (tasks).")] string? tasks = null,
-        [Description("Project context description (init).")] string? context = null,
         CancellationToken cancellationToken = default)
     {
         string act = action.Trim().ToLowerInvariant();
@@ -160,30 +170,21 @@ public sealed class ScriniaProjectTools
         {
             case "tasks":
                 if (string.IsNullOrWhiteSpace(phaseId))
-                    return "Error: plan('tasks') requires 'phaseId' parameter.";
+                    return ResponseBuilder.Error("task('plan') requires 'phaseId' parameter.").ToYaml();
                 if (string.IsNullOrWhiteSpace(tasks))
-                    return "Error: plan('tasks') requires 'tasks' parameter.";
+                    return ResponseBuilder.Error("task('plan') requires 'tasks' parameter.").ToYaml();
                 return await PlanTasks(phaseId, tasks, cancellationToken);
-            case "status":
-                return await PlanStatus(cancellationToken);
-            case "init":
-                if (string.IsNullOrWhiteSpace(context))
-                    return "Error: plan('init') requires 'context' parameter.";
-                return await ProjectInit(context, cancellationToken);
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'tasks', 'status', 'init'.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Use memory('remember', {{ path: '/project/...' }}) for init, memory('recall', {{ path: '/project/status' }}) for status. task('plan') is the only plan action.").ToYaml();
         }
     }
 
-    /// <summary>Dispatcher for requirement('add').</summary>
-    [McpServerTool(Name = "requirement"), Description(
-        "Manage project requirements. Actions: 'add' (store requirements with REQ-IDs), " +
-        "'resolve' (mark a requirement fulfilled), 'list' (show all requirements).")]
+    /// <summary>Internal dispatcher for requirement operations — delegates to PlanRequirements/RequirementResolve/RequirementList. Exposed via memory() dispatcher.</summary>
     public async Task<string> RequirementDispatch(
-        [Description("Action: 'add', 'resolve', or 'list'.")] string action,
-        [Description("Free-text requirements with REQ-IDs (add).")] string? requirements = null,
-        [Description("Requirement ID to resolve (resolve).")] string? id = null,
-        [Description("Evidence of requirement fulfillment (resolve).")] string? evidence = null,
+        string action,
+        string? requirements = null,
+        string? id = null,
+        string? evidence = null,
         CancellationToken cancellationToken = default)
     {
         string act = action.Trim().ToLowerInvariant();
@@ -191,47 +192,23 @@ public sealed class ScriniaProjectTools
         {
             case "add":
                 if (string.IsNullOrWhiteSpace(requirements))
-                    return "Error: requirement('add') requires 'requirements' parameter.";
+                    return ResponseBuilder.Error("requirement('add') requires 'requirements' parameter.").ToYaml();
                 return await PlanRequirements(requirements, cancellationToken);
             case "resolve":
                 if (string.IsNullOrWhiteSpace(id))
-                    return "Error: requirement('resolve') requires 'id' parameter (e.g., 'REQ-01').";
+                    return ResponseBuilder.Error("requirement('resolve') requires 'id' parameter (e.g., 'REQ-01').").ToYaml();
                 if (string.IsNullOrWhiteSpace(evidence))
-                    return "Error: requirement('resolve') requires 'evidence' parameter.";
-                try
-                {
-                    var store = CurrentStore;
-                    string reqText = await ReadMemoryAsync(store, "project:requirements", cancellationToken);
-                    string marker = $"[RESOLVED: {evidence}]";
-                    string updated = reqText.Replace(id, $"{id} {marker}");
-                    await WritePlanningMemoryAsync(store, "project:requirements", updated,
-                        archiveExisting: true, cancellationToken);
-                    return $"Requirement '{id}' resolved: {evidence}. project:requirements updated.";
-                }
-                catch (FileNotFoundException)
-                {
-                    return "Error: no requirements found. Call requirement('add') first.";
-                }
+                    return ResponseBuilder.Error("requirement('resolve') requires 'evidence' parameter.").ToYaml();
+                return await RequirementResolve(id, evidence, cancellationToken);
             case "list":
-                try
-                {
-                    var store = CurrentStore;
-                    string reqText = await ReadMemoryAsync(store, "project:requirements", cancellationToken);
-                    return reqText;
-                }
-                catch (FileNotFoundException)
-                {
-                    return "No requirements found. Call requirement('add') to add requirements.";
-                }
+                return await RequirementList(cancellationToken);
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'add', 'resolve', 'list'.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: 'add', 'resolve', 'list'.").ToYaml();
         }
     }
 
-    /// <summary>Dispatcher for skill('load') and skill('create').</summary>
-    [McpServerTool(Name = "skill"), Description(
-        "Manage specialist skills. Actions: 'load' (list or load a skill), " +
-        "'create' (create a reusable skill from scaffold).")]
+    /// <summary>Dispatcher for skill load and create operations.
+    /// No longer exposed as an MCP tool; called internally via memory() path routing.</summary>
     public async Task<string> SkillDispatch(
         [Description("Action: 'load' or 'create'.")] string action,
         [Description("Skill name (load — optional for listing, create — required).")] string? name = null,
@@ -248,13 +225,526 @@ public sealed class ScriniaProjectTools
                 return await SkillLoad(name, reconcile, cancellationToken);
             case "create":
                 if (string.IsNullOrWhiteSpace(name))
-                    return "Error: skill('create') requires 'name' parameter.";
+                    return ResponseBuilder.Error("memory('remember', { path: '/skill/...' }) requires 'name' in the path.").ToYaml();
                 if (string.IsNullOrWhiteSpace(scaffold))
-                    return "Error: skill('create') requires 'scaffold' parameter.";
+                    return ResponseBuilder.Error("memory('remember', { path: '/skill/...' }) requires 'scaffold' parameter.").ToYaml();
                 return await SkillCreate(name, scaffold, instructions, tools, cancellationToken);
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'load', 'create'.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: 'load', 'create'.").ToYaml();
         }
+    }
+
+    // ── Entity Dispatcher ─────────────────────────────────────────────────
+
+    /// <summary>Unified entity operations dispatcher — routes to existing internal methods.
+    /// No longer exposed as an MCP tool; called internally via memory() path routing.</summary>
+    public async Task<string> EntityDispatch(
+        [Description("Action: 'create', 'update', 'transition', 'show', 'list', 'search'.")] string action,
+        [Description("Entity type: 'goal', 'concern', 'requirement', 'project', 'workflow', 'file'.")] string type,
+        [Description("Entity description (create goal/concern/project).")] string? description = null,
+        [Description("Entity ID for operations on existing entities.")] string? id = null,
+        [Description("Target state for transitions (e.g., 'complete', 'resolved', 'fulfilled').")] string? to = null,
+        [Description("Concern severity: 'high', 'medium', 'low' (create concern).")] string? severity = null,
+        [Description("Phase scope for concerns.")] string? phase = null,
+        [Description("Requirements text with REQ-IDs (create requirement).")] string? requirements = null,
+        [Description("Outcome note (complete goal).")] string? outcome = null,
+        [Description("Resolution description (resolve concern).")] string? resolution = null,
+        [Description("Verification method: 'debugger', 'qa', 'manual' (resolve concern).")] string? verifiedBy = null,
+        [Description("Status filter for list (e.g., 'active', 'resolved').")] string? filter = null,
+        [Description("Search query string.")] string? query = null,
+        [Description("Evidence for requirement fulfillment.")] string? evidence = null,
+        [Description("Project context description (create project).")] string? context = null,
+        [Description("Workflow definition JSON (create/update workflow).")] string? definition = null,
+        [Description("Workflow name for goal creation (default: 'default').")] string? workflowRef = null,
+        CancellationToken cancellationToken = default)
+    {
+        // ── Validate type ────────────────────────────────────────────────────
+        string typeLower = type.Trim().ToLowerInvariant();
+        string? scriniaBaseDir = null;
+        try { scriniaBaseDir = GetScriniaBaseDir(CurrentStore); }
+        catch { /* ignore — no base dir available */ }
+        var mergedTypes = EntityTypeRegistry.GetMergedTypes(scriniaBaseDir);
+        if (!mergedTypes.ContainsKey(typeLower))
+        {
+            string validTypes = string.Join(", ", mergedTypes.Keys.Order());
+            return ResponseBuilder.Error($"Unknown entity type '{type}'. Valid types: {validTypes}.").ToYaml();
+        }
+
+        // ── Validate action ──────────────────────────────────────────────────
+        string act = action.Trim().ToLowerInvariant();
+        string[] validActions = ["create", "update", "transition", "show", "list", "search"];
+        if (!validActions.Contains(act))
+            return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: create, update, transition, show, list, search.").ToYaml();
+
+        // ── Route ────────────────────────────────────────────────────────────
+        switch (act)
+        {
+            // ── CREATE ───────────────────────────────────────────────────────
+            case "create":
+                switch (typeLower)
+                {
+                    case "goal":
+                        if (string.IsNullOrWhiteSpace(description))
+                            return ResponseBuilder.Error("memory('remember', { path: '/goal/...' }) requires 'description' parameter.").ToYaml();
+                        return await GoalUpdate("add", description, goalId: null, outcome: null, workflowRef: workflowRef, cancellationToken);
+
+                    case "concern":
+                        if (string.IsNullOrWhiteSpace(description))
+                            return ResponseBuilder.Error("memory('remember', { path: '/concern/...' }) requires 'description' parameter.").ToYaml();
+                        if (string.IsNullOrWhiteSpace(severity))
+                            return ResponseBuilder.Error("memory('remember', { path: '/concern/...' }) requires 'severity' parameter.").ToYaml();
+                        if (string.IsNullOrWhiteSpace(phase))
+                            return ResponseBuilder.Error("memory('remember', { path: '/concern/...' }) requires 'phase' parameter.").ToYaml();
+                        return await ConcernAdd(description, severity, phase, id, cancellationToken);
+
+                    case "requirement":
+                        if (string.IsNullOrWhiteSpace(requirements))
+                            return ResponseBuilder.Error("memory('remember', { path: '/requirement/...' }) requires 'requirements' parameter.").ToYaml();
+                        return await PlanRequirements(requirements, cancellationToken);
+
+                    case "project":
+                        string? projectDesc = description ?? context;
+                        if (string.IsNullOrWhiteSpace(projectDesc))
+                            return ResponseBuilder.Error("memory('remember', { path: '/project/...' }) requires 'description' or 'context' parameter.").ToYaml();
+                        return await ProjectInit(projectDesc, cancellationToken);
+
+                    case "workflow":
+                        return await CreateOrUpdateWorkflow("create", definition, cancellationToken);
+
+                    case "file":
+                        return ResponseBuilder.Error("File entities are computed views — use codeRefs on memory('remember') to track files.").ToYaml();
+
+                    default:
+                        return await UserEntityCreate(typeLower, description, id, mergedTypes, cancellationToken);
+                }
+
+            // ── UPDATE ───────────────────────────────────────────────────────
+            case "update":
+                switch (typeLower)
+                {
+                    case "goal":
+                        if (string.IsNullOrWhiteSpace(id))
+                            return ResponseBuilder.Error("memory('remember', { path: '/goal/{id}' }) requires 'id' parameter.").ToYaml();
+                        if (string.IsNullOrWhiteSpace(description))
+                            return ResponseBuilder.Error("memory('remember', { path: '/goal/{id}' }) requires 'description' parameter.").ToYaml();
+                        return await GoalUpdate("edit", description, goalId: id, outcome: null, cancellationToken: cancellationToken);
+
+                    case "workflow":
+                        return await CreateOrUpdateWorkflow("update", definition, cancellationToken);
+
+                    case "file":
+                        return ResponseBuilder.Error("File entities are computed views — use codeRefs on memory('remember') to track files.").ToYaml();
+
+                    default:
+                        return ResponseBuilder.Error($"Update is not supported for type '{type}'. Supported types: goal, workflow.").ToYaml();
+                }
+
+            // ── TRANSITION ───────────────────────────────────────────────────
+            case "transition":
+            {
+                if (typeLower == "file")
+                    return ResponseBuilder.Error("File entities are computed views — use codeRefs on memory('remember') to track files.").ToYaml();
+
+                if (string.IsNullOrWhiteSpace(to))
+                    return ResponseBuilder.Error($"memory('transition', {{ path: '/{type}/...' }}) requires 'to' parameter.").ToYaml();
+
+                // Validate transition against registry (built-in or user-defined)
+                var typeDef = mergedTypes.GetValueOrDefault(typeLower);
+                if (typeDef is null)
+                    return ResponseBuilder.Error($"Unknown entity type '{type}'.").ToYaml();
+                string toLower = to.Trim().ToLowerInvariant();
+                var transition = typeDef.Transitions.FirstOrDefault(t =>
+                    t.ToState.Equals(toLower, StringComparison.OrdinalIgnoreCase));
+                if (transition is null)
+                {
+                    string validStates = string.Join(", ", typeDef.Transitions.Select(t => t.ToState).Distinct());
+                    return ResponseBuilder.Error($"memory('transition', {{ path: '/{type}/...', to: '{to}' }}) — invalid target state. Valid transitions: {validStates}.").ToYaml();
+                }
+
+                switch (typeLower)
+                {
+                    case "goal":
+                        if (!toLower.Equals("complete", StringComparison.OrdinalIgnoreCase))
+                            return ResponseBuilder.Error("memory('transition', { path: '/goal/...' }) only supports to: 'complete'.").ToYaml();
+                        if (string.IsNullOrWhiteSpace(id))
+                            return ResponseBuilder.Error("memory('transition', { path: '/goal/{id}', to: 'complete' }) requires 'id' parameter.").ToYaml();
+                        return await GoalUpdate("complete", description: null, goalId: id, outcome, cancellationToken: cancellationToken);
+
+                    case "concern":
+                        if (!toLower.Equals("resolved", StringComparison.OrdinalIgnoreCase))
+                            return ResponseBuilder.Error("memory('transition', { path: '/concern/...' }) only supports to: 'resolved'.").ToYaml();
+                    {
+                        var missing = new List<string>();
+                        if (string.IsNullOrWhiteSpace(id)) missing.Add("id");
+                        if (string.IsNullOrWhiteSpace(resolution)) missing.Add("resolution");
+                        if (string.IsNullOrWhiteSpace(verifiedBy)) missing.Add("verifiedBy");
+                        if (missing.Count > 0)
+                            return ResponseBuilder.Error($"memory('transition', {{ path: '/concern/...', to: 'resolved' }}) requires '{string.Join("', '", missing)}' parameters.").ToYaml();
+                        // ConcernResolve expects a qualified name (concern:xxx) or raw name
+                        string concernName = id!.StartsWith("concern:", StringComparison.OrdinalIgnoreCase) ? id : $"concern:{id}";
+                        return await ConcernResolve(concernName, resolution!, verifiedBy!, cancellationToken);
+                    }
+
+                    case "requirement":
+                        if (!toLower.Equals("fulfilled", StringComparison.OrdinalIgnoreCase))
+                            return ResponseBuilder.Error("memory('transition', { path: '/requirement/...' }) only supports to: 'fulfilled'.").ToYaml();
+                    {
+                        var missing = new List<string>();
+                        if (string.IsNullOrWhiteSpace(id)) missing.Add("id");
+                        if (string.IsNullOrWhiteSpace(evidence)) missing.Add("evidence");
+                        if (missing.Count > 0)
+                            return ResponseBuilder.Error($"memory('transition', {{ path: '/requirement/...', to: 'fulfilled' }}) requires '{string.Join("', '", missing)}' parameters.").ToYaml();
+                        return await RequirementResolve(id!, evidence!, cancellationToken);
+                    }
+
+                    default:
+                        return await UserEntityTransition(typeLower, id, toLower, transition, description, cancellationToken);
+                }
+            }
+
+            // ── SHOW ─────────────────────────────────────────────────────────
+            case "show":
+                switch (typeLower)
+                {
+                    case "project":
+                        return await PlanStatus(cancellationToken);
+
+                    case "goal":
+                        if (!string.IsNullOrWhiteSpace(id))
+                        {
+                            // Show specific goal — extract from GoalList output
+                            string listOutput = await GoalUpdate("list", description: null, goalId: null, outcome: null, cancellationToken: cancellationToken);
+                            // Find the line matching the requested goal ID
+                            string searchId = id.Trim();
+                            var lines = listOutput.Split('\n');
+                            foreach (string line in lines)
+                            {
+                                if (line.Contains($"[{searchId}]", StringComparison.OrdinalIgnoreCase) ||
+                                    line.Contains($"[{searchId.ToUpperInvariant()}]", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    return ResponseBuilder.Success(line.Trim()).WithPath($"goal:{searchId}").WithAction("shown").ToYaml();
+                                }
+                                // Short-form match (G-N matches G-N-xxx)
+                                if (ShortGoalIdPattern.IsMatch(searchId) &&
+                                    System.Text.RegularExpressions.Regex.IsMatch(line,
+                                        $@"\[{Regex.Escape(searchId)}(-[a-fA-F0-9]+)?\]",
+                                        RegexOptions.IgnoreCase))
+                                {
+                                    return ResponseBuilder.Success(line.Trim()).WithPath($"goal:{searchId}").WithAction("shown").ToYaml();
+                                }
+                            }
+                            return ResponseBuilder.Error($"Goal '{id}' not found. Use memory('list', {{ path: '/goal/' }}) to see all goals.").ToYaml();
+                        }
+                        // No ID — show all goals
+                        return await GoalUpdate("list", description: null, goalId: null, outcome: null, cancellationToken: cancellationToken);
+
+                    case "concern":
+                        if (!string.IsNullOrWhiteSpace(id))
+                        {
+                            // Show specific concern content
+                            try
+                            {
+                                var store = CurrentStore;
+                                string concernName = id.StartsWith("concern:", StringComparison.OrdinalIgnoreCase) ? id : $"concern:{id}";
+                                string content = await ReadMemoryAsync(store, concernName, cancellationToken);
+                                return ResponseBuilder.Success(Truncate(content)).WithPath($"concern:{id}").WithAction("shown").ToYaml();
+                            }
+                            catch (FileNotFoundException)
+                            {
+                                return ResponseBuilder.Error($"Concern '{id}' not found.").ToYaml();
+                            }
+                        }
+                        // No ID — list all active concerns
+                        return await ConcernList(phaseFilter: null, statusFilter: null, cancellationToken);
+
+                    case "requirement":
+                        return await RequirementList(cancellationToken);
+
+                    case "workflow":
+                    {
+                        string workflowName = !string.IsNullOrWhiteSpace(id) ? id.Trim() : "default";
+                        var store = CurrentStore;
+                        var (wf, wfWarn) = await ResolveWorkflowAsync(store, workflowName, cancellationToken);
+                        string json = JsonSerializer.Serialize(wf, PlanningJsonContext.Default.WorkflowDefinition);
+                        string source = wf == WorkflowDefinition.DefaultGoalWorkflow ? " (built-in)" : " (override)";
+                        var wfResponse = ResponseBuilder.Success($"Workflow: {wf.Name}{source}\n\n{json}")
+                            .WithPath($"workflow:{wf.Name}")
+                            .WithAction("shown");
+                        if (wfWarn is not null)
+                            wfResponse = wfResponse.WithActionNeeded(wfWarn);
+                        return wfResponse.ToYaml();
+                    }
+
+                    case "file":
+                        return FileShow(id);
+
+                    default:
+                        return await UserEntityShow(typeLower, id, cancellationToken);
+                }
+
+            // ── LIST ─────────────────────────────────────────────────────────
+            case "list":
+                switch (typeLower)
+                {
+                    case "goal":
+                        return await GoalUpdate("list", description: null, goalId: null, outcome: null, cancellationToken: cancellationToken);
+
+                    case "concern":
+                        return await ConcernList(phaseFilter: null, statusFilter: filter, cancellationToken);
+
+                    case "requirement":
+                        return await RequirementList(cancellationToken);
+
+                    case "workflow":
+                    {
+                        var store = CurrentStore;
+                        var overrides = new List<string>();
+                        try
+                        {
+                            var (wfScope, _) = store.ParseQualifiedName("workflow:placeholder");
+                            var entries = store.LoadIndex(wfScope);
+                            foreach (var entry in entries)
+                                overrides.Add(entry.Name);
+                        }
+                        catch { /* workflow topic not yet created — no overrides */ }
+
+                        var sb = new System.Text.StringBuilder();
+                        sb.AppendLine("Available workflows:");
+                        sb.AppendLine($"  - default (built-in: {WorkflowDefinition.DefaultGoalWorkflow.Name})");
+                        foreach (var name in overrides)
+                            sb.AppendLine($"  - {name} (override)");
+                        return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml();
+                    }
+
+                    case "file":
+                        return FileList(query);
+
+                    default:
+                        return UserEntityList(typeLower, filter);
+                }
+
+            // ── SEARCH ───────────────────────────────────────────────────────
+            case "search":
+            {
+                if (typeLower == "file")
+                    return FileList(query);
+
+                if (string.IsNullOrWhiteSpace(query))
+                    return ResponseBuilder.Error("Search requires 'query' parameter.").ToYaml();
+
+                // Search entity-classified scopes only: goal lives in project:context,
+                // concerns in concern:*, requirements in project:requirements.
+                // Use the memory search with scopes restricted to entity topics.
+                var memoryTools = new ScriniaMcpTools();
+                return await memoryTools.Search(query, scopes: null, limit: 20,
+                    excludeTopics: "task,plan,learn,sessions,skill,backlog,research,checkpoint,testing,server,qa,quality,security,cartography,bugs,chaos,benchmark,landscape,feedback",
+                    cancellationToken);
+            }
+
+            default:
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: create, update, transition, show, list, search.").ToYaml();
+        }
+    }
+
+    // ── User-defined entity helpers ─────────────────────────────────────────
+
+    /// <summary>
+    /// Creates an instance of a user-defined entity type by storing a memory
+    /// at the entity topic path with status/state keywords.
+    /// </summary>
+    private async Task<string> UserEntityCreate(
+        string typeLower, string? description, string? id,
+        IReadOnlyDictionary<string, EntityTypeDefinition> mergedTypes,
+        CancellationToken cancellationToken)
+    {
+        if (!mergedTypes.TryGetValue(typeLower, out var typeDef))
+            return ResponseBuilder.Error($"Unknown entity type '{typeLower}'.").ToYaml();
+
+        if (string.IsNullOrWhiteSpace(description))
+            return ResponseBuilder.Error($"memory('remember', {{ path: '/{typeLower}/...' }}) requires 'description' parameter.").ToYaml();
+
+        var store = CurrentStore;
+
+        // Generate ID if not provided
+        string entityId = id ?? DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        string defaultState = typeDef.DefaultState ?? typeDef.ValidStates.FirstOrDefault() ?? "created";
+
+        // Build content
+        string content =
+            $"## {typeLower}: {entityId}\n" +
+            $"**Description:** {description}\n" +
+            $"**Status:** {defaultState}\n" +
+            $"**Created:** {DateTimeOffset.UtcNow:o}\n";
+
+        string qualifiedName = $"entity_{typeLower}:{entityId}";
+
+        // Extract keywords from description
+        var (autoKeywords, _) = Scrinia.Core.Search.TextAnalysis.AnalyzeText(description);
+        string[] explicitKeywords = [$"status:{defaultState}", $"type:{typeLower}"];
+        string[] mergedKeywords = Scrinia.Core.Search.TextAnalysis.MergeKeywords(explicitKeywords, autoKeywords);
+
+        await WritePlanningMemoryAsync(store, qualifiedName, content,
+            archiveExisting: false,
+            keywords: mergedKeywords,
+            cancellationToken);
+
+        return ResponseBuilder.Success($"Created {typeLower} '{entityId}' [status:{defaultState}].")
+            .WithPath($"{typeLower}:{entityId}")
+            .WithAction("created")
+            .ToYaml();
+    }
+
+    /// <summary>
+    /// Transitions a user-defined entity to a new state, validating against the
+    /// transition definition's required parameters.
+    /// </summary>
+    private async Task<string> UserEntityTransition(
+        string typeLower, string? id, string toLower,
+        TransitionDefinition transition, string? description,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+            return ResponseBuilder.Error($"memory('transition', {{ path: '/{typeLower}/...', to: '{toLower}' }}) requires 'id' parameter.").ToYaml();
+
+        var store = CurrentStore;
+        string qualifiedName = $"entity_{typeLower}:{id}";
+
+        // Read existing content
+        string existingContent;
+        try
+        {
+            existingContent = await ReadMemoryAsync(store, qualifiedName, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return ResponseBuilder.Error($"{typeLower} '{id}' not found.").ToYaml();
+        }
+
+        // Validate from-state if transition is not wildcard
+        if (transition.FromState != "*")
+        {
+            // Extract current status from keywords
+            var (scope, _) = store.ParseQualifiedName(qualifiedName);
+            var entries = store.LoadIndex(scope);
+            var entry = entries.FirstOrDefault(e => e.Name.Equals(id, StringComparison.OrdinalIgnoreCase));
+            if (entry is not null)
+            {
+                string? currentStatus = entry.Keywords?
+                    .FirstOrDefault(k => k.StartsWith("status:", StringComparison.OrdinalIgnoreCase))
+                    ?["status:".Length..];
+                if (currentStatus is not null &&
+                    !currentStatus.Equals(transition.FromState, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ResponseBuilder.Error(
+                        $"Cannot transition {typeLower} '{id}' from '{currentStatus}' to '{toLower}'. " +
+                        $"Transition requires from-state '{transition.FromState}'.").ToYaml();
+                }
+            }
+        }
+
+        // Update content with new status
+        string updatedContent = existingContent + $"\n**Transitioned to:** {toLower}\n**At:** {DateTimeOffset.UtcNow:o}\n";
+        if (!string.IsNullOrWhiteSpace(description))
+            updatedContent += $"**Note:** {description}\n";
+
+        // Update keywords: replace status keyword
+        var (entryScope, _) = store.ParseQualifiedName(qualifiedName);
+        var existingEntries = store.LoadIndex(entryScope);
+        var existingEntry = existingEntries.FirstOrDefault(e => e.Name.Equals(id, StringComparison.OrdinalIgnoreCase));
+        var updatedKeywords = (existingEntry?.Keywords ?? [])
+            .Where(k => !k.StartsWith("status:", StringComparison.OrdinalIgnoreCase))
+            .Append($"status:{toLower}")
+            .ToArray();
+
+        await WritePlanningMemoryAsync(store, qualifiedName, updatedContent,
+            archiveExisting: true,
+            keywords: updatedKeywords,
+            cancellationToken);
+
+        return ResponseBuilder.Success($"Transitioned {typeLower} '{id}' to '{toLower}'.")
+            .WithPath($"{typeLower}:{id}")
+            .WithAction("transitioned")
+            .ToYaml();
+    }
+
+    /// <summary>
+    /// Shows a user-defined entity instance or lists all instances if no ID given.
+    /// </summary>
+    private async Task<string> UserEntityShow(
+        string typeLower, string? id, CancellationToken cancellationToken)
+    {
+        var store = CurrentStore;
+
+        if (!string.IsNullOrWhiteSpace(id))
+        {
+            // Show specific entity
+            string qualifiedName = $"entity_{typeLower}:{id}";
+            try
+            {
+                string content = await ReadMemoryAsync(store, qualifiedName, cancellationToken);
+                return ResponseBuilder.Success(Truncate(content))
+                    .WithPath($"{typeLower}:{id}")
+                    .WithAction("shown")
+                    .ToYaml();
+            }
+            catch (FileNotFoundException)
+            {
+                return ResponseBuilder.Error($"{typeLower} '{id}' not found.").ToYaml();
+            }
+        }
+
+        // No ID — list all entities of this type
+        return UserEntityList(typeLower, filter: null);
+    }
+
+    /// <summary>
+    /// Lists all instances of a user-defined entity type, optionally filtered by status.
+    /// </summary>
+    private static string UserEntityList(string typeLower, string? filter)
+    {
+        var store = CurrentStore;
+
+        IReadOnlyList<ArtifactEntry> allEntries;
+        try
+        {
+            var (scope, _) = store.ParseQualifiedName($"entity_{typeLower}:placeholder");
+            allEntries = store.LoadIndex(scope);
+        }
+        catch
+        {
+            return ResponseBuilder.Success($"No {typeLower} entities found.").WithAction("listed").ToYaml();
+        }
+
+        var filtered = allEntries.AsEnumerable();
+        if (!string.IsNullOrWhiteSpace(filter))
+            filtered = filtered.Where(e => HasKeyword(e, $"status:{filter}"));
+
+        var entries = filtered.ToList();
+        if (entries.Count == 0)
+        {
+            string filterNote = filter is not null ? $" with status '{filter}'" : "";
+            return ResponseBuilder.Success($"No {typeLower} entities{filterNote}.").WithAction("listed").ToYaml();
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"{typeLower} entities ({entries.Count}):");
+        sb.AppendLine();
+
+        foreach (var entry in entries)
+        {
+            string statusKw = entry.Keywords?
+                .FirstOrDefault(k => k.StartsWith("status:", StringComparison.OrdinalIgnoreCase))
+                ?? "status:unknown";
+            sb.AppendLine($"- {typeLower}:{entry.Name} [{statusKw}]");
+
+            if (sb.Length > MaxResponseChars - 200)
+            {
+                sb.AppendLine("[... truncated to 8KB limit]");
+                break;
+            }
+        }
+
+        return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml();
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
@@ -278,8 +768,8 @@ public sealed class ScriniaProjectTools
             .Any(e => !Path.GetFileName(e).StartsWith('.'));
 
         string nextStep = hasExistingCode
-            ? "scan the existing codebase for concerns (concern('add')) and capture patterns (store), then set a goal with goal('add')"
-            : "set a goal with goal('add'), then plan requirements";
+            ? "scan the existing codebase for concerns (memory('remember', { path: '/goal/G-X/concern/...' })) and capture patterns (remember), then set a goal with memory('remember', { path: '/goal/...' })"
+            : "set a goal with memory('remember', { path: '/goal/...' }), then plan requirements";
 
         await WriteStateAsync(store, projectName, projectId,
             phase: "Initialized",
@@ -296,15 +786,15 @@ public sealed class ScriniaProjectTools
             {
                 string onboarderContent =
                     "## Onboarder Task\n" +
-                    "Action: Load the onboarder skill via skill('load', { name: \"onboarder\" }). " +
+                    "Action: Load the onboarder skill via memory('recall', { path: '/skill/onboarder' }). " +
                     "Explore the existing codebase structure, conventions, and patterns. " +
-                    "Store findings as project knowledge via memory('store').\n" +
+                    "Store findings as project knowledge via memory('remember').\n" +
                     "Acceptance criteria:\n" +
                     "- Codebase structure documented\n" +
                     "- Key patterns and conventions stored";
                 await WritePlanningMemoryAsync(store, "task:init-0-onboarder", onboarderContent,
                     archiveExisting: false,
-                    keywords: ["status:pending", "wave:0", "phase:init", "gate:onboarder"],
+                    keywords: ["status:pending", "wave:0", "phase:init", "tag:onboarder"],
                     cancellationToken);
             }
             catch { /* best-effort */ }
@@ -313,24 +803,31 @@ public sealed class ScriniaProjectTools
         // Scaffold merge infrastructure
         ScaffoldMergeInfrastructure(scriniaDir);
 
-        string response = $"Initialized project '{projectId}'. Stored: project:context, project:state. " +
-               $"Files in .scrinia/ were updated — these are your changes.";
+        // Create meta-entity directories
+        string initBaseDir = GetScriniaBaseDir(store);
+        Directory.CreateDirectory(Path.Combine(initBaseDir, "workflows"));
+        Directory.CreateDirectory(Path.Combine(initBaseDir, "skills"));
+        Directory.CreateDirectory(Path.Combine(initBaseDir, "agent"));
 
-        response += "\nMerge infrastructure created in .scrinia/hooks/. " +
-            "Configure the merge driver: git config merge.scrinia-meta.driver " +
-            "'.scrinia/hooks/scrinia-merge-meta.sh %O %A %B'";
+        string responseContent = $"Initialized project '{projectId}'. Stored: project:context, project:state. " +
+               $"Created workflows/, skills/, agent/ directories. " +
+               $"Files in .scrinia/ were updated — these are your changes.\n" +
+               "Merge infrastructure created in .scrinia/hooks/. " +
+               "Configure the merge driver: git config merge.scrinia-meta.driver " +
+               "'.scrinia/hooks/scrinia-merge-meta.sh %O %A %B'";
 
         if (hasExistingCode)
-            response += "\n\nExisting codebase detected. Onboarder task created.\n" +
-                "Recommended next steps:\n" +
-                "1. Run task('next') to start the onboarder\n" +
-                "2. Set a goal for what you want to achieve → goal('add')\n" +
-                "3. Then proceed to research → requirements → execution";
-        else
-            response += "\n\nEmpty workspace. Set a goal with goal('add'), " +
-                "then define requirements.";
+            responseContent += "\n\nExisting codebase detected. Onboarder task created.";
 
-        return response;
+        string instruction = hasExistingCode
+            ? "call task('next') to start the onboarder. After onboarding completes, suggest memory('remember', { path: '/goal/...' }) to the user to set a goal."
+            : "ask the user what to work on, then call memory('remember', { path: '/goal/...' }) to set a goal.";
+
+        return ResponseBuilder.Success(responseContent)
+            .WithPath($"project:{projectId}")
+            .WithAction("created")
+            .WithInstruction(instruction)
+            .ToYaml();
     }
 
     /// <summary>Store project requirements with category grouping and REQ-IDs.</summary>
@@ -347,7 +844,7 @@ public sealed class ScriniaProjectTools
         }
         catch (FileNotFoundException)
         {
-            return "Error: no project initialized. Run project_init first.";
+            return ResponseBuilder.Error("No project initialized. Run project_init first.").ToYaml();
         }
 
         await WritePlanningMemoryAsync(store, "project:requirements", requirements, archiveExisting: true, cancellationToken);
@@ -369,14 +866,53 @@ public sealed class ScriniaProjectTools
             nextStep: "review requirements with the user before starting execution",
             cancellationToken);
 
-        return "Stored: project:requirements. Files in .scrinia/ were updated — these are your changes.\n\n" +
-               "Review these requirements with the user:\n" +
-               "- Are all requirements captured? Anything missing?\n" +
-               "- Are the REQ-IDs scoped correctly (too broad? too narrow?)?\n" +
-               "- Are priorities clear — what's essential vs. nice-to-have?\n" +
-               "Once confirmed, set a goal with goal('add') to start execution.";
+        return ResponseBuilder.Success("Stored: project:requirements. Files in .scrinia/ were updated — these are your changes.")
+            .WithPath("project:requirements")
+            .WithAction("created")
+            .WithInstruction("review these requirements with the user:\n- Are all requirements captured? Anything missing?\n- Are the REQ-IDs scoped correctly (too broad? too narrow?)?\n- Are priorities clear — what's essential vs. nice-to-have?\nOnce confirmed, call memory('remember', { path: '/goal/...' }) to start execution.")
+            .ToYaml();
     }
 
+
+    /// <summary>Resolve a requirement by marking it fulfilled in project:requirements.</summary>
+    internal async Task<string> RequirementResolve(
+        string id,
+        string evidence,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var store = CurrentStore;
+            string reqText = await ReadMemoryAsync(store, "project:requirements", cancellationToken);
+            string marker = $"[RESOLVED: {evidence}]";
+            string updated = reqText.Replace(id, $"{id} {marker}");
+            await WritePlanningMemoryAsync(store, "project:requirements", updated,
+                archiveExisting: true, cancellationToken);
+            return ResponseBuilder.Success($"Requirement '{id}' resolved: {evidence}. project:requirements updated.")
+                .WithPath($"requirement:{id}")
+                .WithAction("resolved")
+                .ToYaml();
+        }
+        catch (FileNotFoundException)
+        {
+            return ResponseBuilder.Error("No requirements found. Call memory('remember', { path: '/requirement/...' }) first.").ToYaml();
+        }
+    }
+
+    /// <summary>List all requirements from project:requirements.</summary>
+    internal async Task<string> RequirementList(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var store = CurrentStore;
+            string reqText = await ReadMemoryAsync(store, "project:requirements", cancellationToken);
+            return ResponseBuilder.Success(reqText).WithAction("listed").ToYaml();
+        }
+        catch (FileNotFoundException)
+        {
+            return ResponseBuilder.Success("No requirements found. Call memory('remember', { path: '/requirement/...' }) to add requirements.").WithAction("listed").ToYaml();
+        }
+    }
 
     /// <summary>Decompose a phase into task memories with keyword-based metadata.</summary>
     internal async Task<string> PlanTasks(
@@ -393,63 +929,39 @@ public sealed class ScriniaProjectTools
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(phaseId))
-            return "Error: phaseId is required.";
+            return ResponseBuilder.Error("phaseId is required.").ToYaml();
 
         var store = CurrentStore;
 
         // Parse task sections from free-text input
         var parsedTasks = ParseTaskSections(tasks);
         if (parsedTasks.Count == 0)
-            return "Error: no tasks found. Provide tasks using '## Task {id}' section headers.";
+            return ResponseBuilder.Error("No tasks found. Provide tasks using '## Task {id}' section headers.").ToYaml();
 
         // Auto-inject gate tasks
         var allUserTaskIds = parsedTasks.Select(t => t.Id).ToArray();
 
-        // QA gate — always injected, depends on all user tasks
-        parsedTasks.Add(new ParsedTask(
-            Id: "qa-gate",
-            DependsOn: allUserTaskIds,
-            Content: "## QA Gate\nAction: Spawn a QA agent via skill('load', { name: \"qa\" }). " +
-                "The QA agent runs the full test suite, verifies the build, checks acceptance criteria, " +
-                "and writes qa:latest memory with structured results.\n" +
-                "Acceptance criteria:\n- qa:latest memory exists with current test pass/fail counts\n" +
-                "- Build passes with 0 errors\n- All phase acceptance criteria verified by QA agent"));
-
-        // Self-reflector gate — always injected, after QA
-        parsedTasks.Add(new ParsedTask(
-            Id: "self-reflector-gate",
-            DependsOn: ["qa-gate"],
-            Content: "## Self-Reflector Gate\nAction: Spawn a self-reflector agent via skill('load', { name: \"self-reflector\" }). " +
-                "Read execution logs and QA findings. Compare plan vs reality. " +
-                "Store retrospective and belief updates.\n" +
-                "Acceptance criteria:\n- Retrospective stored as learn:retro-*\n- Beliefs updated if applicable"));
-
-        // Evolutionary, cartographer, and march gates — always injected (after QA + self-reflector)
-        parsedTasks.Add(new ParsedTask(
-            Id: "evolutionary-gate",
-            DependsOn: ["qa-gate", "self-reflector-gate"],
-            Content: "## Evolutionary Gate\nAction: Spawn an evolutionary agent via skill('load', { name: \"evolutionary\" }). " +
-                "Run a knowledge base scan to update stale memories, detect skill drift, and surface emergent patterns.\n" +
-                "Acceptance criteria:\n- Evolutionary scan completed\n- Stale memories updated\n" +
-                "- Session stored as sessions:evolutionary-gNN"));
-
-        parsedTasks.Add(new ParsedTask(
-            Id: "cartographer-gate",
-            DependsOn: ["qa-gate", "self-reflector-gate"],
-            Content: "## Cartographer Gate\nAction: Spawn a cartographer agent via skill('load', {{ name: \"cartographer\" }}). " +
-                "Map knowledge connections, link orphans, identify gaps.\n" +
-                "Acceptance criteria:\n- Cartography scan completed\n- New links created for orphaned memories\n" +
-                "- Report stored as cartography:YYYY-MM-DD"));
-
-        parsedTasks.Add(new ParsedTask(
-            Id: "march-gate",
-            DependsOn: ["qa-gate", "self-reflector-gate"],
-            Content: "## March Report Gate\nAction: Spawn a march reporter agent via skill('load', { name: \"march-reporter\" }). " +
-                "Produce a goal summary document in docs/reports/.\n" +
-                "Acceptance criteria:\n- March report written to docs/reports/\n- Session log updated"));
-
-        // Resolve active goal for task scoping
+        // Resolve active goal for task scoping (moved up so we can read its workflow keyword)
         string? activeGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
+
+        // Inject gate tasks from workflow definition (override-aware)
+        string goalWorkflowName = ResolveGoalWorkflowName(store, activeGoalId);
+        var (workflow, workflowWarning) = await ResolveWorkflowAsync(store, goalWorkflowName, cancellationToken);
+        foreach (var gate in workflow.PostPlanActivities.Where(a => !string.Equals(a.Type, "spawner", StringComparison.OrdinalIgnoreCase)))
+        {
+            var deps = new List<string>();
+            foreach (var dep in gate.DependsOn)
+            {
+                if (dep == "*")
+                    deps.AddRange(allUserTaskIds);  // wildcard = all user tasks
+                else
+                    deps.Add(dep);  // other gate IDs (e.g., "qa-gate")
+            }
+            parsedTasks.Add(new ParsedTask(
+                Id: gate.Id,
+                DependsOn: deps.ToArray(),
+                Content: gate.Prompt));
+        }
 
         // Compute waves from the dependency graph (topological ordering)
         // Tasks with no dependencies → wave 1. Tasks depending on wave N tasks → wave N+1.
@@ -535,8 +1047,12 @@ public sealed class ScriniaProjectTools
                 foreach (string file in task.Files)
                     keywords.Add($"files:{file.Trim()}");
             }
-            if (task.Id.EndsWith("-gate", StringComparison.OrdinalIgnoreCase))
-                keywords.Add($"gate:{task.Id.Replace("-gate", "", StringComparison.OrdinalIgnoreCase)}");
+            // Add tag: keyword from workflow activity definition, or infer from -gate suffix
+            var matchingActivity = workflow.Activities.FirstOrDefault(a => string.Equals(a.Id, task.Id, StringComparison.OrdinalIgnoreCase));
+            if (matchingActivity is not null)
+                keywords.Add($"tag:{matchingActivity.Tag}");
+            else if (task.Id.EndsWith("-gate", StringComparison.OrdinalIgnoreCase))
+                keywords.Add($"tag:{task.Id.Replace("-gate", "", StringComparison.OrdinalIgnoreCase)}");
 
             // Extract REQ-IDs from task content for requirement traceability
             foreach (Match reqMatch in ReqIdPattern.Matches(task.Content))
@@ -612,34 +1128,52 @@ public sealed class ScriniaProjectTools
             ? $" First wave has {firstWaveCount} independent tasks — spawn parallel agents, one per task."
             : "";
 
-        // Check if agent:execution-policy exists
-        string executionPolicyHint = "";
-        try
+        // Check if agent:execution-policy exists — file first, NMP/2 fallback
+        bool hasPolicy = false;
+        string epBaseDir = GetScriniaBaseDir(store);
+        string policyPath = Path.Combine(epBaseDir, "agent", "execution-policy.md");
+        hasPolicy = File.Exists(policyPath);
+        if (!hasPolicy)
         {
-            var (epScope, _) = store.ParseQualifiedName("agent:execution-policy");
-            var epEntries = store.LoadIndex(epScope);
-            if (epEntries.Any(e => e.Name == "execution-policy"))
-                executionPolicyHint = "\nAgent execution policy available — show('agent:execution-policy') for spawn requirements.";
+            // Fall back to NMP/2 check (legacy)
+            try
+            {
+                var (epScope, _) = store.ParseQualifiedName("agent:execution-policy");
+                var epEntries = store.LoadIndex(epScope);
+                hasPolicy = epEntries.Any(e => e.Name == "execution-policy");
+            }
+            catch { }
         }
-        catch { /* agent scope not created — skip silently */ }
 
         string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
-        string conflictWarning = fileConflicts.Count > 0
-            ? "\n\nFile conflicts detected:\n" + string.Join("\n", fileConflicts.Select(c => $"  - {c}"))
-            : "";
-        string response =
+        string responseContent =
             $"Created {parsedTasks.Count} task(s) for phase {phaseId} in {waveCount} wave(s).\n" +
             $"Tasks stored:\n{taskList}\n" +
-            $"Files in .scrinia/ were updated — these are your changes.\n" +
-            $"Next: run task('next') to get the first pending tasks.{parallelHint}\n" +
-            $"Spawn agents for all task execution — the primary agent orchestrates, it does not execute tasks directly." +
-            executionPolicyHint +
-            conflictWarning +
-            patternNote;
+            $"Files in .scrinia/ were updated — these are your changes.";
+        if (!string.IsNullOrEmpty(patternNote))
+            responseContent += patternNote;
 
-        response = Truncate(response);
+        string instruction = $"call task('next') to get the first pending tasks.{parallelHint} Spawn agents for all task execution — the primary agent orchestrates, it does not execute tasks directly.";
 
-        return response;
+        var infoItems = new List<string>();
+        if (hasPolicy)
+            infoItems.Add("Agent execution policy available — show('agent:execution-policy') for spawn requirements.");
+
+        var warningItems = new List<string>();
+        if (workflowWarning is not null)
+            warningItems.Add(workflowWarning);
+        if (fileConflicts.Count > 0)
+            warningItems.AddRange(fileConflicts);
+
+        var ptResponse = ResponseBuilder.Success(responseContent)
+            .WithAction("created")
+            .WithInstruction(instruction);
+        if (warningItems.Count > 0)
+            ptResponse = ptResponse.WithActionNeeded([.. warningItems]);
+        if (infoItems.Count > 0)
+            ptResponse = ptResponse.WithInfo([.. infoItems]);
+
+        return ptResponse.ToYaml();
     }
 
     /// <summary>Resume full agent context after context loss or session start. Delegates to ScriniaMcpTools.Restore.</summary>
@@ -660,7 +1194,7 @@ public sealed class ScriniaProjectTools
         {
             string? rebuilt = await RebuildStateFromMemoriesAsync(store, cancellationToken);
             if (rebuilt is null)
-                return "Error: no project found. Run project_init first.";
+                return ResponseBuilder.Error("No project found. Run project_init first.").ToYaml();
             stateText = rebuilt;
         }
 
@@ -721,20 +1255,20 @@ public sealed class ScriniaProjectTools
         }
         catch { /* no project:context or no goals section — skip silently */ }
 
-        string idleNote = "";
+        string? idleInstruction = null;
         if (!hasActiveGoal && progress == "100%")
-            idleNote = "\nNo active goal. Ask the user what to work on next → goal('add')";
+            idleInstruction = "no active goal — ask the user what to work on next, then call memory('remember', { path: '/goal/...' }).";
         else if (!hasActiveGoal && progress == "0%")
-            idleNote = "\nNo active goal. Set one with goal('add') to start planning.";
+            idleInstruction = "no active goal — ask the user what to work on, then call memory('remember', { path: '/goal/...' }) to start planning.";
 
-        string response =
+        string statusContent =
             $"Project: {projectName}\n" +
             $"Phase: {phase}\n" +
             $"Progress: {progress}\n" +
             $"Last action: {lastAction}\n" +
             $"Blockers: {blockers}\n" +
             $"Next: {next}" +
-            concernNote + goalNote + idleNote;
+            concernNote + goalNote;
 
         // Staleness & drift alerts — use cache if available, fall back to live scan
         int psStale, psReview, psDrift, psMissing;
@@ -754,24 +1288,36 @@ public sealed class ScriniaProjectTools
             (psDrift, psMissing) = ScanDrift(store);
         }
 
-        if (psStale > 0) response += $"\n⚠ {psStale} memory(s) have passed their review date.{psCacheNote}";
-        if (psReview > 0) response += $"\nℹ {psReview} memory(s) have review conditions set.{psCacheNote}";
-        if (psDrift > 0) response += $"\n⚠ {psDrift} code reference(s) have drifted (files changed since stored).{psCacheNote}";
-        if (psMissing > 0) response += $"\n⚠ {psMissing} code reference(s) point to missing files.{psCacheNote}";
+        var psWarnings = new List<string>();
+        if (psStale > 0) psWarnings.Add($"{psStale} memory(s) have passed their review date — verify content is still accurate.{psCacheNote}");
+        if (psDrift > 0) psWarnings.Add($"{psDrift} code reference(s) have drifted (files changed since stored) — re-link or update.{psCacheNote}");
+        if (psMissing > 0) psWarnings.Add($"{psMissing} code reference(s) point to missing files — unlink or correct.{psCacheNote}");
 
-        response = Truncate(response);
+        var psInfoItems = new List<string>();
+        if (psReview > 0) psInfoItems.Add($"{psReview} memory(s) have review conditions set.{psCacheNote}");
 
-        return response;
+        var psResponse = ResponseBuilder.Success(statusContent)
+            .WithPath("project:state")
+            .WithAction("shown");
+        if (idleInstruction is not null)
+            psResponse = psResponse.WithInstruction(idleInstruction);
+        if (psWarnings.Count > 0)
+            psResponse = psResponse.WithActionNeeded([.. psWarnings]);
+        if (psInfoItems.Count > 0)
+            psResponse = psResponse.WithInfo([.. psInfoItems]);
+
+        return psResponse.ToYaml();
     }
 
     /// <summary>Thin dispatcher for task operations — delegates to TaskNext/TaskComplete.</summary>
     [McpServerTool(Name = "task"), Description(
-        "Task operations. Actions: 'next' (get next pending task), 'complete' (mark task done).")]
+        "Task operations. Actions: 'next' (get next pending task), 'complete' (mark task done), 'plan' (decompose phase into tasks).")]
     public async Task<string> TaskDispatch(
-        [Description("Action: 'next' or 'complete'.")] string action,
-        [Description("Phase ID (next — optional, auto-detects if omitted).")] string? phaseId = null,
+        [Description("Action: 'next', 'complete', or 'plan'.")] string action,
+        [Description("Phase ID (next — optional, auto-detects if omitted; plan — required).")] string? phaseId = null,
         [Description("Task name to complete (complete).")] string? taskName = null,
         [Description("Outcome description (complete).")] string? outcome = null,
+        [Description("Free-text task definitions (plan).")] string? tasks = null,
         CancellationToken cancellationToken = default)
     {
         string act = action.Trim().ToLowerInvariant();
@@ -804,21 +1350,28 @@ public sealed class ScriniaProjectTools
                         }
 
                         if (string.IsNullOrWhiteSpace(phaseId))
-                            return "No pending tasks found for the active goal.";
+                            return ResponseBuilder.Success("No pending tasks found for the active goal.").WithAction("listed").ToYaml();
                     }
-                    catch { return "Error: could not auto-detect phase. Provide phaseId parameter."; }
+                    catch { return ResponseBuilder.Error("Could not auto-detect phase. Provide phaseId parameter.").ToYaml(); }
                 }
                 return await TaskNext(phaseId, cancellationToken);
 
             case "complete":
                 if (string.IsNullOrWhiteSpace(taskName))
-                    return "Error: task('complete') requires 'taskName' parameter.";
+                    return ResponseBuilder.Error("task('complete') requires 'taskName' parameter.").ToYaml();
                 if (string.IsNullOrWhiteSpace(outcome))
-                    return "Error: task('complete') requires 'outcome' parameter.";
+                    return ResponseBuilder.Error("task('complete') requires 'outcome' parameter.").ToYaml();
                 return await TaskComplete(taskName, outcome, cancellationToken);
 
+            case "plan":
+                if (string.IsNullOrWhiteSpace(phaseId))
+                    return ResponseBuilder.Error("task('plan') requires 'phaseId' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(tasks))
+                    return ResponseBuilder.Error("task('plan') requires 'tasks' parameter.").ToYaml();
+                return await PlanTasks(phaseId, tasks, cancellationToken);
+
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'next', 'complete'.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: 'next', 'complete', 'plan'.").ToYaml();
         }
     }
 
@@ -845,7 +1398,7 @@ public sealed class ScriniaProjectTools
             .ToList();
 
         if (phaseEntries.Count == 0)
-            return $"No pending tasks for phase {phaseId}.";
+            return ResponseBuilder.Success($"No pending tasks for phase {phaseId}.").WithAction("listed").ToYaml();
 
         // Find pending entries
         var pendingEntries = phaseEntries
@@ -853,7 +1406,7 @@ public sealed class ScriniaProjectTools
             .ToList();
 
         if (pendingEntries.Count == 0)
-            return $"No pending tasks for phase {phaseId}.";
+            return ResponseBuilder.Success($"No pending tasks for phase {phaseId}.").WithAction("listed").ToYaml();
 
         // Find the lowest wave among pending entries
         int currentWave = pendingEntries.Min(e => ParseWave(e));
@@ -875,15 +1428,15 @@ public sealed class ScriniaProjectTools
             .ToList();
 
         if (unblockedEntries.Count == 0)
-            return $"No unblocked tasks for phase {phaseId} in wave {currentWave}. Some tasks may be waiting on dependencies.";
+            return ResponseBuilder.Success($"No unblocked tasks for phase {phaseId} in wave {currentWave}. Some tasks may be waiting on dependencies.").WithAction("listed").ToYaml();
 
         // Build response: read artifact content only for unblocked tasks
+        string tnInstruction = unblockedEntries.Count > 1
+            ? $"these {unblockedEntries.Count} tasks are independent — spawn a parallel agent for each task."
+            : "spawn an agent for this task — keep the primary agent available for SOS and user interaction.";
+
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Phase {phaseId} — Wave {currentWave} — {unblockedEntries.Count} unblocked task(s):");
-        if (unblockedEntries.Count > 1)
-            sb.AppendLine($"These {unblockedEntries.Count} tasks are independent — spawn a parallel agent for each task.");
-        else
-            sb.AppendLine("Spawn an agent for this task — keep the primary agent available for SOS and user interaction.");
         sb.AppendLine();
 
         foreach (var entry in unblockedEntries)
@@ -926,14 +1479,14 @@ public sealed class ScriniaProjectTools
             lastAction: $"task('next') called for phase {phaseId} wave {currentWave}",
             blockers: "none",
             nextStep: unblockedEntries.Count > 1
-                ? $"spawn {unblockedEntries.Count} parallel agents for wave {currentWave} tasks, call task('complete') for each"
-                : $"execute wave {currentWave} task, then call task('complete')",
+                ? $"spawn {unblockedEntries.Count} parallel agents for wave {currentWave} tasks, then call task('complete') for each"
+                : $"spawn agent for wave {currentWave} task, then call task('complete')",
             cancellationToken);
 
-        string response = sb.ToString();
-        response = Truncate(response);
-
-        return response;
+        return ResponseBuilder.Success(sb.ToString().TrimEnd())
+            .WithAction("listed")
+            .WithInstruction(tnInstruction)
+            .ToYaml();
     }
 
     /// <summary>Verify a phase achieved its goal using acceptance criteria from requirements.</summary>
@@ -962,12 +1515,12 @@ public sealed class ScriniaProjectTools
         try { requirementsText = await ReadMemoryAsync(store, "project:requirements", cancellationToken); }
         catch (FileNotFoundException)
         {
-            return "Error: no requirements found. Call requirement('add') first.";
+            return ResponseBuilder.Error("No requirements found. Call memory('remember', { path: '/requirement/...' }) first.").ToYaml();
         }
 
         var criteria = ExtractRequirementCriteria(requirementsText, phaseReqIds);
         if (criteria.Count == 0)
-            return $"No requirements found for phase {phaseId}. Ensure tasks reference REQ-IDs in their content.";
+            return ResponseBuilder.Success($"No requirements found for phase {phaseId}. Ensure tasks reference REQ-IDs in their content.").WithAction("listed").ToYaml();
 
         // Load task summary for context (scoped to active goal)
         string? verifyGoalId = verifyGoalId0;
@@ -1015,19 +1568,14 @@ public sealed class ScriniaProjectTools
                 sb.AppendLine();
             }
 
-            sb.AppendLine("Verify each criterion yourself (run tests, review code, confirm behavior), then call:");
-            sb.AppendLine($"```");
-            sb.AppendLine($"plan('verify', {{ phaseId: \"{phaseId}\", evidence: \"PASS: criterion 1 — your evidence\\nPASS: criterion 2 — your evidence\")");
-            sb.AppendLine($"```");
+            sb.AppendLine("Verify each criterion yourself (run tests, review code, confirm behavior).");
+            sb.AppendLine("The QA gate task (auto-injected) will handle structured verification for this phase.");
             sb.AppendLine();
 
             for (int i = 0; i < criteria.Count; i++)
                 sb.AppendLine($"{i + 1}. [ ] {criteria[i]}");
 
-            string checklistResponse = sb.ToString();
-            checklistResponse = Truncate(checklistResponse);
-
-            return checklistResponse;
+            return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("checklist").ToYaml();
         }
 
         // ── Recording mode (evidence provided) ──
@@ -1049,8 +1597,9 @@ public sealed class ScriniaProjectTools
             if (openConcerns.Count > 0)
             {
                 var names = string.Join(", ", openConcerns.Select(e => e.Name));
-                return $"Error: {openConcerns.Count} open high/medium concern(s) for phase {phaseId}: {names}. " +
-                    "Resolve them (concern('resolve') with verifiedBy) before verification.";
+                return ResponseBuilder.Error($"{openConcerns.Count} open high/medium concern(s) for phase {phaseId}: {names}.")
+                    .WithInstruction("Resolve them (memory('transition', { path: '/concern/...', to: 'resolved' }) with verifiedBy) before verification.")
+                    .ToYaml();
             }
         }
         catch { /* best-effort — don't block if concern scope doesn't exist */ }
@@ -1119,7 +1668,7 @@ public sealed class ScriniaProjectTools
         string verifyNextStep;
         if (passCount < criteria.Count)
         {
-            verifyNextStep = "run plan('gaps') to create gap closure tasks";
+            verifyNextStep = "call task('plan') with gap closure tasks";
         }
         else
         {
@@ -1136,27 +1685,26 @@ public sealed class ScriniaProjectTools
             catch { /* concern scope not yet created — skip silently */ }
 
             verifyNextStep = hasActiveConcerns
-                ? $"resolve addressed concerns (concern('resolve')), then run plan('retrospective') for phase {phaseId}"
-                : $"run plan('retrospective') for phase {phaseId} to record lessons learned";
+                ? $"resolve addressed concerns (memory('transition', {{ path: '/concern/...', to: 'resolved' }})), then the self-reflector gate task will handle retrospective for phase {phaseId}"
+                : $"self-reflector gate task will handle retrospective for phase {phaseId} — proceed to task('next')";
         }
 
         await WriteStateAsync(store, projectName2, projectId2,
             phase: currentPhase2,
             progressPct: progressPct2,
-            lastAction: $"plan('verify') for phase {phaseId}: {status}",
+            lastAction: $"QA verification for phase {phaseId}: {status}",
             blockers: passCount < criteria.Count ? $"{criteria.Count - passCount} criteria failed" : "none",
             nextStep: verifyNextStep,
             cancellationToken);
 
-        string response = sb2.ToString();
-
-        // Append next step guidance to response
+        var verifyResponse = (passCount == criteria.Count
+                ? ResponseBuilder.Success(sb2.ToString().TrimEnd())
+                : ResponseBuilder.Warning(sb2.ToString().TrimEnd()))
+            .WithAction("verified");
         if (passCount == criteria.Count)
-            response += $"\nNext: {verifyNextStep}";
+            verifyResponse = verifyResponse.WithInstruction(verifyNextStep);
 
-        response = Truncate(response);
-
-        return response;
+        return verifyResponse.ToYaml();
     }
 
     /// <summary>Create gap closure tasks for failed verification criteria and re-open the phase.</summary>
@@ -1171,7 +1719,7 @@ public sealed class ScriniaProjectTools
         try { await ReadMemoryAsync(store, "project:context", cancellationToken); }
         catch (FileNotFoundException)
         {
-            return "Error: no project found. Run project_init first.";
+            return ResponseBuilder.Error("No project found. Run project_init first.").ToYaml();
         }
 
         // Parse failed criteria — split on newlines, trim, filter empty
@@ -1181,7 +1729,7 @@ public sealed class ScriniaProjectTools
             .ToList();
 
         if (criteria.Count == 0)
-            return $"Error: no failed criteria provided. Pass newline-separated criterion texts.";
+            return ResponseBuilder.Error("No failed criteria provided. Pass newline-separated criterion texts.").ToYaml();
 
         // Create a gap task for each failed criterion (scoped to active goal)
         string? gapGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
@@ -1217,17 +1765,14 @@ public sealed class ScriniaProjectTools
             progressPct: progressPct,
             lastAction: $"Gap closure: {criteria.Count} task(s) created for phase {phaseId}",
             blockers: "none",
-            nextStep: "run task('next') to work on gap tasks",
+            nextStep: "call task('next') to work on gap tasks",
             cancellationToken);
 
         string taskList = string.Join("\n", createdNames.Select(n => $"  - {n}"));
-        string response =
-            $"Created {criteria.Count} gap closure task(s) for phase {phaseId}. Phase re-opened. Run task('next') to begin.\n" +
-            $"Gap tasks created:\n{taskList}";
-
-        response = Truncate(response);
-
-        return response;
+        return ResponseBuilder.Success($"Created {criteria.Count} gap closure task(s) for phase {phaseId}. Phase re-opened.\nGap tasks created:\n{taskList}")
+            .WithAction("created")
+            .WithInstruction("call task('next') to begin.")
+            .ToYaml();
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -1272,8 +1817,8 @@ public sealed class ScriniaProjectTools
         // Step 4: Write the rebuilt state for future calls (avoids repeated rebuilds)
         string rebuiltNote = "[State rebuilt from memories]\n";
         string nextStep = phase == "Requirements defined"
-            ? "set a goal with goal('add') to start planning"
-            : "run requirement('add') to define project requirements";
+            ? "set a goal with memory('remember', { path: '/goal/...' }) to start planning"
+            : "run memory('remember', { path: '/requirement/...' }) to define project requirements";
 
         await WriteStateAsync(store, projectDisplayName, projectId,
             phase: phase,
@@ -1322,6 +1867,180 @@ public sealed class ScriniaProjectTools
         string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
         byte[] decoded = Nmp2Strategy.Instance.Decode(artifact);
         return System.Text.Encoding.UTF8.GetString(decoded);
+    }
+
+    /// <summary>
+    /// Resolves a workflow by name with override precedence:
+    /// 1. Disk file (.scrinia/workflows/{name}.json)
+    /// 2. NMP/2 memory (workflow:{name}) — legacy fallback
+    /// 3. Built-in default (QuickFixWorkflow or DefaultGoalWorkflow)
+    /// Corrupted overrides fall back with a warning.
+    /// </summary>
+    private static async Task<(WorkflowDefinition Workflow, string? Warning)> ResolveWorkflowAsync(
+        IMemoryStore store, string workflowName, CancellationToken ct)
+    {
+        // 1a. Disk file — YAML
+        string baseDir = GetScriniaBaseDir(store);
+        foreach (var ext in new[] { ".yaml", ".yml" })
+        {
+            string yamlPath = Path.Combine(baseDir, "workflows", $"{workflowName}{ext}");
+            if (File.Exists(yamlPath))
+            {
+                try
+                {
+                    string yamlContent = await File.ReadAllTextAsync(yamlPath, ct);
+                    // AOT pipeline: YAML → object → JSON string → source-gen deserialize
+                    var yamlDeserializer = new DeserializerBuilder().Build();
+                    var yamlObj = yamlDeserializer.Deserialize<object>(yamlContent);
+                    var jsonSerializer = new SerializerBuilder()
+                        .JsonCompatible()
+                        .Build();
+                    string jsonString = jsonSerializer.Serialize(yamlObj);
+                    var parsed = JsonSerializer.Deserialize(jsonString,
+                        PlanningJsonContext.Default.WorkflowDefinition);
+                    if (parsed is not null) return (parsed, null);
+                }
+                catch (Exception ex)
+                {
+                    return (WorkflowDefinition.DefaultGoalWorkflow,
+                        $"\u26a0 ACTION NEEDED: YAML workflow '{workflowName}{ext}' could not be parsed: {ex.Message}");
+                }
+            }
+        }
+
+        // 1b. Disk file — JSON
+        try
+        {
+            string filePath = Path.Combine(baseDir, "workflows", $"{workflowName}.json");
+            if (File.Exists(filePath))
+            {
+                string json = await File.ReadAllTextAsync(filePath, ct);
+                var parsed = JsonSerializer.Deserialize(json, PlanningJsonContext.Default.WorkflowDefinition);
+                if (parsed is not null) return (parsed, null);
+            }
+        }
+        catch (JsonException)
+        {
+            var fallback = workflowName.Equals("quick-fix", StringComparison.OrdinalIgnoreCase)
+                ? WorkflowDefinition.QuickFixWorkflow
+                : WorkflowDefinition.DefaultGoalWorkflow;
+            return (fallback,
+                "\u26a0 ACTION NEEDED: workflow file could not be parsed \u2014 using built-in default.");
+        }
+        catch { /* file I/O error — fall through to NMP/2 */ }
+
+        // 2. NMP/2 fallback (legacy)
+        try
+        {
+            string content = await ReadMemoryAsync(store, $"workflow:{workflowName}", ct);
+            var parsed = JsonSerializer.Deserialize(content, PlanningJsonContext.Default.WorkflowDefinition);
+            if (parsed is not null) return (parsed, null);
+        }
+        catch (FileNotFoundException) { /* no override stored — fall through to built-ins */ }
+        catch
+        {
+            var fallback = workflowName.Equals("quick-fix", StringComparison.OrdinalIgnoreCase)
+                ? WorkflowDefinition.QuickFixWorkflow
+                : WorkflowDefinition.DefaultGoalWorkflow;
+            return (fallback,
+                "\u26a0 ACTION NEEDED: stored workflow override could not be parsed \u2014 using built-in default.");
+        }
+
+        // 3. Built-in default
+        return workflowName.Equals("quick-fix", StringComparison.OrdinalIgnoreCase)
+            ? (WorkflowDefinition.QuickFixWorkflow, null)
+            : (WorkflowDefinition.DefaultGoalWorkflow, null);
+    }
+
+    /// <summary>
+    /// Creates or updates a workflow definition from JSON, with full validation.
+    /// </summary>
+    private async Task<string> CreateOrUpdateWorkflow(
+        string action, string? definition, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(definition))
+            return ResponseBuilder.Error($"Workflow '{action}' requires 'definition' parameter with workflow JSON.").ToYaml();
+
+        WorkflowDefinition parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize(definition, PlanningJsonContext.Default.WorkflowDefinition)!;
+            if (parsed is null)
+                return ResponseBuilder.Error("Workflow definition deserialized to null.").ToYaml();
+        }
+        catch (JsonException)
+        {
+            // JSON parse failed — try YAML pipeline: YAML → object → JSON string → source-gen deserialize
+            try
+            {
+                var yamlDeserializer = new DeserializerBuilder().Build();
+                var yamlObj = yamlDeserializer.Deserialize<object>(definition);
+                var jsonSerializer = new SerializerBuilder()
+                    .JsonCompatible()
+                    .Build();
+                string jsonFromYaml = jsonSerializer.Serialize(yamlObj);
+                parsed = JsonSerializer.Deserialize(jsonFromYaml, PlanningJsonContext.Default.WorkflowDefinition)!;
+                if (parsed is null)
+                    return ResponseBuilder.Error("Workflow definition deserialized to null (from YAML).").ToYaml();
+            }
+            catch (Exception ex)
+            {
+                return ResponseBuilder.Error($"Failed to parse workflow definition as JSON or YAML — {ex.Message}").ToYaml();
+            }
+        }
+
+        var errors = WorkflowDefinition.Validate(parsed);
+        if (errors.Count > 0)
+            return ResponseBuilder.Error($"Workflow validation failed:\n- {string.Join("\n- ", errors)}").ToYaml();
+
+        // Compute basedOn hash from the built-in default workflow
+        string defaultJson = JsonSerializer.Serialize(
+            WorkflowDefinition.DefaultGoalWorkflow, PlanningJsonContext.Default.WorkflowDefinition);
+        string basedOnHash = Convert.ToHexStringLower(
+            SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(defaultJson)));
+
+        var store = CurrentStore;
+
+        // Write to disk (.scrinia/workflows/{name}.json)
+        string baseDir = GetScriniaBaseDir(store);
+        string workflowsDir = Path.Combine(baseDir, "workflows");
+        string filePath = Path.Combine(workflowsDir, $"{parsed.Name}.json");
+        Directory.CreateDirectory(workflowsDir);
+
+        // Archive previous version if file exists
+        ArchiveFileVersion(filePath, Path.Combine(workflowsDir, "versions"));
+
+        // Serialize and write workflow JSON
+        string content = JsonSerializer.Serialize(parsed, PlanningJsonContext.Default.WorkflowDefinition);
+        await File.WriteAllTextAsync(filePath, content, cancellationToken);
+
+        // Write sidecar metadata
+        string now = DateTimeOffset.UtcNow.ToString("o");
+        var existingMeta = ReadSidecarMeta(filePath, PlanningJsonContext.Default.WorkflowFileMeta);
+        var meta = new WorkflowFileMeta(
+            BasedOn: basedOnHash,
+            CreatedAt: existingMeta?.CreatedAt ?? now,
+            UpdatedAt: now);
+        WriteSidecarMeta(filePath, meta, PlanningJsonContext.Default.WorkflowFileMeta);
+
+        // Check for legacy NMP/2 entry (MF-C01 migration note)
+        string migrationNote = "";
+        try
+        {
+            await ReadMemoryAsync(store, $"workflow:{parsed.Name}", cancellationToken);
+            migrationNote = " Note: a legacy NMP/2 entry for workflow:{parsed.Name} still exists — it will be used as fallback but the disk file takes precedence.";
+        }
+        catch { /* no legacy entry — nothing to note */ }
+
+        int seedCount = parsed.SeedActivities?.Length ?? 0;
+        int gateCount = parsed.PostPlanActivities?.Length ?? 0;
+        string wfAction = action == "create" ? "created" : "updated";
+        var wfResult = ResponseBuilder.Success($"Workflow '{parsed.Name}' {wfAction} — {seedCount} seed(s), {gateCount} gate(s). Stored at .scrinia/workflows/{parsed.Name}.json. Files in .scrinia/ were updated — these are your changes.")
+            .WithPath($"workflow:{parsed.Name}")
+            .WithAction(wfAction);
+        if (!string.IsNullOrEmpty(migrationNote))
+            wfResult = wfResult.WithInfo(migrationNote.TrimStart());
+        return wfResult.ToYaml();
     }
 
     /// <summary>
@@ -1445,6 +2164,12 @@ public sealed class ScriniaProjectTools
     /// Calculates overall progress percentage from task completion data.
     /// Each phase contributes equally. Within a phase, progress = completed / total tasks.
     /// </summary>
+    /// <remarks>
+    /// Called at 10+ carry-forward sites on every state write. Must stay synchronous and
+    /// lightweight (keyword scan over in-memory index only — no artifact decoding, no I/O).
+    /// Tightly coupled to the <c>task:</c> topic and <c>phase:XX</c> / <c>status:complete</c>
+    /// / <c>goal:ID</c> keyword conventions. Not a general-purpose API.
+    /// </remarks>
     internal static string CalculateProgress(IMemoryStore store, string? goalId = null)
     {
         var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
@@ -1489,134 +2214,182 @@ public sealed class ScriniaProjectTools
         var existing = allEntries.FirstOrDefault(e => e.Name == subject);
 
         if (existing is null)
-            return $"Error: task '{taskName}' not found.";
+            return ResponseBuilder.Error($"Task '{taskName}' not found.").ToYaml();
 
-        // Gate task validation — block completion if required artifact missing
+        // Gate task validation — data-driven dispatch from WorkflowDefinition (override-aware)
         if (existing.Keywords is not null)
         {
             string? activeGoal = await GetActiveGoalIdAsync(store, cancellationToken);
+            string goalWorkflowName = ResolveGoalWorkflowName(store, activeGoal);
+            var (workflow, _) = await ResolveWorkflowAsync(store, goalWorkflowName, cancellationToken);
 
-            foreach (var kw in existing.Keywords.Where(k => k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase)))
+            // Compute goalShort once for template substitution
+            string goalShort = "";
+            if (activeGoal is not null)
             {
-                string gateType = kw["gate:".Length..];
+                var gm = GoalIdPattern.Match(activeGoal);
+                if (gm.Success) goalShort = $"g{gm.Groups[1].Value}";
+            }
+
+            foreach (var kw in existing.Keywords.Where(k => k.StartsWith("tag:", StringComparison.OrdinalIgnoreCase) || k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase)))
+            {
+                string gateType = kw.StartsWith("tag:", StringComparison.OrdinalIgnoreCase)
+                    ? kw["tag:".Length..]
+                    : kw["gate:".Length..];
+
+                // Find matching activity in workflow definition
+                var activity = workflow.SeedActivities
+                    .Concat(workflow.PostPlanActivities)
+                    .FirstOrDefault(a => string.Equals(a.Tag, gateType, StringComparison.OrdinalIgnoreCase));
+
+                // Unknown gate type → pass through (WF-09 backward compat)
+                if (activity?.Validation is null)
+                    continue;
+
+                var validation = activity.Validation;
+                string target = SubstituteGoalShort(validation.Target, goalShort);
+                string errorMessage = SubstituteGoalShort(validation.ErrorTemplate, goalShort);
+                string? instructionMessage = validation.InstructionTemplate is not null
+                    ? SubstituteGoalShort(validation.InstructionTemplate, goalShort)
+                    : null;
                 string? validationError = null;
 
-                switch (gateType.ToLowerInvariant())
+                try
                 {
-                    case "qa":
-                        try { await ReadMemoryAsync(store, "qa:latest", cancellationToken); }
-                        catch (FileNotFoundException) { validationError = "qa:latest memory not found. The QA agent must write qa:latest before this gate can complete."; }
-                        break;
+                    switch (validation.CheckType)
+                    {
+                        case "memory-exists":
+                            try { await ReadMemoryAsync(store, target, cancellationToken); }
+                            catch (FileNotFoundException) { validationError = errorMessage; }
+                            break;
 
-                    case "self-reflector":
-                        try
+                        case "index-prefix":
                         {
-                            // Check for learn:retro-* for this goal
-                            var (learnScope, _) = store.ParseQualifiedName("learn:placeholder");
-                            var learnEntries = store.LoadIndex(learnScope);
-                            string goalShort = "";
-                            if (activeGoal is not null)
-                            {
-                                var gm = GoalIdPattern.Match(activeGoal);
-                                if (gm.Success) goalShort = $"g{gm.Groups[1].Value}";
-                            }
-                            bool hasRetro = learnEntries.Any(e => e.Name.StartsWith($"retro-{goalShort}", StringComparison.OrdinalIgnoreCase));
-                            if (!hasRetro)
-                                validationError = $"No learn:retro-{goalShort}-* memory found. The self-reflector agent must store a retrospective before this gate can complete.";
+                            int colonIdx = target.IndexOf(':');
+                            string topic = colonIdx >= 0 ? target[..colonIdx] : target;
+                            string prefix = colonIdx >= 0 ? target[(colonIdx + 1)..] : "";
+                            var (indexScope, _) = store.ParseQualifiedName($"{topic}:placeholder");
+                            var entries = store.LoadIndex(indexScope);
+                            bool found = entries.Any(e =>
+                                string.IsNullOrEmpty(prefix) ||
+                                e.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+                            if (!found)
+                                validationError = errorMessage;
+                            break;
                         }
-                        catch { }
-                        break;
 
-                    case "auditor":
-                        try
+                        case "index-no-gate":
                         {
-                            try { await ReadMemoryAsync(store, "project:requirements", cancellationToken); }
-                            catch (FileNotFoundException) { validationError = "No requirements found. The auditor must call requirement('add') before this gate can complete."; }
-                        }
-                        catch { }
-                        break;
-
-                    case "researcher":
-                        try
-                        {
-                            var (resScope, _) = store.ParseQualifiedName("research:placeholder");
-                            var resEntries = store.LoadIndex(resScope);
-                            string resGoalShort = "";
-                            if (activeGoal is not null)
-                            {
-                                var rgm = GoalIdPattern.Match(activeGoal);
-                                if (rgm.Success) resGoalShort = $"g{rgm.Groups[1].Value}";
-                            }
-                            bool hasResearch = resEntries.Any(e =>
-                                string.IsNullOrEmpty(resGoalShort) ||
-                                e.Name.StartsWith(resGoalShort, StringComparison.OrdinalIgnoreCase));
-                            if (!hasResearch)
-                                validationError = "No research:* memories found. The researcher must store findings before this gate can complete.";
-                        }
-                        catch { }
-                        break;
-
-                    case "planner":
-                        try
-                        {
-                            var (ptScope, _) = store.ParseQualifiedName("task:placeholder");
-                            var ptEntries = store.LoadIndex(ptScope);
-                            // Check for non-seed tasks (tasks that don't have gate: keyword — i.e., execution tasks)
-                            string ptGoalShort = "";
-                            if (activeGoal is not null)
-                            {
-                                var pgm = GoalIdPattern.Match(activeGoal);
-                                if (pgm.Success) ptGoalShort = $"g{pgm.Groups[1].Value}";
-                            }
-                            bool hasExecutionTasks = ptEntries.Any(e =>
-                                (string.IsNullOrEmpty(ptGoalShort) || HasKeyword(e, $"goal:{activeGoal}")) &&
-                                e.Keywords is not null && !e.Keywords.Any(k => k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase)));
+                            int ngColonIdx = target.IndexOf(':');
+                            string ngTopic = ngColonIdx >= 0 ? target[..ngColonIdx] : target;
+                            var (ngScope, _) = store.ParseQualifiedName($"{ngTopic}:placeholder");
+                            var ngEntries = store.LoadIndex(ngScope);
+                            bool hasExecutionTasks = ngEntries.Any(e =>
+                                (string.IsNullOrEmpty(goalShort) || HasKeyword(e, $"goal:{activeGoal}")) &&
+                                e.Keywords is not null && !e.Keywords.Any(k => k.StartsWith("tag:", StringComparison.OrdinalIgnoreCase) || k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase)));
                             if (!hasExecutionTasks)
-                                validationError = "No execution tasks found. The planner must call plan('tasks') before this gate can complete.";
+                                validationError = errorMessage;
+                            break;
                         }
-                        catch { }
-                        break;
 
-                    case "evolutionary":
-                        try
+                        case "filesystem-glob":
                         {
-                            var (evoScope, _) = store.ParseQualifiedName("sessions:placeholder");
-                            var evoEntries = store.LoadIndex(evoScope);
-                            bool hasEvoSession = evoEntries.Any(e =>
-                                e.Name.StartsWith("evolutionary-", StringComparison.OrdinalIgnoreCase));
-                            if (!hasEvoSession)
-                                validationError = "No sessions:evolutionary-* memory found. The evolutionary agent must complete its scan.";
+                            string fsStoreDir = store.GetStoreDirForScope("local");
+                            string fsScriniaDir = Path.GetDirectoryName(fsStoreDir) ?? fsStoreDir;
+                            string workspaceRoot = Path.GetDirectoryName(fsScriniaDir) ?? fsScriniaDir;
+                            // target is e.g. "docs/reports/*.md" — split into directory and file pattern
+                            string targetNormalized = target.Replace('/', Path.DirectorySeparatorChar);
+                            string globDir = Path.Combine(workspaceRoot, Path.GetDirectoryName(targetNormalized) ?? "");
+                            string globPattern = Path.GetFileName(targetNormalized);
+                            if (!Directory.Exists(globDir) || !Directory.EnumerateFiles(globDir, globPattern).Any())
+                                validationError = errorMessage;
+                            break;
                         }
-                        catch { }
-                        break;
-
-                    case "cartographer":
-                        try
-                        {
-                            var (cartoScope, _) = store.ParseQualifiedName("cartography:placeholder");
-                            var cartoEntries = store.LoadIndex(cartoScope);
-                            if (cartoEntries.Count == 0)
-                                validationError = "No cartography:* memory found. The cartographer agent must complete its scan.";
-                        }
-                        catch { }
-                        break;
-
-                    case "march":
-                        try
-                        {
-                            string gwStoreDir = store.GetStoreDirForScope("local");
-                            string gwScriniaDir = Path.GetDirectoryName(gwStoreDir) ?? gwStoreDir;
-                            string workspaceRoot = Path.GetDirectoryName(gwScriniaDir) ?? gwScriniaDir;
-                            string reportsDir = Path.Combine(workspaceRoot, "docs", "reports");
-                            if (!Directory.Exists(reportsDir) || !Directory.EnumerateFiles(reportsDir, "*.md").Any())
-                                validationError = "No march report found in docs/reports/. The march reporter must produce a report.";
-                        }
-                        catch { }
-                        break;
+                    }
                 }
+                catch { /* best-effort validation — swallow exceptions like the original */ }
 
                 if (validationError is not null)
-                    return $"Error: gate '{gateType}' validation failed — {validationError}";
+                {
+                    var gateResponse = ResponseBuilder.Error($"gate '{gateType}' validation failed — {validationError}");
+                    if (instructionMessage is not null)
+                        gateResponse = gateResponse.WithInstruction(instructionMessage);
+                    return gateResponse.ToYaml();
+                }
+
+                // RequiredOutputs validation (in addition to gate validation)
+                if (activity?.RequiredOutputs is { Length: > 0 } requiredOutputs)
+                {
+                    foreach (var req in requiredOutputs)
+                    {
+                        string reqTarget = SubstituteGoalShort(req.Target, goalShort);
+                        string? reqError = null;
+
+                        try
+                        {
+                            switch (req.CheckType?.ToLowerInvariant())
+                            {
+                                case "memory-exists":
+                                    try { await ReadMemoryAsync(store, reqTarget, cancellationToken); }
+                                    catch (FileNotFoundException) { reqError = SubstituteGoalShort(req.ErrorTemplate, goalShort); }
+                                    break;
+
+                                case "index-prefix":
+                                {
+                                    int roColonIdx = reqTarget.IndexOf(':');
+                                    string roTopic = roColonIdx >= 0 ? reqTarget[..roColonIdx] : reqTarget;
+                                    string roPrefix = roColonIdx >= 0 ? reqTarget[(roColonIdx + 1)..] : "";
+                                    var (roScope, _) = store.ParseQualifiedName($"{roTopic}:placeholder");
+                                    var roEntries = store.LoadIndex(roScope);
+                                    bool roFound = roEntries.Any(e =>
+                                        string.IsNullOrEmpty(roPrefix) ||
+                                        e.Name.StartsWith(roPrefix, StringComparison.OrdinalIgnoreCase));
+                                    if (!roFound)
+                                        reqError = SubstituteGoalShort(req.ErrorTemplate, goalShort);
+                                    break;
+                                }
+
+                                case "index-no-gate":
+                                {
+                                    int roNgColonIdx = reqTarget.IndexOf(':');
+                                    string roNgTopic = roNgColonIdx >= 0 ? reqTarget[..roNgColonIdx] : reqTarget;
+                                    var (roNgScope, _) = store.ParseQualifiedName($"{roNgTopic}:placeholder");
+                                    var roNgEntries = store.LoadIndex(roNgScope);
+                                    bool roHasExecTasks = roNgEntries.Any(e =>
+                                        (string.IsNullOrEmpty(goalShort) || HasKeyword(e, $"goal:{activeGoal}")) &&
+                                        e.Keywords is not null && !e.Keywords.Any(k => k.StartsWith("tag:", StringComparison.OrdinalIgnoreCase) || k.StartsWith("gate:", StringComparison.OrdinalIgnoreCase)));
+                                    if (!roHasExecTasks)
+                                        reqError = SubstituteGoalShort(req.ErrorTemplate, goalShort);
+                                    break;
+                                }
+
+                                case "filesystem-glob":
+                                {
+                                    string roFsStoreDir = store.GetStoreDirForScope("local");
+                                    string roFsScriniaDir = Path.GetDirectoryName(roFsStoreDir) ?? roFsStoreDir;
+                                    string roWorkspaceRoot = Path.GetDirectoryName(roFsScriniaDir) ?? roFsScriniaDir;
+                                    string roTargetNormalized = reqTarget.Replace('/', Path.DirectorySeparatorChar);
+                                    string roGlobDir = Path.Combine(roWorkspaceRoot, Path.GetDirectoryName(roTargetNormalized) ?? "");
+                                    string roGlobPattern = Path.GetFileName(roTargetNormalized);
+                                    if (!Directory.Exists(roGlobDir) || !Directory.EnumerateFiles(roGlobDir, roGlobPattern).Any())
+                                        reqError = SubstituteGoalShort(req.ErrorTemplate, goalShort);
+                                    break;
+                                }
+                            }
+                        }
+                        catch { /* best-effort validation — swallow exceptions */ }
+
+                        if (reqError is not null)
+                        {
+                            string reqInstruction = req.InstructionTemplate is not null
+                                ? SubstituteGoalShort(req.InstructionTemplate, goalShort)
+                                : "Produce the required output before completing this task.";
+                            return ResponseBuilder.Error($"Required output check failed: {reqError}")
+                                .WithInstruction(reqInstruction)
+                                .ToYaml();
+                        }
+                    }
+                }
             }
         }
 
@@ -1655,6 +2428,52 @@ public sealed class ScriniaProjectTools
 
         await AppendToExecutionLogAsync(store, logName, outcomeEntry, cancellationToken);
 
+        // Auto-compact execution log if too large (COMPACT-01)
+        string compactionNotice = "";
+        try
+        {
+            var (logScope, logSubject) = store.ParseQualifiedName(logName);
+            var logEntries = store.LoadIndex(logScope);
+            var logEntry = logEntries.FirstOrDefault(e => e.Name == logSubject);
+            if (logEntry is not null && logEntry.ChunkCount > 50)
+            {
+                const int keepRecent = 20;
+
+                string artifact = await store.ReadArtifactAsync(logSubject, logScope, cancellationToken);
+                int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+
+                if (chunkCount > 50)
+                {
+                    // Archive the original before modifying
+                    store.ArchiveVersion(logSubject, logScope);
+
+                    // Keep last 20 chunks
+                    int startChunk = chunkCount - keepRecent + 1;
+                    var keptChunks = new string[keepRecent];
+                    for (int i = 0; i < keepRecent; i++)
+                        keptChunks[i] = Nmp2ChunkedEncoder.DecodeChunk(artifact, startChunk + i);
+
+                    string compacted = Nmp2ChunkedEncoder.EncodeChunks(keptChunks);
+                    await store.WriteArtifactAsync(logSubject, logScope, compacted, cancellationToken);
+
+                    // Update index entry
+                    long newBytes = System.Text.Encoding.UTF8.GetByteCount(
+                        System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(compacted)));
+                    store.Upsert(logEntry with
+                    {
+                        ChunkCount = keepRecent,
+                        OriginalBytes = newBytes,
+                        UpdatedAt = DateTimeOffset.UtcNow,
+                        ChunkEntries = null
+                    }, logScope);
+
+                    // COMPACT-02: notice for response
+                    compactionNotice = $"\nExecution log auto-compacted: {chunkCount} → {keepRecent} chunks.";
+                }
+            }
+        }
+        catch { /* best-effort compaction */ }
+
         // Update project state with computed progress
         string stateText;
         try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
@@ -1678,7 +2497,7 @@ public sealed class ScriniaProjectTools
 
         string nextStep;
         if (phaseComplete)
-            nextStep = $"all phase {phaseId} tasks complete — verify the work (run tests, review changes), then run plan('verify') to record results";
+            nextStep = $"all phase {phaseId} tasks complete — the QA gate task will handle verification, run task('next') to continue";
         else
         {
             var pendingCheck = goalScopedEntries
@@ -1699,12 +2518,14 @@ public sealed class ScriniaProjectTools
             nextStep: nextStep,
             cancellationToken);
 
-        string response;
+        string tcContent;
+        string? tcInstruction;
+        var tcInfoItems = new List<string>();
+
         if (phaseComplete)
         {
-            response = $"Task '{taskName}' marked complete. All phase {phaseId} tasks done.\n" +
-                $"Next: verify the work yourself (run tests, review changes, confirm behavior), " +
-                $"then call plan('verify', {{ phaseId: \"{phaseId}\" }}) to record your verification results.";
+            tcContent = $"Task '{taskName}' marked complete. All phase {phaseId} tasks done.";
+            tcInstruction = "verify the work (run tests, review changes, confirm behavior), then call task('next') — the QA gate task will handle structured verification.";
         }
         else
         {
@@ -1719,19 +2540,38 @@ public sealed class ScriniaProjectTools
             int totalRemaining = pendingInPhase.Count;
 
             if (sameWaveRemaining > 1)
-                response = $"Task '{taskName}' marked complete. {sameWaveRemaining} tasks remaining in wave {thisWave} — keep parallel agents running. Call task('complete') for each as they finish.";
+            {
+                tcContent = $"Task '{taskName}' marked complete. {sameWaveRemaining} tasks remaining in wave {thisWave}.";
+                tcInstruction = "keep parallel agents running — call task('complete') for each as they finish.";
+            }
             else if (sameWaveRemaining == 1)
-                response = $"Task '{taskName}' marked complete. 1 task remaining in wave {thisWave}.";
+            {
+                tcContent = $"Task '{taskName}' marked complete. 1 task remaining in wave {thisWave}.";
+                tcInstruction = null;
+            }
             else
-                response = $"Task '{taskName}' marked complete. Wave {thisWave} done. Run task('next') to get wave {thisWave + 1} tasks ({totalRemaining} pending).";
+            {
+                tcContent = $"Task '{taskName}' marked complete. Wave {thisWave} done.";
+                tcInstruction = $"call task('next') to get wave {thisWave + 1} tasks ({totalRemaining} pending).";
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(acceptanceCriteria))
-            response += $"\nAcceptance criteria for this task:\n{acceptanceCriteria}";
+            tcContent += $"\nAcceptance criteria for this task:\n{acceptanceCriteria}";
 
-        response = Truncate(response);
+        // COMPACT-02: add compaction notice if triggered
+        if (!string.IsNullOrEmpty(compactionNotice))
+            tcInfoItems.Add(compactionNotice.Trim());
 
-        return response;
+        var tcResponse = ResponseBuilder.Success(tcContent)
+            .WithPath($"task:{subject}")
+            .WithAction("completed");
+        if (tcInstruction is not null)
+            tcResponse = tcResponse.WithInstruction(tcInstruction);
+        if (tcInfoItems.Count > 0)
+            tcResponse = tcResponse.WithInfo([.. tcInfoItems]);
+
+        return tcResponse.ToYaml();
     }
 
     /// <summary>
@@ -1756,11 +2596,11 @@ public sealed class ScriniaProjectTools
                 // Count memories created/modified after last cartography
                 int newSince = allEntries.Count(e => (e.Entry.UpdatedAt ?? e.Entry.CreatedAt) > lastCartDate);
                 if (newSince >= 10)
-                    return $"\u26a0 {newSince} memories created/modified since last cartographer run. Run skill('load', {{ name: \"cartographer\" }}) to index connections.\n";
+                    return $"⚠ ACTION NEEDED: {newSince} memories created/modified since last cartographer run — spawn a cartographer to index connections.\n";
             }
             else if (totalMemories >= 10)
             {
-                return $"\u26a0 {totalMemories} memories exist with no cartographer run. Run skill('load', {{ name: \"cartographer\" }}) to index connections.\n";
+                return $"⚠ ACTION NEEDED: {totalMemories} memories exist with no cartographer run — spawn a cartographer to index connections.\n";
             }
         }
         catch { /* best-effort */ }
@@ -1871,6 +2711,17 @@ public sealed class ScriniaProjectTools
 
     // ── Keyword helpers (EXEC-01) ─────────────────────────────────────────────
 
+    /// <summary>Substitutes {goalShort} in a template and collapses any resulting double-dashes
+    /// so that e.g. "retro-{goalShort}-" becomes "retro-" (not "retro--") when goalShort is empty.</summary>
+    private static string SubstituteGoalShort(string template, string goalShort)
+    {
+        string result = template.Replace("{goalShort}", goalShort);
+        // Collapse double-dashes that result from empty goalShort substitution
+        if (goalShort.Length == 0)
+            result = result.Replace("--", "-");
+        return result;
+    }
+
     /// <summary>Returns true if the entry has the given keyword (case-insensitive).</summary>
     internal static bool HasKeyword(ArtifactEntry e, string keyword) =>
         e.Keywords?.Contains(keyword, StringComparer.OrdinalIgnoreCase) == true;
@@ -1890,6 +2741,30 @@ public sealed class ScriniaProjectTools
             return match.Success ? $"G-{match.Groups[1].Value}" : null;
         }
         catch { return null; }
+    }
+
+    /// <summary>Resolves workflow name for the active goal by reading the "workflow:*" keyword from its seed tasks. Falls back to "default".</summary>
+    internal static string ResolveGoalWorkflowName(IMemoryStore store, string? goalId)
+    {
+        if (goalId is null) return "default";
+        try
+        {
+            var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+            var taskEntries = store.LoadIndex(taskScope);
+            // Find any task belonging to this goal that has a workflow keyword
+            var goalTask = taskEntries.FirstOrDefault(e =>
+                HasKeyword(e, $"goal:{goalId}") &&
+                e.Keywords?.Any(k => k.StartsWith("workflow:", StringComparison.OrdinalIgnoreCase)) == true);
+            if (goalTask?.Keywords is not null)
+            {
+                string? wfKeyword = goalTask.Keywords.FirstOrDefault(k =>
+                    k.StartsWith("workflow:", StringComparison.OrdinalIgnoreCase));
+                if (wfKeyword is not null)
+                    return wfKeyword["workflow:".Length..];
+            }
+        }
+        catch { /* best-effort */ }
+        return "default";
     }
 
     /// <summary>Extracts wave number from "wave:N" keyword; returns 0 if not found.</summary>
@@ -1929,20 +2804,17 @@ public sealed class ScriniaProjectTools
 
     // ── Concern tracking tools (CONC-01, CONC-02, CONC-03) ───────────────────
 
-    /// <summary>Thin dispatcher for concern operations — delegates to ConcernAdd/ConcernResolve/ConcernList.</summary>
-    [McpServerTool(Name = "concern"), Description(
-        "Track project concerns. Actions: 'add' (new concern), 'resolve' (mark resolved), " +
-        "'list' (show concerns by status/phase).")]
+    /// <summary>Internal dispatcher for concern operations — delegates to ConcernAdd/ConcernResolve/ConcernList. Exposed via memory() dispatcher.</summary>
     public async Task<string> ConcernDispatch(
-        [Description("Action: 'add', 'resolve', 'list'. Defaults to 'list'.")] string action = "list",
-        [Description("Concern description (add).")] string? description = null,
-        [Description("Severity: high/medium/low (add).")] string? severity = null,
-        [Description("Phase scope (add).")] string? phaseScope = null,
-        [Description("Concern ID (add — optional, resolve — as concernName).")] string? id = null,
-        [Description("Concern name to resolve (resolve).")] string? concernName = null,
-        [Description("Resolution notes (resolve).")] string? resolution = null,
-        [Description("Who verified: debugger/qa/manual (resolve).")] string? verifiedBy = null,
-        [Description("Phase filter (list).")] string? phaseFilter = null,
+        string action = "list",
+        string? description = null,
+        string? severity = null,
+        string? phaseScope = null,
+        string? id = null,
+        string? concernName = null,
+        string? resolution = null,
+        string? verifiedBy = null,
+        string? phaseFilter = null,
         CancellationToken cancellationToken = default)
     {
         string act = action.Trim().ToLowerInvariant();
@@ -1950,27 +2822,27 @@ public sealed class ScriniaProjectTools
         {
             case "add":
                 if (string.IsNullOrWhiteSpace(description))
-                    return "Error: concern('add') requires 'description' parameter.";
+                    return ResponseBuilder.Error("concern('add') requires 'description' parameter.").ToYaml();
                 if (string.IsNullOrWhiteSpace(severity))
-                    return "Error: concern('add') requires 'severity' parameter.";
+                    return ResponseBuilder.Error("concern('add') requires 'severity' parameter.").ToYaml();
                 if (string.IsNullOrWhiteSpace(phaseScope))
-                    return "Error: concern('add') requires 'phaseScope' parameter.";
+                    return ResponseBuilder.Error("concern('add') requires 'phaseScope' parameter.").ToYaml();
                 return await ConcernAdd(description, severity, phaseScope, id, cancellationToken);
 
             case "resolve":
                 if (string.IsNullOrWhiteSpace(concernName))
-                    return "Error: concern('resolve') requires 'concernName' parameter.";
+                    return ResponseBuilder.Error("concern('resolve') requires 'concernName' parameter.").ToYaml();
                 if (string.IsNullOrWhiteSpace(resolution))
-                    return "Error: concern('resolve') requires 'resolution' parameter.";
+                    return ResponseBuilder.Error("concern('resolve') requires 'resolution' parameter.").ToYaml();
                 if (string.IsNullOrWhiteSpace(verifiedBy))
-                    return "Error: concern('resolve') requires 'verifiedBy' parameter.";
+                    return ResponseBuilder.Error("concern('resolve') requires 'verifiedBy' parameter.").ToYaml();
                 return await ConcernResolve(concernName, resolution, verifiedBy, cancellationToken);
 
             case "list":
                 return await ConcernList(phaseFilter, statusFilter: null, cancellationToken);
 
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'add', 'resolve', 'list'.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: 'add', 'resolve', 'list'.").ToYaml();
         }
     }
 
@@ -1991,7 +2863,7 @@ public sealed class ScriniaProjectTools
         }
         catch (FileNotFoundException)
         {
-            return "Error: no project initialized. Run project_init first.";
+            return ResponseBuilder.Error("No project initialized. Run project_init first.").ToYaml();
         }
 
         // Generate ID if not provided
@@ -2077,10 +2949,15 @@ public sealed class ScriniaProjectTools
             progressPct: progressPct,
             lastAction: $"Concern added: {qualifiedName} (severity:{severity})",
             blockers: "none",
-            nextStep: "run concern to list active concerns, or concern('resolve') when addressed",
+            nextStep: "run memory('list', { path: '/concern/' }) to list active concerns, or memory('transition', { path: '/concern/...', to: 'resolved' }) when addressed",
             cancellationToken);
 
-        return $"Stored as {qualifiedName}. Files in .scrinia/ were updated — these are your changes." + patternSuggestion;
+        var caResponse = ResponseBuilder.Success($"Stored as {qualifiedName}. Files in .scrinia/ were updated — these are your changes.")
+            .WithPath(qualifiedName)
+            .WithAction("created");
+        if (!string.IsNullOrEmpty(patternSuggestion))
+            caResponse = caResponse.WithInfo(patternSuggestion.Trim());
+        return caResponse.ToYaml();
     }
 
     /// <summary>Resolve a tracked concern with resolution notes.</summary>
@@ -2094,7 +2971,7 @@ public sealed class ScriniaProjectTools
 
         var validVerifiers = new[] { "debugger", "qa", "manual" };
         if (!validVerifiers.Contains(verifiedBy, StringComparer.OrdinalIgnoreCase))
-            return $"Error: verifiedBy must be 'debugger', 'qa', or 'manual'. Got: '{verifiedBy}'.";
+            return ResponseBuilder.Error($"verifiedBy must be 'debugger', 'qa', or 'manual'. Got: '{verifiedBy}'.").ToYaml();
 
         // Parse name to get scope and subject
         var (scope, subject) = store.ParseQualifiedName(concernName);
@@ -2105,7 +2982,7 @@ public sealed class ScriniaProjectTools
             string.Equals(e.Name, subject, StringComparison.OrdinalIgnoreCase));
 
         if (existing is null)
-            return $"Error: concern '{concernName}' not found.";
+            return ResponseBuilder.Error($"Concern '{concernName}' not found.").ToYaml();
 
         // Extract existing severity and phase keywords (to preserve them)
         string severityKw = existing.Keywords?
@@ -2158,7 +3035,10 @@ public sealed class ScriniaProjectTools
             nextStep: "run concern to check remaining active concerns",
             cancellationToken);
 
-        return $"Concern '{concernName}' resolved. Files in .scrinia/ were updated — these are your changes.";
+        return ResponseBuilder.Success($"Concern '{concernName}' resolved. Files in .scrinia/ were updated — these are your changes.")
+            .WithPath(concernName)
+            .WithAction("resolved")
+            .ToYaml();
     }
 
     /// <summary>List tracked concerns by status and phase (index-only, no artifact decoding).</summary>
@@ -2180,7 +3060,7 @@ public sealed class ScriniaProjectTools
         }
         catch
         {
-            return Task.FromResult($"No active concerns.");
+            return Task.FromResult(ResponseBuilder.Success("No active concerns.").WithAction("listed").ToYaml());
         }
 
         // Filter by status
@@ -2199,7 +3079,7 @@ public sealed class ScriniaProjectTools
         if (filtered.Count == 0)
         {
             string phaseNote = phaseFilter is not null ? $" (phase:{phaseFilter})" : "";
-            return Task.FromResult($"No active concerns{phaseNote}.");
+            return Task.FromResult(ResponseBuilder.Success($"No active concerns{phaseNote}.").WithAction("listed").ToYaml());
         }
 
         var sb = new System.Text.StringBuilder();
@@ -2224,10 +3104,7 @@ public sealed class ScriniaProjectTools
             }
         }
 
-        string response = sb.ToString();
-        response = Truncate(response);
-
-        return Task.FromResult(response);
+        return Task.FromResult(ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml());
     }
 
     /// <summary>Store a structured phase retrospective in learn:retro-gN-phaseId.</summary>
@@ -2253,7 +3130,7 @@ public sealed class ScriniaProjectTools
             $"## What Failed\n{whatFailed}\n\n" +
             $"## Lessons\n{lessons}" +
             beliefsSection + "\n\n" +
-            $"## Provenance\nAuthored by agent via plan('retrospective'). Keyword: provenance:agent";
+            $"## Provenance\nAuthored by agent via self-reflector gate. Keyword: provenance:agent";
 
         // Fetch goal ID early so per-phase file name includes it
         string? retroGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
@@ -2325,23 +3202,23 @@ public sealed class ScriniaProjectTools
                     if (skillEntries.Count > 0)
                     {
                         var names = skillEntries.Select(e => $"skill:{e.Name}").Take(5);
-                        skillNudge = $"\nExisting skills to consider updating: {string.Join(", ", names)}";
+                        skillNudge = $"\nℹ Existing skills to consider updating: {string.Join(", ", names)}";
                     }
                 }
                 catch { /* skill scope not yet created — skip silently */ }
 
                 if (allPhasesDone)
-                    retroNextStep = "\nAll phases complete. Before completing the goal:\n" +
-                        "0. Run QA: skill('load', { name: \"qa\" }) → verify tests pass, build clean, criteria met\n" +
-                        "1. Produce a march report: skill('load', { name: \"march-reporter\" }) → docs/reports/ + sessions:YYYY-MM-DD memory\n" +
-                        "2. Distill valuable learnings into topical memories (store) so future goals start smarter\n" +
-                        "3. Update existing skills or create new ones (skill('create')) with lessons from this goal" +
+                    retroNextStep = "\nAll phases complete. → INSTRUCTION: complete the following before calling memory('transition', { path: '/goal/G-X', to: 'complete' }):\n" +
+                        "0. Spawn QA agent: memory('recall', { path: '/skill/qa' }) → verify tests pass, build clean, criteria met\n" +
+                        "1. Spawn march reporter: memory('recall', { path: '/skill/march-reporter' }) → docs/reports/ + sessions:YYYY-MM-DD memory\n" +
+                        "2. Distill valuable learnings into topical memories (remember) so future goals start smarter\n" +
+                        "3. Update existing skills or create new ones (memory('remember', { path: '/skill/...' })) with lessons from this goal" +
                         skillNudge + "\n" +
-                        "4. Then run goal('complete')";
+                        "4. Then call memory('transition', { path: '/goal/G-X', to: 'complete' })";
                 else if (nextPhase is not null)
-                    retroNextStep = $"\nNext: investigate phase {nextPhase} — explore the codebase, store research findings, then plan tasks." +
+                    retroNextStep = $"\n→ INSTRUCTION: investigate phase {nextPhase} — explore the codebase, store research findings, then plan tasks." +
                         skillNudge +
-                        "\nTip: if this conversation is getting long, checkpoint your state: store([\"current context...\"], \"~checkpoint\")";
+                        "\nℹ if this conversation is getting long, checkpoint your state: store([\"current context...\"], \"~checkpoint\")";
             }
         }
         catch { /* best-effort guidance */ }
@@ -2363,22 +3240,28 @@ public sealed class ScriniaProjectTools
             nextStep: retroNextStep.TrimStart('\n'),
             cancellationToken);
 
-        string response = $"Phase {phaseId} retrospective stored in {retroMemoryName}. " +
+        string retroContent2 = $"Phase {phaseId} retrospective stored in {retroMemoryName}. " +
             "Searchable via standard search.\n" +
-            "Update your session log: append to or store sessions:YYYY-MM-DD with this phase's outcome." +
-            retroNextStep;
+            "Update your session log: append to or store sessions:YYYY-MM-DD with this phase's outcome.";
 
+        var retroWarnings = new List<string>();
         // Check memory growth for cartographer nudge (CART-02)
         string retroCartWarning = CheckCartographerNeeded(store);
         if (!string.IsNullOrEmpty(retroCartWarning))
-            response += "\n\n" + retroCartWarning.TrimEnd();
+            retroWarnings.Add(retroCartWarning.Replace("\u26a0 ACTION NEEDED: ", "").TrimEnd());
 
-        response = Truncate(response);
+        var retroResponse = ResponseBuilder.Success(retroContent2)
+            .WithPath(retroMemoryName)
+            .WithAction("created");
+        if (!string.IsNullOrEmpty(retroNextStep))
+            retroResponse = retroResponse.WithInstruction(retroNextStep.TrimStart('\n'));
+        if (retroWarnings.Count > 0)
+            retroResponse = retroResponse.WithActionNeeded([.. retroWarnings]);
 
-        return response;
+        return retroResponse.ToYaml();
     }
 
-    /// <summary>Alias for AgentProfile — used by plan('profile') dispatcher.</summary>
+    /// <summary>Alias for AgentProfile — used by profile dispatcher.</summary>
     internal Task<string> PlanProfile(string profile, CancellationToken cancellationToken = default)
         => AgentProfile(profile, cancellationToken);
 
@@ -2389,34 +3272,46 @@ public sealed class ScriniaProjectTools
     {
         var store = CurrentStore;
 
-        await WritePlanningMemoryAsync(store, "agent:profile", profile,
-            archiveExisting: false, keywords: ["provenance:agent"], cancellationToken);
+        // Write to .scrinia/agent/profile.md (plain markdown)
+        string baseDir = GetScriniaBaseDir(store);
+        string agentDir = Path.Combine(baseDir, "agent");
+        string filePath = Path.Combine(agentDir, "profile.md");
+        Directory.CreateDirectory(agentDir);
 
-        string response = "Agent profile stored in agent:profile. " +
-            "Norms persist across sessions and are searchable via standard search.";
+        // Archive previous version if file exists
+        ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
 
-        response = Truncate(response);
+        await File.WriteAllTextAsync(filePath, profile, cancellationToken);
 
-        return response;
+        // Write sidecar metadata
+        string now = DateTimeOffset.UtcNow.ToString("o");
+        var existingMeta = ReadSidecarMeta(filePath, PlanningJsonContext.Default.AgentFileMeta);
+        var meta = new AgentFileMeta(
+            CreatedAt: existingMeta?.CreatedAt ?? now,
+            UpdatedAt: now);
+        WriteSidecarMeta(filePath, meta, PlanningJsonContext.Default.AgentFileMeta);
+
+        return ResponseBuilder.Success("Agent profile stored in .scrinia/agent/profile.md. Norms persist across sessions and are searchable via standard search.")
+            .WithPath("agent:profile")
+            .WithAction("created")
+            .ToYaml();
     }
 
-    // knowledge_add removed — knowledge is just topical memories via store().
-    // e.g., store(content, "dotnet:asynclocal-pattern", keywords=["source:agent"])
+    // knowledge_add removed — knowledge is just memories via remember().
+    // e.g., memory('remember', { path: '/dotnet/asynclocal-pattern', content: [...], keywords: ["source:agent"] })
 
     // -- Dynamic goal management (GOAL-01, GOAL-02, GOAL-04) ---------------------
 
-    /// <summary>Thin dispatcher for goal management — delegates to GoalUpdate.</summary>
-    [McpServerTool(Name = "goal"), Description(
-        "Manage project goals. Actions: 'add' (new goal), 'edit' (update description), " +
-        "'complete' (mark done with outcome), 'list' (show all goals with status).")]
+    /// <summary>Internal dispatcher for goal management — delegates to GoalUpdate. Exposed via memory() dispatcher.</summary>
     public Task<string> Goal(
-        [Description("Action: 'add', 'edit', 'complete', 'list'.")] string action,
-        [Description("Goal description (add, edit).")] string? description = null,
-        [Description("Goal ID (edit, complete).")] string? goalId = null,
-        [Description("Outcome note (complete).")] string? outcome = null,
+        string action,
+        string? description = null,
+        string? goalId = null,
+        string? outcome = null,
+        string? workflowRef = null,
         CancellationToken cancellationToken = default)
     {
-        return GoalUpdate(action, description, goalId, outcome, cancellationToken);
+        return GoalUpdate(action, description, goalId, outcome, workflowRef, cancellationToken);
     }
 
     /// <summary>Manage project goals dynamically.</summary>
@@ -2425,6 +3320,7 @@ public sealed class ScriniaProjectTools
         [Description("Goal description (required for 'add' action).")] string? description = null,
         [Description("Goal ID to complete (e.g. 'G-1'); required for 'complete' action.")] string? goalId = null,
         [Description("Outcome note; required for 'complete' action.")] string? outcome = null,
+        string? workflowRef = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -2437,7 +3333,7 @@ public sealed class ScriniaProjectTools
         }
         catch (FileNotFoundException)
         {
-            return "Error: no project initialized. Run project_init first.";
+            return ResponseBuilder.Error("No project initialized. Run project_init first.").ToYaml();
         }
 
         string actionLower = action.Trim().ToLowerInvariant();
@@ -2447,7 +3343,7 @@ public sealed class ScriniaProjectTools
             case "add":
             {
                 if (string.IsNullOrWhiteSpace(description))
-                    return "Error: 'add' action requires a description.";
+                    return ResponseBuilder.Error("'add' action requires a description.").ToYaml();
 
                 var (goals, originalCount, contextWithoutGoals) = ParseGoalsSection(contextText);
 
@@ -2498,65 +3394,36 @@ public sealed class ScriniaProjectTools
                 var gpMatch = GoalIdPattern.Match(newGoalId);
                 if (gpMatch.Success) goalPrefix = $"g{gpMatch.Groups[1].Value}-";
 
-                // Auto-create researcher seed task (wave 0 — research first for full context)
-                try
+                // Auto-create seed tasks from workflow definition (override-aware)
+                string resolvedWorkflowName = workflowRef ?? "default";
+                var (workflow, _) = await ResolveWorkflowAsync(store, resolvedWorkflowName, cancellationToken);
+                foreach (var activity in workflow.SeedActivities.OrderBy(a => a.Wave ?? 0))
                 {
-                    string researcherTaskName = $"task:{goalPrefix}00-0-researcher";
-                    var researcherKeywords = new List<string> { "status:pending", "wave:0", "phase:00", "gate:researcher" };
-                    researcherKeywords.Add($"goal:{newGoalId}");
-                    string researcherContent =
-                        "## Researcher Task\n" +
-                        "Action: Investigate the goal scope by exploring the codebase and existing memories. " +
-                        "Understand what exists, what needs to change, and what risks are present. " +
-                        "Store findings via memory('store', { name: \"research:...\", content: [...] }).\n" +
-                        "Acceptance criteria:\n" +
-                        "- Research findings stored as research:* memories\n" +
-                        "- Scope and implementation approach documented";
-                    await WritePlanningMemoryAsync(store, researcherTaskName, researcherContent,
-                        archiveExisting: false, keywords: [.. researcherKeywords], cancellationToken);
+                    try
+                    {
+                        string taskName = $"task:{goalPrefix}00-{activity.Wave}-{activity.Id}";
+                        var keywords = new List<string>
+                        {
+                            "status:pending",
+                            $"wave:{activity.Wave}",
+                            "phase:00",
+                            $"tag:{activity.Tag}",
+                            $"goal:{newGoalId}",
+                            $"workflow:{resolvedWorkflowName}"
+                        };
+                        // Map activity DependsOn IDs to full task names
+                        foreach (var dep in activity.DependsOn)
+                        {
+                            var depActivity = workflow.SeedActivities.FirstOrDefault(a => a.Id == dep);
+                            if (depActivity is not null)
+                                keywords.Add($"depends_on:{goalPrefix}00-{depActivity.Wave}-{depActivity.Id}");
+                        }
+                        // Store the task
+                        await WritePlanningMemoryAsync(store, taskName, activity.Prompt,
+                            archiveExisting: false, keywords: [.. keywords], cancellationToken);
+                    }
+                    catch { /* best-effort */ }
                 }
-                catch { /* best-effort */ }
-
-                // Auto-create auditor seed task (wave 1, depends on researcher)
-                try
-                {
-                    string auditorTaskName = $"task:{goalPrefix}00-1-auditor";
-                    var auditorKeywords = new List<string> { "status:pending", "wave:1", "phase:00", "gate:auditor",
-                        $"depends_on:{goalPrefix}00-0-researcher" };
-                    auditorKeywords.Add($"goal:{newGoalId}");
-                    string auditorContent =
-                        "## Auditor Task\n" +
-                        "Action: Load the auditor skill via skill('load', { name: \"auditor\" }). " +
-                        "Read the research findings to understand full scope and context. " +
-                        "Call requirement('add') for each requirement discovered. " +
-                        "Call concern('add') for each risk or issue found.\n" +
-                        "Acceptance criteria:\n" +
-                        "- Requirements captured via requirement('add')\n" +
-                        "- Concerns raised via concern('add')";
-                    await WritePlanningMemoryAsync(store, auditorTaskName, auditorContent,
-                        archiveExisting: false, keywords: [.. auditorKeywords], cancellationToken);
-                }
-                catch { /* best-effort */ }
-
-                // Auto-create planner seed task (wave 2, depends on auditor)
-                try
-                {
-                    string plannerTaskName = $"task:{goalPrefix}00-2-planner";
-                    var plannerKeywords = new List<string> { "status:pending", "wave:2", "phase:00", "gate:planner",
-                        $"depends_on:{goalPrefix}00-1-auditor" };
-                    plannerKeywords.Add($"goal:{newGoalId}");
-                    string plannerContent =
-                        "## Planner Task\n" +
-                        "Action: Load the planner skill via skill('load', {{ name: \"planner\" }}). " +
-                        "Read research findings and requirements. " +
-                        "Produce task definitions and call plan('tasks') directly.\n" +
-                        "Acceptance criteria:\n" +
-                        "- plan('tasks') called with task definitions\n" +
-                        "- Tasks created with proper dependencies and acceptance criteria";
-                    await WritePlanningMemoryAsync(store, plannerTaskName, plannerContent,
-                        archiveExisting: false, keywords: [.. plannerKeywords], cancellationToken);
-                }
-                catch { /* best-effort */ }
 
                 // Search backlog for related items
                 string backlogSection = "";
@@ -2605,16 +3472,22 @@ public sealed class ScriniaProjectTools
                 }
                 catch { /* backlog topic may not exist */ }
 
-                return $"Goal added as {newGoalId}: {description}.\n" +
+                var seedNames = string.Join(", ", workflow.SeedActivities.OrderBy(a => a.Wave ?? 0).Select(a => a.Id));
+                string goalContent = $"Goal added as {newGoalId}: {description}.\n" +
                        $"project:context updated. Files in .scrinia/ were updated — these are your changes.\n\n" +
                        backlogSection +
-                       $"Researcher task created. Auditor and planner seed tasks queued. Run task('next') to continue.";
+                       $"Seed tasks created ({seedNames}).";
+                return ResponseBuilder.Success(goalContent)
+                    .WithPath($"goal:{newGoalId}")
+                    .WithAction("created")
+                    .WithInstruction("call task('next') to continue.")
+                    .ToYaml();
             }
 
             case "complete":
             {
                 if (string.IsNullOrWhiteSpace(goalId))
-                    return "Error: 'complete' action requires a goalId (e.g. 'G-1').";
+                    return ResponseBuilder.Error("'complete' action requires a goalId (e.g. 'G-1').").ToYaml();
 
                 var (goals, originalCount, contextWithoutGoals) = ParseGoalsSection(contextText);
 
@@ -2644,7 +3517,7 @@ public sealed class ScriniaProjectTools
                 }
 
                 if (matchIndex < 0)
-                    return $"Error: goal '{goalId}' not found. Use goal('list') to see all goal IDs.";
+                    return ResponseBuilder.Error($"Goal '{goalId}' not found. Use memory('list', {{ path: '/goal/' }}) to see all goal IDs.").ToYaml();
 
                 // Failsafe: actually verify criteria and check for retrospectives
                 var warnings = new List<string>();
@@ -2697,11 +3570,11 @@ public sealed class ScriniaProjectTools
 
                             bool hasVerify = logText?.Contains($"VERIFY phase {pid}:", StringComparison.OrdinalIgnoreCase) == true;
                             if (!hasVerify)
-                                warnings.Add($"phase {pid} has no plan('verify') record");
+                                warnings.Add($"phase {pid} has no QA verification record");
 
                             // Check for FAIL in verification results
                             if (hasVerify && logText!.Contains($"VERIFY phase {pid}: PARTIAL", StringComparison.OrdinalIgnoreCase))
-                                warnings.Add($"phase {pid} verification had failures — check plan('verify') results");
+                                warnings.Add($"phase {pid} verification had failures — check QA gate results");
                             if (hasVerify && logText!.Contains($"VERIFY phase {pid}: ALL_FAIL", StringComparison.OrdinalIgnoreCase))
                                 warnings.Add($"phase {pid} verification failed — all criteria unmet");
 
@@ -2716,7 +3589,7 @@ public sealed class ScriniaProjectTools
                                 hasRetro = retroText?.Contains($"Phase {pid} Retrospective", StringComparison.OrdinalIgnoreCase) == true;
 
                             if (!hasRetro)
-                                warnings.Add($"phase {pid} has no plan('retrospective')");
+                                warnings.Add($"phase {pid} has no retrospective (self-reflector gate)");
                         }
                     }
                 }
@@ -2737,8 +3610,9 @@ public sealed class ScriniaProjectTools
                     if (openHighMed.Count > 0)
                     {
                         var names = string.Join(", ", openHighMed.Select(e => e.Name).Take(5));
-                        return $"Error: {openHighMed.Count} open high/medium concern(s) must be resolved before completing the goal: {names}. " +
-                            "Use concern('resolve', { concernName, resolution, verifiedBy }) for each.";
+                        return ResponseBuilder.Error($"{openHighMed.Count} open high/medium concern(s) must be resolved before completing the goal: {names}.")
+                            .WithInstruction("call memory('transition', { path: '/concern/...', to: 'resolved' }) with concernName, resolution, verifiedBy for each before retrying memory('transition', { path: '/goal/G-X', to: 'complete' }).")
+                            .ToYaml();
                     }
                 }
                 catch { /* best-effort */ }
@@ -2807,31 +3681,30 @@ public sealed class ScriniaProjectTools
                 }
                 catch { /* best-effort — don't block goal completion */ }
 
-                string response = $"Goal '{searchId}' marked complete. Outcome recorded. " +
-                       $"project:context updated. Files in .scrinia/ were updated \u2014 these are your changes.";
+                string gcContent = $"Goal '{searchId}' marked complete. Outcome recorded. " +
+                       $"project:context updated. Files in .scrinia/ were updated — these are your changes.\n\n" +
+                       "Post-goal learning:\n" +
+                       "- Run QA if not already done: memory('recall', { path: '/skill/qa' }) for structured verification\n" +
+                       "- Produce a march report: memory('recall', { path: '/skill/march-reporter' }) -> write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
+                       "- Distill valuable findings into topical memories (remember) for future goals\n" +
+                       "- Update or create skills (memory('remember', { path: '/skill/...' })) with lessons learned\n" +
+                       "Planning artifacts (task:*, plan:*, research:*) can be cleaned up — the learnings live in your memories and skills now.";
 
+                var gcResponse = ResponseBuilder.Success(gcContent)
+                    .WithPath($"goal:{searchId}")
+                    .WithAction("completed");
                 if (warnings.Count > 0)
-                    response += "\n\nWorkflow steps you may have skipped:\n" +
-                        string.Join("\n", warnings.Select(w => $"- {w}")) +
-                        "\nConsider running plan('verify') and plan('retrospective') before moving on.";
+                    gcResponse = gcResponse.WithActionNeeded([.. warnings.Select(w => w).Append("Consider running QA and self-reflector gate tasks before moving on.")]);
 
-                response += "\n\nPost-goal learning:\n" +
-                    "- Run QA if not already done: skill('load', { name: \"qa\" }) for structured verification\n" +
-                    "- Produce a march report: skill('load', { name: \"march-reporter\" }) \u2192 write to docs/reports/ and update sessions:YYYY-MM-DD memory\n" +
-                    "- Distill valuable findings into topical memories (store) for future goals\n" +
-                    "- Update or create skills (skill('create')) with lessons learned\n" +
-                    "Planning artifacts (task:*, plan:*, research:*) can be cleaned up \u2014 " +
-                    "the learnings live in your memories and skills now.";
-
-                return response;
+                return gcResponse.ToYaml();
             }
 
             case "edit":
             {
                 if (string.IsNullOrWhiteSpace(goalId))
-                    return "Error: 'edit' action requires a goalId.";
+                    return ResponseBuilder.Error("'edit' action requires a goalId.").ToYaml();
                 if (string.IsNullOrWhiteSpace(description))
-                    return "Error: 'edit' action requires a description.";
+                    return ResponseBuilder.Error("'edit' action requires a description.").ToYaml();
 
                 var (goals, originalCount, contextWithoutGoals) = ParseGoalsSection(contextText);
 
@@ -2855,7 +3728,7 @@ public sealed class ScriniaProjectTools
                 }
 
                 if (matchIndex < 0)
-                    return $"Error: goal '{goalId}' not found. Use goal('list') to see all goals.";
+                    return ResponseBuilder.Error($"Goal '{goalId}' not found. Use memory('list', {{ path: '/goal/' }}) to see all goals.").ToYaml();
 
                 string oldLine = goals[matchIndex];
                 string trimmed = oldLine.TrimStart('-', '*', ' ');
@@ -2863,7 +3736,7 @@ public sealed class ScriniaProjectTools
                 // Find where description starts (after [G-N-xxx] [status])
                 var statusMatch = Regex.Match(trimmed, @"\]\s*\[(active|complete)\]\s*");
                 if (!statusMatch.Success)
-                    return $"Error: could not parse goal line format for '{goalId}'.";
+                    return ResponseBuilder.Error($"Could not parse goal line format for '{goalId}'.").ToYaml();
 
                 int descStart = statusMatch.Index + statusMatch.Length;
                 string afterStatus = trimmed[descStart..];
@@ -2882,7 +3755,10 @@ public sealed class ScriniaProjectTools
                 await WritePlanningMemoryAsync(store, "project:context", updatedContext,
                     archiveExisting: true, cancellationToken);
 
-                return $"Goal '{searchId}' updated.\nOld: {oldDesc.Trim()}\nNew: {description}\nproject:context updated. Files in .scrinia/ were updated — these are your changes.";
+                return ResponseBuilder.Success($"Goal '{searchId}' updated.\nOld: {oldDesc.Trim()}\nNew: {description}\nproject:context updated. Files in .scrinia/ were updated — these are your changes.")
+                    .WithPath($"goal:{searchId}")
+                    .WithAction("updated")
+                    .ToYaml();
             }
 
             case "list":
@@ -2890,7 +3766,7 @@ public sealed class ScriniaProjectTools
                 var (goals, originalCount, _) = ParseGoalsSection(contextText);
 
                 if (goals.Count == 0)
-                    return "No structured goals found in project:context. Use goal('add') to add goals.";
+                    return ResponseBuilder.Success("No structured goals found in project:context. Use memory('remember', { path: '/goal/...' }) to add goals.").WithAction("listed").ToYaml();
 
                 int locked = originalCount >= 0 ? originalCount : goals.Count;
                 int current = goals.Count;
@@ -2921,13 +3797,11 @@ public sealed class ScriniaProjectTools
                     }
                 }
 
-                string response = Truncate(sb.ToString());
-
-                return response;
+                return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml();
             }
 
             default:
-                return $"Error: unknown action '{action}'. Valid actions: 'add', 'edit', 'complete', 'list'.";
+                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: 'add', 'edit', 'complete', 'list'.").ToYaml();
         }
     }
 
@@ -3071,60 +3945,28 @@ public sealed class ScriniaProjectTools
             progressPct: progressPct,
             lastAction: lastAction,
             blockers: "none",
-            nextStep: "run goal('list') to see all goals with status",
+            nextStep: "run memory('list', { path: '/goal/' }) to see all goals with status",
             ct);
     }
 
     // -- Built-in specialist scaffolds (AGENT-04) --------------------------------
+    // Loaded from embedded resources: prompts/scaffolds/{name}.md
 
-    private const string ResearcherScaffold =
-        "## Role: Researcher Specialist\n" +
-        "You investigate technical questions and gather findings for the current project.\n\n" +
-        "## Tools Available (if Scrinia MCP is active)\n" +
-        "- memory('search'): Query stored knowledge and memories for related context.\n" +
-        "- memory('show'): Retrieve full artifact content for a named memory.\n" +
-        "- memory('store'): Persist research findings as research:* memories.\n\n" +
-        "## Instructions\n" +
-        "1. Use memory('search') to find existing knowledge before researching from scratch.\n" +
-        "2. Explore the codebase to understand scope, patterns, and risks.\n" +
-        "3. Store findings via memory('store', { name: \"research:...\", content: [...] }).\n" +
-        "4. Document questions answered, sources consulted, and key conclusions.\n\n" +
-        "## Fallback Instructions (if Scrinia MCP is not available)\n" +
-        "Organize findings in markdown. Use file read/write operations to persist results.\n" +
-        "Document questions answered, sources consulted, and key conclusions.\n";
+    private static readonly Lazy<string> _researcherScaffold = new(() =>
+        EmbeddedPrompts.LoadScaffold("researcher")
+        ?? throw new InvalidOperationException("Built-in researcher scaffold not found"));
 
-    private const string ReviewerScaffold =
-        "## Role: Reviewer Specialist\n" +
-        "You review code, architecture, or plans and provide structured feedback with actionable concerns.\n\n" +
-        "## Tools Available (if Scrinia MCP is active)\n" +
-        "- search: Query memories for existing decisions, patterns, or prior art.\n" +
-        "- show: Load full artifact content for review context.\n" +
-        "- concern('add'): Track issues found during review with severity and phase scope.\n" +
-        "- concern('resolve'): Mark concerns resolved when addressed.\n\n" +
-        "## Instructions\n" +
-        "1. Use search() to load relevant context before reviewing.\n" +
-        "2. For each issue found, call concern('add') with severity (high/medium/low) and phase.\n" +
-        "3. Provide specific, actionable feedback — not just identification.\n" +
-        "4. Summarize findings with a list of concerns added and recommendations.\n\n" +
-        "## Fallback Instructions (if Scrinia MCP is not available)\n" +
-        "Write a structured review document. List issues with severity labels.\n" +
-        "Use markdown headings: Critical Issues, Medium Issues, Minor Issues, Recommendations.\n";
+    private static readonly Lazy<string> _reviewerScaffold = new(() =>
+        EmbeddedPrompts.LoadScaffold("reviewer")
+        ?? throw new InvalidOperationException("Built-in reviewer scaffold not found"));
 
-    private const string DomainExpertScaffold =
-        "## Role: Domain Expert Specialist\n" +
-        "You apply deep domain knowledge to answer questions and document expert-level insights.\n\n" +
-        "## Tools Available (if Scrinia MCP is active)\n" +
-        "- search: Find existing knowledge entries before adding new ones.\n" +
-        "- store: Store expert insights in the body of knowledge (bok:*).\n" +
-        "- show: Retrieve full artifact content for context on prior decisions.\n\n" +
-        "## Instructions\n" +
-        "1. Use search(scopes='bok') to check for existing domain knowledge first.\n" +
-        "2. Provide expert-level analysis grounded in established domain patterns.\n" +
-        "3. Store durable insights via store(domain, slug, knowledge, ...).\n" +
-        "4. Flag uncertainty explicitly — indicate confidence level in your responses.\n\n" +
-        "## Fallback Instructions (if Scrinia MCP is not available)\n" +
-        "Document expert insights in a structured markdown file.\n" +
-        "Include sections: Domain Context, Key Patterns, Caveats, References.\n";
+    private static readonly Lazy<string> _domainExpertScaffold = new(() =>
+        EmbeddedPrompts.LoadScaffold("domain-expert")
+        ?? throw new InvalidOperationException("Built-in domain-expert scaffold not found"));
+
+    private static string ResearcherScaffold => _researcherScaffold.Value;
+    private static string ReviewerScaffold => _reviewerScaffold.Value;
+    private static string DomainExpertScaffold => _domainExpertScaffold.Value;
 
     // -- Subagent creation tools (AGENT-01, AGENT-02, AGENT-03, AGENT-04) -------
 
@@ -3145,7 +3987,7 @@ public sealed class ScriniaProjectTools
         }
         catch (FileNotFoundException)
         {
-            return "Error: no project initialized. Run project_init first.";
+            return ResponseBuilder.Error("No project initialized. Run project_init first.").ToYaml();
         }
 
         // Select prompt template based on scaffold (case-insensitive)
@@ -3207,23 +4049,49 @@ public sealed class ScriniaProjectTools
         // Build capability list for keywords
         string capabilityList = string.IsNullOrWhiteSpace(tools) ? scaffoldLower : tools;
 
-        // Store via WritePlanningMemoryAsync with skill:{name} qualified name
-        string qualifiedName = $"skill:{name}";
-        var skillKeywords = new List<string> { $"role:{role}", $"capabilities:{capabilityList}" };
-
-        // If this skill overrides a built-in, record the built-in's hash so we can detect staleness
+        // Compute basedOn hash if this skill overrides a built-in
+        string? basedOnHash = null;
         if (BuiltInSkills.TryGetValue(name, out string? builtInText))
         {
-            var builtInHash = Convert.ToHexStringLower(
-                System.Security.Cryptography.SHA256.HashData(
-                    System.Text.Encoding.UTF8.GetBytes(builtInText)));
-            skillKeywords.Add($"basedOn:{builtInHash}");
+            basedOnHash = Convert.ToHexStringLower(
+                SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builtInText)));
         }
 
-        await WritePlanningMemoryAsync(store, qualifiedName, promptContent,
-            archiveExisting: true,
-            keywords: [.. skillKeywords],
-            cancellationToken);
+        // Write to disk (.scrinia/skills/{name}.md)
+        string baseDir = GetScriniaBaseDir(store);
+        string skillsDir = Path.Combine(baseDir, "skills");
+        string filePath = Path.Combine(skillsDir, $"{name}.md");
+        Directory.CreateDirectory(skillsDir);
+
+        // Archive previous version if file exists
+        ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
+
+        // Write skill content as plain markdown
+        await File.WriteAllTextAsync(filePath, promptContent, cancellationToken);
+
+        // Write sidecar metadata
+        string now = DateTimeOffset.UtcNow.ToString("o");
+        var existingMeta = ReadSidecarMeta(filePath, PlanningJsonContext.Default.SkillFileMeta);
+        string[]? capabilities = string.IsNullOrWhiteSpace(tools) ? null
+            : tools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var meta = new SkillFileMeta(
+            BasedOn: basedOnHash,
+            Role: role,
+            Capabilities: capabilities,
+            Scaffold: scaffoldLower,
+            CreatedAt: existingMeta?.CreatedAt ?? now,
+            UpdatedAt: now);
+        WriteSidecarMeta(filePath, meta, PlanningJsonContext.Default.SkillFileMeta);
+
+        // MF-C01: check for legacy NMP/2 entry, log migration note if found
+        string qualifiedName = $"skill:{name}";
+        string migrationNote = "";
+        try
+        {
+            await ReadMemoryAsync(store, qualifiedName, cancellationToken);
+            migrationNote = $" Note: a legacy NMP/2 entry for {qualifiedName} still exists — it will be used as fallback but the disk file takes precedence.";
+        }
+        catch { /* no legacy entry — nothing to note */ }
 
         // Update project:state
         string stateText;
@@ -3241,14 +4109,15 @@ public sealed class ScriniaProjectTools
             progressPct: progressPct,
             lastAction: $"Skill created: {qualifiedName} (role:{role})",
             blockers: "none",
-            nextStep: "use skill('load') to retrieve stored skills",
+            nextStep: "use memory('recall', { path: '/skill/' }) to retrieve stored skills",
             cancellationToken);
 
-        string response = $"Stored as {qualifiedName}. Files in .scrinia/ were updated -- these are your changes.";
-
-        response = Truncate(response);
-
-        return response;
+        var scResponse = ResponseBuilder.Success($"Stored as .scrinia/skills/{name}.md. Files in .scrinia/ were updated -- these are your changes.")
+            .WithPath(qualifiedName)
+            .WithAction("created");
+        if (!string.IsNullOrEmpty(migrationNote))
+            scResponse = scResponse.WithInfo(migrationNote.TrimStart());
+        return scResponse.ToYaml();
     }
 
     /// <summary>List or load stored specialist skills.</summary>
@@ -3261,29 +4130,61 @@ public sealed class ScriniaProjectTools
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            // List mode: synchronous index-only scan, no artifact decode
+            // List mode: scan disk files, NMP/2 index, and built-in dictionary
+
+            // 1. Disk files (.scrinia/skills/*.md)
+            string baseDir = GetScriniaBaseDir(store);
+            string skillsDir = Path.Combine(baseDir, "skills");
+            var diskNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var diskMetas = new Dictionary<string, SkillFileMeta?>(StringComparer.OrdinalIgnoreCase);
+            if (Directory.Exists(skillsDir))
+            {
+                foreach (string mdFile in Directory.GetFiles(skillsDir, "*.md"))
+                {
+                    string diskName = Path.GetFileNameWithoutExtension(mdFile);
+                    diskNames.Add(diskName);
+                    diskMetas[diskName] = ReadSidecarMeta(mdFile, PlanningJsonContext.Default.SkillFileMeta);
+                }
+            }
+
+            // 2. NMP/2 index entries (legacy)
             var (scope, _) = store.ParseQualifiedName("skill:placeholder");
             IReadOnlyList<ArtifactEntry> entries;
             try { entries = store.LoadIndex(scope); }
             catch { entries = []; }
+            var nmpNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
 
-            // Merge built-in + project skills
-            var projectNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
-            int totalCount = BuiltInSkills.Count + entries.Count(e => !BuiltInSkills.ContainsKey(e.Name));
+            // 3. Merge: collect all unique names across all three sources
+            var allNames = new HashSet<string>(BuiltInSkills.Keys, StringComparer.OrdinalIgnoreCase);
+            allNames.UnionWith(diskNames);
+            allNames.UnionWith(nmpNames);
 
-            if (totalCount == 0)
-                return Task.FromResult("No skills available.");
+            if (allNames.Count == 0)
+                return Task.FromResult(ResponseBuilder.Success("No skills available.").WithAction("listed").ToYaml());
 
             var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"Available skills ({totalCount}):");
+            sb.AppendLine($"Available skills ({allNames.Count}):");
             sb.AppendLine();
 
-            // Built-in skills (always available, project version overrides if exists)
+            // Built-in skills first (show source label based on override presence)
             foreach (string skillKey in BuiltInSkills.Keys)
             {
-                if (projectNames.Contains(skillKey))
+                if (diskNames.Contains(skillKey))
                 {
-                    // Check if the override is stale (basedOn hash mismatch)
+                    // Disk file overrides built-in — check staleness via sidecar
+                    string tag = "file";
+                    if (diskMetas.TryGetValue(skillKey, out var meta) && meta?.BasedOn is not null)
+                    {
+                        string currentHash = Convert.ToHexStringLower(
+                            SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
+                        if (!meta.BasedOn.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
+                            tag = "stale base";
+                    }
+                    sb.AppendLine($"- skill:{skillKey} [{tag}]");
+                }
+                else if (nmpNames.Contains(skillKey))
+                {
+                    // NMP/2 override (legacy) — check staleness via keywords
                     var overrideEntry = entries.FirstOrDefault(e => e.Name.Equals(skillKey, StringComparison.OrdinalIgnoreCase));
                     string tag = "override";
                     if (overrideEntry?.Keywords is not null)
@@ -3293,8 +4194,7 @@ public sealed class ScriniaProjectTools
                         {
                             string storedHash = basedOnKw["basedOn:".Length..];
                             string currentHash = Convert.ToHexStringLower(
-                                System.Security.Cryptography.SHA256.HashData(
-                                    System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
+                                SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
                             if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                                 tag = "stale base";
                         }
@@ -3307,17 +4207,16 @@ public sealed class ScriniaProjectTools
                 }
             }
 
-            // Project-only skills (not built-in)
-            foreach (var entry in entries)
+            // Non-built-in skills: disk files first, then NMP/2-only
+            foreach (string diskName in diskNames)
             {
-                if (BuiltInSkills.ContainsKey(entry.Name))
+                if (BuiltInSkills.ContainsKey(diskName))
                     continue; // already listed above
 
-                string roleKw = entry.Keywords?
-                    .FirstOrDefault(k => k.StartsWith("role:", StringComparison.OrdinalIgnoreCase))
-                    ?? "role:unknown";
-
-                sb.AppendLine($"- skill:{entry.Name} [custom] [{roleKw}]");
+                string roleTag = diskMetas.TryGetValue(diskName, out var fileMeta) && fileMeta?.Role is not null
+                    ? $"role:{fileMeta.Role}"
+                    : "role:unknown";
+                sb.AppendLine($"- skill:{diskName} [file] [{roleTag}]");
 
                 if (sb.Length > MaxResponseChars - 200)
                 {
@@ -3326,10 +4225,25 @@ public sealed class ScriniaProjectTools
                 }
             }
 
-            string listResponse = sb.ToString();
-            listResponse = Truncate(listResponse);
+            foreach (var entry in entries)
+            {
+                if (BuiltInSkills.ContainsKey(entry.Name) || diskNames.Contains(entry.Name))
+                    continue; // already listed above (built-in or disk takes precedence)
 
-            return Task.FromResult(listResponse);
+                string roleKw = entry.Keywords?
+                    .FirstOrDefault(k => k.StartsWith("role:", StringComparison.OrdinalIgnoreCase))
+                    ?? "role:unknown";
+
+                sb.AppendLine($"- skill:{entry.Name} [override] [{roleKw}]");
+
+                if (sb.Length > MaxResponseChars - 200)
+                {
+                    sb.AppendLine("[... truncated to 8KB limit]");
+                    break;
+                }
+            }
+
+            return Task.FromResult(ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml());
         }
 
         // Load mode: async artifact read
@@ -3339,757 +4253,104 @@ public sealed class ScriniaProjectTools
     private static async Task<string> LoadSkillAsync(
         IMemoryStore store, string skillName, bool reconcile, CancellationToken ct)
     {
-        string qualifiedName = $"skill:{skillName}";
-        string? overrideContent = null;
-        try
+        // 1. Disk file (.scrinia/skills/{name}.md)
+        string baseDir = GetScriniaBaseDir(store);
+        string filePath = Path.Combine(baseDir, "skills", $"{skillName}.md");
+        string? diskContent = null;
+        if (File.Exists(filePath))
         {
-            overrideContent = await ReadMemoryAsync(store, qualifiedName, ct);
+            diskContent = await File.ReadAllTextAsync(filePath, ct);
         }
-        catch (FileNotFoundException)
+
+        // 2. NMP/2 fallback (legacy)
+        string? nmpContent = null;
+        if (diskContent is null)
         {
-            // No project override exists
+            try
+            {
+                nmpContent = await ReadMemoryAsync(store, $"skill:{skillName}", ct);
+            }
+            catch (FileNotFoundException)
+            {
+                // No NMP/2 override exists
+            }
         }
+
+        // Determine the override content (disk > NMP/2) and its source label
+        string? overrideContent = diskContent ?? nmpContent;
+        string sourceLabel = diskContent is not null ? "file" : "project override";
 
         // Reconcile mode: show both built-in and override side by side
         if (reconcile && overrideContent is not null && BuiltInSkills.TryGetValue(skillName, out string? reconBuiltIn))
         {
-            return Truncate(
-                $"## Current Built-in\n{reconBuiltIn}\n\n" +
-                $"## Your Project Override\n{overrideContent}\n\n" +
-                "## Instructions\n" +
-                "Merge your project-specific additions with the updated built-in base,\n" +
-                "then call skill('create') to save the reconciled version.\n");
+            string reconContent = $"## Current Built-in\n{reconBuiltIn}\n\n" +
+                $"## Your Project Override ({sourceLabel})\n{overrideContent}";
+            return ResponseBuilder.Success(reconContent)
+                .WithPath($"skill:{skillName}")
+                .WithAction("loaded")
+                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call memory('remember', { path: '/skill/...' }) to save the reconciled version.")
+                .ToYaml();
         }
 
         if (overrideContent is null)
         {
             // Fall back to built-in skills
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
-                return "[Loaded from built-in]\n" + Truncate(builtIn);
-            return $"Error: skill '{skillName}' not found. Use skill('load') (no name) to list available skills.";
+                return ResponseBuilder.Success(builtIn).WithPath($"skill:{skillName}").WithAction("loaded").WithInfo("Loaded from built-in").ToYaml();
+            return ResponseBuilder.Error($"Skill '{skillName}' not found. Use memory('recall', {{ path: '/skill/' }}) to list available skills.").ToYaml();
         }
 
-        string content = Truncate(overrideContent);
-        content = "[Loaded from project override]\n" + content;
+        var slWarnings = new List<string>();
 
         // Check for stale base — warn if the built-in has changed since this override was created
-        var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-        var entries = store.LoadIndex(scope);
-        var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-        if (entry?.Keywords is not null && BuiltInSkills.TryGetValue(skillName, out string? currentBuiltIn))
+        if (BuiltInSkills.TryGetValue(skillName, out string? currentBuiltIn))
         {
-            var basedOnKw = entry.Keywords.FirstOrDefault(k => k.StartsWith("basedOn:", StringComparison.Ordinal));
-            if (basedOnKw is not null)
+            string? storedHash = null;
+
+            // Read basedOn hash from sidecar metadata (disk file)
+            if (diskContent is not null)
             {
-                string storedHash = basedOnKw["basedOn:".Length..];
+                var meta = ReadSidecarMeta(filePath, PlanningJsonContext.Default.SkillFileMeta);
+                storedHash = meta?.BasedOn;
+            }
+            else if (nmpContent is not null)
+            {
+                // Fall back to NMP/2 keyword-based basedOn
+                var (scope, subject) = store.ParseQualifiedName($"skill:{skillName}");
+                var entries = store.LoadIndex(scope);
+                var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+                if (entry?.Keywords is not null)
+                {
+                    var basedOnKw = entry.Keywords.FirstOrDefault(k => k.StartsWith("basedOn:", StringComparison.Ordinal));
+                    if (basedOnKw is not null)
+                        storedHash = basedOnKw["basedOn:".Length..];
+                }
+            }
+
+            if (storedHash is not null)
+            {
                 string currentHash = Convert.ToHexStringLower(
-                    System.Security.Cryptography.SHA256.HashData(
-                        System.Text.Encoding.UTF8.GetBytes(currentBuiltIn)));
+                    SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(currentBuiltIn)));
                 if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                 {
-                    content = $"[WARNING: built-in skill has changed since this override was created. Review with skill('load', {{ name: \"{skillName}\", reconcile: true }})]\n" + content;
+                    slWarnings.Add($"built-in skill has changed since this override was created. Review with memory('recall', {{ path: '/skill/{skillName}', reconcile: true }})");
                 }
             }
         }
 
-        return content;
+        var slResponse = ResponseBuilder.Success(overrideContent)
+            .WithPath($"skill:{skillName}")
+            .WithAction("loaded")
+            .WithInfo($"Loaded from {sourceLabel}");
+        if (slWarnings.Count > 0)
+            slResponse = slResponse.WithActionNeeded([.. slWarnings]);
+        return slResponse.ToYaml();
     }
 
-    private static readonly Dictionary<string, string> BuiltInSkills = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["march-reporter"] = """
-            ## Role: Goal March Reporter
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "march-reporter" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
-            You produce human-readable goal summary documents that report the march toward project
-            objectives. These documents serve as audit trails for stakeholders and future agents.
+    private static readonly Lazy<IReadOnlyDictionary<string, string>> _builtInSkills =
+        new(() => EmbeddedPrompts.LoadAllSkills());
 
-            ## When to use
-            After completing a goal (step 8), offer to produce a march report. Always produce one
-            at milestone boundaries. Small goals can skip; significant goals need the paper trail.
-            The agent should ask: "Want me to produce a march report for this goal?"
-
-            ## Methodology
-            1. `concern('list')` — query active concerns to see current state and determine next IDs
-            2. `goal('list')` — get all goals with outcomes for the reporting period
-            3. `concern('list', { statusFilter: "all" })` — get all concerns (active + resolved)
-            4. `memory('search', { query: "applied-fixes" })` — load fix summaries
-            5. Review git log for the period to capture file-level changes
-
-            ## Document structure
-            Write to `docs/reports/{date}-{goal-slug}.md`:
-
-            ### 1. Summary
-            - Goal description, dates, outcome (1-3 sentences)
-
-            ### 2. Changes
-            - Features added, config surface changes, new endpoints/permissions
-            - Files touched (summary, not exhaustive)
-
-            ### 3. Findings
-            Table with columns: ID, Description, Severity, Status, Resolution
-            Query `concern('list')` for all findings. Include ALL findings for this goal —
-            fixed, dismissed, and accepted. Dismissed findings need rationale.
-
-            ### 4. Test Impact
-            - Before/after test counts
-            - New tests added and what they cover
-
-            ### 5. Security Posture
-            - What was hardened
-            - Accepted risks with justification
-            - Remaining known issues (if any)
-
-            ### 6. Configuration Changes
-            - New settings with defaults and purpose
-            - Breaking changes (if any)
-            - Migration notes for existing deployments
-
-            ## Key principles
-            - Reference finding IDs (SEC-001, QAL-001, DOC-001) — never describe findings without IDs
-            - Be specific about what was dismissed and why — a future auditor should understand the rationale
-            - Include the "so what" — not just what changed, but why it matters
-            - The document is for humans who weren't in the conversation — write for someone with
-              project context but no session context
-            """,
-
-        ["auditor"] = """
-            ## Role: Code & Architecture Auditor
-            You systematically review code, architecture, and documentation for quality, security,
-            and correctness. You produce structured findings with sequential IDs for tracking.
-
-            ## Methodology
-
-            ### Before scanning
-            1. `concern('list')` — query active concerns to see current findings state and determine next IDs
-            2. `memory('search', { query: "applied-fixes" })` — know what's already been fixed
-            3. `memory('search', { query: "audit-false-positives" })` — avoid known false positives
-            4. Understand the project: `memory('search', { query: "architecture" })`, `memory('search', { query: "patterns" })`
-
-            ### Scanning — three streams
-            Run these in parallel when possible:
-
-            **Security**: input validation at all boundaries, auth/authz consistency, injection risks
-            (path traversal, SQL, XSS), data exposure (logs, errors, stack traces), crypto concerns,
-            concurrency (races, deadlocks), resource exhaustion, dependency vulnerabilities.
-
-            **Code quality**: duplication, missing IDisposable, dead code, error handling (swallowed
-            exceptions, inconsistent patterns), resource leaks, thread safety, API consistency,
-            performance concerns in hot paths.
-
-            **Documentation**: counts match reality (run `dotnet test`, count attributes), stale references
-            to removed features, examples match current API signatures, new features documented.
-
-            ### Finding IDs
-            Use sequenced IDs registered via concern('add'). Count existing concern:SEC-*, concern:QAL-*, concern:DOC-* entries via concern('list') to determine the next available ID. Never reuse numbers.
-            - Security: SEC-NNN
-            - Code quality: QAL-NNN
-            - Documentation: DOC-NNN
-
-            ### Validation
-            **Always validate findings against the codebase before reporting.** Common false positives:
-            - StreamWriter Flush — Dispose() calls it automatically
-            - HttpClient socket exhaustion — only if clients are short-lived
-            - Empty catch blocks — often intentional for graceful degradation
-            - "Thread unsafe" — check if synchronization exists elsewhere
-
-            ### Remediation
-            After validating findings, group by file and spawn one fix agent per file group.
-            The audit identified exact locations — carry them through. This is not a judgment call.
-
-            ### Output
-            - Register each finding with `concern('add')`
-            - Query `concern('list')` for current findings state
-            - Present findings table to user with ID, severity, status, resolution
-
-            ### Mandatory: Register all findings as concerns
-            Every finding MUST be registered via concern('add', { description, severity, phaseScope, id: "SEC-xxx" }).
-            Findings that exist only in reports or tables are incomplete work.
-            The concern system is the single source of truth for findings tracking.
-            Do not maintain a separate findings registry — concerns ARE the registry.
-            """,
-
-        ["debugger"] = """
-            ## Role: Systematic Debugger
-            You diagnose bugs using the scientific method: observe, hypothesize, test, conclude.
-            You never shotgun-fix. Every change is justified by evidence.
-
-            ## Methodology
-
-            ### 1. Observe — gather evidence before theorizing
-            - What is the exact error? (message, stack trace, repro steps)
-            - When did it start? (`git log`, `git bisect` if needed)
-            - What changed? (recent commits, config changes, dependency updates)
-            - `memory('search', { query: "bugs:" })` — has this been investigated before?
-
-            ### 2. Hypothesize — state what you believe is wrong
-            Write it down explicitly:
-            - "I believe the bug is caused by X because evidence Y"
-            - "This hypothesis would be invalidated if Z"
-            - If you have multiple hypotheses, rank by likelihood
-
-            ### 3. Isolate — find the minimal reproduction
-            - Strip away unrelated code/config until the bug is isolated
-            - Add targeted logging or assertions to confirm the hypothesis
-            - If the bug is intermittent: identify the race condition, timing dependency, or state leak
-            - Binary search: comment out halves of the suspected code path
-
-            ### 4. Fix — make the minimal change
-            - Fix the root cause, not the symptom
-            - If the fix is more than ~10 lines, question whether you've found the real cause
-            - Write a test that fails before the fix and passes after
-
-            ### 5. Verify — confirm the fix and check for regressions
-            - Run the full test suite, not just the new test
-            - Check: did the fix introduce any new warnings or side effects?
-            - Check: is the fix consistent with the codebase's patterns?
-
-            ### 6. Store — persist what you learned
-            - `memory('store', { name: "bugs:{area}-{slug}", content: ["Root cause: ...\nFix: ...\nPattern: ..."] })`
-            - Future sessions shouldn't re-investigate what you already know
-            - If this bug class could recur, store the detection pattern
-
-            ## Anti-patterns to avoid
-            - Changing multiple things at once (can't tell which fixed it)
-            - "It works now" without understanding why
-            - Fixing in a test-only path without checking production path
-            - Suppressing errors instead of fixing causes
-            """,
-
-        ["chaos-engineer"] = """
-            ## Role: Chaos Engineer
-            You systematically probe for operational failures — not code bugs, but resilience gaps.
-            What breaks when things go wrong at runtime?
-
-            ## Methodology
-
-            ### 1. Map the failure domains
-            For each external dependency, ask: what happens when it fails?
-            - **Network**: API calls time out, return 500, return malformed JSON
-            - **Storage**: disk full, permissions denied, file locked by another process
-            - **Database**: locked, corrupted, schema mismatch, connection pool exhausted
-            - **Config**: missing keys, empty values, malformed JSON, wrong types
-            - **Resources**: memory pressure, thread pool exhaustion, handle leaks
-            - **Concurrency**: race conditions under load, deadlocks, stale caches
-
-            ### 2. Trace each failure path
-            For each failure scenario:
-            - Does the code handle it? (try/catch, timeout, retry, circuit breaker)
-            - What does the user see? (error message, hang, crash, data loss)
-            - What does the operator see? (logs, health check status, metrics)
-            - Is recovery automatic or does it require intervention?
-
-            ### 3. Rate each gap
-            - **Critical**: data loss, silent corruption, security bypass on failure
-            - **High**: service unavailable with no recovery, cascading failure
-            - **Medium**: degraded but functional, unclear error to user
-            - **Low**: cosmetic, recoverable, well-logged
-
-            ### 4. Probe specific scenarios
-            Ask these questions for each component:
-
-            **API endpoints**: What if the request body is 100MB? What if Content-Type is wrong?
-            What if the client disconnects mid-stream? What if auth token is expired mid-request?
-
-            **File operations**: What if the file is locked? What if the directory doesn't exist?
-            What if disk space runs out mid-write? What if the file is modified between read and write?
-
-            **External services**: What if the LLM provider returns 429? What if DNS fails?
-            What if the response is valid JSON but semantically wrong? What if latency is 30s?
-
-            **Configuration**: What if a required config key is missing? What if the value is empty?
-            What if the value is the wrong type? What if config changes at runtime?
-
-            ### 5. Document findings
-            Use concern IDs (SEC/QAL/DOC/OPS) for tracking via concern('add').
-            For each gap, document: the scenario, what currently happens, what should happen,
-            and the recommended fix.
-
-            ### 6. Prioritize by blast radius
-            Focus on failures that cause: data loss > security bypass > service outage >
-            degraded service > cosmetic issues. Fix the widest blast radius first.
-            """,
-
-        ["onboarder"] = """
-            ## Role: Codebase Onboarder
-            You help agents and developers build a mental model of an unfamiliar codebase.
-            You produce a structured walkthrough that answers: what is this, how does it work,
-            and where do I look for things?
-
-            ## Methodology
-
-            ### 1. Orient — understand the shape
-            - Read README.md, AGENTS.md, CLAUDE.md (or equivalent)
-            - Scan directory structure: `ls` at each level to map the layout
-            - Identify: what language/framework? how many projects? what's the entry point?
-            - Check for existing architecture docs, design decisions, ADRs
-
-            ### 2. Map the architecture
-            - **Projects/modules**: what does each one do? what are the dependencies?
-            - **Entry points**: where does execution start? (CLI main, web startup, MCP handler)
-            - **Core abstractions**: what are the key interfaces/classes? how do they compose?
-            - **Data flow**: how does data enter, get processed, and get stored?
-            - **Extension points**: where can behavior be customized? (plugins, config, DI)
-
-            ### 3. Identify patterns
-            - **Naming conventions**: how are files, classes, methods named?
-            - **Error handling**: what's the pattern? (exceptions, result types, error codes)
-            - **Testing**: where are tests? what framework? how to run them?
-            - **Configuration**: where does config live? how is it loaded?
-            - **Authentication/authorization**: how does auth work? what's the model?
-
-            ### 4. Find the gotchas
-            - Read any "pitfalls" or "troubleshooting" docs
-            - Look for comments like "HACK", "FIXME", "NOTE:", "IMPORTANT:"
-            - Check for non-obvious conventions that would trip up a newcomer
-            - Identify areas where the code does something surprising
-
-            ### 5. Produce the walkthrough
-            Store findings in scrinia for future sessions:
-            - `memory('store', { name: "arch:overview", content: [overview] })` — high-level architecture
-            - `memory('store', { name: "arch:patterns", content: [patterns] })` — conventions and patterns
-            - `memory('store', { name: "arch:pitfalls", content: [pitfalls] })` — things that will trip you up
-            - `memory('store', { name: "testing:infrastructure", content: [testing] })` — how to run and write tests
-
-            The goal: a future agent starting a fresh session can `memory('search', { query: "architecture" })`
-            and have enough context to start working without re-exploring the codebase.
-
-            ## Key principle
-            Write for the agent that comes after you. They have zero context. The walkthrough
-            should answer every question they'd ask in their first 10 minutes.
-            """,
-
-        ["planner"] = """
-            ## Role: Wave Execution Planner
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "planner" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
-            You decompose validated work into parallel execution waves with explicit agent specifications.
-            You don't do the work — you plan how agents will do it. The primary agent NEVER executes tasks.
-
-            ## MANDATORY: Spawn a planner agent before plan('tasks')
-            The primary agent must spawn a planner agent with `skill('load', { name: "planner" })` output as its prompt.
-            Pass research findings and phase requirements to the planner agent. The planner agent
-            produces the task definitions — the orchestrator feeds its output directly to plan('tasks').
-            Do not plan inline — the orchestrator lacks the focus to do proper file conflict analysis,
-            isolation decisions, and SOS criteria while also managing user interaction.
-
-            ## MANDATORY: All tasks execute via spawned agents
-            Every task — even a single-task wave — must be executed by a spawned Agent tool call.
-            The primary agent is an orchestrator. It plans, spawns, monitors, handles SOS, verifies.
-            It never reads implementation files, never edits code, never runs tests during execution.
-
-            Benefits:
-            - User always has a responsive primary agent to talk to
-            - Agents can SOS back if they hit walls (need skill, need decomposition, need domain input)
-            - Primary context stays clean for orchestration decisions
-            - Single tasks still get SOS capability — a stuck agent signals instead of thrashing
-
-            ## Methodology
-
-            ### 1. Analyze the task set
-            For each task, identify:
-            - **Files touched**: which files will be created/modified
-            - **Dependencies**: which tasks must complete before this one starts
-            - **Agent type**: Explore (research), general-purpose (code changes), or specialist (loaded skill)
-            - **Isolation needed**: does this task modify files that other tasks also modify?
-            - **SOS criteria**: what would cause this agent to signal instead of continuing
-
-            ### 2. Detect file conflicts
-            Build a file → task mapping. If two tasks touch the same file:
-            - They CANNOT run in parallel (unless using worktree isolation)
-            - Group them into the same agent, OR sequence them in different waves
-            - Worktree isolation allows parallel execution but requires merge afterward
-
-            ### 3. Produce the execution plan
-            For each wave, specify agent spawn specs:
-            ```
-            Wave N:
-            - Agent 1 [type: general-purpose, isolation: worktree]
-              Files: src/Server/Program.cs, src/Server/Startup.cs
-              Task: {exact change description with file:line, transformation}
-              SOS if: {conditions that should trigger SOS instead of continuing}
-            - Agent 2 [type: general-purpose]
-              Files: src/Core/FileMemoryStore.cs
-              Task: {exact change description}
-              SOS if: {conditions}
-            Merge: build + test after wave completes
-            ```
-
-            ### Background execution
-            Spawn execution agents with `run_in_background: true` so the primary agent
-            stays responsive during execution. The primary gets notified on completion —
-            do not poll or sleep. Only use foreground (default) for research agents whose
-            results are needed before the next step can proceed.
-
-            ### 4. Primary agent execution loop
-            ```
-            for each wave:
-              1. Spawn all agents in background (run_in_background: true, single message, parallel tool calls)
-              2. Continue responding to user — you'll be notified when each agent completes
-              3. Handle any SOS signals:
-                 - Skill needed → skill('create') or skill('load'), respawn
-                 - Decomposition needed → split task, add to next wave
-                 - Domain input needed → ask user, relay answer
-              4. After all agents complete: build + test
-              5. Mark tasks complete (task('complete'))
-              6. Proceed to next wave
-            ```
-
-            ### 5. Handle SOS signals
-            If an agent returns an SOS (needs specialist, needs skill, needs decomposition):
-            - Assess the SOS request
-            - If skill needed: create it via `skill('create')`, spawn specialist in next wave
-            - If decomposition needed: split the task, add sub-tasks to current or next wave
-            - If specialist needed: `skill('load')` the relevant skill, spawn with its methodology
-            - If user input needed: ask the user, then respawn with the answer
-            - Update the execution plan and continue
-
-            ### 6. Convergence
-            After all waves complete:
-            - Build the full project
-            - Run all tests
-            - Verify each task's acceptance criteria
-            - Report: which tasks completed, which SOS'd, what was replanned
-
-            ## Key rules
-            - **Primary agent never executes tasks.** Always spawn. No exceptions.
-            - **Different files = parallel agents.** Always. Not a judgment call.
-            - **Same file = same agent or sequential waves.** Worktree if urgent.
-            - **Research = Explore agent.** Code changes = general-purpose agent.
-            - **Every agent gets the exact change spec.** No agent should need to explore.
-            - **Build + test between waves.** Never start wave N+1 on a broken build.
-            - **Single-task waves still spawn an agent.** The cost is low; the SOS capability is valuable.
-
-            ## Output Format
-            Your output must be directly usable as the `tasks` parameter to plan('tasks'). Use this exact format:
-
-            ## Task {id}
-            Depends on: {comma-separated task IDs, or 'none'}
-            Action: {detailed change description with file paths, line numbers, exact transformations}
-            Acceptance criteria:
-            - criterion 1
-            - criterion 2
-
-            Produce one section per task. The orchestrator will pass your entire output to plan('tasks')
-            without modification.
-            """,
-
-        ["sos-handler"] = """
-            ## Role: Agent SOS Handler
-            You process help requests from agents that have hit a wall during execution.
-            You triage, create skills if needed, spawn specialists, and replan.
-
-            ## SOS signal format
-            An agent signals SOS by returning a structured message:
-            ```
-            SOS: {type}
-            Reason: {why the agent can't proceed}
-            Context: {what it found so far}
-            Need: {what it needs to continue}
-            ```
-
-            ## SOS types and responses
-
-            ### Type: needs-specialist
-            The agent found something outside its expertise.
-            - Check available skills: `skill('load')` — is there already a specialist?
-            - If yes: spawn a new agent with `skill('load', { name: "{specialist}" })` as its prompt
-            - If no: assess whether to create a new skill or handle inline
-            - Feed the SOS context to the specialist as its starting point
-
-            ### Type: needs-skill
-            The agent identified a recurring pattern that should be a reusable skill.
-            - Review the agent's context: what methodology would help?
-            - `skill('create')` the new skill with the methodology
-            - Spawn a new agent loaded with the skill
-            - Store the skill creation in the execution log for the planner
-
-            ### Type: needs-decomposition
-            The agent discovered the task is actually multiple tasks.
-            - Review the agent's findings: what are the sub-tasks?
-            - Analyze file conflicts: can sub-tasks run in parallel?
-            - Add sub-tasks to the current wave (if independent) or next wave
-            - Update the planner's execution plan
-            - Spawn agents for the new sub-tasks
-
-            ### Type: blocked
-            The agent can't proceed due to an external dependency or question.
-            - If it needs user input: surface the question to the user
-            - If it needs a build/test result: run it and feed back
-            - If it needs another task to complete first: check if that task is in flight
-            - Resequence if needed
-
-            ## Key principles
-            - **Never discard SOS context.** The agent's partial work is valuable.
-            - **Prefer existing skills** over creating new ones. Check first.
-            - **The planner sees the whole picture.** SOS handler feeds back into the planner
-              to replan remaining waves.
-            - **SOS is not failure.** It's the agent recognizing its limits, which is better
-              than producing a poor result silently.
-            - **Log everything.** Store SOS events, skill creations, and replanning decisions
-              in the execution log for retrospective learning.
-            """,
-
-        ["evolutionary"] = """
-            ## Role: Evolutionary Agent
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "evolutionary" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
-            You proactively improve the project's knowledge base, skills, and behavioral norms.
-            You don't wait to be asked — you scan, identify drift, and propose improvements.
-
-            ## When to activate
-            - After goal completion (standard practice)
-            - On session start (quick scan for staleness)
-            - After retrospectives (fold lessons into skills)
-            - When the user says "evolve", "improve", or "clean up knowledge"
-
-            ## Methodology
-
-            ### 1. Scan for stale memories
-            `memory('search')` broadly across topics. Check reviewAfter/reviewWhen conditions.
-            Flag memories whose content may be outdated by recent code changes or goal outcomes.
-            Verify against current codebase state before recommending updates.
-
-            ### 2. Detect skill drift
-            Load each skill via `skill('load')`. Compare its methodology against recent
-            retrospective lessons (`memory('show', { name: "learn:execution-outcomes" })`). If a skill's approach
-            was contradicted or improved by experience, update it via `skill('create')`.
-            Check for [stale base] markers on skill overrides via `skill('load')` listing.
-            If found, the built-in has been updated — use `skill('load', { name, reconcile: true })`
-            to review both versions and merge project-specific additions with the new base.
-
-            ### 3. Surface emergent patterns
-            Compare findings across multiple goals. Are there recurring themes — same bug type,
-            same architectural decision, same workflow friction? If a pattern appears 3+ times
-            across different goals, it deserves its own memory.
-
-            ### 4. Update behavioral norms
-            Review `agent:profile` and `agent:execution-policy` against accumulated evidence.
-            Do the norms still match how work actually gets done? Propose updates with reasoning.
-
-            ### 5. Verify test counts
-            Run the project's test command (e.g., `dotnet test`) and capture pass/fail/skip counts.
-            Search for memories that track test counts (e.g., `memory('search', { query: "test count" })`).
-            If stored counts differ from actual, update them. This prevents stale test data
-            from misleading future QA and planning agents.
-
-            ### 6. Scan backlog for unblocked and resolved items
-            `memory('search', { query: "backlog:" })` to review deferred work.
-            - **Unblocked**: Check if recent goals or code changes have unblocked any items. If actionable, flag for promotion.
-            - **Resolved**: Check if items were addressed by recent goals without being tracked. Update or remove completed entries.
-            - **Stale**: Flag items on the backlog for 3+ goals without progress for user review.
-
-            ### 7. Detect recurring patterns
-            Scan concern:* entries for keyword overlap. For each concern's keywords
-            (excluding noise: status:, severity:, phase:, provenance:, goal:, ref:,
-            file:, wave:, depends_on:, basedOn:, type:), count how many concerns
-            share each keyword. If 3+ concerns share a specific keyword, suggest
-            creating a `patterns:{keyword}` memory to capture the recurring theme.
-
-            ### 8. Prune and consolidate
-            Merge memories that overlap significantly. Remove memories superseded by code changes.
-            Promote ephemeral memories that proved valuable via `copy("~name", "topic:name")`.
-
-            ## Key rules
-            - **Never delete without checking** — flag for review if uncertain
-            - **Small focused updates beat large rewrites** — append, don't replace, unless stale
-            - **Evolution is incremental** — each session a little better, not a revolution
-            - **Propose, don't mandate** — behavioral norm changes need user review
-            """,
-
-        ["cartographer"] = """
-            ## Role: Knowledge Cartographer
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "cartographer" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
-            You discover and index connections between memories that embedding similarity
-            alone would miss. You map the knowledge landscape and build bridges.
-
-            ## When to activate
-            - After research phases produce new findings
-            - When the knowledge base grows significantly (10+ new memories in a session)
-            - When the user asks "what connects to X" or "map the knowledge"
-            - After audits or cross-cutting changes that touch multiple domains
-
-            ## Methodology
-
-            ### 1. Survey the landscape
-            `memory('list', { mode: "full" })` to see all memories. Group by topic. Note the vocabulary
-            and domain each topic covers. Identify islands — topics with no connections.
-
-            ### 2. Find unlinked connections
-            For each topic pair, ask: do these domains interact in the codebase?
-            Common connection types:
-            - **Shared files**: same file touched by different domains (e.g., Program.cs)
-            - **Causal chains**: fix A enabled feature B which required doc update C
-            - **Shared patterns**: two domains use the same approach differently
-            - **Dependencies**: domain A's output is domain B's input
-
-            ### 3. Create bridges
-            For each discovered connection, choose the lightest-weight option:
-            1. **Add keywords** to both memories so search finds them together (preferred)
-            2. **Append cross-reference** to existing memory noting the connection
-            3. **Create bridge memory** (e.g., "bridge:auth-resilience") only for rich connections
-
-            ### 4. Validate bridges
-            For each bridge: `memory('search', { query: "X" })` — does Y appear in results? If not, strengthen
-            the keywords. The test is discoverability: future agents should find the connection.
-
-            ## Key rules
-            - **Connections must be real and useful** — not trivial shared vocabulary
-            - **Explain WHY connected**, not just that they are — the reason is the value
-            - **Prefer keywords over new memories** — minimize memory proliferation
-            - **Test discoverability** — if search("auth") should find resilience, verify it does
-            """,
-
-        ["merge-safety"] = """
-            ## Role: Merge Safety Specialist
-            You handle multi-user memory merge conflicts in .scrinia/ directories.
-
-            ## When to activate
-            - After `git pull` or `git merge` that touches `.scrinia/` files
-            - When `memory('restore')` warns about merge conflicts
-            - When a teammate reports merge issues
-
-            ## Methodology
-
-            ### 1. Scan for conflicts
-            Run `reconcile()` with no arguments. It scans `.scrinia/` for git conflict markers.
-            - `.meta.json` conflicts are auto-resolved (keyword union, latest timestamp)
-            - `.nmp2` artifact conflicts need manual resolution
-
-            ### 2. Resolve each conflict
-            For each CONFLICT-N reported:
-            - Review the decoded ours/theirs content shown by reconcile
-            - Choose: `reconcile(conflictId: "CONFLICT-1", choice: "ours"|"theirs"|"merged")`
-            - For "merged": provide the combined content as the content parameter
-
-            ### 3. Verify clean
-            Run `reconcile()` again — verify 0 conflicts remaining.
-
-            ### 4. Structural prevention
-            These conventions prevent most conflicts by design:
-            - **Per-file sidecars**: each memory has its own .meta.json (different memories = no conflict)
-            - **Per-phase retrospectives**: learn:retro-gN-phaseId (not one growing monolith)
-            - **Sorted metadata**: keywords and term frequencies sorted alphabetically for stable diffs
-            - **Binary marking**: .nmp2 files marked as binary in .gitattributes
-            - **Merge driver**: .meta.json auto-resolved via custom git merge driver (keyword union)
-
-            ### 5. Team setup
-            For new team members:
-            - Configure merge driver: `git config merge.scrinia-meta.driver ".scrinia/hooks/scrinia-merge-meta.sh %O %A %B"`
-            - Install post-merge hook: `cp .scrinia/hooks/post-merge .git/hooks/post-merge`
-            - See docs/multi-user-setup.md for full instructions
-
-            ## Key rules
-            - **Always reconcile after merge** — don't skip even if git reports clean
-            - **Never manually edit .nmp2 files** — use scrinia tools (store, reconcile)
-            - **Archive before modifying** — the reconcile tool does this automatically
-            """,
-
-        ["qa"] = """
-            ## Role: Quality Assurance Agent
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "qa" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
-
-            You verify that completed work actually delivers what was promised.
-            Run this before the verification gate — evidence without verification is rubber-stamping.
-
-            ## When to activate
-            - Before verification — mandatory
-            - When the user asks "does this work?" or "verify this"
-
-            ## Methodology
-
-            ### 1. Run the test suite
-            Execute the project's test command (e.g., `dotnet test`).
-            Record exact pass/fail/skip counts from the test runner output.
-            This is not optional — claimed results without running tests are rejected.
-
-            ### 2. Verify build
-            Run the build command. Confirm 0 errors. Record warning count.
-
-            ### 3. Check acceptance criteria
-            For each criterion from the task definition:
-            - Read the changed code to confirm the change was made
-            - Run a specific test or command that exercises the change
-            - Show the evidence — don't just claim PASS
-
-            ### 4. Check for regressions
-            Run `memory('list', { mode: "drift" })` to detect stale memories from code changes.
-            Run the full test suite, not just new tests.
-
-            ### 5. Validate against task description
-            Compare what was asked (task action) with what was delivered (outcome).
-            Flag any deviations or scope creep.
-
-            ### 6. Resolve addressed concerns
-            Run `concern('list')` to see active concerns scoped to this phase.
-            For each concern that your verification evidence shows is resolved:
-              concern('resolve', { concernName: "concern:ID", resolution: "evidence summary", verifiedBy: "qa" })
-            Do not resolve concerns you cannot provide evidence for.
-
-            ## Output format
-            Return structured evidence for verification:
-            ```
-            PASS: criterion 1 — test output: 759 passed, 0 failed
-            PASS: criterion 2 — build: 0 errors, 0 warnings
-            FAIL: criterion 3 — expected X but found Y
-            ```
-
-            ## Persist results
-            After completing verification, write your findings to qa:latest via memory('store'):
-            ```
-            memory('store', { name: "qa:latest", content: ["## QA Report\n**Build**: 0 errors, N warnings\n**Tests**: N passed, 0 failed, 0 skipped\n**Criteria**: N/N passed\n\n{detailed PASS/FAIL evidence}"], keywords: ["qa", "verification"] })
-            ```
-            This memory is read by the verification gate — without it, verification blocks.
-
-            ## Key rules
-            - **Run tests, don't claim results** — the test runner is the source of truth
-            - **Evidence over assertion** — "I verified" is not evidence; test output is
-            - **Check the actual code** — don't assume the agent's outcome report is accurate
-            """,
-
-        ["self-reflector"] = """
-            ## Role: Self-Reflector Agent
-            You analyze completed work to extract lessons, validate hypotheses, and update beliefs.
-            > **Spawn protocol**: When spawning an agent for this skill, call `skill('load', { name: "self-reflector" })` and pass its output as the agent prompt. Do not paraphrase or summarize the skill text.
-
-            ## When to activate
-            - After QA gate completes (auto-injected as gate task)
-            - When the user asks for a retrospective
-
-            ## Methodology
-
-            ### 1. Read execution context
-            - Load the execution log for the current phase: memory('show', { name: "task:{phaseId}-execution-log" })
-            - Load QA results: memory('show', { name: "qa:latest" })
-            - Load the research findings for context on what was planned
-
-            ### 2. Compare plan vs reality
-            - What was the hypothesis from research? Did it hold?
-            - Were there SOS signals, replanning, or deviations?
-            - Which tasks completed smoothly vs which needed iteration?
-
-            ### 3. Extract lessons
-            - What worked well? (approaches to repeat)
-            - What failed or was problematic? (approaches to avoid)
-            - What was surprising or non-obvious?
-
-            ### 4. Update beliefs
-            - What do you now understand differently about this domain?
-            - New patterns discovered, assumptions proven wrong, conventions clarified
-
-            ### 5. Persist findings
-            Store retrospective following the naming convention:
-            memory('store', { name: "learn:retro-{goalShort}-{phaseId}", content: ["## Retrospective..."] })
-
-            If beliefs were updated, store separately:
-            memory('store', { name: "learn:beliefs-phase-{phaseId}", content: ["## Beliefs..."] })
-
-            These naming conventions are used by goal('complete') to detect missing retrospectives.
-
-            ## Key rules
-            - **Read the logs, don't self-report** — execution logs are the source of truth
-            - **Compare plan vs reality** — the hypothesis validation is the most valuable output
-            - **One lesson per finding** — specific and actionable, not vague platitudes
-            - **Beliefs are durable** — only store beliefs you'd want a future agent to know
-            """,
-    };
+    private static IReadOnlyDictionary<string, string> BuiltInSkills => _builtInSkills.Value;
 
     private sealed record ParsedTask(string Id, string[] DependsOn, string Content, string[]? Files = null);
 
@@ -4330,7 +4591,7 @@ public sealed class ScriniaProjectTools
             CONFLICTED=$(grep -r -l "<<<<<<< " .scrinia/ 2>/dev/null | wc -l)
             echo ""
             echo "⚠  scrinia: $CONFLICTED file(s) in .scrinia/ have unresolved merge conflicts."
-            echo "   Run reconcile() in your next agent session to resolve them."
+            echo "   Run memory('reconcile') in your next agent session to resolve them."
             echo "   Files with conflicts:"
             grep -r -l "<<<<<<< " .scrinia/ 2>/dev/null | sed 's/^/     /'
             echo ""
@@ -4413,5 +4674,226 @@ public sealed class ScriniaProjectTools
     {
         try { return Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(fullPath))); }
         catch { return null; }
+    }
+
+    // ── File entity computed view ────────────────────────────────────────────
+
+    /// <summary>Normalizes a file path for comparison: backslash → forward-slash, strip leading ./</summary>
+    internal static string NormalizeFilePath(string path) =>
+        path.Replace('\\', '/').TrimStart('.', '/');
+
+    /// <summary>Computes drift status for a single code-ref entry.</summary>
+    private static string ComputeRefStatus(string workspaceRoot, string refPath, string storedHash)
+    {
+        var fullPath = ResolveDriftPath(workspaceRoot, refPath);
+        if (fullPath is null || !File.Exists(fullPath))
+            return "MISSING";
+        var currentHash = ComputeDriftHash(fullPath);
+        if (currentHash is null || !currentHash.Equals(storedHash, StringComparison.OrdinalIgnoreCase))
+            return "DRIFT";
+        return "OK";
+    }
+
+    /// <summary>Formats a qualified name from a ScopedArtifact (e.g. "arch:example-notes").</summary>
+    private static string FormatQualName(IMemoryStore store, ScopedArtifact sa) =>
+        store.FormatQualifiedName(sa.Scope, sa.Entry.Name);
+
+    /// <summary>Show all memories referencing a file path (file entity view).</summary>
+    private string FileShow(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+            return ResponseBuilder.Error("File show requires 'id' parameter with a file path.").ToYaml();
+
+        var store = CurrentStore;
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
+        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+
+        string normalizedId = NormalizeFilePath(id);
+        var allEntries = store.ListScoped(null);
+        var matches = new List<(string QualName, string Description, string Status)>();
+        string? overallStatus = null;
+
+        foreach (var sa in allEntries)
+        {
+            if (sa.Entry.CodeRefs is null or { Count: 0 }) continue;
+
+            foreach (var (path, storedHash) in sa.Entry.CodeRefs)
+            {
+                string normalizedPath = NormalizeFilePath(path);
+                if (!normalizedPath.Contains(normalizedId, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string status = ComputeRefStatus(workspaceRoot, path, storedHash);
+                string qualName = FormatQualName(store, sa);
+                matches.Add((qualName, sa.Entry.Description, status));
+
+                // Track worst status for the header
+                if (overallStatus is null || status == "MISSING" ||
+                    (status == "DRIFT" && overallStatus == "OK"))
+                    overallStatus = status;
+            }
+        }
+
+        if (matches.Count == 0)
+            return ResponseBuilder.Success($"No memories reference file '{id}'.").WithAction("shown").ToYaml();
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"file: {normalizedId}");
+        sb.AppendLine($"Status: {overallStatus}");
+        sb.AppendLine();
+        sb.AppendLine("Referenced by:");
+        foreach (var (qualName, desc, status) in matches)
+        {
+            string descPart = !string.IsNullOrWhiteSpace(desc) ? $" — \"{Truncate(desc, 80)}\"" : "";
+            sb.AppendLine($"  {qualName}{descPart} [{status}]");
+        }
+
+        return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithPath($"file:{normalizedId}").WithAction("shown").ToYaml();
+    }
+
+    /// <summary>List all files tracked via codeRefs across all memories (file entity view).</summary>
+    private string FileList(string? query)
+    {
+        var store = CurrentStore;
+        string storeDir = store.GetStoreDirForScope("local");
+        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
+        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+
+        string? normalizedQuery = !string.IsNullOrWhiteSpace(query)
+            ? NormalizeFilePath(query) : null;
+
+        var allEntries = store.ListScoped(null);
+
+        // Build inverted index: file path → list of (qualifiedName, status)
+        var index = new Dictionary<string, List<(string QualName, string Status)>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var sa in allEntries)
+        {
+            if (sa.Entry.CodeRefs is null or { Count: 0 }) continue;
+
+            string qualName = FormatQualName(store, sa);
+
+            foreach (var (path, storedHash) in sa.Entry.CodeRefs)
+            {
+                string normalizedPath = NormalizeFilePath(path);
+
+                if (normalizedQuery is not null &&
+                    !normalizedPath.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!index.TryGetValue(normalizedPath, out var list))
+                {
+                    list = [];
+                    index[normalizedPath] = list;
+                }
+
+                string status = ComputeRefStatus(workspaceRoot, path, storedHash);
+                list.Add((qualName, status));
+            }
+        }
+
+        if (index.Count == 0)
+        {
+            string emptyMsg = normalizedQuery is not null
+                ? $"No file references match '{query}'."
+                : "No memories have code references. Use codeRefs parameter on memory('remember') to track file dependencies.";
+            return ResponseBuilder.Success(emptyMsg).WithAction("listed").ToYaml();
+        }
+
+        int totalRefs = index.Values.Sum(v => v.Count);
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"File references ({index.Count} file{(index.Count == 1 ? "" : "s")}, {totalRefs} memor{(totalRefs == 1 ? "y" : "ies")}):");
+        sb.AppendLine();
+
+        foreach (var (filePath, refs) in index.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            int okCount = refs.Count(r => r.Status == "OK");
+            int driftCount = refs.Count(r => r.Status == "DRIFT");
+            int missingCount = refs.Count(r => r.Status == "MISSING");
+
+            var statusParts = new List<string>();
+            if (okCount > 0) statusParts.Add($"{okCount} OK");
+            if (driftCount > 0) statusParts.Add($"{driftCount} DRIFT");
+            if (missingCount > 0) statusParts.Add($"{missingCount} MISSING");
+
+            sb.AppendLine($"  {filePath} — {refs.Count} ref{(refs.Count == 1 ? "" : "s")} [{string.Join(", ", statusParts)}]");
+
+            if (sb.Length > MaxResponseChars - 200) // leave room for truncation notice
+            {
+                sb.AppendLine("  [... truncated]");
+                break;
+            }
+        }
+
+        return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml();
+    }
+
+    /// <summary>Truncates a description string to the given max length.</summary>
+    private static string Truncate(string text, int maxLength)
+    {
+        if (text.Length <= maxLength) return text;
+        return text[..(maxLength - 3)] + "...";
+    }
+
+    // ── File-based meta-entity I/O helpers ──────────────────────────────────
+
+    /// <summary>
+    /// Derives the <c>.scrinia/</c> root directory from the memory store by walking
+    /// up from the local scope directory until a directory named ".scrinia" is found.
+    /// </summary>
+    internal static string GetScriniaBaseDir(IMemoryStore store)
+    {
+        string storeDir = store.GetStoreDirForScope("local");
+        // storeDir is like /path/.scrinia/topics/local/ or /path/.scrinia/topics/
+        // Navigate up to find .scrinia/
+        var dir = new DirectoryInfo(storeDir);
+        while (dir is not null && dir.Name != ".scrinia")
+            dir = dir.Parent;
+        return dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
+    }
+
+    /// <summary>
+    /// Archives an existing file into <paramref name="versionsDir"/> with a UTC
+    /// timestamp suffix before it gets overwritten. No-op if the file does not exist.
+    /// </summary>
+    internal static void ArchiveFileVersion(string filePath, string versionsDir)
+    {
+        if (!File.Exists(filePath)) return;
+        Directory.CreateDirectory(versionsDir);
+        string name = Path.GetFileNameWithoutExtension(filePath);
+        string ext = Path.GetExtension(filePath);
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        File.Copy(filePath, Path.Combine(versionsDir, $"{name}_{timestamp}{ext}"));
+    }
+
+    /// <summary>
+    /// Reads a JSON sidecar metadata file (<c>.meta.json</c>) next to the given file path.
+    /// Returns <c>null</c> if the sidecar does not exist.
+    /// </summary>
+    internal static T? ReadSidecarMeta<T>(string filePath, JsonTypeInfo<T> typeInfo) where T : class
+    {
+        string metaPath = Path.ChangeExtension(filePath, ".meta.json");
+        if (!File.Exists(metaPath)) return null;
+        try
+        {
+            string json = File.ReadAllText(metaPath);
+            return JsonSerializer.Deserialize(json, typeInfo);
+        }
+        catch (JsonException)
+        {
+            // Corrupted sidecar — treat as absent rather than crashing
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Writes a JSON sidecar metadata file (<c>.meta.json</c>) next to the given file path.
+    /// </summary>
+    internal static void WriteSidecarMeta<T>(string filePath, T meta, JsonTypeInfo<T> typeInfo)
+    {
+        string metaPath = Path.ChangeExtension(filePath, ".meta.json");
+        string json = JsonSerializer.Serialize(meta, typeInfo);
+        File.WriteAllText(metaPath, json);
     }
 }

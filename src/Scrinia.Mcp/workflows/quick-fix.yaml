@@ -1,0 +1,115 @@
+name: quick-fix
+
+activities:
+  # Wave 0: Researcher (seed)
+  - id: researcher
+    type: agent
+    role: seed
+    phase: "00"
+    wave: 0
+    skill: "builtin:researcher"
+    dependsOn: []
+    tag: researcher
+    prompt: >-
+      ## Researcher Task (Quick Fix)
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/researcher' })
+      2. EXECUTE the loaded skill's methodology: investigate the bug or change scope, focus on root cause, affected files, and existing test coverage
+      3. STORE findings via memory('remember', { path: '/research/...', content: [...] })
+
+      Acceptance criteria:
+
+      - Root cause or change scope identified and stored as research:* memory
+
+      - Affected files and risk areas documented
+    validation:
+      checkType: index-prefix
+      target: "research:{goalShort}"
+      errorTemplate: "No research:* memories found."
+      instructionTemplate: "The researcher must store findings before this gate can complete."
+    requiredOutputs:
+      - checkType: index-prefix
+        target: "research:{goalShort}"
+        errorTemplate: "No research findings stored."
+        instructionTemplate: "Store findings via memory('remember') before completing."
+
+  # Wave 1: Planner (seed)
+  - id: planner
+    type: agent
+    role: seed
+    phase: "00"
+    wave: 1
+    skill: "builtin:planner"
+    dependsOn:
+      - researcher
+    tag: planner
+    prompt: >-
+      ## Planner Task (Quick Fix)
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/planner' })
+      2. EXECUTE the loaded skill's methodology: read research findings, produce a focused task plan
+      3. STORE plan by calling task('plan') with targeted fix tasks
+
+      Acceptance criteria:
+
+      - task('plan') called with fix tasks
+
+      - Each task has clear acceptance criteria
+    validation:
+      checkType: index-no-gate
+      target: "task:"
+      errorTemplate: "No execution tasks found."
+      instructionTemplate: "Spawn a planner agent via memory('recall', { path: '/skill/planner' }) — it must call task('plan') before this gate can complete."
+    requiredOutputs:
+      - checkType: index-no-gate
+        target: "task:"
+        errorTemplate: "No execution tasks found."
+        instructionTemplate: "Call task('plan') before completing."
+
+  # Implementation — executes the planner's output
+  - id: implementation
+    type: spawner
+    role: post-plan
+    phase: null
+    wave: null
+    skill: null
+    dependsOn:
+      - planner
+    tag: implementation
+    prompt: >-
+      Execute the planned tasks. The planner has decomposed the goal into
+      implementation tasks — this activity creates and coordinates their execution.
+    validation: null
+
+  # QA Gate (post-plan)
+  - id: qa-gate
+    type: agent
+    role: post-plan
+    phase: null
+    wave: null
+    skill: "builtin:qa"
+    dependsOn:
+      - "*"
+    tag: qa
+    prompt: >-
+      ## QA Gate (Quick Fix)
+
+      ACTIONS:
+      1. LOAD skill via memory('recall', { path: '/skill/qa' })
+      2. EXECUTE the skill: run full test suite, verify the fix, check acceptance criteria
+      3. STORE results to qa:latest memory
+
+      Acceptance criteria:
+
+      - qa:latest memory exists with pass/fail counts
+
+      - Build passes with 0 errors
+
+      - Fix verified against acceptance criteria
+    validation:
+      checkType: memory-exists
+      target: "qa:latest"
+      errorTemplate: "qa:latest memory not found."
+      instructionTemplate: "Spawn a QA agent via memory('recall', { path: '/skill/qa' }) — it must write qa:latest before this gate can complete."

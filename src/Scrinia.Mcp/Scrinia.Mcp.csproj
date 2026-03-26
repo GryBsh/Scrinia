@@ -16,9 +16,16 @@
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
+    <PackageReference Include="YamlDotNet" Version="16.*" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Scrinia.Core\Scrinia.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="skills\**\*.md" />
+    <EmbeddedResource Include="workflows\**\*.yaml" />
+    <EmbeddedResource Include="prompts\**\*.md" />
   </ItemGroup>
 </Project>
