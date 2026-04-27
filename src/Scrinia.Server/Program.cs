@@ -159,7 +159,6 @@ builder.Services.AddSingleton<TaskEventBroadcaster>();
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
 builder.Services.AddSingleton(sp =>
     new StoreManager(storePaths, sp.GetRequiredService<IStorageBackend>()));
-builder.Services.AddHostedService<MaintenanceCacheService>();
 
 builder.Services.AddSingleton<IReadOnlyList<IScriniaPlugin>>([.. loadedPlugins]);
 builder.Services.AddSingleton<PluginPipeline>();
@@ -244,8 +243,7 @@ builder.Services
             return Task.CompletedTask;
         };
     })
-    .WithTools<ScriniaMcpTools>()
-    .WithTools<ScriniaProjectTools>();
+    .WithTools<ScriniaMcpTools>();
 
 // JSON
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -395,7 +393,6 @@ app.MapMemoryEndpoints();
 app.MapKeyEndpoints();
 app.MapHealthEndpoints();
 app.MapChatEndpoints(chatOptions);
-app.MapWorkflowEndpoints();
 
 // Plugin endpoints
 var pluginGroup = app.MapGroup("/api/v1/plugins")

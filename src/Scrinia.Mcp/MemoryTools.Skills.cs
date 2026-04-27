@@ -1,22 +1,40 @@
 using System.ComponentModel;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
-using System.Text.RegularExpressions;
-using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
-using Scrinia.Core.Search;
-using YamlDotNet.Serialization;
 
 namespace Scrinia.Mcp;
 
-public sealed partial class ScriniaProjectTools
+/// <summary>Metadata sidecar for a skill file on disk.</summary>
+public record SkillFileMeta(
+    string? BasedOn,
+    string? Role,
+    string[]? Capabilities,
+    string? Scaffold,
+    string? CreatedAt,
+    string? UpdatedAt);
+
+/// <summary>Metadata sidecar for an agent config file on disk.</summary>
+public record AgentFileMeta(
+    string? CreatedAt,
+    string? UpdatedAt);
+
+[JsonSourceGenerationOptions(
+    WriteIndented = true,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(SkillFileMeta))]
+[JsonSerializable(typeof(AgentFileMeta))]
+public partial class ScriniaMcpJsonContext : JsonSerializerContext;
+
+public sealed partial class ScriniaMcpTools
 {
-    // -- Built-in specialist scaffolds (AGENT-04) --------------------------------
-    // Loaded from embedded resources: prompts/scaffolds/{name}.md
+    private const int SkillResponseLimit = 8 * 1024;
 
     private static readonly Lazy<string> _researcherScaffold = new(() =>
         EmbeddedPrompts.LoadScaffold("researcher")
@@ -30,18 +48,71 @@ public sealed partial class ScriniaProjectTools
         EmbeddedPrompts.LoadScaffold("domain-expert")
         ?? throw new InvalidOperationException("Built-in domain-expert scaffold not found"));
 
-    private static string ResearcherScaffold => _researcherScaffold.Value;
-    private static string ReviewerScaffold => _reviewerScaffold.Value;
-    private static string DomainExpertScaffold => _domainExpertScaffold.Value;
-
     private static readonly Lazy<IReadOnlyDictionary<string, string>> _builtInSkills =
         new(() => EmbeddedPrompts.LoadAllSkills());
 
     private static IReadOnlyDictionary<string, string> BuiltInSkills => _builtInSkills.Value;
 
-    // -- Subagent creation tools (AGENT-01, AGENT-02, AGENT-03, AGENT-04) -------
+    // ── Shared file helpers (used by skill, agent, and other markdown-on-disk paths) ─
 
-    /// <summary>Create a reusable specialist skill prompt and store as skill:* memory.</summary>
+    /// <summary>
+    /// Resolves the .scrinia/ base directory by walking up from the local store directory.
+    /// </summary>
+    internal static string GetScriniaBaseDir(IMemoryStore store)
+    {
+        string storeDir = store.GetStoreDirForScope("local");
+        var dir = new DirectoryInfo(storeDir);
+        while (dir is not null && dir.Name != ".scrinia")
+            dir = dir.Parent;
+        return dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
+    }
+
+    /// <summary>
+    /// Archives an existing file into <paramref name="versionsDir"/> with a UTC
+    /// timestamp suffix before it gets overwritten. No-op if the file does not exist.
+    /// </summary>
+    internal static void ArchiveFileVersion(string filePath, string versionsDir)
+    {
+        if (!File.Exists(filePath)) return;
+        Directory.CreateDirectory(versionsDir);
+        string name = Path.GetFileNameWithoutExtension(filePath);
+        string ext = Path.GetExtension(filePath);
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        File.Copy(filePath, Path.Combine(versionsDir, $"{name}_{timestamp}{ext}"));
+    }
+
+    /// <summary>Reads a JSON sidecar (.meta.json) next to <paramref name="filePath"/>. Null if missing or corrupted.</summary>
+    internal static T? ReadSidecarMeta<T>(string filePath, JsonTypeInfo<T> typeInfo) where T : class
+    {
+        string metaPath = Path.ChangeExtension(filePath, ".meta.json");
+        if (!File.Exists(metaPath)) return null;
+        try
+        {
+            string json = File.ReadAllText(metaPath);
+            return JsonSerializer.Deserialize(json, typeInfo);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Writes a JSON sidecar (.meta.json) next to <paramref name="filePath"/>.</summary>
+    internal static void WriteSidecarMeta<T>(string filePath, T meta, JsonTypeInfo<T> typeInfo)
+    {
+        string metaPath = Path.ChangeExtension(filePath, ".meta.json");
+        string json = JsonSerializer.Serialize(meta, typeInfo);
+        File.WriteAllText(metaPath, json);
+    }
+
+    private static async Task<string> ReadLegacySkillNmpAsync(IMemoryStore store, string skillName, CancellationToken ct)
+    {
+        string artifact = await store.ResolveArtifactAsync($"skill:{skillName}", ct);
+        byte[] decoded = Nmp2Strategy.Instance.Decode(artifact);
+        return Encoding.UTF8.GetString(decoded);
+    }
+
+    /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
     internal static async Task<string> SkillCreate(
         [Description("Skill name slug (e.g. 'api-reviewer', 'auth-researcher').")] string name,
         [Description("Built-in scaffold: researcher, reviewer, domain-expert, or custom.")] string scaffold,
@@ -51,46 +122,33 @@ public sealed partial class ScriniaProjectTools
     {
         var store = CurrentStore;
 
-        // Prerequisite check: project:context must exist
-        try
-        {
-            await ReadMemoryAsync(store, "project:context", cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            return ResponseBuilder.Error("No project initialized. Run project_init first.").ToYaml();
-        }
-
-        // Select prompt template based on scaffold (case-insensitive)
         string promptContent;
         string role;
-
         string scaffoldLower = scaffold.Trim().ToLowerInvariant();
         switch (scaffoldLower)
         {
             case "researcher":
-                promptContent = ResearcherScaffold;
+                promptContent = _researcherScaffold.Value;
                 role = "researcher";
                 if (!string.IsNullOrWhiteSpace(instructions))
                     promptContent += $"\n## Additional Instructions\n{instructions}\n";
                 break;
 
             case "reviewer":
-                promptContent = ReviewerScaffold;
+                promptContent = _reviewerScaffold.Value;
                 role = "reviewer";
                 if (!string.IsNullOrWhiteSpace(instructions))
                     promptContent += $"\n## Additional Instructions\n{instructions}\n";
                 break;
 
             case "domain-expert":
-                promptContent = DomainExpertScaffold;
+                promptContent = _domainExpertScaffold.Value;
                 role = "domain-expert";
                 if (!string.IsNullOrWhiteSpace(instructions))
                     promptContent += $"\n## Additional Instructions\n{instructions}\n";
                 break;
 
             default:
-                // Custom scaffold: build from instructions/tools parameters
                 role = "custom";
                 string toolSection = "";
                 if (!string.IsNullOrWhiteSpace(tools))
@@ -108,41 +166,33 @@ public sealed partial class ScriniaProjectTools
                     : instructions;
 
                 promptContent =
-                    $"## Role: Custom Specialist\n" +
+                    "## Role: Custom Specialist\n" +
                     toolSection +
-                    $"## Instructions\n" +
+                    "## Instructions\n" +
                     $"{instructionsSection}\n\n" +
-                    $"## Fallback Instructions (if Scrinia MCP is not available)\n" +
-                    $"Organize findings in markdown. Use standard file operations to persist results.\n";
+                    "## Fallback Instructions (if Scrinia MCP is not available)\n" +
+                    "Organize findings in markdown. Use standard file operations to persist results.\n";
                 break;
         }
 
-        // Build capability list for keywords
-        string capabilityList = string.IsNullOrWhiteSpace(tools) ? scaffoldLower : tools;
-
-        // Compute basedOn hash if this skill overrides a built-in
         string? basedOnHash = null;
         if (BuiltInSkills.TryGetValue(name, out string? builtInText))
         {
             basedOnHash = Convert.ToHexStringLower(
-                SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builtInText)));
+                SHA256.HashData(Encoding.UTF8.GetBytes(builtInText)));
         }
 
-        // Write to disk (.scrinia/skills/{name}.md)
         string baseDir = GetScriniaBaseDir(store);
         string skillsDir = Path.Combine(baseDir, "skills");
         string filePath = Path.Combine(skillsDir, $"{name}.md");
         Directory.CreateDirectory(skillsDir);
 
-        // Archive previous version if file exists
         ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
 
-        // Write skill content as plain markdown
         await File.WriteAllTextAsync(filePath, promptContent, cancellationToken);
 
-        // Write sidecar metadata
         string now = DateTimeOffset.UtcNow.ToString("o");
-        var existingMeta = ReadSidecarMeta(filePath, PlanningJsonContext.Default.SkillFileMeta);
+        var existingMeta = ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.SkillFileMeta);
         string[]? capabilities = string.IsNullOrWhiteSpace(tools) ? null
             : tools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var meta = new SkillFileMeta(
@@ -152,44 +202,23 @@ public sealed partial class ScriniaProjectTools
             Scaffold: scaffoldLower,
             CreatedAt: existingMeta?.CreatedAt ?? now,
             UpdatedAt: now);
-        WriteSidecarMeta(filePath, meta, PlanningJsonContext.Default.SkillFileMeta);
+        WriteSidecarMeta(filePath, meta, ScriniaMcpJsonContext.Default.SkillFileMeta);
 
-        // MF-C01: check for legacy NMP/2 entry, log migration note if found
-        string qualifiedName = $"skill:{name}";
         string migrationNote = "";
         try
         {
-            await ReadMemoryAsync(store, qualifiedName, cancellationToken);
-            migrationNote = $" Note: a legacy NMP/2 entry for {qualifiedName} still exists — it will be used as fallback but the disk file takes precedence.";
+            await ReadLegacySkillNmpAsync(store, name, cancellationToken);
+            migrationNote = $"Note: a legacy NMP/2 entry for skill:{name} still exists — disk file takes precedence.";
         }
-        catch { /* no legacy entry — nothing to note */ }
+        catch { /* no legacy entry */ }
 
-        // Update project:state
-        string stateText;
-        try { stateText = await ReadMemoryAsync(store, "project:state", cancellationToken); }
-        catch (FileNotFoundException) { stateText = ""; }
-
-        string projectName = ExtractStateField(stateText, "Project:") ?? "Unknown Project";
-        string projectId = ExtractStateField(stateText, "ID:") ?? DeriveProjectId(store);
-        string currentPhase = ExtractStateField(stateText, "Phase:") ?? "Not started";
-        string? skillGoalId = await GetActiveGoalIdAsync(store, cancellationToken);
-        string progressPct = CalculateProgress(store, skillGoalId);
-
-        await WriteStateAsync(store, projectName, projectId,
-            phase: currentPhase,
-            progressPct: progressPct,
-            lastAction: $"Skill created: {qualifiedName} (role:{role})",
-            blockers: "none",
-            nextStep: "use memory('recall', { path: '/skill/' }) to retrieve stored skills",
-            cancellationToken);
-
-        var scResponse = ResponseBuilder.Success($"Stored as .scrinia/skills/{name}.md.")
+        var response = ResponseBuilder.Success($"Stored as .scrinia/skills/{name}.md.")
             .WithFileChanges()
             .WithPath($"/skill/{name}")
             .WithAction("created");
-        if (!string.IsNullOrEmpty(migrationNote))
-            scResponse = scResponse.WithInfo(migrationNote.TrimStart());
-        return scResponse.ToYaml();
+        if (migrationNote.Length > 0)
+            response = response.WithInfo(migrationNote);
+        return response.ToYaml();
     }
 
     /// <summary>List or load stored specialist skills.</summary>
@@ -202,9 +231,6 @@ public sealed partial class ScriniaProjectTools
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            // List mode: scan disk files, NMP/2 index, and built-in dictionary
-
-            // 1. Disk files (.scrinia/skills/*.md)
             string baseDir = GetScriniaBaseDir(store);
             string skillsDir = Path.Combine(baseDir, "skills");
             var diskNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -215,18 +241,16 @@ public sealed partial class ScriniaProjectTools
                 {
                     string diskName = Path.GetFileNameWithoutExtension(mdFile);
                     diskNames.Add(diskName);
-                    diskMetas[diskName] = ReadSidecarMeta(mdFile, PlanningJsonContext.Default.SkillFileMeta);
+                    diskMetas[diskName] = ReadSidecarMeta(mdFile, ScriniaMcpJsonContext.Default.SkillFileMeta);
                 }
             }
 
-            // 2. NMP/2 index entries (legacy)
             var (scope, _) = store.ParseQualifiedName("skill:placeholder");
             IReadOnlyList<ArtifactEntry> entries;
             try { entries = store.LoadIndex(scope); }
             catch { entries = []; }
             var nmpNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
 
-            // 3. Merge: collect all unique names across all three sources
             var allNames = new HashSet<string>(BuiltInSkills.Keys, StringComparer.OrdinalIgnoreCase);
             allNames.UnionWith(diskNames);
             allNames.UnionWith(nmpNames);
@@ -234,21 +258,19 @@ public sealed partial class ScriniaProjectTools
             if (allNames.Count == 0)
                 return Task.FromResult(ResponseBuilder.Success("No skills available.").WithAction("listed").ToYaml());
 
-            var sb = new System.Text.StringBuilder();
+            var sb = new StringBuilder();
             sb.AppendLine($"Available skills ({allNames.Count}):");
             sb.AppendLine();
 
-            // Built-in skills first (show source label based on override presence)
             foreach (string skillKey in BuiltInSkills.Keys)
             {
                 if (diskNames.Contains(skillKey))
                 {
-                    // Disk file overrides built-in — check staleness via sidecar
                     string tag = "file";
                     if (diskMetas.TryGetValue(skillKey, out var meta) && meta?.BasedOn is not null)
                     {
                         string currentHash = Convert.ToHexStringLower(
-                            SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
+                            SHA256.HashData(Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
                         if (!meta.BasedOn.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                             tag = "stale base";
                     }
@@ -256,7 +278,6 @@ public sealed partial class ScriniaProjectTools
                 }
                 else if (nmpNames.Contains(skillKey))
                 {
-                    // NMP/2 override (legacy) — check staleness via keywords
                     var overrideEntry = entries.FirstOrDefault(e => e.Name.Equals(skillKey, StringComparison.OrdinalIgnoreCase));
                     string tag = "override";
                     if (overrideEntry?.Keywords is not null)
@@ -266,7 +287,7 @@ public sealed partial class ScriniaProjectTools
                         {
                             string storedHash = basedOnKw["basedOn:".Length..];
                             string currentHash = Convert.ToHexStringLower(
-                                SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
+                                SHA256.HashData(Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
                             if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                                 tag = "stale base";
                         }
@@ -279,18 +300,17 @@ public sealed partial class ScriniaProjectTools
                 }
             }
 
-            // Non-built-in skills: disk files first, then NMP/2-only
             foreach (string diskName in diskNames)
             {
                 if (BuiltInSkills.ContainsKey(diskName))
-                    continue; // already listed above
+                    continue;
 
                 string roleTag = diskMetas.TryGetValue(diskName, out var fileMeta) && fileMeta?.Role is not null
                     ? $"role:{fileMeta.Role}"
                     : "role:unknown";
                 sb.AppendLine($"- /skill/{diskName} [file] [{roleTag}]");
 
-                if (sb.Length > MaxResponseChars - 200)
+                if (sb.Length > SkillResponseLimit - 200)
                 {
                     sb.AppendLine("[... truncated to 8KB limit]");
                     break;
@@ -300,7 +320,7 @@ public sealed partial class ScriniaProjectTools
             foreach (var entry in entries)
             {
                 if (BuiltInSkills.ContainsKey(entry.Name) || diskNames.Contains(entry.Name))
-                    continue; // already listed above (built-in or disk takes precedence)
+                    continue;
 
                 string roleKw = entry.Keywords?
                     .FirstOrDefault(k => k.StartsWith("role:", StringComparison.OrdinalIgnoreCase))
@@ -308,7 +328,7 @@ public sealed partial class ScriniaProjectTools
 
                 sb.AppendLine($"- /skill/{entry.Name} [override] [{roleKw}]");
 
-                if (sb.Length > MaxResponseChars - 200)
+                if (sb.Length > SkillResponseLimit - 200)
                 {
                     sb.AppendLine("[... truncated to 8KB limit]");
                     break;
@@ -318,14 +338,12 @@ public sealed partial class ScriniaProjectTools
             return Task.FromResult(ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml());
         }
 
-        // Load mode: async artifact read
         return LoadSkillAsync(store, name, reconcile, cancellationToken);
     }
 
     private static async Task<string> LoadSkillAsync(
         IMemoryStore store, string skillName, bool reconcile, CancellationToken ct)
     {
-        // 1. Disk file (.scrinia/skills/{name}.md)
         string baseDir = GetScriniaBaseDir(store);
         string filePath = Path.Combine(baseDir, "skills", $"{skillName}.md");
         string? diskContent = null;
@@ -334,25 +352,16 @@ public sealed partial class ScriniaProjectTools
             diskContent = await File.ReadAllTextAsync(filePath, ct);
         }
 
-        // 2. NMP/2 fallback (legacy)
         string? nmpContent = null;
         if (diskContent is null)
         {
-            try
-            {
-                nmpContent = await ReadMemoryAsync(store, $"skill:{skillName}", ct);
-            }
-            catch (FileNotFoundException)
-            {
-                // No NMP/2 override exists
-            }
+            try { nmpContent = await ReadLegacySkillNmpAsync(store, skillName, ct); }
+            catch (FileNotFoundException) { /* no legacy entry */ }
         }
 
-        // Determine the override content (disk > NMP/2) and its source label
         string? overrideContent = diskContent ?? nmpContent;
         string sourceLabel = diskContent is not null ? "file" : "project override";
 
-        // Reconcile mode: show both built-in and override side by side
         if (reconcile && overrideContent is not null && BuiltInSkills.TryGetValue(skillName, out string? reconBuiltIn))
         {
             string reconContent = $"## Current Built-in\n{reconBuiltIn}\n\n" +
@@ -366,28 +375,24 @@ public sealed partial class ScriniaProjectTools
 
         if (overrideContent is null)
         {
-            // Fall back to built-in skills
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
                 return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in").ToYaml();
             return ResponseBuilder.Error($"Skill '{skillName}' not found. Use memory('recall', {{ path: '/skill/' }}) to list available skills.").ToYaml();
         }
 
-        var slWarnings = new List<string>();
+        var warnings = new List<string>();
 
-        // Check for stale base — warn if the built-in has changed since this override was created
         if (BuiltInSkills.TryGetValue(skillName, out string? currentBuiltIn))
         {
             string? storedHash = null;
 
-            // Read basedOn hash from sidecar metadata (disk file)
             if (diskContent is not null)
             {
-                var meta = ReadSidecarMeta(filePath, PlanningJsonContext.Default.SkillFileMeta);
+                var meta = ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.SkillFileMeta);
                 storedHash = meta?.BasedOn;
             }
             else if (nmpContent is not null)
             {
-                // Fall back to NMP/2 keyword-based basedOn
                 var (scope, subject) = store.ParseQualifiedName($"skill:{skillName}");
                 var entries = store.LoadIndex(scope);
                 var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
@@ -402,20 +407,20 @@ public sealed partial class ScriniaProjectTools
             if (storedHash is not null)
             {
                 string currentHash = Convert.ToHexStringLower(
-                    SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(currentBuiltIn)));
+                    SHA256.HashData(Encoding.UTF8.GetBytes(currentBuiltIn)));
                 if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                 {
-                    slWarnings.Add($"built-in skill has changed since this override was created. Review with memory('recall', {{ path: '/skill/{skillName}', reconcile: true }})");
+                    warnings.Add($"built-in skill has changed since this override was created. Review with memory('recall', {{ path: '/skill/{skillName}', reconcile: true }})");
                 }
             }
         }
 
-        var slResponse = ResponseBuilder.Success(overrideContent)
+        var response = ResponseBuilder.Success(overrideContent)
             .WithPath($"/skill/{skillName}")
             .WithAction("loaded")
             .WithInfo($"Loaded from {sourceLabel}");
-        if (slWarnings.Count > 0)
-            slResponse = slResponse.WithActionNeeded([.. slWarnings]);
-        return slResponse.ToYaml();
+        if (warnings.Count > 0)
+            response = response.WithActionNeeded([.. warnings]);
+        return response.ToYaml();
     }
 }

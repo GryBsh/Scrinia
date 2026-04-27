@@ -380,7 +380,7 @@ public sealed partial class ScriniaMcpTools
             .WithFileChanges().WithAction("compacted").ToYaml();
     }
 
-    /// <summary>Resume full agent context after context loss or session start.</summary>
+    /// <summary>Resume agent context — agent profile, patterns, session log, available skills.</summary>
     internal async Task<string> Restore(CancellationToken cancellationToken)
     {
         var store = CurrentStore;
@@ -402,7 +402,6 @@ public sealed partial class ScriniaMcpTools
                     {
                         try
                         {
-                            // Quick check: read first 10KB of each file for conflict markers
                             using var reader = new StreamReader(f);
                             var buf = new char[10240];
                             int read = reader.Read(buf, 0, buf.Length);
@@ -416,119 +415,32 @@ public sealed partial class ScriniaMcpTools
         }
         catch { /* best-effort check */ }
 
-        // Read checkpoint:latest for recovery context
-        string? checkpointContent = null;
+        // Available skills (built-in + disk overrides)
         try
         {
-            checkpointContent = await ScriniaProjectTools.ReadMemoryAsync(store, "checkpoint:latest", cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            // No checkpoint exists — normal for first-time projects
-        }
-
-        string projectState;
-        try
-        {
-            projectState = await ScriniaProjectTools.ReadMemoryAsync(store, "project:state", cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            string? rebuilt = await ScriniaProjectTools.RebuildStateFromMemoriesAsync(store, cancellationToken);
-            if (rebuilt is null)
-                return ResponseBuilder.Error("No project found. Run memory('remember', { path: '/project/...' }) first.").ToYaml();
-            projectState = rebuilt;
-        }
-
-        // Replace stale progress with computed value
-        try
-        {
-            string? restoreGoalId = await ScriniaProjectTools.GetActiveGoalIdAsync(store, cancellationToken);
-            string computedProgress = ScriniaProjectTools.CalculateProgress(store, restoreGoalId);
-            projectState = Regex.Replace(projectState, @"(?m)^Progress:\s*\d+%?$", $"Progress: {computedProgress}%");
-        }
-        catch { /* best-effort — if progress computation fails, show raw state */ }
-
-        // Active goal description
-        try
-        {
-            string ctxText = await ScriniaProjectTools.ReadMemoryAsync(store, "project:context", cancellationToken);
-            var (goals, _, _) = ScriniaProjectTools.ParseGoalsSection(ctxText);
-            var activeLine = goals.FirstOrDefault(g => g.Contains("[active]", StringComparison.OrdinalIgnoreCase));
-            if (activeLine is not null)
+            string skillsBaseDir = GetScriniaBaseDir(store);
+            string skillsDir = Path.Combine(skillsBaseDir, "skills");
+            var diskSkills = Directory.Exists(skillsDir)
+                ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
+                : [];
+            var builtInNames = BuiltInSkills.Keys.ToList();
+            var allSkills = new HashSet<string>(builtInNames, StringComparer.OrdinalIgnoreCase);
+            allSkills.UnionWith(diskSkills);
+            if (allSkills.Count > 0)
             {
-                // Extract description: everything after "[active] " and before " | Outcome:"
-                var statusMatch = Regex.Match(
-                    activeLine.TrimStart('-', '*', ' '),
-                    @"\]\s*\[active\]\s*",
-                    RegexOptions.IgnoreCase);
-                if (statusMatch.Success)
-                {
-                    string desc = activeLine.TrimStart('-', '*', ' ')[(statusMatch.Index + statusMatch.Length)..];
-                    projectState += $"\nActive goal: {desc.Trim()}";
-                }
+                contentSections.Add(
+                    $"Skills available ({allSkills.Count}): " +
+                    string.Join(", ", allSkills.OrderBy(s => s, StringComparer.OrdinalIgnoreCase)));
             }
         }
-        catch { /* no project:context or no active goal — skip */ }
+        catch { /* skills enumeration is best-effort */ }
 
-        // Optionally enrich with active concern count (keyword-only scan, no artifact decoding)
+        // Collect agent/* names for followUp — .md files first, NMP/2 fallback
         try
         {
-            var (cs, _) = store.ParseQualifiedName("concern:placeholder");
-            var entries = store.LoadIndex(cs);
-            int activeCount = entries.Count(e => ScriniaProjectTools.HasKeyword(e, "status:active"));
-            if (activeCount > 0)
-            {
-                int highCount = entries.Count(e =>
-                    ScriniaProjectTools.HasKeyword(e, "status:active") &&
-                    ScriniaProjectTools.HasKeyword(e, "severity:high"));
-                projectState += highCount > 0
-                    ? $"\nConcerns: {activeCount} active ({highCount} high-severity)"
-                    : $"\nConcerns: {activeCount} active";
-            }
-        }
-        catch { /* concern scope not yet created — skip silently */ }
-
-        contentSections.Add(projectState);
-
-        // Optionally surface unused capability hints (ADOPT-03)
-
-        // Check if concern tracking has been used (scope exists with entries)
-        bool concernsUsed = false;
-        try
-        {
-            var (cs2, _) = store.ParseQualifiedName("concern:placeholder");
-            var cEntries = store.LoadIndex(cs2);
-            concernsUsed = cEntries.Count > 0;
-        }
-        catch { /* scope not created — concerns not used */ }
-
-        if (!concernsUsed)
-            info.Add("concern tracking is available — use memory('remember', { path: '/goal/G-X/concern/...' }) to track risks and issues across phases.");
-
-        // Check if knowledge (bok) has been used
-        bool knowledgeUsed = false;
-        try
-        {
-            var (bs, _) = store.ParseQualifiedName("bok:placeholder");
-            var bEntries = store.LoadIndex(bs);
-            knowledgeUsed = bEntries.Count > 0;
-        }
-        catch { /* scope not created — knowledge not used */ }
-
-        if (!knowledgeUsed)
-            info.Add("use memory('remember', { path: '/topic/subject', content: [...] }) to persist domain knowledge across sessions.");
-
-        // Collect agent:* names for followUp — .md files first, NMP/2 fallback
-        try
-        {
-            string agentBaseDir = ScriniaProjectTools.GetScriniaBaseDir(store);
+            string agentBaseDir = GetScriniaBaseDir(store);
             string agentDir = Path.Combine(agentBaseDir, "agent");
             bool usedMdFiles = false;
-
-            // Seed any missing built-in agent files (backfill for existing workspaces)
-            Directory.CreateDirectory(agentDir);
-            ScriniaProjectTools.SeedBuiltInAgentFiles(agentDir);
 
             if (Directory.Exists(agentDir))
             {
@@ -544,7 +456,6 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            // NMP/2 fallback — only if no .md files found
             if (!usedMdFiles)
             {
                 var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
@@ -555,7 +466,7 @@ public sealed partial class ScriniaMcpTools
         }
         catch { /* agent scope not yet created — skip silently */ }
 
-        // Collect patterns:* names for followUp
+        // Collect patterns/* names for followUp
         try
         {
             var (patternsScope, _) = store.ParseQualifiedName("patterns:placeholder");
@@ -565,73 +476,29 @@ public sealed partial class ScriniaMcpTools
         }
         catch { /* patterns scope not yet created — skip silently */ }
 
-        if (checkpointContent is not null)
-            followUpNames.Add("/checkpoint/latest");
+        // Checkpoint:latest — followUp if exists
+        try
+        {
+            string checkpointArtifact = await store.ResolveArtifactAsync("checkpoint:latest", cancellationToken);
+            if (!string.IsNullOrEmpty(checkpointArtifact))
+                followUpNames.Add("/checkpoint/latest");
+        }
+        catch (FileNotFoundException) { /* no checkpoint */ }
 
-        // Today's session log — add to followUp if it exists
+        // Today's session log — followUp if it exists
         try
         {
             string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
-            // Verify the session log exists before adding to followUp
-            await ScriniaProjectTools.ReadMemoryAsync(store, $"sessions:{today}", cancellationToken);
+            await store.ResolveArtifactAsync($"sessions:{today}", cancellationToken);
             followUpNames.Add($"/sessions/{today}");
         }
-        catch (FileNotFoundException) { /* no session log for today — skip */ }
+        catch (FileNotFoundException) { /* no session log for today */ }
 
-        // Staleness & drift alerts — use cache if available, fall back to live scan
-        int rsStale, rsReview, rsDrift, rsMissing;
-        string rsCacheNote = "";
-        if (MaintenanceCache.TryReadCache(store, out var rsCached) && rsCached is not null)
-        {
-            rsStale = rsCached.StaleCount;
-            rsReview = rsCached.ReviewCount;
-            rsDrift = rsCached.DriftCount;
-            rsMissing = rsCached.MissingCount;
-            int cacheAge = (int)(DateTimeOffset.UtcNow - rsCached.ComputedAt).TotalMinutes;
-            rsCacheNote = $" (cached {cacheAge} min ago)";
-        }
-        else
-        {
-            (rsStale, rsReview) = ScriniaProjectTools.ScanStaleness(store);
-            (rsDrift, rsMissing) = ScriniaProjectTools.ScanDrift(store);
-        }
+        if (contentSections.Count == 0)
+            contentSections.Add("No persistent agent context found yet. Use memory('remember') to start storing notes, patterns, and skills.");
 
-        if (rsStale > 0) warnings.Add($"{rsStale} memory(s) have passed their review date — verify content is still accurate.{rsCacheNote}");
-        if (rsDrift > 0) warnings.Add($"{rsDrift} code reference(s) have drifted (files changed since stored) — re-link or update.{rsCacheNote}");
-        if (rsMissing > 0) warnings.Add($"{rsMissing} code reference(s) point to missing files — unlink or correct.{rsCacheNote}");
-        if (rsReview > 0) info.Add($"{rsReview} memory(s) have review conditions set.{rsCacheNote}");
-
-        // Task nudge — rational lensing: nudge agent into the task loop
-        try
-        {
-            // Extract phase number from projectState directly (no longer inlining other content)
-            string phaseId = "";
-            var phaseMatch = ScriniaProjectTools.PhaseNumberPattern.Match(projectState);
-            if (phaseMatch.Success)
-                phaseId = int.Parse(phaseMatch.Groups[1].Value).ToString("D2");
-
-            if (!string.IsNullOrEmpty(phaseId))
-            {
-                string? nudgeGoalId = await ScriniaProjectTools.GetActiveGoalIdAsync(store, cancellationToken);
-                var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
-                var taskEntries = store.LoadIndex(taskScope);
-                var pendingTasks = taskEntries
-                    .Where(e => ScriniaProjectTools.HasKeyword(e, $"phase:{phaseId}"))
-                    .Where(e => nudgeGoalId is null || ScriniaProjectTools.HasKeyword(e, $"goal:{nudgeGoalId}"))
-                    .Where(e => ScriniaProjectTools.HasKeyword(e, "status:pending"))
-                    .ToList();
-
-                if (pendingTasks.Count > 0)
-                    instruction = nudgeGoalId is not null
-                        ? $"call task('next', {{ path: '/goal/{nudgeGoalId}' }}) to continue."
-                        : $"call task('next', {{ path: '/goal/G-X' }}) to continue.";
-            }
-        }
-        catch { /* best-effort — skip nudge silently */ }
-
-        // Append followUp guidance to instruction
         if (followUpNames.Count > 0)
-            instruction = (instruction ?? "") + " Then call memory('recall') for each item in followUp to load full context.";
+            instruction = "Call memory('recall') for each item in followUp to load full context.";
 
         return ResponseBuilder.Success(string.Join("\n\n", contentSections))
             .WithAction("restored")

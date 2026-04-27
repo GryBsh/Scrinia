@@ -29,7 +29,7 @@ public sealed partial class ScriniaMcpTools
             if (agentStore is not null)
             {
                 string agentSubject = artifactOrName["agent:".Length..].Trim();
-                string agentBaseDir = ScriniaProjectTools.GetScriniaBaseDir(agentStore);
+                string agentBaseDir = GetScriniaBaseDir(agentStore);
                 string agentFilePath = Path.Combine(agentBaseDir, "agent", $"{agentSubject}.md");
                 if (File.Exists(agentFilePath))
                 {
@@ -181,24 +181,22 @@ public sealed partial class ScriniaMcpTools
             if (string.IsNullOrWhiteSpace(agentSubject))
                 return ResponseBuilder.Error("Agent config name required (e.g. 'agent:profile').").ToYaml();
 
-            string baseDir = ScriniaProjectTools.GetScriniaBaseDir(store);
+            string baseDir = GetScriniaBaseDir(store);
             string agentDir = Path.Combine(baseDir, "agent");
             string filePath = Path.Combine(agentDir, $"{agentSubject}.md");
             Directory.CreateDirectory(agentDir);
 
-            // Archive previous version if file exists
-            ScriniaProjectTools.ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
+            ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
 
             string agentContent = string.Join("\n", content);
             await File.WriteAllTextAsync(filePath, agentContent, cancellationToken);
 
-            // Write sidecar metadata
             string now = DateTimeOffset.UtcNow.ToString("o");
-            var existingMeta = ScriniaProjectTools.ReadSidecarMeta(filePath, PlanningJsonContext.Default.AgentFileMeta);
+            var existingMeta = ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.AgentFileMeta);
             var meta = new AgentFileMeta(
                 CreatedAt: existingMeta?.CreatedAt ?? now,
                 UpdatedAt: now);
-            ScriniaProjectTools.WriteSidecarMeta(filePath, meta, PlanningJsonContext.Default.AgentFileMeta);
+            WriteSidecarMeta(filePath, meta, ScriniaMcpJsonContext.Default.AgentFileMeta);
 
             long agentBytes = System.Text.Encoding.UTF8.GetByteCount(agentContent);
             return ResponseBuilder.Success($"Remembered: agent:{agentSubject} ({FormatBytes(agentBytes)}).")

@@ -70,8 +70,7 @@ public class ScriniaCommands
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithTools<ScriniaMcpTools>()
-            .WithTools<ScriniaProjectTools>();
+            .WithTools<ScriniaMcpTools>();
 
         var host = builder.Build();
         await host.RunAsync(cancellationToken);

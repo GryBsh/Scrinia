@@ -115,8 +115,7 @@ internal static partial class ScriniaArtifactStore
         // v2 path syntax: starts with "/"
         if (name.StartsWith('/'))
         {
-            var entityTypes = new HashSet<string>(
-                EntityTypeRegistry.Types.Keys, StringComparer.OrdinalIgnoreCase);
+            var entityTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var parsed = PathParser.Parse(name, entityTypes);
 
             var segments = parsed.Segments;
@@ -821,8 +820,7 @@ internal static partial class ScriniaArtifactStore
         string fullPath = "/" + topicPart + "/" + subject;
         try
         {
-            var entityTypes = new HashSet<string>(
-                EntityTypeRegistry.Types.Keys, StringComparer.OrdinalIgnoreCase);
+            var entityTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var parsed = PathParser.Parse(fullPath, entityTypes);
             string? legacyPath = PathRouter.ToLegacyPath(parsed, root);
             if (legacyPath is not null && File.Exists(legacyPath))
