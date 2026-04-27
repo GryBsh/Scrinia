@@ -49,21 +49,11 @@ public class MemoryNamingTests
 
     // ── ClassifyTopic ────────────────────────────────────────────────────────
 
-    [Theory]
-    [InlineData("project")]
-    [InlineData("task")]
-    [InlineData("concern")]
-    [InlineData("plan")]
-    [InlineData("goal")]
-    [InlineData("skill")]
-    [InlineData("research")]
-    [InlineData("backlog")]
-    [InlineData("requirement")]
-    [InlineData("workflow")]
-    public void ClassifyTopic_EntityTopics_ReturnsEntity(string topic)
+    [Fact]
+    public void ClassifyTopic_Skill_ReturnsEntity()
     {
-        MemoryNaming.ClassifyTopic(topic).Should().Be("entity",
-            because: $"'{topic}' is a planning/structural topic that belongs in the entity namespace");
+        MemoryNaming.ClassifyTopic("skill").Should().Be("entity",
+            because: "'skill' is the only topic that still routes to the entity namespace (legacy NMP/2 layout compat)");
     }
 
     [Fact]
@@ -78,36 +68,31 @@ public class MemoryNamingTests
     [InlineData("patterns")]
     [InlineData("sessions")]
     [InlineData("my-custom-topic")]
+    [InlineData("project")]
+    [InlineData("task")]
+    [InlineData("concern")]
+    [InlineData("goal")]
+    [InlineData("workflow")]
     public void ClassifyTopic_UserTopics_ReturnsMemory(string topic)
     {
         MemoryNaming.ClassifyTopic(topic).Should().Be("memory",
-            because: $"'{topic}' is a user-defined topic that belongs in the memory namespace");
+            because: $"'{topic}' is a regular topic that belongs in the memory namespace");
     }
 
     [Fact]
     public void ClassifyTopic_IsCaseInsensitive()
     {
-        MemoryNaming.ClassifyTopic("Project").Should().Be("entity");
-        MemoryNaming.ClassifyTopic("TASK").Should().Be("entity");
-        MemoryNaming.ClassifyTopic("Agent").Should().Be("agent");
+        MemoryNaming.ClassifyTopic("Skill").Should().Be("entity");
+        MemoryNaming.ClassifyTopic("AGENT").Should().Be("agent");
+        MemoryNaming.ClassifyTopic("Project").Should().Be("memory");
     }
 
     // ── BuildScopedTopicScope ────────────────────────────────────────────────
 
-    [Theory]
-    [InlineData("project", "local-topic:entity/project")]
-    [InlineData("task", "local-topic:entity/task")]
-    [InlineData("concern", "local-topic:entity/concern")]
-    [InlineData("plan", "local-topic:entity/plan")]
-    [InlineData("goal", "local-topic:entity/goal")]
-    [InlineData("skill", "local-topic:entity/skill")]
-    [InlineData("research", "local-topic:entity/research")]
-    [InlineData("backlog", "local-topic:entity/backlog")]
-    [InlineData("requirement", "local-topic:entity/requirement")]
-    [InlineData("workflow", "local-topic:entity/workflow")]
-    public void BuildScopedTopicScope_EntityTopics_RouteToEntityNamespace(string topic, string expected)
+    [Fact]
+    public void BuildScopedTopicScope_Skill_RouteToEntityNamespace()
     {
-        MemoryNaming.BuildScopedTopicScope(topic).Should().Be(expected);
+        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local-topic:entity/skill");
     }
 
     [Fact]
@@ -122,6 +107,8 @@ public class MemoryNamingTests
     [InlineData("dotnet", "local-topic:memory/dotnet")]
     [InlineData("patterns", "local-topic:memory/patterns")]
     [InlineData("my-notes", "local-topic:memory/my-notes")]
+    [InlineData("goal", "local-topic:memory/goal")]
+    [InlineData("task", "local-topic:memory/task")]
     public void BuildScopedTopicScope_UserTopics_RouteToMemoryNamespace(string topic, string expected)
     {
         MemoryNaming.BuildScopedTopicScope(topic).Should().Be(expected);

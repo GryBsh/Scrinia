@@ -134,17 +134,15 @@ public sealed class DualModeParseTests : IDisposable
     [Fact]
     public async Task ReadV2DeepPath_FallsBackToNamespacedLegacy()
     {
-        // Create file in G-53 namespaced location: .scrinia/topics/entity/research/
-        // This simulates the entity namespace layout introduced in G-53.
-        string nsDir = Path.Combine(_root, ".scrinia", "topics", "entity", "research");
+        // skill is the only remaining entity topic; place legacy data under
+        // .scrinia/topics/entity/skill/ and resolve via a v2 deep path that
+        // ends in "skill".
+        string nsDir = Path.Combine(_root, ".scrinia", "topics", "entity", "skill");
         Directory.CreateDirectory(nsDir);
         string nsFile = Path.Combine(nsDir, "frontend.nmp2");
         await File.WriteAllTextAsync(nsFile, "namespaced legacy content");
 
-        // Read via v2 deep path "/goal/G-5/research/frontend"
-        // v2 scope = "local-topic:goal/G-5/research" (a v2 path scope)
-        // ResolveV2LegacyDir uses leaf "research" -> finds .scrinia/topics/entity/research/
-        var (scope, subject) = _store.ParseQualifiedName("/goal/G-5/research/frontend");
+        var (scope, subject) = _store.ParseQualifiedName("/agent/profile/skill/frontend");
         string content = await _store.ReadArtifactAsync(subject, scope);
 
         content.Should().Be("namespaced legacy content");

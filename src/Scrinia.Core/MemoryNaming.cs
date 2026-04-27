@@ -8,13 +8,13 @@ namespace Scrinia.Core;
 public static class MemoryNaming
 {
     /// <summary>
-    /// Topic names classified as "entity" (planning/structural).
-    /// Used by <see cref="ClassifyTopic"/> and by scope-filtering logic
-    /// to exclude entity scopes from default search results.
+    /// Topic names classified as "entity" (structural). Currently only "skill"
+    /// is treated as an entity topic so legacy NMP/2 skill data under
+    /// entity/skill/ remains discoverable. Everything else lives under memory/.
     /// </summary>
     public static readonly IReadOnlySet<string> EntityTopics = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "project", "task", "concern", "plan", "goal", "skill", "research", "backlog", "requirement", "workflow", "phase"
+        "skill"
     };
 
     private static readonly HashSet<string> AgentTopics = new(StringComparer.OrdinalIgnoreCase)

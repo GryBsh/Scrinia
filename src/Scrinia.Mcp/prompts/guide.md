@@ -29,25 +29,20 @@ Paths organize memories hierarchically and are auto-tagged for search:
 - `/api/auth-flow` → searchable by `[api, auth, flow]`
 - `/patterns/retry` → searchable by `[patterns, retry]`
 
-Scope searches: `memory('search', { query: "auth", path: "/goal/G-5/" })`
+Scope searches: `memory('search', { query: "auth", path: "/api/" })`
 
 ### Reserved paths
 
 | Path | Purpose |
 |------|---------|
-| `/project/...` | project context and state |
-| `/goal/...` | goals with lifecycle |
-| `/task/...` | decomposed tasks |
-| `/concern/...` | tracked risks |
-| `/research/...` | investigation findings |
-| `/skill/...` | reusable specialist prompts |
-| `/agent/...` | behavioral norms |
-| `/learn/...` | retrospectives and beliefs |
-| `/backlog/...` | deferred work |
+| `/skill/...` | reusable specialist prompts (use `/skill/{name}` to load or override) |
+| `/agent/...` | agent profile and behavioral norms |
+| `/patterns/...` | recurring patterns and conventions |
 | `/sessions/...` | session logs by date |
-| `/patterns/...` | recurring patterns |
 | `/checkpoint/...` | state snapshots |
 | `/temp/...` | ephemeral (dies on process exit) |
+
+Any other path you use is treated as plain memory and grouped by its first segment for search and listing.
 
 ## Chunks
 
@@ -61,6 +56,18 @@ memory('remember', { path: "/api/auth", content: [
 ```
 
 Retrieve a specific chunk: `memory('recall', { path: "/api/auth", chunk: 2 })`
+
+## Skills
+
+Load a built-in or custom skill:
+
+```
+memory('recall', { path: "/skill/qa" })       — load a skill prompt
+memory('recall', { path: "/skill/" })         — list all available skills
+memory('remember', { path: "/skill/my-helper", content: [...] }) — create or override
+```
+
+Skills are persisted as `.scrinia/skills/{name}.md`. Built-in skills are reused from the binary unless you override them.
 
 ## Review Dates
 
@@ -76,7 +83,7 @@ Maintain a session log: `memory('append', { path: "/sessions/2026-04-08", append
 
 ## Recovery
 
-`memory('restore')` rebuilds full context — project state, agent profile, patterns, active goal. Follow the `followUp` list to load detailed context.
+`memory('restore')` resumes agent context — agent profile, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
 
 ## Workspace
 

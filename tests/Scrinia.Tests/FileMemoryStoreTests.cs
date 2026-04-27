@@ -358,9 +358,9 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void ParseQualifiedName_EntityTopic_RoutesToEntityNamespace()
     {
-        var (scope, subject) = _store.ParseQualifiedName("task:my-task");
-        scope.Should().Be("local-topic:entity/task");
-        subject.Should().Be("my-task");
+        var (scope, subject) = _store.ParseQualifiedName("skill:my-skill");
+        scope.Should().Be("local-topic:entity/skill");
+        subject.Should().Be("my-skill");
     }
 
     [Fact]
