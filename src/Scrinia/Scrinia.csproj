@@ -12,6 +12,9 @@
     <Version>0.5.0</Version>
     <Copyright>Copyright (c) 2026 Nick Daniels</Copyright>
   </PropertyGroup>
+  <ItemGroup>
+    <None Remove="NUL" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Spectre.Console" Version="0.54.0" />

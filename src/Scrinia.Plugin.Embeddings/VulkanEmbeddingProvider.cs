@@ -46,6 +46,17 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
             .WithAutoFallback();
 
         // Force immediate native library loading so backend selection is finalized.
+        NativeLogConfig.llama_log_set((level, message) =>
+        {
+            var logLevel = level switch
+            {
+                LLamaLogLevel.Error => LogLevel.Error,
+                LLamaLogLevel.Warning => LogLevel.Warning,
+                LLamaLogLevel.Info => LogLevel.Information,
+                _ => LogLevel.Debug
+            };
+            logger.Log(logLevel, "LLamaNative: {Message}", message);
+        });
         NativeApi.llama_empty_call();
 
         var modelParams = new ModelParams(modelPath)

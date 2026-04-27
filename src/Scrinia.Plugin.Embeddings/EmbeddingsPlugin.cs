@@ -104,7 +104,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                 available = _provider.IsAvailable,
                 dimensions = _provider.Dimensions,
                 semanticWeight = _semanticWeight,
-                vectorCount = _vectorStore?.TotalVectorCount() ?? 0,
+                vectorCount = _vectorStore?.Count() ?? 0,
             });
         });
 

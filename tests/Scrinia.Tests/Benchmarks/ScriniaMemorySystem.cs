@@ -53,7 +53,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
                 // Check if target is in the results
                 if (targetFactKey is not null)
                 {
-                    string targetName = $"{targetFactKey.Split('-')[0]}:{targetFactKey}";
+                    string targetName = $"/{targetFactKey.Split('-')[0]}/{targetFactKey}";
                     foundTarget = names.Any(n => n.Equals(targetName, StringComparison.OrdinalIgnoreCase));
                 }
             }

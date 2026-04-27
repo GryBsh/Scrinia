@@ -94,12 +94,20 @@ public interface IMemoryStore
         return excluded.Contains(scope);
     }
 
-    /// <summary>Builds a HashSet of excluded scope names from a comma-separated excludeTopics string.</summary>
+    /// <summary>Builds a HashSet of excluded scope names from a comma-separated excludeTopics string.
+    /// Already-scoped inputs (containing '/') pass through as "local-topic:{input}";
+    /// bare topic names are routed through <see cref="MemoryNaming.BuildScopedTopicScope"/>.</summary>
     static HashSet<string> BuildExcludedScopeSet(string excludeTopics) =>
         new(
             excludeTopics
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(t => $"local-topic:{t.Trim().ToLowerInvariant()}"),
+                .Select(t =>
+                {
+                    var trimmed = t.Trim();
+                    return trimmed.Contains('/')
+                        ? $"local-topic:{trimmed}"
+                        : MemoryNaming.BuildScopedTopicScope(trimmed.ToLowerInvariant());
+                }),
             StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

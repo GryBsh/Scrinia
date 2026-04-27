@@ -47,9 +47,9 @@ public sealed class MaintenanceIntegrationTests : IDisposable
         var targetEntry = targetEntries.First(e =>
             e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
 
-        targetEntry.Keywords.Should().Contain("ref:topic:source",
+        targetEntry.Keywords.Should().Contain("ref:/topic/source",
             "storing a memory that references topic:target should auto-link via " +
-            "CompositeEventSink → MaintenanceEventSink, adding ref:topic:source on the target");
+            "CompositeEventSink → MaintenanceEventSink, adding ref:/topic/source on the target");
     }
 
     [Fact]
@@ -70,7 +70,7 @@ public sealed class MaintenanceIntegrationTests : IDisposable
         var targetEntry = targetEntries.First(e =>
             e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
 
-        targetEntry.Keywords.Should().Contain("ref:topic:appendsource",
+        targetEntry.Keywords.Should().Contain("ref:/topic/appendsource",
             "appending content that references topic:appendtarget should auto-link via " +
             "CompositeEventSink → MaintenanceEventSink");
     }

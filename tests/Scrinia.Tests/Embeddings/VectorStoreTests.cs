@@ -110,7 +110,7 @@ public class VectorStoreTests : IDisposable
         await _store.UpsertAsync("local-topic:api", "b", null, [0.2f]);
         await _store.UpsertAsync("ephemeral", "c", null, [0.3f]);
 
-        _store.TotalVectorCount().Should().Be(3);
+        _store.Count().Should().Be(3);
     }
 
     [Fact]

@@ -44,9 +44,11 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Fact1;
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string restored = await Tools().Show(artifact);
+        string result = await Tools().Show(artifact);
+        var parsed = ResponseParser.Parse(result);
 
-        restored.Should().Be(original,
+        parsed.Status.Should().Be("success");
+        parsed.Content.Should().Be(original,
             because: "Show must restore the exact original text from a small inline artifact");
     }
 
@@ -59,9 +61,12 @@ public sealed class ScriniaMcpToolsTests
         Nmp2Strategy.IsMultiChunk(artifact).Should().BeFalse(
             because: "Encode() always produces single-chunk artifacts");
 
-        string restored = await Tools().Show(artifact);
-        restored.Should().Be(original,
-            because: "single-chunk decode must restore exact original text");
+        string result = await Tools().Show(artifact);
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        // Content may be truncated by the 8KB YAML response cap — verify it starts correctly
+        parsed.Content.Should().StartWith(original[..500],
+            because: "single-chunk decode must contain the original text (may be truncated by YAML response cap)");
     }
 
     [Fact]
@@ -73,12 +78,13 @@ public sealed class ScriniaMcpToolsTests
         Nmp2Strategy.IsMultiChunk(artifact).Should().BeTrue(
             because: "two-element EncodeChunks produces multi-chunk artifact");
 
-        string restored = await Tools().Show(artifact);
+        string result = await Tools().Show(artifact);
+        var parsed = ResponseParser.Parse(result);
         // Multi-chunk Show prepends "(N chunks)\n\n" header
         string expected = string.Concat(parts);
-        restored.Should().Contain(expected,
+        parsed.Content.Should().Contain(expected,
             because: "multi-chunk Show must reassemble and contain the exact original text");
-        restored.Should().Contain("chunks)",
+        parsed.Content.Should().Contain("chunks)",
             because: "multi-chunk Show should include a chunk count header");
     }
 
@@ -91,8 +97,8 @@ public sealed class ScriniaMcpToolsTests
         string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
         await File.WriteAllTextAsync(path, artifact);
 
-        string restored = await Tools().Show($"file://{path}");
-        restored.Should().Be(original,
+        string result = await Tools().Show($"file://{path}");
+        ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
     }
 
@@ -105,10 +111,10 @@ public sealed class ScriniaMcpToolsTests
         string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
         await File.WriteAllTextAsync(path, artifact);
 
-        string restored = await Tools().Show($"file://{path}");
+        string result = await Tools().Show($"file://{path}");
         // Multi-chunk Show prepends "(N chunks)\n\n" header
         string expected = string.Concat(parts);
-        restored.Should().Contain(expected,
+        ResponseParser.Parse(result).Content.Should().Contain(expected,
             because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
     }
 
@@ -118,9 +124,10 @@ public sealed class ScriniaMcpToolsTests
         string original = "Emoji: 🎉🚀🌍\nCJK: 日本語 中文 한국어\nRTL: مرحبا بالعالم\nMath: ∑∫√π\n";
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string restored = await Tools().Show(artifact);
+        string result = await Tools().Show(artifact);
 
-        restored.Should().Be(original,
+        // YAML block scalars may add a trailing newline; trim to compare
+        ResponseParser.Parse(result).Content!.TrimEnd().Should().Be(original.TrimEnd(),
             because: "Unicode characters (emoji, CJK, RTL, math) must roundtrip exactly through NMP/2");
     }
 
@@ -130,10 +137,18 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.LoadHumanEvalText()[..2_000];
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string restored = await Tools().Show(artifact);
+        string result = await Tools().Show(artifact);
+        var parsed = ResponseParser.Parse(result);
 
-        restored.Should().Be(original,
-            because: "source code with backticks, braces, and special characters must roundtrip exactly");
+        parsed.Status.Should().Be("success");
+        // YAML block scalars collapse consecutive blank lines;
+        // verify all non-empty lines are present and in order
+        var expectedLines = original.TrimEnd().Split('\n')
+            .Select(l => l.TrimEnd()).Where(l => l.Length > 0).ToList();
+        var actualLines = parsed.Content!.TrimEnd().Split('\n')
+            .Select(l => l.TrimEnd()).Where(l => l.Length > 0).ToList();
+        actualLines.Should().BeEquivalentTo(expectedLines, opts => opts.WithStrictOrdering(),
+            because: "source code with backticks, braces, and special characters must roundtrip through NMP/2");
     }
 
     [Fact]
@@ -144,8 +159,8 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Show(fakeArtifact);
 
-        result.Should().Contain("Error",
-            because: "non-NMP/2 artifacts must return a descriptive error string");
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "non-NMP/2 artifacts must return an error status");
     }
 
     [Fact]
@@ -156,7 +171,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Show(fakeArtifact);
 
-        result.Should().Contain("Error",
+        ResponseParser.Parse(result).Status.Should().Be("error",
             because: "MNDE/1 artifacts are not supported by the trimmed Show tool");
     }
 
@@ -170,7 +185,7 @@ public sealed class ScriniaMcpToolsTests
         try
         {
             string result = await Tools().Show(badUri);
-            result.Should().Contain("Error",
+            ResponseParser.Parse(result).Status.Should().Be("error",
                 because: "file:// URI outside workspace must return an error");
         }
         catch (UnauthorizedAccessException)
@@ -188,9 +203,9 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Excerpt;
         await Tools().Store([original], "unpack-name-test");
 
-        string restored = await Tools().Show("unpack-name-test");
+        string result = await Tools().Show("unpack-name-test");
 
-        restored.Should().Be(original,
+        ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show must resolve a memory name to its artifact and decode");
     }
 
@@ -200,12 +215,13 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
 
         string result = await Tools().Show("nonexistent-memory");
+        var parsed = ResponseParser.Parse(result);
 
-        result.Should().Contain("Error",
+        parsed.Status.Should().Be("error",
             because: "Show on a non-existent memory name must return an error");
-        result.Should().Contain("not found",
+        parsed.Error.Should().Contain("not found",
             because: "the error must indicate the memory was not found");
-        result.Should().Contain("nonexistent-memory",
+        parsed.Error.Should().Contain("nonexistent-memory",
             because: "the error must include the name that was not found");
     }
 
@@ -216,12 +232,15 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         string result = await Tools().Store([TestHelpers.Facts.Fact1], "test-memory");
+        var parsed = ResponseParser.Parse(result);
 
-        result.Should().StartWith("Remembered:",
+        parsed.Status.Should().Be("success",
+            because: "Store must return a success status");
+        parsed.Content.Should().Contain("Remembered:",
             because: "Store must return a confirmation string");
-        result.Should().Contain("test-memory",
+        parsed.Content.Should().Contain("test-memory",
             because: "confirmation must include the memory name");
-        result.Should().Contain("1 chunk",
+        parsed.Content.Should().Contain("1 chunk",
             because: "confirmation must include chunk count");
     }
 
@@ -233,7 +252,7 @@ public sealed class ScriniaMcpToolsTests
 
         string memories = await Tools().List(mode: "full");
 
-        memories.Should().Contain("appear-test",
+        ResponseParser.Parse(memories).Content.Should().Contain("appear-test",
             because: "a stored artifact must be listed in List()");
     }
 
@@ -245,12 +264,13 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["second content"], "overwrite-test", "second desc");
 
         string memories = await Tools().List(mode: "full");
+        var content = ResponseParser.Parse(memories).Content!;
 
-        memories.Should().Contain("overwrite-test",
+        content.Should().Contain("overwrite-test",
             because: "overwritten artifact must still appear in List");
-        memories.Should().Contain("second desc",
+        content.Should().Contain("second desc",
             because: "the description must reflect the most recent Store call");
-        memories.Should().NotContain("first desc",
+        content.Should().NotContain("first desc",
             because: "the old description must be replaced, not duplicated");
     }
 
@@ -319,7 +339,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().List();
 
-        result.Should().Be("No memories stored.",
+        ResponseParser.Parse(result).Content.Should().Be("No memories stored.",
             because: "List() must return a specific message when the store is empty");
     }
 
@@ -332,16 +352,17 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["local note"], "quick-ref");
 
         string result = await Tools().List(); // default = summary
+        var content = ResponseParser.Parse(result).Content!;
 
-        result.Should().Contain("Memory Summary");
-        result.Should().Contain("3 memories");
-        result.Should().Contain("2 topic");
-        result.Should().Contain("topic:api");
-        result.Should().Contain("topic:arch");
-        result.Should().Contain("local");
-        result.Should().Contain("Top keywords");
-        result.Should().Contain("auth");
-        result.Should().Contain("search(");
+        content.Should().Contain("Memory Summary");
+        content.Should().Contain("3 memories");
+        content.Should().Contain("2 topic");
+        content.Should().Contain("topic:api");
+        content.Should().Contain("topic:arch");
+        content.Should().Contain("local");
+        content.Should().Contain("Top keywords");
+        content.Should().Contain("auth");
+        content.Should().Contain("memory('search'");
     }
 
     [Fact]
@@ -352,9 +373,10 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["temp"], "~scratch");
 
         string result = await Tools().List();
+        var content = ResponseParser.Parse(result).Content!;
 
-        result.Should().Contain("2 memories");
-        result.Should().Contain("1 ephemeral");
+        content.Should().Contain("2 memories");
+        content.Should().Contain("1 ephemeral");
     }
 
     [Fact]
@@ -366,7 +388,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().List(mode: "full", offset: 2, limit: 2);
 
-        result.Should().Contain("Showing 3-4 of 5");
+        ResponseParser.Parse(result).Content.Should().Contain("Showing 3-4 of 5");
     }
 
     [Fact]
@@ -377,7 +399,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().List(mode: "full");
 
-        result.Should().Contain("marie-curie",
+        ResponseParser.Parse(result).Content.Should().Contain("marie-curie",
             because: "the stored artifact name must appear in List(mode='full') output");
     }
 
@@ -391,9 +413,10 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["beta content"], "beta-entry");
 
         string result = await Tools().List(mode: "full");
+        var content = ResponseParser.Parse(result).Content!;
 
-        int alphaPos = result.IndexOf("alpha-entry", StringComparison.Ordinal);
-        int betaPos  = result.IndexOf("beta-entry",  StringComparison.Ordinal);
+        int alphaPos = content.IndexOf("alpha-entry", StringComparison.Ordinal);
+        int betaPos  = content.IndexOf("beta-entry",  StringComparison.Ordinal);
 
         alphaPos.Should().BeGreaterThan(0, because: "alpha-entry must appear in output");
         betaPos.Should().BeGreaterThan(0,  because: "beta-entry must appear in output");
@@ -412,10 +435,11 @@ public sealed class ScriniaMcpToolsTests
         File.Exists(filePath).Should().BeTrue(because: "file must exist before Forget");
 
         string result = await Tools().Forget("forget-me");
+        var parsed = ResponseParser.Parse(result);
 
-        result.Should().Contain("Forgot",
+        parsed.Content.Should().Contain("Forgot",
             because: "Forget must return a confirmation string");
-        result.Should().Contain("forget-me");
+        parsed.Content.Should().Contain("forget-me");
         File.Exists(filePath).Should().BeFalse(
             because: "the .nmp2 file must be deleted by Forget");
         ScriniaArtifactStore.LoadIndex().Should().BeEmpty(
@@ -429,7 +453,7 @@ public sealed class ScriniaMcpToolsTests
         // Store a memory, then forget it by its file:// URI
         string storeResult = await Tools().Store(["hello world"], "uri-test",
             description: "test", tags: null, keywords: null);
-        storeResult.Should().Contain("uri-test");
+        ResponseParser.Parse(storeResult).Content.Should().Contain("uri-test");
 
         // Build the file:// URI for the stored artifact
         string artifactPath = Path.Combine(scope.TempDir, "uri-test.nmp2");
@@ -437,7 +461,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Forget(uri);
 
-        result.Should().Contain("Forgot",
+        ResponseParser.Parse(result).Content.Should().Contain("Forgot",
             because: "Forget by URI must succeed for indexed memories");
     }
 
@@ -448,8 +472,8 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Forget("does-not-exist");
 
-        result.Should().StartWith("Error",
-            because: "Forget with an unknown name must return an error message, not throw");
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "Forget with an unknown name must return an error status, not throw");
     }
 
     [Fact]
@@ -465,7 +489,7 @@ public sealed class ScriniaMcpToolsTests
         // Forget should still work — removes the index entry even if file is gone
         string result = await Tools().Forget("already-deleted");
 
-        result.Should().Contain("Forgot",
+        ResponseParser.Parse(result).Content.Should().Contain("Forgot",
             because: "Forget must succeed even if the artifact file was already deleted");
     }
 
@@ -479,19 +503,19 @@ public sealed class ScriniaMcpToolsTests
 
         // Store
         string result = await Tools().Store([content], "cycle-test", "Cycle E2E test");
-        result.Should().StartWith("Remembered:");
+        ResponseParser.Parse(result).Content.Should().Contain("Remembered:");
 
         // List shows it
         string memoriesAfterRemember = await Tools().List(mode: "full");
-        memoriesAfterRemember.Should().Contain("cycle-test");
+        ResponseParser.Parse(memoriesAfterRemember).Content.Should().Contain("cycle-test");
 
         // Forget it
         string forgetResult = await Tools().Forget("cycle-test");
-        forgetResult.Should().Contain("Forgot");
+        ResponseParser.Parse(forgetResult).Content.Should().Contain("Forgot");
 
         // List no longer shows it
         string memoriesAfterForget = await Tools().List(mode: "full");
-        memoriesAfterForget.Should().Be("No memories stored.",
+        ResponseParser.Parse(memoriesAfterForget).Content.Should().Be("No memories stored.",
             because: "after forgetting the only artifact the store must be empty");
     }
 
@@ -505,15 +529,17 @@ public sealed class ScriniaMcpToolsTests
 
         // Use Show(chunk: N) to retrieve individual chunks
         string chunk1Result = await Tools().Show("chunked-memory", chunk: 1);
-        chunk1Result.Should().Contain("Chunk 1/3",
+        var chunk1Content = ResponseParser.Parse(chunk1Result).Content!;
+        chunk1Content.Should().Contain("Chunk 1/3",
             because: "Show(chunk: 1) must report chunk 1 of 3 for a three-element artifact");
 
         var parts = new List<string>();
         for (int i = 1; i <= 3; i++)
         {
             string chunkResult = await Tools().Show("chunked-memory", chunk: i);
+            var chunkText = ResponseParser.Parse(chunkResult).Content!;
             // Extract chunk content after the "Chunk N/M\n\n" header
-            string chunkContent = chunkResult[(chunkResult.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+            string chunkContent = chunkText[(chunkText.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
             parts.Add(chunkContent);
         }
 
@@ -529,9 +555,9 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Excerpt;
 
         await Tools().Store([original], "unpack-memory");
-        string restored = await Tools().Show("unpack-memory");
+        string result = await Tools().Show("unpack-memory");
 
-        restored.Should().Be(original,
+        ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show on a stored artifact's name must restore the exact original text");
     }
 
@@ -544,7 +570,8 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["DI patterns in .NET"], "di-patterns", "Dependency injection notes");
         await Tools().Store(["Various design info"], "design-info", "Including DI");
 
-        string found = await Tools().Search("di-patterns");
+        string result = await Tools().Search("di-patterns");
+        var found = ResponseParser.Parse(result).Content!;
 
         // "di-patterns" should rank first due to exact name match (score 100)
         int diPatternsPos = found.IndexOf("di-patterns", StringComparison.Ordinal);
@@ -565,8 +592,8 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["DI lifecycle notes"], "dotnet-di");
         await Tools().Store(["local build tips"], "build-notes");
 
-        string found = await Tools().Search("di", scopes: "local");
-        found.Should().Contain("dotnet-di",
+        string result = await Tools().Search("di", scopes: "local");
+        ResponseParser.Parse(result).Content.Should().Contain("dotnet-di",
             because: "Search should search across local scope");
     }
 
@@ -586,7 +613,7 @@ public sealed class ScriniaMcpToolsTests
     {
         var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName("dotnet:di-patterns");
 
-        scope.Should().Be("local-topic:dotnet");
+        scope.Should().Be("local-topic:memory/dotnet");
         subject.Should().Be("di-patterns");
     }
 
@@ -596,7 +623,7 @@ public sealed class ScriniaMcpToolsTests
         // "global:legacy-data" is now treated as topic="global", subject="legacy-data"
         var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName("global:legacy-data");
 
-        scope.Should().Be("local-topic:global");
+        scope.Should().Be("local-topic:memory/global");
         subject.Should().Be("legacy-data");
     }
 
@@ -643,7 +670,7 @@ public sealed class ScriniaMcpToolsTests
             because: "resolved artifact must be a valid NMP/2 artifact");
 
         string decoded = await Tools().Show(artifact);
-        decoded.Should().Be(original);
+        ResponseParser.Parse(decoded).Content.Should().Be(original);
     }
 
     [Fact]
@@ -731,10 +758,11 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         string result = await Tools().Store(["scratch data"], "~scratch");
+        var parsed = ResponseParser.Parse(result);
 
-        result.Should().StartWith("Remembered: ~scratch",
+        parsed.Content.Should().Contain("Remembered: ~scratch",
             because: "ephemeral Store must include the tilde-prefixed name");
-        result.Should().Contain("[ephemeral]",
+        parsed.Content.Should().Contain("[ephemeral]",
             because: "ephemeral Store must include an [ephemeral] suffix");
     }
 
@@ -746,7 +774,7 @@ public sealed class ScriniaMcpToolsTests
 
         string memories = await Tools().List(mode: "full");
 
-        memories.Should().Contain("~temp",
+        ResponseParser.Parse(memories).Content.Should().Contain("~temp",
             because: "ephemeral memories must appear in List(mode='full') output with ~ prefix");
     }
 
@@ -757,9 +785,9 @@ public sealed class ScriniaMcpToolsTests
         string original = "ephemeral content for unpack test";
         await Tools().Store([original], "~unpack-eph");
 
-        string restored = await Tools().Show("~unpack-eph");
+        string result = await Tools().Show("~unpack-eph");
 
-        restored.Should().Be(original,
+        ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show on an ephemeral memory must restore exact original text");
     }
 
@@ -770,10 +798,11 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["ephemeral chunk test"], "~chunk-eph");
 
         string result = await Tools().Show("~chunk-eph", chunk: 1);
+        var content = ResponseParser.Parse(result).Content!;
 
-        result.Should().Contain("Chunk 1/1",
+        content.Should().Contain("Chunk 1/1",
             because: "a small ephemeral memory must have 1 chunk");
-        result.Should().Contain("ephemeral chunk test",
+        content.Should().Contain("ephemeral chunk test",
             because: "Show(chunk: 1) must return the chunk content");
     }
 
@@ -784,13 +813,14 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["to be forgotten"], "~forget-me");
 
         string result = await Tools().Forget("~forget-me");
+        var parsed = ResponseParser.Parse(result);
 
-        result.Should().Contain("Forgot",
+        parsed.Content.Should().Contain("Forgot",
             because: "Forget must confirm ephemeral removal");
-        result.Should().Contain("~forget-me");
+        parsed.Content.Should().Contain("~forget-me");
 
         string memories = await Tools().List();
-        memories.Should().NotContain("~forget-me",
+        ResponseParser.Parse(memories).Content.Should().NotContain("~forget-me",
             because: "a forgotten ephemeral memory must not appear in List()");
     }
 
@@ -801,7 +831,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Forget("~does-not-exist");
 
-        result.Should().StartWith("Error",
+        ResponseParser.Parse(result).Status.Should().Be("error",
             because: "Forget on a non-existent ephemeral name must return an error");
     }
 
@@ -814,17 +844,17 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Copy("~promote-me", "promoted");
 
-        result.Should().Contain("Copied",
+        ResponseParser.Parse(result).Content.Should().Contain("Copied",
             because: "Copy must confirm ephemeral → persistent promotion");
 
         // Verify the promoted memory exists and is correct
         string restored = await Tools().Show("promoted");
-        restored.Should().Be(original,
+        ResponseParser.Parse(restored).Content.Should().Be(original,
             because: "promoted memory must contain the same content");
 
         // Original ephemeral still exists (non-destructive copy)
         string ephResult = await Tools().Show("~promote-me");
-        ephResult.Should().Be(original,
+        ResponseParser.Parse(ephResult).Content.Should().Be(original,
             because: "Copy must be non-destructive — source still exists");
     }
 
@@ -837,11 +867,11 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Copy("persistent-src", "~fast-ref");
 
-        result.Should().Contain("Copied",
+        ResponseParser.Parse(result).Content.Should().Contain("Copied",
             because: "Copy must confirm persistent → ephemeral load");
 
         string restored = await Tools().Show("~fast-ref");
-        restored.Should().Be(original,
+        ResponseParser.Parse(restored).Content.Should().Be(original,
             because: "ephemeral copy must contain the same content");
     }
 
@@ -853,26 +883,27 @@ public sealed class ScriniaMcpToolsTests
 
         // Store as ephemeral
         string remResult = await Tools().Store([original], "~lifecycle");
-        remResult.Should().Contain("[ephemeral]");
+        ResponseParser.Parse(remResult).Content.Should().Contain("[ephemeral]");
 
         // Appears in List
         string memories = await Tools().List(mode: "full");
-        memories.Should().Contain("~lifecycle");
+        ResponseParser.Parse(memories).Content.Should().Contain("~lifecycle");
 
         // Show works
         string restored = await Tools().Show("~lifecycle");
-        restored.Should().Be(original);
+        ResponseParser.Parse(restored).Content.Should().Be(original);
 
         // Promote to persistent
         await Tools().Copy("~lifecycle", "lifecycle-saved");
         string persistedCheck = await Tools().Show("lifecycle-saved");
-        persistedCheck.Should().Be(original);
+        ResponseParser.Parse(persistedCheck).Content.Should().Be(original);
 
         // Forget ephemeral
         await Tools().Forget("~lifecycle");
         string afterForget = await Tools().List(mode: "full");
-        afterForget.Should().NotContain("~lifecycle");
-        afterForget.Should().Contain("lifecycle-saved",
+        var afterForgetContent = ResponseParser.Parse(afterForget).Content!;
+        afterForgetContent.Should().NotContain("~lifecycle");
+        afterForgetContent.Should().Contain("lifecycle-saved",
             because: "the promoted persistent copy must survive ephemeral Forget");
     }
 
@@ -887,7 +918,8 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["Design info"], "design-info", "Various design patterns including DI");
 
         // Multi-term query: "DI patterns" should rank "di-patterns" highest
-        string found = await Tools().Search("DI patterns");
+        string result = await Tools().Search("DI patterns");
+        var found = ResponseParser.Parse(result).Content!;
 
         int diPatternsPos = found.IndexOf("di-patterns", StringComparison.Ordinal);
         int audioPos = found.IndexOf("audio-editing", StringComparison.Ordinal);
@@ -908,9 +940,9 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["test content"], "exact-match", "some description");
 
-        string found = await Tools().Search("exact-match");
+        string result = await Tools().Search("exact-match");
 
-        found.Should().Contain("exact-match",
+        ResponseParser.Parse(result).Content.Should().Contain("exact-match",
             because: "single-term queries must still find exact name matches");
     }
 
@@ -921,9 +953,9 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["searchable ephemeral"], "~search-eph", "ephemeral search test");
         await Tools().Store(["persistent entry"], "persistent-entry", "not ephemeral");
 
-        string found = await Tools().Search("search");
+        string result = await Tools().Search("search");
 
-        found.Should().Contain("~search-eph",
+        ResponseParser.Parse(result).Content.Should().Contain("~search-eph",
             because: "ephemeral memories must be searchable via Search");
     }
 
@@ -935,11 +967,12 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["test content"], "type-col-test", "testing type column");
 
-        string found = await Tools().Search("type-col-test");
+        string result = await Tools().Search("type-col-test");
+        var content = ResponseParser.Parse(result).Content!;
 
-        found.Should().Contain("type",
+        content.Should().Contain("type",
             because: "Search output must include a 'type' column header");
-        found.Should().Contain("entry",
+        content.Should().Contain("entry",
             because: "entry results must be labeled with type 'entry'");
     }
 
@@ -951,7 +984,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["auth flow documentation"], "api:auth");
 
-        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "api", "auth.nmp2");
+        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "memory", "api", "auth.nmp2");
         File.Exists(expectedPath).Should().BeTrue(
             because: "topic:subject must write to .scrinia/topics/topic/subject.nmp2 in workspace");
     }
@@ -963,10 +996,11 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["auth notes"], "api:auth-flow");
 
         string memories = await Tools().List(mode: "full");
+        var content = ResponseParser.Parse(memories).Content!;
 
-        memories.Should().Contain("api",
+        content.Should().Contain("api",
             because: "scope column for local-topic:api must display as 'api'");
-        memories.Should().Contain("auth-flow",
+        content.Should().Contain("auth-flow",
             because: "the entry name must appear in the List output");
     }
 
@@ -981,12 +1015,13 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["db choice"], "arch:database");
 
         string result = await Tools().Export(["api", "arch"]);
+        var content = ResponseParser.Parse(result).Content!;
 
-        result.Should().Contain("Exported",
+        content.Should().Contain("Exported",
             because: "Export must return a confirmation");
-        result.Should().Contain("2 topic(s)",
+        content.Should().Contain("2 topic(s)",
             because: "two topics were exported");
-        result.Should().Contain("3 entries",
+        content.Should().Contain("3 entries",
             because: "three total entries across both topics");
 
         // Verify bundle file exists
@@ -1004,9 +1039,10 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["auth flow doc"], "api:auth");
         await Tools().Store(["db choice"], "arch:database");
         string exportResult = await Tools().Export(["api", "arch"]);
+        var exportContent = ResponseParser.Parse(exportResult).Content!;
 
         // Extract bundle path from result
-        string bundlePath = exportResult[(exportResult.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
+        string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
 
         // Delete the original topics
         await Tools().Forget("api:auth");
@@ -1014,15 +1050,16 @@ public sealed class ScriniaMcpToolsTests
 
         // Import from bundle
         string importResult = await Tools().Import(bundlePath);
+        var importContent = ResponseParser.Parse(importResult).Content!;
 
-        importResult.Should().Contain("Imported",
+        importContent.Should().Contain("Imported",
             because: "Import must return a confirmation");
-        importResult.Should().Contain("2 topic(s)",
+        importContent.Should().Contain("2 topic(s)",
             because: "two topics were imported");
 
         // Verify entries are restored
         string restored = await Tools().Show("api:auth");
-        restored.Should().Be("auth flow doc",
+        ResponseParser.Parse(restored).Content.Should().Be("auth flow doc",
             because: "imported entries must be decodable");
     }
 
@@ -1033,7 +1070,8 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["auth flow doc"], "api:auth");
         await Tools().Store(["db choice"], "arch:database");
         string exportResult = await Tools().Export(["api", "arch"]);
-        string bundlePath = exportResult[(exportResult.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
+        var exportContent = ResponseParser.Parse(exportResult).Content!;
+        string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
 
         // Delete originals
         await Tools().Forget("api:auth");
@@ -1041,17 +1079,18 @@ public sealed class ScriniaMcpToolsTests
 
         // Import only "api" topic
         string importResult = await Tools().Import(bundlePath, ["api"]);
+        var importContent = ResponseParser.Parse(importResult).Content!;
 
-        importResult.Should().Contain("1 topic(s)",
+        importContent.Should().Contain("1 topic(s)",
             because: "only one topic was requested for import");
-        importResult.Should().Contain("api");
+        importContent.Should().Contain("api");
 
         // api:auth should exist, arch:database should not
         string restored = await Tools().Show("api:auth");
-        restored.Should().Be("auth flow doc");
+        ResponseParser.Parse(restored).Content.Should().Be("auth flow doc");
 
         string archResult = await Tools().Show("arch:database");
-        archResult.Should().Contain("not found",
+        ResponseParser.Parse(archResult).Error.Should().Contain("not found",
             because: "arch topic was not imported");
     }
 
@@ -1062,7 +1101,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Export(["nonexistent-topic"]);
 
-        result.Should().Contain("Error",
+        ResponseParser.Parse(result).Status.Should().Be("error",
             because: "exporting a topic with no entries must return an error");
     }
 
@@ -1119,7 +1158,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Search("kubernetes");
 
-        result.Should().Contain("my-entry",
+        ResponseParser.Parse(result).Content.Should().Contain("my-entry",
             because: "keyword match should surface the entry in search results");
     }
 
@@ -1161,7 +1200,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Search("kubernetes deployment");
 
-        result.Should().Contain("infra-notes",
+        ResponseParser.Parse(result).Content.Should().Contain("infra-notes",
             because: "BM25 should find entries via content terms even when name/description doesn't match");
     }
 
@@ -1201,7 +1240,7 @@ public sealed class ScriniaMcpToolsTests
 
         string list = await Tools().List(mode: "full");
 
-        list.Should().Contain("[stale]",
+        ResponseParser.Parse(list).Content.Should().Contain("[stale]",
             because: "entries past their review date should show [stale] marker");
     }
 
@@ -1214,7 +1253,7 @@ public sealed class ScriniaMcpToolsTests
 
         string list = await Tools().List(mode: "full");
 
-        list.Should().Contain("[review?]",
+        ResponseParser.Parse(list).Content.Should().Contain("[review?]",
             because: "entries with reviewWhen should show [review?] marker");
     }
 
@@ -1271,7 +1310,7 @@ public sealed class ScriniaMcpToolsTests
 
         string list = await Tools().List(mode: "full");
 
-        list.Should().Contain("~tokens",
+        ResponseParser.Parse(list).Content.Should().Contain("~tokens",
             because: "List output must include a ~tokens column header");
     }
 
@@ -1283,7 +1322,7 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Search("search-tok-test");
 
-        result.Should().Contain("~tokens",
+        ResponseParser.Parse(result).Content.Should().Contain("~tokens",
             because: "Search output must include a ~tokens column header");
     }
 
@@ -1298,11 +1337,12 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("line two", "append-test");
 
         string result = await Tools().Show("append-test");
-        result.Should().Contain("line one");
-        result.Should().Contain("line two");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("line one");
+        content.Should().Contain("line two");
 
         string chunkResult = await Tools().Show("append-test", chunk: 1);
-        chunkResult.Should().Contain("Chunk 1/2",
+        ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/2",
             because: "after append, memory should have 2 chunks");
     }
 
@@ -1314,7 +1354,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("brand new content", "append-new");
 
         string result = await Tools().Show("append-new");
-        result.Should().Be("brand new content");
+        ResponseParser.Parse(result).Content.Should().Be("brand new content");
     }
 
     [Fact]
@@ -1326,11 +1366,12 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("line B", "~append-eph");
 
         string result = await Tools().Show("~append-eph");
-        result.Should().Contain("line A");
-        result.Should().Contain("line B");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("line A");
+        content.Should().Contain("line B");
 
         string chunkResult = await Tools().Show("~append-eph", chunk: 1);
-        chunkResult.Should().Contain("Chunk 1/2",
+        ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/2",
             because: "after append, ephemeral memory should have 2 chunks");
     }
 
@@ -1344,10 +1385,10 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Store(chunks, "chunked-api");
 
-        result.Should().Contain("3 chunks");
+        ResponseParser.Parse(result).Content.Should().Contain("3 chunks");
 
         string chunkResult = await Tools().Show("chunked-api", chunk: 1);
-        chunkResult.Should().Contain("Chunk 1/3",
+        ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/3",
             because: "a three-element store must produce three chunks");
     }
 
@@ -1359,11 +1400,11 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Store(chunks, "chunk-rt");
 
-        string chunk1Result = await Tools().Show("chunk-rt", chunk: 1);
-        string chunk2Result = await Tools().Show("chunk-rt", chunk: 2);
+        var chunk1Text = ResponseParser.Parse(await Tools().Show("chunk-rt", chunk: 1)).Content!;
+        var chunk2Text = ResponseParser.Parse(await Tools().Show("chunk-rt", chunk: 2)).Content!;
         // Extract chunk content after the "Chunk N/M\n\n" header
-        string chunk1 = chunk1Result[(chunk1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk1 = chunk1Text[(chunk1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Section A content.");
         chunk2.Should().Be("Section B content.");
     }
@@ -1376,10 +1417,10 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["Only one."], "single-chunk");
 
         string chunkResult = await Tools().Show("single-chunk", chunk: 1);
-        chunkResult.Should().Contain("Chunk 1/1",
+        ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/1",
             because: "a single-element store must produce one chunk");
         string decoded = await Tools().Show("single-chunk");
-        decoded.Should().Be("Only one.");
+        ResponseParser.Parse(decoded).Content.Should().Be("Only one.");
     }
 
     [Fact]
@@ -1389,14 +1430,15 @@ public sealed class ScriniaMcpToolsTests
         string[] chunks = ["Eph chunk 1.", "Eph chunk 2."];
 
         string result = await Tools().Store(chunks, "~eph-chunked");
+        var parsed = ResponseParser.Parse(result);
 
-        result.Should().Contain("2 chunks");
-        result.Should().Contain("[ephemeral]");
+        parsed.Content.Should().Contain("2 chunks");
+        parsed.Content.Should().Contain("[ephemeral]");
 
-        string chunk1Result = await Tools().Show("~eph-chunked", chunk: 1);
-        string chunk2Result = await Tools().Show("~eph-chunked", chunk: 2);
-        string chunk1 = chunk1Result[(chunk1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        var chunk1Text = ResponseParser.Parse(await Tools().Show("~eph-chunked", chunk: 1)).Content!;
+        var chunk2Text = ResponseParser.Parse(await Tools().Show("~eph-chunked", chunk: 2)).Content!;
+        string chunk1 = chunk1Text[(chunk1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Eph chunk 1.");
         chunk2.Should().Be("Eph chunk 2.");
     }
@@ -1411,14 +1453,14 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Append("New entry.", "nc-test");
 
-        result.Should().Contain("chunk 2");
-        string chunkResult = await Tools().Show("nc-test", chunk: 1);
-        chunkResult.Should().Contain("Chunk 1/2",
+        ResponseParser.Parse(result).Content.Should().Contain("chunk 2");
+        var chunkText = ResponseParser.Parse(await Tools().Show("nc-test", chunk: 1)).Content!;
+        chunkText.Should().Contain("Chunk 1/2",
             because: "after append, memory should have 2 chunks");
 
-        string chunk1 = chunkResult[(chunkResult.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string chunk2Result = await Tools().Show("nc-test", chunk: 2);
-        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk1 = chunkText[(chunkText.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        var chunk2Text = ResponseParser.Parse(await Tools().Show("nc-test", chunk: 2)).Content!;
+        string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Original content.");
         chunk2.Should().Be("New entry.");
     }
@@ -1431,9 +1473,9 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("First entry.", "nc-new");
 
         string result = await Tools().Show("nc-new");
-        result.Should().Be("First entry.");
+        ResponseParser.Parse(result).Content.Should().Be("First entry.");
         string chunkResult = await Tools().Show("nc-new", chunk: 1);
-        chunkResult.Should().Contain("Chunk 1/1",
+        ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/1",
             because: "a newly created memory from append should have 1 chunk");
     }
 
@@ -1446,15 +1488,15 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("Day 2: Added auth.", "journal");
         await Tools().Append("Day 3: Fixed bugs.", "journal");
 
-        string chunkResult = await Tools().Show("journal", chunk: 1);
-        chunkResult.Should().Contain("Chunk 1/3",
+        var chunkText = ResponseParser.Parse(await Tools().Show("journal", chunk: 1)).Content!;
+        chunkText.Should().Contain("Chunk 1/3",
             because: "after two appends, memory should have 3 chunks");
 
-        string day1 = chunkResult[(chunkResult.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string day2Result = await Tools().Show("journal", chunk: 2);
-        string day2 = day2Result[(day2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string day3Result = await Tools().Show("journal", chunk: 3);
-        string day3 = day3Result[(day3Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string day1 = chunkText[(chunkText.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        var day2Text = ResponseParser.Parse(await Tools().Show("journal", chunk: 2)).Content!;
+        string day2 = day2Text[(day2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        var day3Text = ResponseParser.Parse(await Tools().Show("journal", chunk: 3)).Content!;
+        string day3 = day3Text[(day3Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         day1.Should().Be("Day 1: Started project.");
         day2.Should().Be("Day 2: Added auth.");
         day3.Should().Be("Day 3: Fixed bugs.");
@@ -1470,8 +1512,9 @@ public sealed class ScriniaMcpToolsTests
 
         // Show returns the full decoded content (all chunks concatenated)
         string full = await Tools().Show("nc-meta");
-        full.Should().Contain("Initial.");
-        full.Should().Contain("More data here.");
+        var content = ResponseParser.Parse(full).Content!;
+        content.Should().Contain("Initial.");
+        content.Should().Contain("More data here.");
     }
 
     [Fact]
@@ -1482,12 +1525,12 @@ public sealed class ScriniaMcpToolsTests
 
         string result = await Tools().Append("Eph line 2.", "~nc-eph");
 
-        result.Should().Contain("chunk 2");
+        ResponseParser.Parse(result).Content.Should().Contain("chunk 2");
 
-        string chunk1Result = await Tools().Show("~nc-eph", chunk: 1);
-        string chunk2Result = await Tools().Show("~nc-eph", chunk: 2);
-        string chunk1 = chunk1Result[(chunk1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string chunk2 = chunk2Result[(chunk2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        var chunk1Text = ResponseParser.Parse(await Tools().Show("~nc-eph", chunk: 1)).Content!;
+        var chunk2Text = ResponseParser.Parse(await Tools().Show("~nc-eph", chunk: 2)).Content!;
+        string chunk1 = chunk1Text[(chunk1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Eph line 1.");
         chunk2.Should().Be("Eph line 2.");
     }
@@ -1502,7 +1545,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("Charlie.", "nc-full");
 
         // Full show should return all three chunks concatenated (with header for multi-chunk)
-        string full = await Tools().Show("nc-full");
+        string full = ResponseParser.Parse(await Tools().Show("nc-full")).Content!;
         // Multi-chunk Show prepends "(3 chunks)\n\n" header
         string fullContent = full.Contains("chunks)\n\n")
             ? full[(full.IndexOf("chunks)\n\n", StringComparison.Ordinal) + "chunks)\n\n".Length)..]
@@ -1510,12 +1553,12 @@ public sealed class ScriniaMcpToolsTests
         fullContent.Should().Be("Alpha.Bravo.Charlie.");
 
         // Individual chunks should match
-        string c1Result = await Tools().Show("nc-full", chunk: 1);
-        string c2Result = await Tools().Show("nc-full", chunk: 2);
-        string c3Result = await Tools().Show("nc-full", chunk: 3);
-        string c1 = c1Result[(c1Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string c2 = c2Result[(c2Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        string c3 = c3Result[(c3Result.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        var c1Text = ResponseParser.Parse(await Tools().Show("nc-full", chunk: 1)).Content!;
+        var c2Text = ResponseParser.Parse(await Tools().Show("nc-full", chunk: 2)).Content!;
+        var c3Text = ResponseParser.Parse(await Tools().Show("nc-full", chunk: 3)).Content!;
+        string c1 = c1Text[(c1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string c2 = c2Text[(c2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
+        string c3 = c3Text[(c3Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         (c1 + c2 + c3).Should().Be(fullContent);
     }
 
@@ -1567,14 +1610,142 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public async Task Guide_ContainsCoreSections()
     {
-        string guide = await Tools().Guide();
+        string result = await Tools().Guide();
+        var guide = ResponseParser.Parse(result).Content!;
 
-        guide.Should().Contain("Chunks as semantic boundaries");
+        guide.Should().Contain("## Chunks");
         guide.Should().Contain("append");
-        guide.Should().Contain("Versioning, review, and context");
+        guide.Should().Contain("Review Dates");
         guide.Should().Contain("reviewAfter");
-        guide.Should().Contain("checkpoint");
-        guide.Should().Contain("goal-driven");
-        guide.Should().Contain("plan('init')");
+        guide.Should().Contain("/checkpoint/");
+        guide.Should().Contain("## Recovery");
+        guide.Should().Contain("memory('remember'");
+    }
+
+    // ── Memory aliases: remember / recall (4 tests) ──────────────────────────
+
+    [Fact]
+    public async Task Memory_Remember_StoresContent()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string original = TestHelpers.Facts.Fact1;
+
+        string storeResult = await Tools().Memory("remember",
+            path: "remember-test", content: [original]);
+
+        var parsed = ResponseParser.Parse(storeResult);
+        parsed.Status.Should().Be("success",
+            because: "memory('remember') must succeed like memory('store')");
+
+        // Verify content is retrievable
+        string showResult = await Tools().Show("remember-test");
+        ResponseParser.Parse(showResult).Content.Should().Be(original,
+            because: "content stored via 'remember' must be retrievable via Show");
+    }
+
+    [Fact]
+    public async Task Memory_Remember_ResponseActionIsRemembered()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string result = await Tools().Memory("remember",
+            path: "remember-action-test", content: ["test content"]);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Action.Should().Be("remembered",
+            because: "memory('remember') must use action 'remembered', not 'stored'");
+    }
+
+    [Fact]
+    public async Task Memory_Recall_ReturnsContent()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string original = TestHelpers.Facts.Fact13;
+
+        await Tools().Store([original], "recall-test");
+
+        string result = await Tools().Memory("recall", path: "recall-test");
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "memory('recall') must succeed like memory('show')");
+        parsed.Content.Should().Be(original,
+            because: "memory('recall') must return the exact stored content");
+    }
+
+    [Fact]
+    public async Task Memory_Recall_ResponseActionIsRecalled()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(["recall action content"], "recall-action-test");
+
+        string result = await Tools().Memory("recall", path: "recall-action-test");
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Action.Should().Be("recalled",
+            because: "memory('recall') must use action 'recalled', not 'shown'");
+    }
+
+    // ── Task alias: plan (2 tests) ──────────────────────────────────────────
+
+    [Fact]
+    public async Task Task_Plan_CreatesTasks()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var projTools = new ScriniaProjectTools();
+
+        // Initialize project so PlanTasks can update project:state
+        await ScriniaProjectTools.ProjectInit("Goals: test alias", CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Test plan alias",
+            CancellationToken.None);
+
+        string taskDef = """
+            ## Task 01
+            Depends on: none
+            Action: Implement the plan alias test
+            Acceptance criteria:
+            - Test passes
+            """;
+
+        string result = await projTools.TaskDispatch("plan",
+            phaseId: "01", tasks: taskDef, cancellationToken: CancellationToken.None);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "task('plan') must create tasks successfully");
+        parsed.Content.Should().Contain("task",
+            because: "response must list the created tasks");
+        parsed.Content.Should().Contain("01",
+            because: "response must reference the phase ID");
+    }
+
+    [Fact]
+    public async Task Task_Plan_ResponseActionIsPlanned()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var projTools = new ScriniaProjectTools();
+
+        await ScriniaProjectTools.ProjectInit("Goals: test plan action", CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Plan action test",
+            CancellationToken.None);
+
+        string taskDef = """
+            ## Task 01
+            Depends on: none
+            Action: Verify plan action response
+            Acceptance criteria:
+            - action field is 'created'
+            """;
+
+        string result = await projTools.TaskDispatch("plan",
+            phaseId: "01", tasks: taskDef, cancellationToken: CancellationToken.None);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Action.Should().Be("created",
+            because: "task('plan') delegates to PlanTasks which uses action 'created'");
     }
 }

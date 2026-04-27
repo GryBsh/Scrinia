@@ -32,10 +32,36 @@ public sealed class SubagentToolTests : IDisposable
         return System.Text.Encoding.UTF8.GetString(decoded);
     }
 
+    /// <summary>Reads a skill markdown file from disk (.scrinia/skills/{name}.md).</summary>
+    private static string ReadSkillFile(IMemoryStore store, string skillName)
+    {
+        string storeDir = store.GetStoreDirForScope("local");
+        // Walk up to .scrinia/
+        var dir = new DirectoryInfo(storeDir);
+        while (dir is not null && dir.Name != ".scrinia")
+            dir = dir.Parent;
+        string baseDir = dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
+        return File.ReadAllText(Path.Combine(baseDir, "skills", $"{skillName}.md"));
+    }
+
+    /// <summary>Reads a skill sidecar metadata from disk (.scrinia/skills/{name}.meta.json).</summary>
+    private static SkillFileMeta? ReadSkillMeta(IMemoryStore store, string skillName)
+    {
+        string storeDir = store.GetStoreDirForScope("local");
+        var dir = new DirectoryInfo(storeDir);
+        while (dir is not null && dir.Name != ".scrinia")
+            dir = dir.Parent;
+        string baseDir = dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
+        string metaPath = Path.Combine(baseDir, "skills", $"{skillName}.meta.json");
+        if (!File.Exists(metaPath)) return null;
+        string json = File.ReadAllText(metaPath);
+        return System.Text.Json.JsonSerializer.Deserialize(json, PlanningJsonContext.Default.SkillFileMeta);
+    }
+
     /// <summary>Sets up a project so skill_create prerequisite check passes.</summary>
     private async Task InitProject()
     {
-        await _tools.ProjectInit("Goals: test subagent creation", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: test subagent creation", CancellationToken.None);
     }
 
     // ── AGENT-01 tests (skill_create storage and response) ─────────────────────
@@ -47,16 +73,13 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
-        // Assert — a skill:* entry must exist in skill scope index
+        // Assert — a .md file must exist on disk at .scrinia/skills/test-reviewer.md
         var store = MemoryStoreContext.Current!;
-        var (scope, _) = store.ParseQualifiedName("skill:placeholder");
-        var entries = store.LoadIndex(scope);
-        entries.Should().HaveCountGreaterOrEqualTo(1,
-            "skill_create should create at least one skill entry in the index");
-        entries.Should().Contain(e => e.Name == "test-reviewer",
-            "skill_create should store a skill:test-reviewer entry in the skill scope");
+        string content = ReadSkillFile(store, "test-reviewer");
+        content.Should().NotBeNullOrEmpty(
+            "skill_create should write a .md file to .scrinia/skills/");
     }
 
     [Fact]
@@ -66,16 +89,14 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
-        // Assert — stored entry must have keyword role:reviewer
+        // Assert — sidecar .meta.json must have Role: "reviewer"
         var store = MemoryStoreContext.Current!;
-        var (scope, _) = store.ParseQualifiedName("skill:placeholder");
-        var entries = store.LoadIndex(scope);
-        entries.Should().Contain(e =>
-            e.Keywords != null &&
-            e.Keywords.Contains("role:reviewer", StringComparer.OrdinalIgnoreCase),
-            "skill entry must have role:reviewer keyword");
+        var meta = ReadSkillMeta(store, "test-reviewer");
+        meta.Should().NotBeNull("skill_create must write a sidecar .meta.json");
+        meta!.Role.Should().Be("reviewer",
+            "skill sidecar must record role:reviewer");
     }
 
     [Fact]
@@ -85,11 +106,11 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
-        // Assert — decoded content must contain "## Role" and the role description
+        // Assert — disk file content must contain "## Role" and the role description
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "skill:test-reviewer");
+        string content = ReadSkillFile(store, "test-reviewer");
         content.Should().Contain("## Role",
             "skill content should contain '## Role' section header");
         content.Should().ContainEquivalentOf("review",
@@ -103,11 +124,13 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        string result = await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
-        // Assert — return value starts with "Stored as skill:test-reviewer"
-        result.Should().StartWith("Stored as skill:test-reviewer",
-            "skill_create response must confirm storage with the qualified name");
+        // Assert — return value confirms storage
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "skill_create should succeed");
+        r.Content.Should().Contain("Stored as .scrinia/skills/test-reviewer.md",
+            "skill_create response must confirm storage with the disk file path");
     }
 
     [Fact]
@@ -115,20 +138,23 @@ public sealed class SubagentToolTests : IDisposable
     {
         // Arrange — write same skill name twice
         await InitProject();
-        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
-        // Get the versions dir path for skill scope
+        // Get the versions dir path for disk skills
         var store = MemoryStoreContext.Current!;
-        var (skillScope, skillSubject) = store.ParseQualifiedName("skill:test-reviewer");
-        string storeDir = store.GetStoreDirForScope(skillScope);
-        string versionsDir = Path.Combine(storeDir, "versions");
+        string storeDir = store.GetStoreDirForScope("local");
+        var dir = new DirectoryInfo(storeDir);
+        while (dir is not null && dir.Name != ".scrinia")
+            dir = dir.Parent;
+        string baseDir = dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
+        string versionsDir = Path.Combine(baseDir, "skills", "versions");
 
-        // Act — write again (same name, archiveExisting: true)
-        await _tools.SkillCreate("test-reviewer", "reviewer", "Updated instructions.", null, CancellationToken.None);
+        // Act — write again (same name, archives previous)
+        await ScriniaProjectTools.SkillCreate("test-reviewer", "reviewer", "Updated instructions.", null, CancellationToken.None);
 
-        // Assert — a version archive file must exist for the subject
+        // Assert — a version archive file must exist for test-reviewer
         bool versionsExist = Directory.Exists(versionsDir) &&
-            Directory.GetFiles(versionsDir, $"{skillSubject}*").Length > 0;
+            Directory.GetFiles(versionsDir, "test-reviewer*").Length > 0;
         versionsExist.Should().BeTrue(
             "skill_create with same skill name should archive the previous version");
     }
@@ -137,11 +163,12 @@ public sealed class SubagentToolTests : IDisposable
     public async Task SkillCreate_RequiresProjectInit()
     {
         // Act — no project_init called
-        string result = await _tools.SkillCreate("test-skill", "researcher", null, null, CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillCreate("test-skill", "researcher", null, null, CancellationToken.None);
 
         // Assert
-        result.Should().StartWith("Error:",
-            "skill_create without project:context must return Error:");
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("error",
+            "skill_create without project:context must return an error");
     }
 
     // ── AGENT-02 tests (capability-conditional fallback section) ──────────────
@@ -153,11 +180,11 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
 
-        // Assert — decoded content must contain "Fallback"
+        // Assert — disk file content must contain "Fallback"
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "skill:my-researcher");
+        string content = ReadSkillFile(store, "my-researcher");
         content.Should().ContainEquivalentOf("Fallback",
             "skill prompt must contain a Fallback section for non-MCP environments");
     }
@@ -169,11 +196,11 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
 
-        // Assert — content contains fallback marker phrase
+        // Assert — disk file content contains fallback marker phrase
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "skill:my-researcher");
+        string content = ReadSkillFile(store, "my-researcher");
         bool hasFallbackMarker =
             content.Contains("if Scrinia MCP is not available", StringComparison.OrdinalIgnoreCase) ||
             content.Contains("Scrinia MCP", StringComparison.OrdinalIgnoreCase) ||
@@ -189,16 +216,18 @@ public sealed class SubagentToolTests : IDisposable
     {
         // Arrange — store two skills
         await InitProject();
-        await _tools.SkillCreate("api-reviewer", "reviewer", null, null, CancellationToken.None);
-        await _tools.SkillCreate("auth-researcher", "researcher", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("api-reviewer", "reviewer", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("auth-researcher", "researcher", null, null, CancellationToken.None);
 
         // Act — list mode (no skillName)
-        string result = await _tools.SkillLoad(null, cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillLoad(null, cancellationToken: CancellationToken.None);
 
         // Assert — both skill names should appear
-        result.Should().Contain("api-reviewer",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "skill_load list mode should succeed");
+        r.Content.Should().Contain("api-reviewer",
             "skill_load list mode must include 'api-reviewer' from index");
-        result.Should().Contain("auth-researcher",
+        r.Content.Should().Contain("auth-researcher",
             "skill_load list mode must include 'auth-researcher' from index");
     }
 
@@ -207,15 +236,17 @@ public sealed class SubagentToolTests : IDisposable
     {
         // Arrange — store a skill
         await InitProject();
-        await _tools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("test-reviewer", "reviewer", null, null, CancellationToken.None);
 
         // Act — load mode (skillName provided)
-        string result = await _tools.SkillLoad("test-reviewer", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillLoad("test-reviewer", cancellationToken: CancellationToken.None);
 
         // Assert — returns full prompt content with "## Role"
-        result.Should().Contain("## Role",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "skill_load should succeed");
+        r.Content.Should().Contain("## Role",
             "skill_load with a skill name must return the full prompt content");
-        result.Should().ContainEquivalentOf("review",
+        r.Content.Should().ContainEquivalentOf("review",
             "skill_load must return content containing role description 'review'");
     }
 
@@ -226,12 +257,14 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act — list mode with no project skills
-        string result = await _tools.SkillLoad(null, cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillLoad(null, cancellationToken: CancellationToken.None);
 
         // Assert — built-in skills should always appear
-        result.Should().Contain("march-reporter",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "skill_load list mode should succeed");
+        r.Content.Should().Contain("march-reporter",
             "skill_load must list built-in skills even when no project skills exist");
-        result.Should().Contain("built-in",
+        r.Content.Should().Contain("built-in",
             "built-in skills must be tagged as [built-in]");
     }
 
@@ -242,15 +275,12 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act — load mode for a skill that does not exist
-        string result = await _tools.SkillLoad("nonexistent", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillLoad("nonexistent", cancellationToken: CancellationToken.None);
 
-        // Assert — must return Error: or informative message
-        bool isErrorOrInformative =
-            result.StartsWith("Error:", StringComparison.OrdinalIgnoreCase) ||
-            result.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
-            result.Contains("nonexistent", StringComparison.OrdinalIgnoreCase);
-        isErrorOrInformative.Should().BeTrue(
-            "skill_load with a missing skill name must return an error or informative message");
+        // Assert — must return an error
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("error",
+            "skill_load with a missing skill name must return an error");
     }
 
     // ── AGENT-04 tests (built-in scaffolds and custom mode) ───────────────────
@@ -262,11 +292,11 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("my-researcher", "researcher", null, null, CancellationToken.None);
 
-        // Assert — content must contain "research" and tool references
+        // Assert — disk file content must contain "research" and tool references
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "skill:my-researcher");
+        string content = ReadSkillFile(store, "my-researcher");
         content.Should().ContainEquivalentOf("research",
             "researcher scaffold content must reference 'research'");
         content.Should().ContainEquivalentOf("tool",
@@ -280,11 +310,11 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("my-reviewer", "reviewer", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("my-reviewer", "reviewer", null, null, CancellationToken.None);
 
-        // Assert — content must contain "review"
+        // Assert — disk file content must contain "review"
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "skill:my-reviewer");
+        string content = ReadSkillFile(store, "my-reviewer");
         content.Should().ContainEquivalentOf("review",
             "reviewer scaffold content must contain 'review'");
     }
@@ -296,11 +326,11 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.SkillCreate("my-expert", "domain-expert", null, null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("my-expert", "domain-expert", null, null, CancellationToken.None);
 
-        // Assert — content must contain "domain" or "expert"
+        // Assert — disk file content must contain "domain" or "expert"
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "skill:my-expert");
+        string content = ReadSkillFile(store, "my-expert");
         bool hasDomainOrExpert =
             content.Contains("domain", StringComparison.OrdinalIgnoreCase) ||
             content.Contains("expert", StringComparison.OrdinalIgnoreCase);
@@ -315,16 +345,16 @@ public sealed class SubagentToolTests : IDisposable
         await InitProject();
 
         // Act — custom scaffold with instructions and tools
-        await _tools.SkillCreate(
+        await ScriniaProjectTools.SkillCreate(
             "my-custom",
             "custom",
             "Analyze database query performance and suggest indexes.",
             "search,show",
             CancellationToken.None);
 
-        // Assert — content must come from the provided instructions
+        // Assert — disk file content must come from the provided instructions
         var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "skill:my-custom");
+        string content = ReadSkillFile(store, "my-custom");
         content.Should().Contain("database",
             "custom scaffold must embed the provided instructions in the content");
     }
@@ -332,48 +362,20 @@ public sealed class SubagentToolTests : IDisposable
     // ── ADOPT-02 tests (description context signals) ──────────────────────────
 
     [Fact]
-    public void SkillCreate_DescriptionContainsContextSignals()
+    public void SkillCreate_InternalMethodExists()
     {
-        // After consolidation, SkillCreate is an internal method called by SkillDispatch.
-        // Verify the method exists and the skill dispatcher description references "skill" and "create".
+        // SkillCreate is an internal method routed through memory() path routing (/skill/...).
         var method = typeof(ScriniaProjectTools).GetMethod("SkillCreate",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
         method.Should().NotBeNull("SkillCreate must exist as an internal method");
-
-        var dispatcher = typeof(ScriniaProjectTools).GetMethod("SkillDispatch");
-        dispatcher.Should().NotBeNull("SkillDispatch dispatcher must exist");
-
-        var descAttr = dispatcher!.GetCustomAttributes(
-                typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
-            .Cast<System.ComponentModel.DescriptionAttribute>()
-            .FirstOrDefault();
-        descAttr.Should().NotBeNull("SkillDispatch must have a [Description] attribute");
-
-        string descText = descAttr!.Description;
-        descText.Should().ContainEquivalentOf("skill",
-            "SkillDispatch description must contain 'skill' reference so agents know where prompts are stored");
     }
 
     [Fact]
-    public void SkillLoad_DescriptionContainsContextSignals()
+    public void SkillLoad_InternalMethodExists()
     {
-        // After consolidation, SkillLoad is an internal method called by SkillDispatch.
-        // Verify the method exists and the skill dispatcher description references "skill" and "load".
+        // SkillLoad is an internal method routed through memory() path routing (/skill/...).
         var method = typeof(ScriniaProjectTools).GetMethod("SkillLoad",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
         method.Should().NotBeNull("SkillLoad must exist as an internal method");
-
-        var dispatcher = typeof(ScriniaProjectTools).GetMethod("SkillDispatch");
-        dispatcher.Should().NotBeNull("SkillDispatch dispatcher must exist");
-
-        var descAttr = dispatcher!.GetCustomAttributes(
-                typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
-            .Cast<System.ComponentModel.DescriptionAttribute>()
-            .FirstOrDefault();
-        descAttr.Should().NotBeNull("SkillDispatch must have a [Description] attribute");
-
-        string descText = descAttr!.Description;
-        descText.Should().ContainEquivalentOf("skill",
-            "SkillDispatch description must contain 'skill' reference so agents know what it loads");
     }
 }

@@ -27,15 +27,15 @@ public sealed class QaGateTests : IDisposable
     public async Task PlanVerify_ChecklistModeStillWorks()
     {
         // Arrange — init project with requirements and a task referencing CRIT-01, no evidence
-        await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- CRIT-01: task storage", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- CRIT-01: task storage", cancellationToken: CancellationToken.None);
         // Create a task that references CRIT-01 so plan_verify can discover the criterion
-        await _tools.PlanTasks("01",
+        await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nDepends on: none\nAction: Implement CRIT-01 — task storage\nAcceptance criteria:\n- tasks stored",
             cancellationToken: CancellationToken.None);
 
         // Act — call plan_verify with no evidence
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — should return checklist
         result.Should().Contain("Verification Checklist",

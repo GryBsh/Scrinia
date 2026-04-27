@@ -32,9 +32,9 @@ public sealed class GateValidationTests : IDisposable
     /// </summary>
     private async Task SetupProjectWithTasks()
     {
-        await _tools.ProjectInit("Goals: gate validation testing", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
-        await _tools.PlanTasks("01",
+        await ScriniaProjectTools.ProjectInit("Goals: gate validation testing", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nDepends on: none\nAction: Implement feature X\nAcceptance criteria:\n- Feature works",
             cancellationToken: CancellationToken.None);
     }
@@ -99,7 +99,7 @@ public sealed class GateValidationTests : IDisposable
         string qaGateTask = FindGateTaskName("qa-gate");
 
         // Act — try to complete the QA gate without qa:latest existing
-        string result = await _tools.TaskComplete(qaGateTask, "QA done",
+        string result = await ScriniaProjectTools.TaskComplete(qaGateTask, "QA done",
             cancellationToken: CancellationToken.None);
 
         // Assert — should be blocked
@@ -125,11 +125,11 @@ public sealed class GateValidationTests : IDisposable
 
         // Complete all prerequisite tasks first (the QA gate depends on user tasks)
         string userTask = FindUserTaskName();
-        await _tools.TaskComplete(userTask, "Feature implemented",
+        await ScriniaProjectTools.TaskComplete(userTask, "Feature implemented",
             cancellationToken: CancellationToken.None);
 
         // Act — complete the QA gate
-        string result = await _tools.TaskComplete(qaGateTask, "QA passed",
+        string result = await ScriniaProjectTools.TaskComplete(qaGateTask, "QA passed",
             cancellationToken: CancellationToken.None);
 
         // Assert — should succeed
@@ -146,12 +146,12 @@ public sealed class GateValidationTests : IDisposable
     public async Task TaskComplete_AuditorGate_BlocksWithoutRequirements()
     {
         // Arrange — create a project without requirements, add auditor gate task
-        await _tools.ProjectInit("Goals: auditor gate test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: auditor gate test", cancellationToken: CancellationToken.None);
         await CreateGateTask("task:01-0-auditor-gate", "auditor",
             "## Auditor Gate\nAction: Run auditor\nAcceptance criteria:\n- Requirements exist");
 
         // Act — try to complete the auditor gate
-        string result = await _tools.TaskComplete("task:01-0-auditor-gate", "Auditor scan done",
+        string result = await ScriniaProjectTools.TaskComplete("task:01-0-auditor-gate", "Auditor scan done",
             cancellationToken: CancellationToken.None);
 
         // Assert — should be blocked since no requirements exist
@@ -166,13 +166,13 @@ public sealed class GateValidationTests : IDisposable
     public async Task TaskComplete_AuditorGate_PassesWithRequirements()
     {
         // Arrange — create project with requirements, then add auditor gate task
-        await _tools.ProjectInit("Goals: auditor gate pass test", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: auditor gate pass test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
         await CreateGateTask("task:01-0-auditor-gate", "auditor",
             "## Auditor Gate\nAction: Run auditor\nAcceptance criteria:\n- Requirements exist");
 
         // Act — complete the auditor gate (requirements exist from PlanRequirements)
-        string result = await _tools.TaskComplete("task:01-0-auditor-gate", "Auditor scan done",
+        string result = await ScriniaProjectTools.TaskComplete("task:01-0-auditor-gate", "Auditor scan done",
             cancellationToken: CancellationToken.None);
 
         // Assert — should succeed
@@ -193,7 +193,7 @@ public sealed class GateValidationTests : IDisposable
         string userTask = FindUserTaskName();
 
         // Act — complete a normal task (no gate keywords)
-        string result = await _tools.TaskComplete(userTask, "Feature implemented",
+        string result = await ScriniaProjectTools.TaskComplete(userTask, "Feature implemented",
             cancellationToken: CancellationToken.None);
 
         // Assert — should succeed without gate validation
@@ -212,10 +212,10 @@ public sealed class GateValidationTests : IDisposable
     public async Task TaskComplete_RequiredOutput_Missing_ReturnsError()
     {
         // Arrange — create a project with a goal so researcher seed tasks are created
-        await _tools.ProjectInit("Goals:\n- Test required outputs",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Test required outputs",
             cancellationToken: CancellationToken.None);
 
-        await _tools.GoalUpdate("add", "Investigate required output validation",
+        await ScriniaProjectTools.GoalUpdate("add", "Investigate required output validation",
             null, null, cancellationToken: CancellationToken.None);
 
         // Find the researcher seed task (which has RequiredOutputs)
@@ -226,7 +226,7 @@ public sealed class GateValidationTests : IDisposable
         string researcherTaskName = $"task:{researcherEntry.Name}";
 
         // Act — complete researcher task WITHOUT storing any research:* memories
-        string result = await _tools.TaskComplete(researcherTaskName, "Done investigating",
+        string result = await ScriniaProjectTools.TaskComplete(researcherTaskName, "Done investigating",
             cancellationToken: CancellationToken.None);
 
         // Assert — should fail because gate validation (index-prefix for research:*) is not met.
@@ -244,10 +244,10 @@ public sealed class GateValidationTests : IDisposable
     public async Task TaskComplete_RequiredOutput_Present_Succeeds()
     {
         // Arrange — create project + goal, then store the required research memory
-        await _tools.ProjectInit("Goals:\n- Test required outputs present",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Test required outputs present",
             cancellationToken: CancellationToken.None);
 
-        await _tools.GoalUpdate("add", "Verify required output success path",
+        await ScriniaProjectTools.GoalUpdate("add", "Verify required output success path",
             null, null, cancellationToken: CancellationToken.None);
 
         // Find the researcher seed task and extract the goal short ID
@@ -278,7 +278,7 @@ public sealed class GateValidationTests : IDisposable
             cancellationToken: CancellationToken.None);
 
         // Act — complete the researcher task (required research output now exists)
-        string result = await _tools.TaskComplete(researcherTaskName, "Research completed",
+        string result = await ScriniaProjectTools.TaskComplete(researcherTaskName, "Research completed",
             cancellationToken: CancellationToken.None);
 
         // Assert — should succeed since the required output is present
@@ -295,10 +295,10 @@ public sealed class GateValidationTests : IDisposable
     public async Task TaskComplete_NoRequiredOutputs_Succeeds()
     {
         // Arrange — create project + goal, then plan tasks for a phase with user tasks
-        await _tools.ProjectInit("Goals:\n- Test no required outputs",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Test no required outputs",
             cancellationToken: CancellationToken.None);
 
-        await _tools.GoalUpdate("add", "Verify backward compat for tasks without RequiredOutputs",
+        await ScriniaProjectTools.GoalUpdate("add", "Verify backward compat for tasks without RequiredOutputs",
             null, null, cancellationToken: CancellationToken.None);
 
         // Find researcher and store its required output to unblock further seeds
@@ -324,21 +324,21 @@ public sealed class GateValidationTests : IDisposable
             content: ["## Research\nScope analysis."],
             name: $"research:{goalShort}scope",
             cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete($"task:{researcherEntry.Name}", "Research done",
+        await ScriniaProjectTools.TaskComplete($"task:{researcherEntry.Name}", "Research done",
             cancellationToken: CancellationToken.None);
 
         // Store requirements and complete auditor
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
         var auditorEntry = entries.First(e => e.Name.Contains("auditor"));
-        await _tools.TaskComplete($"task:{auditorEntry.Name}", "Audit done",
+        await ScriniaProjectTools.TaskComplete($"task:{auditorEntry.Name}", "Audit done",
             cancellationToken: CancellationToken.None);
 
         // Plan execution tasks, then complete planner
-        await _tools.PlanTasks("01",
+        await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nDepends on: none\nAction: Build feature\nAcceptance criteria:\n- done",
             cancellationToken: CancellationToken.None);
         var plannerEntry = entries.First(e => e.Name.Contains("planner"));
-        await _tools.TaskComplete($"task:{plannerEntry.Name}", "Planning done",
+        await ScriniaProjectTools.TaskComplete($"task:{plannerEntry.Name}", "Planning done",
             cancellationToken: CancellationToken.None);
 
         // Reload entries after planning to find user tasks
@@ -350,7 +350,7 @@ public sealed class GateValidationTests : IDisposable
         string userTaskName = $"task:{userTask.Name}";
 
         // Act — complete a user task (no RequiredOutputs defined)
-        string result = await _tools.TaskComplete(userTaskName, "Feature built",
+        string result = await ScriniaProjectTools.TaskComplete(userTaskName, "Feature built",
             cancellationToken: CancellationToken.None);
 
         // Assert — should succeed (user tasks have no RequiredOutputs)

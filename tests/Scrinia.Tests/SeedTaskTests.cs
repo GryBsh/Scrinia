@@ -26,14 +26,14 @@ public sealed class SeedTaskTests : IDisposable
     public async Task GoalAdd_CreatesResearcherSeedTask()
     {
         // Arrange — init project so goal_update prerequisite passes
-        await _tools.ProjectInit(
+        await ScriniaProjectTools.ProjectInit(
             "Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act — add a goal
-        await _tools.GoalUpdate("add", "Implement authentication",
+        await ScriniaProjectTools.GoalUpdate("add", "Implement authentication",
             null, null, cancellationToken: CancellationToken.None);
 
         // Assert — a task with "researcher" in the name must exist with correct keywords
@@ -56,14 +56,14 @@ public sealed class SeedTaskTests : IDisposable
     public async Task GoalAdd_CreatesAllThreeSeedTasks()
     {
         // Arrange — init project so goal_update prerequisite passes
-        await _tools.ProjectInit(
+        await ScriniaProjectTools.ProjectInit(
             "Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act — add a goal
-        await _tools.GoalUpdate("add", "Implement search feature",
+        await ScriniaProjectTools.GoalUpdate("add", "Implement search feature",
             null, null, cancellationToken: CancellationToken.None);
 
         // Assert — all three seed tasks must exist with correct keywords
@@ -113,12 +113,12 @@ public sealed class SeedTaskTests : IDisposable
     public async Task GoalAdd_ResponseMentionsResearcherTask()
     {
         // Arrange
-        await _tools.ProjectInit(
+        await ScriniaProjectTools.ProjectInit(
             "Goals:\n- Build the API",
             cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.GoalUpdate("add", "Add logging",
+        string result = await ScriniaProjectTools.GoalUpdate("add", "Add logging",
             null, null, cancellationToken: CancellationToken.None);
 
         // Assert
@@ -133,8 +133,10 @@ public sealed class SeedTaskTests : IDisposable
             "goal('add') response must mention the auditor seed task");
         parsed.Content.Should().Contain("planner",
             "goal('add') response must mention the planner seed task");
-        parsed.Instruction.Should().Contain("task('next')",
-            "goal('add') instruction must mention task('next') to continue");
+        parsed.Instruction.Should().Contain("task('next',",
+            "goal('add') instruction must mention task('next') with path to continue");
+        parsed.Instruction.Should().Contain("Confirm this goal with the user",
+            "goal('add') instruction must ask for user confirmation before proceeding");
     }
 
     // ── Onboarder seed task tests (plan 'init') ──────────────────────────────
@@ -149,7 +151,7 @@ public sealed class SeedTaskTests : IDisposable
         var store = MemoryStoreContext.Current!;
 
         // Act
-        await _tools.ProjectInit("Goals: explore existing project",
+        await ScriniaProjectTools.ProjectInit("Goals: explore existing project",
             cancellationToken: CancellationToken.None);
 
         // Assert — a task with "onboarder" in the name must exist with correct keywords
@@ -175,7 +177,7 @@ public sealed class SeedTaskTests : IDisposable
         var store = MemoryStoreContext.Current!;
 
         // Act
-        await _tools.ProjectInit("Goals: start fresh project",
+        await ScriniaProjectTools.ProjectInit("Goals: start fresh project",
             cancellationToken: CancellationToken.None);
 
         // Assert — no onboarder task should exist
@@ -195,7 +197,7 @@ public sealed class SeedTaskTests : IDisposable
         await File.WriteAllTextAsync(dummyFile, "// existing app");
 
         // Act
-        string result = await _tools.ProjectInit("Goals: onboard to existing project",
+        string result = await ScriniaProjectTools.ProjectInit("Goals: onboard to existing project",
             cancellationToken: CancellationToken.None);
 
         // Assert

@@ -14,7 +14,7 @@ namespace Scrinia.Mcp;
 /// Naming convention:
 ///   "subject"              → local scope:   &lt;workspace&gt;/.scrinia/store/subject.nmp2
 ///   "topic:subject"        → local topic:   &lt;workspace&gt;/.scrinia/topics/topic/subject.nmp2
-///   "~subject"             → ephemeral:     in-memory only (dies with process)
+///   "/temp/subject"         → ephemeral:     in-memory only (dies with process)
 /// </summary>
 internal static partial class ScriniaArtifactStore
 {
@@ -103,26 +103,50 @@ internal static partial class ScriniaArtifactStore
 
     /// <summary>
     /// Parses a qualified name into an internal scope string and a sanitized subject name.
-    /// "subject" → ("local", subject), "topic:subject" → ("local-topic:topic", subject).
+    /// Supports both v1 ("topic:subject") and v2 ("/path/to/subject") syntax.
+    /// "subject" → ("local", subject), "topic:subject" → ("local-topic:topic", subject),
+    /// "/goal/G-5/research/frontend" → ("local-topic:goal/G-5/research", "frontend").
     /// </summary>
     public static (string Scope, string Subject) ParseQualifiedName(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
 
+        // v2 path syntax: starts with "/"
+        if (name.StartsWith('/'))
+        {
+            var entityTypes = new HashSet<string>(
+                EntityTypeRegistry.Types.Keys, StringComparer.OrdinalIgnoreCase);
+            var parsed = PathParser.Parse(name, entityTypes);
+
+            var segments = parsed.Segments;
+            if (segments.Count == 0)
+                throw new ArgumentException("Empty path", nameof(name));
+
+            if (segments.Count == 1)
+                return ("local", SanitizeName(segments[0].Value));
+
+            // Build scope from all but last segment
+            string topicPart = string.Join("/", segments.Take(segments.Count - 1).Select(s => s.Value));
+            string scope = $"local-topic:{topicPart}";
+            string subject = SanitizeName(segments[^1].Value);
+            return (scope, subject);
+        }
+
+        // v1 topic:name syntax (existing logic)
         int colonIdx = name.IndexOf(':');
         if (colonIdx < 0)
             return ("local", SanitizeName(name.Trim()));
 
         string topic = name[..colonIdx].Trim();
-        string subject = name[(colonIdx + 1)..].Trim();
+        string subjectV1 = name[(colonIdx + 1)..].Trim();
 
         if (string.IsNullOrWhiteSpace(topic))
             throw new ArgumentException($"Topic part must not be empty in '{name}'.", nameof(name));
-        if (string.IsNullOrWhiteSpace(subject))
+        if (string.IsNullOrWhiteSpace(subjectV1))
             throw new ArgumentException($"Subject part must not be empty in '{name}'.", nameof(name));
 
-        return ($"local-topic:{SanitizeName(topic)}", SanitizeName(subject));
+        return (MemoryNaming.BuildScopedTopicScope(SanitizeName(topic)), SanitizeName(subjectV1));
     }
 
     /// <summary>
@@ -141,8 +165,8 @@ internal static partial class ScriniaArtifactStore
         // Already-qualified scope names pass through
         if (s.StartsWith("local-topic:", StringComparison.OrdinalIgnoreCase)) return [s];
 
-        // Bare topic name → local topic
-        return [$"local-topic:{SanitizeName(s)}"];
+        // Bare topic name → namespace-aware scope via BuildScopedTopicScope
+        return [MemoryNaming.BuildScopedTopicScope(SanitizeName(s))];
     }
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
@@ -188,10 +212,50 @@ internal static partial class ScriniaArtifactStore
         if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
         {
             string topic = scope["local-topic:".Length..];
+
+            // v2 path scope: topic contains "/" that isn't a v1 namespace prefix
+            // (v1 namespaces are "entity/X", "memory/X", "agent" — exactly one slash
+            // with a recognised prefix). Multi-level paths use .scrinia/memories/.
+            if (IsV2PathScope(topic))
+                return Path.Combine(WorkspaceRoot, ".scrinia", "memories", topic.Replace('/', Path.DirectorySeparatorChar));
+
             return Path.Combine(WorkspaceRoot, ".scrinia", "topics", topic);
         }
 
         throw new ArgumentException($"Unknown scope: {scope}");
+    }
+
+    /// <summary>
+    /// Determines whether a topic part from a "local-topic:X" scope is a v2 multi-level
+    /// path (routed to .scrinia/memories/) vs a v1 namespace scope (routed to .scrinia/topics/).
+    /// v1 patterns: "agent", "entity/{topic}", "memory/{topic}" (single namespace + single topic).
+    /// v2 patterns: anything with more than 2 segments or a non-namespace first segment with slashes.
+    /// </summary>
+    private static bool IsV2PathScope(string topicPart)
+    {
+        // No slash → v1 flat topic (e.g. "arch", "patterns")
+        int firstSlash = topicPart.IndexOf('/');
+        if (firstSlash < 0) return false;
+
+        string prefix = topicPart[..firstSlash];
+
+        // "agent" namespace has no sub-slash in v1
+        if (prefix.Equals("agent", StringComparison.OrdinalIgnoreCase))
+        {
+            // agent/X is v1 (shouldn't normally happen since agent is flat), but
+            // agent/X/Y would be v2
+            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
+        }
+
+        // "entity/topic" or "memory/topic" with exactly one slash → v1
+        if (MemoryNaming.ReservedNamespaceDirs.Contains(prefix))
+        {
+            // If there's another slash beyond "entity/topic", it's v2
+            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
+        }
+
+        // First segment is not a reserved namespace → v2 (e.g. "goal/G-5/research")
+        return true;
     }
 
     /// <summary>
@@ -204,9 +268,37 @@ internal static partial class ScriniaArtifactStore
         if (!Directory.Exists(localTopicsRoot))
             return [];
 
-        return Directory.GetDirectories(localTopicsRoot)
-            .Select(d => $"local-topic:{Path.GetFileName(d)}")
-            .ToArray();
+        var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Scan namespace subdirs: entity/*, memory/*, agent/
+        foreach (string nsDir in Directory.GetDirectories(localTopicsRoot))
+        {
+            string nsDirName = Path.GetFileName(nsDir);
+            if (MemoryNaming.ReservedNamespaceDirs.Contains(nsDirName))
+            {
+                // agent/ is a topic itself (no sub-dirs)
+                if (nsDirName.Equals("agent", StringComparison.OrdinalIgnoreCase))
+                {
+                    scopes.Add($"local-topic:{nsDirName}");
+                }
+                else
+                {
+                    // entity/* and memory/* contain topic subdirs
+                    foreach (string subDir in Directory.GetDirectories(nsDir))
+                    {
+                        string subName = Path.GetFileName(subDir);
+                        scopes.Add($"local-topic:{nsDirName}/{subName}");
+                    }
+                }
+            }
+            else
+            {
+                // Legacy flat topic dir — emit as-is for backward compat
+                scopes.Add($"local-topic:{nsDirName}");
+            }
+        }
+
+        return [.. scopes];
     }
 
     /// <summary>
@@ -220,7 +312,8 @@ internal static partial class ScriniaArtifactStore
             if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
                 continue;
 
-            string topicName = scope["local-topic:".Length..];
+            string rawTopicPart = scope["local-topic:".Length..];
+            string topicName = MemoryNaming.StripNamespacePrefix(rawTopicPart);
             var entries = LoadIndex(scope);
             if (entries.Count == 0) continue;
             topics.Add(new TopicInfo(
@@ -238,6 +331,14 @@ internal static partial class ScriniaArtifactStore
     {
         if (!string.IsNullOrWhiteSpace(scopes))
         {
+            // "all" (case-insensitive) returns every scope including entity-classified ones
+            if (scopes.Trim().Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                var all = new List<string> { "local" };
+                all.AddRange(DiscoverTopics());
+                return all.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            }
+
             return scopes
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .SelectMany(NormalizeScopeFilters)
@@ -245,9 +346,38 @@ internal static partial class ScriniaArtifactStore
                 .ToArray();
         }
 
+        // Default (null): exclude entity-classified scopes so searches focus on user content
         var ordered = new List<string> { "local" };
-        ordered.AddRange(DiscoverTopics());
+        foreach (var topic in DiscoverTopics())
+        {
+            if (IsEntityScope(topic))
+                continue;
+            ordered.Add(topic);
+        }
         return ordered.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    /// <summary>
+    /// Returns true if the scope is classified as an entity scope — either
+    /// namespaced ("local-topic:entity/*") or legacy flat ("local-topic:{topic}"
+    /// where topic is in <see cref="MemoryNaming.EntityTopics"/>).
+    /// </summary>
+    private static bool IsEntityScope(string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return false;
+
+        string topicPart = scope["local-topic:".Length..];
+
+        // Namespaced: "entity/task", "entity/concern", etc.
+        if (topicPart.StartsWith("entity/", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Legacy flat: "task", "concern", etc. (no slash → bare topic name)
+        if (!topicPart.Contains('/') && MemoryNaming.EntityTopics.Contains(topicPart))
+            return true;
+
+        return false;
     }
 
     private static string GetLockPath(string scope) =>
@@ -258,7 +388,22 @@ internal static partial class ScriniaArtifactStore
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
         using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
-        return LoadIndexFrom(storeDir);
+        var entries = LoadIndexFrom(storeDir);
+
+        // Merge legacy entries (namespaced entries take precedence)
+        string? legacyDir = ResolveLegacyFallbackDir(scope);
+        if (legacyDir is not null && Directory.Exists(legacyDir))
+        {
+            var legacyEntries = LoadIndexFrom(legacyDir);
+            var namespacedNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var le in legacyEntries)
+            {
+                if (!namespacedNames.Contains(le.Name))
+                    entries.Add(le);
+            }
+        }
+
+        return entries;
     }
 
     private static List<ArtifactEntry> LoadIndexFrom(string storeDir)
@@ -594,22 +739,170 @@ internal static partial class ScriniaArtifactStore
         $"file://{ArtifactPath(name, scope)}";
 
     /// <summary>
+    /// Resolves a legacy (pre-namespace) topic directory for a scoped topic.
+    /// For "local-topic:entity/task" returns the flat ".scrinia/topics/task" path.
+    /// For v2 path scopes, delegates to <see cref="ResolveV2LegacyDir"/>.
+    /// Returns null if the scope is not a namespaced topic scope.
+    /// </summary>
+    internal static string? ResolveLegacyFallbackDir(string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return null;
+
+        string topicPart = scope["local-topic:".Length..];
+
+        // v2 path scopes get their own fallback chain
+        if (IsV2PathScope(topicPart))
+            return ResolveV2LegacyDir(scope);
+
+        string stripped = MemoryNaming.StripNamespacePrefix(topicPart);
+
+        // Only provide fallback when the scope actually has a namespace prefix
+        if (stripped == topicPart)
+            return null;
+
+        return Path.Combine(WorkspaceRoot, ".scrinia", "topics", stripped);
+    }
+
+    /// <summary>
+    /// Resolves a v2 path scope to the equivalent v1 legacy directory for fallback reads.
+    /// Uses the leaf segment of the topic path as the v1 topic name and probes
+    /// legacy flat and namespaced locations.
+    /// </summary>
+    private static string? ResolveV2LegacyDir(string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return null;
+
+        string topicPart = scope["local-topic:".Length..];
+        if (!IsV2PathScope(topicPart))
+            return null;
+
+        // The leaf segment of the v2 topic path is the most likely v1 topic name.
+        // e.g. "goal/G-5/research" → leaf = "research"
+        int lastSlash = topicPart.LastIndexOf('/');
+        string leafTopic = lastSlash >= 0 ? topicPart[(lastSlash + 1)..] : topicPart;
+        if (string.IsNullOrEmpty(leafTopic))
+            return null;
+
+        string root = WorkspaceRoot;
+
+        // Check flat legacy location: .scrinia/topics/{leafTopic}/
+        string flatDir = Path.Combine(root, ".scrinia", "topics", leafTopic);
+        if (Directory.Exists(flatDir))
+            return flatDir;
+
+        // Check namespaced legacy locations based on topic classification
+        string ns = MemoryNaming.ClassifyTopic(leafTopic);
+        string nsDir = Path.Combine(root, ".scrinia", "topics", ns, leafTopic);
+        if (Directory.Exists(nsDir))
+            return nsDir;
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves a v2 path scope + subject to the equivalent v1 legacy file path.
+    /// Builds a synthetic <see cref="ParsedPath"/> and delegates to
+    /// <see cref="PathRouter.ToLegacyPath"/>, which probes the filesystem.
+    /// </summary>
+    private static string? ResolveV2LegacyFilePath(string subject, string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return null;
+
+        string topicPart = scope["local-topic:".Length..];
+        if (!IsV2PathScope(topicPart))
+            return null;
+
+        string root = WorkspaceRoot;
+
+        // Build a full v2 path from scope + subject and let PathRouter find legacy
+        string fullPath = "/" + topicPart + "/" + subject;
+        try
+        {
+            var entityTypes = new HashSet<string>(
+                EntityTypeRegistry.Types.Keys, StringComparer.OrdinalIgnoreCase);
+            var parsed = PathParser.Parse(fullPath, entityTypes);
+            string? legacyPath = PathRouter.ToLegacyPath(parsed, root);
+            if (legacyPath is not null && File.Exists(legacyPath))
+                return legacyPath;
+        }
+        catch (ArgumentException)
+        {
+            // Path parsing can fail for malformed scope strings — not a fatal error
+        }
+
+        // Fallback: try the leaf topic segment as a v1 flat topic
+        int lastSlash = topicPart.LastIndexOf('/');
+        string leafTopic = lastSlash >= 0 ? topicPart[(lastSlash + 1)..] : topicPart;
+        if (string.IsNullOrEmpty(leafTopic))
+            return null;
+
+        string sanitized = SanitizeName(subject);
+
+        // Flat legacy: .scrinia/topics/{leafTopic}/{subject}.nmp2
+        string flatPath = Path.Combine(root, ".scrinia", "topics", leafTopic, sanitized + ".nmp2");
+        if (File.Exists(flatPath))
+            return flatPath;
+
+        // Namespaced legacy: .scrinia/topics/{ns}/{leafTopic}/{subject}.nmp2
+        string ns = MemoryNaming.ClassifyTopic(leafTopic);
+        string nsPath = Path.Combine(root, ".scrinia", "topics", ns, leafTopic, sanitized + ".nmp2");
+        if (File.Exists(nsPath))
+            return nsPath;
+
+        return null;
+    }
+
+    /// <summary>
     /// Finds the artifact file path for a subject within a scope.
-    /// Returns the canonical path (may or may not exist on disk).
+    /// Falls back to legacy (flat) topic directory when the namespaced path
+    /// doesn't have the file, ensuring backward-compatible reads.
     /// </summary>
     public static string FindArtifactPath(string subject, string normalizedScope)
     {
-        return ArtifactPath(subject, normalizedScope);
+        string primary = ArtifactPath(subject, normalizedScope);
+        if (File.Exists(primary))
+            return primary;
+
+        // Try legacy flat directory fallback (includes v2→v1 via ResolveLegacyFallbackDir)
+        string? legacyDir = ResolveLegacyFallbackDir(normalizedScope);
+        if (legacyDir is not null)
+        {
+            string legacyPath = Path.Combine(legacyDir, SanitizeName(subject) + ".nmp2");
+            if (File.Exists(legacyPath))
+                return legacyPath;
+        }
+
+        // v2 path scope → v1 legacy file fallback via PathRouter
+        string? v2Legacy = ResolveV2LegacyFilePath(subject, normalizedScope);
+        if (v2Legacy is not null)
+            return v2Legacy;
+
+        // Return primary (canonical) even if it doesn't exist — callers check File.Exists
+        return primary;
     }
 
     /// <summary>
     /// Formats a qualified name from scope and subject.
-    /// local → subject, local-topic:t → t:subject
+    /// local → subject, local-topic:t → t:subject,
+    /// v2 scopes (e.g. "local-topic:goal/G-5/research") → "/goal/G-5/research/subject"
     /// </summary>
     public static string FormatQualifiedName(string scope, string subject)
     {
         if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
-            return $"{scope["local-topic:".Length..]}:{subject}";
+        {
+            string topicPart = scope["local-topic:".Length..];
+
+            // v2 path scope → reconstruct as /path syntax
+            if (IsV2PathScope(topicPart))
+                return $"/{topicPart}/{subject}";
+
+            // v1 → strip namespace prefix and use topic:subject
+            string stripped = MemoryNaming.StripNamespacePrefix(topicPart);
+            return $"{stripped}:{subject}";
+        }
         return subject;
     }
 

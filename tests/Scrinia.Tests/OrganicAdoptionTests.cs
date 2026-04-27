@@ -37,13 +37,13 @@ public sealed class OrganicAdoptionTests : IDisposable
 
     private async Task InitProject()
     {
-        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API\n- Create the UI", CancellationToken.None);
     }
 
     private async Task InitProjectWithRequirements()
     {
         await InitProject();
-        await _tools.PlanRequirements("## v1 Requirements\n- REQ-01: Core feature", CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1 Requirements\n- REQ-01: Core feature", CancellationToken.None);
     }
 
     private static string SimpleTasks =>
@@ -78,11 +78,14 @@ public sealed class OrganicAdoptionTests : IDisposable
         await InitProject();
 
         // Act
-        string response = await _tools.ContextResume(CancellationToken.None);
+        string response = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — hint about unused concern tracking must appear
-        (response.Contains("hint", StringComparison.OrdinalIgnoreCase) ||
-         response.Contains("concern", StringComparison.OrdinalIgnoreCase))
+        var r = ResponseParser.Parse(response);
+        r.Status.Should().Be("success", "context_resume should succeed");
+        string fullText = (r.Content ?? "") + " " + string.Join(" ", r.ActionNeeded) + " " + string.Join(" ", r.Info);
+        (fullText.Contains("hint", StringComparison.OrdinalIgnoreCase) ||
+         fullText.Contains("concern", StringComparison.OrdinalIgnoreCase))
             .Should().BeTrue(
                 "context_resume should surface a hint about unused concern tracking when concern_add has never been called");
     }
@@ -94,12 +97,15 @@ public sealed class OrganicAdoptionTests : IDisposable
         await InitProject();
 
         // Act
-        string response = await _tools.ContextResume(CancellationToken.None);
+        string response = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — hint about persisting knowledge must appear
-        (response.Contains("knowledge", StringComparison.OrdinalIgnoreCase) ||
-         response.Contains("store", StringComparison.OrdinalIgnoreCase) ||
-         response.Contains("topic", StringComparison.OrdinalIgnoreCase))
+        var r = ResponseParser.Parse(response);
+        r.Status.Should().Be("success", "context_resume should succeed");
+        string fullText = (r.Content ?? "") + " " + string.Join(" ", r.ActionNeeded) + " " + string.Join(" ", r.Info);
+        (fullText.Contains("knowledge", StringComparison.OrdinalIgnoreCase) ||
+         fullText.Contains("store", StringComparison.OrdinalIgnoreCase) ||
+         fullText.Contains("topic", StringComparison.OrdinalIgnoreCase))
             .Should().BeTrue(
                 "context_resume should surface a hint about persisting domain knowledge");
     }
@@ -109,13 +115,16 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         // Arrange — init project and add a concern
         await InitProject();
-        await _tools.ConcernAdd("Test risk", "low", "01", id: "test-risk", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Test risk", "low", "01", id: "test-risk", CancellationToken.None);
 
         // Act
-        string response = await _tools.ContextResume(CancellationToken.None);
+        string response = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — unused-concern hint text must NOT appear
-        response.Should().NotContain(
+        var r = ResponseParser.Parse(response);
+        r.Status.Should().Be("success", "context_resume should succeed");
+        string fullText = (r.Content ?? "") + " " + string.Join(" ", r.ActionNeeded) + " " + string.Join(" ", r.Info);
+        fullText.Should().NotContain(
             "concern tracking is available",
             "context_resume should NOT show an unused concern hint when concerns have been logged");
     }
@@ -130,11 +139,14 @@ public sealed class OrganicAdoptionTests : IDisposable
         await StorePatternsMemory();
 
         // Act
-        string response = await _tools.PlanTasks("01", SimpleTasks, CancellationToken.None);
+        string response = await ScriniaProjectTools.PlanTasks("01", SimpleTasks, CancellationToken.None);
 
         // Assert — response must contain Pattern or Learn substring
-        (response.Contains("Pattern", StringComparison.OrdinalIgnoreCase) ||
-         response.Contains("Learn", StringComparison.OrdinalIgnoreCase))
+        var r = ResponseParser.Parse(response);
+        r.Status.Should().Be("success", "plan_tasks should succeed");
+        string fullText = (r.Content ?? "") + " " + string.Join(" ", r.ActionNeeded) + " " + string.Join(" ", r.Info);
+        (fullText.Contains("Pattern", StringComparison.OrdinalIgnoreCase) ||
+         fullText.Contains("Learn", StringComparison.OrdinalIgnoreCase))
             .Should().BeTrue(
                 "plan_tasks should surface learn:patterns content in its response when patterns exist");
     }
@@ -146,12 +158,12 @@ public sealed class OrganicAdoptionTests : IDisposable
         await InitProjectWithRequirements();
 
         // Act
-        string response = await _tools.PlanTasks("01", SimpleTasks, CancellationToken.None);
+        string response = await ScriniaProjectTools.PlanTasks("01", SimpleTasks, CancellationToken.None);
 
         // Assert — must NOT return error or crash
-        response.Should().NotStartWith("Error:",
+        var r = ResponseParser.Parse(response);
+        r.Status.Should().Be("success",
             "plan_tasks should not error when learn:patterns does not exist");
-        response.Should().NotBeNullOrWhiteSpace("plan_tasks should always return a response");
     }
 
     // ── ADOPT-01: guide() text covers v2.0 tools and namespaces ──────────────
@@ -162,9 +174,11 @@ public sealed class OrganicAdoptionTests : IDisposable
         // Arrange — guide() has no store dependency
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        // Assert — research tools are now memory('store') based
-        guide.Should().Contain("memory('store')",
-            "guide() should mention memory('store') for persisting research findings");
+        // Assert — guide mentions memory('remember' for storing knowledge
+        var r = ResponseParser.Parse(guide);
+        r.Status.Should().Be("success", "guide() should succeed");
+        r.Content.Should().Contain("memory('remember'",
+            "guide() should mention memory('remember' for persisting research findings");
     }
 
     [Fact]
@@ -172,11 +186,13 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("concern('add')",
-            "guide() should mention the concern('add') tool");
-        guide.Should().Contain("tracked risks",
+        var r = ResponseParser.Parse(guide);
+        r.Status.Should().Be("success", "guide() should succeed");
+        r.Content.Should().Contain("/concern/...",
+            "guide() should mention the /concern/ path in reserved paths");
+        r.Content.Should().Contain("tracked risks",
             "guide() should describe concerns as tracked risks");
-        guide.Should().Contain("concern",
+        r.Content.Should().Contain("concern",
             "guide() should mention the concern topic");
     }
 
@@ -185,10 +201,12 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("memory('store')",
-            "guide() should mention memory('store') for persisting knowledge");
-        guide.Should().Contain("skill('create')",
-            "guide() should mention skill('create') for reusable prompts");
+        var r = ResponseParser.Parse(guide);
+        r.Status.Should().Be("success", "guide() should succeed");
+        r.Content.Should().Contain("memory('remember'",
+            "guide() should mention memory('remember' for persisting knowledge");
+        r.Content.Should().Contain("/skill/",
+            "guide() should mention /skill/ in reserved paths");
     }
 
     [Fact]
@@ -196,10 +214,12 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("skill('create')",
-            "guide() should mention the skill('create') tool");
-        guide.Should().Contain("skill('load')",
-            "guide() should mention the skill('load') tool");
+        var r = ResponseParser.Parse(guide);
+        r.Status.Should().Be("success", "guide() should succeed");
+        r.Content.Should().Contain("/skill/",
+            "guide() should mention /skill/ reserved path for specialist prompts");
+        r.Content.Should().Contain("memory('recall'",
+            "guide() should mention memory('recall' for reading memories");
     }
 
     [Fact]
@@ -207,8 +227,10 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("goal('add')",
-            "guide() should mention the goal('add') tool");
+        var r = ResponseParser.Parse(guide);
+        r.Status.Should().Be("success", "guide() should succeed");
+        r.Content.Should().Contain("/goal/",
+            "guide() should mention /goal/ reserved path");
     }
 
     [Fact]
@@ -216,11 +238,13 @@ public sealed class OrganicAdoptionTests : IDisposable
     {
         string guide = await _memTools.Guide(CancellationToken.None);
 
-        guide.Should().Contain("research:*",
-            "guide() should mention the research:* topic namespace");
-        guide.Should().Contain("concern:*",
-            "guide() should mention the concern:* topic namespace");
-        guide.Should().Contain("skill:*",
-            "guide() should mention the skill:* topic namespace");
+        var r = ResponseParser.Parse(guide);
+        r.Status.Should().Be("success", "guide() should succeed");
+        r.Content.Should().Contain("/research/",
+            "guide() should mention the /research/ path");
+        r.Content.Should().Contain("/concern/",
+            "guide() should mention the /concern/ path");
+        r.Content.Should().Contain("/skill/",
+            "guide() should mention the /skill/ path");
     }
 }

@@ -38,8 +38,8 @@ public sealed class ScriniaArtifactStoreTests
     public void ResolveReadScopes_ExplicitFilter_ParsesCorrectly()
     {
         var scopes = ScriniaArtifactStore.ResolveReadScopes("local,dotnet");
-        scopes.Should().Equal(["local", "local-topic:dotnet"],
-            because: "explicit scope filter must normalize bare topic names to local-topic");
+        scopes.Should().Equal(["local", "local-topic:memory/dotnet"],
+            because: "explicit scope filter must normalize bare topic names to namespace-aware local-topic");
     }
 
     // ── LoadIndex ─────────────────────────────────────────────────────────────
@@ -392,8 +392,8 @@ public sealed class ScriniaArtifactStoreTests
     {
         var result = ScriniaArtifactStore.NormalizeScopeFilters("api");
 
-        result.Should().Equal(["local-topic:api"],
-            because: "bare topic names must resolve to local topic only");
+        result.Should().Equal(["local-topic:memory/api"],
+            because: "bare topic names must resolve to namespace-aware local topic");
     }
 
     // ── v3 fields ────────────────────────────────────────────────────────────
@@ -523,6 +523,80 @@ public sealed class ScriniaArtifactStoreTests
         list[0].Entry.Keywords.Should().Equal("auth");
         list[0].Entry.TermFrequencies.Should().ContainKey("auth");
         list[0].Entry.UpdatedAt.Should().NotBeNull();
+    }
+
+    // ── Legacy entry preservation in index cache ──────────────────────────
+
+    [Fact]
+    public void ScriniaArtifactStore_LoadIndex_MergesLegacyEntries()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // Create a legacy entry by writing a .meta.json directly to the flat path
+        string legacyDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "concern");
+        Directory.CreateDirectory(legacyDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-concern",
+          "uri": "file:///tmp/legacy-concern.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "Legacy concern entry"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-concern.meta.json"), legacyMeta);
+
+        // Create a different entry in the namespaced path
+        string namespacedDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "entity", "concern");
+        Directory.CreateDirectory(namespacedDir);
+        string namespacedMeta = """
+        {
+          "name": "namespaced-concern",
+          "uri": "file:///tmp/namespaced-concern.nmp2",
+          "originalBytes": 200,
+          "chunkCount": 1,
+          "createdAt": "2026-02-01T00:00:00+00:00",
+          "description": "Namespaced concern entry"
+        }
+        """;
+        File.WriteAllText(Path.Combine(namespacedDir, "namespaced-concern.meta.json"), namespacedMeta);
+
+        // Also write a collision entry in both locations
+        string legacyCollision = """
+        {
+          "name": "shared-concern",
+          "uri": "file:///tmp/shared-concern.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "Legacy version"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "shared-concern.meta.json"), legacyCollision);
+
+        string namespacedCollision = """
+        {
+          "name": "shared-concern",
+          "uri": "file:///tmp/shared-concern.nmp2",
+          "originalBytes": 300,
+          "chunkCount": 2,
+          "createdAt": "2026-03-01T00:00:00+00:00",
+          "description": "Namespaced version"
+        }
+        """;
+        File.WriteAllText(Path.Combine(namespacedDir, "shared-concern.meta.json"), namespacedCollision);
+
+        var entries = ScriniaArtifactStore.LoadIndex("local-topic:entity/concern");
+
+        entries.Should().Contain(e => e.Name == "legacy-concern",
+            because: "legacy-only entries must be merged into the result");
+        entries.Should().Contain(e => e.Name == "namespaced-concern",
+            because: "namespaced-only entries must be present");
+        entries.Should().ContainSingle(e => e.Name == "shared-concern",
+            because: "same-name entries should not be duplicated");
+        entries.First(e => e.Name == "shared-concern").Description.Should().Be("Namespaced version",
+            because: "namespaced entries take precedence over legacy entries");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

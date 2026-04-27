@@ -18,6 +18,8 @@ TestResults/
 *.suo
 .DS_Store
 Thumbs.db
+.vs/
+
 
 # Web UI
 web/node_modules/
@@ -30,4 +32,9 @@ scrinia-test/
 # Downloaded models (runtime, via scri setup)
 /models/
 
+# Local misc files
 .fake
+.env
+
+# Planning Reports
+docs/reports

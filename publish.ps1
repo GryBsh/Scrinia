@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $Rids = if ($Platform) { @($Platform) } else { @('win-x64', 'linux-x64', 'osx-arm64') }
 $Project = 'src/Scrinia/Scrinia.csproj'
+$MergeProject = 'src/Scrinia.Merge/Scrinia.Merge.csproj'
 $VulkanProject = 'src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj'
 # When a single platform is specified, output directly into OutputDir (no RID subdirectory).
 $SinglePlatform = [bool]$Platform
@@ -31,6 +32,14 @@ foreach ($rid in $Rids) {
         --output $ridDir
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid" }
     Write-Host "  -> $ridDir"
+
+    Write-Host "  Publishing scri-merge for $rid ..."
+    dotnet publish $MergeProject `
+        --runtime $rid `
+        --configuration Release `
+        --output $ridDir
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish (scri-merge) failed for $rid" }
+    Write-Host "  -> $ridDir/scri-merge"
 
     if ($WithVulkan) {
         Write-Host "  Publishing Vulkan embeddings plugin for $rid ..."

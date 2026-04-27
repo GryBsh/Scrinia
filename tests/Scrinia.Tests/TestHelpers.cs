@@ -2,6 +2,7 @@ using System.Reflection;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Mcp;
+using YamlDotNet.Serialization;
 
 namespace Scrinia.Tests;
 
@@ -135,5 +136,53 @@ internal static class TestHelpers
             "Fact #000001: The human brain contains approximately 86 billion neurons.\n" +
             "Fact #000002: Light travels at approximately 299,792,458 meters per second.\n" +
             "Fact #000003: DNA is so tightly coiled that if you stretched it out it would be 2 meters long.";
+    }
+}
+
+/// <summary>
+/// Deserializes YAML tool responses (produced by <see cref="McpResponseExtensions.ToYaml"/>)
+/// into an <see cref="McpResponseAssert"/> for easy assertion in tests.
+/// </summary>
+internal static class ResponseParser
+{
+    private static readonly IDeserializer Deserializer =
+        new DeserializerBuilder().Build();
+
+    public static McpResponseAssert Parse(string yamlResponse)
+    {
+        var dict = Deserializer.Deserialize<Dictionary<string, object>>(yamlResponse)
+            ?? throw new InvalidOperationException("YAML deserialized to null");
+        return new McpResponseAssert(dict);
+    }
+}
+
+/// <summary>
+/// Lightweight wrapper over a deserialized MCP YAML response dictionary,
+/// exposing typed accessors for each standard field.
+/// </summary>
+internal sealed class McpResponseAssert
+{
+    private readonly Dictionary<string, object> _data;
+
+    public McpResponseAssert(Dictionary<string, object> data) => _data = data;
+
+    public string Status => GetString("status") ?? "";
+    public string? Action => GetString("action");
+    public string? Path => GetString("path");
+    public string? Instruction => GetString("instruction");
+    public string? Error => GetString("error");
+    public string? Content => GetString("content");
+    public List<string> ActionNeeded => GetList("actionNeeded");
+    public List<string> Info => GetList("info");
+    public List<string> FollowUp => GetList("followUp");
+
+    private string? GetString(string key) =>
+        _data.GetValueOrDefault(key)?.ToString();
+
+    private List<string> GetList(string key)
+    {
+        if (_data.GetValueOrDefault(key) is List<object> list)
+            return list.Select(x => x.ToString()!).ToList();
+        return new List<string>();
     }
 }

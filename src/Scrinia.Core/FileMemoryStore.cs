@@ -15,7 +15,7 @@ namespace Scrinia.Core;
 /// Naming convention:
 ///   "subject"              → local scope:   {workspace}/.scrinia/store/subject.nmp2
 ///   "topic:subject"        → local topic:   {workspace}/.scrinia/topics/topic/subject.nmp2
-///   "~subject"             → ephemeral:     in-memory only (dies with instance)
+///   "/temp/subject"         → ephemeral:     in-memory only (dies with instance)
 /// </summary>
 public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 {
@@ -210,25 +210,55 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Name must not be empty.", nameof(name));
 
+        // v2 path syntax: starts with "/"
+        if (name.StartsWith('/'))
+        {
+            var parsed = PathParser.Parse(name, MemoryNaming.EntityTopics);
+
+            var segments = parsed.Segments;
+            if (segments.Count == 0)
+                throw new ArgumentException("Empty path", nameof(name));
+
+            if (segments.Count == 1)
+                return ("local", SanitizeName(segments[0].Value));
+
+            // Build scope from all but last segment
+            string topicPart = string.Join("/", segments.Take(segments.Count - 1).Select(s => s.Value));
+            string scope = $"local-topic:{topicPart}";
+            string subject = SanitizeName(segments[^1].Value);
+            return (scope, subject);
+        }
+
+        // v1 topic:name syntax (existing logic)
         int colonIdx = name.IndexOf(':');
         if (colonIdx < 0)
             return ("local", SanitizeName(name.Trim()));
 
         string topic = name[..colonIdx].Trim();
-        string subject = name[(colonIdx + 1)..].Trim();
+        string subjectV1 = name[(colonIdx + 1)..].Trim();
 
         if (string.IsNullOrWhiteSpace(topic))
             throw new ArgumentException($"Topic part must not be empty in '{name}'.", nameof(name));
-        if (string.IsNullOrWhiteSpace(subject))
+        if (string.IsNullOrWhiteSpace(subjectV1))
             throw new ArgumentException($"Subject part must not be empty in '{name}'.", nameof(name));
 
-        return ($"local-topic:{SanitizeName(topic)}", SanitizeName(subject));
+        return (MemoryNaming.BuildScopedTopicScope(SanitizeName(topic)), SanitizeName(subjectV1));
     }
 
     public string FormatQualifiedName(string scope, string subject)
     {
         if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
-            return $"{scope["local-topic:".Length..]}:{subject}";
+        {
+            string topicPart = scope["local-topic:".Length..];
+
+            // v2 path scope -> reconstruct as /path syntax
+            if (IsV2PathScope(topicPart))
+                return $"/{topicPart}/{subject}";
+
+            // v1 -> strip namespace prefix and output as path format
+            string stripped = MemoryNaming.StripNamespacePrefix(topicPart);
+            return $"/{stripped}/{subject}";
+        }
         return subject;
     }
 
@@ -306,6 +336,39 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     // ── Paths ────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Determines whether a topic part from a "local-topic:X" scope is a v2 multi-level
+    /// path (routed to .scrinia/memories/) vs a v1 namespace scope (routed to .scrinia/topics/).
+    /// v1 patterns: "agent", "entity/{topic}", "memory/{topic}" (single namespace + single topic).
+    /// v2 patterns: anything with more than 2 segments or a non-namespace first segment with slashes.
+    /// </summary>
+    private static bool IsV2PathScope(string topicPart)
+    {
+        // No slash -> v1 flat topic (e.g. "arch", "patterns")
+        int firstSlash = topicPart.IndexOf('/');
+        if (firstSlash < 0) return false;
+
+        string prefix = topicPart[..firstSlash];
+
+        // "agent" namespace has no sub-slash in v1
+        if (prefix.Equals("agent", StringComparison.OrdinalIgnoreCase))
+        {
+            // agent/X is v1 (shouldn't normally happen since agent is flat), but
+            // agent/X/Y would be v2
+            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
+        }
+
+        // "entity/topic" or "memory/topic" with exactly one slash -> v1
+        if (MemoryNaming.ReservedNamespaceDirs.Contains(prefix))
+        {
+            // If there's another slash beyond "entity/topic", it's v2
+            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
+        }
+
+        // First segment is not a reserved namespace -> v2 (e.g. "goal/G-5/research")
+        return true;
+    }
+
     public string GetStoreDirForScope(string scope)
     {
         if (scope == "local")
@@ -314,6 +377,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
         {
             string topic = scope["local-topic:".Length..];
+
+            // v2 path scope: topic contains "/" that isn't a v1 namespace prefix
+            // (v1 namespaces are "entity/X", "memory/X", "agent" — exactly one slash
+            // with a recognised prefix). Multi-level paths use .scrinia/memories/.
+            if (IsV2PathScope(topic))
+                return Path.Combine(_workspaceRoot, ".scrinia", "memories", topic.Replace('/', Path.DirectorySeparatorChar));
+
             return Path.Combine(_workspaceRoot, ".scrinia", "topics", topic);
         }
 
@@ -329,8 +399,151 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public string ArtifactUri(string name, string scope = "local") =>
         $"file://{ArtifactPath(name, scope)}";
 
-    public string FindArtifactPath(string subject, string normalizedScope) =>
-        ArtifactPath(subject, normalizedScope);
+    public string FindArtifactPath(string subject, string normalizedScope)
+    {
+        string primary = ArtifactPath(subject, normalizedScope);
+        if (File.Exists(primary))
+            return primary;
+
+        // Namespace → flat legacy fallback
+        string? legacyDir = ResolveLegacyFallbackDir(normalizedScope);
+        if (legacyDir is not null)
+        {
+            string legacyPath = Path.Combine(legacyDir, SanitizeName(subject) + ".nmp2");
+            if (File.Exists(legacyPath))
+                return legacyPath;
+        }
+
+        // v2 path scope → v1 legacy file fallback via PathRouter
+        string? v2Legacy = ResolveV2LegacyFilePath(subject, normalizedScope);
+        if (v2Legacy is not null)
+            return v2Legacy;
+
+        return primary;
+    }
+
+    // ── Legacy fallback ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Given a namespaced scope like "local-topic:entity/task", returns the legacy
+    /// flat path (.scrinia/topics/task/) for backward-compatible reads.
+    /// Returns null if the scope is not a namespaced topic scope.
+    /// </summary>
+    private string? ResolveLegacyFallbackDir(string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return null;
+
+        string topicPart = scope["local-topic:".Length..];
+
+        // v2 path scopes get their own fallback chain via ResolveV2LegacyDir
+        if (IsV2PathScope(topicPart))
+            return ResolveV2LegacyDir(scope);
+
+        // Only applies to namespaced scopes (containing a '/')
+        // or the special "agent" scope
+        string legacyTopic;
+        int slashIdx = topicPart.IndexOf('/');
+        if (slashIdx >= 0)
+        {
+            string prefix = topicPart[..slashIdx];
+            if (!MemoryNaming.ReservedNamespaceDirs.Contains(prefix))
+                return null;
+            legacyTopic = topicPart[(slashIdx + 1)..];
+        }
+        else
+        {
+            return null; // not a namespaced scope
+        }
+
+        string legacyDir = Path.Combine(_workspaceRoot, ".scrinia", "topics", legacyTopic);
+        return Directory.Exists(legacyDir) ? legacyDir : null;
+    }
+
+    /// <summary>
+    /// Resolves a v2 path scope to the equivalent v1 legacy directory for fallback reads.
+    /// Uses the leaf segment of the topic path as the v1 topic name and probes
+    /// legacy flat and namespaced locations.
+    /// </summary>
+    private string? ResolveV2LegacyDir(string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return null;
+
+        string topicPart = scope["local-topic:".Length..];
+        if (!IsV2PathScope(topicPart))
+            return null;
+
+        // The leaf segment of the v2 topic path is the most likely v1 topic name.
+        // e.g. "goal/G-5/research" → leaf = "research"
+        int lastSlash = topicPart.LastIndexOf('/');
+        string leafTopic = lastSlash >= 0 ? topicPart[(lastSlash + 1)..] : topicPart;
+        if (string.IsNullOrEmpty(leafTopic))
+            return null;
+
+        // Check flat legacy location: .scrinia/topics/{leafTopic}/
+        string flatDir = Path.Combine(_workspaceRoot, ".scrinia", "topics", leafTopic);
+        if (Directory.Exists(flatDir))
+            return flatDir;
+
+        // Check namespaced legacy locations based on topic classification
+        string ns = MemoryNaming.ClassifyTopic(leafTopic);
+        string nsDir = Path.Combine(_workspaceRoot, ".scrinia", "topics", ns, leafTopic);
+        if (Directory.Exists(nsDir))
+            return nsDir;
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves a v2 path scope + subject to the equivalent v1 legacy file path.
+    /// Builds a synthetic <see cref="ParsedPath"/> and delegates to
+    /// <see cref="PathRouter.ToLegacyPath"/>, which probes the filesystem.
+    /// </summary>
+    private string? ResolveV2LegacyFilePath(string subject, string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return null;
+
+        string topicPart = scope["local-topic:".Length..];
+        if (!IsV2PathScope(topicPart))
+            return null;
+
+        // Build a full v2 path from scope + subject and let PathRouter find legacy
+        string fullPath = "/" + topicPart + "/" + subject;
+        try
+        {
+            var parsed = PathParser.Parse(fullPath, MemoryNaming.EntityTopics);
+            string? legacyPath = PathRouter.ToLegacyPath(parsed, _workspaceRoot);
+            if (legacyPath is not null && File.Exists(legacyPath))
+                return legacyPath;
+        }
+        catch (ArgumentException)
+        {
+            // Path parsing can fail for malformed scope strings — not a fatal error
+        }
+
+        // Fallback: try the leaf topic segment as a v1 flat topic
+        int lastSlash = topicPart.LastIndexOf('/');
+        string leafTopic = lastSlash >= 0 ? topicPart[(lastSlash + 1)..] : topicPart;
+        if (string.IsNullOrEmpty(leafTopic))
+            return null;
+
+        string sanitized = SanitizeName(subject);
+
+        // Flat legacy: .scrinia/topics/{leafTopic}/{subject}.nmp2
+        string flatPath = Path.Combine(_workspaceRoot, ".scrinia", "topics", leafTopic, sanitized + ".nmp2");
+        if (File.Exists(flatPath))
+            return flatPath;
+
+        // Namespaced legacy: .scrinia/topics/{ns}/{leafTopic}/{subject}.nmp2
+        string ns = MemoryNaming.ClassifyTopic(leafTopic);
+        string nsPath = Path.Combine(_workspaceRoot, ".scrinia", "topics", ns, leafTopic, sanitized + ".nmp2");
+        if (File.Exists(nsPath))
+            return nsPath;
+
+        return null;
+    }
 
     // ── Scope helpers ────────────────────────────────────────────────────────
 
@@ -345,13 +558,87 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase)) return [];
         if (s.StartsWith("local-topic:", StringComparison.OrdinalIgnoreCase)) return [s];
 
-        return [$"local-topic:{SanitizeName(s)}"];
+        // Path prefix query: "/goal/G-5/" → find all scopes under that path tree
+        if (s.StartsWith('/'))
+            return ResolvePathPrefix(s);
+
+        return [MemoryNaming.BuildScopedTopicScope(SanitizeName(s))];
+    }
+
+    /// <summary>
+    /// Resolves a path prefix (e.g. "/goal/G-5/") to all discovered scopes whose
+    /// topic part starts with the prefix. Enables subtree queries for hierarchical v2 paths
+    /// as well as v1 scopes whose stripped topic name matches.
+    /// </summary>
+    internal IReadOnlyList<string> ResolvePathPrefix(string pathPrefix)
+    {
+        string prefix = pathPrefix.TrimStart('/').TrimEnd('/');
+        if (string.IsNullOrEmpty(prefix))
+        {
+            // "/" alone means everything — equivalent to "all"
+            var all = new List<string> { "local" };
+            all.AddRange(DiscoverTopics());
+            return all;
+        }
+
+        var matching = new List<string>();
+        foreach (string scope in DiscoverTopics())
+        {
+            if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+                continue;
+
+            string topicPart = scope["local-topic:".Length..];
+
+            // Direct match: the topic part starts with the prefix at a path boundary
+            // e.g. prefix="goal/G-5" matches "goal/G-5", "goal/G-5/research" but NOT "goal/G-50"
+            if (MatchesPathPrefix(topicPart, prefix))
+            {
+                matching.Add(scope);
+                continue;
+            }
+
+            // Also match against the stripped (namespace-removed) topic part
+            // so "/arch" matches "local-topic:memory/arch" and "local-topic:arch"
+            string stripped = MemoryNaming.StripNamespacePrefix(topicPart);
+            if (!stripped.Equals(topicPart, StringComparison.Ordinal)
+                && MatchesPathPrefix(stripped, prefix))
+            {
+                matching.Add(scope);
+            }
+        }
+
+        return matching;
+    }
+
+    /// <summary>
+    /// Returns true if <paramref name="topicPart"/> equals or is a child path of <paramref name="prefix"/>.
+    /// Matches at path separator boundaries to avoid "goal/G-5" matching "goal/G-50".
+    /// </summary>
+    private static bool MatchesPathPrefix(string topicPart, string prefix)
+    {
+        if (topicPart.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (topicPart.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            && topicPart.Length > prefix.Length
+            && topicPart[prefix.Length] == '/')
+            return true;
+
+        return false;
     }
 
     public IReadOnlyList<string> ResolveReadScopes(string? scopes = null)
     {
         if (!string.IsNullOrWhiteSpace(scopes))
         {
+            // "all" (case-insensitive) returns every scope including entity-classified ones
+            if (scopes.Trim().Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                var all = new List<string> { "local" };
+                all.AddRange(DiscoverTopics());
+                return all.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            }
+
             return scopes
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .SelectMany(NormalizeScopeFilters)
@@ -359,9 +646,38 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 .ToArray();
         }
 
+        // Default (null): exclude entity-classified scopes so searches focus on user content
         var ordered = new List<string> { "local" };
-        ordered.AddRange(DiscoverTopics());
+        foreach (var topic in DiscoverTopics())
+        {
+            if (IsEntityScope(topic))
+                continue;
+            ordered.Add(topic);
+        }
         return ordered.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    /// <summary>
+    /// Returns true if the scope is classified as an entity scope — either
+    /// namespaced ("local-topic:entity/*") or legacy flat ("local-topic:{topic}"
+    /// where topic is in <see cref="MemoryNaming.EntityTopics"/>).
+    /// </summary>
+    private static bool IsEntityScope(string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            return false;
+
+        string topicPart = scope["local-topic:".Length..];
+
+        // Namespaced: "entity/task", "entity/concern", etc.
+        if (topicPart.StartsWith("entity/", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Legacy flat: "task", "concern", etc. (no slash → bare topic name)
+        if (!topicPart.Contains('/') && MemoryNaming.EntityTopics.Contains(topicPart))
+            return true;
+
+        return false;
     }
 
     // ── CRUD ─────────────────────────────────────────────────────────────────
@@ -402,6 +718,26 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             entries = LoadEntriesFromLegacyIndex(storeDir);
             if (entries.Count > 0)
                 WriteSidecars(entries, storeDir);
+        }
+
+        // Merge entries from legacy flat directory (new-path entries take precedence)
+        string? legacyDir = ResolveLegacyFallbackDir(scope);
+        if (legacyDir is not null)
+        {
+            var legacyEntries = LoadEntriesFromSidecars(legacyDir);
+            if (legacyEntries.Count == 0)
+                legacyEntries = LoadEntriesFromLegacyIndex(legacyDir);
+
+            if (legacyEntries.Count > 0)
+            {
+                var existingNames = new HashSet<string>(
+                    entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+                foreach (var le in legacyEntries)
+                {
+                    if (!existingNames.Contains(le.Name))
+                        entries.Add(le);
+                }
+            }
         }
 
         if (entries.Count > 0)
@@ -568,9 +904,20 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // Write the sidecar for this single entry
             WriteSidecar(entry, storeDir);
 
-            // Invalidate cache and rebuild from sidecars
+            // Invalidate cache and rebuild from sidecars (including legacy entries)
             _indexCache.TryRemove(scope, out _);
             var entries = LoadEntriesFromSidecars(storeDir);
+            string? legacyDir = ResolveLegacyFallbackDir(scope);
+            if (legacyDir is not null && Directory.Exists(legacyDir))
+            {
+                var legacyEntries = LoadEntriesFromSidecars(legacyDir);
+                var namespacedNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+                foreach (var le in legacyEntries)
+                {
+                    if (!namespacedNames.Contains(le.Name))
+                        entries.Add(le);
+                }
+            }
             _indexCache[scope] = new CachedIndex(entries);
 
             // Invalidate topic discovery cache when saving a topic scope
@@ -599,9 +946,20 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // Delete the sidecar file
             File.Delete(metaPath);
 
-            // Invalidate cache and rebuild from remaining sidecars
+            // Invalidate cache and rebuild from remaining sidecars (including legacy entries)
             _indexCache.TryRemove(scope, out _);
             var entries = LoadEntriesFromSidecars(storeDir);
+            string? legacyDirR = ResolveLegacyFallbackDir(scope);
+            if (legacyDirR is not null && Directory.Exists(legacyDirR))
+            {
+                var legacyEntries = LoadEntriesFromSidecars(legacyDirR);
+                var namespacedNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+                foreach (var le in legacyEntries)
+                {
+                    if (!namespacedNames.Contains(le.Name))
+                        entries.Add(le);
+                }
+            }
             _indexCache[scope] = new CachedIndex(entries);
             return true;
         }
@@ -631,6 +989,26 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 WriteSidecars(entries, storeDir);
         }
 
+        // Merge entries from legacy flat directory (new-path entries take precedence)
+        string? legacyDir = ResolveLegacyFallbackDir(scope);
+        if (legacyDir is not null)
+        {
+            var legacyEntries = LoadEntriesFromSidecars(legacyDir);
+            if (legacyEntries.Count == 0)
+                legacyEntries = LoadEntriesFromLegacyIndex(legacyDir);
+
+            if (legacyEntries.Count > 0)
+            {
+                var existingNames = new HashSet<string>(
+                    entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+                foreach (var le in legacyEntries)
+                {
+                    if (!existingNames.Contains(le.Name))
+                        entries.Add(le);
+                }
+            }
+        }
+
         return entries;
     }
 
@@ -647,6 +1025,27 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     public async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
     {
         string path = ArtifactPath(subject, scope);
+
+        // Fall back to legacy flat path if the namespaced path doesn't have the file
+        if (!File.Exists(path))
+        {
+            string? legacyDir = ResolveLegacyFallbackDir(scope);
+            if (legacyDir is not null)
+            {
+                string legacyPath = Path.Combine(legacyDir, SanitizeName(subject) + ".nmp2");
+                if (File.Exists(legacyPath))
+                    path = legacyPath;
+            }
+        }
+
+        // v2 path scope → v1 legacy file fallback via PathRouter
+        if (!File.Exists(path))
+        {
+            string? v2Legacy = ResolveV2LegacyFilePath(subject, scope);
+            if (v2Legacy is not null)
+                path = v2Legacy;
+        }
+
         if (!File.Exists(path))
             throw new FileNotFoundException($"Artifact not found: {subject} in scope {scope}", path);
 
@@ -1014,21 +1413,84 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (_cachedTopics is not null && (DateTime.UtcNow - _topicsCacheTime) < TopicsCacheTtl)
             return _cachedTopics;
 
+        var results = new List<string>();
+        var namespacedChildren = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // ── v1: scan .scrinia/topics/ ────────────────────────────────────────
         string localTopicsRoot = Path.Combine(_workspaceRoot, ".scrinia", "topics");
-        if (!Directory.Exists(localTopicsRoot))
+        if (Directory.Exists(localTopicsRoot))
         {
-            _cachedTopics = [];
-            _topicsCacheTime = DateTime.UtcNow;
-            return [];
+            // Scan namespace subdirectories (entity/, memory/, agent/)
+            foreach (string nsDir in Directory.GetDirectories(localTopicsRoot))
+            {
+                string nsDirName = Path.GetFileName(nsDir);
+                if (!MemoryNaming.ReservedNamespaceDirs.Contains(nsDirName))
+                    continue;
+
+                if (nsDirName.Equals("agent", StringComparison.OrdinalIgnoreCase))
+                {
+                    // agent is a single scope (no children)
+                    results.Add("local-topic:agent");
+                }
+                else
+                {
+                    // entity/ and memory/ contain child topic dirs
+                    foreach (string childDir in Directory.GetDirectories(nsDir))
+                    {
+                        string childName = Path.GetFileName(childDir);
+                        results.Add($"local-topic:{nsDirName}/{childName}");
+                        namespacedChildren.Add(childName);
+                    }
+                }
+            }
+
+            // Legacy flat dirs: include those NOT in ReservedNamespaceDirs AND not shadowed by namespace children
+            foreach (string flatDir in Directory.GetDirectories(localTopicsRoot))
+            {
+                string dirName = Path.GetFileName(flatDir);
+                if (MemoryNaming.ReservedNamespaceDirs.Contains(dirName))
+                    continue; // skip namespace dirs themselves
+                if (namespacedChildren.Contains(dirName))
+                    continue; // skip legacy dirs shadowed by namespaced entries
+                results.Add($"local-topic:{dirName}");
+            }
         }
 
-        var topics = Directory.GetDirectories(localTopicsRoot)
-            .Select(d => $"local-topic:{Path.GetFileName(d)}")
-            .ToArray();
+        // ── v2: scan .scrinia/memories/ for hierarchical paths ───────────────
+        string memoriesRoot = Path.Combine(_workspaceRoot, ".scrinia", "memories");
+        if (Directory.Exists(memoriesRoot))
+            DiscoverMemoriesRecursive(memoriesRoot, "", results);
 
-        _cachedTopics = topics;
+        _cachedTopics = results.ToArray();
         _topicsCacheTime = DateTime.UtcNow;
-        return topics;
+        return _cachedTopics;
+    }
+
+    /// <summary>
+    /// Recursively scans the v2 memories directory tree and adds leaf directories
+    /// (those containing .nmp2 or .meta.json files) as v2 scopes.
+    /// </summary>
+    private static void DiscoverMemoriesRecursive(string dir, string relativePath, List<string> results)
+    {
+        // Check if this directory itself is a leaf (contains artifact files)
+        bool hasArtifacts = Directory.EnumerateFiles(dir, "*.nmp2").Any()
+                         || Directory.EnumerateFiles(dir, "*.meta.json").Any();
+
+        if (hasArtifacts && !string.IsNullOrEmpty(relativePath))
+            results.Add($"local-topic:{relativePath}");
+
+        // Recurse into subdirectories
+        foreach (string subDir in Directory.GetDirectories(dir))
+        {
+            string subName = Path.GetFileName(subDir);
+            if (subName.Equals("versions", StringComparison.OrdinalIgnoreCase))
+                continue; // skip version archive dirs
+
+            string childPath = string.IsNullOrEmpty(relativePath)
+                ? subName
+                : $"{relativePath}/{subName}";
+            DiscoverMemoriesRecursive(subDir, childPath, results);
+        }
     }
 
     public List<TopicInfo> GatherTopicInfos(string? scopes = null)
@@ -1039,7 +1501,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (!scope.StartsWith("local-topic:", StringComparison.Ordinal))
                 continue;
 
-            string topicName = scope["local-topic:".Length..];
+            string rawTopicPart = scope["local-topic:".Length..];
+            string topicName = MemoryNaming.StripNamespacePrefix(rawTopicPart);
             var entries = LoadIndex(scope);
             if (entries.Count == 0) continue;
             topics.Add(new TopicInfo(

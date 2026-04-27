@@ -35,7 +35,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     public void ParseQualifiedName_topic_scope()
     {
         var (scope, subject) = _store.ParseQualifiedName("api:auth-flow");
-        scope.Should().Be("local-topic:api");
+        scope.Should().Be("local-topic:memory/api");
         subject.Should().Be("auth-flow");
     }
 
@@ -43,7 +43,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     public void FormatQualifiedName_roundtrips()
     {
         _store.FormatQualifiedName("local", "notes").Should().Be("notes");
-        _store.FormatQualifiedName("local-topic:api", "auth").Should().Be("api:auth");
+        _store.FormatQualifiedName("local-topic:memory/api", "auth").Should().Be("/api/auth");
     }
 
     [Fact]
@@ -351,5 +351,344 @@ public sealed class FileMemoryStoreTests : IDisposable
         // Read should now throw
         var act = () => _store.ReadArtifactAsync("del-cache", "local");
         await act.Should().ThrowAsync<FileNotFoundException>();
+    }
+
+    // ── Namespace separation ─────────────────────────────────────────────────
+
+    [Fact]
+    public void ParseQualifiedName_EntityTopic_RoutesToEntityNamespace()
+    {
+        var (scope, subject) = _store.ParseQualifiedName("task:my-task");
+        scope.Should().Be("local-topic:entity/task");
+        subject.Should().Be("my-task");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_AgentTopic_RoutesToAgentScope()
+    {
+        var (scope, subject) = _store.ParseQualifiedName("agent:profile");
+        scope.Should().Be("local-topic:agent");
+        subject.Should().Be("profile");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_UserTopic_RoutesToMemoryNamespace()
+    {
+        var (scope, subject) = _store.ParseQualifiedName("dotnet:di-patterns");
+        scope.Should().Be("local-topic:memory/dotnet");
+        subject.Should().Be("di-patterns");
+    }
+
+    [Fact]
+    public void FormatQualifiedName_EntityNamespaced_StripsPrefix()
+    {
+        _store.FormatQualifiedName("local-topic:entity/task", "my-task").Should().Be("/task/my-task");
+    }
+
+    [Fact]
+    public void FormatQualifiedName_MemoryNamespaced_StripsPrefix()
+    {
+        _store.FormatQualifiedName("local-topic:memory/api", "auth").Should().Be("/api/auth");
+    }
+
+    [Fact]
+    public void FormatQualifiedName_AgentScope_StripsPrefix()
+    {
+        _store.FormatQualifiedName("local-topic:agent", "profile").Should().Be("/agent/profile");
+    }
+
+    [Fact]
+    public void DiscoverTopics_NamespacedDirs_FoundWithNamespace()
+    {
+        // Create namespaced directories: entity/task, memory/api
+        string entityTaskDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "task");
+        string memoryApiDir = Path.Combine(_tempDir, ".scrinia", "topics", "memory", "api");
+        Directory.CreateDirectory(entityTaskDir);
+        Directory.CreateDirectory(memoryApiDir);
+
+        var topics = _store.DiscoverTopics();
+        topics.Should().Contain("local-topic:entity/task");
+        topics.Should().Contain("local-topic:memory/api");
+    }
+
+    [Fact]
+    public void DiscoverTopics_AgentDir_ReturnsAgentScope()
+    {
+        string agentDir = Path.Combine(_tempDir, ".scrinia", "topics", "agent");
+        Directory.CreateDirectory(agentDir);
+
+        var topics = _store.DiscoverTopics();
+        topics.Should().Contain("local-topic:agent",
+            because: "agent is a single scope without child directories");
+    }
+
+    [Fact]
+    public void DiscoverTopics_LegacyFlatDir_NotShadowed_StillDiscovered()
+    {
+        // A legacy flat dir that has no namespaced counterpart should still appear
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "custom-notes");
+        Directory.CreateDirectory(legacyDir);
+
+        var topics = _store.DiscoverTopics();
+        topics.Should().Contain("local-topic:custom-notes",
+            because: "legacy flat dirs not shadowed by namespace entries should still be discovered");
+    }
+
+    [Fact]
+    public void DiscoverTopics_LegacyFlatDir_ShadowedByNamespaced_Excluded()
+    {
+        // Create both a namespaced and a legacy flat dir for "api"
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "memory", "api");
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "api");
+        Directory.CreateDirectory(namespacedDir);
+        Directory.CreateDirectory(legacyDir);
+
+        var topics = _store.DiscoverTopics();
+        topics.Should().Contain("local-topic:memory/api",
+            because: "namespaced entry should be discovered");
+        topics.Should().NotContain("local-topic:api",
+            because: "legacy flat dir shadowed by namespaced entry should be excluded");
+    }
+
+    // ── Legacy fallback: reads from legacy flat paths ────────────────────────
+
+    [Fact]
+    public async Task ReadArtifact_FallsBackToLegacyPath()
+    {
+        // Write an artifact to the legacy flat path: topics/task/my-task.nmp2
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "task");
+        Directory.CreateDirectory(legacyDir);
+        string artifact = Nmp2ChunkedEncoder.Encode("Legacy task content");
+        await File.WriteAllTextAsync(Path.Combine(legacyDir, "my-task.nmp2"), artifact);
+
+        // Read via the namespaced scope — should fall back to legacy path
+        string read = await _store.ReadArtifactAsync("my-task", "local-topic:entity/task");
+        read.Should().Be(artifact,
+            because: "ReadArtifactAsync should fall back to legacy flat path when the namespaced path does not exist");
+    }
+
+    [Fact]
+    public void LoadIndex_MergesEntriesFromLegacyFlatDir()
+    {
+        // Create a legacy flat dir with a sidecar meta file
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "task");
+        Directory.CreateDirectory(legacyDir);
+
+        // Write a sidecar meta.json in the legacy dir
+        string metaJson = """
+        {
+          "name": "legacy-entry",
+          "uri": "file:///tmp/legacy-entry.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-entry.meta.json"), metaJson);
+
+        // Also ensure the namespaced dir exists (but is empty)
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "task");
+        Directory.CreateDirectory(namespacedDir);
+
+        var entries = _store.LoadIndex("local-topic:entity/task");
+        entries.Should().Contain(e => e.Name == "legacy-entry",
+            because: "entries from the legacy flat dir should be merged into the namespaced scope");
+    }
+
+    [Fact]
+    public void LoadIndex_NamespacedEntries_TakePrecedenceOverLegacy()
+    {
+        // Create the legacy flat dir with a sidecar
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "task");
+        Directory.CreateDirectory(legacyDir);
+        string legacyMeta = """
+        {
+          "name": "shared-entry",
+          "uri": "file:///tmp/shared-entry.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "Legacy version"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "shared-entry.meta.json"), legacyMeta);
+
+        // Create the namespaced dir with the same entry name
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "task");
+        Directory.CreateDirectory(namespacedDir);
+        string namespacedMeta = """
+        {
+          "name": "shared-entry",
+          "uri": "file:///tmp/shared-entry.nmp2",
+          "originalBytes": 200,
+          "chunkCount": 2,
+          "createdAt": "2026-02-01T00:00:00+00:00",
+          "description": "Namespaced version"
+        }
+        """;
+        File.WriteAllText(Path.Combine(namespacedDir, "shared-entry.meta.json"), namespacedMeta);
+
+        var entries = _store.LoadIndex("local-topic:entity/task");
+        entries.Should().ContainSingle(e => e.Name == "shared-entry",
+            because: "same-name entries should not be duplicated");
+        entries.First(e => e.Name == "shared-entry").Description.Should().Be("Namespaced version",
+            because: "namespaced entries take precedence over legacy entries");
+    }
+
+    // ── Legacy entry preservation in index cache ────────────────────────────
+
+    [Fact]
+    public void Upsert_NamespacedScope_PreservesLegacyEntriesInCache()
+    {
+        // Create a legacy entry by writing a .meta.json directly to the flat path
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "concern");
+        Directory.CreateDirectory(legacyDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-item",
+          "uri": "file:///tmp/legacy-item.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy concern"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-item.meta.json"), legacyMeta);
+
+        // Also create the namespaced directory so the scope resolves
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "concern");
+        Directory.CreateDirectory(namespacedDir);
+
+        // Verify LoadIndex initially returns the legacy entry
+        var before = _store.LoadIndex("local-topic:entity/concern");
+        before.Should().Contain(e => e.Name == "legacy-item",
+            because: "legacy entry should be discovered before any namespaced upsert");
+
+        // Now upsert a NEW entry into the namespaced scope
+        _store.Upsert(
+            new ArtifactEntry("new-namespaced", "", 200, 1, DateTimeOffset.UtcNow, "New entry"),
+            "local-topic:entity/concern");
+
+        // Verify LoadIndex STILL returns the legacy entry alongside the new one
+        var after = _store.LoadIndex("local-topic:entity/concern");
+        after.Should().Contain(e => e.Name == "legacy-item",
+            because: "upserting a new namespaced entry must not evict legacy entries from the cache");
+        after.Should().Contain(e => e.Name == "new-namespaced",
+            because: "the newly upserted entry must also be present");
+    }
+
+    [Fact]
+    public void Remove_NamespacedScope_PreservesLegacyEntriesInCache()
+    {
+        // Create a legacy entry in flat path
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "concern");
+        Directory.CreateDirectory(legacyDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-survivor",
+          "uri": "file:///tmp/legacy-survivor.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "Legacy entry that must survive removal"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-survivor.meta.json"), legacyMeta);
+
+        // Create a namespaced entry via Upsert
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "concern");
+        Directory.CreateDirectory(namespacedDir);
+        _store.Upsert(
+            new ArtifactEntry("removable-entry", "", 200, 1, DateTimeOffset.UtcNow, "Will be removed"),
+            "local-topic:entity/concern");
+
+        // Verify LoadIndex returns both
+        var before = _store.LoadIndex("local-topic:entity/concern");
+        before.Should().Contain(e => e.Name == "legacy-survivor");
+        before.Should().Contain(e => e.Name == "removable-entry");
+
+        // Remove the namespaced entry
+        _store.Remove("removable-entry", "local-topic:entity/concern").Should().BeTrue();
+
+        // Verify LoadIndex STILL returns the legacy entry
+        var after = _store.LoadIndex("local-topic:entity/concern");
+        after.Should().Contain(e => e.Name == "legacy-survivor",
+            because: "removing a namespaced entry must not evict legacy entries from the cache");
+        after.Should().NotContain(e => e.Name == "removable-entry",
+            because: "the removed entry must be gone");
+    }
+
+    [Fact]
+    public void LoadIndex_MergesLegacyAndNamespacedEntries_WithPrecedence()
+    {
+        // Create an entry in the legacy flat path
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "concern");
+        Directory.CreateDirectory(legacyDir);
+        string legacyOnlyMeta = """
+        {
+          "name": "legacy-only",
+          "uri": "file:///tmp/legacy-only.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "Only in legacy"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-only.meta.json"), legacyOnlyMeta);
+
+        // Also write a collision entry in legacy
+        string legacyCollisionMeta = """
+        {
+          "name": "collision",
+          "uri": "file:///tmp/collision.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "Legacy version of collision"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "collision.meta.json"), legacyCollisionMeta);
+
+        // Create a different entry in the namespaced path
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "concern");
+        Directory.CreateDirectory(namespacedDir);
+        string namespacedOnlyMeta = """
+        {
+          "name": "namespaced-only",
+          "uri": "file:///tmp/namespaced-only.nmp2",
+          "originalBytes": 200,
+          "chunkCount": 1,
+          "createdAt": "2026-02-01T00:00:00+00:00",
+          "description": "Only in namespaced"
+        }
+        """;
+        File.WriteAllText(Path.Combine(namespacedDir, "namespaced-only.meta.json"), namespacedOnlyMeta);
+
+        // Write a collision entry in namespaced (same name as legacy)
+        string namespacedCollisionMeta = """
+        {
+          "name": "collision",
+          "uri": "file:///tmp/collision.nmp2",
+          "originalBytes": 300,
+          "chunkCount": 2,
+          "createdAt": "2026-03-01T00:00:00+00:00",
+          "description": "Namespaced version of collision"
+        }
+        """;
+        File.WriteAllText(Path.Combine(namespacedDir, "collision.meta.json"), namespacedCollisionMeta);
+
+        // Call LoadIndex — verify both unique entries returned
+        var entries = _store.LoadIndex("local-topic:entity/concern");
+        entries.Should().Contain(e => e.Name == "legacy-only",
+            because: "legacy-only entries must be merged into the result");
+        entries.Should().Contain(e => e.Name == "namespaced-only",
+            because: "namespaced-only entries must be present");
+
+        // Verify namespaced entry takes precedence when names collide
+        entries.Should().ContainSingle(e => e.Name == "collision",
+            because: "same-name entries should not be duplicated");
+        entries.First(e => e.Name == "collision").Description.Should().Be("Namespaced version of collision",
+            because: "namespaced entries take precedence over legacy entries");
     }
 }

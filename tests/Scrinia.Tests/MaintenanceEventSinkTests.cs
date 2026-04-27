@@ -79,7 +79,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         await _tools.Store(["Content of linked entry."], "test:linked");
 
         // Manually add ref:test:linked keyword on some other entry to simulate an inbound reference
-        await _tools.Store(["Some referencing content."], "test:referrer", keywords: ["ref:test:linked"]);
+        await _tools.Store(["Some referencing content."], "test:referrer", keywords: ["ref:/test/linked"]);
 
         // Act — fire OnStoredAsync for the linked entry
         await _sink.OnStoredAsync(
@@ -211,7 +211,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         entry.Keywords.Should().Contain("orphan", "entry should initially be flagged as orphan");
 
         // Act — create a referrer and fire sink for the orphan again
-        await _tools.Store(["References test:wasorphan here."], "test:referrer2", keywords: ["ref:test:wasorphan"]);
+        await _tools.Store(["References test:wasorphan here."], "test:referrer2", keywords: ["ref:/test/wasorphan"]);
 
         await _sink.OnStoredAsync(
             "test:wasorphan",

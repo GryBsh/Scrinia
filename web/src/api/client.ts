@@ -18,6 +18,12 @@ import type {
   ChatEvent,
   ChatRequest,
   ChatProvidersResponse,
+  WorkflowListResponse,
+  WorkflowContent,
+  GoalListResponse,
+  GoalDetailResponse,
+  TaskListResponse,
+  TaskEvent,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -254,6 +260,88 @@ export async function streamChat(
       const data = line.slice('data: '.length);
       try {
         const event: ChatEvent = JSON.parse(data);
+        onEvent(event);
+      } catch { /* skip malformed lines */ }
+    }
+  }
+}
+
+// ── Workflow dashboard ──────────────────────────────────────────────────────
+
+export function listWorkflows(store: string): Promise<WorkflowListResponse> {
+  return apiFetch<WorkflowListResponse>(`${API_BASE}/stores/${store}/workflows`);
+}
+
+export function getWorkflow(store: string, name: string): Promise<WorkflowContent> {
+  return apiFetch<WorkflowContent>(`${API_BASE}/stores/${store}/workflows/${encodeURIComponent(name)}`);
+}
+
+export async function updateWorkflow(store: string, name: string, yamlContent: string): Promise<void> {
+  await apiFetch(`${API_BASE}/stores/${store}/workflows/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ yamlContent }),
+  });
+}
+
+export function listGoals(store: string): Promise<GoalListResponse> {
+  return apiFetch<GoalListResponse>(`${API_BASE}/stores/${store}/workflows/goals`);
+}
+
+export function getGoalDetail(store: string, goalId: string): Promise<GoalDetailResponse> {
+  return apiFetch<GoalDetailResponse>(`${API_BASE}/stores/${store}/workflows/goals/${encodeURIComponent(goalId)}`);
+}
+
+export function getGoalTasks(store: string, goalId: string): Promise<TaskListResponse> {
+  return apiFetch<TaskListResponse>(`${API_BASE}/stores/${store}/workflows/goals/${encodeURIComponent(goalId)}/tasks`);
+}
+
+export async function streamTaskEvents(
+  store: string,
+  goalId: string,
+  onEvent: (event: TaskEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const response = await fetch(
+    `${API_BASE}/stores/${store}/workflows/goals/${encodeURIComponent(goalId)}/events`,
+    { headers, signal },
+  );
+
+  if (response.status === 401) {
+    clearToken();
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+
+  if (!response.ok) {
+    let msg = `HTTP ${response.status}`;
+    try {
+      const err = await response.json();
+      msg = err.error || msg;
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice('data: '.length);
+      try {
+        const event: TaskEvent = JSON.parse(data);
         onEvent(event);
       } catch { /* skip malformed lines */ }
     }

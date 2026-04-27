@@ -14,8 +14,11 @@ activities:
       ## Agent Specialist Task
 
       ACTIONS:
+      
       1. LOAD skill via memory('recall', { path: '/skill/agent-specialist' })
+
       2. EXECUTE the skill: assess skill fit for this goal
+
       3. STORE assessment with proposed agent assignments
 
       Acceptance criteria:
@@ -48,15 +51,18 @@ activities:
       ## Researcher Task
 
       ACTIONS:
+
       1. LOAD skill via memory('recall', { path: '/skill/researcher' })
+      
       2. EXECUTE the loaded skill's methodology against this goal
+      
       3. STORE findings via memory('remember', { path: '/research/...', content: [...] })
 
       Acceptance criteria:
 
       - Research findings stored as research:* memories
 
-      - Scope and implementation approach documented
+      - Scope and implementation approach documented 
     validation:
       checkType: index-prefix
       target: "research:{goalShort}"
@@ -82,8 +88,11 @@ activities:
       ## Auditor Task
 
       ACTIONS:
+      
       1. LOAD skill via memory('recall', { path: '/skill/auditor' })
+
       2. EXECUTE the loaded skill's methodology: read research findings, identify requirements and risks
+
       3. STORE requirements via memory('remember', { path: '/requirement/...' }) and concerns via memory('remember', { path: '/goal/G-X/concern/...' })
 
       Acceptance criteria:
@@ -116,14 +125,14 @@ activities:
       ## Planner Task
 
       ACTIONS:
+
       1. LOAD skill via memory('recall', { path: '/skill/planner' })
-      2. EXECUTE the loaded skill's methodology: read research findings and requirements, produce task definitions
+      2. EXECUTE the loaded skill's methodology: read research findings and requirements, produce task definitions      
       3. STORE plan by calling task('plan') directly with task definitions
 
       Acceptance criteria:
 
       - task('plan') called with task definitions
-
       - Tasks created with proper dependencies and acceptance criteria
     validation:
       checkType: index-no-gate
@@ -165,16 +174,15 @@ activities:
       ## QA Gate
 
       ACTIONS:
+      
       1. LOAD skill via memory('recall', { path: '/skill/qa' })
-      2. EXECUTE the skill: run full test suite, verify build, check acceptance criteria
+      2. EXECUTE the skill: run full test suite, verify build, check acceptance criteria      
       3. STORE results to qa:latest memory
 
       Acceptance criteria:
 
       - qa:latest memory exists with current test pass/fail counts
-
       - Build passes with 0 errors
-
       - All phase acceptance criteria verified by QA agent
     validation:
       checkType: memory-exists
@@ -196,14 +204,14 @@ activities:
       ## Self-Reflector Gate
 
       ACTIONS:
-      1. LOAD skill via memory('recall', { path: '/skill/self-reflector' })
-      2. EXECUTE the skill: read execution logs and QA findings, compare plan vs reality
+
+      1. LOAD skill via memory('recall', { path: '/skill/self-reflector' })      
+      2. EXECUTE the skill: read execution logs and QA findings, compare plan vs reality      
       3. STORE retrospective and belief updates
 
       Acceptance criteria:
 
       - Retrospective stored as learn:retro-*
-
       - Beliefs updated if applicable
     validation:
       checkType: index-prefix
@@ -226,16 +234,15 @@ activities:
       ## Evolutionary Gate
 
       ACTIONS:
+
       1. LOAD skill via memory('recall', { path: '/skill/evolutionary' })
-      2. EXECUTE the skill: run knowledge base scan, update stale memories, detect skill drift, surface emergent patterns
+      2. EXECUTE the skill: run knowledge base scan, update stale memories, detect skill drift, surface emergent patterns      
       3. STORE session as sessions:evolutionary-gNN
 
       Acceptance criteria:
 
       - Evolutionary scan completed
-
       - Stale memories updated
-
       - Session stored as sessions:evolutionary-gNN
     validation:
       checkType: index-prefix
@@ -258,6 +265,7 @@ activities:
       ## Cartographer Gate
 
       ACTIONS:
+
       1. LOAD skill via memory('recall', { path: '/skill/cartographer' })
       2. EXECUTE the skill: map knowledge connections, link orphans, identify gaps
       3. STORE report as cartography:YYYY-MM-DD
@@ -265,9 +273,7 @@ activities:
       Acceptance criteria:
 
       - Cartography scan completed
-
       - New links created for orphaned memories
-
       - Report stored as cartography:YYYY-MM-DD
     validation:
       checkType: index-prefix
@@ -297,7 +303,6 @@ activities:
       Acceptance criteria:
 
       - March report written to docs/reports/
-
       - Session log updated
     validation:
       checkType: filesystem-glob

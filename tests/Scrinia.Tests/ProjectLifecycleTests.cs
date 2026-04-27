@@ -29,7 +29,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_StoresProjectContext()
     {
         // Act
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert — project:context memory must exist
         var store = MemoryStoreContext.Current!;
@@ -43,10 +43,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_ResultContainsProjectContextReference()
     {
         // Act
-        string result = await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().Contain("project:context",
+        ResponseParser.Parse(result).Content.Should().Contain("project:context",
             "project_init result should reference the stored project:context memory");
     }
 
@@ -54,7 +54,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_CreatesProjectState()
     {
         // Act
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert — project:state memory must exist with expected fields
         var store = MemoryStoreContext.Current!;
@@ -67,16 +67,17 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_ReturnsProjectId()
     {
         // Act
-        string result = await _tools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", cancellationToken: CancellationToken.None);
 
         // Assert — result contains workspace-derived project ID (sanitized directory name)
         string expectedId = Path.GetFileName(_scope.WorkspaceDir)
             .Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
         // The result must contain at least the workspace dir basename or sanitized form
         string workspaceName = Path.GetFileName(_scope.WorkspaceDir);
-        result.Should().NotBeNullOrEmpty("result should be a non-empty string");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().NotBeNullOrEmpty("result should be a non-empty string");
         // The result message should reference the project ID
-        result.Should().MatchRegex(@"Initialized project '[\w\-_]+'",
+        content.Should().MatchRegex(@"Initialized project '[\w\-_]+'",
             "result should contain 'Initialized project' with an ID");
     }
 
@@ -84,10 +85,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ProjectInit_IncludesOwnershipHint()
     {
         // Act
-        string result = await _tools.ProjectInit("Goals: build X", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.ProjectInit("Goals: build X", cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().Contain(".scrinia/",
+        ResponseParser.Parse(result).Content.Should().Contain(".scrinia/",
             "result should include .scrinia/ ownership hint");
     }
 
@@ -97,10 +98,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRequirements_StoresRequirements()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
-        await _tools.PlanRequirements(
+        await ScriniaProjectTools.PlanRequirements(
             "- PROJ-01: init\n- PROJ-02: requirements", cancellationToken: CancellationToken.None);
 
         // Assert
@@ -115,10 +116,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRequirements_UpdatesState()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
-        await _tools.PlanRequirements(
+        await ScriniaProjectTools.PlanRequirements(
             "- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
 
         // Assert — state should be updated with recent timestamp
@@ -133,28 +134,29 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanRequirements_FailsWithoutInit()
     {
         // Act — call plan_requirements without calling project_init first
-        string result = await _tools.PlanRequirements(
+        string result = await ScriniaProjectTools.PlanRequirements(
             "- PROJ-01: init", cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().Contain("project_init",
-            "plan_requirements without project_init should return an error mentioning 'project_init'");
-        result.Should().StartWith("Error:",
-            "error responses should start with 'Error:'");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error",
+            "plan_requirements without project_init should return an error");
+        parsed.Error.Should().Contain("project_init",
+            "error should mention 'project_init'");
     }
 
     [Fact]
     public async Task PlanRequirements_IncludesOwnershipHint()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanRequirements(
+        string result = await ScriniaProjectTools.PlanRequirements(
             "- PROJ-01: init", cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().Contain(".scrinia/",
+        ResponseParser.Parse(result).Content.Should().Contain(".scrinia/",
             "plan_requirements result should include .scrinia/ ownership hint");
     }
 
@@ -164,28 +166,29 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ContextResume_ReturnsStructuredSummary()
     {
         // Arrange — full state via init + requirements
-        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — all required fields present
-        result.Should().Contain("Project:", "context_resume must include project name");
-        result.Should().Contain("Phase:", "context_resume must include current phase");
-        result.Should().Contain("Progress:", "context_resume must include progress");
-        result.Should().Contain("Last action:", "context_resume must include last action");
-        result.Should().Contain("Next:", "context_resume must include next step");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("Project:", "context_resume must include project name");
+        content.Should().Contain("Phase:", "context_resume must include current phase");
+        content.Should().Contain("Progress:", "context_resume must include progress");
+        content.Should().Contain("Last action:", "context_resume must include last action");
+        content.Should().Contain("Next:", "context_resume must include next step");
     }
 
     [Fact]
     public async Task ContextResume_RespectsResponseCap()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -196,15 +199,19 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ContextResume_IncludesNextActionSuggestion()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — must contain a concrete suggestion (tool name or action verb)
-        bool hasConcreteAction = result.Contains("run ") || result.Contains("plan_")
-            || result.Contains("task_") || result.Contains("goal_update")
-            || result.Contains("concern") || result.Contains("research");
+        var content = ResponseParser.Parse(result).Content ?? "";
+        var instruction = ResponseParser.Parse(result).Instruction ?? "";
+        string combined = content + instruction;
+        bool hasConcreteAction = combined.Contains("run ") || combined.Contains("plan_")
+            || combined.Contains("task_") || combined.Contains("goal_update")
+            || combined.Contains("concern") || combined.Contains("research")
+            || combined.Contains("memory(") || combined.Contains("task(");
         hasConcreteAction.Should().BeTrue(
             "context_resume must return a concrete next action (contains a tool name or action)");
     }
@@ -213,8 +220,8 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ContextResume_RebuildsFromMemories()
     {
         // Arrange — initialize project so memories exist
-        await _tools.ProjectInit("Goals: build a memory server for AI agents", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server for AI agents", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- PROJ-01: init\n- PROJ-02: reqs", cancellationToken: CancellationToken.None);
 
         // Delete project:state artifact so rebuild is triggered
         var store = MemoryStoreContext.Current!;
@@ -223,62 +230,64 @@ public sealed class ProjectLifecycleTests : IDisposable
         store.Remove(subject, scope);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — rebuilt from memories prefix must be present
-        result.Should().ContainEquivalentOf("State rebuilt from memories",
-            "context_resume should indicate state was rebuilt when project:state is missing");
-        result.Should().NotStartWith("Error:",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().NotBe("error",
             "context_resume should succeed even without project:state if other memories exist");
+        (parsed.Content ?? "").Should().ContainEquivalentOf("State rebuilt from memories",
+            "context_resume should indicate state was rebuilt when project:state is missing");
     }
 
     [Fact]
     public async Task ContextResume_FailsWithoutAnyMemories()
     {
         // Act — no project memories at all
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert
-        result.Should().StartWith("Error:",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error",
             "context_resume with no project memories should return an error");
-        result.Should().Contain("plan('init')",
-            "error should direct user to run plan('init')");
+        parsed.Error.Should().Contain("memory('remember', { path: '/project/...' })",
+            "error should direct user to run memory('remember', { path: '/project/...' })");
     }
 
     [Fact]
     public async Task ContextResume_IncludesCheckpointWhenPresent()
     {
         // Arrange — init project, add a goal, complete it (creates checkpoint:latest)
-        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
             cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("add", "Goal for resume checkpoint test", null, null, cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("complete", null, "G-4", "Resume checkpoint outcome", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("add", "Goal for resume checkpoint test", null, null, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("complete", null, "G-4", "Resume checkpoint outcome", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
-        // Assert — response must contain the checkpoint section
-        result.Should().Contain("Last checkpoint",
-            "context_resume should include 'Last checkpoint' section when checkpoint:latest exists");
-        result.Should().Contain("G-4",
-            "context_resume checkpoint section should reference the completed goal ID");
+        // Assert — followUp must include checkpoint:latest (no longer inlined)
+        var parsed = ResponseParser.Parse(result);
+        parsed.FollowUp.Should().Contain("/checkpoint/latest",
+            "context_resume followUp should include /checkpoint/latest when it exists");
     }
 
     [Fact]
     public async Task ContextResume_OmitsCheckpointWhenAbsent()
     {
         // Arrange — init project without completing any goals (no checkpoint:latest)
-        await _tools.ProjectInit("Goals:\n- Build the API",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API",
             cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — response must NOT contain the checkpoint section and must not error
-        result.Should().NotContain("Last checkpoint",
-            "context_resume should not include 'Last checkpoint' when no checkpoint:latest exists");
-        result.Should().NotStartWith("Error:",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().NotBe("error",
             "context_resume should succeed without a checkpoint");
+        (parsed.Content ?? "").Should().NotContain("Last checkpoint",
+            "context_resume should not include 'Last checkpoint' when no checkpoint:latest exists");
     }
 
     // ── context_resume enrichment tests ─────────────────────────────────────
@@ -287,35 +296,35 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ContextResume_IncludesAgentProfile()
     {
         // Arrange — init project, store an agent:profile memory
-        await _tools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
         await _memTools.Store(["Memory persistence: always use scrinia"], "agent:profile",
             cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
-        // Assert — response should contain agent norms section and its content
-        result.Should().Contain("Agent norms",
-            "context_resume should include the 'Agent norms' section when agent:* memories exist");
-        result.Should().Contain("Memory persistence",
-            "context_resume should inline agent:profile content");
+        // Assert — followUp must include agent:profile (no longer inlined)
+        var parsed = ResponseParser.Parse(result);
+        parsed.FollowUp.Should().Contain("/agent/profile",
+            "context_resume followUp should include /agent/profile when it exists");
     }
 
     [Fact]
     public async Task ContextResume_IncludesActiveGoalDescription()
     {
         // Arrange — init project and add a goal (which becomes active)
-        await _tools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("add", "Build the authentication system", null, null,
+        await ScriniaProjectTools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("add", "Build the authentication system", null, null,
             cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — response should mention the active goal
-        result.Should().Contain("Active goal",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("Active goal",
             "context_resume should include 'Active goal:' when a goal is active");
-        result.Should().Contain("authentication",
+        content.Should().Contain("authentication",
             "context_resume should include the goal description text");
     }
 
@@ -323,19 +332,18 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ContextResume_IncludesSessionLog()
     {
         // Arrange — init project, store a session log for today
-        await _tools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: enrich test", cancellationToken: CancellationToken.None);
         string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
         await _memTools.Store(["- Completed feature X"], $"sessions:{today}",
             cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
-        // Assert — response should contain session log section and its content
-        result.Should().Contain("Session log",
-            "context_resume should include the 'Session log' section when today's session exists");
-        result.Should().Contain("Completed feature X",
-            "context_resume should inline today's session log content");
+        // Assert — followUp must include today's session (no longer inlined)
+        var parsed = ResponseParser.Parse(result);
+        parsed.FollowUp.Should().Contain($"/sessions/{today}",
+            "context_resume followUp should include today's session log when it exists");
     }
 
     [Fact]
@@ -344,37 +352,41 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Arrange — full lifecycle: init, requirements, tasks
         // PlanTasks updates project:state to include "Phase 01" which the nudge regex needs,
         // and creates pending tasks that trigger the task('next') nudge.
-        await _tools.ProjectInit("Goals: task nudge test", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- REQ-01: Feature A", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: task nudge test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- REQ-01: Feature A", cancellationToken: CancellationToken.None);
         string taskInput =
             "## Task 01\nWave: 1\nDepends on: none\nAction: Implement feature\nAcceptance criteria:\n- done";
-        await _tools.PlanTasks("01", taskInput, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", taskInput, cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — response should nudge agent to call task('next')
-        result.Should().Contain("task('next')",
-            "context_resume should include a task('next') nudge when pending tasks exist");
+        var parsed = ResponseParser.Parse(result);
+        string combined = (parsed.Content ?? "") + (parsed.Instruction ?? "");
+        combined.Should().Contain("task('next',",
+            "context_resume should include a task('next') nudge with path when pending tasks exist");
     }
 
     [Fact]
     public async Task ContextResume_OmitsEnrichmentsWhenAbsent()
     {
         // Arrange — init project only (no agent:profile, no session log, no goals, no tasks)
-        await _tools.ProjectInit("Goals: bare minimum project", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: bare minimum project", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — none of the enrichment sections should appear
-        result.Should().NotContain("Agent profile",
+        var parsed = ResponseParser.Parse(result);
+        string combined = (parsed.Content ?? "") + (parsed.Instruction ?? "");
+        combined.Should().NotContain("Agent profile",
             "context_resume should not include 'Agent profile' when no agent:profile exists");
-        result.Should().NotContain("Session log",
+        combined.Should().NotContain("Session log",
             "context_resume should not include 'Session log' when no session log exists for today");
-        result.Should().NotContain("Active goal",
+        combined.Should().NotContain("Active goal",
             "context_resume should not include 'Active goal' when no goal is active");
-        result.Should().NotContain("task('next')",
+        combined.Should().NotContain("task('next')",
             "context_resume should not include task('next') nudge when no pending tasks exist");
     }
 
@@ -384,26 +396,27 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanStatus_ReturnsPhaseAndProgress()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- PROJ-01: init", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- PROJ-01: init", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert
-        result.Should().Contain("Phase:", "plan_status must include current phase");
-        result.Should().Contain("Progress:", "plan_status must include progress percentage");
-        result.Should().Contain("%", "plan_status progress must include percentage sign");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("Phase:", "plan_status must include current phase");
+        content.Should().Contain("Progress:", "plan_status must include progress percentage");
+        content.Should().Contain("%", "plan_status progress must include percentage sign");
     }
 
     [Fact]
     public async Task PlanStatus_RespectsResponseCap()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -414,13 +427,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanStatus_WorksWithPartialState()
     {
         // Arrange — only project_init, no roadmap
-        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — should return useful info, not an error
-        result.Should().NotStartWith("Error:",
+        ResponseParser.Parse(result).Status.Should().NotBe("error",
             "plan_status with partial state (only project:context + project:state) should return useful info");
         result.Should().NotBeNullOrEmpty("plan_status should always return a non-empty response");
     }
@@ -429,13 +442,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanStatus_IncludesBlockers()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a memory server", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert
-        result.Should().ContainEquivalentOf("Blockers:",
+        ResponseParser.Parse(result).Content.Should().ContainEquivalentOf("Blockers:",
             "plan_status must include a Blockers field (even if value is 'none')");
     }
 
@@ -445,7 +458,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         // After consolidation, PlanRequirements is an internal method called by RequirementDispatch.
         // Verify the method exists and still has a parameter-level [Description] mentioning v1/v2 scope.
         var method = typeof(ScriniaProjectTools).GetMethod("PlanRequirements",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
         method.Should().NotBeNull("PlanRequirements must exist as an internal method");
 
         // Check parameter-level [Description] on the 'requirements' parameter for v1 scope guidance
@@ -516,8 +529,8 @@ public sealed class ProjectLifecycleTests : IDisposable
 
     private async Task SetupProjectAndRoadmap()
     {
-        await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- PLAN-01: task storage\n- PLAN-02: research guidance", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- PLAN-01: task storage\n- PLAN-02: research guidance", cancellationToken: CancellationToken.None);
     }
 
     [Fact]
@@ -527,7 +540,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task:01-1-01 and task:01-1-02 must exist in index
         var store = MemoryStoreContext.Current!;
@@ -549,7 +562,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task:01-1-01 must have Keywords containing status:pending
         var store = MemoryStoreContext.Current!;
@@ -569,7 +582,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeMultiWaveInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", MakeMultiWaveInput(), cancellationToken: CancellationToken.None);
 
         // Assert — wave:1 on task 01, wave:2 on task 02
         var store = MemoryStoreContext.Current!;
@@ -594,7 +607,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — both tasks should have phase:01 keyword
         var store = MemoryStoreContext.Current!;
@@ -617,7 +630,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeDependencyInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", MakeDependencyInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task 02 depends on task 01-1-01 (subject-only, not qualified)
         var store = MemoryStoreContext.Current!;
@@ -639,7 +652,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — task:01-1-01 content should contain the action text
         var store = MemoryStoreContext.Current!;
@@ -654,14 +667,15 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanTasks_SucceedsWithoutRoadmap()
     {
         // Arrange — no roadmap (just init)
-        await _tools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build something", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — should succeed (roadmap is no longer a prerequisite)
-        result.Should().NotStartWith("Error:", "plan_tasks should succeed without a roadmap");
-        result.Should().Contain("Created", "plan_tasks should confirm task creation");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().NotBe("error", "plan_tasks should succeed without a roadmap");
+        parsed.Content.Should().Contain("Created", "plan_tasks should confirm task creation");
     }
 
     [Fact]
@@ -671,7 +685,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Assert — project:state should reference plan_tasks or "Tasks created"
         var store = MemoryStoreContext.Current!;
@@ -686,24 +700,15 @@ public sealed class ProjectLifecycleTests : IDisposable
     [Fact]
     public void PlanTasks_DescriptionAdvicesResearch()
     {
-        // After consolidation, PlanTasks is an internal method called by PlanDispatch.
-        // The research cueing is now handled by roadmap guidance text, not the tool description.
-        // Verify the method exists and the plan dispatcher description references 'tasks' (PLAN-02).
+        // PlanTasks is an internal method routed through TaskDispatch("plan").
         var method = typeof(ScriniaProjectTools).GetMethod("PlanTasks",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
         method.Should().NotBeNull("PlanTasks must exist as an internal method");
 
-        var dispatcher = typeof(ScriniaProjectTools).GetMethod("PlanDispatch");
-        dispatcher.Should().NotBeNull("PlanDispatch dispatcher must exist");
-
-        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
-            .Cast<System.ComponentModel.DescriptionAttribute>()
-            .FirstOrDefault();
-        descAttr.Should().NotBeNull("PlanDispatch must have a [Description] attribute");
-
-        string descText = descAttr!.Description;
-        descText.Should().ContainEquivalentOf("tasks",
-            "PlanDispatch description must reference 'tasks' action for phase decomposition (PLAN-02)");
+        // TaskDispatch is the public entry point for plan operations
+        var dispatcher = typeof(ScriniaProjectTools).GetMethod("TaskDispatch",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static);
+        dispatcher.Should().NotBeNull("TaskDispatch must exist as the task routing entry point");
     }
 
     [Fact]
@@ -725,7 +730,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         }
 
         // Act
-        string result = await _tools.PlanTasks("01", manyTasks.ToString(), cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanTasks("01", manyTasks.ToString(), cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -737,7 +742,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     private async Task SetupProjectWithTasks(string phaseId, string tasksInput)
     {
         await SetupProjectAndRoadmap();
-        await _tools.PlanTasks(phaseId, tasksInput, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks(phaseId, tasksInput, cancellationToken: CancellationToken.None);
     }
 
     private static string MakeThreeTaskInput() =>
@@ -788,11 +793,12 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - result should contain both task names
-        result.Should().Contain("01-1-01", "task_next should include first task");
-        result.Should().Contain("01-1-02", "task_next should include second task");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("01-1-01", "task_next should include first task");
+        content.Should().Contain("01-1-02", "task_next should include second task");
     }
 
     [Fact]
@@ -802,12 +808,13 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeThreeTaskInput());
 
         // Act
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - ALL 3 should appear (EXEC-03: returns batch, not single)
-        result.Should().Contain("01-1-01", "task_next should include task 01");
-        result.Should().Contain("01-1-02", "task_next should include task 02");
-        result.Should().Contain("01-1-03", "task_next should include task 03");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("01-1-01", "task_next should include task 01");
+        content.Should().Contain("01-1-02", "task_next should include task 02");
+        content.Should().Contain("01-1-03", "task_next should include task 03");
     }
 
     [Fact]
@@ -817,11 +824,12 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeWaveDependencyInput());
 
         // Act - call task_next for phase 01
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - only wave-1 task should appear; wave-2 task should not
-        result.Should().Contain("01-1-01", "wave-1 unblocked task should appear");
-        result.Should().NotContain("01-2-02", "wave-2 blocked task should NOT appear");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("01-1-01", "wave-1 unblocked task should appear");
+        content.Should().NotContain("01-2-02", "wave-2 blocked task should NOT appear");
     }
 
     [Fact]
@@ -829,14 +837,15 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange - 2 wave-1 tasks; complete task 1
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - only task 2 should appear; task 1 is complete
-        result.Should().Contain("01-1-02", "incomplete task 02 should appear");
-        result.Should().NotContain("01-1-01", "completed task 01 should NOT appear in pending list");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("01-1-02", "incomplete task 02 should appear");
+        content.Should().NotContain("01-1-01", "completed task 01 should NOT appear in pending list");
     }
 
     [Fact]
@@ -858,22 +867,31 @@ public sealed class ProjectLifecycleTests : IDisposable
         string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
         string reportsDir = Path.Combine(workspaceRoot, "docs", "reports");
         Directory.CreateDirectory(reportsDir);
-        await File.WriteAllTextAsync(Path.Combine(reportsDir, "march-report.md"), "# March Report\nGoal complete.");
+        string marchReportPath = Path.Combine(reportsDir, "march-report.md");
+        await File.WriteAllTextAsync(marchReportPath, "# March Report\nGoal complete.");
+        File.Exists(marchReportPath).Should().BeTrue($"march report should exist at {marchReportPath}");
 
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
-        // Complete all auto-injected gate tasks
-        await _tools.TaskComplete("task:01-2-qa-gate", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-3-self-reflector-gate", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-4-evolutionary-gate", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-4-cartographer-gate", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-4-march-gate", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+
+        // Discover and complete all gate tasks dynamically (wave numbers may vary)
+        var (taskScope, _) = store.ParseQualifiedName("task:placeholder");
+        var allEntries = store.LoadIndex(taskScope);
+        var gateOrder = new[] { "qa-gate", "self-reflector-gate", "evolutionary-gate", "cartographer-gate", "march-gate" };
+        foreach (var gateSuffix in gateOrder)
+        {
+            var entry = allEntries.FirstOrDefault(e => e.Name.Contains(gateSuffix));
+            entry.Should().NotBeNull($"{gateSuffix} task should exist");
+            var gr = await ScriniaProjectTools.TaskComplete($"task:{entry!.Name}", "Done", cancellationToken: CancellationToken.None);
+            ResponseParser.Parse(gr).Status.Should().Be("success",
+                $"{gateSuffix} should complete: {ResponseParser.Parse(gr).Error}");
+        }
 
         // Act
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - should indicate no pending tasks
-        result.Should().ContainEquivalentOf("no pending", "result should indicate no pending tasks when all complete");
+        ResponseParser.Parse(result).Content.Should().ContainEquivalentOf("no pending", "result should indicate no pending tasks when all complete");
     }
 
     [Fact]
@@ -882,27 +900,29 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Arrange - create tasks for phase "01"; create tasks for a "02" project
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
         // Add phase 02 tasks too
-        await _tools.PlanTasks("02", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("02", MakeTwoTaskInput(), cancellationToken: CancellationToken.None);
 
         // Act - only request phase 01
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - only phase-01 tasks should appear
-        result.Should().Contain("01-1-", "phase-01 tasks should appear");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("01-1-", "phase-01 tasks should appear");
         // Phase-02 tasks should not dominate the result (task names contain phase identifier)
         // Phase 02 tasks are named with "02-1-01", "02-1-02"
-        result.Should().NotContain("02-1-01", "phase-02 tasks should NOT appear when filtering for phase 01");
+        content.Should().NotContain("02-1-01", "phase-02 tasks should NOT appear when filtering for phase 01");
     }
 
     [Fact]
     public async Task TaskNext_FailsWithoutProject()
     {
         // Act - call task_next without any project setup
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert - should return an error or "no pending tasks"
-        bool isError = result.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
-            || result.Contains("no pending", StringComparison.OrdinalIgnoreCase);
+        var parsed = ResponseParser.Parse(result);
+        bool isError = parsed.Status == "error"
+            || (parsed.Content ?? "").Contains("no pending", StringComparison.OrdinalIgnoreCase);
         isError.Should().BeTrue("task_next without any project should return error or no-pending response");
     }
 
@@ -922,10 +942,10 @@ public sealed class ProjectLifecycleTests : IDisposable
             manyTasks.AppendLine($"- Feature {i} works correctly with many detailed criteria spanning multiple lines");
             manyTasks.AppendLine();
         }
-        await _tools.PlanTasks("01", manyTasks.ToString(), cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks("01", manyTasks.ToString(), cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.TaskNext("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskNext("01", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -941,7 +961,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Assert - entry should have status:complete, NOT status:pending
         var store = MemoryStoreContext.Current!;
@@ -963,7 +983,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
 
         // Assert - wave, phase keywords still present
         var store = MemoryStoreContext.Current!;
@@ -984,7 +1004,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Assert - task:01-execution-log memory must exist
         var store = MemoryStoreContext.Current!;
@@ -1001,8 +1021,8 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act - complete two different tasks
-        await _tools.TaskComplete("task:01-1-01", "Completed first task", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Completed second task", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Completed first task", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Completed second task", cancellationToken: CancellationToken.None);
 
         // Assert - execution log should have 2 chunks
         var store = MemoryStoreContext.Current!;
@@ -1020,7 +1040,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Fixed the parser bug", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Fixed the parser bug", cancellationToken: CancellationToken.None);
 
         // Assert - reading the log should contain the outcome text
         var store = MemoryStoreContext.Current!;
@@ -1036,7 +1056,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Some outcome", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Some outcome", cancellationToken: CancellationToken.None);
 
         // Assert - log should contain ISO timestamp pattern
         var store = MemoryStoreContext.Current!;
@@ -1053,12 +1073,13 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        string result = await _tools.TaskComplete("task:99-9-99", "Done", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskComplete("task:99-9-99", "Done", cancellationToken: CancellationToken.None);
 
         // Assert - should return error for unknown task
-        result.Should().StartWith("Error:",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error",
             "task_complete with unknown task name should return an error");
-        result.Should().Contain("not found",
+        parsed.Error.Should().Contain("not found",
             "error should mention 'not found'");
     }
 
@@ -1076,7 +1097,7 @@ public sealed class ProjectLifecycleTests : IDisposable
             Path.GetFileName(storeDir)!);
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
 
         // Assert - no version files should be created
         bool versionsExist = Directory.Exists(versionsDir) &&
@@ -1092,7 +1113,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        await _tools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Completed authentication", cancellationToken: CancellationToken.None);
 
         // Assert - project:state should reference the completed task
         var store = MemoryStoreContext.Current!;
@@ -1108,7 +1129,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithTasks("01", MakeTwoTaskInput());
 
         // Act
-        string result = await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1122,14 +1143,14 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — full lifecycle with criteria tasks + all tasks complete
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Implemented auth", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Implemented profile", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Implemented auth", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Implemented profile", cancellationToken: CancellationToken.None);
 
         // Act — no evidence → checklist mode
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — must contain the verification checklist header
-        result.Should().Contain("Verification Checklist",
+        ResponseParser.Parse(result).Content.Should().Contain("Verification Checklist",
             "plan_verify without evidence returns a checklist showing criteria to verify");
     }
 
@@ -1138,16 +1159,17 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — roadmap with 2 success criteria
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — both requirement criteria should appear in output
-        result.Should().Contain("CRIT-01",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("CRIT-01",
             "plan_verify should include the CRIT-01 requirement criterion");
-        result.Should().Contain("CRIT-02",
+        content.Should().Contain("CRIT-02",
             "plan_verify should include the CRIT-02 requirement criterion");
     }
 
@@ -1158,12 +1180,13 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act — call without evidence to get checklist
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — returns a verification checklist, not auto-evaluated results
-        result.Should().Contain("Verification Checklist",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("Verification Checklist",
             "plan_verify without evidence should return a checklist");
-        result.Should().Contain("[ ]",
+        content.Should().Contain("[ ]",
             "checklist items should be unchecked");
     }
 
@@ -1172,15 +1195,18 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — complete both tasks
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done auth", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done profile", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done auth", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Done profile", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
-        // Assert — task completion criterion should PASS
-        result.Should().Contain("PASS:",
-            "plan_verify should report PASS when all tasks are complete");
+        // Assert — checklist mode (no evidence) should show task completion and QA gate guidance
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("Verification Checklist",
+            "plan_verify should return a verification checklist when called without evidence");
+        content.Should().Contain("QA gate",
+            "plan_verify checklist should reference the QA gate for structured verification");
     }
 
     [Fact]
@@ -1188,22 +1214,23 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
         // Write qa:latest so the QA gate passes
         await _memTools.Store(["## QA Report\nBuild: 0 errors\nTests: 8 passed, 0 failed"],
             "qa:latest", cancellationToken: CancellationToken.None);
 
         // Act — provide agent-verified evidence (include test output to pass QA gate)
-        string result = await _tools.PlanVerify("01",
+        string result = await ScriniaProjectTools.PlanVerify("01",
             evidence: "PASS: Auth endpoint created — 5 passed, 0 failed\nPASS: Profile endpoint created — 3 passed, 0 failed",
             cancellationToken: CancellationToken.None);
 
         // Assert — must contain evidence strings from the agent
-        result.Should().Contain("Evidence:",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("Evidence:",
             "plan_verify with evidence must include Evidence: strings for each criterion");
-        result.Should().Contain("ALL_PASS");
+        content.Should().Contain("ALL_PASS");
     }
 
     [Fact]
@@ -1211,24 +1238,25 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — requirements for two phases; tasks in phase 01 reference SCOPE-01 only,
         // tasks in phase 02 reference SCOPE-02 only. plan_verify("01") should scope to phase 01.
-        await _tools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- SCOPE-01: phase one req\n- SCOPE-02: phase two req", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- SCOPE-01: phase one req\n- SCOPE-02: phase two req", cancellationToken: CancellationToken.None);
         // Phase 01 task references SCOPE-01
-        await _tools.PlanTasks("01",
+        await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nWave: 1\nDepends on: none\nAction: Implement SCOPE-01 — phase one work\nAcceptance criteria:\n- phase one done",
             cancellationToken: CancellationToken.None);
         // Phase 02 task references SCOPE-02
-        await _tools.PlanTasks("02",
+        await ScriniaProjectTools.PlanTasks("02",
             "## Task 01\nWave: 1\nDepends on: none\nAction: Implement SCOPE-02 — phase two work\nAcceptance criteria:\n- phase two done",
             cancellationToken: CancellationToken.None);
 
         // Act — verify only phase 01
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — only SCOPE-01 should appear; SCOPE-02 must NOT appear
-        result.Should().Contain("SCOPE-01",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("SCOPE-01",
             "plan_verify('01') should include phase 01 criteria (SCOPE-01)");
-        result.Should().NotContain("SCOPE-02",
+        content.Should().NotContain("SCOPE-02",
             "plan_verify('01') must NOT include phase 02 criteria (SCOPE-02)");
     }
 
@@ -1236,13 +1264,13 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task PlanVerify_FailsWithoutRequirements()
     {
         // Arrange — only init, no requirements
-        await _tools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: test", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().StartWith("Error:",
+        ResponseParser.Parse(result).Status.Should().Be("error",
             "plan_verify without requirements should return an error");
     }
 
@@ -1251,11 +1279,11 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1270,13 +1298,14 @@ public sealed class ProjectLifecycleTests : IDisposable
         // No task_complete calls — testing pre-execution quality check (PLAN-03)
 
         // Act
-        string result = await _tools.PlanVerify("01", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanVerify("01", cancellationToken: CancellationToken.None);
 
         // Assert — should return checklist (no evidence), not an error
-        result.Should().Contain("Verification Checklist",
-            "plan_verify before execution should return a verification checklist");
-        result.Should().NotStartWith("Error:",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().NotBe("error",
             "plan_verify before execution should not return an error");
+        parsed.Content.Should().Contain("Verification Checklist",
+            "plan_verify before execution should return a verification checklist");
     }
 
     [Fact]
@@ -1284,18 +1313,19 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — full lifecycle with roadmap + tasks completed, no qa:latest needed
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
 
         // Act — provide evidence (QA gate removed — no qa:latest required)
-        string result = await _tools.PlanVerify("01",
+        string result = await ScriniaProjectTools.PlanVerify("01",
             evidence: "PASS: criterion 1 — I verified it looks good",
             cancellationToken: CancellationToken.None);
 
         // Assert — should record evidence without blocking
-        result.Should().NotStartWith("Blocked:",
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().NotStartWith("Blocked:",
             "plan_verify should not block since QA gate was removed");
-        result.Should().MatchRegex("(ALL_PASS|PARTIAL|Status:)",
+        content.Should().MatchRegex("(ALL_PASS|PARTIAL|Status:)",
             "plan_verify should return structured results");
     }
 
@@ -1309,7 +1339,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         string failedCriteria = "All tasks must be complete";
 
         // Act
-        await _tools.PlanGaps("01", failedCriteria, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanGaps("01", failedCriteria, cancellationToken: CancellationToken.None);
 
         // Assert — gap task memory must exist in index
         var store = MemoryStoreContext.Current!;
@@ -1326,7 +1356,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -1346,7 +1376,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -1365,7 +1395,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         var store = MemoryStoreContext.Current!;
@@ -1384,7 +1414,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert — project:state should indicate phase was re-opened
         var store = MemoryStoreContext.Current!;
@@ -1401,7 +1431,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         string threeCriteria = "Criterion one\nCriterion two\nCriterion three";
 
         // Act
-        await _tools.PlanGaps("01", threeCriteria, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanGaps("01", threeCriteria, cancellationToken: CancellationToken.None);
 
         // Assert — three gap tasks: gap-01, gap-02, gap-03
         var store = MemoryStoreContext.Current!;
@@ -1420,7 +1450,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         string criterion = "Tasks must produce verified output artifacts";
 
         // Act
-        await _tools.PlanGaps("01", criterion, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanGaps("01", criterion, cancellationToken: CancellationToken.None);
 
         // Assert — gap task content contains criterion text
         var store = MemoryStoreContext.Current!;
@@ -1436,10 +1466,10 @@ public sealed class ProjectLifecycleTests : IDisposable
         // No setup at all
 
         // Act
-        string result = await _tools.PlanGaps("01", "Some criterion", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanGaps("01", "Some criterion", cancellationToken: CancellationToken.None);
 
         // Assert
-        result.Should().StartWith("Error:",
+        ResponseParser.Parse(result).Status.Should().Be("error",
             "plan_gaps without project should return an error");
     }
 
@@ -1450,7 +1480,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectWithCriteria("01");
 
         // Act
-        string result = await _tools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanGaps("01", "Failed criterion", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1466,7 +1496,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", cancellationToken: CancellationToken.None);
 
         // Assert — per-phase retro file must exist in learn scope
         var store = MemoryStoreContext.Current!;
@@ -1483,7 +1513,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed quickly", "Build was slow", "Use incremental builds", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("01", "Tests passed quickly", "Build was slow", "Use incremental builds", cancellationToken: CancellationToken.None);
 
         // Assert — content must contain all required section headers
         var store = MemoryStoreContext.Current!;
@@ -1501,7 +1531,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("01", "Tests passed", "Nothing failed", "Write tests first", cancellationToken: CancellationToken.None);
 
         // Assert — index entry Keywords must contain "provenance:agent"
         var store = MemoryStoreContext.Current!;
@@ -1519,8 +1549,8 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act — two calls for different phases produce separate files
-        await _tools.PlanRetrospective("01", "Worked well", "Minor issues", "Lessons from 01", cancellationToken: CancellationToken.None);
-        await _tools.PlanRetrospective("02", "Worked well", "Some failures", "Lessons from 02", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("01", "Worked well", "Minor issues", "Lessons from 01", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("02", "Worked well", "Some failures", "Lessons from 02", cancellationToken: CancellationToken.None);
 
         // Assert — each phase gets its own memory file
         var store = MemoryStoreContext.Current!;
@@ -1538,7 +1568,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Assert — content must reference phase ID
         var store = MemoryStoreContext.Current!;
@@ -1554,7 +1584,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Assert — content must contain ISO 8601 date pattern YYYY-MM-DD
         var store = MemoryStoreContext.Current!;
@@ -1570,7 +1600,7 @@ public sealed class ProjectLifecycleTests : IDisposable
         await SetupProjectAndRoadmap();
 
         // Act
-        string result = await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Assert
         result.Length.Should().BeLessOrEqualTo(8192,
@@ -1582,7 +1612,7 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange
         await SetupProjectAndRoadmap();
-        await _tools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRetrospective("01", "Tests passed", "Build slow", "Speed up pipeline", cancellationToken: CancellationToken.None);
 
         // Act — search via standard search with no excludeTopics
         var store = MemoryStoreContext.Current!;
@@ -1604,12 +1634,10 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act — no project_init required; user preferences are project-independent
         await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", cancellationToken: CancellationToken.None);
 
-        // Assert — agent:profile must exist in index
-        var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("agent:profile");
-        var entries = store.LoadIndex(scope);
-        entries.Should().Contain(e => e.Name == subject,
-            "plan_profile should store a agent:profile memory");
+        // Assert — .scrinia/agent/profile.md must exist on disk
+        string mdPath = Path.Combine(_scope.WorkspaceDir, ".scrinia", "agent", "profile.md");
+        File.Exists(mdPath).Should().BeTrue(
+            "plan_profile should store agent:profile as .scrinia/agent/profile.md");
     }
 
     [Fact]
@@ -1618,9 +1646,9 @@ public sealed class ProjectLifecycleTests : IDisposable
         // Act
         await _tools.PlanProfile("autonomy_level: high\nreview_depth: detailed", cancellationToken: CancellationToken.None);
 
-        // Assert — content must contain the preference text
-        var store = MemoryStoreContext.Current!;
-        string content = await ReadMemoryText(store, "agent:profile");
+        // Assert — .md file content must contain the preference text
+        string mdPath = Path.Combine(_scope.WorkspaceDir, ".scrinia", "agent", "profile.md");
+        string content = await File.ReadAllTextAsync(mdPath);
         content.Should().Contain("autonomy_level: high",
             "agent:profile content must contain 'autonomy_level: high'");
         content.Should().Contain("review_depth: detailed",
@@ -1628,18 +1656,18 @@ public sealed class ProjectLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanProfile_HasProvenanceKeyword()
+    public async Task PlanProfile_HasSidecarMeta()
     {
         // Act
         await _tools.PlanProfile("autonomy_level: high", cancellationToken: CancellationToken.None);
 
-        // Assert — index entry Keywords must contain "provenance:agent"
-        var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("agent:profile");
-        var entries = store.LoadIndex(scope);
-        var entry = entries.First(e => e.Name == subject);
-        entry.Keywords.Should().Contain("provenance:agent",
-            "agent:profile index entry must have provenance:agent keyword");
+        // Assert — sidecar .meta.json must exist with timestamps
+        string metaPath = Path.Combine(_scope.WorkspaceDir, ".scrinia", "agent", "profile.meta.json");
+        File.Exists(metaPath).Should().BeTrue(
+            "agent:profile should have a .meta.json sidecar file");
+        string metaJson = await File.ReadAllTextAsync(metaPath);
+        metaJson.Should().Contain("createdAt",
+            "sidecar metadata must have a createdAt field");
     }
 
     [Fact]
@@ -1649,35 +1677,34 @@ public sealed class ProjectLifecycleTests : IDisposable
         await _tools.PlanProfile("autonomy_level: high", cancellationToken: CancellationToken.None);
         await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", cancellationToken: CancellationToken.None);
 
-        // Assert — artifact must have ChunkCount == 1 (overwrite, not append)
-        var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("agent:profile");
-        var entries = store.LoadIndex(scope);
-        var entry = entries.First(e => e.Name == subject);
-        entry.ChunkCount.Should().Be(1,
-            "two plan_profile calls should produce ChunkCount == 1 (overwrite semantics)");
+        // Assert — .md file should contain only the second call's content
+        string mdPath = Path.Combine(_scope.WorkspaceDir, ".scrinia", "agent", "profile.md");
+        string content = await File.ReadAllTextAsync(mdPath);
+        content.Should().Contain("autonomy_level: low",
+            "agent:profile should contain content from the second call (overwrite semantics)");
     }
 
     [Fact]
-    public async Task PlanProfile_DoesNotArchive()
+    public async Task PlanProfile_ArchivesPreviousVersion()
     {
         // Act — two calls with different content
         await _tools.PlanProfile("autonomy_level: high", cancellationToken: CancellationToken.None);
         await _tools.PlanProfile("autonomy_level: low\nreview_depth: minimal", cancellationToken: CancellationToken.None);
 
-        // Assert — only one entry in index, content from second call
-        var store = MemoryStoreContext.Current!;
-        var (scope, subject) = store.ParseQualifiedName("agent:profile");
-        var entries = store.LoadIndex(scope);
-        entries.Where(e => e.Name == subject).Should().HaveCount(1,
-            "plan_profile must use overwrite (not append) — only 1 index entry expected");
-
-        // Content should be from the second call
-        string content = await ReadMemoryText(store, "agent:profile");
+        // Assert — .md file should contain content from the second call only
+        string mdPath = Path.Combine(_scope.WorkspaceDir, ".scrinia", "agent", "profile.md");
+        string content = await File.ReadAllTextAsync(mdPath);
         content.Should().Contain("autonomy_level: low",
             "agent:profile should contain content from the second call (overwrite semantics)");
         content.Should().NotContain("autonomy_level: high",
-            "agent:profile must not contain content from first call (archiveExisting: false means no version created AND content is replaced)");
+            "agent:profile must not contain content from first call");
+
+        // Assert — previous version should be archived
+        string versionsDir = Path.Combine(_scope.WorkspaceDir, ".scrinia", "agent", "versions");
+        Directory.Exists(versionsDir).Should().BeTrue(
+            "previous version should be archived in versions directory");
+        Directory.GetFiles(versionsDir, "profile_*.md").Should().HaveCount(1,
+            "exactly one archived version expected after two writes");
     }
 
     [Fact]
@@ -1701,12 +1728,11 @@ public sealed class ProjectLifecycleTests : IDisposable
         string result = await mcpTools.Guide(CancellationToken.None);
 
         // Assert — must mention learning memory topics and self-reflector skill
-        result.Should().Contain("learn:*",
-            "guide() must mention learn:* reserved planning topic");
-        result.Should().Contain("agent:*",
-            "guide() must mention agent:* reserved planning topic for behavioral norms");
-        result.Should().Contain("self-reflector",
-            "guide() must mention self-reflector skill for retrospectives");
+        var content = ResponseParser.Parse(result).Content!;
+        content.Should().Contain("/learn/",
+            "guide() must mention /learn/ reserved path");
+        content.Should().Contain("/agent/",
+            "guide() must mention /agent/ reserved path for behavioral norms");
     }
 
     // ── Gate tests ─────────────────────────────────────────────────────────────
@@ -1716,9 +1742,9 @@ public sealed class ProjectLifecycleTests : IDisposable
     {
         // Arrange — full lifecycle with roadmap + tasks completed + open high concern
         await SetupProjectWithCriteria("01");
-        await _tools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
-        await _tools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
-        await _tools.ConcernAdd("Risk: auth bypass vulnerability",
+        await ScriniaProjectTools.TaskComplete("task:01-1-01", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.TaskComplete("task:01-1-02", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: auth bypass vulnerability",
             "high", "01", id: "auth-bypass", CancellationToken.None);
 
         // Write qa:latest so the QA gate passes (testing concern gate, not QA gate)
@@ -1726,14 +1752,15 @@ public sealed class ProjectLifecycleTests : IDisposable
             "qa:latest", cancellationToken: CancellationToken.None);
 
         // Act — provide valid test evidence (would pass QA gate)
-        string result = await _tools.PlanVerify("01",
+        string result = await ScriniaProjectTools.PlanVerify("01",
             evidence: "PASS: criterion 1 — 42 passed, 0 failed, build clean",
             cancellationToken: CancellationToken.None);
 
         // Assert — should hard reject due to open concern
-        result.Should().StartWith("Error:",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error",
             "plan_verify should reject when open high-severity concerns exist for the phase");
-        result.Should().Contain("auth-bypass",
+        parsed.Error.Should().Contain("auth-bypass",
             "rejection message should mention the open concern name");
     }
 
@@ -1741,28 +1768,30 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task ConcernResolve_RequiresVerifiedBy()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: test verifiedBy validation", cancellationToken: CancellationToken.None);
-        await _tools.ConcernAdd("Risk: test concern",
+        await ScriniaProjectTools.ProjectInit("Goals: test verifiedBy validation", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: test concern",
             "medium", "01", id: "vb-test", CancellationToken.None);
 
         // Act — try with invalid verifiedBy value
-        string errorResult = await _tools.ConcernResolve("concern:vb-test",
+        string errorResult = await ScriniaProjectTools.ConcernResolve("concern:vb-test",
             "Fixed it", verifiedBy: "invalid", CancellationToken.None);
 
         // Assert — should reject invalid verifiedBy
-        errorResult.Should().StartWith("Error:",
+        var errorParsed = ResponseParser.Parse(errorResult);
+        errorParsed.Status.Should().Be("error",
             "concern_resolve should reject invalid verifiedBy value");
-        errorResult.Should().Contain("invalid",
+        errorParsed.Error.Should().Contain("invalid",
             "error message should mention the invalid value");
 
         // Act — resolve with valid verifiedBy
-        string successResult = await _tools.ConcernResolve("concern:vb-test",
+        string successResult = await ScriniaProjectTools.ConcernResolve("concern:vb-test",
             "Fixed it properly", verifiedBy: "qa", CancellationToken.None);
 
         // Assert — should succeed
-        successResult.Should().NotStartWith("Error:",
+        var successParsed = ResponseParser.Parse(successResult);
+        successParsed.Status.Should().NotBe("error",
             "concern_resolve should succeed with verifiedBy='qa'");
-        successResult.Should().Contain("resolved",
+        successParsed.Content.Should().Contain("resolved",
             "success message should confirm resolution");
     }
 
@@ -1772,10 +1801,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task GoalComplete_CreatesCheckpointLatest()
     {
         // Arrange — init project, add a goal, then complete it
-        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API\n- Create the UI\n- Ship MVP",
             cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("add", "Goal for checkpoint test", null, null, cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("complete", null, "G-4", "Checkpoint outcome", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("add", "Goal for checkpoint test", null, null, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("complete", null, "G-4", "Checkpoint outcome", cancellationToken: CancellationToken.None);
 
         // Assert — checkpoint:latest memory must exist as a persistent (non-ephemeral) memory
         var store = MemoryStoreContext.Current!;
@@ -1802,10 +1831,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task GoalComplete_CheckpointContainsProjectName()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- Build the API\n- Create the UI",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API\n- Create the UI",
             cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("add", "Goal with project name check", null, null, cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("complete", null, "G-3", "Done", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("add", "Goal with project name check", null, null, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("complete", null, "G-3", "Done", cancellationToken: CancellationToken.None);
 
         // Assert — checkpoint content should contain the project name (derived from workspace dir)
         var store = MemoryStoreContext.Current!;
@@ -1820,10 +1849,10 @@ public sealed class ProjectLifecycleTests : IDisposable
     public async Task GoalComplete_CheckpointHasRecoveryKeyword()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- Build the API\n- Ship it",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API\n- Ship it",
             cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("add", "Goal for keyword test", null, null, cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("complete", null, "G-3", "Keyword outcome", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("add", "Goal for keyword test", null, null, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("complete", null, "G-3", "Keyword outcome", cancellationToken: CancellationToken.None);
 
         // Assert — checkpoint entry must have 'recovery' keyword for context_resume discovery
         var store = MemoryStoreContext.Current!;
@@ -1846,13 +1875,145 @@ public sealed class ProjectLifecycleTests : IDisposable
     /// </summary>
     private async Task SetupProjectWithCriteria(string phaseId)
     {
-        await _tools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("- CRIT-01: task storage\n- CRIT-02: verification support", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build a test project", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("- CRIT-01: task storage\n- CRIT-02: verification support", cancellationToken: CancellationToken.None);
         // Tasks reference CRIT-01 and CRIT-02 so plan_verify can discover the criteria
         string taskInput =
             $"## Task 01\nWave: 1\nDepends on: none\nAction: Implement CRIT-01 — authentication\nAcceptance criteria:\n- Users can log in\n- JWT tokens are returned\n\n" +
             $"## Task 02\nWave: 1\nDepends on: none\nAction: Implement CRIT-02 — user profile\nAcceptance criteria:\n- Profile data is stored";
-        await _tools.PlanTasks(phaseId, taskInput, cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanTasks(phaseId, taskInput, cancellationToken: CancellationToken.None);
+    }
+
+    // -- Execution log compaction tests (COMPACT-01, COMPACT-02) --
+
+    /// <summary>
+    /// Pre-seeds the execution log for a given phase with <paramref name="chunkCount"/> chunks,
+    /// each containing distinguishable content like "entry-1", "entry-2", etc.
+    /// Uses Nmp2ChunkedEncoder.EncodeChunks directly for speed, then writes the artifact
+    /// and index entry so TaskComplete's compaction check sees the correct chunk count.
+    /// </summary>
+    private static async Task SeedExecutionLog(IMemoryStore store, string phaseId, int chunkCount)
+    {
+        string logName = $"task:{phaseId}-execution-log";
+        var (logScope, logSubject) = store.ParseQualifiedName(logName);
+
+        // Build distinguishable chunks
+        var chunks = new string[chunkCount];
+        for (int i = 0; i < chunkCount; i++)
+            chunks[i] = $"entry-{i + 1}";
+
+        // Encode and write the artifact
+        string artifact = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.EncodeChunks(chunks);
+        await store.WriteArtifactAsync(logSubject, logScope, artifact);
+
+        // Compute total original bytes for the index entry
+        long totalBytes = chunks.Sum(c => (long)System.Text.Encoding.UTF8.GetByteCount(c));
+
+        // Upsert index entry so the compaction guard (logEntry.ChunkCount > 50) sees the right count
+        var entry = new Scrinia.Core.Models.ArtifactEntry(
+            Name: logSubject,
+            Uri: $"file://{logSubject}.nmp2",
+            OriginalBytes: totalBytes,
+            ChunkCount: chunkCount,
+            CreatedAt: DateTimeOffset.UtcNow,
+            Description: "execution log",
+            Keywords: ["execution-log", $"phase:{phaseId}"]);
+        store.Upsert(entry, logScope);
+    }
+
+    [Fact]
+    public async Task TaskComplete_LogOver50Chunks_AutoCompacts()
+    {
+        // Arrange — project with tasks, then pre-seed log with 51 chunks
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+        var store = MemoryStoreContext.Current!;
+        await SeedExecutionLog(store, "01", 51);
+
+        // Act — completing a task appends chunk 52, triggering compaction (> 50)
+        string result = await ScriniaProjectTools.TaskComplete("task:01-1-01", "Final outcome", cancellationToken: CancellationToken.None);
+
+        // Assert — response contains compaction notice (in info field)
+        ResponseParser.Parse(result).Info.Should().Contain(s => s.Contains("auto-compacted"),
+            "task_complete should report auto-compaction when execution log exceeds 50 chunks");
+
+        // Assert — log is compacted to 20 chunks
+        var (logScope, logSubject) = store.ParseQualifiedName("task:01-execution-log");
+        string logArtifact = await store.ReadArtifactAsync(logSubject, logScope);
+        int finalChunkCount = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.GetChunkCount(logArtifact);
+        finalChunkCount.Should().Be(20,
+            "compaction should keep only the 20 most recent chunks");
+    }
+
+    [Fact]
+    public async Task TaskComplete_LogAt50Chunks_NoCompaction()
+    {
+        // Arrange — project with tasks, then pre-seed log with exactly 49 chunks
+        // (TaskComplete will append one more → 50 total, which is NOT > 50)
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+        var store = MemoryStoreContext.Current!;
+        await SeedExecutionLog(store, "01", 49);
+
+        // Act — completing a task appends chunk 50 (exactly 50 ≤ 50, no compaction)
+        string result = await ScriniaProjectTools.TaskComplete("task:01-1-01", "Boundary outcome", cancellationToken: CancellationToken.None);
+
+        // Assert — no compaction notice
+        ResponseParser.Parse(result).Info.Should().NotContain(s => s.Contains("auto-compacted"),
+            "task_complete should NOT compact when execution log has exactly 50 chunks");
+
+        // Assert — log still has 50 chunks (49 seeded + 1 appended)
+        var (logScope, logSubject) = store.ParseQualifiedName("task:01-execution-log");
+        string logArtifact = await store.ReadArtifactAsync(logSubject, logScope);
+        int finalChunkCount = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.GetChunkCount(logArtifact);
+        finalChunkCount.Should().Be(50,
+            "log should retain all 50 chunks when at the boundary (no compaction)");
+    }
+
+    [Fact]
+    public async Task TaskComplete_CompactionPreservesRecentChunks()
+    {
+        // Arrange — project with tasks, then pre-seed log with 60 chunks
+        // Each chunk is "entry-N" so we can verify which ones survived compaction.
+        await SetupProjectWithTasks("01", MakeTwoTaskInput());
+        var store = MemoryStoreContext.Current!;
+        await SeedExecutionLog(store, "01", 60);
+
+        // Act — completing a task appends chunk 61, triggering compaction
+        string result = await ScriniaProjectTools.TaskComplete("task:01-1-01", "Trigger compaction", cancellationToken: CancellationToken.None);
+
+        // Assert — compaction occurred (in info field)
+        ResponseParser.Parse(result).Info.Should().Contain(s => s.Contains("auto-compacted"),
+            "task_complete should report auto-compaction when execution log exceeds 50 chunks");
+
+        // Assert — 20 chunks retained
+        var (logScope, logSubject) = store.ParseQualifiedName("task:01-execution-log");
+        string logArtifact = await store.ReadArtifactAsync(logSubject, logScope);
+        int finalChunkCount = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.GetChunkCount(logArtifact);
+        finalChunkCount.Should().Be(20,
+            "compaction should keep exactly 20 chunks");
+
+        // Assert — retained chunks are the 20 most recent (entries 42-61),
+        // not the oldest (entries 1-20).
+        // After seeding 60 chunks + 1 appended by TaskComplete = 61 total before compaction.
+        // Compaction keeps chunks 42-61. Chunk 61 is the TaskComplete-appended entry.
+
+        // The oldest retained chunk (chunk 1 after compaction) should be entry-42
+        string firstRetained = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.DecodeChunk(logArtifact, 1);
+        firstRetained.Should().Contain("entry-42",
+            "the first retained chunk should be entry-42 (most recent 20 from 61 total)");
+
+        // The oldest entries should NOT be present
+        string fullLog = string.Concat(
+            Enumerable.Range(1, 20)
+                .Select(c => Scrinia.Core.Encoding.Nmp2ChunkedEncoder.DecodeChunk(logArtifact, c)));
+        fullLog.Should().NotContain("entry-1\n",
+            "entry-1 is old and should have been dropped by compaction");
+        fullLog.Should().NotContain("entry-41\n",
+            "entry-41 is old and should have been dropped by compaction");
+
+        // The last chunk should be the TaskComplete-appended entry containing the outcome
+        string lastRetained = Scrinia.Core.Encoding.Nmp2ChunkedEncoder.DecodeChunk(logArtifact, 20);
+        lastRetained.Should().Contain("Trigger compaction",
+            "the last retained chunk should be the outcome appended by task_complete");
     }
 
     private static async Task<string> ReadMemoryText(IMemoryStore store, string qualifiedName)

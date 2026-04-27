@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -29,18 +30,16 @@ public class ScriniaCommands
         WriteJson(new CliErrorOutput(message), CliJsonContext.Default.CliErrorOutput);
     }
 
-    /// <summary>Start the MCP server (stdio transport for Claude Desktop / Claude Code).</summary>
+    /// <summary>Start the MCP server (stdio transport).</summary>
     /// <param name="workspaceRoot">Workspace root for local memory store. Defaults to current working directory.</param>
     /// <param name="remote">Scrinia.Server URL for remote mode (e.g. http://localhost:5000).</param>
     /// <param name="apiKey">API key for remote server authentication.</param>
     /// <param name="store">Target store name on the remote server (default: "default").</param>
-    /// <param name="stdio">Use stdio transport (default, required for Claude Desktop / Claude Code).</param>
     public async Task<int> Serve(
         string? workspaceRoot = null,
         string? remote = null,
         string? apiKey = null,
         string? store = null,
-        bool stdio = true,
         CancellationToken cancellationToken = default)
     {
         if (!string.IsNullOrEmpty(remote))
@@ -720,11 +719,20 @@ public class ScriniaCommands
 
     /// <summary>Download embedding models for built-in and optional Vulkan plugin.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="multiUser">Configure git merge drivers for multi-user collaboration.</param>
+    /// <param name="resolver">Conflict resolver when --multi-user is set (none, claude, copilot).</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
+        bool multiUser = false,
+        string? resolver = null,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+
+        if (multiUser)
+        {
+            ConfigureMultiUser(resolver);
+        }
 
         string exeDir = AppContext.BaseDirectory;
 
@@ -788,6 +796,89 @@ public class ScriniaCommands
         }
 
         return 0;
+    }
+
+    private static void ConfigureMultiUser(string? resolver)
+    {
+        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        string scriniaDir = Path.Combine(root, ".scrinia");
+
+        // 1. Configure git merge drivers
+        RunGit(root, "config", "merge.scrinia-meta.driver",
+            $".scrinia/hooks/scri-merge meta %O %A %B");
+        RunGit(root, "config", "merge.scrinia-nmp2.driver",
+            $".scrinia/hooks/scri-merge nmp2 %O %A %B");
+        AnsiConsole.MarkupLine("[green]  Git merge drivers configured.[/]");
+
+        // 2. Create/update .scrinia/.gitattributes
+        string gitattributesPath = Path.Combine(scriniaDir, ".gitattributes");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(gitattributesPath,
+            "*.meta.json merge=scrinia-meta\n*.nmp2 merge=scrinia-nmp2\n");
+        AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(gitattributesPath)}");
+
+        // 3. Create .scrinia/merge.config
+        string resolverValue = resolver ?? "none";
+        string mergeConfigPath = Path.Combine(scriniaDir, "merge.config");
+        string mergeConfigJson = JsonSerializer.Serialize(
+            new
+            {
+                jaccardThreshold = 0.7,
+                resolver = resolverValue,
+                conflictDir = "conflict"
+            },
+            new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(mergeConfigPath, mergeConfigJson + "\n");
+        AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(mergeConfigPath)}");
+
+        // 4. Add .scrinia/hooks/scri-merge* to .gitignore if not already there
+        string gitignorePath = Path.Combine(root, ".gitignore");
+        const string hookEntry = ".scrinia/hooks/scri-merge*";
+        bool needsEntry = true;
+        if (File.Exists(gitignorePath))
+        {
+            string content = File.ReadAllText(gitignorePath);
+            if (content.Contains(hookEntry, StringComparison.Ordinal))
+                needsEntry = false;
+        }
+        if (needsEntry)
+        {
+            using var writer = File.AppendText(gitignorePath);
+            writer.WriteLine();
+            writer.WriteLine("# Scrinia merge driver binary (platform-specific)");
+            writer.WriteLine(hookEntry);
+            AnsiConsole.MarkupLine($"[green]  Updated:[/] {Markup.Escape(gitignorePath)}");
+        }
+
+        // 5. Print instructions
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(
+            "[bold]Multi-user merge driver configured.[/] " +
+            "Copy scri-merge binary to [blue].scrinia/hooks/[/] for your platform.");
+    }
+
+    private static void RunGit(string workingDir, params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (string arg in args)
+            psi.ArgumentList.Add(arg);
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start git process.");
+        process.WaitForExit(10_000);
+        if (process.ExitCode != 0)
+        {
+            string error = process.StandardError.ReadToEnd();
+            throw new InvalidOperationException(
+                $"git {string.Join(' ', args)} failed (exit {process.ExitCode}): {error}");
+        }
     }
 
     private static async Task DownloadFilesAsync(string baseUrl, string[] files, string targetDir, CancellationToken ct)
@@ -958,5 +1049,302 @@ public class ScriniaCommands
         }
 
         return result;
+    }
+
+    /// <summary>Migrate .scrinia/ data from v1 (topic:name) to v2 (path) structure.</summary>
+    /// <param name="workspace">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="dryRun">Print what would be copied without actually doing it.</param>
+    /// <param name="backup">Create a timestamped backup of .scrinia/ before migrating.</param>
+    /// <param name="cleanup">Remove v1 originals after verifying migration.</param>
+    public Task<int> Migrate(
+        string? workspace = null,
+        bool dryRun = false,
+        bool backup = true,
+        bool cleanup = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspace);
+        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        string scriniaDir = Path.Combine(root, ".scrinia");
+
+        if (!Directory.Exists(scriniaDir))
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] No .scrinia/ directory found.");
+            return Task.FromResult(1);
+        }
+
+        // ── Cleanup mode: remove v1 originals ───────────────────────────
+        if (cleanup)
+        {
+            return RunCleanup(scriniaDir, dryRun);
+        }
+
+        // ── Backup ──────────────────────────────────────────────────────
+        if (backup && !dryRun)
+        {
+            string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+            string backupDir = Path.Combine(root, $".scrinia-backup-{timestamp}");
+            AnsiConsole.MarkupLine($"[dim]Backing up .scrinia/ to {Markup.Escape(Path.GetFileName(backupDir))}...[/]");
+            CopyDirectoryRecursive(scriniaDir, backupDir);
+            AnsiConsole.MarkupLine("[green]Backup complete.[/]");
+        }
+
+        // ── Gather migration plan ───────────────────────────────────────
+        var plan = BuildMigrationPlan(scriniaDir);
+
+        if (plan.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Nothing to migrate — no v1 files found.[/]");
+            return Task.FromResult(0);
+        }
+
+        // ── Execute or report ───────────────────────────────────────────
+        int migrated = 0;
+        int skipped = 0;
+        int errors = 0;
+
+        if (dryRun)
+            AnsiConsole.MarkupLine($"[bold][DRY RUN][/] Would migrate {plan.Count} files:");
+
+        foreach (var (source, target) in plan)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string relSource = Path.GetRelativePath(scriniaDir, source).Replace('\\', '/');
+            string relTarget = Path.GetRelativePath(scriniaDir, target).Replace('\\', '/');
+
+            if (File.Exists(target))
+            {
+                if (!dryRun)
+                    skipped++;
+                else
+                    AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(relSource)} → {Markup.Escape(relTarget)} (skip, exists)[/]");
+                continue;
+            }
+
+            if (dryRun)
+            {
+                AnsiConsole.MarkupLine($"  {Markup.Escape(relSource)} → {Markup.Escape(relTarget)}");
+                continue;
+            }
+
+            try
+            {
+                string? targetDir = Path.GetDirectoryName(target);
+                if (targetDir is not null)
+                    Directory.CreateDirectory(targetDir);
+                File.Copy(source, target);
+                migrated++;
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]Error copying {Markup.Escape(relSource)}: {Markup.Escape(ex.Message)}[/]");
+                errors++;
+            }
+        }
+
+        if (!dryRun)
+        {
+            AnsiConsole.MarkupLine($"[green]Migrated {migrated} files to v2 path structure.[/]");
+            if (skipped > 0)
+                AnsiConsole.MarkupLine($"[dim]Skipped {skipped} files (already exist at target).[/]");
+            if (errors > 0)
+                AnsiConsole.MarkupLine($"[red]{errors} errors during migration.[/]");
+            AnsiConsole.MarkupLine("[dim]Original files preserved in topics/ for fallback.[/]");
+            AnsiConsole.MarkupLine("[dim]Run 'scri migrate --cleanup' to remove originals after verifying.[/]");
+        }
+
+        return Task.FromResult(errors > 0 ? 1 : 0);
+    }
+
+    private static List<(string Source, string Target)> BuildMigrationPlan(string scriniaDir)
+    {
+        var plan = new List<(string Source, string Target)>();
+        string memoriesDir = Path.Combine(scriniaDir, "memories");
+
+        // 1. Scan .scrinia/topics/ for .nmp2 and .meta.json files
+        string topicsDir = Path.Combine(scriniaDir, "topics");
+        if (Directory.Exists(topicsDir))
+        {
+            foreach (string file in Directory.EnumerateFiles(topicsDir, "*", SearchOption.AllDirectories))
+            {
+                string ext = Path.GetExtension(file);
+                if (!ext.Equals(".nmp2", StringComparison.OrdinalIgnoreCase) &&
+                    !ext.Equals(".json", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Skip version files — they live in topic/versions/ subdirs
+                string relPath = Path.GetRelativePath(topicsDir, file).Replace('\\', '/');
+                if (relPath.Contains("/versions/", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string target = MapTopicFileToV2(relPath, memoriesDir);
+                plan.Add((file, target));
+            }
+        }
+
+        // 2. Scan .scrinia/agent/ for markdown files → memories/agent/
+        string agentDir = Path.Combine(scriniaDir, "agent");
+        if (Directory.Exists(agentDir))
+        {
+            foreach (string file in Directory.EnumerateFiles(agentDir, "*", SearchOption.AllDirectories))
+            {
+                string relPath = Path.GetRelativePath(agentDir, file).Replace('\\', '/');
+                string target = Path.Combine(memoriesDir, "agent", relPath.Replace('/', Path.DirectorySeparatorChar));
+                plan.Add((file, target));
+            }
+        }
+
+        // 3. Scan .scrinia/skills/ → memories/skill/
+        string skillsDir = Path.Combine(scriniaDir, "skills");
+        if (Directory.Exists(skillsDir))
+        {
+            foreach (string file in Directory.EnumerateFiles(skillsDir, "*", SearchOption.AllDirectories))
+            {
+                string relPath = Path.GetRelativePath(skillsDir, file).Replace('\\', '/');
+                string target = Path.Combine(memoriesDir, "skill", relPath.Replace('/', Path.DirectorySeparatorChar));
+                plan.Add((file, target));
+            }
+        }
+
+        // 4. Scan .scrinia/workflows/ → memories/workflow/
+        string workflowsDir = Path.Combine(scriniaDir, "workflows");
+        if (Directory.Exists(workflowsDir))
+        {
+            foreach (string file in Directory.EnumerateFiles(workflowsDir, "*", SearchOption.AllDirectories))
+            {
+                string relPath = Path.GetRelativePath(workflowsDir, file).Replace('\\', '/');
+                string target = Path.Combine(memoriesDir, "workflow", relPath.Replace('/', Path.DirectorySeparatorChar));
+                plan.Add((file, target));
+            }
+        }
+
+        return plan;
+    }
+
+    /// <summary>
+    /// Maps a relative path under topics/ to its v2 target under memories/.
+    /// Handles the three v1 layouts:
+    ///   entity/{topic}/{file} → {topic}/{file}     (strip entity/ prefix)
+    ///   memory/{topic}/{file} → {topic}/{file}     (strip memory/ prefix)
+    ///   agent/{file}          → agent/{file}        (keep as-is)
+    ///   {topic}/{file}        → {topic}/{file}      (flat topic, keep as-is)
+    /// </summary>
+    private static string MapTopicFileToV2(string relPath, string memoriesDir)
+    {
+        // relPath uses forward slashes, e.g. "entity/goal/G-5.nmp2" or "arch/overview.nmp2"
+        string[] parts = relPath.Split('/');
+
+        string mappedRelPath;
+        if (parts.Length >= 3 &&
+            parts[0].Equals("entity", StringComparison.OrdinalIgnoreCase))
+        {
+            // entity/goal/G-5.nmp2 → goal/G-5.nmp2
+            mappedRelPath = string.Join(Path.DirectorySeparatorChar.ToString(), parts[1..]);
+        }
+        else if (parts.Length >= 3 &&
+                 parts[0].Equals("memory", StringComparison.OrdinalIgnoreCase))
+        {
+            // memory/api/auth-flow.nmp2 → api/auth-flow.nmp2
+            mappedRelPath = string.Join(Path.DirectorySeparatorChar.ToString(), parts[1..]);
+        }
+        else
+        {
+            // agent/profile.nmp2 → agent/profile.nmp2
+            // arch/overview.nmp2 → arch/overview.nmp2
+            mappedRelPath = relPath.Replace('/', Path.DirectorySeparatorChar);
+        }
+
+        return Path.Combine(memoriesDir, mappedRelPath);
+    }
+
+    private static Task<int> RunCleanup(string scriniaDir, bool dryRun)
+    {
+        string topicsDir = Path.Combine(scriniaDir, "topics");
+        string memoriesDir = Path.Combine(scriniaDir, "memories");
+
+        if (!Directory.Exists(memoriesDir))
+        {
+            AnsiConsole.MarkupLine("[red]Error:[/] No memories/ directory found. Run 'scri migrate' first.");
+            return Task.FromResult(1);
+        }
+
+        if (!Directory.Exists(topicsDir))
+        {
+            AnsiConsole.MarkupLine("[yellow]Nothing to clean up — topics/ directory does not exist.[/]");
+            return Task.FromResult(0);
+        }
+
+        // Only remove files from topics/ that have a corresponding file in memories/
+        var plan = BuildMigrationPlan(scriniaDir);
+        int removed = 0;
+        int kept = 0;
+
+        foreach (var (source, target) in plan)
+        {
+            if (!File.Exists(target))
+            {
+                kept++;
+                continue;
+            }
+
+            string relSource = Path.GetRelativePath(scriniaDir, source).Replace('\\', '/');
+
+            if (dryRun)
+            {
+                AnsiConsole.MarkupLine($"  [red]Would remove[/] {Markup.Escape(relSource)}");
+            }
+            else
+            {
+                File.Delete(source);
+                removed++;
+            }
+        }
+
+        if (dryRun)
+        {
+            AnsiConsole.MarkupLine($"[bold][DRY RUN][/] Would remove {plan.Count - kept} v1 files.");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[green]Removed {removed} v1 files.[/]");
+            if (kept > 0)
+                AnsiConsole.MarkupLine($"[dim]Kept {kept} files (no v2 counterpart found).[/]");
+
+            // Clean up empty directories in topics/
+            CleanEmptyDirectories(topicsDir);
+        }
+
+        return Task.FromResult(0);
+    }
+
+    private static void CopyDirectoryRecursive(string sourceDir, string targetDir)
+    {
+        Directory.CreateDirectory(targetDir);
+
+        foreach (string file in Directory.GetFiles(sourceDir))
+        {
+            string destFile = Path.Combine(targetDir, Path.GetFileName(file));
+            File.Copy(file, destFile, overwrite: false);
+        }
+
+        foreach (string dir in Directory.GetDirectories(sourceDir))
+        {
+            string destDir = Path.Combine(targetDir, Path.GetFileName(dir));
+            CopyDirectoryRecursive(dir, destDir);
+        }
+    }
+
+    private static void CleanEmptyDirectories(string dir)
+    {
+        foreach (string subDir in Directory.GetDirectories(dir))
+        {
+            CleanEmptyDirectories(subDir);
+        }
+
+        if (!Directory.EnumerateFileSystemEntries(dir).Any())
+        {
+            try { Directory.Delete(dir); } catch { /* ignore */ }
+        }
     }
 }

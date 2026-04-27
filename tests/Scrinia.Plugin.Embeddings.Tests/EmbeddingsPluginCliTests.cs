@@ -69,7 +69,7 @@ public class EmbeddingsPluginCliTests
         try
         {
             using var store = new VectorStore(tempDir);
-            store.TotalVectorCount().Should().Be(0);
+            store.Count().Should().Be(0);
         }
         finally
         {

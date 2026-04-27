@@ -24,7 +24,7 @@ public sealed class ConcernPatternTests : IDisposable
 
     private async Task InitProject()
     {
-        await _tools.ProjectInit("Goals: test concern pattern detection", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: test concern pattern detection", CancellationToken.None);
     }
 
     [Fact]
@@ -35,16 +35,16 @@ public sealed class ConcernPatternTests : IDisposable
 
         // Use a distinctive word "authentication" in all 3 descriptions
         // so TextAnalysis extracts it as a keyword for each concern
-        await _tools.ConcernAdd(
+        await ScriniaProjectTools.ConcernAdd(
             "Risk: authentication token expiry not handled in login flow",
             "high", "06", id: "auth-pat-1", CancellationToken.None);
 
-        await _tools.ConcernAdd(
+        await ScriniaProjectTools.ConcernAdd(
             "Risk: authentication credentials stored in plaintext",
             "high", "06", id: "auth-pat-2", CancellationToken.None);
 
         // Act — the 3rd concern should trigger pattern detection
-        string result = await _tools.ConcernAdd(
+        string result = await ScriniaProjectTools.ConcernAdd(
             "Risk: authentication session hijacking possible",
             "medium", "06", id: "auth-pat-3", CancellationToken.None);
 
@@ -62,12 +62,12 @@ public sealed class ConcernPatternTests : IDisposable
         await InitProject();
 
         // Only 2 concerns share the distinctive keyword "serialization"
-        await _tools.ConcernAdd(
+        await ScriniaProjectTools.ConcernAdd(
             "Risk: serialization format not validated on input",
             "medium", "06", id: "ser-pat-1", CancellationToken.None);
 
         // Act
-        string result = await _tools.ConcernAdd(
+        string result = await ScriniaProjectTools.ConcernAdd(
             "Risk: serialization overhead causing latency spikes",
             "low", "06", id: "ser-pat-2", CancellationToken.None);
 
@@ -84,16 +84,16 @@ public sealed class ConcernPatternTests : IDisposable
 
         // All 3 concerns share severity:high and phase:06 (noise prefixes)
         // but have completely different content keywords (no overlapping words)
-        await _tools.ConcernAdd(
+        await ScriniaProjectTools.ConcernAdd(
             "Database connection pool exhaustion detected",
             "high", "06", id: "noise-1", CancellationToken.None);
 
-        await _tools.ConcernAdd(
+        await ScriniaProjectTools.ConcernAdd(
             "Network latency causing upstream timeouts",
             "high", "06", id: "noise-2", CancellationToken.None);
 
         // Act
-        string result = await _tools.ConcernAdd(
+        string result = await ScriniaProjectTools.ConcernAdd(
             "Memory consumption growing unbounded overnight",
             "high", "06", id: "noise-3", CancellationToken.None);
 

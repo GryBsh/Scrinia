@@ -54,14 +54,16 @@ public sealed class GoalPrefixTests : IDisposable
             description: "Test project state");
 
         // Act — add a new goal; it should be G-6, not G-3 (which would collide if count were used)
-        string result = await _projTools.GoalUpdate("add", "New goal after cleanup",
+        string result = await ScriniaProjectTools.GoalUpdate("add", "New goal after cleanup",
             cancellationToken: CancellationToken.None);
 
         // Assert — the response must contain G-6 (max existing ID 5 + 1), not G-3 (count 2 + 1)
-        result.Should().Contain("G-6",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "goal_update(add) should succeed");
+        r.Content.Should().Contain("G-6",
             "goal_update(add) should assign G-6 because the highest existing ID is G-5, " +
             "not G-3 which would result from using goal count (2) + 1");
-        result.Should().NotContain("G-3",
+        r.Content.Should().NotContain("G-3",
             "goal_update(add) must not reuse G-3 when G-5 already exists");
     }
 
@@ -71,11 +73,11 @@ public sealed class GoalPrefixTests : IDisposable
     public async Task PlanTasks_GoalPrefixedNames()
     {
         // Arrange — full project setup: init, add goal, requirements, roadmap
-        await _projTools.ProjectInit("Goals: test goal-prefixed task names",
+        await ScriniaProjectTools.ProjectInit("Goals: test goal-prefixed task names",
             cancellationToken: CancellationToken.None);
-        await _projTools.GoalUpdate("add", "Test goal for task prefix",
+        await ScriniaProjectTools.GoalUpdate("add", "Test goal for task prefix",
             cancellationToken: CancellationToken.None);
-        await _projTools.PlanRequirements(
+        await ScriniaProjectTools.PlanRequirements(
             "- REQ-01: verify task naming includes goal prefix",
             cancellationToken: CancellationToken.None);
 
@@ -88,15 +90,17 @@ public sealed class GoalPrefixTests : IDisposable
             """;
 
         // Act
-        string result = await _projTools.PlanTasks("01", taskDef,
+        string result = await ScriniaProjectTools.PlanTasks("01", taskDef,
             cancellationToken: CancellationToken.None);
 
         // Assert — the task name should include the goal prefix (e.g., "task:g1-abc-01-1-01")
         // The active goal from InitProject + goal_update(add) will be G-1-xxx (init has no structured goals),
         // so the prefix should be "g1-xxx-"
-        result.Should().Contain("task:g",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "plan_tasks should succeed");
+        r.Content.Should().Contain("task:g",
             "plan_tasks should create task memories with goal-prefixed names (task:gN-...)");
-        result.Should().MatchRegex(@"task:g\d+-[a-f0-9]+-01-",
+        r.Content.Should().MatchRegex(@"task:g\d+-[a-f0-9]+-01-",
             "task name should follow pattern task:g{goalNum}-{hex}-{phaseId}-{wave}-{taskId}");
     }
 
@@ -106,16 +110,18 @@ public sealed class GoalPrefixTests : IDisposable
     public async Task GoalUpdate_Add_ProducesIdWithHexSuffix()
     {
         // Arrange — initialize a project so goal_update has the required context
-        await _projTools.ProjectInit("Goals: test branch-safe goal IDs",
+        await ScriniaProjectTools.ProjectInit("Goals: test branch-safe goal IDs",
             cancellationToken: CancellationToken.None);
 
         // Act — add a goal
-        string result = await _projTools.GoalUpdate("add", "test goal",
+        string result = await ScriniaProjectTools.GoalUpdate("add", "test goal",
             cancellationToken: CancellationToken.None);
 
         // Assert — the response should contain a goal ID matching G-{num}-{hex3}
-        Regex.IsMatch(result, @"G-\d+-[a-f0-9]{3}").Should().BeTrue(
-            $"goal ID in response should match pattern G-N-xxx (3-char hex suffix), but got: {result}");
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "goal_update(add) should succeed");
+        Regex.IsMatch(r.Content ?? "", @"G-\d+-[a-f0-9]{3}").Should().BeTrue(
+            $"goal ID in response should match pattern G-N-xxx (3-char hex suffix), but got: {r.Content}");
     }
 
     // ── Test 5: Two adds produce different IDs ───────────────────────────────
@@ -124,18 +130,22 @@ public sealed class GoalPrefixTests : IDisposable
     public async Task GoalUpdate_Add_TwoCallsProduceDifferentIds()
     {
         // Arrange — initialize a project
-        await _projTools.ProjectInit("Goals: test unique goal IDs",
+        await ScriniaProjectTools.ProjectInit("Goals: test unique goal IDs",
             cancellationToken: CancellationToken.None);
 
         // Act — add two goals
-        string result1 = await _projTools.GoalUpdate("add", "first goal",
+        string result1 = await ScriniaProjectTools.GoalUpdate("add", "first goal",
             cancellationToken: CancellationToken.None);
-        string result2 = await _projTools.GoalUpdate("add", "second goal",
+        string result2 = await ScriniaProjectTools.GoalUpdate("add", "second goal",
             cancellationToken: CancellationToken.None);
 
         // Extract goal IDs from both responses
-        var match1 = Regex.Match(result1, @"G-\d+-[a-f0-9]{3}");
-        var match2 = Regex.Match(result2, @"G-\d+-[a-f0-9]{3}");
+        var r1 = ResponseParser.Parse(result1);
+        var r2 = ResponseParser.Parse(result2);
+        r1.Status.Should().Be("success", "first goal_update(add) should succeed");
+        r2.Status.Should().Be("success", "second goal_update(add) should succeed");
+        var match1 = Regex.Match(r1.Content ?? "", @"G-\d+-[a-f0-9]{3}");
+        var match2 = Regex.Match(r2.Content ?? "", @"G-\d+-[a-f0-9]{3}");
 
         match1.Success.Should().BeTrue("first goal_update(add) should produce a branch-safe goal ID");
         match2.Success.Should().BeTrue("second goal_update(add) should produce a branch-safe goal ID");
@@ -151,27 +161,30 @@ public sealed class GoalPrefixTests : IDisposable
     public async Task GoalUpdate_Complete_AcceptsShortFormId()
     {
         // Arrange — initialize project and add a goal
-        await _projTools.ProjectInit("Goals: test short-form goal completion",
+        await ScriniaProjectTools.ProjectInit("Goals: test short-form goal completion",
             cancellationToken: CancellationToken.None);
 
-        string addResult = await _projTools.GoalUpdate("add", "goal for short-form completion",
+        string addResult = await ScriniaProjectTools.GoalUpdate("add", "goal for short-form completion",
             cancellationToken: CancellationToken.None);
 
         // Extract the full goal ID (e.g. G-1-a3f)
-        var fullIdMatch = Regex.Match(addResult, @"G-(\d+)-[a-f0-9]{3}");
+        var ar = ResponseParser.Parse(addResult);
+        ar.Status.Should().Be("success", "goal_update(add) should succeed");
+        var fullIdMatch = Regex.Match(ar.Content ?? "", @"G-(\d+)-[a-f0-9]{3}");
         fullIdMatch.Success.Should().BeTrue("goal_update(add) should return a full goal ID");
         string fullId = fullIdMatch.Value;
         string shortId = $"G-{fullIdMatch.Groups[1].Value}"; // e.g. "G-1"
 
         // Act — complete using short-form ID (G-1 instead of G-1-a3f)
-        string completeResult = await _projTools.GoalUpdate("complete",
+        string completeResult = await ScriniaProjectTools.GoalUpdate("complete",
             goalId: shortId, outcome: "done",
             cancellationToken: CancellationToken.None);
 
         // Assert — should succeed (not return an error)
-        completeResult.Should().NotStartWith("Error:",
+        var cr = ResponseParser.Parse(completeResult);
+        cr.Status.Should().Be("success",
             $"completing with short-form ID '{shortId}' should match full ID '{fullId}'");
-        completeResult.Should().Contain("complete",
+        cr.Content.Should().Contain("complete",
             "response should confirm the goal was completed");
     }
 
@@ -181,23 +194,26 @@ public sealed class GoalPrefixTests : IDisposable
     public async Task GoalUpdate_Complete_AutoAppendsToSessionMemory()
     {
         // Arrange — initialize project and add a goal
-        await _projTools.ProjectInit("Goals: test session memory on completion",
+        await ScriniaProjectTools.ProjectInit("Goals: test session memory on completion",
             cancellationToken: CancellationToken.None);
 
-        string addResult = await _projTools.GoalUpdate("add", "Test goal for session logging",
+        string addResult = await ScriniaProjectTools.GoalUpdate("add", "Test goal for session logging",
             cancellationToken: CancellationToken.None);
 
         // Extract goal ID from addResult
-        var idMatch = Regex.Match(addResult, @"G-\d+-[a-f0-9]{3}");
+        var ar = ResponseParser.Parse(addResult);
+        ar.Status.Should().Be("success", "goal_update(add) should succeed");
+        var idMatch = Regex.Match(ar.Content ?? "", @"G-\d+-[a-f0-9]{3}");
         idMatch.Success.Should().BeTrue("goal_update(add) should return a goal ID");
         string goalId = idMatch.Value;
 
         // Act — complete the goal
-        string completeResult = await _projTools.GoalUpdate("complete",
+        string completeResult = await ScriniaProjectTools.GoalUpdate("complete",
             goalId: goalId, outcome: "Done testing",
             cancellationToken: CancellationToken.None);
 
-        completeResult.Should().NotStartWith("Error:",
+        var cr = ResponseParser.Parse(completeResult);
+        cr.Status.Should().Be("success",
             "goal completion should succeed");
 
         // Assert — a sessions:{today} memory should exist with the outcome text
@@ -226,10 +242,10 @@ public sealed class GoalPrefixTests : IDisposable
     public async Task GoalUpdate_Complete_MentionsMarchReport()
     {
         // Arrange — initialize project and add a goal
-        await _projTools.ProjectInit("Goals: test march report mention",
+        await ScriniaProjectTools.ProjectInit("Goals: test march report mention",
             cancellationToken: CancellationToken.None);
 
-        string addResult = await _projTools.GoalUpdate("add", "Test goal for march report mention",
+        string addResult = await ScriniaProjectTools.GoalUpdate("add", "Test goal for march report mention",
             cancellationToken: CancellationToken.None);
 
         var idMatch = Regex.Match(addResult, @"G-\d+-[a-f0-9]{3}");
@@ -237,14 +253,16 @@ public sealed class GoalPrefixTests : IDisposable
         string goalId = idMatch.Value;
 
         // Act — complete the goal
-        string completeResult = await _projTools.GoalUpdate("complete",
+        string completeResult = await ScriniaProjectTools.GoalUpdate("complete",
             goalId: goalId, outcome: "Done",
             cancellationToken: CancellationToken.None);
 
         // Assert — response should complete and mention march report in post-goal guidance
-        completeResult.Should().NotStartWith("Error:",
+        var cr2 = ResponseParser.Parse(completeResult);
+        cr2.Status.Should().Be("success",
             "goal completion should succeed");
-        completeResult.Should().Contain("march report",
+        string fullText = (cr2.Content ?? "") + (cr2.Instruction ?? "");
+        fullText.Should().Contain("march report",
             "post-goal guidance should mention producing a march report");
     }
 }

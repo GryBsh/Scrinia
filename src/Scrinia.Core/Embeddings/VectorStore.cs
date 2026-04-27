@@ -21,7 +21,7 @@ namespace Scrinia.Core.Embeddings;
 /// Persistent scopes write to {baseDir}/{scope}/vectors.bin with atomic writes for full rewrites
 /// and direct append for single-entry upserts.
 /// </summary>
-public sealed class VectorStore : IDisposable
+public sealed class VectorStore : IDisposable, IVectorStore
 {
     private static readonly byte[] MagicSvf1 = "SVF1"u8.ToArray();
     private static readonly byte[] MagicSvf2 = "SVF2"u8.ToArray();
@@ -36,8 +36,7 @@ public sealed class VectorStore : IDisposable
         _baseDir = baseDir;
     }
 
-    private SemaphoreSlim GetLock(string scope) =>
-        _scopeLocks.GetOrAdd(scope, _ => new SemaphoreSlim(1, 1));
+    private SemaphoreSlim GetLock(string scope) => _scopeLocks.GetOrAdd(scope, _ => new SemaphoreSlim(1, 1));
 
     private static string GetVectorLockPath(string vectorPath) => vectorPath + ".lock";
 
@@ -149,8 +148,7 @@ public sealed class VectorStore : IDisposable
     }
 
     /// <summary>Returns the count of vectors across all loaded scopes.</summary>
-    public int TotalVectorCount() =>
-        _scopeVectors.Values.Sum(v => v.Count);
+    public int Count() => _scopeVectors.Values.Sum(v => v.Count);
 
     private string GetFilePath(string scope)
     {

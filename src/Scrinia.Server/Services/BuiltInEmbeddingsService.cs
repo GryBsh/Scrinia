@@ -34,7 +34,7 @@ public sealed class BuiltInEmbeddingsService :
     public string ProviderName => _provider.GetType().Name;
     public int Dimensions => _provider.Dimensions;
     public double SemanticWeight => _semanticWeight;
-    public int TotalVectorCount => _vectorStore.TotalVectorCount();
+    public int TotalVectorCount => _vectorStore.Count();
 
     // ── ISearchScoreContributor ──────────────────────────────────────────────
 

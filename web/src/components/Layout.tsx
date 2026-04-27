@@ -1,6 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Database, Key, LayoutDashboard, LogOut, Heart, MessageSquare, Settings } from 'lucide-react'
+import { Database, Key, LayoutDashboard, LogOut, Heart, MessageSquare, Settings, GitBranch } from 'lucide-react'
 import { getHealth, clearToken } from '../api/client'
 
 export default function Layout() {
@@ -37,6 +37,9 @@ export default function Layout() {
           </NavLink>
           <NavLink to="/chat" icon={<MessageSquare className="w-4 h-4" />} active={isActive('/chat')}>
             Agent Chat
+          </NavLink>
+          <NavLink to="/workflows" icon={<GitBranch className="w-4 h-4" />} active={isActive('/workflows')}>
+            Workflows
           </NavLink>
           <NavLink to="/keys" icon={<Key className="w-4 h-4" />} active={isActive('/keys')}>
             API Keys

@@ -18,7 +18,7 @@ public sealed class EmbeddingsTools(
             provider = provider.GetType().Name,
             available = provider.IsAvailable,
             dimensions = provider.Dimensions,
-            vectorCount = vectorStore.TotalVectorCount(),
+            vectorCount = vectorStore.Count(),
         });
     }
 

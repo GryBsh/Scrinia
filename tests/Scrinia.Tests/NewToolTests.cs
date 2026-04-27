@@ -124,9 +124,9 @@ public sealed class NewToolTests : IDisposable
 
     private async Task SetupProjectAndRoadmap()
     {
-        await _projTools.ProjectInit("Goals: test file conflicts", cancellationToken: CancellationToken.None);
-        await _projTools.GoalUpdate("add", "Test file conflict detection", cancellationToken: CancellationToken.None);
-        await _projTools.PlanRequirements(
+        await ScriniaProjectTools.ProjectInit("Goals: test file conflicts", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.GoalUpdate("add", "Test file conflict detection", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements(
             "- REQ-01: task decomposition\n- REQ-02: conflict detection",
             cancellationToken: CancellationToken.None);
     }
@@ -150,7 +150,7 @@ public sealed class NewToolTests : IDisposable
             """;
 
         // Act
-        string result = await _projTools.PlanTasks("01", tasksWithConflict,
+        string result = await ScriniaProjectTools.PlanTasks("01", tasksWithConflict,
             cancellationToken: CancellationToken.None);
 
         // Assert — response must warn about the file conflict on Bar.cs
@@ -183,7 +183,7 @@ public sealed class NewToolTests : IDisposable
             """;
 
         // Act
-        string result = await _projTools.PlanTasks("01", tasksWithoutFiles,
+        string result = await ScriniaProjectTools.PlanTasks("01", tasksWithoutFiles,
             cancellationToken: CancellationToken.None);
 
         // Assert — no conflict warning when no Files: lines present
@@ -300,7 +300,7 @@ public sealed class NewToolTests : IDisposable
     /// <summary>Sets up a project so skill_create prerequisite check passes.</summary>
     private async Task InitProject()
     {
-        await _projTools.ProjectInit("Goals: test skill versioning", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: test skill versioning", cancellationToken: CancellationToken.None);
     }
 
     [Fact]
@@ -310,7 +310,7 @@ public sealed class NewToolTests : IDisposable
         await InitProject();
 
         // Act — create a skill that overrides the built-in "planner" skill
-        await _projTools.SkillCreate("planner", "custom", "test override", null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("planner", "custom", "test override", null, CancellationToken.None);
 
         // Assert — the sidecar .meta.json should have a BasedOn hash
         var store = MemoryStoreContext.Current!;
@@ -335,7 +335,7 @@ public sealed class NewToolTests : IDisposable
         await InitProject();
 
         // Act — create a skill that does NOT match any built-in name
-        await _projTools.SkillCreate("my-custom-skill", "custom", "totally custom", null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("my-custom-skill", "custom", "totally custom", null, CancellationToken.None);
 
         // Assert — the sidecar should NOT have a BasedOn hash
         var store = MemoryStoreContext.Current!;
@@ -358,10 +358,10 @@ public sealed class NewToolTests : IDisposable
     {
         // Arrange — create a fresh override of the built-in "planner" skill
         await InitProject();
-        await _projTools.SkillCreate("planner", "custom", "fresh override", null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("planner", "custom", "fresh override", null, CancellationToken.None);
 
         // Act — load the skill immediately (hash should match current built-in)
-        string result = await _projTools.SkillLoad("planner", cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillLoad("planner", cancellationToken: CancellationToken.None);
 
         // Assert — no stale warning because the basedOn hash matches the current built-in
         ResponseParser.Parse(result).Content.Should().NotContain("WARNING",
@@ -373,10 +373,10 @@ public sealed class NewToolTests : IDisposable
     {
         // Arrange — create an override of a built-in skill
         await InitProject();
-        await _projTools.SkillCreate("planner", "custom", "project-specific planner", null, CancellationToken.None);
+        await ScriniaProjectTools.SkillCreate("planner", "custom", "project-specific planner", null, CancellationToken.None);
 
         // Act — load with reconcile=true
-        string result = await _projTools.SkillLoad("planner", reconcile: true, cancellationToken: CancellationToken.None);
+        string result = await ScriniaProjectTools.SkillLoad("planner", reconcile: true, cancellationToken: CancellationToken.None);
 
         // Assert — response must contain both the built-in and override sections
         var content = ResponseParser.Parse(result).Content!;
@@ -714,7 +714,7 @@ public sealed class NewToolTests : IDisposable
         // The StoreScope creates: {WorkspaceDir}/.scrinia/store/ and sets MemoryStoreContext.Current
 
         // Act — initialize the project
-        await _projTools.ProjectInit("Goals: test gitattributes scaffolding",
+        await ScriniaProjectTools.ProjectInit("Goals: test gitattributes scaffolding",
             cancellationToken: CancellationToken.None);
 
         // Assert — .scrinia/.gitattributes should exist and contain the binary marker

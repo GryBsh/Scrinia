@@ -37,7 +37,7 @@ public sealed class PlanningTopicsTests : IDisposable
         // Assert
         string artifactPath = _store.ArtifactPath(subject, scope);
         File.Exists(artifactPath).Should().BeTrue("artifact file should exist at the resolved path");
-        scope.Should().StartWith("local-topic:plan", "plan: prefix should resolve to local-topic:plan scope");
+        scope.Should().StartWith("local-topic:entity/plan", "plan: prefix should resolve to local-topic:entity/plan scope");
     }
 
     [Fact]
@@ -49,8 +49,9 @@ public sealed class PlanningTopicsTests : IDisposable
         foreach (string prefix in prefixes)
         {
             var (scope, subject) = _store.ParseQualifiedName($"{prefix}:test-memory");
-            scope.Should().Be($"local-topic:{prefix}",
-                $"prefix '{prefix}:' should resolve to scope 'local-topic:{prefix}'");
+            string expectedScope = MemoryNaming.BuildScopedTopicScope(prefix);
+            scope.Should().Be(expectedScope,
+                $"prefix '{prefix}:' should resolve to scope '{expectedScope}'");
             subject.Should().Be("test-memory",
                 $"subject should be 'test-memory' after stripping '{prefix}:' prefix");
         }
@@ -111,8 +112,8 @@ public sealed class PlanningTopicsTests : IDisposable
             Description: "Local entry");
         _store.Upsert(localEntry, "local");
 
-        // Act — null scopes means "all scopes"
-        var allEntries = _store.ListScoped(null);
+        // Act — "all" scopes includes entity-classified scopes
+        var allEntries = _store.ListScoped("all");
 
         // Assert — should include entries from both scopes
         allEntries.Should().Contain(x => x.Entry.Name == "local-note",

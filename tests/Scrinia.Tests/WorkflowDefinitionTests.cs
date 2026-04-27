@@ -318,13 +318,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task GoalAdd_CreatesSeedTasksMatchingWorkflow()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- Build the API",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act
-        await _tools.GoalUpdate("add", "Test workflow seed creation",
+        await ScriniaProjectTools.GoalUpdate("add", "Test workflow seed creation",
             null, null, cancellationToken: CancellationToken.None);
 
         // Assert — each seed activity in the workflow should have a corresponding task
@@ -350,13 +350,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task GoalAdd_SeedTaskDependencies_MatchWorkflow()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- Build the API",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build the API",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act
-        await _tools.GoalUpdate("add", "Test seed dependencies",
+        await ScriniaProjectTools.GoalUpdate("add", "Test seed dependencies",
             null, null, cancellationToken: CancellationToken.None);
 
         // Assert — dependency structure
@@ -395,13 +395,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task PlanTasks_InjectsAllGatesFromWorkflow()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: gate injection from workflow",
+        await ScriniaProjectTools.ProjectInit("Goals: gate injection from workflow",
             cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X",
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X",
             cancellationToken: CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanTasks("01",
+        string result = await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nDepends on: none\nAction: Implement feature X\nAcceptance criteria:\n- Feature works",
             cancellationToken: CancellationToken.None);
 
@@ -422,13 +422,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task PlanTasks_GateTaskKeywords_MatchWorkflow()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: gate keyword matching",
+        await ScriniaProjectTools.ProjectInit("Goals: gate keyword matching",
             cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X",
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X",
             cancellationToken: CancellationToken.None);
 
         // Act
-        await _tools.PlanTasks("01",
+        await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nDepends on: none\nAction: Implement feature X\nAcceptance criteria:\n- Feature works",
             cancellationToken: CancellationToken.None);
 
@@ -451,13 +451,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task PlanTasks_QaGateDependsOnAllUserTasks_FromWorkflow()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: wildcard dependency test",
+        await ScriniaProjectTools.ProjectInit("Goals: wildcard dependency test",
             cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X\n- REQ-02: Feature Y",
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X\n- REQ-02: Feature Y",
             cancellationToken: CancellationToken.None);
 
         // Act — two user tasks, so qa-gate (DependsOn: ["*"]) should depend on both
-        await _tools.PlanTasks("01",
+        await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nDepends on: none\nAction: Build X\nAcceptance criteria:\n- done\n\n" +
             "## Task 02\nDepends on: none\nAction: Build Y\nAcceptance criteria:\n- done",
             cancellationToken: CancellationToken.None);
@@ -485,7 +485,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
     {
         // Arrange — create a project and manually insert a task with a gate keyword
         // that does not exist in the workflow definition
-        await _tools.ProjectInit("Goals: unknown gate passthrough test",
+        await ScriniaProjectTools.ProjectInit("Goals: unknown gate passthrough test",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
@@ -509,7 +509,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
         store.Upsert(entry, scope);
 
         // Act — complete the task with the unknown gate type
-        string result = await _tools.TaskComplete("task:01-1-custom-gate", "Custom gate done",
+        string result = await ScriniaProjectTools.TaskComplete("task:01-1-custom-gate", "Custom gate done",
             cancellationToken: CancellationToken.None);
 
         // Assert — should pass through without validation error (WF-09 backward compat)
@@ -929,13 +929,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task GoalAdd_WithQuickFixWorkflowRef_StoresWorkflowKeyword()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- Fix a bug",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Fix a bug",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act — add a goal with workflowRef="quick-fix"
-        await _tools.GoalUpdate("add", "Fix login timeout bug",
+        await ScriniaProjectTools.GoalUpdate("add", "Fix login timeout bug",
             null, null, workflowRef: "quick-fix",
             cancellationToken: CancellationToken.None);
 
@@ -957,13 +957,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task GoalAdd_WithQuickFixWorkflowRef_Creates2SeedTasks()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- Fix a bug",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Fix a bug",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act
-        await _tools.GoalUpdate("add", "Fix null reference in parser",
+        await ScriniaProjectTools.GoalUpdate("add", "Fix null reference in parser",
             null, null, workflowRef: "quick-fix",
             cancellationToken: CancellationToken.None);
 
@@ -983,13 +983,13 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task GoalAdd_WithDefaultWorkflow_Creates3SeedTasks()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- Build a feature",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Build a feature",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act — no workflowRef, should default to goal-execution
-        await _tools.GoalUpdate("add", "Build caching layer",
+        await ScriniaProjectTools.GoalUpdate("add", "Build caching layer",
             null, null, cancellationToken: CancellationToken.None);
 
         // Assert — default workflow creates researcher + auditor + planner
@@ -1008,20 +1008,20 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task PlanTasks_WithQuickFixGoal_InjectsOnlyQaGate()
     {
         // Arrange
-        await _tools.ProjectInit("Goals: quick fix gate injection test",
+        await ScriniaProjectTools.ProjectInit("Goals: quick fix gate injection test",
             cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Fix the bug",
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Fix the bug",
             cancellationToken: CancellationToken.None);
 
         // Add goal with quick-fix workflow so seed tasks get workflow:quick-fix keyword
-        await _tools.GoalUpdate("add", "Fix timeout issue",
+        await ScriniaProjectTools.GoalUpdate("add", "Fix timeout issue",
             null, null, workflowRef: "quick-fix",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
 
         // Act — plan tasks for phase 01
-        await _tools.PlanTasks("01",
+        await ScriniaProjectTools.PlanTasks("01",
             "## Task 01\nDepends on: none\nAction: Fix the timeout\nAcceptance criteria:\n- Timeout fixed",
             cancellationToken: CancellationToken.None);
 
@@ -1058,9 +1058,9 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task ResolveGoalWorkflowName_GoalWithQuickFixTasks_ReturnsQuickFix()
     {
         // Arrange — create a goal with quick-fix workflow so tasks have workflow:quick-fix keyword
-        await _tools.ProjectInit("Goals:\n- Fix a bug",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Fix a bug",
             cancellationToken: CancellationToken.None);
-        await _tools.GoalUpdate("add", "Fix a test failure",
+        await ScriniaProjectTools.GoalUpdate("add", "Fix a test failure",
             null, null, workflowRef: "quick-fix",
             cancellationToken: CancellationToken.None);
 
@@ -1095,7 +1095,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task ResolveWorkflow_YamlFile_ParsesCorrectly()
     {
         // Arrange — initialize project so the store is set up
-        await _tools.ProjectInit("Goals:\n- YAML workflow test",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- YAML workflow test",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
@@ -1138,7 +1138,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(workflowsDir, "yaml-test.yaml"), yaml);
 
         // Act — resolve via entity('show', { type: 'workflow', id: 'yaml-test' })
-        string result = await _tools.EntityDispatch("show", "workflow", id: "yaml-test",
+        string result = await ScriniaProjectTools.EntityDispatch("show", "workflow", id: "yaml-test",
             cancellationToken: CancellationToken.None);
 
         // Assert — should use override (not built-in) and have 2 seed activities
@@ -1163,7 +1163,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task ResolveWorkflow_YamlFallbackToJson()
     {
         // Arrange — only a .json file exists (no .yaml or .yml)
-        await _tools.ProjectInit("Goals:\n- JSON fallback test",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- JSON fallback test",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
@@ -1183,7 +1183,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(workflowsDir, "json-only.json"), json);
 
         // Act
-        string result = await _tools.EntityDispatch("show", "workflow", id: "json-only",
+        string result = await ScriniaProjectTools.EntityDispatch("show", "workflow", id: "json-only",
             cancellationToken: CancellationToken.None);
 
         // Assert — should resolve from JSON as an override
@@ -1206,7 +1206,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task ResolveWorkflow_CorruptedYaml_FallsBackWithWarning()
     {
         // Arrange — write a corrupted YAML file
-        await _tools.ProjectInit("Goals:\n- Corrupted YAML test",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- Corrupted YAML test",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
@@ -1219,7 +1219,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
             "{{{invalid yaml content that cannot be parsed");
 
         // Act
-        string result = await _tools.EntityDispatch("show", "workflow", id: "corrupted",
+        string result = await ScriniaProjectTools.EntityDispatch("show", "workflow", id: "corrupted",
             cancellationToken: CancellationToken.None);
 
         // Assert — should fall back to built-in with a warning
@@ -1239,7 +1239,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task ResolveWorkflow_YamlPrecedenceOverYml()
     {
         // Arrange — create both .yaml and .yml with different names/content
-        await _tools.ProjectInit("Goals:\n- YAML precedence test",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- YAML precedence test",
             cancellationToken: CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
@@ -1303,7 +1303,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(workflowsDir, "precedence-test.yml"), ymlContent);
 
         // Act
-        string result = await _tools.EntityDispatch("show", "workflow", id: "precedence-test",
+        string result = await ScriniaProjectTools.EntityDispatch("show", "workflow", id: "precedence-test",
             cancellationToken: CancellationToken.None);
 
         // Assert — .yaml should win, so we get 2 seed activities (not 1 from .yml)
@@ -1326,7 +1326,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
     public async Task CreateOrUpdateWorkflow_YamlInput_ParsedCorrectly()
     {
         // Arrange
-        await _tools.ProjectInit("Goals:\n- YAML create test",
+        await ScriniaProjectTools.ProjectInit("Goals:\n- YAML create test",
             cancellationToken: CancellationToken.None);
 
         // YAML definition string (not a file on disk — passed as the definition parameter)
@@ -1349,7 +1349,7 @@ public sealed class WorkflowDefinitionTests : IDisposable
             """;
 
         // Act — entity('create', { type: 'workflow', definition: yamlString })
-        string result = await _tools.EntityDispatch("create", "workflow",
+        string result = await ScriniaProjectTools.EntityDispatch("create", "workflow",
             definition: yamlDefinition,
             cancellationToken: CancellationToken.None);
 

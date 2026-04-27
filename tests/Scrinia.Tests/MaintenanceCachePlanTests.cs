@@ -24,7 +24,7 @@ public sealed class MaintenanceCachePlanTests : IDisposable
 
     private async Task InitProject()
     {
-        await _tools.ProjectInit("Goals: test cache integration\nConstraints: none", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: test cache integration\nConstraints: none", CancellationToken.None);
     }
 
     // ── PlanStatus cache-first tests ─────────────────────────────────────────
@@ -39,7 +39,7 @@ public sealed class MaintenanceCachePlanTests : IDisposable
             driftCount: 1, missingCount: 0, orphanCount: 0);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — should use cached values and show cache age annotation
         result.Should().Contain("3 memory(s) have passed their review date",
@@ -68,7 +68,7 @@ public sealed class MaintenanceCachePlanTests : IDisposable
             ReviewAfter: DateTimeOffset.UtcNow.AddDays(-1)));
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — should detect staleness via live scan and NOT mention cache
         result.Should().Contain("passed their review date",
@@ -89,7 +89,7 @@ public sealed class MaintenanceCachePlanTests : IDisposable
             driftCount: 0, missingCount: 2, orphanCount: 0);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — should use cached values and show cache age annotation
         result.Should().Contain("5 memory(s) have passed their review date",
@@ -118,7 +118,7 @@ public sealed class MaintenanceCachePlanTests : IDisposable
             ReviewWhen: "when auth changes"));
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — should detect review condition via live scan and NOT mention cache
         result.Should().Contain("review conditions set",

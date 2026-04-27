@@ -34,7 +34,7 @@ public sealed class ConcernTrackingTests : IDisposable
     /// <summary>Sets up a project so concern_add prerequisite check passes.</summary>
     private async Task InitProject()
     {
-        await _tools.ProjectInit("Goals: test concern tracking", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: test concern tracking", CancellationToken.None);
     }
 
     // ── concern_add tests (CONC-01) ───────────────────────────────────────────
@@ -46,7 +46,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.ConcernAdd("Risk: auth token expiry not handled",
+        await ScriniaProjectTools.ConcernAdd("Risk: auth token expiry not handled",
             "high", "06", id: null, CancellationToken.None);
 
         // Assert — a concern:* entry must exist in index
@@ -66,7 +66,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.ConcernAdd("Risk: auth token expiry not handled",
+        await ScriniaProjectTools.ConcernAdd("Risk: auth token expiry not handled",
             "high", "06", id: null, CancellationToken.None);
 
         // Assert
@@ -85,7 +85,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.ConcernAdd("Risk: database overload under peak load",
+        await ScriniaProjectTools.ConcernAdd("Risk: database overload under peak load",
             "high", "06", id: null, CancellationToken.None);
 
         // Assert
@@ -104,7 +104,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.ConcernAdd("Risk: scope creep in phase 06",
+        await ScriniaProjectTools.ConcernAdd("Risk: scope creep in phase 06",
             "medium", "06", id: null, CancellationToken.None);
 
         // Assert
@@ -123,23 +123,26 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        string result = await _tools.ConcernAdd("Risk: auth token expiry",
+        string result = await ScriniaProjectTools.ConcernAdd("Risk: auth token expiry",
             "high", "06", id: null, CancellationToken.None);
 
         // Assert — response should contain "concern:" prefix
-        result.Should().Contain("concern:",
-            "concern_add response must contain the concern name with 'concern:' prefix");
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "concern_add should succeed");
+        r.Path.Should().Contain("/concern/",
+            "concern_add response must contain the concern name with '/concern/' path prefix");
     }
 
     [Fact]
     public async Task ConcernAdd_FailsWithoutProject()
     {
         // Act — no project_init, no project:context
-        string result = await _tools.ConcernAdd("Risk: some risk",
+        string result = await ScriniaProjectTools.ConcernAdd("Risk: some risk",
             "low", "all", id: null, CancellationToken.None);
 
         // Assert
-        result.Should().StartWith("Error:",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("error",
             "concern_add without project:context should return an error");
     }
 
@@ -150,7 +153,7 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        await _tools.ConcernAdd("Risk: auth insecure storage",
+        await ScriniaProjectTools.ConcernAdd("Risk: auth insecure storage",
             "high", "06", id: "auth-risk", CancellationToken.None);
 
         // Assert — concern:auth-risk must exist in index
@@ -168,11 +171,11 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange
         await InitProject();
-        await _tools.ConcernAdd("Risk: auth token expiry",
+        await ScriniaProjectTools.ConcernAdd("Risk: auth token expiry",
             "high", "06", id: "auth-risk", CancellationToken.None);
 
         // Act
-        await _tools.ConcernResolve("concern:auth-risk",
+        await ScriniaProjectTools.ConcernResolve("concern:auth-risk",
             "Added refresh token rotation", verifiedBy: "manual", CancellationToken.None);
 
         // Assert — status keyword should be "status:resolved", NOT "status:active"
@@ -193,11 +196,11 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange
         await InitProject();
-        await _tools.ConcernAdd("Risk: database load",
+        await ScriniaProjectTools.ConcernAdd("Risk: database load",
             "medium", "06", id: "db-risk", CancellationToken.None);
 
         // Act
-        await _tools.ConcernResolve("concern:db-risk",
+        await ScriniaProjectTools.ConcernResolve("concern:db-risk",
             "Added connection pooling", verifiedBy: "manual", CancellationToken.None);
 
         // Assert — severity and phase keywords must still be present
@@ -217,7 +220,7 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange
         await InitProject();
-        await _tools.ConcernAdd("Risk: test",
+        await ScriniaProjectTools.ConcernAdd("Risk: test",
             "low", "06", id: "test-risk", CancellationToken.None);
 
         // Get the versions directory path for concern scope
@@ -228,7 +231,7 @@ public sealed class ConcernTrackingTests : IDisposable
             Path.GetFileName(storeDir)!);
 
         // Act
-        await _tools.ConcernResolve("concern:test-risk", "Resolved it", verifiedBy: "manual", CancellationToken.None);
+        await ScriniaProjectTools.ConcernResolve("concern:test-risk", "Resolved it", verifiedBy: "manual", CancellationToken.None);
 
         // Assert — no version files should be created for "test-risk"
         bool versionsExist = Directory.Exists(versionsDir) &&
@@ -244,13 +247,14 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act — try to resolve a concern that was never added
-        string result = await _tools.ConcernResolve("concern:nonexistent",
+        string result = await ScriniaProjectTools.ConcernResolve("concern:nonexistent",
             "Some resolution", verifiedBy: "manual", CancellationToken.None);
 
         // Assert
-        result.Should().StartWith("Error:",
-            "concern_resolve with unknown concern name should return Error:");
-        result.Should().ContainEquivalentOf("not found",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("error",
+            "concern_resolve with unknown concern name should return an error");
+        r.Error.Should().ContainEquivalentOf("not found",
             "error should mention 'not found'");
     }
 
@@ -259,11 +263,11 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange
         await InitProject();
-        await _tools.ConcernAdd("Risk: auth token short lived",
+        await ScriniaProjectTools.ConcernAdd("Risk: auth token short lived",
             "high", "06", id: "auth-res", CancellationToken.None);
 
         // Act
-        await _tools.ConcernResolve("concern:auth-res",
+        await ScriniaProjectTools.ConcernResolve("concern:auth-res",
             "Extended token lifetime to 24 hours", verifiedBy: "qa", CancellationToken.None);
 
         // Assert — content after resolve must contain the resolution text
@@ -280,15 +284,17 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange
         await InitProject();
-        await _tools.ConcernAdd("Risk: auth", "high", "06", id: "c1", CancellationToken.None);
-        await _tools.ConcernAdd("Risk: db", "medium", "07", id: "c2", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: auth", "high", "06", id: "c1", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: db", "medium", "07", id: "c2", CancellationToken.None);
 
         // Act
-        string result = await _tools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
+        string result = await ScriniaProjectTools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
 
         // Assert — both active concerns should appear
-        result.Should().Contain("c1", "active concern 'c1' should appear in query result");
-        result.Should().Contain("c2", "active concern 'c2' should appear in query result");
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "concern list should succeed");
+        r.Content.Should().Contain("c1", "active concern 'c1' should appear in query result");
+        r.Content.Should().Contain("c2", "active concern 'c2' should appear in query result");
     }
 
     [Fact]
@@ -296,16 +302,18 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange
         await InitProject();
-        await _tools.ConcernAdd("Risk: phase06 only", "high", "06", id: "p06-risk", CancellationToken.None);
-        await _tools.ConcernAdd("Risk: phase07 only", "low", "07", id: "p07-risk", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: phase06 only", "high", "06", id: "p06-risk", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: phase07 only", "low", "07", id: "p07-risk", CancellationToken.None);
 
         // Act
-        string result = await _tools.ConcernList(phaseFilter: "06", statusFilter: null, CancellationToken.None);
+        string result = await ScriniaProjectTools.ConcernList(phaseFilter: "06", statusFilter: null, CancellationToken.None);
 
         // Assert — only phase:06 concern should appear
-        result.Should().Contain("p06-risk",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "concern list with phase filter should succeed");
+        r.Content.Should().Contain("p06-risk",
             "concern query filtered by phase:06 should include p06-risk");
-        result.Should().NotContain("p07-risk",
+        r.Content.Should().NotContain("p07-risk",
             "concern query filtered by phase:06 should NOT include p07-risk");
     }
 
@@ -316,10 +324,12 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        string result = await _tools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
+        string result = await ScriniaProjectTools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
 
         // Assert
-        result.Should().ContainEquivalentOf("no active concerns",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "concern list should succeed");
+        r.Content.Should().ContainEquivalentOf("no active concerns",
             "concern query with no active concerns should return 'No active concerns' message");
     }
 
@@ -328,90 +338,67 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange — add a concern with recognizable content
         await InitProject();
-        await _tools.ConcernAdd("Risk: UNIQUE_SENTINEL_CONTENT_12345",
+        await ScriniaProjectTools.ConcernAdd("Risk: UNIQUE_SENTINEL_CONTENT_12345",
             "high", "06", id: "sentinel", CancellationToken.None);
 
         // Act — query active concerns
-        string result = await _tools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
+        string result = await ScriniaProjectTools.ConcernList(phaseFilter: null, statusFilter: null, CancellationToken.None);
 
         // The query returns index-only data (names, keywords).
         // The concern content "UNIQUE_SENTINEL_CONTENT_12345" should NOT appear in the result
         // because it's stored inside the artifact, not in the index.
-        result.Should().Contain("sentinel",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "concern list should succeed");
+        r.Content.Should().Contain("sentinel",
             "concern query should list the concern name from index");
-        result.Should().NotContain("UNIQUE_SENTINEL_CONTENT_12345",
+        r.Content.Should().NotContain("UNIQUE_SENTINEL_CONTENT_12345",
             "concern query should NOT decode artifacts — content must not appear in the listing");
     }
 
-    // ── Description / context signal tests (ADOPT-02) ─────────────────────────
+    // ── Internal dispatcher existence tests (WF-14: MCP attributes removed) ───
 
     [Fact]
     public void ConcernAdd_DescriptionContainsContextSignals()
     {
-        // After consolidation, ConcernAdd is an internal method called by ConcernDispatch.
-        // Verify the method exists and the concern dispatcher description references 'add' and 'resolve'.
+        // ConcernAdd is an internal method called by ConcernDispatch (now exposed via entity() tool).
         var method = typeof(ScriniaProjectTools).GetMethod("ConcernAdd",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
         method.Should().NotBeNull("ConcernAdd must exist as an internal method");
 
         var dispatcher = typeof(ScriniaProjectTools).GetMethod("ConcernDispatch");
         dispatcher.Should().NotBeNull("ConcernDispatch dispatcher must exist");
 
-        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
-            .Cast<System.ComponentModel.DescriptionAttribute>()
-            .FirstOrDefault();
-        descAttr.Should().NotBeNull("ConcernDispatch must have a [Description] attribute");
-
-        string descText = descAttr!.Description;
-        bool hasContextSignal = descText.Contains("add", StringComparison.OrdinalIgnoreCase)
-            || descText.Contains("concern", StringComparison.OrdinalIgnoreCase);
-        hasContextSignal.Should().BeTrue(
-            "ConcernDispatch description must contain context signals referencing 'add' or 'concern'");
+        // No [McpServerTool] attribute — concern is routed through entity() now
+        var mcpAttr = dispatcher!.GetCustomAttribute<ModelContextProtocol.Server.McpServerToolAttribute>();
+        mcpAttr.Should().BeNull("ConcernDispatch should no longer have [McpServerTool] — it is exposed via entity()");
     }
 
     [Fact]
     public void ConcernResolve_DescriptionContainsContextSignals()
     {
-        // After consolidation, ConcernResolve is an internal method called by ConcernDispatch.
-        // Verify the method exists and the concern dispatcher description references 'resolve'.
+        // ConcernResolve is an internal method called by ConcernDispatch (now exposed via entity() tool).
         var method = typeof(ScriniaProjectTools).GetMethod("ConcernResolve",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
         method.Should().NotBeNull("ConcernResolve must exist as an internal method");
 
         var dispatcher = typeof(ScriniaProjectTools).GetMethod("ConcernDispatch");
         dispatcher.Should().NotBeNull("ConcernDispatch dispatcher must exist");
 
-        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
-            .Cast<System.ComponentModel.DescriptionAttribute>()
-            .FirstOrDefault();
-        descAttr.Should().NotBeNull("ConcernDispatch must have a [Description] attribute");
-
-        string descText = descAttr!.Description;
-        bool hasContextSignal = descText.Contains("resolve", StringComparison.OrdinalIgnoreCase)
-            || descText.Contains("concern", StringComparison.OrdinalIgnoreCase);
-        hasContextSignal.Should().BeTrue(
-            "ConcernDispatch description must contain context signals referencing 'resolve' or 'concern'");
+        // No [McpServerTool] attribute — concern is routed through entity() now
+        var mcpAttr = dispatcher!.GetCustomAttribute<ModelContextProtocol.Server.McpServerToolAttribute>();
+        mcpAttr.Should().BeNull("ConcernDispatch should no longer have [McpServerTool] — it is exposed via entity()");
     }
 
     [Fact]
     public void ConcernQuery_DescriptionContainsContextSignals()
     {
-        // After consolidation, the Concern query method is now ConcernDispatch (MCP name: "concern").
-        // Verify the dispatcher exists and its description references 'list' (the query action)
-        // and 'add' (so agents know how to add concerns).
+        // ConcernDispatch is now an internal dispatcher (exposed via entity() tool).
         var dispatcher = typeof(ScriniaProjectTools).GetMethod("ConcernDispatch");
         dispatcher.Should().NotBeNull("ConcernDispatch dispatcher must exist");
 
-        var descAttr = dispatcher!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: false)
-            .Cast<System.ComponentModel.DescriptionAttribute>()
-            .FirstOrDefault();
-        descAttr.Should().NotBeNull("ConcernDispatch must have a [Description] attribute");
-
-        string descText = descAttr!.Description;
-        bool hasContextSignal = descText.Contains("add", StringComparison.OrdinalIgnoreCase)
-            || descText.Contains("list", StringComparison.OrdinalIgnoreCase);
-        hasContextSignal.Should().BeTrue(
-            "ConcernDispatch description must contain context signals referencing 'add' or 'list'");
+        // No [McpServerTool] attribute — concern is routed through entity() now
+        var mcpAttr = dispatcher!.GetCustomAttribute<ModelContextProtocol.Server.McpServerToolAttribute>();
+        mcpAttr.Should().BeNull("ConcernDispatch should no longer have [McpServerTool] — it is exposed via entity()");
     }
 
     // ── plan_status concern enrichment tests (CONC-04) ────────────────────────
@@ -421,14 +408,16 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange — project with 2 active concerns
         await InitProject();
-        await _tools.ConcernAdd("Risk: alpha", "medium", "06", id: "ps-c1", CancellationToken.None);
-        await _tools.ConcernAdd("Risk: beta", "medium", "06", id: "ps-c2", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: alpha", "medium", "06", id: "ps-c1", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: beta", "medium", "06", id: "ps-c2", CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — response must include concern count line
-        result.Should().Contain("Concerns: 2 active",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "plan_status should succeed");
+        r.Content.Should().Contain("Concerns: 2 active",
             "plan_status should report active concern count when concerns exist");
     }
 
@@ -437,14 +426,16 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange — 1 high + 1 medium concern
         await InitProject();
-        await _tools.ConcernAdd("Risk: critical thing", "high", "06", id: "ps-high", CancellationToken.None);
-        await _tools.ConcernAdd("Risk: minor thing", "medium", "06", id: "ps-med", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: critical thing", "high", "06", id: "ps-high", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: minor thing", "medium", "06", id: "ps-med", CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — response must include high-severity count
-        result.Should().Contain("1 high-severity",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "plan_status should succeed");
+        r.Content.Should().Contain("1 high-severity",
             "plan_status should include high-severity count when high-severity concerns exist");
     }
 
@@ -455,10 +446,12 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — response must NOT include a Concerns: line
-        result.Should().NotContain("Concerns:",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "plan_status should succeed");
+        r.Content.Should().NotContain("Concerns:",
             "plan_status should NOT include a Concerns: line when no concerns exist");
     }
 
@@ -467,14 +460,17 @@ public sealed class ConcernTrackingTests : IDisposable
     {
         // Arrange — project with 1 active concern
         await InitProject();
-        await _tools.ConcernAdd("Risk: gamma", "high", "06", id: "pr-c1", CancellationToken.None);
+        await ScriniaProjectTools.ConcernAdd("Risk: gamma", "high", "06", id: "pr-c1", CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — context_resume response should mention concern(s)
-        bool hasConcernInfo = result.Contains("Concerns:", StringComparison.OrdinalIgnoreCase)
-            || result.Contains("concern", StringComparison.OrdinalIgnoreCase);
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success", "context_resume should succeed");
+        string fullText = (r.Content ?? "") + string.Join(" ", r.ActionNeeded) + string.Join(" ", r.Info);
+        bool hasConcernInfo = fullText.Contains("Concerns:", StringComparison.OrdinalIgnoreCase)
+            || fullText.Contains("concern", StringComparison.OrdinalIgnoreCase);
         hasConcernInfo.Should().BeTrue(
             "context_resume should include concern summary when active concerns exist");
     }
@@ -486,13 +482,15 @@ public sealed class ConcernTrackingTests : IDisposable
         await InitProject();
 
         // Act — must not throw
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — should succeed and NOT contain "Concerns:" line
-        result.Should().NotBeNull("plan_status must return a result even when concern scope does not exist");
-        result.Should().Contain("Project:",
+        var r = ResponseParser.Parse(result);
+        r.Status.Should().Be("success",
+            "plan_status must return a result even when concern scope does not exist");
+        r.Content.Should().Contain("Project:",
             "plan_status response should still contain project info when concern scope is missing");
-        result.Should().NotContain("Concerns:",
+        r.Content.Should().NotContain("Concerns:",
             "plan_status should not include Concerns: line when concern scope is missing");
     }
 }

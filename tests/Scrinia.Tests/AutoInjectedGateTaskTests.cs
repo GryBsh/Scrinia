@@ -31,8 +31,8 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
     /// </summary>
     private async Task SetupSinglePhaseProject()
     {
-        await _tools.ProjectInit("Goals: gate injection testing", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: gate injection testing", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X", cancellationToken: CancellationToken.None);
     }
 
     /// <summary>
@@ -40,8 +40,8 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
     /// </summary>
     private async Task SetupTwoPhaseProject()
     {
-        await _tools.ProjectInit("Goals: multi-phase gate testing", cancellationToken: CancellationToken.None);
-        await _tools.PlanRequirements("## v1\n- REQ-01: Feature X\n- REQ-02: Feature Y",
+        await ScriniaProjectTools.ProjectInit("Goals: multi-phase gate testing", cancellationToken: CancellationToken.None);
+        await ScriniaProjectTools.PlanRequirements("## v1\n- REQ-01: Feature X\n- REQ-02: Feature Y",
             cancellationToken: CancellationToken.None);
     }
 
@@ -61,7 +61,7 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         await SetupSinglePhaseProject();
 
         // Act
-        string result = await _tools.PlanTasks("01", SingleTaskInput(),
+        string result = await ScriniaProjectTools.PlanTasks("01", SingleTaskInput(),
             cancellationToken: CancellationToken.None);
 
         // Assert — response should list the qa-gate task
@@ -88,7 +88,7 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         await SetupSinglePhaseProject();
 
         // Act
-        string result = await _tools.PlanTasks("01", TwoTaskInput(),
+        string result = await ScriniaProjectTools.PlanTasks("01", TwoTaskInput(),
             cancellationToken: CancellationToken.None);
 
         // Assert — qa-gate should exist and depend on both user tasks
@@ -117,7 +117,7 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         await SetupSinglePhaseProject();
 
         // Act
-        string result = await _tools.PlanTasks("01", SingleTaskInput(),
+        string result = await ScriniaProjectTools.PlanTasks("01", SingleTaskInput(),
             cancellationToken: CancellationToken.None);
 
         // Assert — all five gate tasks should be present
@@ -142,7 +142,7 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         await SetupTwoPhaseProject();
 
         // Act
-        string result = await _tools.PlanTasks("01", SingleTaskInput(),
+        string result = await ScriniaProjectTools.PlanTasks("01", SingleTaskInput(),
             cancellationToken: CancellationToken.None);
 
         // Assert — all gates should be injected regardless of phase position
@@ -168,7 +168,7 @@ public sealed class AutoInjectedGateTaskTests : IDisposable
         await SetupSinglePhaseProject();
 
         // Act
-        await _tools.PlanTasks("01", SingleTaskInput(),
+        await ScriniaProjectTools.PlanTasks("01", SingleTaskInput(),
             cancellationToken: CancellationToken.None);
 
         // Assert — qa-gate should have "tag:qa" keyword

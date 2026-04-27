@@ -29,7 +29,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
     public async Task PlanStatus_WithStaleMemory_ContainsPassedReviewDateAlert()
     {
         // Arrange — initialize project, then add a memory with past ReviewAfter
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
         store.Upsert(new ArtifactEntry("stale-entry", "file://s1", 100, 1,
@@ -37,7 +37,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
             ReviewAfter: DateTimeOffset.UtcNow.AddDays(-1)));
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert
         result.Should().Contain("passed their review date",
@@ -48,7 +48,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
     public async Task PlanStatus_WithReviewWhenMemory_ContainsReviewConditionsAlert()
     {
         // Arrange — initialize project, then add a memory with ReviewWhen
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
         store.Upsert(new ArtifactEntry("conditional-entry", "file://c1", 100, 1,
@@ -56,7 +56,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
             ReviewWhen: "when auth changes"));
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert
         result.Should().Contain("review conditions set",
@@ -67,10 +67,10 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
     public async Task PlanStatus_WithNoStalenessOrDrift_DoesNotContainAlerts()
     {
         // Arrange — initialize project with no staleness or drift entries
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
 
         // Act
-        string result = await _tools.PlanStatus(CancellationToken.None);
+        string result = await ScriniaProjectTools.PlanStatus(CancellationToken.None);
 
         // Assert — none of the alert messages should appear
         result.Should().NotContain("passed their review date",
@@ -89,7 +89,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
     public async Task ContextResume_WithStaleMemory_ContainsPassedReviewDateAlert()
     {
         // Arrange — initialize project, then add a memory with past ReviewAfter
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
         store.Upsert(new ArtifactEntry("stale-entry", "file://s1", 100, 1,
@@ -97,7 +97,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
             ReviewAfter: DateTimeOffset.UtcNow.AddDays(-1)));
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert
         result.Should().Contain("passed their review date",
@@ -108,7 +108,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
     public async Task ContextResume_WithReviewWhenMemory_ContainsReviewConditionsAlert()
     {
         // Arrange — initialize project, then add a memory with ReviewWhen
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
 
         var store = MemoryStoreContext.Current!;
         store.Upsert(new ArtifactEntry("conditional-entry", "file://c1", 100, 1,
@@ -116,7 +116,7 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
             ReviewWhen: "when auth changes"));
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert
         result.Should().Contain("review conditions set",
@@ -127,10 +127,10 @@ public sealed class StalenessAndDriftIntegrationTests : IDisposable
     public async Task ContextResume_WithNoStalenessOrDrift_DoesNotContainAlerts()
     {
         // Arrange — initialize project with no staleness or drift entries
-        await _tools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
+        await ScriniaProjectTools.ProjectInit("Goals: build X\nConstraints: none", CancellationToken.None);
 
         // Act
-        string result = await _tools.ContextResume(CancellationToken.None);
+        string result = await ScriniaProjectTools.ContextResume(CancellationToken.None);
 
         // Assert — none of the alert messages should appear
         result.Should().NotContain("passed their review date",
