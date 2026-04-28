@@ -1,154 +1,88 @@
-# AGENTS.md — scrinia LLM Memory + Planning (Named Memory Protocol)
+# AGENTS.md — scrinia LLM Memory (Named Memory Protocol)
 
-Licensed under BSD-3-Clause. Copyright (c) 2026 Nick Daniels. **v1.0 planning milestone.**
+Licensed under BSD-3-Clause. Copyright (c) 2026 Nick Daniels.
 
 This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It describes what scrinia is, how the codebase is structured, what patterns to follow, and common pitfalls to avoid.
 
-**If scrinia is available as an MCP server in your session, call `guide()` once and commit its content to your project's agent file.** The guide covers ephemeral memories, topic organization, agent-directed chunking strategies, keywords, review conditions, cross-project sharing, and the full goal-driven planning workflow. Use scrinia's memory tools proactively to persist knowledge as you work — it's what they're built for.
+**If scrinia is available as an MCP server in your session, call `guide()` once and commit its content to your project's agent file.** The guide covers ephemeral memories, topic organization, agent-directed chunking strategies, keywords, review conditions, skills, and session recall. Use scrinia's memory tool proactively to persist knowledge as you work — that is what it is for.
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory and structured project planning. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes 3 MCP tools (guide, memory, task) so agents can remember findings, search past knowledge, plan and execute projects, and share context across projects.
+scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes two MCP tools (`guide`, `memory`) so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
 
 ## Project Layout
 
 ```
 scrinia/
   src/
-    Scrinia.Core/                 <- shared class library (net10.0, BSD-3-Clause)
-      Encoding/
-        IEncodingStrategy.cs      <- core abstractions (EncodingOptions, EncodingResult, ArtifactMetadata)
-        Nmp2Strategy.cs           <- NMP/2 encoder/decoder (always Brotli + URL-safe Base64)
-        Nmp2ChunkedEncoder.cs     <- multi-chunk support (agent-directed chunking only, append-as-chunk)
-      Models/
-        ArtifactEntry.cs          <- v3 index entry record (keywords, TF, review, ChunkEntries)
-        ChunkEntry.cs             <- per-chunk index data (keywords, TF, preview)
-        EphemeralEntry.cs         <- in-memory entry record
-        ScopedArtifact.cs         <- (scope, entry) pair for search/list
-        IndexFile.cs              <- v3 index.json schema
-      Search/
-        IMemorySearcher.cs        <- WeightedFieldScorer + BM25 hybrid search + result types
-        TextAnalysis.cs           <- tokenizer, term frequency, keyword extraction/merge
-        Bm25Scorer.cs             <- BM25 scoring (k1=1.5, b=0.75, IDF formula)
-        ReferenceExtractor.cs     <- regex-based file path and memory name reference extraction
-      IMemoryStore.cs             <- interface for local/remote store dispatch
-      IStorageBackend.cs          <- factory interface for creating IMemoryStore instances
-      FilesystemBackend.cs        <- default IStorageBackend (creates FileMemoryStore)
-      FileMemoryStore.cs          <- instance-based IMemoryStore impl (filesystem-backed)
-      MemoryNaming.cs             <- static naming utils (StripEphemeralPrefix, FormatScopeLabel)
-      MemoryStoreContext.cs       <- AsyncLocal indirection: MCP tools read Current to dispatch
+    Scrinia.Core/                 <- shared class library (net10.0)
+      Encoding/                   <- NMP/2 strategy, chunked encoder
+      Models/                     <- ArtifactEntry, ChunkEntry, EphemeralEntry, ScopedArtifact
+      Search/                     <- BM25 + WeightedFieldScorer + TextAnalysis + ReferenceExtractor
+      Embeddings/                 <- IEmbeddingProvider, VectorStore, HnswIndex, HybridReranker, providers
+      Resilience/                 <- RetryPolicy, CircuitBreaker, TransientDetector
+      IMemoryStore.cs             <- store interface (CRUD, search, list, scope routing)
+      FileMemoryStore.cs          <- filesystem-backed implementation
+      MemoryNaming.cs             <- topic classification + scope formatting
+      MemoryStoreContext.cs       <- AsyncLocal indirection (MCP tools read .Current)
+      PathParser.cs / PathRouter.cs <- v2 path parsing + legacy fallback resolution
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
-    Scrinia.Mcp/                  <- shared MCP tools library (net10.0 classlib, refs Core)
-      MemoryTools.cs              <- 3 MCP tools (sealed class, no constructor, no DI injection): guide, memory, task
-      ProjectTools.cs             <- planning DTOs + PlanningJsonContext (sealed class, same pattern)
+    Scrinia.Mcp/                  <- MCP tools library
+      MemoryTools.cs              <- guide() + memory() entry points (sealed partial)
+      MemoryTools.Core.cs         <- store/show + agent-config write
+      MemoryTools.Lifecycle.cs    <- bundle, reconcile, compact, restore
+      MemoryTools.Bundling.cs     <- export/import bundle helpers
+      MemoryTools.Skills.cs       <- SkillCreate/SkillLoad + shared sidecar helpers
+      EmbeddedPrompts.cs          <- loads embedded skills, scaffolds, guide.md
+      McpResponse.cs              <- structured response builder (YAML output)
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
-      Program.cs                  <- entry point (6 lines, ConsoleAppFramework v5)
-      Commands/
-        ScriniaCommands.cs        <- all 11 CLI commands as public methods (ConsoleAppFramework source-gen, all support --json)
-        WorkspaceSetup.cs         <- shared --workspace-root configuration + plugin loading helper
-        WorkspaceConfig.cs        <- .scrinia/config.json I/O (Load/Save/Get/Set/Unset)
-        ConfigJsonContext.cs      <- trim-safe JSON context for config file
-        CliJsonContext.cs         <- trim-safe JSON context for --json CLI output
-      Mcp/
-        ScriniaArtifactStore.cs   <- memory store (local, topic, ephemeral scopes; static class)
-      Services/
-        McpPluginHost.cs          <- MCP client for child-process plugins (stdio transport, auto-reconnect)
-        PluginClientJsonContext.cs <- trim-safe JSON context for plugin communication
+      Program.cs                  <- ConsoleAppFramework v5 host
+      Commands/ScriniaCommands.cs <- CLI commands (serve, list, search, store, show, forget, append, copy, export, import, setup, config)
+      Mcp/ScriniaArtifactStore.cs <- CLI store wrapper (static, delegates to FileMemoryStore)
     Scrinia.Server/               <- HTTP API server (net10.0 web, refs Core + Mcp)
-      Program.cs                  <- entry point (ASP.NET Core minimal API)
-      Auth/
-        ApiKeyStore.cs            <- SQLite-backed API key store (SHA-256 hashed)
-        ApiKeyAuthHandler.cs      <- Bearer token auth handler
-        WorkspaceContext.cs       <- per-request context (user, stores, permissions)
-      Endpoints/
-        MemoryEndpoints.cs        <- REST routes for memory CRUD, search, export/import
-        KeyEndpoints.cs           <- API key management routes
-        HealthEndpoints.cs        <- Kubernetes-style health probes (/health, /health/live, /health/ready, /health/details)
-      Services/
-        StoreManager.cs           <- multi-store factory + cache (name → IMemoryStore via IStorageBackend)
-        MemoryOrchestrator.cs     <- business logic for memory operations
-        BundleService.cs          <- export/import bundle streaming
-      Models/
-        ApiDtos.cs                <- request/response records (source-gen JSON)
-        ServerJsonContext.cs      <- System.Text.Json source-gen context
-      Middleware/
-        RequestTimingMiddleware.cs <- structured request timing logs (method, path, status, elapsed ms)
-      Dockerfile                  <- multi-stage Docker build (includes Node.js web UI build)
-    Scrinia.Plugin.Abstractions/  <- plugin interface library (net10.0 classlib)
-      IScriniaPlugin.cs           <- plugin lifecycle interface
-      ScriniaPluginBase.cs        <- convenience base class
-      IMemoryOperationHook.cs     <- before/after hooks
-      HookContexts.cs             <- 6 context classes
-    Scrinia.Core/Embeddings/      <- built-in semantic search (zero native deps, pure C#)
-      IEmbeddingProvider.cs       <- Provider abstraction (IsAvailable, Dimensions, EmbedAsync, default EmbedBatchAsync)
-      VectorMath.cs               <- Shared L2Normalize utility (used by all providers)
-      NullEmbeddingProvider.cs    <- No-op fallback (IsAvailable=false)
-      EmbeddingOptions.cs         <- Config POCO (Provider="model2vec", SemanticWeight)
-      EmbeddingProviderFactory.cs <- Factory (model2vec/ollama/openai/voyageai/azure/google/none)
-      Model2VecProvider.cs        <- Local model: m2v-MiniLM-L6-v2, 384-dim, pure C# SafeTensors reader
-      Model2VecModelManager.cs    <- Downloads model from HuggingFace (~22MB)
-      SafeTensorsReader.cs        <- Binary SafeTensors parser (internal)
-      UnigramTokenizer.cs            <- SentencePiece-style tokenizer for distilled models
-      BertTokenizer.cs            <- WordPiece tokenizer (TokenizeRaw, Encode for BERT-style vocab)
-      VectorStore.cs              <- Per-scope binary vector storage (SVF2 format, append-only with compaction)
-      VectorIndex.cs              <- SIMD cosine similarity + flat-scan search
-      HnswIndex.cs                <- Hierarchical Navigable Small World graph (M=16, efConstruction=200)
-      HybridReranker.cs           <- ISearchScoreContributor: re-ranks BM25 top-K with cosine similarity
-      Models/VectorEntry.cs       <- (Name, ChunkIndex?, Vector) record
-      Providers/                  <- OllamaEmbeddingProvider, OpenAiEmbeddingProvider, VoyageAiEmbeddingProvider, AzureAiEmbeddingProvider, GoogleGeminiEmbeddingProvider
-    Scrinia.Core/Resilience/      <- transient failure resilience (zero external deps)
-      RetryPolicy.cs              <- async/sync retry with exponential backoff, jitter, Retry-After
-      CircuitBreaker.cs           <- Closed/Open/HalfOpen states, per-provider isolation
-      CircuitBreakerRegistry.cs   <- static registry for health observability
-      TransientDetector.cs        <- classifies HTTP codes and exceptions as retryable
-    Scrinia.Plugin.Embeddings/    <- optional Vulkan GPU acceleration plugin (net10.0 classlib, LLamaSharp)
-      EmbeddingsPlugin.cs         <- server: IScriniaPlugin + ISearchScoreContributor + IMemoryEventSink + IMemoryOperationHook
-      VulkanEmbeddingProvider.cs  <- LLamaSharp Vulkan-accelerated embeddings (GGUF model)
-      VulkanModelManager.cs       <- Downloads GGUF model from HuggingFace
-    Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport, self-contained NOT trimmed)
-      Program.cs                  <- MCP server host, registers EmbeddingsTools (Vulkan provider)
-      EmbeddingsTools.cs          <- MCP tools class (sealed, 4 tools: status, search, upsert, remove)
-    Scrinia.AppHost/              <- .NET Aspire AppHost (orchestrates Scrinia.Server)
-      Program.cs                  <- Aspire entry point
+      Endpoints/MemoryEndpoints.cs <- REST: store, list, show, append, search, export, import
+      Endpoints/HealthEndpoints.cs <- /health, /health/live, /health/ready, /health/details
+      Endpoints/KeyEndpoints.cs    <- API key management
+      Endpoints/ChatEndpoints.cs   <- general-purpose LLM chat (OpenAI/Anthropic/Gemini providers)
+      Auth/                        <- ApiKeyStore (SQLite), bearer-token auth handler, RequestContext
+      Services/StoreManager.cs     <- multi-store factory keyed by name
+    Scrinia.Plugin.Abstractions/  <- IScriniaPlugin + extension hooks
+    Scrinia.Plugin.Embeddings/    <- optional Vulkan GPU plugin (LLamaSharp, GGUF model)
+    Scrinia.Plugin.Embeddings.Cli/ <- MCP server plugin exe (stdio transport)
+    Scrinia.Merge/                <- merge driver for .scrinia .meta.json conflicts
+    Scrinia.AppHost/              <- .NET Aspire orchestrator
   tests/
-    Scrinia.Tests/                <- xunit + FluentAssertions, 1,206 tests
-      TestHelpers.cs              <- StoreScope (test isolation), embedded resource helpers
-      TestData/                   <- 6 embedded resource corpora
-      Embeddings/                 <- VectorStoreTests, VectorIndexTests, HnswIndexTests, HybridScorerTests, BertTokenizerTests, UnigramTokenizerTests, ProviderTests, SafeTensorsReaderTests, Model2VecProviderTests
-    Scrinia.Server.Tests/         <- xunit + FluentAssertions + WebApplicationFactory, 86 server + 18 merge tests
-      ScriniaServerFactory.cs     <- test factory (temp data dir, test API keys)
-    Scrinia.Plugin.Embeddings.Tests/ <- xunit + FluentAssertions, 12 tests (Vulkan plugin CLI + benchmark tests)
-      EmbeddingsPluginCliTests.cs <- core type integration tests (EmbeddingOptions, Factory, VectorStore)
-  web/                            <- React + Vite + Tailwind CSS SPA
-    src/api/                      <- typed API client and TypeScript DTOs
-    src/pages/                    <- Login, Dashboard, MemoryBrowser, MemoryDetail, KeyManagement
+    Scrinia.Tests/                <- core + MCP unit tests
+    Scrinia.Server.Tests/         <- WebApplicationFactory tests (memory, auth, health, chat)
+    Scrinia.Plugin.Embeddings.Tests/ <- Vulkan plugin tests
+    Scrinia.Merge.Tests/          <- merge handler tests
+  web/                            <- React + Vite + Tailwind SPA
+    src/pages/                    <- Login, Dashboard, MemoryBrowser, MemoryDetail, KeyManagement, AgentChat, Settings
     src/components/               <- Layout, MemoryList, MemoryContent, ChunkViewer, SearchBar
-    vite.config.ts                <- build to src/Scrinia.Server/wwwroot, dev proxy to :5000
-  LICENSE                         <- BSD-3-Clause
-  NMP_SPEC.md                    <- NMP/2 format specification
-  AGENTS.md                      <- this file
-  docker-compose.yml             <- one-command server deployment
   docs/
-    getting-started.md            <- overview, installation, quick start
-    cli-reference.md              <- 11 CLI commands, configuration, embedding providers, MCP client setup
-    server-admin.md               <- deployment, authentication, REST API, web UI, Docker
-    planning-tools.md             <- complete guide for planning tools (entity, plan, task, skill) with lifecycle and examples
-    multi-user-setup.md           <- multi-user merge safety and git hook setup
-    troubleshooting.md            <- common issues and solutions
-    web-ui-guide.md               <- web UI usage guide
-    architecture/
-      overview.md                 <- system diagram, solution structure, dependency graph
-      cli.md                      <- workspace discovery, plugin host, MCP tools
-      server.md                   <- startup, middleware, auth, multi-store, plugins
-      core.md                     <- IMemoryStore, NMP/2 encoding, search algorithms, data models
-      embeddings.md               <- providers, vector store, HNSW, hybrid scoring
-  .github/workflows/ci.yml       <- CI build + test on push/PR
-  .github/workflows/release.yml  <- release builds (CLI, server, Docker image)
+    getting-started.md, cli-reference.md, server-admin.md, multi-user-setup.md,
+    troubleshooting.md, web-ui-guide.md, architecture/{overview,cli,server,core,embeddings}.md
+  CLAUDE.md                       <- canonical agent quick-start
+  NMP_SPEC.md                     <- NMP/2 format specification
 ```
 
-## Core Abstractions
+## MCP Tools
 
-All encoding, model, and search types live in `Scrinia.Core` (namespaces: `Scrinia.Core.Encoding`, `Scrinia.Core.Models`, `Scrinia.Core.Search`). The CLI/MCP project (`Scrinia`) and tests reference Core via `<ProjectReference>`.
+Two tools are exposed:
+
+| Tool | Description |
+|------|-------------|
+| `guide()` | Returns the embedded usage guide. Call once per session and commit its content to your project's agent file. |
+| `memory(action, ...)` | Unified dispatcher: `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, `reconcile`. |
+
+Skill paths are routed through `memory()`:
+- `memory('recall', { path: '/skill/qa' })` — load a skill prompt (built-in or override).
+- `memory('recall', { path: '/skill/' })` — list available skills.
+- `memory('remember', { path: '/skill/{name}', content: [...] })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
+
+`memory('restore')` resumes context — agent profile, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
+
+## Core Abstractions
 
 ### `IEncodingStrategy`
 
@@ -158,7 +92,6 @@ Only one implementation exists: `Nmp2Strategy`. Namespace: `Scrinia.Core.Encodin
 public interface IEncodingStrategy
 {
     string StrategyId { get; }           // "nmp/2"
-    string Description { get; }
     EncodingResult Encode(ReadOnlySpan<byte> input, EncodingOptions options);
     byte[] Decode(string artifact);
     bool CanDecode(string artifact);
@@ -166,630 +99,50 @@ public interface IEncodingStrategy
 }
 ```
 
-Key records:
-```csharp
-record EncodingOptions(int CharsPerLine = 76);  // Base64 chars per line
+### `IMemoryStore`
 
-record EncodingResult(string Artifact, long OriginalBytes, long ArtifactChars,
-                      int EstimatedTokens, double BitsPerToken, string StrategyId);
+The store abstraction. `FileMemoryStore` is the filesystem implementation. MCP tools dispatch through `MemoryStoreContext.Current`, an `AsyncLocal<IMemoryStore>` that the CLI (set once at startup) and server (set per-request in middleware) both populate.
 
-record ArtifactMetadata(string StrategyId, int OriginalBytes, uint? Crc32);
-```
+### `MemoryNaming`
 
-### `Nmp2ChunkedEncoder`
+Pure static utilities for topic classification:
+- `EntityTopics` contains a single entry: `skill`. This routes legacy NMP/2 skill data under `local-topic:entity/skill/`.
+- `AgentTopics` contains `agent`, routed to `local-topic:agent`.
+- Everything else routes to `local-topic:memory/{topic}`.
 
-The entry point for encoding text. No auto-chunking — single-element content always produces a single chunk. Multi-chunk only via explicit multiple elements or AppendChunk.
+## Reserved Paths
 
-```csharp
-// Single-chunk: always produces one chunk regardless of size
-string artifact = Nmp2ChunkedEncoder.Encode(text);
+Memory paths are free-form. A small set has first-class behavior:
 
-// Agent-directed chunking: each element → one independently decodable chunk
-// 1 element → single-chunk format, 2+ → multi-chunk format
-string artifact = Nmp2ChunkedEncoder.EncodeChunks(["## Auth\n...", "## Users\n..."]);
+| Path | Purpose |
+|------|---------|
+| `/skill/...` | Reusable specialist prompts. Stored at `.scrinia/skills/{name}.md` with sidecar metadata. Built-in skills are embedded in the binary; user overrides on disk take precedence. |
+| `/agent/...` | Agent profile and behavioral norms. Stored at `.scrinia/agent/{name}.md` with sidecar metadata. |
+| `/patterns/...` | Recurring patterns and conventions. |
+| `/sessions/...` | Session logs by date (`YYYY-MM-DD`). |
+| `/checkpoint/...` | State snapshots. |
+| `/temp/...` | Ephemeral (dies on process exit). |
 
-// Append a new chunk without re-encoding existing chunks (surgical append)
-// Single-chunk → promotes to multi-chunk; multi-chunk → appends new section
-string updated = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, "new chunk text");
+## Pitfalls to Avoid
 
-// Chunk access
-int count = Nmp2ChunkedEncoder.GetChunkCount(artifact);
-string chunkText = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunkIndex); // 1-based
-```
+- Do not assume `MemoryStoreContext.Current` is always set — the AsyncLocal does not propagate across the .NET generic host's thread boundary in CLI mode. The CLI uses `*.Default` static fallbacks for `SearchContributorContext` and `MemoryEventSinkContext` to bridge that gap.
+- Use source-generated JSON contexts (`ScriniaMcpJsonContext`, `ServerJsonContext`, `CliJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`) — `JsonSerializer` reflection is incompatible with trimming.
+- `WithTools<T>()` registers ALL public methods on the type as MCP tools. Keep helper methods `internal` or `private`.
+- Skills write to `.scrinia/skills/` first, fall back to NMP/2 `skill:{name}` legacy entries, then to embedded built-ins. Don't bypass this lookup chain.
+- File I/O for skill / agent sidecars uses `ReadSidecarMeta<T>` / `WriteSidecarMeta<T>` on `ScriniaMcpTools`, not raw `JsonSerializer` calls — they use the source-gen context.
 
-Key internals:
-- `EncodeMultiChunkFromParts(string[])` — shared multi-chunk encoding (CRC32 over concatenated bytes)
-- `AppendCompressedChunk(sb, bytes, number)` — appends one `##CHUNK:N` section to a StringBuilder
-- `ExtractRawChunkSections(artifact, count)` — extracts existing chunk sections verbatim for surgical append
-
-### `ScriniaArtifactStore`
-
-Static class in `Scrinia.Mcp`. Data records (`ArtifactEntry`, `ChunkEntry`, `EphemeralEntry`, `ScopedArtifact`, `IndexFile`) live in `Scrinia.Core.Models`.
-
-Manages three scopes of memory:
-
-| Pattern | Scope | Storage |
-|---|---|---|
-| `subject` | local | `<workspace>/.scrinia/store/subject.nmp2` |
-| `topic:subject` | local-topic | `<workspace>/.scrinia/topics/topic/subject.nmp2` |
-| `~subject` | ephemeral | In-memory `ConcurrentDictionary` (dies with process) |
-
-Key methods:
-- `Configure(workspaceRoot)` — must be called before any store operations
-- `ParseQualifiedName(name)` — returns `(scope, subject)` tuple
-- `ResolveArtifactAsync(nameOrArtifact)` — inline NMP/2 -> file:// -> ~ephemeral -> qualified name
-- `ListScoped(scopes?)` — returns all entries across requested scopes
-- `SearchAll(query, scopes?, limit)` — polymorphic results (entries + topics)
-- `ArchiveVersion(subject, scope)` — copies .nmp2 to `versions/` subdirectory before overwrite
-
-Index file v3 fields (`Scrinia.Core.Models.ArtifactEntry`):
-```csharp
-record ArtifactEntry(
-    string Name, string Uri, long OriginalBytes, int ChunkCount,
-    DateTimeOffset CreatedAt, string Description,
-    string[]? Tags = null, string? ContentPreview = null,
-    string[]? Keywords = null,                      // agent + auto-extracted
-    Dictionary<string, int>? TermFrequencies = null, // BM25 TF data
-    DateTimeOffset? UpdatedAt = null,
-    DateTimeOffset? ReviewAfter = null,             // date-based staleness
-    string? ReviewWhen = null,                      // condition-based staleness
-    ChunkEntry[]? ChunkEntries = null,             // per-chunk indexing
-    Dictionary<string, string>? CodeRefs = null);  // file path references
-```
-
-Ephemeral entries mirror Keywords, TermFrequencies, and UpdatedAt (no review fields).
-
-### `ScriniaMcpTools` (3 memory tools)
-
-3 memory MCP tools exposed via `[McpServerTool(Name = "noun")]` with action-based dispatch:
-
-| MCP name | Actions | Description |
-|---|---|---|
-| `guide` | (standalone) | Cognitive toolset guide |
-| `memory` | store, append, show, search, list, forget, copy, compact, update, link, references, restore, reconcile | Unified memory operations |
-| `bundle` | export, import | Topic bundle import/export |
-
-### `ScriniaProjectTools` (planning actions)
-
-Planning actions dispatched through the `memory()` and `task()` tools, in a separate sealed class, same pattern as `ScriniaMcpTools` (no constructor, no DI). Registered in CLI and Server via `.WithTools<ScriniaProjectTools>()`. All responses capped at 8KB (`MaxResponseChars`). Uses `MemoryStoreContext.Current` for store dispatch.
-
-| MCP name | Actions | Description |
-|---|---|---|
-| `entity` | create, update, transition, show, list, search | Unified entity operations (goals, concerns, requirements, projects, workflows) |
-| `plan` | tasks | Task decomposition with auto-injected gate tasks |
-| `task` | next, complete | Task execution loop |
-| `skill` | load, create | Specialist skills |
-
-**Tool budget**: 3/50 (guide, memory, task).
-
-**Planning topic conventions**: Planning tools use topic-scoped memories with these prefixes:
-
-| Topic prefix | Usage | Examples |
-|---|---|---|
-| `project:*` | Project context, requirements, state | `project:context`, `project:requirements`, `project:state` |
-| `plan:*` | Phased roadmap | `plan:roadmap` |
-| `task:*` | Individual tasks + execution logs | `task:01-1-01`, `task:01-execution-log` |
-| `learn:*` | Retrospectives and lessons | `learn:execution-outcomes` |
-| `agent:*` | Project-level agent behavioral norms | `agent:profile` |
-
-**Task naming**: `task:{phaseId}-{wave}-{id}` (e.g. `task:01-1-03`). Keywords encode metadata: `status:pending`/`status:complete`, `wave:N`, `phase:XX`, `depends_on:{subject}`.
-
-**Planning DTOs** (`ProjectTools.cs`):
-```csharp
-public sealed record ProjectRecord(string Id, string Name, string? Description, string[]? Goals, string[]? Constraints);
-public sealed record PlanRecord(string Id, string Phase, string? Goal, string? Status, string[]? TaskIds);
-public sealed record TaskRecord(string Id, string Phase, string Name, string? Description, string? Status, string[]? DependsOn, string[]? AcceptanceCriteria);
-```
-
-**`PlanningJsonContext`**: Source-gen JSON context for trimming safety. Serializes `ProjectRecord`, `PlanRecord`, `TaskRecord` (and their array forms). Camel case, ignores nulls, indented.
-
-### Planning Tools Usage Examples
-
-**Project Setup:**
-```
-entity('create', { type: "project", description: "# My App\n## Goals\nBuild a REST API\n## Constraints\nUse PostgreSQL" })
-→ "Initialized project 'my-app'. Stored: project:context, project:state."
-
-entity('create', { type: "requirement", requirements: "## v1\n- AUTH-01: JWT login\n- API-01: CRUD endpoints" })
-→ "Stored: project:requirements."
-```
-
-**Execution:**
-```
-plan('tasks', { phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create auth endpoint\nAcceptance criteria:\n- POST /login returns JWT" })
-→ "Created 1 task(s) for phase 01 in 1 wave(s)."
-
-task('next', { phaseId: "01" })
-→ "Phase 01 — Wave 1 — 1 unblocked task(s):\n## task:01-1-01\nAction: Create auth endpoint..."
-
-task('complete', { taskName: "task:01-1-01", outcome: "Auth endpoint created. Tests pass." })
-→ "Task 'task:01-1-01' marked complete."
-```
-
-**Recovery:**
-```
-memory('restore')
-→ "Project: my-app\nPhase: Phase 01\nProgress: 50%\nNext: run task('next')..."
-
-entity('show', { type: "project" })
-→ "Project: my-app\nPhase: Phase 01\nProgress: 50%\nBlockers: none"
-```
-
-**Skills:**
-```
-skill('load')
-→ "Available skills: planner, auditor, debugger, ..."
-
-skill('create', { name: "my-skill", scaffold: "...", instructions: "..." })
-→ "Skill 'my-skill' created."
-```
-
-### `excludeTopics` scope filtering
-
-`IMemoryStore` provides default interface methods for `ListScoped`, `SearchAll`, and `ResolveReadScopes` that accept an optional `excludeTopics` parameter (comma-separated topic names, e.g. `"plan,task,project,learn"`). Topics are matched as `local-topic:{topicName}` scopes. `FileMemoryStore` provides efficient overrides. The `memory('list')` and `memory('search')` actions expose `excludeTopics` to let agents hide planning namespaces from knowledge listings.
-
-### Search: BM25 + Weighted Field + Semantic Scoring
-
-All search types in `Scrinia.Core.Search`. Hybrid scoring: `finalScore = weightedFieldScore + normalizedBm25 × 5.0 + supplementalScore`
-
-Supplemental scores come from `ISearchScoreContributor` plugins (e.g., `HybridReranker`). When no contributor is registered, `supplementalScore = 0` (legacy behavior). Score keys: `"{scope}|{name}"` for entries, `"{scope}|{name}|{chunkIndex}"` for chunks.
-
-- **BM25 normalization**: Raw BM25 scores are min-max normalized to 0–100 range across all candidates per search
-- **Intersection bonus**: `(matchedTerms - 1) × 15` rewards multi-term matches
-- **Top-K**: Min-heap via `PriorityQueue` (O(n log k) vs O(n log n) sort), inline dedup via `bestPerMemory` dict
-- `TextAnalysis`: tokenizer (stop words, >= 2 chars), single-pass `AnalyzeText`, keyword extraction (top 25), `MergeKeywordsWithSource` (agent-first, cap 30)
-- `Bm25Scorer`: k1=1.5, b=0.75, IDF formula. `CachedIndex` caches corpus stats per index version
-- Keywords: agent-provided boosted +5 in TF, auto-extracted boosted +2 in TF
-- Entries without TF data (v2 index) get bm25Score=0 (graceful degradation)
-
-Entry scoring (per term, max wins):
-
-| Match type | Score |
-|---|---|
-| Exact name match | 100 |
-| Tag exact match | 50 |
-| Keyword exact match | 40 |
-| Name starts with | 30 |
-| Name contains | 20 |
-| Tag contains | 15 |
-| Keyword contains | 12 |
-| Description contains | 10 |
-| Content preview contains | 5 |
-
-### `HttpMemoryStore`
-
-`IMemoryStore` implementation in `Scrinia` (CLI project) that proxies to a Scrinia.Server REST API. Used when `--remote` is specified. Ephemeral storage stays client-side. Synchronous interface methods use `HttpClient.Send()` (sync HTTP, not `.GetAwaiter().GetResult()`) to avoid thread pool starvation.
-
-### `FileMemoryStore`
-
-Instance-based `IMemoryStore` implementation in `Scrinia.Core`. Takes `workspaceRoot` in constructor. Used by the server (`StoreManager` creates one per named store) and tests. The CLI still uses the static `ScriniaArtifactStore`.
-
-Key safety features:
-- **Path traversal protection**: `SanitizeName` strips `..`, `/`, `\` sequences and applies `Path.GetFileName()` as final safety net.
-- **Index locking**: `ConcurrentDictionary<string, ReaderWriterLockSlim>` provides per-scope reader/writer locks (concurrent reads, serialized writes). Write operations use atomic rename for crash safety.
-- **Cross-process file locking**: `FileLock` class (`Scrinia.Core`) provides OS-enforced shared/exclusive file locks with retry and exponential backoff. Both `FileMemoryStore` and `ScriniaArtifactStore` use per-scope `.lock` files (e.g., `.scrinia/store/.lock`, `.scrinia/topics/{topic}/.lock`) to coordinate access across multiple processes. Unique `.tmp` filenames use PID-based suffixes to prevent temp file collisions.
-- **CachedIndex**: Wraps `IndexFile` with O(1) name→position lookup (`NameToPosition` dict) and lazily computed BM25 `CorpusStats`.
-- **Artifact LRU cache**: 50 MB bounded LRU cache for decoded artifact content (O(1) access via `Dictionary` + `LinkedList`).
-
-### `MemoryStoreContext`
-
-AsyncLocal indirection in `Scrinia.Core`. MCP tools read `MemoryStoreContext.Current` to dispatch to the active `IMemoryStore`. Set per-request by the server middleware and per-session by the CLI.
-
-### `SessionBudget`
-
-In `Scrinia.Core`. Tracks chars loaded via `memory('show')` per session.
-
-- `RecordAccess(memoryName, charsLoaded)` — accumulates across multiple accesses
-- `TotalCharsLoaded` / `EstimatedTokensLoaded` — session totals
-- `Breakdown` — per-memory `(Chars, EstTokens)` dictionary
-- Uses `AsyncLocal` override for test isolation
-
-## NMP/2 Format (Named Memory Protocol v2)
-
-See [NMP_SPEC.md](NMP_SPEC.md) for the complete specification. Key points:
-
-- Always Brotli-compressed, URL-safe Base64 encoded
-- Header: `NMP/2 {N}B CRC32:{hex} BR+B64 [C:{k}]`
-- Single-chunk: one `Encode()` call, any size
-- Multi-chunk: `##CHUNK:1` sections via `EncodeChunks(string[])` or `AppendChunk()`, independently decodable
-- CRC32 over original bytes, `##PAD:0-2`, `NMP/END` sentinel
-
-## Bundle Format (.scrinia-bundle)
-
-Standard zip containing:
-- `manifest.json` — `{ version: 1, exported, topics[], totalEntries }`
-- `topics/{name}/index.json` — entry metadata
-- `topics/{name}/{subject}.nmp2` — artifact files
-
-Created by `scri export` (from stored memories) or `scri bundle` (from raw files).
-
-## scrinia Guide (MCP tool output)
-
-The `guide()` tool returns this playbook. Agents should call it once per session.
-
-### Ephemeral memories (~name)
-Use `~` prefix for in-session working state that shouldn't persist:
-- `memory('store', { name: "~scratch", content: [...] })` — temporary notes, intermediate results
-- `memory('store', { name: "~plan", content: [...] })` — current task plan you're iterating on
-- Dies when the process exits — no cleanup needed
-- Promote to persistent: `memory('copy', { name: "~scratch", destination: "notes:my-finding" })`
-
-### Topic organization (topic:subject)
-Group related memories by topic for easy discovery:
-- `memory('store', { name: "api:auth-flow", content: [...] })` — API topic, auth-flow entry
-- `memory('store', { name: "arch:decisions", content: [...] })` — architecture decisions
-- `memory('list', { scopes: "api" })` — list only the api topic (summary mode by default)
-- `memory('list', { mode: "full", offset: 0, limit: 50 })` — paginated full listing
-- `memory('search', { query: "auth", scopes: "api" })` — search within a topic
-Topics appear automatically when you use the colon syntax.
-
-### Keywords and search
-Memories are automatically indexed with content keywords for BM25 search.
-You can also provide explicit keywords for better discoverability:
-- `memory('store', { name: "api:auth", content: [...], keywords: ["oauth", "jwt", "bearer"] })`
-- Agent keywords are prioritized over auto-extracted ones
-- Search finds content even when names/descriptions don't match the query
-
-### Agent-directed chunking
-No auto-chunking — single-element content always produces a single chunk, regardless of size.
-Multi-chunk only via explicit multiple elements or `memory('append')`.
-
-Use chunked access to stay within context limits:
-1. `memory('show', { name: "api:large-doc", chunk: 1 })` — read just the first chunk (also returns total count)
-2. Process chunk-by-chunk instead of loading everything at once
-
-#### Maximize context with pre-chunked storage
-You control how content is split — organize by semantic boundaries:
-- `memory('store', { name: "api:endpoints", content: ["## Auth\n...", "## Users\n...", "## Billing\n..."] })`
-- Each element becomes one independently retrievable chunk
-- Each chunk is individually indexed (keywords, TF, preview) for chunk-level search
-- `memory('search', { query: "oauth" })` returns `chunk` results pointing to specific chunks — call `memory('show', { name: "...", chunk: N })` directly
-
-#### Strategies for effective chunking
-- **One concept per chunk**: split by function, endpoint, topic, or section header
-- **Self-contained chunks**: each chunk should make sense on its own without context from other chunks
-- **Journal pattern**: use `memory('append', { name: "log", appendContent: "entry" })` to build a log where each entry is independently addressable — read only recent entries instead of the whole history
-- **Chunk size sweet spot**: aim for 2K-8K chars per chunk — small enough to be selective, large enough to carry meaningful context
-
-### Incremental capture with append
-Build up memories incrementally without recomposing the full document:
-- `memory('append', { name: "session-notes", appendContent: "New finding here" })` — always adds as a new independently retrievable chunk
-- Creates the memory if it doesn't exist yet
-- Each appended chunk gets its own index entry (keywords, TF, preview) for chunk-level search
-- Great for session journals, running logs, and incremental notes
-
-### Context compression
-When you gather large amounts of information during research:
-1. Summarize your findings into a concise document
-2. `memory('store', { name: "topic:finding-name", content: [summary] })` — persist for future sessions
-3. Later: `memory('search', { query: "finding" })` -> `memory('show', { name: "topic:finding-name" })` to recall
-This lets you carry knowledge across sessions without re-researching.
-
-### Version history
-When you overwrite an existing memory, the previous version is archived:
-- Stored in `versions/` subdirectory with timestamp suffix
-- No manual action needed — happens automatically on store/append
-
-### Review conditions
-Flag memories that may become stale:
-- `memory('store', { name: "api:endpoints", content: [...], reviewAfter: "2026-06-01" })` — date-based
-- `memory('store', { name: "auth:flow", content: [...], reviewWhen: "when auth system changes" })` — condition-based
-- `memory('list')` summary includes stale/review counts
-- `memory('list', { mode: "full" })` shows `[stale]` or `[review?]` markers per entry
-
-### Cross-project sharing
-Export topics as portable .scrinia-bundle files:
-1. `bundle('export', { topic: "api,arch" })` — creates a .scrinia-bundle in .scrinia/exports/
-2. Copy the bundle to another project
-3. `bundle('import', { bundle: "path/to/bundle.scrinia-bundle" })` — restores all topics
-Useful for sharing team conventions, API patterns, or onboarding knowledge.
-
-### Context preservation (~checkpoints)
-Long conversations get compressed by your host platform. Use ephemeral checkpoints to survive:
-- Before a large task or after a milestone: `memory('store', { name: "~checkpoint", content: ["Task: ...\nKey findings: ...\nNext steps: ..."] })`
-- After context compaction: `memory('list', { scopes: "ephemeral" })` then `memory('show', { name: "~checkpoint" })`
-- Update as you make progress — overwrite with fresh state
-
-### Workspace changes
-Scrinia tools (memory store/append/forget/copy, bundle import) write to the `.scrinia/` directory.
-These file changes are a direct result of your tool calls — treat them as changes you made.
-Include `.scrinia/` changes in your commits alongside other project changes.
-
-### When to store vs. not store
-**Store:** stable patterns, architectural decisions, API conventions,
-solutions to recurring problems, project-specific knowledge.
-**Don't store:** session-specific state (use ~ephemeral instead).
-**Exception:** use `~checkpoint` to preserve working context across context compactions.
-
-## Known Pitfalls
-
-### file:// URI sandboxing
-
-`FileMemoryStore.ResolveArtifactAsync` accepts `file://` URIs for backward compatibility but restricts them to the workspace `.scrinia/` directory. Paths outside the workspace throw `UnauthorizedAccessException`. The Forget MCP tool resolves `file://` URIs to memory names and deletes via the store API — it does NOT do direct `File.Delete`.
-
-### Search input bounds
-
-The server enforces bounds on search parameters: query max 10KB, scopes max 1KB, limit clamped to 1–1000. The MCP tools do not enforce these limits (the MCP transport is trusted).
-
-### ConsoleAppFramework v5 source-gen CLI
-
-XML doc aliases (e.g. `-d,`) must NOT duplicate the auto-generated option name from the parameter (e.g. don't put `--workspace-root,` in doc for `workspaceRoot` param). `[Argument]` needs `using ConsoleAppFramework;`. `app.Add<T>()` (no args) registers methods as root subcommands.
-
-### Non-static MCP tools class
-
-`WithTools<T>()` requires a non-static type:
-```csharp
-[McpServerToolType]
-public sealed class ScriniaMcpTools { ... }  // correct — no constructor, no DI
-```
-
-### System.Text.Encoding.UTF8 ambiguity
-
-The `Scrinia.Core.Encoding` namespace shadows `System.Text.Encoding`. Always fully qualify:
-```csharp
-System.Text.Encoding.UTF8.GetBytes(text)  // correct
-Encoding.UTF8.GetBytes(text)              // ambiguous — resolves to Scrinia.Core.Encoding
-```
-
-### MCP tool class internals
-
-`ScriniaMcpTools` and `ScriniaProjectTools` both live in `Scrinia.Mcp` (shared library). Both sealed with no constructor (no DI injection). Both registered via `.WithTools<T>()` in CLI and Server. `FormatBytes` and `BundleJsonOptions` on `ScriniaMcpTools` are `public static`. `BundleIndex`, `BundleManifest`, and `BundleJsonContext` are `public`. `PlanningJsonContext` is `public` on `ProjectTools.cs`.
-
-### Test isolation
-
-Tests use `TestHelpers.StoreScope` to isolate store operations:
-```csharp
-using var scope = new TestHelpers.StoreScope();
-// scope.WorkspaceDir = temp workspace root
-// scope.TempDir = temp .scrinia/store/ directory
-// Ephemeral store + SessionBudget also isolated via AsyncLocal overrides
-```
-
-### Workspace root discovery
-
-`WorkspaceSetup.Configure(null)` walks up the directory tree from CWD looking for `.scrinia/` (like git finds `.git/`). If found, its parent becomes the workspace root. If not found, falls back to CWD. This makes `scri serve` work regardless of which directory the MCP client launches from.
-
-### Workspace configuration
-
-`.scrinia/config.json` stores persistent workspace-scoped settings as a flat `Dictionary<string, string>` (case-insensitive keys). Managed via `WorkspaceConfig` (Load/Save/GetValue/SetValue/UnsetValue) with `ConfigJsonContext` for trim safety.
-
-CLI command:
-```bash
-scri config                              # list all settings
-scri config plugins:embeddings           # get one setting
-scri config plugins:embeddings my-plugin # set a setting
-scri config --unset plugins:embeddings   # remove a setting
-```
-
-Config resolution order (highest priority first):
-1. Environment variable (key with `:` → `_`, uppercased)
-2. `.scrinia/config.json`
-3. Hardcoded default
-
-The `plugins:embeddings` setting controls which plugin executable is used for embeddings (default: `scri-plugin-embeddings`).
-
-### JSON CLI output
-
-All CLI commands support a `--json` flag that outputs structured JSON instead of Spectre.Console formatted text. JSON types are defined in `CliJsonContext.cs` (source-gen for trim safety):
-
-- `CliListOutput` / `CliListSummaryOutput` — list command output (full vs summary mode)
-- `CliScopeEntry` / `CliMemoryEntry` — scope and memory entry data
-- `CliSearchOutput` / `CliSearchResult` — search results
-- `CliShowOutput` — memory content
-- `CliStoreOutput` / `CliForgetOutput` — store/forget confirmations
-- `CliExportOutput` / `CliImportOutput` / `CliBundleOutput` — bundle operations
-- `CliConfigOutput` — config values
-- `CliErrorOutput` — error responses
-
-### CLI list command
-
-The `list` command supports these flags:
-- `--summary` — summary mode (topics, keywords, stats; matches MCP default behavior)
-- `--offset N` — skip first N entries (full mode only)
-- `--limit N` — max entries to return (full mode only, default 50)
-- `--json` — JSON output
-
-### Index serialization
-
-`_jsonOptions` uses `DefaultIgnoreCondition = WhenWritingNull` to keep index files lean. v2 indexes load cleanly (null fields).
-
-## Running Tests
+## Testing
 
 ```bash
-# CLI + MCP + planning + embeddings tests (1,206 tests)
-cd tests/Scrinia.Tests
-dotnet test
-
-# Server API + merge tests (86 + 18 tests)
-cd tests/Scrinia.Server.Tests
-dotnet test
-
-# Vulkan plugin + benchmark tests (12 tests)
-cd tests/Scrinia.Plugin.Embeddings.Tests
-dotnet test
+dotnet test Scrinia.sln                                    # full suite
+dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj       # core tests only
 ```
 
-Expected: 1,322 tests total (1,206 + 86 + 18 + 12). Auth plugin adds 62 tests (distributed separately).
+Use `TestHelpers.StoreScope` for test isolation — it redirects workspace, store directory, ephemeral store, and `SessionBudget` via `AsyncLocal` overrides.
 
-Test corpora (6 embedded resources): `TestHelpers.AllTestDataFiles()` returns all as `(name, content)` pairs. Individual loaders: `LoadFactsText()`, `LoadHumanEvalText()`, `LoadGsm8kText()`, `LoadInfiniteBenchText()`, `LoadMmluText()`, `LoadQualityArticleText()`.
+## Contributing
 
-## HTTP API Server
-
-The server (`Scrinia.Server`) provides REST API access to scrinia's memory stores. It uses ASP.NET Core minimal APIs with SQLite-backed API key authentication.
-
-### Architecture
-
-- **Multi-store**: Multiple named stores, each backed by an `IMemoryStore` created by the configured `IStorageBackend`. Stores are configured via `Scrinia:Stores:{name}` settings. Default backend: `FilesystemBackend` (creates `FileMemoryStore` instances). Plugins can replace the backend via `IServiceCollection`.
-- **API key auth**: Bearer token authentication. Keys are SHA-256 hashed in SQLite (`HashKeyBytes` internal for timing-safe comparison). Each key is scoped to specific stores and granular permissions. Bootstrap key written to `BOOTSTRAP_KEY` file on first run (never logged).
-- **Granular permissions**: Permission types enforced per-endpoint: `read`, `search`, `store`, `append`, `forget`, `copy`, `export`, `import`, `manage_keys`.
-- **Per-request context**: `RequestContext` resolves the authenticated user, their accessible stores, permissions, store access levels, and the active store from the route.
-- **Health probes**: `/health/live` (liveness), `/health/ready` (readiness with SQLite + store checks), `/health` (alias for ready). All unauthenticated.
-
-### Running
-
-```bash
-# Development (with hot-reload web UI)
-cd web && npm run dev &     # Vite dev server on :5173
-dotnet run --project src/Scrinia.Server  # API on :5000
-
-# Production
-cd web && npm run build     # builds to src/Scrinia.Server/wwwroot/
-dotnet run --project src/Scrinia.Server  # serves UI + API on :5000
-
-# Docker
-docker compose up -d
-docker compose logs   # shows bootstrap API key
-```
-
-### Server Infrastructure
-
-- **Rate limiting**: Sliding window (100 req/min, 6 segments). Applied to `/api/v1/` and `/api/v1/keys` groups. NOT applied to `/health/*` or `/mcp`. Returns 429 on overflow.
-- **CORS**: Configurable origins from `Scrinia:CorsOrigins` array. Empty array = allow all origins.
-- **OpenAPI**: Spec at `/openapi/v1.json`, interactive explorer at `/scalar/v1` (Scalar).
-- **Request timing**: Structured log per request (method, path, status code, elapsed ms).
-- **Global exception handler**: `UseExceptionHandler` — sanitizes unhandled exceptions to `{ "error": "An internal error occurred." }` (500). Placed first in pipeline.
-- **HTTPS/HSTS**: `UseHsts()` + `UseHttpsRedirection()` — enforced in production only (skipped in Development).
-- **Security headers**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-XSS-Protection: 0`.
-- **Request size limits**: Kestrel `MaxRequestBodySize = 10 MB`, `FormOptions.MultipartBodyLengthLimit = 50 MB` (for bundle imports).
-- **Input validation**: Memory name max 256 chars, content element max 5 MB. Enforced in `StoreMemory` and `AppendMemory` endpoints.
-- **Graceful shutdown**: `app.RunAsync()` with `ApplicationStopping` hook to dispose `ApiKeyStore` (SQLite connection).
-- **Middleware order**: `UseExceptionHandler` → HSTS/HTTPS (prod) → security headers → `UseDefaultFiles` + `UseStaticFiles` → `RequestTimingMiddleware` → `UseCors` → `UseRateLimiter` → `UseAuthentication` → `UseAuthorization` → custom `RequestContext` → plugin middleware → endpoints → `MapFallbackToFile("index.html")`.
-
-### Plugin System
-
-The server supports drop-in plugins via `Scrinia.Plugin.Abstractions`. Plugin DLLs placed in `{dataDir}/plugins/` are auto-loaded at startup.
-
-**Plugin interface** (`Scrinia.Plugin.Abstractions.IScriniaPlugin`):
-- `Name`, `Version`, `Order` (lower runs first, default 0)
-- `ConfigureServices(IServiceCollection, IConfiguration)` — register DI services
-- `ConfigureMiddleware(IApplicationBuilder)` — add middleware (runs after auth, before endpoints)
-- `MapEndpoints(IEndpointRouteBuilder)` — add HTTP routes
-
-**Storage backend extensibility** (`Scrinia.Core.IStorageBackend`):
-- `BackendId` — identifier for diagnostics (e.g. "filesystem", "postgresql")
-- `CreateStore(storeName, storePath)` — factory method returning `IMemoryStore`
-- Default: `FilesystemBackend` creates `FileMemoryStore` instances with `Directory.CreateDirectory`
-- Plugins override by registering a replacement `IStorageBackend` singleton in `ConfigureServices`
-- `StoreManager` resolves the backend from DI at construction time (deferred via factory delegate)
-- `MemoryNaming` (static, `Scrinia.Core`) provides `StripEphemeralPrefix` and `FormatScopeLabel` without store dependency
-
-**Convenience base class**: `ScriniaPluginBase` — abstract class with virtual empty defaults for all methods.
-
-**Memory operation hooks** (`IMemoryOperationHook`):
-- `OnBeforeStoreAsync` / `OnAfterStoreAsync` — intercept store operations
-- `OnBeforeAppendAsync` / `OnAfterAppendAsync` — intercept append operations
-- `OnBeforeForgetAsync` / `OnAfterForgetAsync` — intercept forget operations
-- Before-hooks can set `Cancel = true` + `CancelReason` to abort (returns 409 Conflict)
-- All methods have default `Task.CompletedTask` implementations
-
-**Hook context classes** (all sealed, `required init` props):
-- `BeforeStoreContext`: Store, Name, Content[], Description, Tags, Keywords, Cancel, CancelReason
-- `AfterStoreContext`: Store, Name, QualifiedName, ChunkCount, OriginalBytes, **Content[]**
-- `BeforeAppendContext`: Store, Name, Content, Cancel, CancelReason
-- `AfterAppendContext`: Store, Name, ChunkCount, OriginalBytes, **Content**
-- `BeforeForgetContext`: Store, Name, Cancel, CancelReason
-- `AfterForgetContext`: Store, Name, WasDeleted
-
-**PluginLoader** (`Scrinia.Server/Services/PluginLoader.cs`):
-- Scans `{pluginsDir}/*.dll`, creates isolated `AssemblyLoadContext` per DLL
-- Custom ALC falls back to Default for shared assemblies (Scrinia.*, Microsoft.*, System.*)
-- Instantiates `IScriniaPlugin` implementations via parameterless constructor
-- Sorted by `Order`; logs each loaded plugin; logs+skips failures
-
-**PluginPipeline** (`Scrinia.Server/Services/PluginPipeline.cs`):
-- Singleton wrapping `MemoryOrchestrator` with before/after hook invocation
-- Methods: `StoreAsync`, `AppendAsync`, `ForgetAsync`
-- Pattern: before hooks → MemoryOrchestrator → after hooks
-- If `Cancel=true` → throws `OperationCanceledException` (endpoints catch → 409)
-- Zero overhead when no hooks registered (`_hooks.Length == 0` short-circuit)
-
-**Two code paths, no double-firing**: REST uses `IMemoryOperationHook` (via `PluginPipeline`). MCP uses `IMemoryEventSink` (via `MemoryEventSinkContext`). A plugin implements both interfaces but only one fires per code path. Both paths share `ISearchScoreContributor` for search.
-
-**Core extensibility interfaces** (in `Scrinia.Core`, AsyncLocal-based):
-- `ISearchScoreContributor` + `SearchContributorContext` — supplemental search scores (both REST + MCP)
-- `IMemoryEventSink` + `MemoryEventSinkContext` — store/append/forget event notifications (MCP path only)
-
-**CLI plugin loading** (`Scrinia/Services/McpPluginHost.cs`):
-- Plugin exe name configurable via `plugins:embeddings` setting (env var → config file → default `scri-plugin-embeddings`)
-- Discovers `{exeDir}/plugins/{pluginName}[.exe]` executables (each plugin IS an MCP server)
-- Uses `StdioClientTransport` + `McpClient` from ModelContextProtocol SDK (stderr forwarded for logging)
-- `McpPluginHost` implements both `ISearchScoreContributor` and `IMemoryEventSink`
-- Capability detection via `ListToolsAsync()` at startup — conditionally wires `SearchContributorContext.Default` / `MemoryEventSinkContext.Default`
-- Auto-reconnects crashed plugin up to 3 times, then degrades to BM25-only search
-- No `TrimmerRootAssembly` entries needed — plugins run in their own .NET runtime
-
-**Plugin MCP tools** (4 tools exposed by `EmbeddingsTools.cs`):
-- `status` → provider info, availability, vector count (JSON)
-- `search` (query, scopes[]) → similarity scores keyed by `{scope}|{name}[|{chunkIndex}]` (JSON)
-- `upsert` (scope, name, text, chunkIndex?) → embed text and store vector
-- `remove` (scope, name) → remove all vectors for a memory
-
-**Writing a CLI plugin**:
-1. Create a .NET console app referencing `ModelContextProtocol` package
-2. Implement an MCP server with tools (at minimum: `status` for health checks)
-3. Accept `--data-dir` and `--models-dir` arguments for data isolation
-4. Accept `--config Key=Value` arguments for configuration passthrough
-5. Publish self-contained (NOT trimmed) to `{exeDir}/plugins/scri-plugin-{name}`
-6. See `Scrinia.Plugin.Embeddings.Cli/` for a complete reference implementation
-
-### MCP over HTTP
-
-MCP Streamable HTTP transport at `/mcp`, powered by `ModelContextProtocol.AspNetCore` 1.0.0.
-
-- **Endpoint**: `POST /mcp?store={store}` — JSON-RPC request/response
-- **Auth**: Bearer token (same API key auth as REST endpoints)
-- **Store selection**: Query param `?store=default` resolves the `FileMemoryStore` for the session
-- **Session context**: `PerSessionExecutionContext = true` ensures `MemoryStoreContext.Current` (AsyncLocal) persists across MCP tool calls within a session
-- **Tools**: All 3 MCP tools (guide, memory, task), shared via `Scrinia.Mcp` library
-
-MCP client config (HTTP transport):
-```json
-{
-  "mcpServers": {
-    "scrinia": {
-      "url": "http://localhost:5000/mcp?store=default",
-      "headers": { "Authorization": "Bearer YOUR_API_KEY" }
-    }
-  }
-}
-```
-
-### Web UI
-
-React 19 + TypeScript + Vite + Tailwind CSS 4 + React Router 7 + TanStack Query SPA.
-
-- **Build**: `cd web && npm run build` → outputs to `Scrinia.Server/wwwroot/`
-- **Dev mode**: `cd web && npm run dev` (Vite on :5173, proxies API to :5000)
-- **Pages**: Login (API key entry), Dashboard (health + store overview), Memory Browser (list/search with scope tabs), Memory Detail (content + chunks + delete), Key Management (create/list/revoke)
-- **Static serving**: `UseDefaultFiles` + `UseStaticFiles` (no auth), `MapFallbackToFile("index.html")` for SPA routing (must be last route)
-- **MSBuild integration**: `BuildWebUI` target runs `npm ci && npm run build` before dotnet build if `wwwroot/index.html` doesn't exist
-
-### Configuration
-
-| Setting | Env var | Default |
-|---|---|---|
-| `Scrinia:DataDir` | `Scrinia__DataDir` | `{LocalAppData}/scrinium` |
-| `Scrinia:Stores:{name}` | `Scrinia__Stores__{name}` | `{DataDir}/stores/{name}` |
-| `Scrinia:CorsOrigins` | `Scrinia__CorsOrigins__0` etc. | `[]` (allows all origins) |
-
-### Key endpoints
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/health`, `/health/live`, `/health/ready` | None | Health probes |
-| GET | `/openapi/v1.json` | None | OpenAPI specification |
-| GET | `/scalar/v1` | None | Interactive API explorer (Scalar) |
-| POST | `/mcp?store={store}` | Bearer | MCP Streamable HTTP endpoint |
-| POST | `/api/v1/stores/{store}/memories` | Bearer | Store a memory |
-| GET | `/api/v1/stores/{store}/memories` | Bearer | List memories |
-| GET | `/api/v1/stores/{store}/memories/{name}` | Bearer | Show memory |
-| DELETE | `/api/v1/stores/{store}/memories/{name}` | Bearer | Delete memory |
-| POST | `/api/v1/stores/{store}/memories/{name}/append` | Bearer | Append chunk |
-| POST | `/api/v1/stores/{store}/memories/{name}/copy` | Bearer | Copy memory |
-| GET | `/api/v1/stores/{store}/memories/{name}/chunks/{i}` | Bearer | Get chunk |
-| GET | `/api/v1/stores/{store}/search?q=...` | Bearer | Search memories |
-| POST | `/api/v1/stores/{store}/export` | Bearer | Export topics |
-| POST | `/api/v1/stores/{store}/import` | Bearer | Import bundle |
-| POST | `/api/v1/keys` | Bearer (manage_keys) | Create API key |
-| GET | `/api/v1/keys` | Bearer (manage_keys) | List keys |
-| DELETE | `/api/v1/keys/{id}` | Bearer (manage_keys) | Revoke key |
+- All commits should keep the build green (`dotnet build Scrinia.sln`) and tests passing (`dotnet test Scrinia.sln`).
+- New JSON-serialized types must be registered in the appropriate source-gen context.
+- New CLI commands go in `ScriniaCommands.cs` and inherit `--workspace-root` / `--remote` / `--api-key` patterns.
+- Plugin authors implement `IScriniaPlugin` (lifecycle), and any combination of `ISearchScoreContributor`, `IMemoryEventSink`, `IMemoryOperationHook`.

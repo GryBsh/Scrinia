@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router'
 import { hasToken } from './api/client'
 import Layout from './components/Layout'
@@ -9,10 +9,6 @@ import MemoryDetailPage from './pages/MemoryDetailPage'
 import KeyManagementPage from './pages/KeyManagementPage'
 import SettingsPage from './pages/SettingsPage'
 import AgentChatPage from './pages/AgentChatPage'
-import WorkflowsPage from './pages/WorkflowsPage'
-import WorkflowDetailPage from './pages/WorkflowDetailPage'
-
-const WorkflowEditorPage = React.lazy(() => import('./pages/WorkflowEditorPage'))
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState<boolean | null>(null)
@@ -49,24 +45,6 @@ export const router = createBrowserRouter([
       { path: '/stores/:store', element: <MemoryBrowserPage /> },
       { path: '/stores/:store/memories/:name', element: <MemoryDetailPage /> },
       { path: '/chat', element: <AgentChatPage /> },
-      { path: '/workflows', element: <WorkflowsPage /> },
-      {
-        path: '/workflows/editor',
-        element: (
-          <Suspense fallback={<div className="p-8 text-gray-500">Loading editor...</div>}>
-            <WorkflowEditorPage />
-          </Suspense>
-        ),
-      },
-      {
-        path: '/workflows/editor/:name',
-        element: (
-          <Suspense fallback={<div className="p-8 text-gray-500">Loading editor...</div>}>
-            <WorkflowEditorPage />
-          </Suspense>
-        ),
-      },
-      { path: '/workflows/:goalId', element: <WorkflowDetailPage /> },
       { path: '/keys', element: <KeyManagementPage /> },
       { path: '/settings', element: <SettingsPage /> },
     ],

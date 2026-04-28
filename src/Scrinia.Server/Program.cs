@@ -154,7 +154,6 @@ chatOptions.Temperature = Math.Clamp(chatOptions.Temperature, 0.0, 2.0);
 if (chatOptions.MaxTokens <= 0) chatOptions.MaxTokens = 4096;
 builder.Services.AddSingleton(chatOptions);
 builder.Services.AddSingleton<Scrinia.Server.Chat.ChatProviderCache>();
-builder.Services.AddSingleton<TaskEventBroadcaster>();
 
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
 builder.Services.AddSingleton(sp =>

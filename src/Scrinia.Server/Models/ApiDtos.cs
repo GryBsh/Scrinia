@@ -104,26 +104,3 @@ public sealed record KeySummaryDto(
 // ── Plugins ─────────────────────────────────────────────────────────────────
 
 public sealed record PluginInfo(string Name, string Version, int Order);
-
-// ── Workflow dashboard ──────────────────────────────────────────────────────
-
-public sealed record WorkflowListResponse(WorkflowSummary[] Workflows);
-public sealed record WorkflowSummary(string Name, int SeedActivityCount, int PostPlanActivityCount, bool IsBuiltIn);
-public sealed record WorkflowContent(string Name, string YamlContent);
-public sealed record WorkflowUpdateRequest(string YamlContent);
-
-// ── Goals ───────────────────────────────────────────────────────────────────
-
-public sealed record GoalListResponse(GoalSummary[] Goals);
-public sealed record GoalSummary(string Id, string Description, string Status, string? WorkflowRef, int ProgressPercent);
-public sealed record GoalDetailResponse(string Id, string Description, string Status, string? WorkflowRef, int ProgressPercent, PhaseGroup[] Phases);
-public sealed record PhaseGroup(string PhaseId, TaskSummary[] Tasks);
-
-// ── Tasks ───────────────────────────────────────────────────────────────────
-
-public sealed record TaskSummary(string Name, string Status, int Wave, string? Skill, string[] DependsOn, string? Tag, string? Description);
-public sealed record TaskListResponse(TaskSummary[] Tasks);
-
-// ── SSE events ──────────────────────────────────────────────────────────────
-
-public sealed record TaskEvent(string GoalId, string TaskName, string OldStatus, string NewStatus, string Timestamp);

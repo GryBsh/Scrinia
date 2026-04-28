@@ -76,13 +76,12 @@ When `scri serve` is invoked, the CLI starts an MCP server over stdio transport:
 builder.Services
     .AddMcpServer(mcp => mcp.ServerInfo = new() { Name = "scrinia", Version = "1.0.0" })
     .WithStdioServerTransport()
-    .WithTools<ScriniaMcpTools>()
-    .WithTools<ScriniaProjectTools>();
+    .WithTools<ScriniaMcpTools>();
 ```
 
-The 3 MCP tools (guide, memory, task) are sealed classes (non-static, no constructor, no DI) registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+The two MCP tools (`guide`, `memory`) are exposed by `ScriniaMcpTools`, a sealed partial class registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
 
-`ScriniaProjectTools` exposes the unified `entity()` tool (which dispatches to internal goal, concern, requirement, and project methods), plus `plan('tasks')`, `task()`, and `skill()`. It uses dedicated topic conventions (`project:*`, `plan:*`, `task:*`, `learn:*`, `agent:*`) and maintains a `project:state` memory for tracking progress. It includes `PlanningJsonContext` for trimming-safe serialization of planning DTOs.
+`memory()` is the unified dispatcher for `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, and `reconcile`. Skill-path routing (`/skill/...`) handles skill creation/load through the same entry point.
 
 ### Remote Mode
 
@@ -236,32 +235,10 @@ dotnet publish src/Scrinia/Scrinia.csproj -c Release -r win-x64 --self-contained
 ### Trimming Safety
 
 The CLI is safe for trimming because:
-- All JSON serialization uses source-gen contexts (`StoreJsonContext`, `BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`, `CliJsonContext`, `PlanningJsonContext`)
+- All JSON serialization uses source-gen contexts (`StoreJsonContext`, `BundleJsonContext`, `FileStoreJsonContext`, `ConfigJsonContext`, `PluginClientJsonContext`, `CliJsonContext`, `ScriniaMcpJsonContext`)
 - ConsoleAppFramework v5 is source-generated (no reflection)
 - No dynamic assembly loading (plugins are child processes)
 - `InternalsVisibleTo` for test access only
-
-## Planning Data Flow
-
-The planning tools in `ScriniaProjectTools` follow a state-tracking pattern where every write operation updates `project:state`. The `entity()` tool is the unified entry point that dispatches to internal methods:
-
-```
-entity('create', { type: "project" }) ────→ project:context + project:state
-                                              ↓
-entity('create', { type: "requirement" }) ─→ project:requirements + project:state (updated)
-                                              ↓
-entity('create', { type: "goal" }) ────────→ auto-creates seed tasks + project:state (updated)
-                                              ↓
-plan('tasks') ─────────────────────────────→ task:{phaseId}-{wave}-{id} memories + project:state
-                                              ↓
-task('next') ──────────────────────────────→ reads LoadIndex("local-topic:task"), filters by keywords
-                                             (status:pending → phase:{id} → min wave → unblocked deps)
-                                             NO artifact decode during scan — keyword-only
-                                              ↓
-task('complete') ──────────────────────────→ Upsert(entry with status:complete) + AppendChunk to execution log
-```
-
-`entity('show', { type: "project" })` reads `project:state`. If missing, `RebuildStateFromMemoriesAsync` reconstructs from `project:context` + task index.
 
 ## JSON CLI Output
 
@@ -269,8 +246,8 @@ All CLI commands support a `--json` flag for machine-readable JSON output. A sou
 
 ## Test Coverage
 
-1,206 tests in `Scrinia.Tests` covering:
-- All 3 MCP tools (guide, memory, task)
+`Scrinia.Tests` covers:
+- The two MCP tools (`guide`, `memory`)
 - Store operations and edge cases
 - Search ranking and scoring
 - Encoding and chunking

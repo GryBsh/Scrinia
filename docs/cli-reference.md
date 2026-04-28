@@ -1,6 +1,6 @@
 # Scrinia CLI Reference
 
-`scri` is the command-line interface and MCP server for Scrinia. It provides 11 commands for managing persistent memories and serves as an MCP server exposing 3 tools (guide, memory, task) for AI coding tools.
+`scri` is the command-line interface and MCP server for Scrinia. It manages persistent memories and serves as an MCP server exposing two tools (`guide` and `memory`) for AI coding tools.
 
 ## Commands
 
@@ -377,21 +377,20 @@ The configuration pattern is the same -- point your MCP client at `scri serve` o
 
 Names are sanitized for filesystem safety: `..` is stripped, `/` and `\` are replaced with `_`, and invalid filename characters are removed.
 
-### Planning Topic Conventions
+### Reserved Path Conventions
 
-The planning tools (`ScriniaProjectTools`) use reserved topic prefixes:
+Memory paths are free-form, but a small set of namespaces have first-class behavior in the `memory` tool:
 
-| Topic Prefix | Purpose |
-|-------------|---------|
-| `project:*` | Project context, requirements, state |
-| `plan:*` | Roadmaps and phase plans |
-| `task:*` | Individual tasks with status/wave/dependency keywords |
-| `learn:*` | Retrospective outcomes and lessons learned |
-| `agent:*` | Project-level agent behavioral norms |
+| Path | Purpose |
+|------|---------|
+| `/skill/...` | Reusable specialist prompts (built-in or override). Routed through `memory()` to load/store on disk under `.scrinia/skills/`. |
+| `/agent/...` | Agent profile and behavioral norms (`.scrinia/agent/{name}.md` with sidecar metadata). |
+| `/patterns/...` | Recurring patterns and conventions. |
+| `/sessions/...` | Session logs by date. |
+| `/checkpoint/...` | State snapshots. |
+| `/temp/...` | Ephemeral (dies on process exit). |
 
-The `list` and `search` MCP tools support an `excludeTopics` parameter to filter planning topics out of general queries.
-
-> **Note:** The planning actions are MCP-only — they are accessed via `scri serve`, not as standalone CLI commands. See the [Planning Tools Guide](planning-tools.md) for full documentation.
+The `list` and `search` actions support an `excludeTopics` parameter to filter specific topics from the result set.
 
 ## Portable Bundles
 
