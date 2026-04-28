@@ -328,7 +328,7 @@ The server exposes MCP Streamable HTTP at `/mcp` via `ModelContextProtocol.AspNe
 app.MapMcp("/mcp").RequireAuthorization();
 ```
 
-All 3 MCP tools (guide, memory, task) are available (defined in `MemoryTools.cs` and `ProjectTools.cs` respectively). The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
+Both MCP tools (`guide` and `memory`) are available, defined in `MemoryTools.cs`. The MCP path uses `IMemoryEventSink` for event hooks (not `IMemoryOperationHook`) to avoid double-firing.
 
 ## Web UI Integration
 

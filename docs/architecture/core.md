@@ -273,7 +273,7 @@ Used by the `references` and `link` memory tools to enable drift detection (`mem
 
 **Scope resolution:** `ResolveReadScopes`, `GetStoreDirForScope`, `FindArtifactPath`
 
-**Scope filtering (default interface methods):** `ListScoped(scope, excludeTopics)` and `SearchAll(..., excludeTopics)` overloads filter out entries belonging to specified topics. `FileMemoryStore` provides efficient overrides. The MCP `list` and `search` tools use `excludeTopics` to let agents exclude planning topics (`plan`, `task`, `project`, `learn`, `user`) from general queries.
+**Scope filtering (default interface methods):** `ListScoped(scope, excludeTopics)` and `SearchAll(..., excludeTopics)` overloads filter out entries belonging to specified topics. `FileMemoryStore` provides efficient overrides. The MCP `list` and `search` actions accept `excludeTopics` so agents can scope queries to specific topic subsets.
 
 ### FileMemoryStore
 
@@ -334,20 +334,9 @@ Both `FileMemoryStore` and `ScriniaArtifactStore` use file locks for all index a
 - Topic discovery cache with 2-second TTL
 - Cross-process `FileLock` for filesystem-level coordination
 
-### Planning Tool Task Queries
+### Keyword-Only Index Scans
 
-The `task('next')` planning tool demonstrates an important performance pattern — keyword-only index scan:
-
-1. `store.LoadIndex("local-topic:task")` — loads index entries (O(1) via CachedIndex)
-2. Filter by `phase:{phaseId}` keyword — no artifact decode
-3. Filter by `status:pending` keyword
-4. Group by `wave:{N}`, select lowest wave
-5. Check `depends_on:{subject}` against completed task set
-6. Only then decode artifact content for the unblocked result set
-
-This means `task('next')` with 100 tasks scans keywords only, decoding perhaps 3-5 artifacts for the current wave — not all 100.
-
-`task('complete')` updates status keywords via record `with`-expression + `Upsert` — no `ArchiveVersion` call (prevents version bloat from frequent status updates).
+Index entries carry `Keywords` so consumers can filter without decoding artifacts. `LoadIndex(scope)` returns `IReadOnlyList<ArtifactEntry>` (O(1) via CachedIndex). Filtering on keywords (e.g. `status:active`, `tag:onboarder`) lets callers reduce a large index to a small candidate set before decoding any payload — important for keeping `list` and `search` responsive on large stores.
 
 ### Version Archiving
 
@@ -443,7 +432,7 @@ All serialized types use source-generated `JsonSerializerContext` for trimming s
 | `FileStoreJsonContext` | Core | Index file persistence |
 | `BundleJsonContext` | Core | Export/import bundles |
 | `StoreJsonContext` | CLI | CLI store operations |
-| `PlanningJsonContext` | Mcp | Planning DTOs (ProjectRecord, PlanRecord, TaskRecord, ConcernRecord, SkillRecord, ResearchRecord, GoalRecord + array forms) |
+| `ScriniaMcpJsonContext` | Mcp | Skill and agent file sidecar metadata (`SkillFileMeta`, `AgentFileMeta`) |
 | `ServerJsonContext` | Server | API request/response DTOs |
 | `ConfigJsonContext` | CLI | Workspace config file |
 | `PluginClientJsonContext` | CLI | Plugin MCP communication |

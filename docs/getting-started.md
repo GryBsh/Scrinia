@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to 3 MCP tools for persistent memory and project planning. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to two MCP tools (`guide`, `memory`) for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -155,86 +155,52 @@ Memories are organized into three scopes:
 | `topic:subject` | Topic | `.scrinia/topics/topic/subject.nmp2` | Persistent |
 | `~subject` | Ephemeral | In-memory only | Dies with process |
 
-**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize project knowledge by domain. The planning tools use reserved topic prefixes: `project:*`, `plan:*`, `task:*`, `learn:*`, and `agent:*`.
+**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize knowledge by domain.
 
 **Ephemeral** memories are scratch space that disappears when the process exits. Useful for temporary context within a session.
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes 3 tools using a noun-action pattern: guide, memory, and task.
-
-### Memory Tools (3)
+When connected via MCP, Scrinia exposes two tools:
 
 | Tool | Actions | Purpose |
 |------|---------|---------|
-| `memory` | `store`, `show`, `append`, `list`, `search`, `forget`, `copy`, `restore`, `reconcile`, `resolve` | Core memory operations: persist, retrieve, search, and manage memories |
 | `guide` | *(none — standalone)* | Session playbook (call once per session) |
-| `bundle` | `export`, `import` | Export/import memory bundles for portability |
+| `memory` | `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, `reconcile` | Unified memory dispatcher; skill paths (`/skill/...`) are routed through it |
 
-### Planning Tools (4)
+### Reserved Paths
 
-| Tool | Actions | Purpose |
-|------|---------|---------|
-| `entity` | `create`, `update`, `transition`, `show`, `list`, `search` | Unified entity operations for goals, concerns, requirements, projects, and workflows |
-| `plan` | `tasks` | Task decomposition with auto-injected gate tasks |
-| `task` | `next`, `complete` | Execute tasks: get unblocked work and mark complete |
-| `skill` | `create`, `load` | Create and load reusable specialist skills |
+A small set of paths have first-class behavior; everything else is plain memory grouped by its first segment.
 
-**Built-in skills** (13) ship with scrinia and are always available via `skill('load')`:
+| Path | Purpose |
+|------|---------|
+| `/skill/...` | Reusable specialist prompts (built-in or override). Stored at `.scrinia/skills/{name}.md`. |
+| `/agent/...` | Agent profile and behavioral norms. |
+| `/patterns/...` | Recurring patterns and conventions. |
+| `/sessions/...` | Session logs by date (`YYYY-MM-DD`). |
+| `/checkpoint/...` | State snapshots. |
+| `/temp/...` | Ephemeral (dies on process exit). |
+
+### Built-in Skills
+
+The following ship with scrinia and load via `memory('recall', { path: '/skill/{name}' })`:
 
 | Skill | Purpose |
 |-------|---------|
-| `agent-specialist` | Agent behavioral norms and profile bootstrapping |
-| `planner` | Wave-aware execution planning: file conflict detection, agent specs, merge strategy |
 | `auditor` | Systematic code, security, and documentation review with sequential finding IDs |
 | `debugger` | Scientific method debugging: observe, hypothesize, isolate, verify, store |
 | `chaos-engineer` | Probe operational resilience: failure domains, blast radius, recovery gaps |
 | `onboarder` | Build a codebase mental model for new agents and developers |
-| `sos-handler` | Triage agent SOS signals: spawn specialists, create skills, replan waves |
+| `sos-handler` | Triage agent SOS signals: spawn specialists, create skills |
 | `evolutionary` | Proactive knowledge and skill improvement, stale memory scanning |
-| `cartographer` | Cross-domain connection indexing and bridge discovery |
-| `march-reporter` | Produce human-readable goal summary documents for audit trails |
 | `merge-safety` | Multi-user merge conflict prevention and resolution guidance |
 | `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |
 | `self-reflector` | Agent self-assessment: identify blind spots, biases, and improvement opportunities |
 
-Built-in skills are evolvable — `skill('create')` with the same name creates a project-specific override.
-
-Planning tools use dedicated topic conventions: `project:*` for project state, `plan:*` for roadmaps, `task:*` for individual tasks, `learn:*` for retrospective outcomes, and `agent:*` for agent behavioral norms. The `memory('list')` and `memory('search')` actions support `excludeTopics` to filter planning topics out of general queries.
-
-## Planning Quick Start
-
-Scrinia's planning tools let an agent manage a full project lifecycle. The `entity()` tool is the unified interface for managing goals, concerns, requirements, and projects. Here's a minimal flow:
-
-```
-# 1. Initialize a project
-entity('create', { type: "project", description: "Build a REST API for user management with JWT auth" })
-
-# 2. Define requirements
-entity('create', { type: "requirement", requirements: "## v1\n- AUTH-01: User registration\n- AUTH-02: JWT login\n- API-01: CRUD endpoints" })
-
-# 3. Set a goal (auto-creates researcher → auditor → planner seed tasks)
-entity('create', { type: "goal", description: "Implement user management with JWT" })
-
-# 4. Decompose Phase 1 into tasks
-plan('tasks', { phaseId: "01", tasks: "## Task 01\nDepends on: none\nAction: Create registration endpoint\nAcceptance criteria:\n- POST /users returns 201" })
-
-# 5. Execute: get task → do the work → mark complete
-task('next', { phaseId: "01" })      # returns unblocked tasks
-task('complete', { taskName: "task:01-1-01", outcome: "Registration endpoint created. Tests pass." })
-
-# 6. Check project status anytime
-entity('show', { type: "project" })  # current phase, progress, blockers
-
-# 7. Resume anytime after context loss
-memory('restore')                    # restores full project state
-```
-
-See [Planning Tools Guide](planning-tools.md) for full documentation of all planning tools.
+Built-in skills are evolvable — `memory('remember', { path: '/skill/{name}', content: [...] })` creates a project-specific override on disk.
 
 ## What's Next
 
-- **[Planning Tools Guide](planning-tools.md)** -- Full planning lifecycle reference with examples
 - **[CLI Reference](cli-reference.md)** -- Full command reference, configuration, embedding providers, MCP client setup
 - **[Server Administration](server-admin.md)** -- Deployment, authentication, REST API, Web UI, Docker
 - **[Architecture Overview](architecture/overview.md)** -- System design, project structure, dependency graph

@@ -156,7 +156,7 @@ find .scrinia/store/versions/ -name "*.nmp2" -mtime +30 -delete
 find .scrinia/topics/*/versions/ -name "*.nmp2" -mtime +30 -delete
 ```
 
-Note: `task('complete')` and `project:state` updates skip archiving by design to prevent this issue for planning data.
+Note: append-only memories that update frequently (e.g., session logs) skip archiving by design to prevent version bloat.
 
 ### Search returns unexpected results
 
