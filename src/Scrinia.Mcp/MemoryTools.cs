@@ -92,6 +92,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Conflict ID to resolve (reconcile).")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged' (reconcile).")] string? choice = null,
         [Description("Content for 'merged' resolution (reconcile).")] string? mergedContent = null,
+        [Description("When recalling /skill/{name}, return both the built-in and the project override side-by-side so you can merge them and save back (skill recall).")] bool reconcile = false,
         CancellationToken cancellationToken = default)
     {
         string act = action.Trim().ToLowerInvariant();
@@ -106,7 +107,7 @@ public sealed partial class ScriniaMcpTools
         // ── Skill path routing ───────────────────────────────────────────────
         // When `path` starts with "/skill/", route to SkillLoad/SkillCreate.
         {
-            var skillResult = TryRouteToSkill(act, path, content, cancellationToken);
+            var skillResult = TryRouteToSkill(act, path, content, reconcile, cancellationToken);
             if (skillResult is not null)
                 return await skillResult;
         }
@@ -186,7 +187,7 @@ public sealed partial class ScriniaMcpTools
     /// to standard memory behavior.
     /// </summary>
     private static Task<string>? TryRouteToSkill(
-        string act, string? path, string[]? content,
+        string act, string? path, string[]? content, bool reconcile,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -208,7 +209,7 @@ public sealed partial class ScriniaMcpTools
         {
             case "recall":
             case "show":
-                return SkillLoad(skillName, reconcile: false, cancellationToken);
+                return SkillLoad(skillName, reconcile, cancellationToken);
 
             case "remember":
             case "store":
