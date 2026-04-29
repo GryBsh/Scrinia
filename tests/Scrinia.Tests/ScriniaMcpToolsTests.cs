@@ -1615,7 +1615,7 @@ public sealed class ScriniaMcpToolsTests
 
         guide.Should().Contain("## Chunks");
         guide.Should().Contain("append");
-        guide.Should().Contain("Review Dates");
+        guide.Should().Contain("Review markers");
         guide.Should().Contain("reviewAfter");
         guide.Should().Contain("/checkpoint/");
         guide.Should().Contain("## Recovery");
