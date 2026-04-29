@@ -87,7 +87,6 @@ public sealed partial class ScriniaMcpTools
         [Description("Starting index for full mode (list).")] int offset = 0,
         [Description("Max results (list default 50, search default 20).")] int limit = 50,
         [Description("Comma-separated topics to exclude (list, search).")] string? excludeTopics = null,
-        [Description("Overwrite existing on copy (copy).")] bool overwrite = false,
         [Description("Keep only N recent chunks, 0 = merge all (compact).")] int keepRecent = 0,
         [Description("Reason for linking (link).")] string? reason = null,
         [Description("Conflict ID to resolve (reconcile).")] string? conflictId = null,
