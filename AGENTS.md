@@ -62,7 +62,7 @@ scrinia/
   docs/
     getting-started.md, cli-reference.md, server-admin.md, multi-user-setup.md,
     troubleshooting.md, web-ui-guide.md, architecture/{overview,cli,server,core,embeddings}.md
-  CLAUDE.md                       <- canonical agent quick-start
+  AGENTS.md                       <- this file (canonical contributor doc for agents)
   NMP_SPEC.md                     <- NMP/2 format specification
 ```
 
