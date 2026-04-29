@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 3 MCP tools — each using noun('action') dispatch — so agents can remember, search, plan, execute, and learn across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
+Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 2 MCP tools (`guide` and `memory`) so agents can remember, search, recall, and load reusable specialist skills across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -145,34 +145,31 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-3 tools available via `scri serve` — all use noun('action') dispatch.
-
-### Memory tools (3)
+2 tools available via `scri serve`.
 
 | Tool | Actions | Description |
 |---|---|---|
-| `guide` | (none) | Returns the scrinia guide for agent onboarding |
-| `memory` | store, append, show, search, list, forget, copy, compact, update, link, references, restore, reconcile | Unified memory operations |
-| `bundle` | export, import | Bundle export/import for memory portability |
+| `guide` | *(none — standalone)* | Returns the embedded agent guide. Call once per session. |
+| `memory` | `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, `reconcile` | Unified memory dispatcher. Skill paths (`/skill/...`) are routed through it. |
 
-### Planning tools (6)
+### Built-in skills
 
-Full project lifecycle — ideation, planning, execution, verification, and learning.
+Eight skills ship with scrinia and load via `memory('recall', { path: '/skill/{name}' })`:
 
-| Tool | Actions | Description |
-|---|---|---|
-| `plan` | init, tasks, status | Project initialization, task decomposition, progress tracking |
-| `task` | next, complete | Task queue management |
-| `goal` | add, complete, list, update | Goal lifecycle management |
-| `concern` | add, resolve, list | Risk and issue tracking |
-| `skill` | load, create | Specialist methodology management |
-| `requirement` | add, resolve, list | Requirement registration and tracking |
+| Skill | Purpose |
+|-------|---------|
+| `auditor` | Systematic code, security, and documentation review with sequenced finding IDs |
+| `qa` | Test-and-build verification with command-output evidence |
+| `debugger` | Scientific-method debugging: observe, hypothesize, isolate, verify |
+| `chaos-engineer` | Probe operational resilience: failure domains, blast radius, recovery gaps |
+| `onboarder` | Build a codebase mental model for new agents and developers |
+| `merge-safety` | Multi-user `.scrinia/` merge conflict prevention and resolution |
+| `evolutionary` | Prune stale memories, surface drift, keep skills aligned with practice |
+| `self-reflector` | Compare plan vs reality after a unit of work, persist durable lessons |
 
-Thirteen **built-in skills** ship with scrinia: `agent-specialist`, `planner`, `auditor`, `debugger`, `chaos-engineer`, `onboarder`, `sos-handler`, `evolutionary`, `cartographer`, `march-reporter`, `merge-safety`, `qa`, `self-reflector`. Call `skill('load')` to list them. Projects can override any built-in with `skill('create')`.
+Projects can override any built-in by writing to `/skill/{name}` — the on-disk version takes precedence and is reusable across sessions.
 
-Plans are stored as topic-scoped memories (`plan:*`, `task:*`, `project:*`, `learn:*`, `agent:*`) — no separate database. All planning data is searchable via the standard `memory('search')` tool. The `excludeTopics` parameter on `memory('list')` and `memory('search')` lets agents separate knowledge from planning data when needed.
-
-Agent learning is built in: the `self-reflector` skill stores execution outcomes and lessons learned, and `agent:profile` memories store agent behavioral norms — both discoverable via standard search.
+Plans, retrospectives, agent norms, and findings are all just memories — searchable via `memory('search')`, organized via reserved paths (`/findings/`, `/learn/`, `/agent/`, `/patterns/`, `/sessions/`). No separate database, no separate tools.
 
 ## Documentation
 
@@ -180,7 +177,6 @@ Agent learning is built in: the `self-reflector` skill stores execution outcomes
 - **[Getting Started](docs/getting-started.md)** — overview, installation, quick start
 - **[CLI Reference](docs/cli-reference.md)** — commands, configuration, embedding providers, MCP client setup
 - **[Server Administration](docs/server-admin.md)** — deployment, authentication, REST API, web UI, Docker
-- **[Planning Tools](docs/planning-tools.md)** — project lifecycle, task execution, verification
 - **[Web UI](docs/web-ui-guide.md)** — React SPA component architecture, dev setup, deployment
 - **[Troubleshooting](docs/troubleshooting.md)** — common issues, plugin failures, recovery
 
