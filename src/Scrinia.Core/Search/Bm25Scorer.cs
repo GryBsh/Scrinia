@@ -54,12 +54,22 @@ internal static class Bm25Scorer
 
     /// <summary>
     /// Computes corpus statistics from a collection of entry term frequencies.
-    /// Returns (avgDocLength, documentFrequencies).
+    /// Returns (avgDocLength, documentFrequencies). When the caller knows the corpus
+    /// size up-front, pass it via <paramref name="docCountHint"/> so the internal
+    /// document-frequency map can be pre-sized and avoid rehashes during the build pass.
     /// </summary>
     public static (double AvgDocLength, Dictionary<string, int> DocumentFrequencies)
-        ComputeCorpusStats(IEnumerable<IReadOnlyDictionary<string, int>?> allTfs)
+        ComputeCorpusStats(
+            IEnumerable<IReadOnlyDictionary<string, int>?> allTfs,
+            int docCountHint = 0)
     {
-        var docFreqs = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // Heuristic capacity: ~24 unique terms per doc on typical English/code corpora,
+        // capped to avoid huge over-allocation for very large corpora (Heaps' law:
+        // vocabulary grows sublinearly with corpus size).
+        int initialCapacity = docCountHint > 0
+            ? (int)Math.Min((long)docCountHint * 24, 50_000L)
+            : 0;
+        var docFreqs = new Dictionary<string, int>(initialCapacity, StringComparer.OrdinalIgnoreCase);
         long totalLength = 0;
         int docCount = 0;
 

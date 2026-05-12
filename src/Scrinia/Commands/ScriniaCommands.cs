@@ -498,6 +498,190 @@ public class ScriniaCommands
         return 0;
     }
 
+    // ── MCP-passthrough commands ────────────────────────────────────────────
+    //
+    // Each of the six commands below wires the CLI directly into the same
+    // ScriniaMcpTools handler that the MCP server invokes. Output is the raw
+    // YAML response (terminal-friendly when read by humans, parseable by tools);
+    // --json wraps the response in CliMcpOutput so callers get a stable shape.
+
+    private static int EmitMcpResult(string yaml, bool json, string action)
+    {
+        bool isError = yaml.Contains("status: error", StringComparison.Ordinal);
+        string status = isError ? "error"
+            : yaml.Contains("status: warning", StringComparison.Ordinal) ? "warning"
+            : "success";
+
+        if (json)
+        {
+            WriteJson(new CliMcpOutput(action, status, yaml), CliJsonContext.Default.CliMcpOutput);
+        }
+        else
+        {
+            // Pass YAML straight through — same pattern as Show.
+            Console.Write(yaml);
+            if (!yaml.EndsWith('\n')) Console.WriteLine();
+        }
+        return isError ? 1 : 0;
+    }
+
+    /// <summary>Print the embedded agent guide. Call once per session.</summary>
+    /// <param name="json">Output as JSON instead of raw markdown.</param>
+    public async Task<int> Guide(
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        var tools = new ScriniaMcpTools();
+        string yaml = await tools.Guide(cancellationToken);
+
+        if (json)
+        {
+            WriteJson(new CliMcpOutput("guide", "success", yaml), CliJsonContext.Default.CliMcpOutput);
+            return 0;
+        }
+
+        // Human-friendly: print the raw guide markdown instead of the YAML envelope.
+        string? guide = EmbeddedPrompts.LoadGuide();
+        Console.Write(guide ?? yaml);
+        if (guide is not null && !guide.EndsWith('\n')) Console.WriteLine();
+        return 0;
+    }
+
+    /// <summary>Append a new chunk to an existing memory.</summary>
+    /// <param name="name">Memory name to append to (e.g. 'session-notes', '/sessions/2026-05-11').</param>
+    /// <param name="file">File path to read content from. Use '-' or omit for stdin.</param>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
+    public async Task<int> Append(
+        [Argument] string name,
+        [Argument] string? file = null,
+        string? workspaceRoot = null,
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+        string content;
+        if (string.IsNullOrEmpty(file) || file == "-")
+        {
+            if (!Console.IsInputRedirected)
+            {
+                if (json) { WriteJsonError("No file specified and stdin is not redirected."); return 1; }
+                AnsiConsole.MarkupLine("[red]Error:[/] No file specified and stdin is not redirected.");
+                AnsiConsole.MarkupLine("Usage: scri append <name> <file> or pipe content via stdin.");
+                return 1;
+            }
+            content = await Console.In.ReadToEndAsync(cancellationToken);
+        }
+        else
+        {
+            if (!File.Exists(file))
+            {
+                if (json) { WriteJsonError($"File not found: {file}"); return 1; }
+                AnsiConsole.MarkupLine($"[red]Error:[/] File not found: {Markup.Escape(file)}");
+                return 1;
+            }
+            content = await File.ReadAllTextAsync(file, cancellationToken);
+        }
+
+        var tools = new ScriniaMcpTools();
+        string yaml = await tools.Append(content, name, cancellationToken);
+        return EmitMcpResult(yaml, json, "append");
+    }
+
+    /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version.</summary>
+    /// <param name="name">Memory name to compact.</param>
+    /// <param name="keepRecent">-k, Keep only the N most recent chunks. 0 = merge all into one.</param>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
+    public async Task<int> Compact(
+        [Argument] string name,
+        int keepRecent = 0,
+        string? workspaceRoot = null,
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+        var tools = new ScriniaMcpTools();
+        string yaml = await tools.Compact(name, keepRecent, cancellationToken);
+        return EmitMcpResult(yaml, json, "compact");
+    }
+
+    /// <summary>Create a bidirectional link between two memories.</summary>
+    /// <param name="from">Source memory name.</param>
+    /// <param name="to">Target memory name.</param>
+    /// <param name="reason">-r, Optional reason for the connection.</param>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
+    public async Task<int> Link(
+        [Argument] string from,
+        [Argument] string to,
+        string? reason = null,
+        string? workspaceRoot = null,
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+        var tools = new ScriniaMcpTools();
+        string yaml = await tools.Link(from, to, reason, cancellationToken);
+        return EmitMcpResult(yaml, json, "link");
+    }
+
+    /// <summary>Resume agent context — profile, patterns, today's session log, available skills.</summary>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
+    public async Task<int> Restore(
+        string? workspaceRoot = null,
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+        var tools = new ScriniaMcpTools();
+        string yaml = await tools.Restore(cancellationToken);
+        return EmitMcpResult(yaml, json, "restore");
+    }
+
+    /// <summary>Scan for merge conflicts in .scrinia/ or resolve a specific conflict.</summary>
+    /// <param name="conflictId">Workspace-relative path under .scrinia/ to the conflicted file (e.g. "local/skills/qa.nmp2"). Omit to scan.</param>
+    /// <param name="choice">Resolution when resolving: 'ours', 'theirs', or 'merged'.</param>
+    /// <param name="mergedContent">Content for 'merged' resolution. Use '-' for stdin.</param>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Output as JSON instead of formatted text.</param>
+    public async Task<int> Reconcile(
+        string? conflictId = null,
+        string? choice = null,
+        string? mergedContent = null,
+        string? workspaceRoot = null,
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+        // Allow piping the merged content for 'merged' resolution.
+        if (mergedContent == "-")
+        {
+            if (!Console.IsInputRedirected)
+            {
+                if (json) { WriteJsonError("--merged-content '-' requires stdin to be redirected."); return 1; }
+                AnsiConsole.MarkupLine("[red]Error:[/] --merged-content '-' requires stdin to be redirected.");
+                return 1;
+            }
+            mergedContent = await Console.In.ReadToEndAsync(cancellationToken);
+        }
+
+        var tools = new ScriniaMcpTools();
+        string yaml = await tools.Reconcile(conflictId, choice, mergedContent, cancellationToken);
+        return EmitMcpResult(yaml, json, "reconcile");
+    }
+
     /// <summary>Export topics to a .scrinia-bundle.</summary>
     /// <param name="topics">Comma-separated topic names to export (e.g. api,arch).</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
@@ -677,7 +861,9 @@ public class ScriniaCommands
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create))
         {
             // Write topic index
-            string indexJson = JsonSerializer.Serialize(new Scrinia.Core.Bundles.BundleIndex(entries), Scrinia.Core.Bundles.BundleFormatService.DefaultJsonOptions);
+            string indexJson = JsonSerializer.Serialize(
+                new Scrinia.Core.Bundles.BundleIndex(entries),
+                Scrinia.Core.Bundles.BundleJsonContext.Default.BundleIndex);
             var indexEntry = zip.CreateEntry($"topics/{sanitizedTopic}/index.json");
             using (var writer = new StreamWriter(indexEntry.Open()))
                 writer.Write(indexJson);
@@ -693,7 +879,9 @@ public class ScriniaCommands
 
             // Write manifest
             var manifest = new Scrinia.Core.Bundles.BundleManifest(1, DateTimeOffset.UtcNow.ToString("o"), [sanitizedTopic], entries.Count);
-            string manifestJson = JsonSerializer.Serialize(manifest, Scrinia.Core.Bundles.BundleFormatService.DefaultJsonOptions);
+            string manifestJson = JsonSerializer.Serialize(
+                manifest,
+                Scrinia.Core.Bundles.BundleJsonContext.Default.BundleManifest);
             var manifestEntry = zip.CreateEntry("manifest.json");
             using (var writer = new StreamWriter(manifestEntry.Open()))
                 writer.Write(manifestJson);
@@ -820,13 +1008,8 @@ public class ScriniaCommands
         string resolverValue = resolver ?? "none";
         string mergeConfigPath = Path.Combine(scriniaDir, "merge.config");
         string mergeConfigJson = JsonSerializer.Serialize(
-            new
-            {
-                jaccardThreshold = 0.7,
-                resolver = resolverValue,
-                conflictDir = "conflict"
-            },
-            new JsonSerializerOptions { WriteIndented = true });
+            new MergeConfig(JaccardThreshold: 0.7, Resolver: resolverValue, ConflictDir: "conflict"),
+            CliJsonContext.Default.MergeConfig);
         File.WriteAllText(mergeConfigPath, mergeConfigJson + "\n");
         AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(mergeConfigPath)}");
 

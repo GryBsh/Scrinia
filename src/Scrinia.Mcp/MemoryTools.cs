@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO.Compression;
 using System.Text.Json;
@@ -16,9 +15,6 @@ namespace Scrinia.Mcp;
 [McpServerToolType]
 public sealed partial class ScriniaMcpTools
 {
-
-    private static readonly ConcurrentDictionary<string, ConflictEntry> _activeConflicts = new();
-    private sealed record ConflictEntry(string FilePath, string Type, string? OursContent, string? TheirsContent);
 
     private static readonly Regex CountPattern = new(
         @"\b\d+\s+(tests?|tools?|skills?|endpoints?|routes?|models?|memories)\b",
@@ -57,19 +53,13 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Unified memory tool — dispatches to action-specific handlers.</summary>
     [McpServerTool(Name = "memory"), Description(
-        "Unified memory operations. Actions: " +
-        "'remember' / 'store' (persist content with keywords/review/codeRefs), " +
-        "'recall' / 'show' (read/decode memory content, optional chunk), " +
-        "'forget' (delete memory), " +
-        "'search' (find memories by query), " +
-        "'list' (browse memories — summary/full/drift modes), " +
-        "'append' (add chunk to existing memory), " +
-        "'compact' (merge chunks in a memory), " +
-        "'link' (add codeRefs to a memory), " +
-        "'restore' (resume agent context — agent profile, patterns, session log, available skills), " +
-        "'reconcile' (scan for merge conflicts or resolve a specific conflict).")]
+        "Unified memory operations. Call memory('restore') at the start of every session to reload agent context " +
+        "(profile, patterns, recent session log, available skills). " +
+        "Canonical actions: remember (alias: store), recall (alias: show), forget, search, list, append, compact, link, restore, reconcile. " +
+        "Parameter-shape gotcha: 'remember' takes a content array (each element is a chunk); 'append' takes a single appendContent string. " +
+        "Call guide() for the full per-action parameter reference.")]
     public async Task<string> Memory(
-        [Description("Action to perform: 'remember' (or 'store'), 'recall' (or 'show'), 'forget', 'search', 'list', 'append', 'compact', 'link', 'restore', 'reconcile'.")] string action,
+        [Description("Action to perform. Canonical: remember, recall, forget, search, list, append, compact, link, restore, reconcile. Aliases: store→remember, show→recall.")] string action,
         [Description("Memory path (e.g., '/skill/qa', '/patterns/retry', or 'topic:subject' for backward compat).")] string? path = null,
         [Description("Content array — each element becomes one chunk (store).")] string[]? content = null,
         [Description("Text content to append as new chunk (append).")] string? appendContent = null,
@@ -92,7 +82,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Conflict ID to resolve (reconcile).")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged' (reconcile).")] string? choice = null,
         [Description("Content for 'merged' resolution (reconcile).")] string? mergedContent = null,
-        [Description("When recalling /skill/{name}, return both the built-in and the project override side-by-side so you can merge them and save back (skill recall).")] bool reconcile = false,
+        [Description("Skill-recall only: when recalling /skill/{name}, return both the built-in and the project override side-by-side so you can merge them and save back. Ignored for non-skill paths. Unrelated to the 'reconcile' action.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
     {
         string act = action.Trim().ToLowerInvariant();
@@ -107,7 +97,7 @@ public sealed partial class ScriniaMcpTools
         // ── Skill path routing ───────────────────────────────────────────────
         // When `path` starts with "/skill/", route to SkillLoad/SkillCreate.
         {
-            var skillResult = TryRouteToSkill(act, path, content, reconcile, cancellationToken);
+            var skillResult = TryRouteToSkill(act, path, content, withBuiltin, cancellationToken);
             if (skillResult is not null)
                 return await skillResult;
         }
@@ -118,53 +108,112 @@ public sealed partial class ScriniaMcpTools
             case "store":
                 const int MaxNameLength = 256;
                 const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
-                if (content is null || content.Length == 0) return ResponseBuilder.Error("memory('remember') requires 'content' parameter.").ToYaml();
-                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('remember') requires 'path' parameter.").ToYaml();
+                if (content is null || content.Length == 0)
+                    return ResponseBuilder.Error(
+                        "memory('remember') requires 'content' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('remember', { path: '...', content: ['chunk 1', 'chunk 2'] })").ToYaml();
+                if (string.IsNullOrWhiteSpace(path))
+                    return ResponseBuilder.Error(
+                        "memory('remember') requires 'path' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('remember', { path: '/findings/example', content: [...] })").ToYaml();
                 if (path.Length > MaxNameLength)
-                    return ResponseBuilder.Error($"path exceeds {MaxNameLength} characters.").ToYaml();
+                    return ResponseBuilder.Error(
+                        $"path exceeds {MaxNameLength} characters.",
+                        ErrorCodes.InvalidParameter,
+                        $"Shorten the path to under {MaxNameLength} characters.").ToYaml();
                 foreach (var element in content)
                 {
                     if (element != null && System.Text.Encoding.UTF8.GetByteCount(element) > MaxContentBytesPerElement)
-                        return ResponseBuilder.Error($"content element exceeds {MaxContentBytesPerElement / (1024 * 1024)} MB limit.").ToYaml();
+                        return ResponseBuilder.Error(
+                            $"content element exceeds {MaxContentBytesPerElement / (1024 * 1024)} MB limit.",
+                            ErrorCodes.InvalidParameter,
+                            "Split the content into multiple smaller elements in the content array.").ToYaml();
                 }
                 {
-                    var result = await Store(content, path, description ?? "", tags, keywords, reviewAfter, reviewWhen, codeRefs, cancellationToken);
-                    return responseAction is not null ? result.Replace("action: stored", $"action: {responseAction}") : result;
+                    var result = await Store(content, path, description ?? "", tags, keywords, reviewAfter, reviewWhen, codeRefs,
+                        actionLabel: responseAction ?? "stored", cancellationToken);
+                    string? typoHint = ReservedPrefixGuard.HintFor(path);
+                    if (typoHint is not null)
+                        result = McpResponseExtensions.InjectInfoHint(result, typoHint);
+                    return result;
                 }
 
             case "append":
-                if (string.IsNullOrWhiteSpace(appendContent)) return ResponseBuilder.Error("memory('append') requires 'appendContent' parameter.").ToYaml();
-                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('append') requires 'path' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(appendContent))
+                    return ResponseBuilder.Error(
+                        "memory('append') requires 'appendContent' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('append', { path: '...', appendContent: 'new chunk text' })").ToYaml();
+                if (string.IsNullOrWhiteSpace(path))
+                    return ResponseBuilder.Error(
+                        "memory('append') requires 'path' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('append', { path: '/sessions/2026-05-11', appendContent: '...' })").ToYaml();
                 if (appendContent != null && System.Text.Encoding.UTF8.GetByteCount(appendContent) > 5 * 1024 * 1024)
-                    return ResponseBuilder.Error("append content exceeds 5 MB limit.").ToYaml();
-                return await Append(appendContent!, path!, cancellationToken);
+                    return ResponseBuilder.Error(
+                        "append content exceeds 5 MB limit.",
+                        ErrorCodes.InvalidParameter,
+                        "Split the append into multiple smaller memory('append') calls.").ToYaml();
+                {
+                    var result = await Append(appendContent!, path!, cancellationToken);
+                    string? typoHint = ReservedPrefixGuard.HintFor(path);
+                    if (typoHint is not null)
+                        result = McpResponseExtensions.InjectInfoHint(result, typoHint);
+                    return result;
+                }
 
             case "recall":
             case "show":
-                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('recall') requires 'path' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(path))
+                    return ResponseBuilder.Error(
+                        "memory('recall') requires 'path' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('recall', { path: '...' })",
+                        "memory('list') to discover available paths").ToYaml();
                 {
-                    var result = await Show(path, chunk, cancellationToken);
-                    return responseAction is not null ? result.Replace("action: shown", $"action: {responseAction}") : result;
+                    return await Show(path, chunk, actionLabel: responseAction ?? "shown", cancellationToken: cancellationToken);
                 }
 
             case "search":
-                if (string.IsNullOrWhiteSpace(query)) return ResponseBuilder.Error("memory('search') requires 'query' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(query))
+                    return ResponseBuilder.Error(
+                        "memory('search') requires 'query' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('search', { query: 'keywords or phrase' })").ToYaml();
                 return await Search(query, scopes, limit, excludeTopics, cancellationToken);
 
             case "list":
                 return await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken);
 
             case "forget":
-                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('forget') requires 'path' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(path))
+                    return ResponseBuilder.Error(
+                        "memory('forget') requires 'path' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('forget', { path: '...' })").ToYaml();
                 return await Forget(path, cancellationToken);
 
             case "compact":
-                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('compact') requires 'path' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(path))
+                    return ResponseBuilder.Error(
+                        "memory('compact') requires 'path' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('compact', { path: '...', keepRecent: 3 })").ToYaml();
                 return await Compact(path, keepRecent, cancellationToken);
 
             case "link":
-                if (string.IsNullOrWhiteSpace(path)) return ResponseBuilder.Error("memory('link') requires 'path' parameter.").ToYaml();
-                if (string.IsNullOrWhiteSpace(destination)) return ResponseBuilder.Error("memory('link') requires 'destination' parameter.").ToYaml();
+                if (string.IsNullOrWhiteSpace(path))
+                    return ResponseBuilder.Error(
+                        "memory('link') requires 'path' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('link', { path: '...', destination: '...' })").ToYaml();
+                if (string.IsNullOrWhiteSpace(destination))
+                    return ResponseBuilder.Error(
+                        "memory('link') requires 'destination' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('link', { path: '...', destination: '...' })").ToYaml();
                 return await Link(path, destination, reason, cancellationToken);
 
             case "restore":
@@ -174,7 +223,10 @@ public sealed partial class ScriniaMcpTools
                 return await Reconcile(conflictId, choice, mergedContent, cancellationToken);
 
             default:
-                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: remember (store), recall (show), forget, search, list, append, compact, link, restore, reconcile.").ToYaml();
+                return ResponseBuilder.Error(
+                    $"Unknown action '{action}'. Valid actions: remember (store), recall (show), forget, search, list, append, compact, link, restore, reconcile.",
+                    ErrorCodes.InvalidAction,
+                    "Call guide() for the full per-action parameter reference.").ToYaml();
         }
     }
 
@@ -187,7 +239,7 @@ public sealed partial class ScriniaMcpTools
     /// to standard memory behavior.
     /// </summary>
     private static Task<string>? TryRouteToSkill(
-        string act, string? path, string[]? content, bool reconcile,
+        string act, string? path, string[]? content, bool withBuiltin,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -209,16 +261,20 @@ public sealed partial class ScriniaMcpTools
         {
             case "recall":
             case "show":
-                return SkillLoad(skillName, reconcile, cancellationToken);
+                return SkillLoad(skillName, withBuiltin, cancellationToken);
 
             case "remember":
             case "store":
                 if (content is null || content.Length == 0)
                     return Task.FromResult(ResponseBuilder.Error(
-                        "memory('remember', { path: '/skill/...' }) requires 'content' with at least one element (the skill instructions).").ToYaml());
+                        "memory('remember', { path: '/skill/...' }) requires 'content' with at least one element (the skill instructions).",
+                        ErrorCodes.InvalidParameter,
+                        "memory('remember', { path: '/skill/my-helper', content: ['instructions here'] })").ToYaml());
                 if (string.IsNullOrWhiteSpace(skillName))
                     return Task.FromResult(ResponseBuilder.Error(
-                        "memory('remember', { path: '/skill/{name}' }) requires a skill name in the path.").ToYaml());
+                        "memory('remember', { path: '/skill/{name}' }) requires a skill name in the path.",
+                        ErrorCodes.InvalidParameter,
+                        "memory('remember', { path: '/skill/your-name-here', content: [...] })").ToYaml());
                 return SkillCreate(
                     name: skillName,
                     scaffold: "custom",
@@ -227,7 +283,7 @@ public sealed partial class ScriniaMcpTools
                     cancellationToken);
 
             case "list":
-                return SkillLoad(name: null, reconcile: false, cancellationToken);
+                return SkillLoad(name: null, withBuiltin: false, cancellationToken);
 
             default:
                 return null;

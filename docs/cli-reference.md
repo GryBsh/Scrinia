@@ -80,6 +80,101 @@ Delete a stored memory and remove its index entry.
 scri forget <name> [--workspace-root <path>]
 ```
 
+### scri guide
+
+Print the embedded agent guide — the same document MCP clients receive when they
+call the `guide()` tool. Useful when working from a terminal without an MCP session.
+
+```bash
+scri guide [--json]
+```
+
+Default output is the raw Markdown. `--json` wraps the response in the standard
+MCP envelope (`{ action, status, yaml }`) for tooling consumption.
+
+### scri append
+
+Append a new chunk to an existing memory. The previous version is archived to
+`{scope}/versions/{name}_{timestamp}.nmp2` so the append is undoable.
+
+```bash
+scri append <name> [<file>] [--workspace-root <path>] [--json]
+```
+
+```bash
+# From a file
+scri append session-notes ./more.md
+
+# From stdin
+echo "another paragraph" | scri append session-notes
+```
+
+If the target memory doesn't exist, `append` falls back to creating it as a
+single-chunk memory (equivalent to `store`).
+
+### scri compact
+
+Merge the chunks of a multi-chunk memory back into a single chunk (or keep the N
+newest). The pre-compact version is archived first.
+
+```bash
+scri compact <name> [--keep-recent N] [--workspace-root <path>] [--json]
+```
+
+- Default (`--keep-recent 0`): all chunks are concatenated into one.
+- `--keep-recent N` (N ≥ 1): keep only the N most recent chunks; older ones are dropped.
+
+```bash
+scri compact session-notes               # merge all chunks
+scri compact session-notes --keep-recent 5  # keep last 5
+```
+
+### scri link
+
+Create a bidirectional reference between two memories. Both sides get a
+`ref:{other}` keyword so searches and graph traversals discover the connection.
+
+```bash
+scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]
+```
+
+```bash
+scri link api:auth-flow patterns:retry -r "auth retries use the documented pattern"
+```
+
+### scri restore
+
+Resume agent context after a fresh session — emits the agent profile, recurring
+patterns, today's session log, and the list of available skills. The same call
+the MCP `memory('restore')` action makes.
+
+```bash
+scri restore [--workspace-root <path>] [--json]
+```
+
+### scri reconcile
+
+Scan `.scrinia/` for unresolved git merge conflicts, or resolve a specific
+conflict by its workspace-relative path. Run with no arguments to get the
+conflict list, then resolve each path independently — the resolve step re-reads
+the file fresh, so it doesn't depend on any state from the scan.
+
+```bash
+scri reconcile [--conflict-id <relative-path>] [--choice ours|theirs|merged] \
+               [--merged-content <content-or-->] [--workspace-root <path>] [--json]
+```
+
+```bash
+# Scan
+scri reconcile
+
+# Resolve a conflict by taking the incoming side
+scri reconcile --conflict-id local/skills/qa.nmp2 --choice theirs
+
+# Resolve by providing merged content from a file
+cat resolved.md | scri reconcile --conflict-id local/notes/api.nmp2 --choice merged --merged-content -
+```
+
 ### scri export
 
 Export one or more topics to a portable `.scrinia-bundle` file (ZIP format).
@@ -140,6 +235,34 @@ scri config plugins:embeddings my-custom-plugin
 scri config Scrinia:Embeddings:Provider ollama
 scri config Scrinia:Embeddings:OllamaModel nomic-embed-text
 ```
+
+### scri migrate
+
+One-shot utility to migrate a `.scrinia/` store from the v1 (`topic:name`) layout to the v2 (path-based) layout.
+Use this only when upgrading a workspace created by an older Scrinia release; new workspaces are already v2.
+
+```bash
+scri migrate [--workspace <path>] [--dry-run] [--backup=true|false] [--cleanup]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--workspace` | cwd | Workspace root containing the `.scrinia/` directory. |
+| `--dry-run` | false | Print the migration plan without copying any files. |
+| `--backup` | true | Copy `.scrinia/` to `.scrinia-backup-{timestamp}/` before migrating. |
+| `--cleanup` | false | Remove the v1 originals after verifying the v2 copies. Run as a separate step after the initial migration. |
+
+Recommended workflow:
+
+```bash
+scri migrate --dry-run            # preview what would be moved
+scri migrate                      # run the migration (backup created automatically)
+# verify your memories are accessible via scri list / scri show
+scri migrate --cleanup            # remove the v1 originals
+```
+
+If the migration reports errors, the v1 originals are preserved under `topics/` and the backup directory contains
+the pre-migration state.
 
 ## JSON Output
 

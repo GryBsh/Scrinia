@@ -20,6 +20,7 @@ public sealed partial class ScriniaMcpTools
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
                      "Use the exact name shown by memory('list') (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string artifactOrName,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
+        string actionLabel = "shown",
         CancellationToken cancellationToken = default)
     {
         // ── Agent config: read .md file first, NMP/2 fallback ────────────
@@ -35,7 +36,7 @@ public sealed partial class ScriniaMcpTools
                 {
                     string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
                     SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
-                    return ResponseBuilder.Success(mdContent).WithAction("shown").ToYaml();
+                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel).ToYaml();
                 }
             }
             // Fall through to NMP/2 resolution for legacy entries
@@ -54,7 +55,11 @@ public sealed partial class ScriniaMcpTools
             // Store-based resolution (memory name, ephemeral, etc.)
             var store = MemoryStoreContext.Current;
             if (store is null)
-                return ResponseBuilder.Error($"Memory '{artifactOrName}' not found. Use memory('list') or memory('search') to find available memories.").ToYaml();
+                return ResponseBuilder.Error(
+                    $"Memory '{artifactOrName}' not found.",
+                    ErrorCodes.NotFound,
+                    "memory('list') to see available memories",
+                    "memory('search', { query: '...' }) to find by keyword").ToYaml();
 
             try
             {
@@ -62,12 +67,19 @@ public sealed partial class ScriniaMcpTools
             }
             catch (FileNotFoundException)
             {
-                return ResponseBuilder.Error($"Memory '{artifactOrName}' not found. Use memory('list') or memory('search') to find available memories.").ToYaml();
+                return ResponseBuilder.Error(
+                    $"Memory '{artifactOrName}' not found.",
+                    ErrorCodes.NotFound,
+                    "memory('list') to see available memories",
+                    "memory('search', { query: '...' }) to find by keyword").ToYaml();
             }
         }
 
         if (!artifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
-            return ResponseBuilder.Error("Only NMP/2 artifacts are supported by this tool.").ToYaml();
+            return ResponseBuilder.Error(
+                "Only NMP/2 artifacts are supported by this tool.",
+                ErrorCodes.InvalidParameter,
+                "Provide a memory name or an artifact whose header begins with 'NMP/2 '.").ToYaml();
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
@@ -75,7 +87,7 @@ public sealed partial class ScriniaMcpTools
         {
             string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
             SessionBudget.RecordAccess(artifactOrName, chunkContent.Length);
-            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction("shown").ToYaml();
+            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel).ToYaml();
         }
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
@@ -83,9 +95,9 @@ public sealed partial class ScriniaMcpTools
         SessionBudget.RecordAccess(artifactOrName, decoded.Length);
 
         if (chunkCount > 1)
-            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction("shown").ToYaml();
+            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel).ToYaml();
 
-        return ResponseBuilder.Success(decoded).WithAction("shown").ToYaml();
+        return ResponseBuilder.Success(decoded).WithAction(actionLabel).ToYaml();
     }
 
     // ── Persistent memory tools ───────────────────────────────────────────────
@@ -104,6 +116,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
         [Description("Optional free-text condition describing when this memory should be reviewed (e.g. 'when auth system changes').")] string? reviewWhen = null,
         [Description("Optional file paths this memory depends on. Hashes are recorded to detect drift.")] string[]? codeRefs = null,
+        string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -171,7 +184,7 @@ public sealed partial class ScriniaMcpTools
             catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
 
             return ResponseBuilder.Success($"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]")
-                .WithAction("stored").ToYaml();
+                .WithAction(actionLabel).ToYaml();
         }
 
         // ── Agent config path (agent:* → .scrinia/agent/{name}.md) ──────
@@ -179,7 +192,10 @@ public sealed partial class ScriniaMcpTools
         {
             string agentSubject = name["agent:".Length..].Trim();
             if (string.IsNullOrWhiteSpace(agentSubject))
-                return ResponseBuilder.Error("Agent config name required (e.g. 'agent:profile').").ToYaml();
+                return ResponseBuilder.Error(
+                    "Agent config name required (e.g. 'agent:profile').",
+                    ErrorCodes.InvalidParameter,
+                    "Use a path like 'agent:profile' for the agent config.").ToYaml();
 
             string baseDir = GetScriniaBaseDir(store);
             string agentDir = Path.Combine(baseDir, "agent");
@@ -200,7 +216,7 @@ public sealed partial class ScriniaMcpTools
 
             long agentBytes = System.Text.Encoding.UTF8.GetByteCount(agentContent);
             return ResponseBuilder.Success($"Remembered: agent:{agentSubject} ({FormatBytes(agentBytes)}).")
-                .WithFileChanges().WithAction("stored").ToYaml();
+                .WithFileChanges().WithAction(actionLabel).ToYaml();
         }
 
         // ── Persistent path ──────────────────────────────────────────────
@@ -292,7 +308,7 @@ public sealed partial class ScriniaMcpTools
         catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
 
         return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
-            .WithFileChanges().WithAction("stored").ToYaml();
+            .WithFileChanges().WithAction(actionLabel).ToYaml();
     }
 
     /// <summary>Update metadata on an existing memory without re-encoding its content.</summary>
@@ -307,7 +323,10 @@ public sealed partial class ScriniaMcpTools
         var store = CurrentStore;
 
         if (store.IsEphemeral(name))
-            return Task.FromResult(ResponseBuilder.Error("Update does not support ephemeral memories. Use memory('remember') instead.").ToYaml());
+            return Task.FromResult(ResponseBuilder.Error(
+                "Update does not support ephemeral memories. Use memory('remember') instead.",
+                ErrorCodes.InvalidParameter,
+                "memory('remember', { path: '...', content: [...] }) — overwrites an existing ephemeral entry").ToYaml());
 
         var (scope, subject) = store.ParseQualifiedName(name);
 
@@ -316,7 +335,11 @@ public sealed partial class ScriniaMcpTools
         if (entry is null)
         {
             string qualName = store.FormatQualifiedName(scope, subject);
-            return Task.FromResult(ResponseBuilder.Error($"Memory '{qualName}' not found.").ToYaml());
+            return Task.FromResult(ResponseBuilder.Error(
+                $"Memory '{qualName}' not found.",
+                ErrorCodes.NotFound,
+                "memory('list') to see available memories",
+                "memory('remember', { path: '...', content: [...] }) to create it").ToYaml());
         }
 
         // Track what changed for the response message
@@ -695,7 +718,7 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         bool ok = CurrentStore.CopyMemory(nameOrUri, destination, overwrite, out string msg);
-        if (!ok) return Task.FromResult(ResponseBuilder.Error(msg).ToYaml());
+        if (!ok) return Task.FromResult(ResponseBuilder.Error(msg, ErrorCodes.Internal).ToYaml());
         return Task.FromResult(ResponseBuilder.Success(msg).WithAction("copied").ToYaml());
     }
 
@@ -711,7 +734,10 @@ public sealed partial class ScriniaMcpTools
         {
             string key = MemoryNaming.StripEphemeralPrefix(nameOrUri);
             if (!store.ForgetEphemeral(key))
-                return ResponseBuilder.Error($"No ephemeral memory found with name '~{key}'.").ToYaml();
+                return ResponseBuilder.Error(
+                    $"No ephemeral memory found with name '~{key}'.",
+                    ErrorCodes.NotFound,
+                    "memory('list') to see ephemeral memories currently held in process").ToYaml();
 
             try { await (MemoryEventSinkContext.Current?.OnForgottenAsync($"~{key}", true, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
@@ -732,7 +758,10 @@ public sealed partial class ScriniaMcpTools
             }
 
             if (!removedAny)
-                return ResponseBuilder.Error($"No artifact found with name or URI '{nameOrUri}'.").ToYaml();
+                return ResponseBuilder.Error(
+                    $"No artifact found with name or URI '{nameOrUri}'.",
+                    ErrorCodes.NotFound,
+                    "memory('list') to see available memories").ToYaml();
 
             try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(name, removedAny, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
@@ -749,7 +778,10 @@ public sealed partial class ScriniaMcpTools
         // Remove index entry
         bool removed = store.Remove(subject, scope);
         if (!removed && !deleted)
-            return ResponseBuilder.Error($"No artifact found with name '{nameOrUri}'.").ToYaml();
+            return ResponseBuilder.Error(
+                $"No artifact found with name '{nameOrUri}'.",
+                ErrorCodes.NotFound,
+                "memory('list') to see available memories").ToYaml();
 
         try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(qualifiedName, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block forget */ }
@@ -944,7 +976,10 @@ public sealed partial class ScriniaMcpTools
         string result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
 
         if (result1.Contains("status: error") || result2.Contains("status: error"))
-            return ResponseBuilder.Error($"Partial link failure:\n  {from}: {result1}\n  {to}: {result2}").ToYaml();
+            return ResponseBuilder.Error(
+                $"Partial link failure:\n  {from}: {result1}\n  {to}: {result2}",
+                ErrorCodes.Internal,
+                $"Verify both '{from}' and '{to}' exist via memory('recall').").ToYaml();
 
         string linkMsg = $"Linked '{from}' <-> '{to}'.";
         if (!string.IsNullOrWhiteSpace(reason))

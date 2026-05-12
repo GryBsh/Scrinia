@@ -62,7 +62,7 @@ When pulling or merging a branch that touches `.scrinia/`:
 1. **Pull/merge** — git applies the merge driver for `.meta.json` files automatically
 2. **Check for warnings** — the post-merge hook reports any remaining conflicts
 3. **`memory('reconcile')`** — run in your agent session to scan for and resolve remaining conflicts
-4. **`memory('reconcile', { conflictId, choice })`** — resolve each conflict: `"ours"`, `"theirs"`, or `"merged"` with custom content
+4. **`memory('reconcile', { conflictId, choice })`** — resolve each conflict by its workspace-relative path (e.g. `local/skills/qa.nmp2`): `"ours"`, `"theirs"`, or `"merged"` with custom content
 5. **`memory('reconcile')`** again — verify 0 conflicts remaining
 6. **Commit** — commit the resolved `.scrinia/` files
 

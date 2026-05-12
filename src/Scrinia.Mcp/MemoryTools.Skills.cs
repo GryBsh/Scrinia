@@ -224,7 +224,7 @@ public sealed partial class ScriniaMcpTools
     /// <summary>List or load stored specialist skills.</summary>
     internal static Task<string> SkillLoad(
         [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? name = null,
-        [Description("Set to true to show both built-in and override for reconciliation.")] bool reconcile = false,
+        [Description("Set to true to show both built-in and override side-by-side for merging.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -338,11 +338,11 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult(ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml());
         }
 
-        return LoadSkillAsync(store, name, reconcile, cancellationToken);
+        return LoadSkillAsync(store, name, withBuiltin, cancellationToken);
     }
 
     private static async Task<string> LoadSkillAsync(
-        IMemoryStore store, string skillName, bool reconcile, CancellationToken ct)
+        IMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
     {
         string baseDir = GetScriniaBaseDir(store);
         string filePath = Path.Combine(baseDir, "skills", $"{skillName}.md");
@@ -362,14 +362,14 @@ public sealed partial class ScriniaMcpTools
         string? overrideContent = diskContent ?? nmpContent;
         string sourceLabel = diskContent is not null ? "file" : "project override";
 
-        if (reconcile && overrideContent is not null && BuiltInSkills.TryGetValue(skillName, out string? reconBuiltIn))
+        if (withBuiltin && overrideContent is not null && BuiltInSkills.TryGetValue(skillName, out string? reconBuiltIn))
         {
             string reconContent = $"## Current Built-in\n{reconBuiltIn}\n\n" +
                 $"## Your Project Override ({sourceLabel})\n{overrideContent}";
             return ResponseBuilder.Success(reconContent)
                 .WithPath($"/skill/{skillName}")
                 .WithAction("loaded")
-                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call memory('remember', { path: '/skill/...' }) to save the reconciled version.")
+                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call memory('remember', { path: '/skill/...' }) to save the merged version.")
                 .ToYaml();
         }
 
@@ -377,7 +377,10 @@ public sealed partial class ScriniaMcpTools
         {
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
                 return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in").ToYaml();
-            return ResponseBuilder.Error($"Skill '{skillName}' not found. Use memory('recall', {{ path: '/skill/' }}) to list available skills.").ToYaml();
+            return ResponseBuilder.Error(
+                $"Skill '{skillName}' not found.",
+                ErrorCodes.NotFound,
+                "memory('recall', { path: '/skill/' }) to list available skills").ToYaml();
         }
 
         var warnings = new List<string>();
@@ -410,7 +413,7 @@ public sealed partial class ScriniaMcpTools
                     SHA256.HashData(Encoding.UTF8.GetBytes(currentBuiltIn)));
                 if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                 {
-                    warnings.Add($"built-in skill has changed since this override was created. Review with memory('recall', {{ path: '/skill/{skillName}', reconcile: true }})");
+                    warnings.Add($"built-in skill has changed since this override was created. Review with memory('recall', {{ path: '/skill/{skillName}', withBuiltin: true }})");
                 }
             }
         }

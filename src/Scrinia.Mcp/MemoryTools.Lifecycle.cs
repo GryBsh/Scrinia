@@ -29,160 +29,202 @@ public sealed partial class ScriniaMcpTools
         {
             case "export":
                 if (topics is null || topics.Length == 0)
-                    return ResponseBuilder.Error("bundle('export') requires 'topics' parameter.").ToYaml();
+                    return ResponseBuilder.Error(
+                        "bundle('export') requires 'topics' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "bundle('export', { topics: ['api', 'arch'] })").ToYaml();
                 return await Export(topics, bundlePath, cancellationToken);
 
             case "import":
                 if (string.IsNullOrWhiteSpace(bundlePath))
-                    return ResponseBuilder.Error("bundle('import') requires 'bundlePath' parameter.").ToYaml();
+                    return ResponseBuilder.Error(
+                        "bundle('import') requires 'bundlePath' parameter.",
+                        ErrorCodes.InvalidParameter,
+                        "bundle('import', { bundlePath: './exports/foo.scrinia-bundle' })").ToYaml();
                 return await Import(bundlePath, topics, overwrite, cancellationToken);
 
             default:
-                return ResponseBuilder.Error($"Unknown action '{action}'. Valid actions: 'export', 'import'.").ToYaml();
+                return ResponseBuilder.Error(
+                    $"Unknown action '{action}'. Valid actions: 'export', 'import'.",
+                    ErrorCodes.InvalidAction,
+                    "bundle('export', { topics: [...] }) or bundle('import', { bundlePath: '...' })").ToYaml();
         }
     }
 
     /// <summary>Scan for merge conflicts or resolve a specific conflict.</summary>
+    /// <remarks>
+    /// Conflict identifiers are workspace-relative paths under .scrinia/ (e.g. "local/skills/qa.nmp2"),
+    /// so the two-step scan → resolve workflow survives across processes. Each resolve re-reads the
+    /// conflict markers from disk; there is no in-memory state shared between scan and resolve.
+    /// </remarks>
     internal Task<string> Reconcile(
-        [Description("Conflict ID to resolve (from a prior reconcile scan). Omit to scan for conflicts.")] string? conflictId = null,
+        [Description("Workspace-relative path under .scrinia/ to the conflicted file. Omit to scan.")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged'. Required when conflictId is provided.")] string? choice = null,
         [Description("Content for 'merged' resolution.")] string? content = null,
         CancellationToken cancellationToken = default)
     {
-        // ── Resolve mode: conflictId provided ─────────────────────────────
-        if (conflictId is not null)
-        {
-            if (string.IsNullOrWhiteSpace(choice))
-                return Task.FromResult(ResponseBuilder.Error("'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.").ToYaml());
-
-            if (!_activeConflicts.TryGetValue(conflictId, out var conflictEntry))
-                return Task.FromResult(ResponseBuilder.Error($"Conflict '{conflictId}' not found. Run memory('reconcile') first to scan for conflicts.").ToYaml());
-
-            string? resolvedContent;
-            switch (choice.ToLowerInvariant())
-            {
-                case "ours":
-                    resolvedContent = conflictEntry.OursContent;
-                    if (resolvedContent is null)
-                        return Task.FromResult(ResponseBuilder.Error($"No 'ours' content available for {conflictId}. Use 'merged' with explicit content instead.").ToYaml());
-                    break;
-                case "theirs":
-                    resolvedContent = conflictEntry.TheirsContent;
-                    if (resolvedContent is null)
-                        return Task.FromResult(ResponseBuilder.Error($"No 'theirs' content available for {conflictId}. Use 'merged' with explicit content instead.").ToYaml());
-                    break;
-                case "merged":
-                    if (string.IsNullOrEmpty(content))
-                        return Task.FromResult(ResponseBuilder.Error("'merged' choice requires the content parameter.").ToYaml());
-                    if (conflictEntry.Type.Contains("meta", StringComparison.OrdinalIgnoreCase))
-                    {
-                        try { System.Text.Json.Nodes.JsonNode.Parse(content!); }
-                        catch { return Task.FromResult(ResponseBuilder.Error("Merged content is not valid JSON for .meta.json conflict.").ToYaml()); }
-                    }
-                    resolvedContent = content;
-                    break;
-                default:
-                    return Task.FromResult(ResponseBuilder.Error($"Invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.").ToYaml());
-            }
-
-            try
-            {
-                if (conflictEntry.Type == "nmp2")
-                {
-                    string artifact = Nmp2ChunkedEncoder.Encode(resolvedContent);
-                    File.WriteAllText(conflictEntry.FilePath, artifact);
-                }
-                else
-                {
-                    File.WriteAllText(conflictEntry.FilePath, resolvedContent);
-                }
-            }
-            catch (Exception ex)
-            {
-                return Task.FromResult(ResponseBuilder.Error($"Writing resolved content to {conflictEntry.FilePath}: {ex.Message}").ToYaml());
-            }
-
-            _activeConflicts.TryRemove(conflictId, out _);
-            return Task.FromResult(ResponseBuilder.Success($"Resolved {conflictId} ({conflictEntry.Type}) with '{choice}'. {_activeConflicts.Count} conflict(s) remaining.").WithAction("reconciled").ToYaml());
-        }
-
-        // ── Scan mode: no conflictId ──────────────────────────────────────
-        _activeConflicts.Clear();
-
         var store = CurrentStore;
         string storeDir = store.GetStoreDirForScope("local");
-        string scriniaDir = Path.GetDirectoryName(storeDir)!; // .scrinia/ directory
+        string scriniaDir = Path.GetDirectoryName(storeDir)!; // .scrinia/
 
+        return conflictId is not null
+            ? Task.FromResult(ResolveConflictByPath(scriniaDir, conflictId, choice, content))
+            : Task.FromResult(ScanForConflicts(scriniaDir));
+    }
+
+    private static string ResolveConflictByPath(string scriniaDir, string conflictId, string? choice, string? mergedContent)
+    {
+        if (string.IsNullOrWhiteSpace(choice))
+            return ResponseBuilder.Error(
+                "'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.",
+                ErrorCodes.InvalidParameter,
+                $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
+
+        if (!TryResolveScriniaRelativePath(scriniaDir, conflictId, out string absolutePath, out string? pathError))
+            return ResponseBuilder.Error(
+                pathError!,
+                ErrorCodes.InvalidParameter,
+                "memory('reconcile') to list current conflicts by relative path").ToYaml();
+
+        if (!File.Exists(absolutePath))
+            return ResponseBuilder.Error(
+                $"Conflict '{conflictId}' not found at {absolutePath}.",
+                ErrorCodes.NotFound,
+                "memory('reconcile') to list current conflicts by relative path").ToYaml();
+
+        string fileContent;
+        try { fileContent = File.ReadAllText(absolutePath); }
+        catch (Exception ex)
+        {
+            return ResponseBuilder.Error(
+                $"Reading {absolutePath}: {ex.Message}",
+                ErrorCodes.Internal,
+                "Verify filesystem permissions and retry.").ToYaml();
+        }
+
+        if (!fileContent.Contains("<<<<<<<"))
+            return ResponseBuilder.Error(
+                $"No conflict markers found in '{conflictId}'; nothing to resolve.",
+                ErrorCodes.Conflict,
+                "memory('reconcile') to list current conflicts").ToYaml();
+
+        string type = ClassifyConflictType(absolutePath);
+        string normalisedChoice = choice.ToLowerInvariant();
+        string resolvedContent;
+
+        switch (normalisedChoice)
+        {
+            case "ours":
+            case "theirs":
+                if (!TryExtractConflictSide(fileContent, normalisedChoice, out string? extracted, out string? extractError))
+                    return ResponseBuilder.Error(
+                        $"{conflictId}: {extractError}",
+                        ErrorCodes.Conflict,
+                        $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'merged', mergedContent: '...' }})").ToYaml();
+
+                // For .nmp2 the extracted region is an encoded artifact; decode for storage as plain text,
+                // then re-encode on write below.
+                if (type == "nmp2")
+                {
+                    try { extracted = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(extracted!)); }
+                    catch { /* fall through: write extracted as-is */ }
+                }
+                resolvedContent = extracted!;
+                break;
+
+            case "merged":
+                if (string.IsNullOrEmpty(mergedContent))
+                    return ResponseBuilder.Error(
+                        "'merged' choice requires the mergedContent parameter.",
+                        ErrorCodes.InvalidParameter,
+                        $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'merged', mergedContent: 'merged text here' }})").ToYaml();
+                if (type == "meta.json")
+                {
+                    try { JsonNode.Parse(mergedContent!); }
+                    catch
+                    {
+                        return ResponseBuilder.Error(
+                            "Merged content is not valid JSON for .meta.json conflict.",
+                            ErrorCodes.Conflict,
+                            "Provide JSON-parseable mergedContent for .meta.json conflicts.").ToYaml();
+                    }
+                }
+                resolvedContent = mergedContent!;
+                break;
+
+            default:
+                return ResponseBuilder.Error(
+                    $"Invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.",
+                    ErrorCodes.InvalidParameter,
+                    $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
+        }
+
+        try
+        {
+            string toWrite = type == "nmp2" ? Nmp2ChunkedEncoder.Encode(resolvedContent) : resolvedContent;
+            File.WriteAllText(absolutePath, toWrite);
+        }
+        catch (Exception ex)
+        {
+            return ResponseBuilder.Error(
+                $"Writing resolved content to {absolutePath}: {ex.Message}",
+                ErrorCodes.Internal,
+                "Verify filesystem permissions and disk space, then retry the reconcile.").ToYaml();
+        }
+
+        return ResponseBuilder.Success($"Resolved {conflictId} ({type}) with '{choice}'.").WithAction("reconciled").ToYaml();
+    }
+
+    private static string ScanForConflicts(string scriniaDir)
+    {
         var autoResolved = new List<string>();
         var needsManual = new List<string>();
-        int nextConflictId = 0;
 
-        // Scan all files in .scrinia/ recursively
         foreach (var filePath in Directory.EnumerateFiles(scriniaDir, "*", SearchOption.AllDirectories))
         {
             string fileContent;
             try { fileContent = File.ReadAllText(filePath); }
             catch { continue; }
 
-            // Check for git conflict markers
             if (!fileContent.Contains("<<<<<<<")) continue;
 
-            string relativePath = Path.GetRelativePath(scriniaDir, filePath);
+            string relativePath = Path.GetRelativePath(scriniaDir, filePath).Replace('\\', '/');
+            string type = ClassifyConflictType(filePath);
 
-            if (filePath.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase))
+            if (type == "meta.json")
             {
-                // Try auto-resolve .meta.json
                 if (TryAutoResolveMetaJson(filePath, fileContent))
-                {
                     autoResolved.Add(relativePath);
-                }
                 else
-                {
-                    string id = $"CONFLICT-{++nextConflictId}";
-                    _activeConflicts[id] = new ConflictEntry(filePath, "meta.json", null, null);
-                    needsManual.Add($"{id}: {relativePath} (.meta.json — auto-resolve failed)");
-                }
+                    needsManual.Add($"{relativePath} (.meta.json — auto-resolve failed)");
             }
-            else if (filePath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase))
+            else if (type == "nmp2")
             {
-                // Extract ours and theirs raw content
-                int oursStart = fileContent.IndexOf('\n', fileContent.IndexOf("<<<<<<<")) + 1;
-                int separator = fileContent.IndexOf("=======");
-                int theirsEnd = fileContent.IndexOf(">>>>>>>");
+                if (!TryExtractConflictSide(fileContent, "ours", out string? oursRaw, out string? extractError))
+                {
+                    needsManual.Add($"{relativePath} (.nmp2 — {extractError})");
+                    continue;
+                }
+                TryExtractConflictSide(fileContent, "theirs", out string? theirsRaw, out _);
 
-                if (separator < 0 || theirsEnd < 0) { needsManual.Add($"{relativePath} (.nmp2 — malformed conflict markers)"); continue; }
+                string oursDecoded = TryDecodeNmp2(oursRaw!);
+                string theirsDecoded = TryDecodeNmp2(theirsRaw ?? "");
 
-                int theirsStart = fileContent.IndexOf('\n', separator) + 1;
+                int afterFirstConflict = fileContent.IndexOf(">>>>>>>", StringComparison.Ordinal) + ">>>>>>>".Length;
+                bool hasMore = afterFirstConflict < fileContent.Length
+                    && fileContent.IndexOf("<<<<<<<", afterFirstConflict, StringComparison.Ordinal) >= 0;
+                string multiNote = hasMore ? " (file has additional conflict regions — resolve manually)" : "";
 
-                string oursRaw = fileContent[oursStart..separator].TrimEnd();
-                string theirsRaw = fileContent[theirsStart..theirsEnd].TrimEnd();
-
-                // Try to decode NMP/2 content from each side
-                string? oursDecoded = null, theirsDecoded = null;
-                try { oursDecoded = System.Text.Encoding.UTF8.GetString(new Scrinia.Core.Encoding.Nmp2Strategy().Decode(oursRaw)); } catch { oursDecoded = oursRaw; }
-                try { theirsDecoded = System.Text.Encoding.UTF8.GetString(new Scrinia.Core.Encoding.Nmp2Strategy().Decode(theirsRaw)); } catch { theirsDecoded = theirsRaw; }
-
-                string id = $"CONFLICT-{++nextConflictId}";
-                _activeConflicts[id] = new ConflictEntry(filePath, "nmp2", oursDecoded, theirsDecoded);
-
-                // Check for additional conflict regions after the first
-                string multiNote = "";
-                int afterFirstConflict = theirsEnd + ">>>>>>>".Length;
-                if (afterFirstConflict < fileContent.Length && fileContent.IndexOf("<<<<<<<", afterFirstConflict, StringComparison.Ordinal) >= 0)
-                    multiNote = " (file has additional conflict regions — resolve manually)";
-
-                needsManual.Add($"{id}: {relativePath} (.nmp2 artifact){multiNote}\n    OURS:\n    {Indent(oursDecoded)}\n    THEIRS:\n    {Indent(theirsDecoded)}");
+                needsManual.Add($"{relativePath} (.nmp2 artifact){multiNote}\n    OURS:\n    {Indent(oursDecoded)}\n    THEIRS:\n    {Indent(theirsDecoded)}");
             }
             else
             {
-                string id = $"CONFLICT-{++nextConflictId}";
-                _activeConflicts[id] = new ConflictEntry(filePath, "unknown", null, null);
-                needsManual.Add($"{id}: {relativePath} (unknown file type)");
+                needsManual.Add($"{relativePath} (unknown file type)");
             }
         }
 
         if (autoResolved.Count == 0 && needsManual.Count == 0)
-            return Task.FromResult(ResponseBuilder.Success("No merge conflicts found in .scrinia/.").WithAction("reconciled").ToYaml());
+            return ResponseBuilder.Success("No merge conflicts found in .scrinia/.").WithAction("reconciled").ToYaml();
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Merge conflict scan: {autoResolved.Count} auto-resolved, {needsManual.Count} need manual resolution.");
@@ -194,17 +236,91 @@ public sealed partial class ScriniaMcpTools
         }
         if (needsManual.Count > 0)
         {
-            sb.AppendLine("\nNeeds manual resolution:");
+            sb.AppendLine("\nNeeds manual resolution (pass the relative path as conflictId):");
             foreach (var f in needsManual) sb.AppendLine($"  FAIL {f}");
         }
 
-        sb.Append($"\n{_activeConflicts.Count} conflict(s) remaining.");
+        sb.Append($"\n{needsManual.Count} conflict(s) remaining.");
 
         var reconcileWarnings = needsManual.Count > 0
             ? new[] { $"{needsManual.Count} conflict(s) need manual resolution." }
             : Array.Empty<string>();
-        return Task.FromResult(
-            ResponseBuilder.Success(sb.ToString()).WithAction("reconciled").WithActionNeeded(reconcileWarnings).ToYaml());
+        return ResponseBuilder.Success(sb.ToString())
+            .WithAction("reconciled")
+            .WithActionNeeded(reconcileWarnings)
+            .ToYaml();
+    }
+
+    private static bool TryResolveScriniaRelativePath(
+        string scriniaDir, string conflictId, out string absolutePath, out string? error)
+    {
+        absolutePath = "";
+        error = null;
+
+        string normalised = conflictId.Replace('\\', '/').Trim();
+        if (normalised.Length == 0)
+        {
+            error = "Conflict id is empty.";
+            return false;
+        }
+        if (Path.IsPathRooted(normalised))
+        {
+            error = $"Conflict id '{conflictId}' must be a path relative to .scrinia/, not an absolute path.";
+            return false;
+        }
+
+        string scriniaAbs = Path.GetFullPath(scriniaDir);
+        string candidate = Path.GetFullPath(Path.Combine(scriniaAbs, normalised));
+        string scriniaWithSep = scriniaAbs.EndsWith(Path.DirectorySeparatorChar)
+            ? scriniaAbs
+            : scriniaAbs + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(scriniaWithSep, StringComparison.OrdinalIgnoreCase))
+        {
+            error = $"Conflict id '{conflictId}' resolves outside .scrinia/.";
+            return false;
+        }
+
+        absolutePath = candidate;
+        return true;
+    }
+
+    private static string ClassifyConflictType(string filePath)
+    {
+        if (filePath.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase)) return "meta.json";
+        if (filePath.EndsWith(".nmp2", StringComparison.OrdinalIgnoreCase)) return "nmp2";
+        return "unknown";
+    }
+
+    private static bool TryExtractConflictSide(
+        string fileContent, string side, out string? extracted, out string? error)
+    {
+        extracted = null;
+        error = null;
+
+        int markerStart = fileContent.IndexOf("<<<<<<<", StringComparison.Ordinal);
+        if (markerStart < 0) { error = "no conflict markers"; return false; }
+        int oursStartLine = fileContent.IndexOf('\n', markerStart);
+        int separator = fileContent.IndexOf("=======", StringComparison.Ordinal);
+        int theirsEnd = fileContent.IndexOf(">>>>>>>", StringComparison.Ordinal);
+        if (oursStartLine < 0 || separator < 0 || theirsEnd < 0 || separator < markerStart || theirsEnd < separator)
+        {
+            error = "malformed conflict markers";
+            return false;
+        }
+        int theirsStartLine = fileContent.IndexOf('\n', separator);
+        if (theirsStartLine < 0) { error = "malformed conflict markers"; return false; }
+
+        extracted = side == "ours"
+            ? fileContent[(oursStartLine + 1)..separator].TrimEnd()
+            : fileContent[(theirsStartLine + 1)..theirsEnd].TrimEnd();
+        return true;
+    }
+
+    private static string TryDecodeNmp2(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        try { return System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(raw)); }
+        catch { return raw; }
     }
 
     private static string Indent(string? text, string prefix = "      ")
@@ -266,7 +382,7 @@ public sealed partial class ScriniaMcpTools
 
             var sortedKw = new JsonArray();
             foreach (var k in keywordSet.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
-                sortedKw.Add(k);
+                sortedKw.Add((JsonNode?)k);
             baseNode["keywords"] = sortedKw;
 
             // Union termFrequencies (max value for shared keys)
@@ -312,7 +428,19 @@ public sealed partial class ScriniaMcpTools
         var store = CurrentStore;
         var (scope, subject) = store.ParseQualifiedName(name);
 
-        string artifact = await store.ReadArtifactAsync(subject, scope, cancellationToken);
+        string artifact;
+        try
+        {
+            artifact = await store.ReadArtifactAsync(subject, scope, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            return ResponseBuilder.Error(
+                $"Memory '{name}' not found.",
+                ErrorCodes.NotFound,
+                "memory('list') to see available memories",
+                "memory('remember', { path: '...', content: [...] }) to create it").ToYaml();
+        }
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
         if (chunkCount <= 1)

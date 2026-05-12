@@ -1,6 +1,8 @@
+using System.Reflection;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 using Scalar.AspNetCore;
 using Scrinia.Core;
@@ -69,6 +71,7 @@ Directory.CreateDirectory(pluginsDir);
 
 using var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
 var bootLogger = loggerFactory.CreateLogger("Scrinia.Server");
+Scrinia.Core.FileLock.DefaultLogger = loggerFactory.CreateLogger("Scrinia.FileLock");
 
 // Only load plugins when Vulkan embeddings are explicitly enabled
 bool vulkanEnabled = string.Equals(
@@ -107,8 +110,14 @@ if (!pluginProvidesEmbeddings)
         string embeddingsDir = Path.Combine(dataDir, "embeddings");
         Directory.CreateDirectory(embeddingsDir);
 
-        var embeddingOptions = new EmbeddingOptions();
-        builder.Configuration.GetSection("Scrinia:Embeddings").Bind(embeddingOptions);
+        // EmbeddingOptions is bound via the standard IOptions<T> pipeline so binding errors
+        // surface at startup. We resolve the value immediately here because the provider is
+        // constructed before the host runs.
+        builder.Services.AddOptions<EmbeddingOptions>()
+            .Bind(builder.Configuration.GetSection("Scrinia:Embeddings"))
+            .ValidateOnStart();
+        var embeddingOptions = builder.Configuration.GetSection("Scrinia:Embeddings")
+            .Get<EmbeddingOptions>() ?? new EmbeddingOptions();
 
         var embeddingProvider = EmbeddingProviderFactory.Create(
             embeddingOptions, modelsDir,
@@ -147,12 +156,19 @@ if (!pluginProvidesEmbeddings)
     }
 }
 
-// Chat providers (cloud LLM for agent chat)
-var chatOptions = new Scrinia.Server.Chat.ChatOptions();
-builder.Configuration.GetSection("Scrinia:Chat").Bind(chatOptions);
-chatOptions.Temperature = Math.Clamp(chatOptions.Temperature, 0.0, 2.0);
-if (chatOptions.MaxTokens <= 0) chatOptions.MaxTokens = 4096;
-builder.Services.AddSingleton(chatOptions);
+// Chat providers (cloud LLM for agent chat). Bound via IOptions<T> with PostConfigure
+// for the historical clamp/default rules — values are normalised before any consumer reads them.
+builder.Services.AddOptions<Scrinia.Server.Chat.ChatOptions>()
+    .Bind(builder.Configuration.GetSection("Scrinia:Chat"))
+    .PostConfigure(opts =>
+    {
+        opts.Temperature = Math.Clamp(opts.Temperature, 0.0, 2.0);
+        if (opts.MaxTokens <= 0) opts.MaxTokens = 4096;
+    })
+    .ValidateOnStart();
+// Bridge: existing consumers (ChatProviderCache, MapChatEndpoints) take a raw ChatOptions.
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IOptions<Scrinia.Server.Chat.ChatOptions>>().Value);
 builder.Services.AddSingleton<Scrinia.Server.Chat.ChatProviderCache>();
 
 // StoreManager uses factory delegate so IStorageBackend is resolved after plugins register
@@ -218,10 +234,13 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddOpenApi();
 
 // MCP over HTTP
+string serverVersion = Assembly.GetExecutingAssembly()
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+    ?.InformationalVersion.Split('+')[0] ?? "unknown";
 builder.Services
     .AddMcpServer(options =>
     {
-        options.ServerInfo = new() { Name = "scrinia", Version = "0.5.0" };
+        options.ServerInfo = new() { Name = "scrinia", Version = serverVersion };
     })
     .WithHttpTransport(options =>
     {
@@ -391,7 +410,7 @@ foreach (var plugin in loadedPlugins)
 app.MapMemoryEndpoints();
 app.MapKeyEndpoints();
 app.MapHealthEndpoints();
-app.MapChatEndpoints(chatOptions);
+app.MapChatEndpoints(app.Services.GetRequiredService<Scrinia.Server.Chat.ChatOptions>());
 
 // Plugin endpoints
 var pluginGroup = app.MapGroup("/api/v1/plugins")

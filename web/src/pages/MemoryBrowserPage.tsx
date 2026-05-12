@@ -1,7 +1,11 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams } from 'react-router'
-import { useQuery } from '@tanstack/react-query'
-import { listMemories, searchMemories } from '../api/client'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import {
+  MEMORY_LIST_PAGE_SIZE,
+  listMemories,
+  searchMemories,
+} from '../api/client'
 import MemoryList from '../components/MemoryList'
 import SearchBar from '../components/SearchBar'
 import type { SearchResultItem } from '../api/types'
@@ -12,10 +16,29 @@ export default function MemoryBrowserPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [scopeFilter, setScopeFilter] = useState<string>('')
 
-  const { data, isLoading, error } = useQuery({
+  const {
+    data,
+    isLoading,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
     queryKey: ['memories', store, scopeFilter],
-    queryFn: () => listMemories(store, scopeFilter || undefined),
+    queryFn: ({ pageParam }) =>
+      listMemories(store, scopeFilter || undefined, pageParam, MEMORY_LIST_PAGE_SIZE),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((n, p) => n + p.memories.length, 0)
+      return loaded < lastPage.total ? loaded : undefined
+    },
   })
+
+  const memories = useMemo(
+    () => data?.pages.flatMap((p) => p.memories) ?? [],
+    [data],
+  )
+  const total = data?.pages[0]?.total ?? 0
 
   const { data: searchResults } = useQuery({
     queryKey: ['search', store, searchQuery],
@@ -23,10 +46,11 @@ export default function MemoryBrowserPage() {
     enabled: !!searchQuery,
   })
 
-  // Extract unique scopes for filter tabs
-  const scopes = data?.memories
-    ? [...new Set(data.memories.map((m) => m.scope))]
-    : []
+  // Extract unique scopes for filter tabs — only reflects scopes within loaded pages.
+  const scopes = useMemo(
+    () => [...new Set(memories.map((m) => m.scope))],
+    [memories],
+  )
 
   return (
     <div className="p-6">
@@ -35,7 +59,11 @@ export default function MemoryBrowserPage() {
           <h2 className="text-xl font-semibold">Memories</h2>
           <p className="text-sm text-gray-500">
             Store: <span className="font-mono">{store}</span>
-            {data && <span className="ml-2">({data.total} total)</span>}
+            {data && (
+              <span className="ml-2">
+                ({memories.length} of {total})
+              </span>
+            )}
           </p>
         </div>
       </div>
@@ -79,7 +107,20 @@ export default function MemoryBrowserPage() {
         {error && (
           <p className="p-4 text-red-500 text-sm">Error: {(error as Error).message}</p>
         )}
-        {data && <MemoryList memories={data.memories} store={store} />}
+        {data && <MemoryList memories={memories} store={store} />}
+        {hasNextPage && (
+          <div className="border-t p-3 text-center">
+            <button
+              onClick={() => fetchNextPage()}
+              disabled={isFetchingNextPage}
+              className="text-sm text-blue-600 hover:text-blue-700 disabled:text-gray-400"
+            >
+              {isFetchingNextPage
+                ? 'Loading…'
+                : `Load more (${total - memories.length} remaining)`}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

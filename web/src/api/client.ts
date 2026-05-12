@@ -103,9 +103,19 @@ export async function getHealth(): Promise<HealthResponse> {
 
 // ── Memories ─────────────────────────────────────────────────────────────────
 
-export function listMemories(store: string, scopes?: string) {
-  const params = scopes ? `?scopes=${encodeURIComponent(scopes)}` : '';
-  return apiFetch<ListResponse>(`${API_BASE}/stores/${store}/memories${params}`);
+export const MEMORY_LIST_PAGE_SIZE = 200;
+
+export function listMemories(
+  store: string,
+  scopes?: string,
+  offset = 0,
+  limit = MEMORY_LIST_PAGE_SIZE,
+) {
+  const params = new URLSearchParams();
+  if (scopes) params.set('scopes', scopes);
+  params.set('offset', String(offset));
+  params.set('limit', String(limit));
+  return apiFetch<ListResponse>(`${API_BASE}/stores/${store}/memories?${params}`);
 }
 
 export function showMemory(store: string, name: string) {
