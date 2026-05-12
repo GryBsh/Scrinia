@@ -65,7 +65,10 @@ public class HybridScorerTests : IDisposable
         var withNull = _store.SearchAll("test", "local", 10, supplementalScores: null);
 
         legacy.Should().HaveCount(withNull.Count);
-        legacy[0].Score.Should().Be(withNull[0].Score);
+        // The recency multiplier reads DateTimeOffset.UtcNow at scoring time, so two sequential
+        // calls can differ at the ~1e-10 level from the milliseconds elapsed between them.
+        // Strict double equality would be brittle without telling us anything useful.
+        legacy[0].Score.Should().BeApproximately(withNull[0].Score, 0.001);
     }
 
     [Fact]

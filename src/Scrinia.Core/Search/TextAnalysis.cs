@@ -144,10 +144,21 @@ public static class TextAnalysis
     }
 
     /// <summary>
+    /// Default cap on the term-frequency dictionary written to sidecar metadata.
+    /// The long tail of TF=1 terms is mostly named entities and one-off mentions that bloat
+    /// sidecar size 2–4x while contributing near-zero IDF weight to BM25 scoring. Keywords
+    /// (top-25) are a subset of the cap, and any ref:/file: prefixed keywords are re-added
+    /// to TF in the Store path via the keyword-boost step, so reference-driven recall is
+    /// preserved even when the rare-term tail is pruned.
+    /// </summary>
+    public const int DefaultMaxTfTerms = 100;
+
+    /// <summary>
     /// Extracts keywords and computes term frequencies in a single tokenization pass.
     /// Avoids the double tokenization of calling <see cref="ExtractKeywords"/> + <see cref="ComputeTermFrequencies"/> separately.
     /// </summary>
-    public static (string[] Keywords, Dictionary<string, int> TermFrequencies) AnalyzeText(string text, int topN = 25)
+    public static (string[] Keywords, Dictionary<string, int> TermFrequencies) AnalyzeText(
+        string text, int topN = 25, int maxTfTerms = DefaultMaxTfTerms)
     {
         var tf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (string token in Tokenize(text))
@@ -156,12 +167,23 @@ public static class TextAnalysis
             tf[token] = count + 1;
         }
 
-        var keywords = tf
+        // Sort once — used both for keyword selection and (when capping) for TF pruning.
+        var sorted = tf
             .OrderByDescending(kvp => kvp.Value)
             .ThenBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var keywords = sorted
             .Take(topN)
             .Select(kvp => kvp.Key)
             .ToArray();
+
+        if (sorted.Count > maxTfTerms)
+        {
+            tf = new Dictionary<string, int>(maxTfTerms, StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < maxTfTerms; i++)
+                tf[sorted[i].Key] = sorted[i].Value;
+        }
 
         return (keywords, tf);
     }

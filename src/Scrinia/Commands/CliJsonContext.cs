@@ -19,6 +19,7 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliErrorOutput))]
 [JsonSerializable(typeof(MergeConfig))]
 [JsonSerializable(typeof(CliMcpOutput))]
+[JsonSerializable(typeof(CliConsolidateOutput))]
 internal partial class CliJsonContext : JsonSerializerContext;
 
 internal sealed record MergeConfig(
@@ -72,3 +73,13 @@ internal sealed record CliErrorOutput(string Error);
 /// <see cref="Status"/> mirrors the YAML's status field for quick branching.
 /// </summary>
 internal sealed record CliMcpOutput(string Action, string Status, string Yaml);
+
+/// <summary>Output of the consolidate command. Status: "completed", "preview" (dry-run), or "skipped" (debounce).</summary>
+internal sealed record CliConsolidateOutput(
+    string Status,
+    string? Reason,
+    int TotalMemories,
+    long TotalBytes,
+    int StaleCount,
+    int CompactionCandidates,
+    string[] Compacted);

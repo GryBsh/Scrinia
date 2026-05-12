@@ -129,6 +129,51 @@ scri compact session-notes               # merge all chunks
 scri compact session-notes --keep-recent 5  # keep last 5
 ```
 
+### scri consolidate
+
+Run deterministic consolidation passes over the local store. Designed to be wired
+to an editor hook so workspace memory stays tidy without manual intervention. No
+LLM call — only mechanical operations (Tier 1).
+
+What it does today:
+
+- Compacts multi-chunk session entries (paths under `/sessions/` or `sessions:`)
+  older than `--session-age-days` (default 7) into single-chunk form. Originals
+  are archived under `versions/`.
+- Reports stats: total memories, total bytes, count of entries past `reviewAfter`.
+
+```bash
+scri consolidate [--auto] [--dry-run] [--debounce-minutes 30] [--session-age-days 7] [--json] [--workspace-root <path>]
+```
+
+- `--auto` enables debounce: skips the run if `.scrinia/.last-consolidation` shows
+  a run within `--debounce-minutes`. Hooks fire on every Stop event, so this
+  prevents wasted work.
+- `--dry-run` previews actions without writing.
+- After a non-dry run, `.scrinia/.last-consolidation` is updated with the current
+  UTC timestamp.
+
+Wire it to a Claude Code Stop hook (opt-in) by adding to your
+`.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "scri consolidate --auto" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Stale entries (past their `reviewAfter` date) are reported but NOT deleted —
+review them with `scri list` and decide manually.
+
 ### scri link
 
 Create a bidirectional reference between two memories. Both sides get a

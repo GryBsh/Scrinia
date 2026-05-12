@@ -43,18 +43,36 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "guide"), Description(
-        "Required reading — call at session start, then commit content to your project's agent file. " +
-        "Covers memory patterns, skills, and session recall.")]
-    public Task<string> Guide(CancellationToken cancellationToken = default) =>
-        Task.FromResult(ResponseBuilder.Success(
-            EmbeddedPrompts.LoadGuide()
-            ?? throw new InvalidOperationException("Built-in guide not found in embedded resources"))
-            .WithAction("guide").ToYaml());
+        "Required reading — call at session start. Returns the agent guide AND auto-restores " +
+        "workspace context (available skills, recent sessions, patterns) so you have everything " +
+        "needed for the session in one tool call. Then commit content to your project's agent file.")]
+    public async Task<string> Guide(CancellationToken cancellationToken = default)
+    {
+        string guideContent = EmbeddedPrompts.LoadGuide()
+            ?? throw new InvalidOperationException("Built-in guide not found in embedded resources");
+
+        // No store configured (e.g. running outside a workspace): just return the static guide.
+        if (MemoryStoreContext.Current is null)
+            return ResponseBuilder.Success(guideContent).WithAction("guide").ToYaml();
+
+        // Fold the workspace-restore context into the guide response so the agent gets warnings,
+        // available skills, and followUp pointers without a separate memory('restore') call —
+        // closes the most common utilization failure mode (read guide, forget to restore).
+        var ctx = await BuildRestoreContextAsync(cancellationToken);
+        var combinedInfo = ctx.Info.Concat(ctx.ContentSections).ToArray();
+        return ResponseBuilder.Success(guideContent)
+            .WithAction("guide")
+            .WithActionNeeded(ctx.Warnings.ToArray())
+            .WithInfo(combinedInfo)
+            .WithInstruction(ctx.Instruction)
+            .WithFollowUp(ctx.FollowUpNames.ToArray())
+            .ToYaml();
+    }
 
     /// <summary>Unified memory tool — dispatches to action-specific handlers.</summary>
     [McpServerTool(Name = "memory"), Description(
-        "Unified memory operations. Call memory('restore') at the start of every session to reload agent context " +
-        "(profile, patterns, recent session log, available skills). " +
+        "Unified memory operations. Workspace context (profile, patterns, recent sessions, skills) " +
+        "is auto-loaded by guide() at session start — no separate memory('restore') call needed. " +
         "Canonical actions: remember (alias: store), recall (alias: show), forget, search, list, append, compact, link, restore, reconcile. " +
         "Parameter-shape gotcha: 'remember' takes a content array (each element is a chunk); 'append' takes a single appendContent string. " +
         "Call guide() for the full per-action parameter reference.")]
@@ -64,6 +82,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Content array — each element becomes one chunk (store).")] string[]? content = null,
         [Description("Text content to append as new chunk (append).")] string? appendContent = null,
         [Description("Search query string (search).")] string? query = null,
+        [Description("Optional context terms that augment search scoring without appearing in the visible query — e.g. synonyms or related concepts the agent knows but the user didn't type. Affects BM25, field-score, and semantic ranking (search).")] string? context = null,
         [Description("Target name for link.")] string? destination = null,
         [Description("Optional description (store).")] string? description = null,
         [Description("Optional tags (store).")] string[]? tags = null,
@@ -182,7 +201,7 @@ public sealed partial class ScriniaMcpTools
                         "memory('search') requires 'query' parameter.",
                         ErrorCodes.InvalidParameter,
                         "memory('search', { query: 'keywords or phrase' })").ToYaml();
-                return await Search(query, scopes, limit, excludeTopics, cancellationToken);
+                return await Search(query, scopes, limit, excludeTopics, context, cancellationToken);
 
             case "list":
                 return await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken);

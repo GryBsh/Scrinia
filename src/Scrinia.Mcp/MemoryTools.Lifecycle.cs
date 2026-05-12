@@ -511,6 +511,24 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Resume agent context — agent profile, patterns, session log, available skills.</summary>
     internal async Task<string> Restore(CancellationToken cancellationToken)
     {
+        var ctx = await BuildRestoreContextAsync(cancellationToken);
+        return ResponseBuilder.Success(string.Join("\n\n", ctx.ContentSections))
+            .WithAction("restored")
+            .WithActionNeeded(ctx.Warnings.ToArray())
+            .WithInfo(ctx.Info.ToArray())
+            .WithInstruction(ctx.Instruction)
+            .WithFollowUp(ctx.FollowUpNames.ToArray())
+            .ToYaml();
+    }
+
+    /// <summary>
+    /// Build the workspace-context blocks that <see cref="Restore"/> serialises into a YAML
+    /// response. Extracted so <see cref="Guide"/> can fold the same signals into the cold-start
+    /// guide call — the model gets workspace warnings, available skills, and followUp pointers
+    /// on the first tool call without having to remember to <c>memory('restore')</c> separately.
+    /// </summary>
+    internal async Task<RestoreContext> BuildRestoreContextAsync(CancellationToken cancellationToken)
+    {
         var store = CurrentStore;
         var warnings = new List<string>();
         var info = new List<string>();
@@ -628,12 +646,17 @@ public sealed partial class ScriniaMcpTools
         if (followUpNames.Count > 0)
             instruction = "Call memory('recall') for each item in followUp to load full context.";
 
-        return ResponseBuilder.Success(string.Join("\n\n", contentSections))
-            .WithAction("restored")
-            .WithActionNeeded(warnings.ToArray())
-            .WithInfo(info.ToArray())
-            .WithInstruction(instruction)
-            .WithFollowUp(followUpNames.ToArray())
-            .ToYaml();
+        return new RestoreContext(warnings, info, contentSections, followUpNames, instruction);
     }
 }
+
+/// <summary>
+/// Building blocks for the workspace-restore response. Shared between
+/// <see cref="ScriniaMcpTools.Restore"/> and <see cref="ScriniaMcpTools.Guide"/>.
+/// </summary>
+internal sealed record RestoreContext(
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<string> Info,
+    IReadOnlyList<string> ContentSections,
+    IReadOnlyList<string> FollowUpNames,
+    string? Instruction);

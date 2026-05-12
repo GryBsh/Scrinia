@@ -1529,4 +1529,165 @@ public class ScriniaCommands
             try { Directory.Delete(dir); } catch { /* ignore */ }
         }
     }
+
+    /// <summary>Run deterministic consolidation passes against the local store. Tier 1: no LLM call, mechanical only.</summary>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="auto">When set, skip if .scrinia/.last-consolidation indicates a recent run (debounce). Intended for hook-driven invocation.</param>
+    /// <param name="dryRun">Report what would change without modifying anything.</param>
+    /// <param name="debounceMinutes">Minimum minutes between auto runs. Hooks fire on every Stop event; this prevents wasted work.</param>
+    /// <param name="sessionAgeDays">Compact multi-chunk session entries older than N days (preserves content, drops chunk granularity).</param>
+    /// <param name="json">Output as JSON instead of a styled table.</param>
+    public Task<int> Consolidate(
+        string? workspaceRoot = null,
+        bool auto = false,
+        bool dryRun = false,
+        int debounceMinutes = 30,
+        int sessionAgeDays = 7,
+        bool json = false)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+
+        string scriniaDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string debounceFile = Path.Combine(scriniaDir, ".last-consolidation");
+
+        // Hook-friendly debounce: hooks fire on every Stop event, but consolidation only earns
+        // its keep if there's been new activity. The debounce file lets us cheaply no-op when
+        // the last run is recent. Corrupt or missing file → proceed (fail-open).
+        if (auto && File.Exists(debounceFile))
+        {
+            try
+            {
+                string lastRunStr = File.ReadAllText(debounceFile).Trim();
+                if (DateTimeOffset.TryParse(lastRunStr, out var lastRun))
+                {
+                    double minutesSince = (DateTimeOffset.UtcNow - lastRun).TotalMinutes;
+                    if (minutesSince < debounceMinutes)
+                    {
+                        string reason = $"Last run {minutesSince:F1}m ago (debounce {debounceMinutes}m)";
+                        if (json)
+                            WriteJson(
+                                new CliConsolidateOutput("skipped", reason, 0, 0, 0, 0, []),
+                                CliJsonContext.Default.CliConsolidateOutput);
+                        else
+                            AnsiConsole.MarkupLine($"[dim]consolidate: skipped — {reason}[/]");
+                        return Task.FromResult(0);
+                    }
+                }
+            }
+            catch { /* corrupt debounce file → proceed */ }
+        }
+
+        var allEntries = ScriniaArtifactStore.ListScoped(null);
+        long totalBytes = allEntries.Sum(e => e.Entry.OriginalBytes);
+        int staleCount = allEntries.Count(e => e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow);
+
+        // Compact old multi-chunk session entries. Sessions are append-only logs that accumulate
+        // chunks across a day's work; once a session is past its useful window, chunk-level
+        // search granularity stops earning its sidecar overhead. Single-chunk artifacts still
+        // search fine via entry-level keywords and TF.
+        var ageThreshold = DateTimeOffset.UtcNow.AddDays(-sessionAgeDays);
+        var compactionCandidates = allEntries
+            .Where(e => IsSessionScope(e.Scope))
+            .Where(e => e.Entry.ChunkCount > 1)
+            .Where(e => (e.Entry.UpdatedAt ?? e.Entry.CreatedAt) <= ageThreshold)
+            .ToList();
+
+        var compacted = new List<string>();
+        if (!dryRun)
+        {
+            foreach (var item in compactionCandidates)
+            {
+                try
+                {
+                    CompactEntryToSingleChunk(item);
+                    compacted.Add(ScriniaArtifactStore.FormatQualifiedName(item.Scope, item.Entry.Name));
+                }
+                catch (Exception ex)
+                {
+                    if (!json)
+                        AnsiConsole.MarkupLine($"[red]compact failed for {Markup.Escape(item.Entry.Name)}: {Markup.Escape(ex.Message)}[/]");
+                }
+            }
+
+            Directory.CreateDirectory(scriniaDir);
+            File.WriteAllText(debounceFile, DateTimeOffset.UtcNow.ToString("o"));
+        }
+
+        if (json)
+        {
+            WriteJson(
+                new CliConsolidateOutput(
+                    Status: dryRun ? "preview" : "completed",
+                    Reason: null,
+                    TotalMemories: allEntries.Count,
+                    TotalBytes: totalBytes,
+                    StaleCount: staleCount,
+                    CompactionCandidates: compactionCandidates.Count,
+                    Compacted: compacted.ToArray()),
+                CliJsonContext.Default.CliConsolidateOutput);
+            return Task.FromResult(0);
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"[bold]consolidate{(dryRun ? " (dry-run)" : "")}[/]");
+        sb.AppendLine($"[blue]{allEntries.Count} memories[/] — {ScriniaMcpTools.FormatBytes(totalBytes)}");
+        if (staleCount > 0)
+            sb.AppendLine($"[yellow]{staleCount} entries past reviewAfter[/] — review with [italic]scrinia list[/]");
+        if (compactionCandidates.Count > 0)
+        {
+            string verb = dryRun ? "would compact" : "compacted";
+            sb.AppendLine($"[green]{verb} {compactionCandidates.Count} multi-chunk session{(compactionCandidates.Count == 1 ? "" : "s")} older than {sessionAgeDays}d[/]");
+            foreach (var name in (dryRun ? compactionCandidates.Select(c => ScriniaArtifactStore.FormatQualifiedName(c.Scope, c.Entry.Name)) : compacted).Take(10))
+                sb.AppendLine($"  [dim]•[/] {Markup.Escape(name)}");
+            int total = dryRun ? compactionCandidates.Count : compacted.Count;
+            if (total > 10)
+                sb.AppendLine($"  [dim]… and {total - 10} more[/]");
+        }
+        else
+        {
+            sb.AppendLine("[dim]Nothing to consolidate.[/]");
+        }
+        AnsiConsole.Write(new Markup(sb.ToString()));
+        return Task.FromResult(0);
+    }
+
+    /// <summary>True when the scope is the session-log scope under any namespacing variant.</summary>
+    private static bool IsSessionScope(string scope)
+    {
+        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal)) return false;
+        string topicPart = scope["local-topic:".Length..];
+        return topicPart.Equals("sessions", StringComparison.OrdinalIgnoreCase)
+            || topicPart.Equals("memory/sessions", StringComparison.OrdinalIgnoreCase)
+            || topicPart.EndsWith("/sessions", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Decodes a multi-chunk artifact and re-encodes it as a single chunk. Archives the original
+    /// so the prior chunked form remains recoverable. Updates the sidecar to reflect the new
+    /// chunk count and clears per-chunk metadata (which is no longer accurate after merge).
+    /// </summary>
+    private static void CompactEntryToSingleChunk(ScopedArtifact item)
+    {
+        string path = ScriniaArtifactStore.FindArtifactPath(item.Entry.Name, item.Scope);
+        if (!File.Exists(path)) return;
+
+        string artifact = File.ReadAllText(path);
+        if (Nmp2ChunkedEncoder.GetChunkCount(artifact) <= 1) return;
+
+        ScriniaArtifactStore.ArchiveVersion(item.Entry.Name, item.Scope);
+
+        byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
+        string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
+        string compacted = Nmp2ChunkedEncoder.Encode(fullText);
+        File.WriteAllText(path, compacted);
+
+        var updated = item.Entry with
+        {
+            ChunkCount = 1,
+            OriginalBytes = allBytes.LongLength,
+            UpdatedAt = DateTimeOffset.UtcNow,
+            ChunkEntries = null,
+        };
+        ScriniaArtifactStore.Upsert(updated, item.Scope);
+    }
 }

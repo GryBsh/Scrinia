@@ -88,6 +88,15 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
 {
     private const double Bm25Weight = 5.0;
 
+    /// <summary>
+    /// Maximum recency boost applied to today's entries — 10% on top of the base score.
+    /// Linearly decays to zero over <see cref="RecencyDecayDays"/>. Sized so recency nudges
+    /// ranking on near-ties (the common case for session logs and pattern entries) without
+    /// dominating BM25 + field signals on substantive matches.
+    /// </summary>
+    private const double RecencyBoostMax = 0.10;
+    private const double RecencyDecayDays = 365.0;
+
     public IReadOnlyList<ScoredArtifact> Search(
         string query,
         IEnumerable<ScopedArtifact> candidates,
@@ -201,6 +210,7 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
             double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
             double total = fieldScore + normalizedBm25 * Bm25Weight + supplemental;
+            total *= ComputeRecencyMultiplier(candidate.Entry.UpdatedAt ?? candidate.Entry.CreatedAt);
             if (total > 0)
             {
                 string key = $"{candidate.Scope}|{candidate.Entry.Name}";
@@ -218,6 +228,7 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
             double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
             double chunkTotal = chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental;
+            chunkTotal *= ComputeRecencyMultiplier(candidate.Entry.UpdatedAt ?? candidate.Entry.CreatedAt);
             if (chunkTotal > 0)
             {
                 string key = $"{candidate.Scope}|{candidate.Entry.Name}";
@@ -562,6 +573,21 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             docLen += kvp.Value;
 
         return Bm25Scorer.Score(queryTerms, chunk.TermFrequencies, docLen, avgDocLen, corpusSize, docFreqs);
+    }
+
+    // ── Recency boost ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Linear recency multiplier: today gets a <see cref="RecencyBoostMax"/> boost,
+    /// decaying to 1.0 over <see cref="RecencyDecayDays"/>. Future-dated entries (clock skew)
+    /// are clamped to "today". Older entries get no boost (multiplier = 1.0).
+    /// </summary>
+    private static double ComputeRecencyMultiplier(DateTimeOffset lastUpdate)
+    {
+        double daysSince = (DateTimeOffset.UtcNow - lastUpdate).TotalDays;
+        if (daysSince < 0) daysSince = 0;
+        double boost = RecencyBoostMax * Math.Max(0.0, 1.0 - daysSince / RecencyDecayDays);
+        return 1.0 + boost;
     }
 
     // ── Supplemental score lookup ─────────────────────────────────────────

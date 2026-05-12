@@ -178,10 +178,9 @@ public sealed partial class ScriniaMcpTools
 
             store.RememberEphemeral(key, ephEntry);
 
-            // Fire event sink (embeddings, etc.) — never block the response
-            var sink = MemoryEventSinkContext.Current;
-            try { await (sink?.OnStoredAsync($"~{key}", content, store, cancellationToken) ?? Task.CompletedTask); }
-            catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
+            // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
+            // never blocks the response. Failure logged to stderr; the artifact is already on disk.
+            FireEventSinkAsync(sink => sink.OnStoredAsync($"~{key}", content, store, cancellationToken));
 
             return ResponseBuilder.Success($"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]")
                 .WithAction(actionLabel).ToYaml();
@@ -303,9 +302,9 @@ public sealed partial class ScriniaMcpTools
 
         store.Upsert(entry, scope);
 
-        // Fire event sink (embeddings, etc.) — never block the response
-        try { await (MemoryEventSinkContext.Current?.OnStoredAsync(qualifiedName, content, store, cancellationToken) ?? Task.CompletedTask); }
-        catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
+        // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
+        // never blocks the response. Failure logged to stderr; the artifact is already on disk.
+        FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, cancellationToken));
 
         return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
             .WithFileChanges().WithAction(actionLabel).ToYaml();
@@ -633,9 +632,15 @@ public sealed partial class ScriniaMcpTools
         [Description("Maximum results to return.")] int limit = 20,
         [Description("Optional comma-separated topic names to exclude from results. " +
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge searches.")] string? excludeTopics = null,
+        [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when the agent knows synonyms or related concepts.")] string? context = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
+
+        // Augment the query with caller-supplied context for scoring. The bare query is preserved
+        // for any user-facing echo; the effective query feeds BM25, field scoring, and embeddings
+        // alike so a single signal carries through all three.
+        string effectiveQuery = string.IsNullOrWhiteSpace(context) ? query : $"{query} {context}";
 
         // Compute supplemental scores from plugin (e.g. embeddings) if available
         // Use excludeTopics-filtered candidates so excluded topics don't influence embeddings scoring
@@ -644,14 +649,14 @@ public sealed partial class ScriniaMcpTools
         if (contributor is not null)
         {
             var candidates = store.ListScoped(scopes, excludeTopics);
-            supplemental = await contributor.ComputeScoresAsync(query, candidates, store, cancellationToken);
+            supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
         }
 
         IReadOnlyList<SearchResult> matches = supplemental is { Count: > 0 }
-            ? store.SearchAll(query, scopes, limit, supplemental)
+            ? store.SearchAll(effectiveQuery, scopes, limit, supplemental)
                 .Where(r => !IMemoryStore.ShouldExcludeScope(IMemoryStore.GetResultScope(r), excludeTopics))
                 .ToList()
-            : store.SearchAll(query, scopes, limit, excludeTopics);
+            : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics);
         if (matches.Count == 0)
             return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
 
@@ -923,9 +928,9 @@ public sealed partial class ScriniaMcpTools
             store.Upsert(entry, scope);
         }
 
-        // Fire event sink (embeddings, etc.) — never block the response
-        try { await (MemoryEventSinkContext.Current?.OnAppendedAsync(qualifiedName, content, store, cancellationToken) ?? Task.CompletedTask); }
-        catch { /* plugin errors must not block append */ }
+        // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
+        // never blocks the response. Failure logged to stderr; the artifact is already on disk.
+        FireEventSinkAsync(sink => sink.OnAppendedAsync(qualifiedName, content, store, cancellationToken));
 
         return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
             .WithFileChanges().WithAction("appended").ToYaml();
@@ -1063,5 +1068,23 @@ public sealed partial class ScriniaMcpTools
         var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
         var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
         return fileRefs.Select(f => $"file:{f}").Concat(memoryRefs.Select(m => $"ref:{m}"));
+    }
+
+    /// <summary>
+    /// Detach an event-sink call from the response path so embedding latency (which can be
+    /// 100–400 ms for remote providers) never blocks the MCP write response.
+    /// The sink is resolved at fire-time so a concurrent context switch won't bind us to a stale sink.
+    /// Errors are logged to stderr; the on-disk artifact is already durable by the time this runs,
+    /// so a missed embedding only means the entry won't show in semantic search until the next write.
+    /// </summary>
+    private static void FireEventSinkAsync(Func<IMemoryEventSink, Task> action)
+    {
+        var sink = MemoryEventSinkContext.Current;
+        if (sink is null) return;
+        _ = Task.Run(async () =>
+        {
+            try { await action(sink); }
+            catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
+        });
     }
 }
