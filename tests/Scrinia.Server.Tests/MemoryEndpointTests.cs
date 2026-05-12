@@ -55,6 +55,46 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
     }
 
     [Fact]
+    public async Task List_respects_offset_and_limit_with_total_unchanged()
+    {
+        // Seed 12 deterministically-named entries.
+        for (int i = 0; i < 12; i++)
+        {
+            var req = new StoreRequest([$"pagination chunk {i}"], $"page-{i:D2}");
+            await _client.PostAsJsonAsync($"{_base}/memories", req);
+        }
+
+        var page1 = await _client.GetFromJsonAsync<ListResponse>($"{_base}/memories?limit=5&offset=0");
+        page1.Should().NotBeNull();
+        page1!.Memories.Length.Should().BeLessOrEqualTo(5,
+            because: "limit must be honoured exactly");
+        int totalSeenInPage1 = page1.Total;
+        totalSeenInPage1.Should().BeGreaterOrEqualTo(12,
+            because: "Total must reflect the unpaginated count, not the page size");
+
+        var page2 = await _client.GetFromJsonAsync<ListResponse>($"{_base}/memories?limit=5&offset=5");
+        page2.Should().NotBeNull();
+        page2!.Total.Should().Be(totalSeenInPage1,
+            because: "Total is stable across pages within a list call");
+
+        var page1Names = page1.Memories.Select(m => m.QualifiedName).ToHashSet();
+        var page2Names = page2.Memories.Select(m => m.QualifiedName).ToHashSet();
+        page1Names.Should().NotIntersectWith(page2Names,
+            because: "consecutive pages must not return overlapping entries");
+    }
+
+    [Fact]
+    public async Task List_clamps_limit_above_max()
+    {
+        // Asking for limit > 1000 must be clamped silently — the response should never
+        // exceed the hard cap regardless of how many entries exist.
+        var resp = await _client.GetFromJsonAsync<ListResponse>($"{_base}/memories?limit=999999");
+        resp.Should().NotBeNull();
+        resp!.Memories.Length.Should().BeLessOrEqualTo(1000,
+            because: "limit must be clamped to MaxListLimit (1000)");
+    }
+
+    [Fact]
     public async Task Search_finds_matching_memory()
     {
         var req = new StoreRequest(["Kubernetes deployment patterns with pods and services"], "k8s-patterns", "K8s guide");

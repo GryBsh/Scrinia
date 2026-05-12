@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Hashing;
 using System.Text;
 
@@ -104,7 +105,7 @@ public static class Nmp2ChunkedEncoder
         sb.Append("NMP/2 ");
         sb.Append(totalBytes);
         sb.Append("B CRC32:");
-        sb.Append(crc.ToString("X8"));
+        sb.Append(crc.ToString("X8", CultureInfo.InvariantCulture));
         sb.Append(" BR+B64 C:");
         sb.Append(newCount);
         sb.Append('\n');
@@ -218,7 +219,7 @@ public static class Nmp2ChunkedEncoder
         sb.Append("NMP/2 ");
         sb.Append(totalBytes);
         sb.Append("B CRC32:");
-        sb.Append(crc.ToString("X8"));
+        sb.Append(crc.ToString("X8", CultureInfo.InvariantCulture));
         sb.Append(" BR+B64 C:");
         sb.Append(k);
         sb.Append('\n');
@@ -239,22 +240,7 @@ public static class Nmp2ChunkedEncoder
         sb.Append(chunkNumber);
         sb.Append('\n');
 
-        byte[] compressed = Nmp2Strategy.BrotliCompress(chunkUtf8);
-
-        int pad = (3 - (compressed.Length % 3)) % 3;
-        byte[] padded = new byte[compressed.Length + pad];
-        compressed.CopyTo(padded, 0);
-
-        string b64 = Nmp2Strategy.Base64UrlEncode(padded);
-        int lines = b64.Length == 0 ? 0 : (int)Math.Ceiling((double)b64.Length / CharsPerLine);
-
-        for (int j = 0; j < lines; j++)
-        {
-            int start = j * CharsPerLine;
-            int len = Math.Min(CharsPerLine, b64.Length - start);
-            sb.Append(b64, start, len);
-            sb.Append('\n');
-        }
+        int pad = Nmp2Strategy.CompressAndAppendBase64(sb, chunkUtf8, CharsPerLine);
 
         sb.Append("##PAD:");
         sb.Append(pad);

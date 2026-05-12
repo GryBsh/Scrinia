@@ -235,4 +235,4 @@ internal sealed record AnthropicToolResultBlock(
     [property: JsonPropertyName("content")] string Content);
 
 [JsonSerializable(typeof(AnthropicRequest))]
-internal partial class AnthropicChatJsonContext : JsonSerializerContext;
+internal sealed partial class AnthropicChatJsonContext : JsonSerializerContext;

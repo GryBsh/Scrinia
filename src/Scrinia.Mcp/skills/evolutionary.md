@@ -31,10 +31,10 @@ Load each skill via `memory('recall', { path: '/skill/{name}' })`. Compare the m
 If the skill listing shows `[stale base]` for any built-in override, the embedded version has been updated upstream. Use:
 
 ```
-memory('recall', { path: '/skill/{name}', reconcile: true })
+memory('recall', { path: '/skill/{name}', withBuiltin: true })
 ```
 
-This returns both versions side-by-side so you can merge project-specific additions into the new base, then save the reconciled result.
+This returns both versions side-by-side so you can merge project-specific additions into the new base, then save the merged result.
 
 ### 3. Surface emergent patterns
 

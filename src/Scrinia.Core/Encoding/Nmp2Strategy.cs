@@ -1,3 +1,6 @@
+using System.Buffers;
+using System.Buffers.Text;
+using System.Globalization;
 using System.IO.Compression;
 using System.IO.Hashing;
 using System.Text;
@@ -24,6 +27,19 @@ public sealed class Nmp2Strategy : IEncodingStrategy
 {
     public static readonly Nmp2Strategy Instance = new();
 
+    /// <summary>
+    /// Upper bound on bytes Decode() will produce. Guards against memory-pressure DoS from
+    /// large or malicious multi-chunk artifacts and high-ratio Brotli streams. Set per-process
+    /// at startup; default 64 MB.
+    /// </summary>
+    public static int MaxDecodedBytes { get; set; } = 64 * 1024 * 1024;
+
+    /// <summary>
+    /// Upper bound on declared chunk count in a multi-chunk artifact header. Prevents
+    /// trivial DoS via tiny artifacts that declare millions of chunks.
+    /// </summary>
+    public const int MaxChunkCount = 100_000;
+
     public string StrategyId => "nmp/2";
     public string Description => "nmp/2 brotli+base64 — maximum LLM density, ~60-90 bits/token on code";
 
@@ -31,39 +47,27 @@ public sealed class Nmp2Strategy : IEncodingStrategy
     {
         int originalLen = input.Length;
         uint crc = Crc32.HashToUInt32(input);
-
-        // Always Brotli-compress
-        byte[] compressed = BrotliCompress(input);
-
-        // Pad to 3-byte boundary for clean URL-safe Base64 (no trailing '=')
-        int pad = (3 - (compressed.Length % 3)) % 3;
-        byte[] padded = new byte[compressed.Length + pad];
-        compressed.CopyTo(padded, 0);
-
         int charsPerLine = options.CharsPerLine;
-        string b64 = Base64UrlEncode(padded);
-        int lines = b64.Length == 0 ? 0 : (int)Math.Ceiling((double)b64.Length / charsPerLine);
 
-        // Estimate capacity
-        int approxCap = 50 + lines * (charsPerLine + 1) + 15;
+        // Brotli + Base64 typically lands at ~1.4x the compressed size in chars. Most real
+        // payloads compress 3–10x, so size the builder to the expected compressed-base64
+        // chars plus header/footer (~70 chars) with a 128-char floor for tiny inputs.
+        int approxCap = 70 + Math.Max(128, (input.Length * 14) / 10);
         var sb = new StringBuilder(approxCap);
 
         // Header
         sb.Append("NMP/2 ");
         sb.Append(originalLen);
         sb.Append("B CRC32:");
-        sb.Append(crc.ToString("X8"));
+        sb.Append(crc.ToString("X8", CultureInfo.InvariantCulture));
         sb.Append(" BR+B64");
         sb.Append('\n');
 
-        // Data lines — plain Base64, no row-index prefix
-        for (int i = 0; i < lines; i++)
-        {
-            int start = i * charsPerLine;
-            int len = Math.Min(charsPerLine, b64.Length - start);
-            sb.Append(b64, start, len);
-            sb.Append('\n');
-        }
+        // Compress + Base64Url + append data lines via the pooled helper.
+        // Returns the pad value to record in the footer; new artifacts always emit 0
+        // because Base64Url encodes without padding bytes — older artifacts may carry pad 1 or 2
+        // and remain decodable.
+        int pad = CompressAndAppendBase64(sb, input, charsPerLine);
 
         // Footer
         sb.Append("##PAD:");
@@ -81,17 +85,65 @@ public sealed class Nmp2Strategy : IEncodingStrategy
             StrategyId: StrategyId);
     }
 
+    /// <summary>
+    /// Brotli-compresses <paramref name="data"/> into a pooled buffer, Base64Url-encodes the
+    /// result, and writes the data as newline-terminated chunks of <paramref name="charsPerLine"/>
+    /// characters into <paramref name="sb"/>. Returns the pad value to record in the footer
+    /// (always 0 with Base64Url encoding; preserved for back-compat with the older padded format).
+    /// </summary>
+    internal static int CompressAndAppendBase64(StringBuilder sb, ReadOnlySpan<byte> data, int charsPerLine)
+    {
+        int maxCompressed = BrotliEncoder.GetMaxCompressedLength(data.Length);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(maxCompressed);
+        try
+        {
+            if (!BrotliEncoder.TryCompress(data, rented.AsSpan(0, maxCompressed),
+                    out int compressedLen, quality: 11, window: 22))
+                throw new InvalidOperationException(
+                    $"NMP/2: Brotli compression failed for {data.Length}-byte input.");
+
+            string b64 = Base64Url.EncodeToString(rented.AsSpan(0, compressedLen));
+            int lines = b64.Length == 0 ? 0 : (int)Math.Ceiling((double)b64.Length / charsPerLine);
+
+            for (int i = 0; i < lines; i++)
+            {
+                int start = i * charsPerLine;
+                int len = Math.Min(charsPerLine, b64.Length - start);
+                sb.Append(b64, start, len);
+                sb.Append('\n');
+            }
+            return 0;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
+    }
+
     public byte[] Decode(string artifact)
     {
+        int maxBytes = MaxDecodedBytes;
+
         if (IsMultiChunk(artifact))
         {
             int count = ParseChunkCount(artifact);
-            var chunks = new List<byte[]>(count);
-            for (int i = 1; i <= count; i++)
-                chunks.Add(DecodeChunkSection(artifact, i));
+            if (count < 1 || count > MaxChunkCount)
+                throw new InvalidDataException(
+                    $"NMP/2 artifact declares {count} chunks; must be 1..{MaxChunkCount}.");
 
-            int total = chunks.Sum(c => c.Length);
-            byte[] result = new byte[total];
+            var chunks = new List<byte[]>(Math.Min(count, 256));
+            long runningTotal = 0;
+            for (int i = 1; i <= count; i++)
+            {
+                byte[] chunkBytes = DecodeChunkSection(artifact, i, maxBytes - runningTotal);
+                runningTotal += chunkBytes.Length;
+                if (runningTotal > maxBytes)
+                    throw new InvalidDataException(
+                        $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i}).");
+                chunks.Add(chunkBytes);
+            }
+
+            byte[] result = new byte[runningTotal];
             int offset = 0;
             foreach (var chunk in chunks)
             {
@@ -120,7 +172,7 @@ public sealed class Nmp2Strategy : IEncodingStrategy
             return [];
 
         byte[] compressed = padded[..compressedLen];
-        return BrotliDecompress(compressed);
+        return BrotliDecompressBounded(compressed, maxBytes);
     }
 
     public bool CanDecode(string artifact) =>
@@ -143,7 +195,7 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         {
             var bytesPart = parts[1];
             if (bytesPart.EndsWith('B'))
-                int.TryParse(bytesPart[..^1], out originalBytes);
+                _ = int.TryParse(bytesPart[..^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out originalBytes);
         }
 
         uint? crc = null;
@@ -198,9 +250,17 @@ public sealed class Nmp2Strategy : IEncodingStrategy
 
     /// <summary>
     /// Decodes a single ##CHUNK:{chunkIndex} section from a multi-chunk artifact.
-    /// Returns the decompressed bytes for that chunk.
+    /// Returns the decompressed bytes for that chunk. Bounded by <see cref="MaxDecodedBytes"/>.
     /// </summary>
-    internal static byte[] DecodeChunkSection(string artifact, int chunkIndex)
+    internal static byte[] DecodeChunkSection(string artifact, int chunkIndex) =>
+        DecodeChunkSection(artifact, chunkIndex, MaxDecodedBytes);
+
+    /// <summary>
+    /// Decodes a single ##CHUNK:{chunkIndex} section, throwing
+    /// <see cref="InvalidDataException"/> if the decompressed output exceeds
+    /// <paramref name="maxBytes"/>.
+    /// </summary>
+    internal static byte[] DecodeChunkSection(string artifact, int chunkIndex, long maxBytes)
     {
         string chunkMarker = $"##CHUNK:{chunkIndex}";
         bool inChunk = false;
@@ -233,7 +293,7 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         if (compressedLen <= 0) return [];
 
         byte[] compressed = padded[..compressedLen];
-        return BrotliDecompress(compressed);
+        return BrotliDecompressBounded(compressed, maxBytes);
     }
 
     private static IEnumerable<string> EnumerateLines(string text)
@@ -274,12 +334,42 @@ public sealed class Nmp2Strategy : IEncodingStrategy
         return ms.ToArray();
     }
 
-    internal static byte[] BrotliDecompress(byte[] data)
+    internal static byte[] BrotliDecompress(byte[] data) =>
+        BrotliDecompressBounded(data, MaxDecodedBytes);
+
+    /// <summary>
+    /// Decompresses Brotli data, throwing <see cref="InvalidDataException"/> if the
+    /// decompressed output would exceed <paramref name="maxBytes"/>. Bounds high-ratio
+    /// compression so a small artifact cannot expand without limit.
+    /// </summary>
+    internal static byte[] BrotliDecompressBounded(byte[] data, long maxBytes)
     {
+        if (maxBytes < 0)
+            throw new InvalidDataException(
+                $"NMP/2 remaining decode budget exhausted (maxBytes={maxBytes}).");
+
         using var input = new MemoryStream(data);
         using var brotli = new BrotliStream(input, CompressionMode.Decompress);
         using var output = new MemoryStream();
-        brotli.CopyTo(output);
+
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(8192);
+        try
+        {
+            long total = 0;
+            int read;
+            while ((read = brotli.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                total += read;
+                if (total > maxBytes)
+                    throw new InvalidDataException(
+                        $"NMP/2 decompressed output exceeds MaxDecodedBytes={maxBytes} bytes.");
+                output.Write(buffer, 0, read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
         return output.ToArray();
     }
 }

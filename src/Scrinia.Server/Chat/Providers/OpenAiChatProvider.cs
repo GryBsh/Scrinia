@@ -205,4 +205,4 @@ internal sealed record OpenAiDeltaToolCall(
 
 [JsonSerializable(typeof(OpenAiRequest))]
 [JsonSerializable(typeof(OpenAiChunk))]
-internal partial class OpenAiChatJsonContext : JsonSerializerContext;
+internal sealed partial class OpenAiChatJsonContext : JsonSerializerContext;

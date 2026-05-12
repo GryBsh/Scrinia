@@ -146,3 +146,11 @@ Use `TestHelpers.StoreScope` for test isolation — it redirects workspace, stor
 - New JSON-serialized types must be registered in the appropriate source-gen context.
 - New CLI commands go in `ScriniaCommands.cs` and inherit `--workspace-root` / `--remote` / `--api-key` patterns.
 - Plugin authors implement `IScriniaPlugin` (lifecycle), and any combination of `ISearchScoreContributor`, `IMemoryEventSink`, `IMemoryOperationHook`.
+
+## Docs maintenance — known gaps
+
+These are intentional follow-ups, not bugs in any one commit. Track them when touching the relevant area.
+
+- **No CI check enforces skill/doc parity.** The skill table in `docs/getting-started.md` is manually edited; if a skill is added to or removed from `src/Scrinia.Mcp/skills/` without updating the doc, the drift is invisible until the next manual review. A small CI step that diffs `Directory.GetFiles("src/Scrinia.Mcp/skills", "*.md")` against the rows in the skills table would close this gap (and would also catch the dual breakage where a skill body still references a removed MCP surface).
+- **No CI check enforces XML-doc coverage on the public API.** Public `IMemoryStore` / `MemoryTools` members are well-documented today; the next regression isn't caught until somebody notices. DocFX-with-coverage-threshold or a custom roslyn analyzer is the standard fix.
+- **No tooling enforces version-string single-sourcing.** `Directory.Build.props` is the canonical `<Version>`; a grep over `src/**/*.cs` and `src/**/*.csproj` for the literal version is a one-line CI guard against drift returning.

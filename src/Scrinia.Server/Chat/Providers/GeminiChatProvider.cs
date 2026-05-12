@@ -230,4 +230,4 @@ internal sealed record GeminiGenerationConfig(
     [property: JsonPropertyName("temperature")] double Temperature);
 
 [JsonSerializable(typeof(GeminiRequest))]
-internal partial class GeminiChatJsonContext : JsonSerializerContext;
+internal sealed partial class GeminiChatJsonContext : JsonSerializerContext;

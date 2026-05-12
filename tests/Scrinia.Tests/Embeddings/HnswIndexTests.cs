@@ -111,4 +111,64 @@ public class HnswIndexTests
         var results = index.Search([1f, 0f], topK: 5);
         results.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task ConcurrentSearchesAndInserts_ProduceConsistentResults()
+    {
+        // Reader/writer lock should allow concurrent searches without blocking, while
+        // serializing inserts. The test asserts both correctness (Count reflects every
+        // insert exactly once) and absence of deadlock under load.
+        using var index = new HnswIndex();
+        var rng = new Random(1);
+
+        // Seed with a base set so searches have a non-empty graph to traverse.
+        const int seedCount = 100;
+        for (int i = 0; i < seedCount; i++)
+            index.Insert($"seed-{i}", RandomVector(32, rng));
+
+        const int searchTaskCount = 8;
+        const int insertTaskCount = 2;
+        const int searchesPerTask = 200;
+        const int insertsPerTask = 50;
+
+        var insertedKeys = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var searchTasks = new Task[searchTaskCount];
+        var insertTasks = new Task[insertTaskCount];
+
+        for (int s = 0; s < searchTaskCount; s++)
+        {
+            int taskId = s;
+            searchTasks[s] = Task.Run(() =>
+            {
+                var localRng = new Random(100 + taskId);
+                for (int i = 0; i < searchesPerTask; i++)
+                {
+                    var query = RandomVector(32, localRng);
+                    var hits = index.Search(query, topK: 5);
+                    hits.Should().NotBeNull();
+                }
+            });
+        }
+
+        for (int w = 0; w < insertTaskCount; w++)
+        {
+            int taskId = w;
+            insertTasks[w] = Task.Run(() =>
+            {
+                var localRng = new Random(500 + taskId);
+                for (int i = 0; i < insertsPerTask; i++)
+                {
+                    string key = $"concurrent-{taskId}-{i}";
+                    index.Insert(key, RandomVector(32, localRng));
+                    insertedKeys.Add(key);
+                }
+            });
+        }
+
+        await Task.WhenAll(searchTasks.Concat(insertTasks));
+
+        index.Count.Should().Be(seedCount + insertTaskCount * insertsPerTask,
+            because: "every concurrent insert must be reflected in Count exactly once");
+        insertedKeys.Should().HaveCount(insertTaskCount * insertsPerTask);
+    }
 }

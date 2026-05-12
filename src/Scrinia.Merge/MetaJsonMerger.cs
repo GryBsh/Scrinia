@@ -15,7 +15,7 @@ public sealed record MetaEntry(
 );
 
 [JsonSerializable(typeof(MetaEntry))]
-internal partial class MetaEntryJsonContext : JsonSerializerContext { }
+internal sealed partial class MetaEntryJsonContext : JsonSerializerContext { }
 
 public static class MetaJsonMerger
 {

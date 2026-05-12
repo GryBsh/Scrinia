@@ -100,7 +100,8 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
 
         // Compute BM25 corpus stats from all candidates with TF data
         var (avgDocLen, docFreqs) = Bm25Scorer.ComputeCorpusStats(
-            candidateList.Select(c => (IReadOnlyDictionary<string, int>?)c.Entry.TermFrequencies));
+            candidateList.Select(c => (IReadOnlyDictionary<string, int>?)c.Entry.TermFrequencies),
+            docCountHint: candidateList.Count);
 
         var queryTerms = TextAnalysis.Tokenize(query);
         int corpusSize = candidateList.Count;
@@ -157,7 +158,8 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
 
         // Compute BM25 corpus stats
         var (avgDocLen, docFreqs) = Bm25Scorer.ComputeCorpusStats(
-            candidateList.Select(c => (IReadOnlyDictionary<string, int>?)c.Entry.TermFrequencies));
+            candidateList.Select(c => (IReadOnlyDictionary<string, int>?)c.Entry.TermFrequencies),
+            docCountHint: candidateList.Count);
 
         var queryTerms = TextAnalysis.Tokenize(query);
         int corpusSize = candidateList.Count;

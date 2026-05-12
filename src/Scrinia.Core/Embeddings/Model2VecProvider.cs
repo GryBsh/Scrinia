@@ -66,7 +66,7 @@ public sealed class Model2VecProvider : IEmbeddingProvider
 
             // Find the embedding tensor — typically named "embeddings" or the only tensor
             var tensorName = header.ContainsKey("embeddings") ? "embeddings"
-                : header.Keys.FirstOrDefault(k => !k.StartsWith("__"))
+                : header.Keys.FirstOrDefault(k => !k.StartsWith("__", StringComparison.Ordinal))
                 ?? throw new FormatException("No embedding tensor found in SafeTensors file.");
 
             var meta = header[tensorName];

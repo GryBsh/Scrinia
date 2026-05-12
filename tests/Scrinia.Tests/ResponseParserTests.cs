@@ -48,6 +48,35 @@ public sealed class ResponseParserTests
     }
 
     [Fact]
+    public void Truncated_Content_AppendsFollowUpHint()
+    {
+        // Build content larger than the response cap (~8 KB) and confirm the YAML output
+        // surfaces a followUp entry pointing to the next chunk.
+        string large = new('x', 16 * 1024);
+        var yaml = ResponseBuilder.Success(large).ToYaml();
+
+        var parsed = ResponseParser.Parse(yaml);
+
+        parsed.Status.Should().Be("success");
+        parsed.Content.Should().NotBeNull();
+        parsed.Content!.Should().EndWith("... (truncated)",
+            because: "the in-content truncation marker must still be present");
+        parsed.FollowUp.Should().Contain(hint => hint.Contains("truncated", StringComparison.OrdinalIgnoreCase),
+            because: "agents reading followUp must see a directive to fetch the next chunk");
+    }
+
+    [Fact]
+    public void Untruncated_Content_DoesNotAppendFollowUp()
+    {
+        var yaml = ResponseBuilder.Success("small content").ToYaml();
+
+        var parsed = ResponseParser.Parse(yaml);
+
+        parsed.FollowUp.Should().BeEmpty(
+            because: "responses that fit within the cap must not emit a truncation hint");
+    }
+
+    [Fact]
     public void ParseResponse_MinimalSuccess_DefaultsAreClean()
     {
         var yaml = ResponseBuilder.Success().ToYaml();

@@ -51,12 +51,18 @@ for rid in "${RIDS[@]}"; do
     fi
 
     echo "Publishing $rid ..."
+    # Trim-analysis warnings are gated as errors so a regression silently dropping a member
+    # via reflection cannot ship. If a trim warning fires, fix the root cause — either move
+    # to a JsonSerializerContext, annotate with [DynamicallyAccessedMembers], or rewrite the
+    # reflection-heavy call to a trim-safe shape.
     dotnet publish "$PROJECT" \
         --runtime "$rid" \
         --self-contained \
         --configuration Release \
         -p:PublishSingleFile=true \
         -p:PublishTrimmed=true \
+        -p:SuppressTrimAnalysisWarnings=false \
+        -p:TreatWarningsAsErrors=true \
         --output "$rid_dir"
     echo "  -> $rid_dir"
 

@@ -142,7 +142,7 @@ public static class AgentLoop
                 _ => $"Error: unknown tool '{toolName}'.",
             };
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             return "Error executing tool.";
         }

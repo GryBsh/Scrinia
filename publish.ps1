@@ -23,12 +23,18 @@ foreach ($rid in $Rids) {
     $ridDir = if ($SinglePlatform) { $OutputDir } else { "$OutputDir/$rid" }
 
     Write-Host "Publishing $rid ..."
+    # Trim-analysis warnings are gated as errors so a regression silently dropping a member
+    # via reflection cannot ship. If a trim warning fires, fix the root cause — either move
+    # to a JsonSerializerContext, annotate with [DynamicallyAccessedMembers], or rewrite the
+    # reflection-heavy call to a trim-safe shape.
     dotnet publish $Project `
         --runtime $rid `
         --self-contained `
         --configuration Release `
         -p:PublishSingleFile=true `
         -p:PublishTrimmed=true `
+        -p:SuppressTrimAnalysisWarnings=false `
+        -p:TreatWarningsAsErrors=true `
         --output $ridDir
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid" }
     Write-Host "  -> $ridDir"

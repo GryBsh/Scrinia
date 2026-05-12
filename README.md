@@ -114,16 +114,24 @@ For HTTP transport via the API server, see [Server Administration](docs/server-a
 
 ## CLI quick reference
 
+> **Note**: All mcp tools are availabl via cli, so they can be used in hooks, etc.
+
 ```bash
 scri serve                          # start MCP server (stdio)
+scri guide                          # print the agent guide (run once per session)
 scri store notes ./notes.md         # store a file as memory
 scri store api:auth ./auth.md       # store under a topic
+scri append notes ./more.md         # add a new chunk to an existing memory
+scri compact notes --keep-recent 3  # merge old chunks; keep the 3 newest
+scri link notes api:auth -r "see also" # bidirectional cross-reference
 scri list                           # list summary (topics, keywords, stats)
 scri list --summary=false           # list all memories (full listing)
 scri list --offset 0 --limit 50    # paginated full listing
 scri search "auth"                  # hybrid BM25 + semantic search
 scri show api:auth                  # display memory content
 scri forget api:auth                # delete a memory
+scri restore                        # resume agent context (profile, patterns, session log)
+scri reconcile                      # scan .scrinia/ for merge conflicts
 scri export api                     # export topic to .scrinia-bundle
 scri import ./bundle.scrinia-bundle # import a bundle
 scri bundle docs *.md               # bundle raw files
@@ -131,6 +139,7 @@ scri setup                          # download embedding model
 scri config                         # list workspace settings
 scri config plugins:embeddings      # get a setting
 scri config plugins:embeddings val  # set a setting
+scri migrate --dry-run              # migrate v1 (topic:name) store to v2 (path) layout
 ```
 
 All commands accept `--workspace-root` to override the workspace directory and `--json` for machine-parseable JSON output.
@@ -197,6 +206,23 @@ dotnet test tests/Scrinia.Tests             # 1,206 CLI + MCP + planning + embed
 dotnet test tests/Scrinia.Server.Tests      # 86 server + 18 merge tests
 dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
 ```
+
+## Running benchmarks
+
+[BenchmarkDotNet](https://benchmarkdotnet.org/) is used for measuring hot-path performance
+(BM25 corpus stats, HNSW search). Run from the repo root:
+
+```bash
+# Run everything (a full pass takes several minutes)
+dotnet run -c Release --project tests/Scrinia.Benchmarks
+
+# Run a subset and emit a machine-readable JSON summary
+dotnet run -c Release --project tests/Scrinia.Benchmarks -- \
+    --filter "*Bm25*" --exporters json
+```
+
+JSON exports land in `tests/Scrinia.Benchmarks/BenchmarkDotNet.Artifacts/` and can be diffed
+against a committed baseline to gate regressions in CI.
 
 ## License
 

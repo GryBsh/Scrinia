@@ -168,18 +168,10 @@ internal static partial class ScriniaArtifactStore
         return [MemoryNaming.BuildScopedTopicScope(SanitizeName(s))];
     }
 
-    private static readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        TypeInfoResolver = StoreJsonContext.Default,
-    };
-
     [JsonSourceGenerationOptions(
         WriteIndented = true,
         PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonSerializable(typeof(IndexFile))]
     [JsonSerializable(typeof(ArtifactEntry))]
@@ -430,7 +422,7 @@ internal static partial class ScriniaArtifactStore
             try
             {
                 string json = File.ReadAllText(metaFile);
-                var entry = JsonSerializer.Deserialize<ArtifactEntry>(json, _jsonOptions);
+                var entry = JsonSerializer.Deserialize(json, StoreJsonContext.Default.ArtifactEntry);
                 if (entry is not null)
                     entries.Add(entry);
             }
@@ -447,7 +439,7 @@ internal static partial class ScriniaArtifactStore
         try
         {
             string json = File.ReadAllText(indexPath);
-            var idx = JsonSerializer.Deserialize<IndexFile>(json, _jsonOptions);
+            var idx = JsonSerializer.Deserialize(json, StoreJsonContext.Default.IndexFile);
             return idx?.Entries ?? [];
         }
         catch
@@ -465,7 +457,7 @@ internal static partial class ScriniaArtifactStore
     private static void WriteSidecar(ArtifactEntry entry, string storeDir)
     {
         string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
-        string json = JsonSerializer.Serialize(entry, _jsonOptions);
+        string json = JsonSerializer.Serialize(entry, StoreJsonContext.Default.ArtifactEntry);
         string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
         File.WriteAllText(tmp, json);
         File.Move(tmp, metaPath, overwrite: true);

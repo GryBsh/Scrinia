@@ -112,6 +112,27 @@ All providers:
 | `vulkan` | None (local) | GGUF model | (model-dependent) | Plugin (optional) |
 | `none` | N/A | N/A | 0 | Core |
 
+### Choosing a provider
+
+| Provider | Latency | Cost | Privacy | Setup effort | Use when |
+|----------|---------|------|---------|--------------|----------|
+| `model2vec` | ~5–20 ms | Free | Local (no network) | `scri setup` (~22 MB download) | **Default for most users.** Local, deterministic, no native deps. Sufficient quality for code/notes search. |
+| `vulkan` | ~10–50 ms (GPU) | Free | Local | Plugin install + GPU driver | You have a Vulkan-capable GPU and need higher-quality embeddings on a large corpus without leaving the machine. |
+| `ollama` | ~50–200 ms (local LAN) | Free | Local (process boundary) | Ollama install + model pull | You already run Ollama for chat and want to share an embedding model. Larger models than model2vec at the cost of an extra process. |
+| `openai` | ~100–400 ms | Per-token billing | Sent to OpenAI | API key | You want best-in-class quality, accept network round-trips, and your data is allowed to leave the machine. |
+| `voyageai` | ~150–400 ms | Per-token billing | Sent to Voyage AI | API key | Voyage models are designed for retrieval and often outperform OpenAI on RAG benchmarks. |
+| `azure` | ~100–400 ms | Per-token billing | Stays in your Azure tenant | API key + endpoint | Enterprise deployments that already have OpenAI-via-Azure provisioned. Pick the v1 URL pattern unless you have a legacy deployment. |
+| `google` | ~150–400 ms | Per-token billing | Sent to Google | API key | You want Gemini's embedding model and accept Google's data policies. Set `GoogleDimensions` to truncate vectors for storage efficiency. |
+| `none` | N/A | Free | N/A | None | You don't want semantic search — BM25 keyword search continues to work. |
+
+**Decision shortcuts:**
+- *Single laptop, mixed content*: stay on `model2vec`.
+- *Multi-user server, high-volume search*: `vulkan` if you have a GPU; otherwise `openai`/`voyageai` for quality, or `ollama` for free local with a stronger model than model2vec.
+- *Regulated environment*: `model2vec` or `azure` (data stays in your tenant).
+- *Privacy with quality*: `vulkan` or `ollama` — keeps embeddings on-device.
+
+Switching providers re-embeds existing memories on next access — embeddings live in `.scrinia/embeddings/` and providers tag their vectors with the model identifier so cross-provider mixing is avoided.
+
 ### Model2Vec Provider (Default)
 
 Runs locally using a pure C# implementation with zero native dependencies. Uses a distilled `m2v-MiniLM-L6-v2` model (384 dimensions, ~22MB, F16 SafeTensors). This model is distilled from `all-MiniLM-L6-v2` via the [model2vec](https://github.com/MinishLab/model2vec) library, producing vectors in the same semantic space as the full MiniLM transformer.

@@ -152,10 +152,10 @@ Memories are organized into three scopes:
 | Pattern | Scope | Storage | Lifetime |
 |---------|-------|---------|----------|
 | `subject` | Local | `.scrinia/store/subject.nmp2` | Persistent |
-| `topic:subject` | Topic | `.scrinia/topics/topic/subject.nmp2` | Persistent |
+| `/topic/subject` | Topic | `.scrinia/topics/topic/subject.nmp2` | Persistent |
 | `~subject` | Ephemeral | In-memory only | Dies with process |
 
-**Topics** group related memories (e.g., `api:auth`, `api:endpoints`, `arch:decisions`). Use them to organize knowledge by domain.
+**Topics** group related memories (e.g., `/api/auth`, `/api/endpoints`, `/arch/decisions`). Use them to organize knowledge by domain.
 
 **Ephemeral** memories are scratch space that disappears when the process exits. Useful for temporary context within a session.
 
@@ -191,7 +191,6 @@ The following ship with scrinia and load via `memory('recall', { path: '/skill/{
 | `debugger` | Scientific method debugging: observe, hypothesize, isolate, verify, store |
 | `chaos-engineer` | Probe operational resilience: failure domains, blast radius, recovery gaps |
 | `onboarder` | Build a codebase mental model for new agents and developers |
-| `sos-handler` | Triage agent SOS signals: spawn specialists, create skills |
 | `evolutionary` | Proactive knowledge and skill improvement, stale memory scanning |
 | `merge-safety` | Multi-user merge conflict prevention and resolution guidance |
 | `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |

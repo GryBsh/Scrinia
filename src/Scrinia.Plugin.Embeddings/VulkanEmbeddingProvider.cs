@@ -78,7 +78,7 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
 
         try
         {
-            var embeddings = await _embedder.GetEmbeddings(text);
+            var embeddings = await _embedder.GetEmbeddings(text, ct);
             var vec = embeddings.Single().ToArray();
             VectorMath.L2Normalize(vec);
             return vec;

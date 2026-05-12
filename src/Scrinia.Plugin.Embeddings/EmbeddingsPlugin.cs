@@ -24,7 +24,7 @@ namespace Scrinia.Plugin.Embeddings;
 /// provides optional Vulkan GPU acceleration when installed.
 /// </summary>
 public sealed class EmbeddingsPlugin : ScriniaPluginBase,
-    IMemoryOperationHook, ISearchScoreContributor, IMemoryEventSink
+    IMemoryOperationHook, ISearchScoreContributor, IMemoryEventSink, IDisposable
 {
     public override string Name => "Embeddings";
     public override string Version => "2.0.0";
@@ -33,6 +33,15 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     private VectorStore? _vectorStore;
     private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
+    private bool _disposed;
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        (_provider as IDisposable)?.Dispose();
+        (_vectorStore as IDisposable)?.Dispose();
+    }
 
     // -- IScriniaPlugin (server path) --
 

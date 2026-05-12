@@ -7,3 +7,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Scrinia.Server.Tests")]
 [assembly: InternalsVisibleTo("Scrinia.Plugin.Embeddings")]
 [assembly: InternalsVisibleTo("Scrinia.Plugin.Embeddings.Tests")]
+[assembly: InternalsVisibleTo("Scrinia.Benchmarks")]

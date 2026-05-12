@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -70,8 +71,11 @@ builder.Services.AddSingleton(vectorStore);
 builder.Services.AddSingleton(provider);
 builder.Services.AddSingleton(options);
 
+string pluginVersion = Assembly.GetExecutingAssembly()
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+    ?.InformationalVersion.Split('+')[0] ?? "unknown";
 builder.Services
-    .AddMcpServer(mcp => mcp.ServerInfo = new() { Name = "scrinia-plugin-embeddings", Version = "0.5.0" })
+    .AddMcpServer(mcp => mcp.ServerInfo = new() { Name = "scrinia-plugin-embeddings", Version = pluginVersion })
     .WithStdioServerTransport()
     .WithTools<EmbeddingsTools>();
 

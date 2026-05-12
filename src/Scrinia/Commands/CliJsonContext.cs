@@ -17,7 +17,14 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliBundleOutput))]
 [JsonSerializable(typeof(CliConfigOutput))]
 [JsonSerializable(typeof(CliErrorOutput))]
+[JsonSerializable(typeof(MergeConfig))]
+[JsonSerializable(typeof(CliMcpOutput))]
 internal partial class CliJsonContext : JsonSerializerContext;
+
+internal sealed record MergeConfig(
+    double JaccardThreshold,
+    string Resolver,
+    string ConflictDir);
 
 internal sealed record CliMemoryEntry(
     string Name,
@@ -57,3 +64,11 @@ internal sealed record CliImportOutput(string Message);
 internal sealed record CliBundleOutput(string Path, int FileCount, string Topic, long BundleBytes, string Message);
 internal sealed record CliConfigOutput(Dictionary<string, string>? Settings, string? Key, string? Value);
 internal sealed record CliErrorOutput(string Error);
+
+/// <summary>
+/// Shared output shape for the MCP-passthrough commands (append, compact, link,
+/// restore, reconcile, guide). The raw YAML response from the MCP handler is
+/// preserved verbatim under <see cref="Yaml"/> so callers can re-parse if needed.
+/// <see cref="Status"/> mirrors the YAML's status field for quick branching.
+/// </summary>
+internal sealed record CliMcpOutput(string Action, string Status, string Yaml);

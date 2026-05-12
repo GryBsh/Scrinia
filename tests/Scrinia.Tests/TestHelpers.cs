@@ -171,6 +171,7 @@ internal sealed class McpResponseAssert
     public string? Path => GetString("path");
     public string? Instruction => GetString("instruction");
     public string? Error => GetString("error");
+    public string? ErrorCode => GetString("errorCode");
     public string? Content => GetString("content");
     public List<string> ActionNeeded => GetList("actionNeeded");
     public List<string> Info => GetList("info");

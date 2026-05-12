@@ -1,0 +1,47 @@
+<Project>
+  <!--
+    Solution-wide version and packaging metadata. Individual projects must NOT
+    redeclare <Version> — bumping here updates the CLI banner, the MCP ServerInfo
+    on both the in-process server and the embeddings plugin, and the published
+    assembly attributes consumed via AssemblyInformationalVersionAttribute.
+  -->
+  <PropertyGroup>
+    <Version>0.5.0</Version>
+    <AssemblyInformationalVersion>$(Version)+$(SourceRevisionId)</AssemblyInformationalVersion>
+    <Copyright>Copyright (c) 2026 Nick Daniels</Copyright>
+  </PropertyGroup>
+
+  <!--
+    Solution-wide static analysis. `Recommended` is the curated set of correctness +
+    code-quality rules from the .NET SDK; `latest` pins the analyzer version to the
+    target framework's defaults (.NET 10 here). Test projects opt out of WarningsAsErrors
+    because xunit/FluentAssertions emit advisory analyzer hints that don't justify
+    blocking the build during test authoring.
+  -->
+  <PropertyGroup>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <!--
+      Categories suppressed solution-wide. Each entry is a deliberate choice — not
+      a backlog. Revisit when the cost/benefit shifts.
+
+      CA1848 (LoggerMessage delegates):    perf hint; we use LoggerMessage selectively
+                                            on hot paths (FileLock), not everywhere.
+      CA1873 (expensive log arg eval):      pairs with CA1848.
+      CA1822 (can be marked static):       no measurable benefit in this codebase.
+      CA1725 (parameter name mismatch):    we match the interface conceptually, not
+                                            char-for-char; renames are churn.
+      CA1051 (visible instance fields):    occasional internal POCOs use fields by design.
+      CA1305 / CA1310 (IFormatProvider /   internal YAML/log/identifier formatting; values
+        StringComparison missing):          are ASCII identifiers and counts where locale
+                                            doesn't affect output. McpResponse.ToYaml does
+                                            pass InvariantCulture explicitly on the public
+                                            output path.
+    -->
+    <NoWarn>$(NoWarn);CA1848;CA1873;CA1822;CA1725;CA1051;CA1305;CA1310</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests')) AND !$(MSBuildProjectName.EndsWith('.Benchmarks'))">
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

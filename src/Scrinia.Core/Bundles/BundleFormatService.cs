@@ -64,7 +64,7 @@ public static class BundleFormatService
             exportedTopics.Add(sanitizedTopic);
 
             // Write index.json for this topic
-            string indexJson = JsonSerializer.Serialize(new BundleIndex(entries), DefaultJsonOptions);
+            string indexJson = JsonSerializer.Serialize(new BundleIndex(entries), BundleJsonContext.Default.BundleIndex);
             var indexEntry = zip.CreateEntry($"topics/{sanitizedTopic}/index.json");
             using (var writer = new StreamWriter(indexEntry.Open()))
                 writer.Write(indexJson);
@@ -92,7 +92,7 @@ public static class BundleFormatService
             exportedTopics,
             totalEntries,
             fileEntities is { Count: > 0 } ? fileEntities : null);
-        string manifestJson = JsonSerializer.Serialize(manifest, DefaultJsonOptions);
+        string manifestJson = JsonSerializer.Serialize(manifest, BundleJsonContext.Default.BundleManifest);
         var manifestEntry = zip.CreateEntry("manifest.json");
         using (var writer = new StreamWriter(manifestEntry.Open()))
             writer.Write(manifestJson);

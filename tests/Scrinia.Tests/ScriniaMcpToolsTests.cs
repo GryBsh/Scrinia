@@ -1689,4 +1689,197 @@ public sealed class ScriniaMcpToolsTests
             because: "memory('recall') must use action 'recalled', not 'shown'");
     }
 
+    // ── withBuiltin parameter (skill recall) — disambiguated from 'reconcile' action ──
+
+    [Fact]
+    public async Task Memory_Recall_Skill_WithBuiltin_ReturnsBothBuiltInAndOverride()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // Create a project override for the qa skill.
+        string overrideBody = "## Project QA override\nUse repo-specific acceptance criteria.";
+        string skillsDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "skills");
+        Directory.CreateDirectory(skillsDir);
+        await File.WriteAllTextAsync(Path.Combine(skillsDir, "qa.md"), overrideBody);
+
+        string result = await Tools().Memory(
+            "recall",
+            path: "/skill/qa",
+            withBuiltin: true);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "withBuiltin recall on an existing skill must succeed");
+        parsed.Content.Should().Contain("Current Built-in",
+            because: "withBuiltin must include the embedded skill alongside the override");
+        parsed.Content.Should().Contain("Your Project Override",
+            because: "withBuiltin must include the project override alongside the built-in");
+        parsed.Content.Should().Contain("Project QA override",
+            because: "withBuiltin must include the actual override body verbatim");
+    }
+
+    [Fact]
+    public async Task Memory_Recall_NonSkill_WithBuiltinFlag_IsIgnored()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["plain content"], "plain-memory");
+
+        // Setting withBuiltin: true on a non-/skill/ path must not change behavior —
+        // the parameter is skill-recall-only and is unrelated to the 'reconcile' action.
+        string result = await Tools().Memory(
+            "recall",
+            path: "plain-memory",
+            withBuiltin: true);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Content.Should().Be("plain content",
+            because: "withBuiltin must be silently ignored for non-skill paths");
+    }
+
+    [Fact]
+    public async Task Memory_Reconcile_ActionIsIndependentOfWithBuiltinFlag()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // The reconcile *action* scans for git merge conflicts; in a fresh store it reports zero.
+        // It must work without (and ignore) the withBuiltin skill-merge flag — they are unrelated.
+        string result = await Tools().Memory("reconcile");
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "memory('reconcile') on a clean store must succeed");
+    }
+
+    // ── Structured error responses: errorCode + actionNeeded recovery hints ──
+
+    [Fact]
+    public async Task Memory_UnknownAction_ReturnsInvalidActionCode()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string result = await Tools().Memory("frobnicate", path: "anything");
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error");
+        parsed.ErrorCode.Should().Be(ErrorCodes.InvalidAction,
+            because: "an unknown action must surface a machine-readable INVALID_ACTION code");
+        parsed.ActionNeeded.Should().NotBeEmpty(
+            because: "every error path must surface at least one recovery hint");
+    }
+
+    [Fact]
+    public async Task Memory_MissingRequiredParameter_ReturnsInvalidParameterCode()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string result = await Tools().Memory("remember");  // no path, no content
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error");
+        parsed.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
+        parsed.ActionNeeded.Should().NotBeEmpty();
+        parsed.ActionNeeded[0].Should().Contain("memory('remember'",
+            because: "the recovery hint should be a concrete tool call template");
+    }
+
+    [Fact]
+    public async Task Memory_NotFound_ReturnsNotFoundCodeWithListAndSearchHints()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string result = await Tools().Show("nonexistent-memory");
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error");
+        parsed.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        parsed.ActionNeeded.Should().NotBeEmpty();
+        parsed.ActionNeeded.Should().Contain(h => h.Contains("memory('list')"),
+            because: "a not-found error should point to memory('list') as one recovery path");
+    }
+
+    [Fact]
+    public async Task Memory_LegacyErrorBuilder_FallsBackToInternalCode()
+    {
+        // The single-arg ResponseBuilder.Error overload is used by callsites that haven't
+        // adopted explicit codes yet. It must default to INTERNAL so consumers can still
+        // branch on errorCode reliably.
+        string yaml = ResponseBuilder.Error("something exploded").ToYaml();
+        var parsed = ResponseParser.Parse(yaml);
+
+        parsed.Status.Should().Be("error");
+        parsed.Error.Should().Be("something exploded");
+        parsed.ErrorCode.Should().Be(ErrorCodes.Internal);
+    }
+
+    // ── Reserved-prefix typo guard ────────────────────────────────────────────
+
+    [Fact]
+    public async Task Memory_Remember_PluralPrefixTypo_AddsInfoHint()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // /patterns/ is the canonical reserved prefix; /pattern/ is the singular typo.
+        // Soft-warn: store still succeeds, but the response carries an info hint.
+        string result = await Tools().Memory(
+            "remember",
+            path: "/pattern/auth-retry",
+            content: ["use exponential backoff with jitter"]);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "the typo guard must NOT block the write — soft-warn only");
+        parsed.Info.Should().Contain(i => i.Contains("'/patterns/'") && i.Contains("reserved prefix"),
+            because: "agents must see a hint suggesting the canonical reserved spelling");
+    }
+
+    [Fact]
+    public async Task Memory_Remember_WrongCasePrefix_AddsInfoHint()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string result = await Tools().Memory(
+            "remember",
+            path: "/Findings/SEC-001",
+            content: ["api key leaked in logs"]);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Info.Should().Contain(i => i.Contains("lower-case") && i.Contains("'/findings/'"),
+            because: "case-mismatch on a reserved prefix should suggest the canonical lower-case form");
+    }
+
+    [Fact]
+    public async Task Memory_Remember_ExactReservedPrefix_NoHint()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string result = await Tools().Memory(
+            "remember",
+            path: "/patterns/retry-backoff",
+            content: ["use exponential backoff"]);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Info.Should().NotContain(i => i.Contains("reserved prefix"),
+            because: "canonical reserved paths must not trigger the typo hint");
+    }
+
+    [Fact]
+    public async Task Memory_Remember_UnrelatedPath_NoHint()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // /api/ is not a reserved prefix and not similar to any — must be silent.
+        string result = await Tools().Memory(
+            "remember",
+            path: "/api/auth-flow",
+            content: ["oauth callback handler"]);
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Info.Should().NotContain(i => i.Contains("reserved prefix"),
+            because: "non-reserved paths must not produce false-positive hints");
+    }
+
 }

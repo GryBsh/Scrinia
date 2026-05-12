@@ -18,7 +18,19 @@ Starts on `http://localhost:5000`. On first run, a bootstrap API key with full p
 dotnet run --project src/Scrinia.AppHost
 ```
 
-Opens the Aspire dashboard with telemetry and orchestration for Scrinium.
+`Scrinia.AppHost` is a thin Aspire orchestrator (`Aspire.AppHost.Sdk` 13.x) that wires up
+`Scrinia.Server` as a managed `scrinium` resource. Running it opens the Aspire dashboard
+where you can:
+
+- See the server's stdout / structured logs alongside HTTP request traces.
+- Inspect distributed-trace spans across Scrinium and any sidecars you add (e.g. a database
+  resource, a worker, a downstream API mock).
+- Restart the server with state preserved in the data directory.
+
+Use this for **local development** when you want richer telemetry than a plain
+`dotnet run` provides, or as a starting point for multi-resource topologies (Scrinium +
+custom workers). For production deployments, the Docker or reverse-proxy paths below are
+the supported routes — Aspire's role here is developer UX, not deployment.
 
 ### Docker
 
@@ -601,6 +613,31 @@ The server includes production-ready security features:
 Each store is a full `.scrinia/` workspace with its own index, artifacts, topics, embeddings, and exports.
 
 **Vector data isolation:** Embedding vectors are stored per-store in `.scrinia/embeddings/` within each store's workspace directory — never shared across stores. The Model2Vec model binary lives at `{exeDir}/models/m2v-MiniLM-L6-v2/` (shared, read-only). Both the built-in Model2Vec and optional Vulkan plugin produce 384-dim vectors in the same MiniLM embedding space, so switching providers does not require reindexing.
+
+### Version Retention
+
+There is **no limit on the number of memories** you can store, and the currently-active body of every memory is preserved indefinitely. The retention discussed here is the size of the **rollback history** kept beside each memory — used for recovery after an accidental overwrite, not for steady-state reads.
+
+Every overwrite / append to a memory `foo` copies the *prior* body to a sibling `versions/` directory as `foo_{YYYYMMDD-HHmmss}.{ext}` before the new body is written. The active file (`foo.nmp2`, `foo.md`) is never touched by the retention logic.
+
+| Memory class | Active file (kept forever) | Rollback history location | History size |
+|---|---|---|---|
+| NMP/2 memory body | `{scope}/{name}.nmp2` | `{scope}/versions/{name}_{ts}.nmp2` | Capped at 10 newest per memory (oldest archives auto-deleted on each overwrite). |
+| Skill markdown (`/skill/*`) | `.scrinia/skills/{name}.md` | `.scrinia/skills/versions/{name}_{ts}.md` | Unbounded — every prior version is retained until you prune manually. |
+| Agent config markdown (`/agent/*`) | `.scrinia/agent/{name}.md` | `.scrinia/agent/versions/{name}_{ts}.md` | Unbounded — every prior version is retained until you prune manually. |
+
+The `versions/` directories are gitignored by default (`.scrinia/.gitignore` includes `**/versions/`) so they don't pollute commits. Bundles produced by `scri export` / `bundle('export')` do not include `versions/`.
+
+**Manual prune** for skill and agent rollback history (NMP/2 history is already self-managing):
+
+```bash
+# Keep the 5 newest skill rollback snapshots per skill name
+for f in $(ls .scrinia/skills/versions/ | sed 's/_[0-9]*-[0-9]*\.md//' | sort -u); do
+    ls -1t .scrinia/skills/versions/${f}_*.md | tail -n +6 | xargs -r rm
+done
+```
+
+The equivalent for `agent/versions/` is the same with the directory swapped. Pruning rollback history is safe — only the currently-active file is read at load time; archived copies exist solely for human recovery.
 
 ## Server Plugins
 

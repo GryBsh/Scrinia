@@ -72,6 +72,7 @@ Defined in `App.tsx` using React Router v7:
   ├── /                             → DashboardPage
   ├── /stores/:store                → MemoryBrowserPage
   ├── /stores/:store/memories/:name → MemoryDetailPage
+  ├── /chat                         → AgentChatPage
   ├── /keys                         → KeyManagementPage
   └── /settings                     → SettingsPage
 ```
@@ -165,6 +166,9 @@ Lists memories in a table with scope filter tabs. Supports real-time search via 
 
 ### MemoryDetailPage
 Displays full memory content with metadata (chunks, size, tokens). Multi-chunk memories use `ChunkViewer` with tab navigation — chunks are lazy-loaded. Includes delete with confirmation.
+
+### AgentChatPage
+Interactive chat with the cloud LLM providers configured under `Scrinia:Chat` (Anthropic, OpenAI, Gemini — whichever have API keys set). The page auto-selects the first available store from the health check, then queries `/api/v1/stores/{store}/chat/providers` to populate the provider dropdown. Messages stream from `POST /api/v1/stores/{store}/chat/` and the page surfaces in-flight `memory('search')` and `memory('recall')` tool calls inline so the user can see what the agent is consulting. Requires the `chat` permission on the API key. Hidden gracefully if no providers are configured.
 
 ### KeyManagementPage
 Create keys with userId, stores, permissions, and label. Lists existing keys with status. Copy-to-clipboard for new keys. Revoke with confirmation.

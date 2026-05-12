@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Plugin.Abstractions;
 using Scrinia.Server.Auth;
@@ -62,21 +63,36 @@ public static class MemoryEndpoints
         }
     }
 
+    private const int DefaultListLimit = 200;
+    private const int MaxListLimit = 1000;
+
     private static Task<IResult> ListMemories(
         string store,
         RequestContext ctx,
-        string? scopes = null)
+        string? scopes = null,
+        int offset = 0,
+        int limit = DefaultListLimit)
     {
         if (!ctx.HasPermission("search"))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403));
 
+        if (offset < 0) offset = 0;
+        if (limit <= 0) limit = DefaultListLimit;
+        if (limit > MaxListLimit) limit = MaxListLimit;
+
+        // ListScoped materialises a full enumeration; capture the count once, then page from it.
         var items = ctx.Store!.ListScoped(scopes);
-        var mapped = items.Select(item =>
+        var sourceList = items as List<ScopedArtifact> ?? items.ToList();
+        int total = sourceList.Count;
+
+        var paged = new List<MemoryListItem>(Math.Min(limit, Math.Max(0, total - offset)));
+        for (int i = offset; i < total && paged.Count < limit; i++)
         {
+            var item = sourceList[i];
             string qualifiedName = item.Scope == "ephemeral"
                 ? $"~{item.Entry.Name}"
                 : ctx.Store!.FormatQualifiedName(item.Scope, item.Entry.Name);
-            return new MemoryListItem(
+            paged.Add(new MemoryListItem(
                 item.Entry.Name,
                 qualifiedName,
                 MemoryNaming.FormatScopeLabel(item.Scope),
@@ -85,10 +101,10 @@ public static class MemoryEndpoints
                 item.Entry.CreatedAt,
                 item.Entry.UpdatedAt,
                 item.Entry.Description,
-                item.Entry.Tags);
-        }).ToArray();
+                item.Entry.Tags));
+        }
 
-        return Task.FromResult<IResult>(Results.Ok(new ListResponse(mapped, mapped.Length)));
+        return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));
     }
 
     private static async Task<IResult> ShowMemory(

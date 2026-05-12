@@ -15,7 +15,7 @@ namespace Scrinia.Core.Embeddings;
 /// Search: O(efSearch * log N)
 /// Remove: lazy deletion (mark + skip during search)
 /// </summary>
-public sealed class HnswIndex
+public sealed class HnswIndex : IDisposable
 {
     private const int M = 16;
     private const int M0 = M * 2; // max connections at layer 0 (doubled per paper)
@@ -27,7 +27,11 @@ public sealed class HnswIndex
     private int _entryPoint = -1;
     private int _maxLevel;
     private readonly Random _rng = new(42);
-    private readonly object _lock = new();
+
+    // Read-heavy workload: searches dominate inserts. RWLockSlim lets concurrent searches
+    // run in parallel while still serializing graph mutations.
+    private readonly ReaderWriterLockSlim _lock = new(LockRecursionPolicy.NoRecursion);
+    private bool _disposed;
 
     private sealed class HnswNode
     {
@@ -50,13 +54,19 @@ public sealed class HnswIndex
 
     public int Count
     {
-        get { lock (_lock) return _nodes.Count(n => !n.Deleted); }
+        get
+        {
+            _lock.EnterReadLock();
+            try { return _nodes.Count(n => !n.Deleted); }
+            finally { _lock.ExitReadLock(); }
+        }
     }
 
     /// <summary>Inserts a vector into the HNSW graph.</summary>
     public void Insert(string key, float[] vector)
     {
-        lock (_lock)
+        _lock.EnterWriteLock();
+        try
         {
             // Check for existing key -> update
             if (_nameToId.TryGetValue(key, out int existingId))
@@ -120,6 +130,7 @@ public sealed class HnswIndex
                 _entryPoint = nodeId;
             }
         }
+        finally { _lock.ExitWriteLock(); }
     }
 
     /// <summary>Approximate nearest neighbor search. Returns up to topK results.</summary>
@@ -127,7 +138,8 @@ public sealed class HnswIndex
     {
         if (efSearch <= 0) efSearch = Math.Max(topK, 50);
 
-        lock (_lock)
+        _lock.EnterReadLock();
+        try
         {
             if (_entryPoint < 0) return [];
 
@@ -154,12 +166,14 @@ public sealed class HnswIndex
             results.Sort((a, b) => b.Similarity.CompareTo(a.Similarity));
             return results.Take(topK).ToList();
         }
+        finally { _lock.ExitReadLock(); }
     }
 
     /// <summary>Marks a key as deleted (lazy deletion).</summary>
     public void Remove(string key)
     {
-        lock (_lock)
+        _lock.EnterWriteLock();
+        try
         {
             if (_nameToId.TryGetValue(key, out int id))
             {
@@ -167,12 +181,14 @@ public sealed class HnswIndex
                 _nameToId.Remove(key);
             }
         }
+        finally { _lock.ExitWriteLock(); }
     }
 
     /// <summary>Serializes the HNSW graph to a binary stream.</summary>
     public void Save(Stream stream)
     {
-        lock (_lock)
+        _lock.EnterReadLock();
+        try
         {
             using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
             writer.Write("HNSW"u8);
@@ -200,6 +216,14 @@ public sealed class HnswIndex
                 }
             }
         }
+        finally { _lock.ExitReadLock(); }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _lock.Dispose();
     }
 
     /// <summary>Deserializes an HNSW graph from a binary stream.</summary>

@@ -32,4 +32,4 @@ public sealed record MergeConfig(
 }
 
 [JsonSerializable(typeof(MergeConfig))]
-internal partial class MergeConfigJsonContext : JsonSerializerContext { }
+internal sealed partial class MergeConfigJsonContext : JsonSerializerContext { }

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 
@@ -97,6 +98,54 @@ public class FileLockTests : IDisposable
         using var lk = FileLock.AcquireExclusive(nested, TimeSpan.FromMilliseconds(500));
         lk.Should().NotBeNull();
         File.Exists(nested).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Contention_LogsWarningAndTimeoutErrors()
+    {
+        var sink = new CapturingLogger();
+
+        using var holder = FileLock.AcquireExclusive(LockPath);
+
+        var act = () => FileLock.AcquireExclusive(LockPath, TimeSpan.FromMilliseconds(150), sink);
+
+        act.Should().Throw<FileLockTimeoutException>();
+
+        sink.Entries.Should().Contain(e => e.Level == LogLevel.Warning && e.Message.Contains("contention"),
+            because: "first retry must emit a warning so contention is visible in logs");
+        sink.Entries.Should().Contain(e => e.Level == LogLevel.Error && e.Message.Contains("timed out"),
+            because: "final timeout must emit an error with elapsed time");
+    }
+
+    [Fact]
+    public void NoContention_EmitsNoLogs()
+    {
+        var sink = new CapturingLogger();
+
+        using var lk = FileLock.AcquireExclusive(LockPath, TimeSpan.FromSeconds(1), sink);
+
+        sink.Entries.Should().BeEmpty(
+            because: "an uncontended acquire must not emit any log records");
+    }
+
+    /// <summary>Minimal in-memory ILogger that captures level + formatted message.</summary>
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add((logLevel, formatter(state, exception)));
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose() { }
+        }
     }
 
     [Fact]

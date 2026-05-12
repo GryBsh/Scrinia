@@ -9,6 +9,7 @@ namespace Scrinia.Tests;
 /// (the real production path) and report before/after sizes, compression ratio,
 /// and bits per token.
 /// </summary>
+[Collection(Nmp2DecodeCapCollection.Name)]
 public sealed class Nmp2BenchmarkTests(ITestOutputHelper output)
 {
     private static readonly Nmp2Strategy Strategy = new();

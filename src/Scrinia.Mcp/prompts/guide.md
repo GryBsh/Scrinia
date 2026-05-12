@@ -13,6 +13,28 @@ memory('forget', { path: "..." })        — delete it
 memory('restore')                        — resume after context loss
 ```
 
+## Action × parameter reference
+
+`memory()` dispatches to ten actions. Canonical names below — `store`/`show` are accepted as aliases for `remember`/`recall` for back-compat, but prefer the canonical form.
+
+| Action | Required | Optional |
+|---|---|---|
+| `remember` (alias: `store`) | `path`, `content[]` | `description`, `tags[]`, `keywords[]`, `codeRefs[]`, `reviewAfter`, `reviewWhen` |
+| `recall` (alias: `show`) | `path` | `chunk`, `withBuiltin` (only for `/skill/` paths) |
+| `append` | `path`, `appendContent` | — |
+| `forget` | `path` | — |
+| `search` | `query` | `scopes`, `limit`, `excludeTopics` |
+| `list` | — | `scopes`, `mode` (`summary`/`full`/`drift`), `offset`, `limit`, `excludeTopics` |
+| `compact` | `path` | `keepRecent` |
+| `link` | `path`, `destination` | `reason` |
+| `restore` | — | — |
+| `reconcile` | — | `conflictId`, `choice` (`ours`/`theirs`/`merged`), `mergedContent` |
+
+Two shape gotchas worth remembering:
+- `remember` uses `content: string[]` — each element is a chunk.
+- `append` uses `appendContent: string` — a single new chunk.
+- The shapes are intentionally different; passing the wrong key returns a clear error.
+
 ## Search before non-trivial work
 
 For new tasks, joining a project, or questions about prior decisions, `memory('search')` first. It prevents redundant investigation and keeps your work consistent with what's already been decided.
@@ -83,7 +105,7 @@ Built-in skills that ship with scrinia:
 - `evolutionary` — prune stale memories, surface drift, keep skills aligned with practice
 - `self-reflector` — compare plan vs reality after a unit of work, persist lessons
 
-Skills are persisted as `.scrinia/skills/{name}.md`. Built-ins are reused from the binary unless you override them. To merge a project override against an updated built-in: `memory('recall', { path: '/skill/{name}', reconcile: true })`.
+Skills are persisted as `.scrinia/skills/{name}.md`. Built-ins are reused from the binary unless you override them. To merge a project override against an updated built-in: `memory('recall', { path: '/skill/{name}', withBuiltin: true })`. (`withBuiltin` is the skill-merge flag; it is unrelated to the `reconcile` action which handles git merge conflicts.)
 
 ## Reading responses
 

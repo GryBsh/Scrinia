@@ -340,4 +340,154 @@ public sealed class Nmp2StrategyTests
         decoded.Should().BeEmpty();
     }
 
+    // ── MaxDecodedBytes / decode-size DoS guard ──────────────────────────────
+    //
+    // These tests use the internal *Bounded helpers + per-call maxBytes overload so
+    // they are parallel-safe (no global static mutation). Coverage of the public
+    // Strategy.Decode static-cap path lives in Nmp2DecodeCapTests (serial collection).
+
+    [Fact]
+    public void BrotliDecompressBounded_OutputExceedsCap_Throws()
+    {
+        byte[] compressed = Nmp2Strategy.BrotliCompress(TestHelpers.Utf8(new string('B', 16 * 1024)));
+
+        FluentActions.Invoking(() => Nmp2Strategy.BrotliDecompressBounded(compressed, maxBytes: 1024))
+            .Should().Throw<InvalidDataException>(
+                because: "BrotliDecompressBounded must refuse to expand past maxBytes")
+            .WithMessage("*MaxDecodedBytes*");
+    }
+
+    [Fact]
+    public void BrotliDecompressBounded_OutputWithinCap_RoundTrips()
+    {
+        string original = new('D', 4096);
+        byte[] compressed = Nmp2Strategy.BrotliCompress(TestHelpers.Utf8(original));
+
+        byte[] decoded = Nmp2Strategy.BrotliDecompressBounded(compressed, maxBytes: 8 * 1024);
+        System.Text.Encoding.UTF8.GetString(decoded).Should().Be(original);
+    }
+
+    [Fact]
+    public void DecodeChunkSection_PerChunkCapExceeded_Throws()
+    {
+        string payload = new('A', 4096);
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks([payload, payload]);
+
+        FluentActions.Invoking(() =>
+                Nmp2Strategy.DecodeChunkSection(artifact, chunkIndex: 1, maxBytes: 1024))
+            .Should().Throw<InvalidDataException>(
+                because: "per-chunk decompression must respect the maxBytes argument")
+            .WithMessage("*MaxDecodedBytes*");
+    }
+
+    [Fact]
+    public void Decode_MultiChunk_DeclaredCountExceedsMaxChunkCount_Throws()
+    {
+        // Forge a header that declares an absurd chunk count. The first line is the only
+        // thing IsMultiChunk / ParseChunkCount inspect; the count check fires before any
+        // chunk content would be required.
+        string forged = $"NMP/2 1B CRC32:00000000 BR+B64 C:{Nmp2Strategy.MaxChunkCount + 1}\nNMP/END";
+
+        FluentActions.Invoking(() => Strategy.Decode(forged))
+            .Should().Throw<InvalidDataException>(
+                because: "an artifact declaring more than MaxChunkCount chunks must be rejected")
+            .WithMessage("*chunks*");
+    }
+
+    [Fact]
+    public void Decode_MultiChunk_WithinCap_StillRoundTrips()
+    {
+        // Regression guard: the cap must not affect legitimate decodes.
+        string payload = new('C', 2048);
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks([payload, payload]);
+
+        byte[] decoded = Strategy.Decode(artifact);
+        System.Text.Encoding.UTF8.GetString(decoded).Should().Be(payload + payload);
+    }
+
+    // ── Encode allocation budget — ArrayPool + Base64Url path ─────────────────
+
+    [Fact]
+    public void Encode_OneKbPayload_StaysUnderAllocationBudget()
+    {
+        // Warm caches so the first-run JIT/static allocations don't pollute the measurement.
+        byte[] warmup = TestHelpers.Utf8(new string('w', 1024));
+        _ = Strategy.Encode(warmup, DefaultOptions);
+
+        byte[] input = TestHelpers.Utf8(new string('x', 1024));
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var result = Strategy.Encode(input, DefaultOptions);
+        long delta = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // Round-trip correctness first.
+        byte[] decoded = Strategy.Decode(result.Artifact);
+        decoded.Should().Equal(input);
+
+        // The pre-refactor encoder was observed allocating ~6 KB of intermediate trash
+        // (compressed array + padded copy + 3 string-Replace results + StringBuilder).
+        // The pooled-buffer + Base64Url path keeps it under ~3 KB.
+        delta.Should().BeLessThan(3_500,
+            because: $"Encode of 1 KB should stay under 3.5 KB of allocations; actual: {delta} bytes");
+    }
+
+}
+
+/// <summary>
+/// End-to-end coverage of <see cref="Nmp2Strategy.MaxDecodedBytes"/> via the public
+/// <c>Decode</c> path. Mutates a process-wide static, so the tests live in a serial
+/// collection shared with any other suite that decodes real payloads.
+/// </summary>
+[Collection(Nmp2DecodeCapCollection.Name)]
+public sealed class Nmp2DecodeCapTests
+{
+    private static readonly Nmp2Strategy Strategy = new();
+    private static readonly EncodingOptions DefaultOptions = new();
+
+    [Fact]
+    public void Decode_MultiChunk_CumulativeSizeExceedsCap_Throws()
+    {
+        string payload = new('A', 4096);
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks([payload, payload, payload, payload]);
+
+        int originalCap = Nmp2Strategy.MaxDecodedBytes;
+        try
+        {
+            Nmp2Strategy.MaxDecodedBytes = 8 * 1024;
+
+            FluentActions.Invoking(() => Strategy.Decode(artifact))
+                .Should().Throw<InvalidDataException>()
+                .WithMessage("*MaxDecodedBytes*");
+        }
+        finally
+        {
+            Nmp2Strategy.MaxDecodedBytes = originalCap;
+        }
+    }
+
+    [Fact]
+    public void Decode_SingleChunk_BrotliOutputExceedsCap_Throws()
+    {
+        var result = Strategy.Encode(TestHelpers.Utf8(new string('B', 16 * 1024)), DefaultOptions);
+
+        int originalCap = Nmp2Strategy.MaxDecodedBytes;
+        try
+        {
+            Nmp2Strategy.MaxDecodedBytes = 1024;
+
+            FluentActions.Invoking(() => Strategy.Decode(result.Artifact))
+                .Should().Throw<InvalidDataException>()
+                .WithMessage("*MaxDecodedBytes*");
+        }
+        finally
+        {
+            Nmp2Strategy.MaxDecodedBytes = originalCap;
+        }
+    }
+}
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class Nmp2DecodeCapCollection
+{
+    public const string Name = "Nmp2DecodeCap";
 }

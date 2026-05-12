@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -24,7 +25,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly ConcurrentDictionary<string, EphemeralEntry> _ephemeralStore = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly JsonSerializerOptions _jsonOptions;
 
     // Scope discovery cache with 2-second TTL
     private string[]? _cachedTopics;
@@ -61,7 +61,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (Stats is not null) return Stats;
 
             var (avgDocLen, docFreqs) = Bm25Scorer.ComputeCorpusStats(
-                Entries.Select(e => (IReadOnlyDictionary<string, int>?)e.TermFrequencies));
+                Entries.Select(e => (IReadOnlyDictionary<string, int>?)e.TermFrequencies),
+                docCountHint: Entries.Count);
 
             Stats = new CorpusStats(avgDocLen, docFreqs, Entries.Count);
             return Stats;
@@ -159,6 +160,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     [JsonSourceGenerationOptions(
         WriteIndented = true,
         PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonSerializable(typeof(IndexFile))]
     [JsonSerializable(typeof(ArtifactEntry))]
@@ -168,14 +170,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
-        _jsonOptions = new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            PropertyNameCaseInsensitive = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-            TypeInfoResolver = FileStoreJsonContext.Default,
-        };
 
         EnsureGitIgnore(_workspaceRoot);
     }
@@ -756,7 +750,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             try
             {
                 string json = File.ReadAllText(metaFile);
-                var entry = JsonSerializer.Deserialize<ArtifactEntry>(json, _jsonOptions);
+                var entry = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
                 if (entry is not null)
                     entries.Add(entry);
             }
@@ -773,14 +767,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try
         {
             string json = File.ReadAllText(indexPath);
-            var idx = System.Text.Json.JsonSerializer.Deserialize<IndexFile>(json,
-                new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true,
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-                    TypeInfoResolver = FileStoreJsonContext.Default,
-                });
+            var idx = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.IndexFile);
             return idx?.Entries ?? [];
         }
         catch
@@ -818,7 +805,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             }).ToArray()
         };
 
-        string json = JsonSerializer.Serialize(sorted, _jsonOptions);
+        string json = JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);
         string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
         File.WriteAllText(tmp, json);
         File.Move(tmp, metaPath, overwrite: true);
@@ -1379,7 +1366,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string versionsDir = Path.Combine(storeDir, "versions");
         Directory.CreateDirectory(versionsDir);
 
-        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
         string archiveName = $"{SanitizeName(subject)}_{timestamp}.nmp2";
         string archivePath = Path.Combine(versionsDir, archiveName);
 

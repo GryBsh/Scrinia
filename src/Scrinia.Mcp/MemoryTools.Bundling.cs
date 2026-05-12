@@ -23,7 +23,10 @@ public sealed partial class ScriniaMcpTools
     {
         var store = CurrentStore;
         if (topics is null || topics.Length == 0)
-            return Task.FromResult(ResponseBuilder.Error("At least one topic name is required.").ToYaml());
+            return Task.FromResult(ResponseBuilder.Error(
+                "At least one topic name is required.",
+                ErrorCodes.InvalidParameter,
+                "bundle('export', { topics: ['api', 'arch'] })").ToYaml());
 
         string exportsDir = Path.Combine(store.GetStoreDirForScope("local"), "..", "exports");
         exportsDir = Path.GetFullPath(exportsDir);
@@ -52,7 +55,10 @@ public sealed partial class ScriniaMcpTools
             if (exportedTopics.Count == 0)
             {
                 try { File.Delete(bundlePath); } catch { }
-                return Task.FromResult(ResponseBuilder.Error("No entries found in the specified topics.").ToYaml());
+                return Task.FromResult(ResponseBuilder.Error(
+                    "No entries found in the specified topics.",
+                    ErrorCodes.NotFound,
+                    "memory('list') to see available topics with entry counts").ToYaml());
             }
         }
 
@@ -82,10 +88,16 @@ public sealed partial class ScriniaMcpTools
 
         // SEC-041: prevent path traversal outside workspace
         if (!resolvedPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(ResponseBuilder.Error("Bundle path must be within the workspace.").ToYaml());
+            return Task.FromResult(ResponseBuilder.Error(
+                "Bundle path must be within the workspace.",
+                ErrorCodes.InvalidPath,
+                "Move the bundle file under the workspace root and retry.").ToYaml());
 
         if (!File.Exists(resolvedPath))
-            return Task.FromResult(ResponseBuilder.Error($"Bundle file not found: {resolvedPath}").ToYaml());
+            return Task.FromResult(ResponseBuilder.Error(
+                $"Bundle file not found: {resolvedPath}",
+                ErrorCodes.NotFound,
+                "Verify the bundle path is correct and the file exists.").ToYaml());
 
         try
         {
@@ -104,7 +116,10 @@ public sealed partial class ScriniaMcpTools
         }
         catch (InvalidOperationException ex)
         {
-            return Task.FromResult(ResponseBuilder.Error(ex.Message).ToYaml());
+            return Task.FromResult(ResponseBuilder.Error(
+                ex.Message,
+                ErrorCodes.Internal,
+                "Verify the bundle file is a valid .scrinia-bundle archive.").ToYaml());
         }
     }
 
