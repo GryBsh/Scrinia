@@ -2,6 +2,19 @@
 
 `scri` is the command-line interface and MCP server for Scrinia. It manages persistent memories and serves as an MCP server exposing two tools (`guide` and `memory`) for AI coding tools.
 
+## Surface overview
+
+The top-level surface is organized by purpose:
+
+| Group | Commands |
+|---|---|
+| Infrastructure | `serve`, `setup`, `config` |
+| Lifecycle | `guide`, `restore`, `reconcile`, `consolidate` |
+| Memory operations | `memory list / search / show / store / forget / append / compact / link` |
+| Bundle files | `bundle export / import / pack` |
+
+`scri migrate` is still callable for one-shot v1→v2 store migration but is hidden from `--help` (see [scri migrate](#scri-migrate)).
+
 ## Commands
 
 ### scri serve
@@ -9,7 +22,7 @@
 Start the MCP server over stdio transport. This is how MCP clients (Claude Code, Cursor, Copilot) connect to Scrinia.
 
 ```bash
-scri serve [--workspace-root <path>]
+scri serve [--workspace-root <path>] [--no-auto-setup]
 scri serve --remote http://localhost:5000 --api-key <key> [--store default]
 ```
 
@@ -19,15 +32,18 @@ scri serve --remote http://localhost:5000 --api-key <key> [--store default]
 | `--remote` | (none) | Connect to a remote Scrinium instead of local storage |
 | `--api-key` | (none) | API key for remote server authentication |
 | `--store` | `default` | Target store on the remote server |
+| `--no-auto-setup` | `false` | Skip the first-run embedding model download |
 
-**Local mode** reads/writes directly to `.scrinia/` on disk. **Remote mode** proxies all MCP tool calls to a Scrinium instance over HTTP.
+**Local mode** reads/writes directly to `.scrinia/` on disk. On first launch, `serve` checks for the built-in embedding model (`m2v-MiniLM-L6-v2`) and downloads it if missing (~50MB, one-time). Download progress goes to stderr to keep the JSON-RPC stdout clean. If the download fails, the server still starts — semantic search degrades to BM25-only until you run `scri setup` manually.
 
-### scri list
+**Remote mode** proxies all MCP tool calls to a Scrinium instance over HTTP — no local embedding model needed.
+
+### scri memory list
 
 List stored memories. Defaults to summary mode (topics, keywords, stats). Use `--summary false` for the full table with chunk counts, sizes, token estimates, and review markers.
 
 ```bash
-scri list [--workspace-root <path>] [--scopes local,api,ephemeral]
+scri memory list [--workspace-root <path>] [--scopes local,api,ephemeral]
     [--summary] [--offset 0] [--limit 50] [--json]
 ```
 
@@ -38,20 +54,20 @@ scri list [--workspace-root <path>] [--scopes local,api,ephemeral]
 | `--limit` | `50` | Maximum entries to return |
 | `--json` | `false` | Output as JSON |
 
-### scri search
+### scri memory search
 
 Search memories using BM25 + weighted-field hybrid scoring. With the embeddings plugin active, semantic vector scores are blended in.
 
 ```bash
-scri search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
+scri memory search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
 ```
 
-### scri store
+### scri memory store
 
 Compress and persist text as a named memory. Reads from a file path or stdin (`-`).
 
 ```bash
-scri store <name> [file] [--workspace-root <path>]
+scri memory store <name> [file] [--workspace-root <path>]
     [-d description] [-t tag1,tag2] [-k keyword1,keyword2]
     [--review-after 2026-06-01] [--review-when "when auth changes"]
 ```
@@ -59,25 +75,25 @@ scri store <name> [file] [--workspace-root <path>]
 **Examples:**
 
 ```bash
-scri store session-notes ./notes.md
-scri store api:auth ./auth.md -k oauth,jwt --review-when "when auth system changes"
-cat notes.md | scri store session-notes -
+scri memory store session-notes ./notes.md
+scri memory store api:auth ./auth.md -k oauth,jwt --review-when "when auth system changes"
+cat notes.md | scri memory store session-notes -
 ```
 
-### scri show
+### scri memory show
 
 Decode and display a memory's full content. Optionally write to a file.
 
 ```bash
-scri show <name> [--workspace-root <path>] [-o output.md]
+scri memory show <name> [--workspace-root <path>] [-o output.md]
 ```
 
-### scri forget
+### scri memory forget
 
 Delete a stored memory and remove its index entry.
 
 ```bash
-scri forget <name> [--workspace-root <path>]
+scri memory forget <name> [--workspace-root <path>]
 ```
 
 ### scri guide
@@ -92,41 +108,41 @@ scri guide [--json]
 Default output is the raw Markdown. `--json` wraps the response in the standard
 MCP envelope (`{ action, status, yaml }`) for tooling consumption.
 
-### scri append
+### scri memory append
 
 Append a new chunk to an existing memory. The previous version is archived to
 `{scope}/versions/{name}_{timestamp}.nmp2` so the append is undoable.
 
 ```bash
-scri append <name> [<file>] [--workspace-root <path>] [--json]
+scri memory append <name> [<file>] [--workspace-root <path>] [--json]
 ```
 
 ```bash
 # From a file
-scri append session-notes ./more.md
+scri memory append session-notes ./more.md
 
 # From stdin
-echo "another paragraph" | scri append session-notes
+echo "another paragraph" | scri memory append session-notes
 ```
 
 If the target memory doesn't exist, `append` falls back to creating it as a
-single-chunk memory (equivalent to `store`).
+single-chunk memory (equivalent to `memory store`).
 
-### scri compact
+### scri memory compact
 
 Merge the chunks of a multi-chunk memory back into a single chunk (or keep the N
 newest). The pre-compact version is archived first.
 
 ```bash
-scri compact <name> [--keep-recent N] [--workspace-root <path>] [--json]
+scri memory compact <name> [--keep-recent N] [--workspace-root <path>] [--json]
 ```
 
 - Default (`--keep-recent 0`): all chunks are concatenated into one.
 - `--keep-recent N` (N ≥ 1): keep only the N most recent chunks; older ones are dropped.
 
 ```bash
-scri compact session-notes               # merge all chunks
-scri compact session-notes --keep-recent 5  # keep last 5
+scri memory compact session-notes               # merge all chunks
+scri memory compact session-notes --keep-recent 5  # keep last 5
 ```
 
 ### scri consolidate
@@ -172,19 +188,19 @@ Wire it to a Claude Code Stop hook (opt-in) by adding to your
 ```
 
 Stale entries (past their `reviewAfter` date) are reported but NOT deleted —
-review them with `scri list` and decide manually.
+review them with `scri memory list` and decide manually.
 
-### scri link
+### scri memory link
 
 Create a bidirectional reference between two memories. Both sides get a
 `ref:{other}` keyword so searches and graph traversals discover the connection.
 
 ```bash
-scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]
+scri memory link <from> <to> [-r reason] [--workspace-root <path>] [--json]
 ```
 
 ```bash
-scri link api:auth-flow patterns:retry -r "auth retries use the documented pattern"
+scri memory link api:auth-flow patterns:retry -r "auth retries use the documented pattern"
 ```
 
 ### scri restore
@@ -220,36 +236,36 @@ scri reconcile --conflict-id local/skills/qa.nmp2 --choice theirs
 cat resolved.md | scri reconcile --conflict-id local/notes/api.nmp2 --choice merged --merged-content -
 ```
 
-### scri export
+### scri bundle export
 
 Export one or more topics to a portable `.scrinia-bundle` file (ZIP format).
 
 ```bash
-scri export <topics> [--workspace-root <path>] [-o filename]
+scri bundle export <topics> [--workspace-root <path>] [-o filename]
 ```
 
 ```bash
-scri export api,arch -o project-knowledge
+scri bundle export api,arch -o project-knowledge
 ```
 
-### scri import
+### scri bundle import
 
 Import topics from a `.scrinia-bundle` file.
 
 ```bash
-scri import <path> [--workspace-root <path>] [--topics api,arch] [--overwrite]
+scri bundle import <path> [--workspace-root <path>] [--topics api,arch] [--overwrite]
 ```
 
-### scri bundle
+### scri bundle pack
 
-Bundle raw files from disk into a `.scrinia-bundle` without storing them as memories first. Useful for sharing documentation or code knowledge.
+Pack raw files from disk into a `.scrinia-bundle` without storing them as memories first. Useful for sharing documentation or code knowledge.
 
 ```bash
-scri bundle <topic> <files> [--workspace-root <path>] [-o filename] [-d description] [-t tags]
+scri bundle pack <topic> <files> [--workspace-root <path>] [-o filename] [-d description] [-t tags]
 ```
 
 ```bash
-scri bundle docs "src/**/*.md" -d "Source documentation" -t docs,reference
+scri bundle pack docs "src/**/*.md" -d "Source documentation" -t docs,reference
 ```
 
 ### scri setup
@@ -261,6 +277,8 @@ scri setup [--workspace-root <path>]
 ```
 
 Downloads `model.safetensors` (~22MB) and `vocab.txt` from HuggingFace to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Shows progress bars. Skips files that already exist.
+
+Most users won't need to run this directly — `scri serve` auto-downloads the model on first launch (use `--no-auto-setup` on serve to opt out). Run `setup` explicitly when configuring multi-user collaboration (`--multi-user`) or when you want to control when the network call happens.
 
 No plugin installation required -- Model2Vec is built into Scrinia Core.
 
@@ -284,7 +302,7 @@ scri config Scrinia:Embeddings:OllamaModel nomic-embed-text
 ### scri migrate
 
 One-shot utility to migrate a `.scrinia/` store from the v1 (`topic:name`) layout to the v2 (path-based) layout.
-Use this only when upgrading a workspace created by an older Scrinia release; new workspaces are already v2.
+Use this only when upgrading a workspace created by an older Scrinia release; new workspaces are already v2. Hidden from `scri --help` because it's one-time-use, but the command is still callable.
 
 ```bash
 scri migrate [--workspace <path>] [--dry-run] [--backup=true|false] [--cleanup]
@@ -302,7 +320,7 @@ Recommended workflow:
 ```bash
 scri migrate --dry-run            # preview what would be moved
 scri migrate                      # run the migration (backup created automatically)
-# verify your memories are accessible via scri list / scri show
+# verify your memories are accessible via scri memory list / scri memory show
 scri migrate --cleanup            # remove the v1 originals
 ```
 
@@ -314,9 +332,9 @@ the pre-migration state.
 All CLI commands support a `--json` flag for machine-readable JSON output. This uses a source-generated `CliJsonContext` for trimming safety.
 
 ```bash
-scri list --json
-scri search "auth" --json
-scri show api:auth-flow --json
+scri memory list --json
+scri memory search "auth" --json
+scri memory show api:auth-flow --json
 ```
 
 ## Workspace
@@ -567,20 +585,20 @@ Bundles (`.scrinia-bundle` files) are ZIP archives containing memories and their
 **Export topics:**
 
 ```bash
-scri export api,arch -o project-knowledge
+scri bundle export api,arch -o project-knowledge
 # Creates .scrinia/exports/project-knowledge.scrinia-bundle
 ```
 
-**Bundle raw files:**
+**Pack raw files:**
 
 ```bash
-scri bundle docs "src/**/*.md" -d "Source documentation"
+scri bundle pack docs "src/**/*.md" -d "Source documentation"
 ```
 
 **Import:**
 
 ```bash
-scri import ./project-knowledge.scrinia-bundle --topics api
+scri bundle import ./project-knowledge.scrinia-bundle --topics api
 ```
 
 ## Custom Plugin Executable

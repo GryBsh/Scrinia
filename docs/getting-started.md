@@ -4,9 +4,9 @@ Scrinia gives LLMs persistent, portable memory. It compresses text into compact 
 
 ## How It Works
 
-1. An LLM (or you) stores text as a named memory: `scri store session-notes ./notes.md`
+1. An LLM (or you) stores text as a named memory: `scri memory store session-notes ./notes.md`
 2. Scrinia compresses it with Brotli, indexes it for BM25 + weighted-field search, and (optionally) embeds it for semantic vector search.
-3. Later, the LLM searches for relevant context: `scri search "authentication flow"`
+3. Later, the LLM searches for relevant context: `scri memory search "authentication flow"`
 4. Scrinia returns ranked results from across all stored memories.
 
 Memories persist in a `.scrinia/` directory alongside your project (like `.git/`), travel with the code, and work across sessions.
@@ -39,13 +39,13 @@ dotnet build
 
 Produces a single-file `scri.exe` (~50 MB). Available platforms: `win-x64`, `linux-x64`, `osx-arm64`.
 
-Then download the Model2Vec embedding model (~22MB) for semantic search:
+The embedding model (`m2v-MiniLM-L6-v2`, ~22MB) downloads automatically on first `scri serve` — semantic search is built in, no plugins needed. To pre-download (e.g., before going offline or in CI):
 
 ```bash
 scri setup
 ```
 
-Semantic search is built-in -- no plugins needed. For optional Vulkan GPU acceleration:
+For optional Vulkan GPU acceleration:
 
 ```powershell
 .\publish.ps1 -OutputDir ./dist -Platform win-x64 -WithVulkan
@@ -67,23 +67,23 @@ Scrinia stores data in `.scrinia/` at your project root. It's created automatica
 
 ```bash
 cd /path/to/your/project
-scri list    # creates .scrinia/ if needed
+scri memory list    # creates .scrinia/ if needed
 ```
 
 ### 2. Store a Memory
 
 ```bash
 # From a file
-scri store api:auth-flow ./docs/auth.md -d "OAuth2 authentication flow"
+scri memory store api:auth-flow ./docs/auth.md -d "OAuth2 authentication flow"
 
 # From stdin
-echo "Always use snake_case for API endpoints" | scri store conventions -
+echo "Always use snake_case for API endpoints" | scri memory store conventions -
 ```
 
 ### 3. Search
 
 ```bash
-scri search "authentication"
+scri memory search "authentication"
 ```
 
 ### 4. Connect an MCP Client

@@ -10,7 +10,23 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking — CLI surface)
+- Memory CRUD commands are now grouped under `scri memory <action>` — `scri list`,
+  `scri search`, `scri store`, `scri show`, `scri forget`, `scri append`,
+  `scri compact`, `scri link` become `scri memory list`, `scri memory search`,
+  etc. The top-level `--help` is correspondingly shorter and easier to scan.
+- Bundle file operations are grouped under `scri bundle <action>` — `scri export`
+  and `scri import` become `scri bundle export` / `scri bundle import`; the old
+  top-level `scri bundle` (pack-raw-files) is now `scri bundle pack`.
+- `scri migrate` is hidden from top-level `--help` (still callable for one-shot
+  v1→v2 store migration).
+
 ### Added
+- `scri serve` auto-downloads the built-in embedding model on first run if it's
+  missing — most users no longer need to run `scri setup` separately. Download
+  progress goes to stderr to keep MCP stdio clean; if download fails, the server
+  still starts with semantic search degraded to BM25-only. Opt out with
+  `scri serve --no-auto-setup`.
 - Six new CLI commands wrap the previously MCP-only handlers: `scri guide`,
   `scri append`, `scri compact`, `scri link`, `scri restore`, `scri reconcile`.
   Each wires directly to the same `ScriniaMcpTools` method the MCP server uses,

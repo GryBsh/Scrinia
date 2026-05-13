@@ -14,4 +14,6 @@ if (args.Length == 0 || args.Any(a => a is "--help" or "-h"))
 
 var app = ConsoleApp.Create();
 app.Add<ScriniaCommands>();
+app.Add<MemoryCommands>("memory");
+app.Add<BundleCommands>("bundle");
 await app.RunAsync(args);

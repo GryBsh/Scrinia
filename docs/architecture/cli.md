@@ -28,10 +28,12 @@ The CLI uses ConsoleAppFramework v5, a source-generated CLI framework with zero 
 // Program.cs
 var app = ConsoleApp.Create();
 app.Add<ScriniaCommands>();
+app.Add<MemoryCommands>("memory");
+app.Add<BundleCommands>("bundle");
 app.Run(args);
 ```
 
-`app.Add<T>()` (no arguments) registers all public methods on `ScriniaCommands` as root subcommands. Method names become command names (e.g., `Store` becomes `scri store`).
+`app.Add<T>()` registers each public method on the type as a command. `app.Add<T>("prefix")` nests them under that prefix — `MemoryCommands.List` becomes `scri memory list`, `BundleCommands.Export` becomes `scri bundle export`. Methods on `ScriniaCommands` that should NOT be top-level commands (the memory CRUD operations, the bundle file operations) are kept `internal` so the source generator skips them while the forwarder classes in `MemoryCommands` / `BundleCommands` call into them across the assembly.
 
 ### Pitfalls
 

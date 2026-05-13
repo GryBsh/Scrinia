@@ -35,11 +35,13 @@ public class ScriniaCommands
     /// <param name="remote">Scrinia.Server URL for remote mode (e.g. http://localhost:5000).</param>
     /// <param name="apiKey">API key for remote server authentication.</param>
     /// <param name="store">Target store name on the remote server (default: "default").</param>
+    /// <param name="noAutoSetup">Skip the first-run embedding model download. Without the model the server still runs but falls back to BM25-only search.</param>
     public async Task<int> Serve(
         string? workspaceRoot = null,
         string? remote = null,
         string? apiKey = null,
         string? store = null,
+        bool noAutoSetup = false,
         CancellationToken cancellationToken = default)
     {
         if (!string.IsNullOrEmpty(remote))
@@ -54,6 +56,13 @@ public class ScriniaCommands
         {
             // Local mode (default) → FileMemoryStore
             WorkspaceSetup.Configure(workspaceRoot);
+
+            // First-run convenience: if the embedding model isn't on disk yet, fetch it
+            // before the MCP server starts up. Writes status to stderr only — stdout is
+            // the JSON-RPC channel once the host begins. If download fails we degrade to
+            // BM25-only search rather than blocking startup.
+            if (!noAutoSetup)
+                await EnsureEmbeddingModelAsync(cancellationToken);
         }
 
         // Load CLI plugins (embeddings, etc.) — sets SearchContributorContext + MemoryEventSinkContext
@@ -84,7 +93,7 @@ public class ScriniaCommands
     /// <param name="offset">Starting index for paginated output (0-based).</param>
     /// <param name="limit">Maximum entries to show (0 = unlimited).</param>
     /// <param name="json">Output as JSON instead of a table.</param>
-    public Task<int> List(string? workspaceRoot = null, string? scopes = null,
+    internal Task<int> List(string? workspaceRoot = null, string? scopes = null,
         bool summary = false, int offset = 0, int limit = 0, bool json = false)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -268,7 +277,7 @@ public class ScriniaCommands
     /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral).</param>
     /// <param name="limit">Maximum results to return.</param>
     /// <param name="json">Output as JSON instead of a table.</param>
-    public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, bool json = false, CancellationToken cancellationToken = default)
+    internal async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, bool json = false, CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
@@ -363,7 +372,7 @@ public class ScriniaCommands
     /// <param name="reviewAfter">ISO 8601 date after which this memory should be reviewed.</param>
     /// <param name="reviewWhen">Free-text condition for when this memory should be reviewed.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Store(
+    internal async Task<int> Store(
         [Argument] string name,
         [Argument] string? file = null,
         string? workspaceRoot = null,
@@ -430,7 +439,7 @@ public class ScriniaCommands
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="output">-o, Write output to a file instead of stdout.</param>
     /// <param name="json">Output as JSON instead of raw text.</param>
-    public async Task<int> Show(
+    internal async Task<int> Show(
         [Argument] string name,
         string? workspaceRoot = null,
         string? output = null,
@@ -472,7 +481,7 @@ public class ScriniaCommands
     /// <param name="name">Memory name to delete (e.g. 'session-notes', 'api:auth-flow', '~scratch').</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Forget(
+    internal async Task<int> Forget(
         [Argument] string name,
         string? workspaceRoot = null,
         bool json = false,
@@ -552,7 +561,7 @@ public class ScriniaCommands
     /// <param name="file">File path to read content from. Use '-' or omit for stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Append(
+    internal async Task<int> Append(
         [Argument] string name,
         [Argument] string? file = null,
         string? workspaceRoot = null,
@@ -595,7 +604,7 @@ public class ScriniaCommands
     /// <param name="keepRecent">-k, Keep only the N most recent chunks. 0 = merge all into one.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Compact(
+    internal async Task<int> Compact(
         [Argument] string name,
         int keepRecent = 0,
         string? workspaceRoot = null,
@@ -616,7 +625,7 @@ public class ScriniaCommands
     /// <param name="reason">-r, Optional reason for the connection.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Link(
+    internal async Task<int> Link(
         [Argument] string from,
         [Argument] string to,
         string? reason = null,
@@ -687,7 +696,7 @@ public class ScriniaCommands
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="filename">-o, Output filename (saved to .scrinia/exports/).</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Export(
+    internal async Task<int> Export(
         [Argument] string topics,
         string? workspaceRoot = null,
         string? filename = null,
@@ -729,7 +738,7 @@ public class ScriniaCommands
     /// <param name="topics">Comma-separated topic names to import (imports all if omitted).</param>
     /// <param name="overwrite">Replace existing entries if they conflict.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public async Task<int> Import(
+    internal async Task<int> Import(
         [Argument] string path,
         string? workspaceRoot = null,
         string? topics = null,
@@ -769,7 +778,7 @@ public class ScriniaCommands
     /// <param name="description">-d, Description for all entries.</param>
     /// <param name="tags">-t, Comma-separated tags for all entries.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public Task<int> Bundle(
+    internal Task<int> Bundle(
         [Argument] string topic,
         [Argument] string files,
         string? workspaceRoot = null,
@@ -1063,6 +1072,58 @@ public class ScriniaCommands
         }
     }
 
+    /// <summary>
+    /// First-run helper used by <see cref="Serve"/>. If the built-in embedding model is missing,
+    /// quietly downloads it before the MCP host opens its stdio channel. All output goes to stderr
+    /// to keep the JSON-RPC stdout pristine. Any failure is logged but not fatal — the server still
+    /// starts; semantic search degrades to BM25-only via NullEmbeddingProvider.
+    /// </summary>
+    private static async Task EnsureEmbeddingModelAsync(CancellationToken ct)
+    {
+        string exeDir = AppContext.BaseDirectory;
+        string modelDir = Path.Combine(exeDir, "models", "m2v-MiniLM-L6-v2");
+        string safetensors = Path.Combine(modelDir, "model.safetensors");
+        string vocab = Path.Combine(modelDir, "vocab.txt");
+
+        if (File.Exists(safetensors) && File.Exists(vocab))
+            return;
+
+        try { Directory.CreateDirectory(modelDir); }
+        catch (Exception ex)
+        {
+            await Console.Error.WriteLineAsync($"[scrinia] auto-setup: cannot create {modelDir}: {ex.Message} — semantic search disabled");
+            return;
+        }
+
+        await Console.Error.WriteLineAsync("[scrinia] first-run: downloading embedding model (~50MB)…");
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        string baseUrl = Model2VecModelManager.ModelBaseUrl;
+        foreach (string file in new[] { "model.safetensors", "vocab.txt" })
+        {
+            string target = Path.Combine(modelDir, file);
+            if (File.Exists(target)) continue;
+
+            string tmp = target + ".tmp";
+            try
+            {
+                using var resp = await http.GetAsync($"{baseUrl}/{file}", HttpCompletionOption.ResponseHeadersRead, ct);
+                resp.EnsureSuccessStatusCode();
+                await using (var fs = File.Create(tmp))
+                    await resp.Content.CopyToAsync(fs, ct);
+                File.Move(tmp, target, overwrite: true);
+                await Console.Error.WriteLineAsync($"[scrinia] downloaded {file}");
+            }
+            catch (Exception ex)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                await Console.Error.WriteLineAsync($"[scrinia] auto-setup failed ({file}): {ex.Message} — semantic search disabled, run `scri setup` to retry");
+                return;
+            }
+        }
+        await Console.Error.WriteLineAsync("[scrinia] embedding model ready");
+    }
+
     private static async Task DownloadFilesAsync(string baseUrl, string[] files, string targetDir, CancellationToken ct)
     {
         using var http = new HttpClient();
@@ -1233,11 +1294,12 @@ public class ScriniaCommands
         return result;
     }
 
-    /// <summary>Migrate .scrinia/ data from v1 (topic:name) to v2 (path) structure.</summary>
+    /// <summary>Migrate .scrinia/ data from v1 (topic:name) to v2 (path) structure. One-shot — hidden from top-level help.</summary>
     /// <param name="workspace">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="dryRun">Print what would be copied without actually doing it.</param>
     /// <param name="backup">Create a timestamped backup of .scrinia/ before migrating.</param>
     /// <param name="cleanup">Remove v1 originals after verifying migration.</param>
+    [Hidden]
     public Task<int> Migrate(
         string? workspace = null,
         bool dryRun = false,

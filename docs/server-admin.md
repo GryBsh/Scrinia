@@ -626,7 +626,7 @@ Every overwrite / append to a memory `foo` copies the *prior* body to a sibling 
 | Skill markdown (`/skill/*`) | `.scrinia/skills/{name}.md` | `.scrinia/skills/versions/{name}_{ts}.md` | Unbounded — every prior version is retained until you prune manually. |
 | Agent config markdown (`/agent/*`) | `.scrinia/agent/{name}.md` | `.scrinia/agent/versions/{name}_{ts}.md` | Unbounded — every prior version is retained until you prune manually. |
 
-The `versions/` directories are gitignored by default (`.scrinia/.gitignore` includes `**/versions/`) so they don't pollute commits. Bundles produced by `scri export` / `bundle('export')` do not include `versions/`.
+The `versions/` directories are gitignored by default (`.scrinia/.gitignore` includes `**/versions/`) so they don't pollute commits. Bundles produced by `scri bundle export` / `bundle('export')` do not include `versions/`.
 
 **Manual prune** for skill and agent rollback history (NMP/2 history is already self-managing):
 
