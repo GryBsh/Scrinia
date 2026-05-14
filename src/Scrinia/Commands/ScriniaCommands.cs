@@ -920,12 +920,14 @@ public class ScriniaCommands
     /// <param name="resolver">Conflict resolver when --multi-user is set (none, claude, copilot).</param>
     /// <param name="llmDownload">Download the LLM plugin model without prompting (~900MB GGUF).</param>
     /// <param name="noLlmDownload">Skip the LLM plugin model download without prompting.</param>
+    /// <param name="noOllama">Skip Ollama auto-detection even if it is running. Use to force local-only setup.</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
         bool multiUser = false,
         string? resolver = null,
         bool llmDownload = false,
         bool noLlmDownload = false,
+        bool noOllama = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -936,6 +938,21 @@ public class ScriniaCommands
         }
 
         string exeDir = AppContext.BaseDirectory;
+
+        // ── Step 0: Ollama auto-detect (offers to wire embeddings + chat through Ollama
+        //           if it's already running, skipping the local-model downloads below). ──
+        bool ollamaConfigured = !noOllama && await TryConfigureOllamaAsync(cancellationToken);
+        if (ollamaConfigured)
+        {
+            // Reindex any existing vectors against the new Ollama provider signature.
+            await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine(
+                "[green]Setup complete via Ollama.[/] Skipping local-model downloads. " +
+                "Run [cyan]scri config[/] to inspect or adjust settings.");
+            return 0;
+        }
 
         // ── Step 1: Built-in Model2Vec model (always) ──
         AnsiConsole.MarkupLine("[bold]Built-in embeddings (Model2Vec / MiniLM-L6-v2)[/]");
@@ -1071,6 +1088,160 @@ public class ScriniaCommands
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Probes for a running Ollama at the default URL and, if detected, walks the user through
+    /// picking embedding + chat models and pulling them if missing. On success writes
+    /// <c>Scrinia:Embeddings:*</c> + <c>Scrinia:Llm:*</c> config and returns true so the caller
+    /// can skip the local-model download steps.
+    ///
+    /// Returns false (continue with local setup) when Ollama isn't running, the user declines,
+    /// or any required pull fails. All prompts default to safe values so an accidental Enter
+    /// doesn't trigger a multi-GB download.
+    /// </summary>
+    private static async Task<bool> TryConfigureOllamaAsync(CancellationToken ct)
+    {
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[bold]Ollama auto-detect[/]");
+
+        if (!await OllamaSetup.IsRunningAsync(OllamaSetup.DefaultBaseUrl, timeoutSeconds: 2, ct))
+        {
+            AnsiConsole.MarkupLine($"[dim]  No Ollama detected at {OllamaSetup.DefaultBaseUrl} — continuing with local setup.[/]");
+            return false;
+        }
+
+        AnsiConsole.MarkupLine($"[green]  Ollama detected at {OllamaSetup.DefaultBaseUrl}.[/]");
+        if (!AnsiConsole.Confirm("  Use Ollama for Scrinia embeddings + chat?", defaultValue: true))
+            return false;
+
+        var installed = await OllamaSetup.ListInstalledAsync(OllamaSetup.DefaultBaseUrl, ct);
+        var pulledNames = new HashSet<string>(installed.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
+        var pulledEmbedding = installed.Where(m => OllamaSetup.LooksLikeEmbeddingModel(m.Name)).ToList();
+        var pulledChat = installed.Where(m => !OllamaSetup.LooksLikeEmbeddingModel(m.Name)).ToList();
+
+        string root = ScriniaArtifactStore.WorkspaceRootPath;
+
+        // -- Embedding model selection --
+        string? embeddingModel = await PromptForOllamaModelAsync(
+            label: "embedding model",
+            defaultModel: OllamaSetup.DefaultEmbeddingModel,
+            installedRelevant: pulledEmbedding,
+            installedAll: pulledNames,
+            ct: ct);
+        if (embeddingModel is null) return false;
+
+        // -- Chat model selection --
+        string? chatModel = await PromptForOllamaModelAsync(
+            label: "chat model",
+            defaultModel: OllamaSetup.DefaultChatModel,
+            installedRelevant: pulledChat,
+            installedAll: pulledNames,
+            fallbackOnPullFailure: OllamaSetup.FallbackChatModel,
+            ct: ct);
+        if (chatModel is null) return false;
+
+        // -- Write config (Embeddings uses raw host URL, Llm uses /v1 OpenAI-compat suffix) --
+        WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:Provider", "ollama");
+        WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:OllamaBaseUrl", OllamaSetup.DefaultBaseUrl);
+        WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:OllamaModel", embeddingModel);
+        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Provider", "openai");
+        WorkspaceConfig.SetValue(root, "Scrinia:Llm:BaseUrl", $"{OllamaSetup.DefaultBaseUrl}/v1");
+        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Model", chatModel);
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[green]  Config written:[/]");
+        AnsiConsole.MarkupLine($"    [dim]Scrinia:Embeddings:Provider = ollama[/]");
+        AnsiConsole.MarkupLine($"    [dim]Scrinia:Embeddings:OllamaModel = {Markup.Escape(embeddingModel)}[/]");
+        AnsiConsole.MarkupLine($"    [dim]Scrinia:Llm:Provider = openai[/]");
+        AnsiConsole.MarkupLine($"    [dim]Scrinia:Llm:Model = {Markup.Escape(chatModel)}[/]");
+        return true;
+    }
+
+    /// <summary>
+    /// Interactive picker for an Ollama model. Shows pulled candidates as a selection list with
+    /// "Pull {default}" and "Type a name" options. When the chosen name isn't already pulled,
+    /// confirms and runs <see cref="OllamaSetup.PullModelAsync"/>. Returns the final model name
+    /// when ready, or <c>null</c> when the user aborts or all pull attempts fail.
+    /// </summary>
+    private static async Task<string?> PromptForOllamaModelAsync(
+        string label,
+        string defaultModel,
+        List<OllamaSetup.OllamaModelInfo> installedRelevant,
+        HashSet<string> installedAll,
+        CancellationToken ct,
+        string? fallbackOnPullFailure = null)
+    {
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[bold]Select {label}:[/]");
+
+        const string pullDefaultOption = "__pull_default__";
+        const string typeNameOption = "__type__";
+
+        var prompt = new SelectionPrompt<string>()
+            .Title($"  Choose an Ollama {label}")
+            .PageSize(10);
+
+        foreach (var m in installedRelevant)
+            prompt.AddChoice(m.Name);
+        if (!installedAll.Contains(defaultModel))
+            prompt.AddChoice(pullDefaultOption);
+        prompt.AddChoice(typeNameOption);
+
+        prompt.UseConverter(s => s switch
+        {
+            pullDefaultOption => $"Pull {defaultModel}",
+            typeNameOption => "Type a name…",
+            _ => $"{s} (already pulled)",
+        });
+
+        string choice = AnsiConsole.Prompt(prompt);
+        string targetModel;
+        if (choice == pullDefaultOption)
+        {
+            targetModel = defaultModel;
+        }
+        else if (choice == typeNameOption)
+        {
+            targetModel = AnsiConsole.Prompt(
+                new TextPrompt<string>($"  Enter Ollama {label} tag:")
+                    .DefaultValue(defaultModel)
+                    .ValidationErrorMessage("[red]Model name cannot be empty.[/]")
+                    .Validate(s => !string.IsNullOrWhiteSpace(s)));
+        }
+        else
+        {
+            targetModel = choice;
+        }
+
+        // Pull if not already on disk. Default-No so a typo isn't a multi-GB download.
+        if (!installedAll.Contains(targetModel))
+        {
+            bool wantsPull = AnsiConsole.Confirm(
+                $"  [cyan]{Markup.Escape(targetModel)}[/] is not yet pulled. Pull it now?",
+                defaultValue: false);
+            if (!wantsPull) return null;
+
+            bool ok = await OllamaSetup.PullModelAsync(OllamaSetup.DefaultBaseUrl, targetModel, ct);
+            if (!ok)
+            {
+                if (fallbackOnPullFailure is not null
+                    && !string.Equals(fallbackOnPullFailure, targetModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]  Pull failed. Trying fallback [cyan]{Markup.Escape(fallbackOnPullFailure)}[/]…[/]");
+                    if (await OllamaSetup.PullModelAsync(OllamaSetup.DefaultBaseUrl, fallbackOnPullFailure, ct))
+                    {
+                        return fallbackOnPullFailure;
+                    }
+                }
+                AnsiConsole.MarkupLine(
+                    $"[red]  Pull failed. Run [cyan]ollama pull {Markup.Escape(targetModel)}[/] manually, then re-run setup.[/]");
+                return null;
+            }
+        }
+
+        return targetModel;
     }
 
     private static void ConfigureMultiUser(string? resolver)
