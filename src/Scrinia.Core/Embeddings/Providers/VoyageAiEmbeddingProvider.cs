@@ -11,6 +11,7 @@ public sealed class VoyageAiEmbeddingProvider : ResilientEmbeddingProvider
     private readonly string _model;
 
     public override int Dimensions => ObservedDimensions > 0 ? ObservedDimensions : 1024;
+    public override string Signature => $"voyageai:{_model}";
     protected override string ProviderName => "Voyage AI";
 
     public VoyageAiEmbeddingProvider(string? apiKey, string model, string baseUrl, ILogger logger,

@@ -13,6 +13,7 @@ public sealed class OllamaEmbeddingProvider : ResilientEmbeddingProvider
 
     public override bool IsAvailable => ObservedDimensions > 0;
     public override int Dimensions => ObservedDimensions;
+    public override string Signature => $"ollama:{_model}";
     protected override string ProviderName => "Ollama";
 
     public OllamaEmbeddingProvider(string baseUrl, string model, ILogger logger,

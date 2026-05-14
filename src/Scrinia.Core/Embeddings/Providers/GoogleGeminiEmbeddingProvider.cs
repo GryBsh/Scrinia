@@ -10,8 +10,10 @@ public sealed class GoogleGeminiEmbeddingProvider : ResilientEmbeddingProvider
 {
     private readonly string _requestUrl;
     private readonly int _configuredDimensions;
+    private readonly string _model;
 
     public override int Dimensions => ObservedDimensions > 0 ? ObservedDimensions : (_configuredDimensions > 0 ? _configuredDimensions : 3072);
+    public override string Signature => $"google:{_model}";
     protected override string ProviderName => "Google Gemini";
 
     public GoogleGeminiEmbeddingProvider(string? apiKey, string model, string baseUrl, int dimensions, ILogger logger,
@@ -19,6 +21,7 @@ public sealed class GoogleGeminiEmbeddingProvider : ResilientEmbeddingProvider
         : base(CreateHttpClient(apiKey), logger, circuitBreaker, retryOptions)
     {
         _configuredDimensions = dimensions;
+        _model = model;
 
         var url = baseUrl.TrimEnd('/');
         _requestUrl = $"{url}/v1beta/models/{model}:embedContent";

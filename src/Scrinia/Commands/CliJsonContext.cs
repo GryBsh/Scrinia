@@ -16,6 +16,7 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(CliImportOutput))]
 [JsonSerializable(typeof(CliBundleOutput))]
 [JsonSerializable(typeof(CliConfigOutput))]
+[JsonSerializable(typeof(CliReindexOutput))]
 [JsonSerializable(typeof(CliErrorOutput))]
 [JsonSerializable(typeof(MergeConfig))]
 [JsonSerializable(typeof(CliMcpOutput))]
@@ -65,6 +66,7 @@ internal sealed record CliExportOutput(string Path, string Message);
 internal sealed record CliImportOutput(string Message);
 internal sealed record CliBundleOutput(string Path, int FileCount, string Topic, long BundleBytes, string Message);
 internal sealed record CliConfigOutput(Dictionary<string, string>? Settings, string? Key, string? Value);
+internal sealed record CliReindexOutput(int RescuedScopes, string Message);
 internal sealed record CliErrorOutput(string Error);
 
 /// <summary>

@@ -193,6 +193,7 @@ public class HybridRerankerTests : IDisposable
         private readonly float[]? _fixedVector;
         public bool IsAvailable => _fixedVector is not null;
         public int Dimensions => _fixedVector?.Length ?? 0;
+        public string Signature => "fake:test";
 
         public FakeEmbeddingProvider(float[]? fixedVector) => _fixedVector = fixedVector;
 

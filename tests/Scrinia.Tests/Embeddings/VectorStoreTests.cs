@@ -169,4 +169,58 @@ public class VectorStoreTests : IDisposable
         vectors.Should().HaveCount(1);
         vectors[0].Name.Should().Be("keep");
     }
+
+    // ── Signature / migration tests ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Svf3_PersistsSignatureAcrossSessions()
+    {
+        using var sigStore = new VectorStore(_tempDir, expectedSignature: "ollama:nomic-embed-text");
+        await sigStore.UpsertAsync("local", "x", null, [0.1f, 0.2f, 0.3f]);
+
+        using var reopen = new VectorStore(_tempDir, expectedSignature: "ollama:nomic-embed-text");
+        var vectors = reopen.GetVectors("local");
+        vectors.Should().HaveCount(1);
+        reopen.HasStaleQuarantines.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Svf3_MismatchedSignature_QuarantinesAndStartsFresh()
+    {
+        // Write vectors as ollama
+        using (var oldStore = new VectorStore(_tempDir, expectedSignature: "ollama:nomic-embed-text"))
+        {
+            await oldStore.UpsertAsync("local", "x", null, [0.1f, 0.2f, 0.3f]);
+        }
+
+        // Reopen as openai — should quarantine the file
+        using var newStore = new VectorStore(_tempDir, expectedSignature: "openai:text-embedding-3-small");
+        var vectors = newStore.GetVectors("local");
+
+        vectors.Should().BeEmpty("signature mismatch should produce an empty store");
+        newStore.HasStaleQuarantines.Should().BeTrue();
+        newStore.StaleQuarantineScopes.Should().Contain("local");
+
+        // Quarantined file should still exist on disk under a .stale name (recoverable).
+        string localDir = Path.Combine(_tempDir, "local");
+        Directory.GetFiles(localDir, "vectors.bin.stale-*").Should().NotBeEmpty();
+        File.Exists(Path.Combine(localDir, "vectors.bin")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Svf3_NullExpectedSignature_DisablesMismatchCheck()
+    {
+        // Write with one signature
+        using (var oldStore = new VectorStore(_tempDir, expectedSignature: "ollama:nomic-embed-text"))
+        {
+            await oldStore.UpsertAsync("local", "x", null, [0.1f, 0.2f, 0.3f]);
+        }
+
+        // Reopen without an expected signature — test/ad-hoc path. Should read OK,
+        // no quarantine.
+        using var reopen = new VectorStore(_tempDir, expectedSignature: null);
+        var vectors = reopen.GetVectors("local");
+        vectors.Should().HaveCount(1);
+        reopen.HasStaleQuarantines.Should().BeFalse();
+    }
 }

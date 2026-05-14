@@ -16,17 +16,20 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
     private readonly LLamaEmbedder _embedder;
     private readonly LLamaWeights _weights;
     private readonly int _dimensions;
+    private readonly string _signature;
     private readonly ILogger _logger;
     private bool _disposed;
 
     public bool IsAvailable => !_disposed;
     public int Dimensions => _dimensions;
+    public string Signature => _signature;
 
-    private VulkanEmbeddingProvider(LLamaWeights weights, LLamaEmbedder embedder, int dimensions, ILogger logger)
+    private VulkanEmbeddingProvider(LLamaWeights weights, LLamaEmbedder embedder, int dimensions, string signature, ILogger logger)
     {
         _weights = weights;
         _embedder = embedder;
         _dimensions = dimensions;
+        _signature = signature;
         _logger = logger;
     }
 
@@ -50,8 +53,11 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
         var weights = LLamaWeights.LoadFromFile(modelParams);
         var embedder = new LLamaEmbedder(weights, modelParams);
 
+        // Signature includes the filename so swapping GGUFs (e.g. MiniLM→bge-small) triggers
+        // a vector-store reindex via VectorStore's signature-mismatch check.
+        string signature = $"vulkan:{Path.GetFileNameWithoutExtension(modelPath)}";
         logger.LogInformation("Vulkan embedding provider loaded: {ModelPath}, {Dims} dimensions", modelPath, dimensions);
-        return new VulkanEmbeddingProvider(weights, embedder, dimensions, logger);
+        return new VulkanEmbeddingProvider(weights, embedder, dimensions, signature, logger);
     }
 
     public async Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)

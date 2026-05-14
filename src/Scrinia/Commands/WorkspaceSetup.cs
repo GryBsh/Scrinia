@@ -91,6 +91,47 @@ internal static class WorkspaceSetup
         await TryLoadBackgroundLlmAsync(loggerFactory.CreateLogger("Scrinia.Llm"), ct);
     }
 
+    /// <summary>
+    /// Runs <see cref="EmbeddingReindexer.ReindexIfStaleAsync"/> when the on-disk vectors were
+    /// built with a different provider than the active one. Sync with stderr progress so the
+    /// user can see what's happening. Triggered both at startup (here) and after
+    /// <c>scri config Scrinia:Embeddings:*</c> writes (in the Config command).
+    /// </summary>
+    internal static void MaybeReindexAfterModelSwitch(
+        IEmbeddingProvider provider, string embeddingsDir, ILogger logger)
+    {
+        var store = MemoryStoreContext.Current;
+        if (store is null) return;
+
+        try
+        {
+            int lastDone = -1;
+            void OnProgress(int done, int total)
+            {
+                if (done == lastDone) return;
+                lastDone = done;
+                Console.Error.Write($"\r[scrinia] reindexing {done}/{total} memories…");
+                if (done == total) Console.Error.WriteLine();
+            }
+
+            // Sync wait — startup is a one-shot cost the user is already paying for.
+            var result = EmbeddingReindexer.ReindexIfStaleAsync(
+                store, provider, embeddingsDir, logger, OnProgress, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            if (result is not null)
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia:info] Reindex complete: {result.Embedded}/{result.Total} embedded, " +
+                    $"{result.Skipped} skipped, {result.Failed} failed.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Reindex after model change failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     /// <summary>True when <paramref name="provider"/> is one of the network-backed providers
     /// — i.e. anything that talks to a remote/local HTTP endpoint rather than loading a
     /// model in-process. Used to decide whether the Vulkan plugin should be skipped.</summary>
@@ -111,7 +152,7 @@ internal static class WorkspaceSetup
 
             if (provider.IsAvailable)
             {
-                var vectorStore = new VectorStore(embeddingsDir);
+                var vectorStore = new VectorStore(embeddingsDir, provider.Signature);
                 var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
 
@@ -121,6 +162,8 @@ internal static class WorkspaceSetup
                 Console.Error.WriteLine(
                     $"[scrinia:info] HTTP embeddings ready " +
                     $"(provider={options.Provider}, type={provider.GetType().Name}, dims={provider.Dimensions})");
+
+                MaybeReindexAfterModelSwitch(provider, embeddingsDir, logger);
             }
             else
             {
@@ -149,7 +192,7 @@ internal static class WorkspaceSetup
 
             if (provider.IsAvailable)
             {
-                var vectorStore = new VectorStore(embeddingsDir);
+                var vectorStore = new VectorStore(embeddingsDir, provider.Signature);
                 var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
 
@@ -159,6 +202,8 @@ internal static class WorkspaceSetup
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings ready " +
                     $"(provider={provider.GetType().Name}, dims={provider.Dimensions})");
+
+                MaybeReindexAfterModelSwitch(provider, embeddingsDir, logger);
             }
             else
             {

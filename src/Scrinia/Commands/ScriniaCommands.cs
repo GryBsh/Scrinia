@@ -1269,12 +1269,13 @@ public class ScriniaCommands
     /// <param name="unset">Remove the setting.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    public int Config(
+    public async Task<int> Config(
         [Argument] string? key = null,
         [Argument] string? value = null,
         bool unset = false,
         string? workspaceRoot = null,
-        bool json = false)
+        bool json = false,
+        CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         string root = ScriniaArtifactStore.WorkspaceRootPath;
@@ -1342,6 +1343,88 @@ public class ScriniaCommands
             WriteJson(new CliConfigOutput(null, key, value), CliJsonContext.Default.CliConfigOutput);
         else
             AnsiConsole.MarkupLine($"[green]Set '{Markup.Escape(key)}' = '{Markup.Escape(value)}'.[/]");
+
+        // Embedding settings affect vector identity. After a Scrinia:Embeddings:* write we
+        // load the active provider against the new config and run a reindex if the on-disk
+        // vector files were built with a different signature. No-op when the change doesn't
+        // actually alter the active provider signature.
+        if (key.StartsWith("Scrinia:Embeddings:", StringComparison.OrdinalIgnoreCase))
+            await TryReindexAfterConfigChangeAsync(cancellationToken);
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Builds the current embeddings provider and triggers
+    /// <see cref="EmbeddingReindexer.ReindexIfStaleAsync"/>. Used after <c>scri config</c>
+    /// writes that may have changed the embedding signature. Errors are surfaced as warnings
+    /// so a reindex failure doesn't fail the config command itself.
+    /// </summary>
+    private static async Task TryReindexAfterConfigChangeAsync(CancellationToken ct)
+    {
+        try
+        {
+            // Configure must have already run by the caller — workspace root and
+            // MemoryStoreContext.Current are populated.
+            await WorkspaceSetup.LoadPluginsAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Reindex after config change failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Rebuild vector embeddings for every persistent memory in the workspace.
+    /// Use after switching embedding model or recovering from a corrupted vector file.</summary>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Emit result as JSON instead of human-readable progress.</param>
+    public async Task<int> Reindex(
+        string? workspaceRoot = null,
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+
+        // LoadPluginsAsync wires the embedding provider and, via MaybeReindexAfterModelSwitch,
+        // will auto-reindex when the signature changed. For an explicit `scri reindex` we want
+        // to force a full pass even when signatures match (e.g., user thinks vectors are stale
+        // due to data corruption). Do that by deleting all SVF3 files and then calling
+        // LoadPluginsAsync — the next read will see no files and rebuild from scratch.
+        string embeddingsDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia", "embeddings");
+        int forcedCount = 0;
+        if (Directory.Exists(embeddingsDir))
+        {
+            foreach (string scopeDir in Directory.EnumerateDirectories(embeddingsDir))
+            {
+                string vectorsPath = Path.Combine(scopeDir, "vectors.bin");
+                if (File.Exists(vectorsPath))
+                {
+                    try
+                    {
+                        // Move to a timestamped backup rather than hard delete so a botched
+                        // reindex doesn't lose the user's vectors irreversibly.
+                        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+                        File.Move(vectorsPath, $"{vectorsPath}.pre-reindex-{stamp}", overwrite: false);
+                        forcedCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]Could not move {Markup.Escape(vectorsPath)}: {ex.Message}[/]");
+                    }
+                }
+            }
+        }
+
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+        if (json)
+            WriteJson(new CliReindexOutput(forcedCount, "Reindex triggered via LoadPluginsAsync."),
+                CliJsonContext.Default.CliReindexOutput);
+        else
+            AnsiConsole.MarkupLine(
+                $"[green]Reindex complete.[/] Force-rebuilt {forcedCount} scope(s).");
         return 0;
     }
 

@@ -5,6 +5,7 @@ public sealed class NullEmbeddingProvider : IEmbeddingProvider
 {
     public bool IsAvailable => false;
     public int Dimensions => 0;
+    public string Signature => "none";
     public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default) => Task.FromResult<float[]?>(null);
     public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default) => Task.FromResult<float[][]?>(null);
     public void Dispose() { }

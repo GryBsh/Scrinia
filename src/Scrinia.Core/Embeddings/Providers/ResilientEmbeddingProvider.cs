@@ -34,6 +34,9 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
     /// <inheritdoc />
     public abstract int Dimensions { get; }
 
+    /// <inheritdoc />
+    public abstract string Signature { get; }
+
     /// <summary>Display name for this provider, used in log messages.</summary>
     protected abstract string ProviderName { get; }
 

@@ -17,6 +17,7 @@ public sealed class Model2VecProvider : IEmbeddingProvider
 
     public bool IsAvailable => true;
     public int Dimensions => _dims;
+    public string Signature => "model2vec:m2v-MiniLM-L6-v2";
 
     private Model2VecProvider(float[] matrix, int dims, int vocabSize, Func<string, IReadOnlyList<int>> tokenize)
     {
