@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using LLama;
 using LLama.Common;
 using LLama.Sampling;
@@ -17,11 +18,25 @@ namespace Scrinia.Plugin.Llm;
 /// at a time) so the internal <see cref="StatelessExecutor"/> needs no extra synchronization.
 /// Tier 2 consolidation is sequential by design — there is no parallel inference path.</para>
 /// </summary>
-public sealed class VulkanLlmProvider : ILocalLlm, IDisposable
+public sealed partial class VulkanLlmProvider : ILocalLlm, IDisposable
 {
+    // Thinking-model overhead: LFM2.5-Thinking, DeepSeek-R1, Qwen-QwQ et al. emit a chain-of-
+    // thought block before the final answer. The caller's MaxTokens budget is for the *answer*,
+    // so we silently expand the executor's budget when a thinking model is loaded; otherwise the
+    // entire output is reasoning and the answer never appears.
+    private const int ThinkingMaxTokensMultiplier = 8;
+    private const int ThinkingMaxTokensCap = 2048;
+
+    [GeneratedRegex(@"<think>.*?</think>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
+    private static partial Regex ThinkBlockPattern();
+
+    [GeneratedRegex(@"<\|reasoning\|>.*?<\|/reasoning\|>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
+    private static partial Regex ReasoningBlockPattern();
+
     private readonly LLamaWeights _weights;
     private readonly StatelessExecutor _executor;
     private readonly ILogger _logger;
+    private readonly bool _isThinkingModel;
     private string? _lastError;
     private bool _disposed;
 
@@ -33,11 +48,12 @@ public sealed class VulkanLlmProvider : ILocalLlm, IDisposable
 
     private VulkanLlmProvider(
         LLamaWeights weights, StatelessExecutor executor,
-        string modelPath, string arch, string hardware, ILogger logger)
+        string modelPath, string arch, string hardware, bool isThinkingModel, ILogger logger)
     {
         _weights = weights;
         _executor = executor;
         _logger = logger;
+        _isThinkingModel = isThinkingModel;
         ModelPath = modelPath;
         ModelArchitecture = arch;
         Hardware = hardware;
@@ -69,11 +85,36 @@ public sealed class VulkanLlmProvider : ILocalLlm, IDisposable
         // Failures here are informational only and must not crash the load.
         string arch = TryGetMetadata(weights, "general.architecture") ?? "unknown";
         string hardware = modelParams.GpuLayerCount != 0 ? "vulkan" : "cpu";
+        bool isThinking = DetectThinkingModel(modelPath, weights);
 
         logger.LogInformation(
-            "Vulkan LLM provider loaded: {ModelPath} (arch={Arch}, hardware={Hardware}, ctx={Ctx})",
-            modelPath, arch, hardware, contextSize);
-        return new VulkanLlmProvider(weights, executor, modelPath, arch, hardware, logger);
+            "Vulkan LLM provider loaded: {ModelPath} (arch={Arch}, hardware={Hardware}, ctx={Ctx}, thinking={Thinking})",
+            modelPath, arch, hardware, contextSize, isThinking);
+        return new VulkanLlmProvider(weights, executor, modelPath, arch, hardware, isThinking, logger);
+    }
+
+    /// <summary>
+    /// Heuristic for "this model emits a reasoning block before the answer." Catches LFM2.5-
+    /// Thinking, DeepSeek-R1 derivatives, Qwen-QwQ, etc. by filename or basename. The signal is
+    /// rough on purpose — false positives only cost a few extra tokens per call, false negatives
+    /// cost empty completions.
+    /// </summary>
+    private static bool DetectThinkingModel(string modelPath, LLamaWeights weights)
+    {
+        string filename = Path.GetFileName(modelPath);
+        if (filename.Contains("thinking", StringComparison.OrdinalIgnoreCase)) return true;
+        if (filename.Contains("reasoning", StringComparison.OrdinalIgnoreCase)) return true;
+        if (filename.Contains("-R1", StringComparison.OrdinalIgnoreCase)) return true;
+        if (filename.Contains("QwQ", StringComparison.OrdinalIgnoreCase)) return true;
+
+        // Also check GGUF basename metadata in case the file was renamed.
+        string? basename = TryGetMetadata(weights, "general.basename") ?? TryGetMetadata(weights, "general.name");
+        if (basename is not null
+            && (basename.Contains("thinking", StringComparison.OrdinalIgnoreCase)
+                || basename.Contains("reasoning", StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        return false;
     }
 
     public async Task<string?> CompleteAsync(
@@ -97,9 +138,16 @@ public sealed class VulkanLlmProvider : ILocalLlm, IDisposable
             ReadOnlySpan<byte> applied = template.Apply();
             string prompt = Encoding.UTF8.GetString(applied);
 
+            // Thinking models burn most of their token budget on the reasoning block before
+            // the final answer. Multiply the caller's budget so something actually reaches
+            // the answer phase, with a hard cap so we never blow past plausible Tier 2 sizes.
+            int effectiveMaxTokens = _isThinkingModel
+                ? Math.Min(maxTokens * ThinkingMaxTokensMultiplier, ThinkingMaxTokensCap)
+                : maxTokens;
+
             var inferenceParams = new InferenceParams
             {
-                MaxTokens = maxTokens,
+                MaxTokens = effectiveMaxTokens,
                 AntiPrompts = stopSequences is null ? [] : [.. stopSequences],
                 SamplingPipeline = new DefaultSamplingPipeline
                 {
@@ -113,7 +161,7 @@ public sealed class VulkanLlmProvider : ILocalLlm, IDisposable
                 if (ct.IsCancellationRequested) break;
                 sb.Append(chunk);
             }
-            string output = sb.ToString().Trim();
+            string output = StripReasoningBlocks(sb.ToString()).Trim();
             return string.IsNullOrWhiteSpace(output) ? null : output;
         }
         catch (OperationCanceledException) { return null; }
@@ -123,6 +171,33 @@ public sealed class VulkanLlmProvider : ILocalLlm, IDisposable
             _logger.LogWarning(ex, "Vulkan LLM inference failed");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Strips chain-of-thought wrappers so callers see only the final answer. Two patterns
+    /// cover the common cases: <c>&lt;think&gt;...&lt;/think&gt;</c> (DeepSeek-R1, Qwen-QwQ,
+    /// LFM2.5-Thinking textual form) and <c>&lt;|reasoning|&gt;...&lt;|/reasoning|&gt;</c>
+    /// (some templates expose the special tokens as literal text). If the model leaves an
+    /// unclosed block (max-tokens truncation in the middle of thinking), we strip from the
+    /// open tag to EOS so we don't leak reasoning into descriptions/facts.
+    /// </summary>
+    public static string StripReasoningBlocks(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return raw;
+
+        string s = ThinkBlockPattern().Replace(raw, "");
+        s = ReasoningBlockPattern().Replace(s, "");
+
+        // Truncated thinking — open tag without close. Drop from the open tag forward so the
+        // partial reasoning doesn't end up in the final output. If there's nothing after,
+        // the caller already treats empty as a skip-and-continue signal.
+        int openThink = s.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
+        if (openThink >= 0) s = s[..openThink];
+
+        int openReason = s.IndexOf("<|reasoning|>", StringComparison.OrdinalIgnoreCase);
+        if (openReason >= 0) s = s[..openReason];
+
+        return s;
     }
 
     private static string? TryGetMetadata(LLamaWeights weights, string key)

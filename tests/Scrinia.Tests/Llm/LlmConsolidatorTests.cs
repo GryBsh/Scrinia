@@ -38,7 +38,9 @@ public class LlmConsolidatorTests : IDisposable
     }
 
     /// <summary>Helper: write an artifact + sidecar with a specific description.</summary>
-    private ArtifactEntry SeedEntry(string name, string content, string description, string scope = "local")
+    private ArtifactEntry SeedEntry(
+        string name, string content, string description,
+        Dictionary<string, int>? termFrequencies = null, string scope = "local")
     {
         string artifact = Nmp2ChunkedEncoder.Encode(content);
         File.WriteAllText(ScriniaArtifactStore.ArtifactPath(name, scope), artifact);
@@ -48,7 +50,8 @@ public class LlmConsolidatorTests : IDisposable
             OriginalBytes: System.Text.Encoding.UTF8.GetByteCount(content),
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: description);
+            Description: description,
+            TermFrequencies: termFrequencies);
         ScriniaArtifactStore.Upsert(entry, scope);
         return entry;
     }
@@ -129,6 +132,42 @@ public class LlmConsolidatorTests : IDisposable
         entry.TermFrequencies!.Should().ContainKey("oauth");
         entry.TermFrequencies.Should().ContainKey("pkce");
         entry.TermFrequencies.Should().ContainKey("tokens");
+    }
+
+    [Fact]
+    public async Task SeedsFacts_WhenExistingTermFrequenciesHaveCaseInsensitiveCollisions()
+    {
+        // Reproduces a real-world crash: sidecar JSON deserializes TermFrequencies with the
+        // default case-sensitive comparer, so a dict can legitimately hold both "BM25" and
+        // "bm25". The fact-seeding code must merge case-insensitively without throwing.
+        var existingTf = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            ["BM25"] = 3,
+            ["bm25"] = 1,
+            ["other"] = 5,
+        };
+        SeedEntry("note-collide", "content with bm25 and other words", description: "real desc",
+            termFrequencies: existingTf);
+        _llm.FactsResponse = ["The BM25 scorer ranks documents."];
+
+        var entries = ScriniaArtifactStore.ListScoped(null);
+        var result = await LlmConsolidator.RunAsync(
+            _llm, entries, justCompacted: new HashSet<string>(),
+            _scriniaDir, dryRun: false, onWarning: null, CancellationToken.None);
+
+        result.FactsExtracted.Should().Be(1);
+        var entry = Reload("note-collide");
+        entry.TermFrequencies.Should().NotBeNull();
+
+        // After the round-trip the dict is case-sensitive again (default JSON comparer),
+        // so the surviving key is whichever case-variant the merge inserted first.
+        // Either is acceptable — what we're verifying is "no crash + the merged count is
+        // higher than any single source variant + fact tokens were also seeded".
+        var ciTf = new Dictionary<string, int>(entry.TermFrequencies!, StringComparer.OrdinalIgnoreCase);
+        ciTf.Should().ContainKey("bm25", "case-insensitive lookup finds either BM25 or bm25");
+        ciTf["bm25"].Should().BeGreaterThan(3,
+            "merged count for BM25+bm25 plus fact-seed +2 should exceed either variant alone");
+        ciTf.Should().ContainKey("scorer", "the fact 'The BM25 scorer ranks documents.' seeds 'scorer'");
     }
 
     [Fact]

@@ -156,9 +156,21 @@ internal static class LlmConsolidator
                 {
                     // Seed the TF dict so BM25 picks up fact terms. +2 weight per token
                     // matches the boost agent-merged keywords get in the Store path.
-                    var tf = updated.TermFrequencies is not null
-                        ? new Dictionary<string, int>(updated.TermFrequencies, StringComparer.OrdinalIgnoreCase)
-                        : new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    //
+                    // Manual merge with case-insensitive comparer rather than the copy-ctor:
+                    // sidecar JSON deserializes the source dict case-sensitively, so it can
+                    // legitimately hold both "BM25" and "bm25" — the copy-ctor would throw.
+                    // BM25 scoring already treats them as the same token, so summing here
+                    // preserves the effective weight while normalizing the keys.
+                    var tf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    if (updated.TermFrequencies is not null)
+                    {
+                        foreach (var (k, v) in updated.TermFrequencies)
+                        {
+                            tf.TryGetValue(k, out int existing);
+                            tf[k] = existing + v;
+                        }
+                    }
                     foreach (string fact in extracted)
                     {
                         foreach (string token in TextAnalysis.Tokenize(fact))
