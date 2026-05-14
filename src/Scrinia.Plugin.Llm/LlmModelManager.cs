@@ -8,23 +8,25 @@ namespace Scrinia.Plugin.Llm;
 /// plugin — atomic <c>.tmp</c> swap on completion so a killed download leaves no
 /// half-written file.
 ///
-/// <para>Default model: <c>LFM2.5-1.2B-Thinking</c> Q5_K_M quant. LFM2's hybrid SSM+attention
-/// architecture requires a llama.cpp snapshot that supports it; LLamaSharp 0.25 ships one
-/// recent enough to load it. If the loaded GGUF fails at runtime (e.g. on older LLamaSharp
-/// builds), users can override via <c>scri config Scrinia:Llm:LocalModelUrl &lt;url&gt;</c>
-/// and <c>Scrinia:Llm:LocalModelFile &lt;name&gt;</c>. The recommended fallback is
-/// <see cref="FallbackModelUrl"/> (Qwen2.5-1.5B-Instruct), known-compatible with LLamaSharp 0.25.</para>
+/// <para>Default model: <c>LFM2.5-1.2B-Instruct</c> Q5_K_M quant. Tier 2 tasks (descriptions,
+/// summaries, atomic facts) want terse, direct output — the <c>-Thinking</c> sibling spends
+/// its token budget on chain-of-thought before the answer, which is wasteful here and was
+/// the source of empty completions in early field tests. Users can switch via
+/// <c>scri config Scrinia:Llm:LocalModelUrl &lt;url&gt;</c> and
+/// <c>Scrinia:Llm:LocalModelFile &lt;name&gt;</c>. The fallback is
+/// <see cref="FallbackModelUrl"/> (Qwen2.5-1.5B-Instruct) for users on LLamaSharp builds
+/// that pre-date LFM2 support.</para>
 /// </summary>
 public static class LlmModelManager
 {
-    /// <summary>Default GGUF URL — LFM2.5-1.2B-Thinking, Q5_K_M quantization.</summary>
+    /// <summary>Default GGUF URL — LFM2.5-1.2B-Instruct, Q5_K_M quantization.</summary>
     public const string DefaultModelUrl =
-        "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q5_K_M.gguf";
+        "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q5_K_M.gguf";
 
     /// <summary>Default GGUF filename matching <see cref="DefaultModelUrl"/>.</summary>
-    public const string DefaultModelFile = "LFM2.5-1.2B-Thinking-Q5_K_M.gguf";
+    public const string DefaultModelFile = "LFM2.5-1.2B-Instruct-Q5_K_M.gguf";
 
-    /// <summary>Fallback URL when the user wants a known-LLamaSharp-0.25-compatible model.</summary>
+    /// <summary>Fallback URL when LFM2 architecture is unsupported by the local LLamaSharp build.</summary>
     public const string FallbackModelUrl =
         "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q5_k_m.gguf";
 

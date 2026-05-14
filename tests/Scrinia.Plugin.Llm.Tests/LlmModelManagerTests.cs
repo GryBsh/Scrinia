@@ -12,11 +12,12 @@ namespace Scrinia.Plugin.Llm.Tests;
 public class LlmModelManagerTests
 {
     [Fact]
-    public void DefaultModelUrl_PointsAtLfm2()
+    public void DefaultModelUrl_PointsAtLfm2Instruct()
     {
-        // The default ships LFM2.5-1.2B-Thinking-Q5_K_M per design. If this ever changes,
-        // CHANGELOG and onboarding docs must be updated too.
-        LlmModelManager.DefaultModelUrl.Should().Contain("LFM2.5-1.2B-Thinking", "this is the documented v1 default");
+        // The default ships LFM2.5-1.2B-Instruct-Q5_K_M per design. Instruct (not Thinking)
+        // because Tier 2 wants terse direct output, not chain-of-thought. If this ever
+        // changes, CHANGELOG and onboarding docs must be updated too.
+        LlmModelManager.DefaultModelUrl.Should().Contain("LFM2.5-1.2B-Instruct", "this is the documented v1 default");
         LlmModelManager.DefaultModelFile.Should().EndWith(".gguf");
     }
 

@@ -62,8 +62,9 @@ public sealed partial class VulkanLlmProvider : ILocalLlm, IDisposable
     /// <summary>
     /// Loads the GGUF at <paramref name="modelPath"/>. Throws on load failure so the caller
     /// can fall through to <see cref="NullLlmProvider"/> with a clear error string surfaced
-    /// via plugin status. <paramref name="contextSize"/> is the KV-cache budget; small models
-    /// (1–2B params) typically run well at 4096 even on modest GPUs.
+    /// via plugin status. <paramref name="contextSize"/> is the KV-cache budget; 8192 covers
+    /// Tier 2's largest prompt (~3K-token fact-extraction input + system prompt + response
+    /// budget), and LFM2.5/Qwen2.5 both support 32K for users on bigger VRAM.
     /// </summary>
     public static VulkanLlmProvider Create(string modelPath, int contextSize, ILogger logger)
     {

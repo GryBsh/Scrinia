@@ -1012,9 +1012,9 @@ public class ScriniaCommands
 
             // Defaults intentionally inlined to avoid pulling Scrinia.Plugin.Llm (and transitively
             // LLamaSharp) into the trimmed CLI publish. Kept in sync with LlmModelManager.
-            const string defaultLlmFile = "LFM2.5-1.2B-Thinking-Q5_K_M.gguf";
+            const string defaultLlmFile = "LFM2.5-1.2B-Instruct-Q5_K_M.gguf";
             const string defaultLlmUrl =
-                "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q5_K_M.gguf";
+                "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q5_K_M.gguf";
 
             string llmFile = WorkspaceSetup.GetConfigValue("Scrinia:Llm:LocalModelFile") ?? defaultLlmFile;
             string llmUrl = WorkspaceSetup.GetConfigValue("Scrinia:Llm:LocalModelUrl") ?? defaultLlmUrl;

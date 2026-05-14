@@ -41,7 +41,10 @@ string modelFile = configValues.TryGetValue("Scrinia:Llm:LocalModelFile", out va
     ? lf
     : LlmModelManager.DefaultModelFile;
 
-int contextSize = 4096;
+// Default 8K — covers the largest Tier 2 prompt (fact extraction at MaxInputChars=12_000
+// chars ≈ 3K tokens) plus system prompt and 400-token response budget with headroom. LFM2.5
+// and Qwen2.5 both support 32K, so users on bigger VRAM can bump this via config.
+int contextSize = 8192;
 if (configValues.TryGetValue("Scrinia:Llm:LocalContextSize", out var ctxStr)
     && int.TryParse(ctxStr, out var ctxVal) && ctxVal > 0)
     contextSize = ctxVal;
