@@ -4,6 +4,8 @@ param(
 
     [switch]$WithVulkan,
 
+    [switch]$WithLlm,
+
     [ValidateSet('win-x64', 'linux-x64', 'osx-arm64')]
     [string]$Platform
 )
@@ -14,6 +16,7 @@ $Rids = if ($Platform) { @($Platform) } else { @('win-x64', 'linux-x64', 'osx-ar
 $Project = 'src/Scrinia/Scrinia.csproj'
 $MergeProject = 'src/Scrinia.Merge/Scrinia.Merge.csproj'
 $VulkanProject = 'src/Scrinia.Plugin.Embeddings.Cli/Scrinia.Plugin.Embeddings.Cli.csproj'
+$LlmProject = 'src/Scrinia.Plugin.Llm.Cli/Scrinia.Plugin.Llm.Cli.csproj'
 # When a single platform is specified, output directly into OutputDir (no RID subdirectory).
 $SinglePlatform = [bool]$Platform
 
@@ -73,6 +76,30 @@ foreach ($rid in $Rids) {
         }
         Write-Host "  -> $pluginsDir"
     }
+
+    if ($WithLlm) {
+        Write-Host "  Publishing LLM plugin for $rid ..."
+        $llmDir = "$ridDir/plugins/scri-plugin-llm"
+        dotnet publish $LlmProject `
+            --runtime $rid `
+            --configuration Release `
+            --output $llmDir
+        if ($LASTEXITCODE -ne 0) { throw "dotnet publish (llm plugin) failed for $rid" }
+
+        # Same Vulkan-native-DLL overwrite as the embeddings plugin: single-file publish
+        # flattens CPU-backend DLLs to the root, which shadow the Vulkan ones. Restore.
+        $nugetBase = "$env:USERPROFILE/.nuget/packages"
+        if ($rid -like 'win-*') {
+            $vulkanSrc = "$nugetBase/llamasharp.backend.vulkan.windows/0.25.0/runtimes/$rid/native/vulkan"
+        } else {
+            $vulkanSrc = "$nugetBase/llamasharp.backend.vulkan.linux/0.25.0/runtimes/$rid/native/vulkan"
+        }
+        if (Test-Path $vulkanSrc) {
+            Copy-Item "$vulkanSrc/*" $llmDir -Force
+            Write-Host "    Overwrote root native DLLs with Vulkan variants"
+        }
+        Write-Host "  -> $llmDir"
+    }
 }
 
 Write-Host ''
@@ -85,6 +112,12 @@ foreach ($rid in $Rids) {
     if ($WithVulkan) {
         $ext = if ($rid -like 'win-*') { '.exe' } else { '' }
         Get-ChildItem "$ridDir/plugins/scri-plugin-embeddings$ext" -ErrorAction SilentlyContinue |
+            ForEach-Object { '{0}  {1}' -f $_.Length.ToString('N0').PadLeft(12), $_.FullName } |
+            Write-Host
+    }
+    if ($WithLlm) {
+        $ext = if ($rid -like 'win-*') { '.exe' } else { '' }
+        Get-ChildItem "$ridDir/plugins/scri-plugin-llm$ext" -ErrorAction SilentlyContinue |
             ForEach-Object { '{0}  {1}' -f $_.Length.ToString('N0').PadLeft(12), $_.FullName } |
             Write-Host
     }

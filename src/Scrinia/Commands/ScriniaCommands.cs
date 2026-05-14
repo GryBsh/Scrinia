@@ -914,14 +914,18 @@ public class ScriniaCommands
         return Task.FromResult(0);
     }
 
-    /// <summary>Download embedding models for built-in and optional Vulkan plugin.</summary>
+    /// <summary>Download embedding and (optional) LLM models for built-in providers and installed plugins.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="multiUser">Configure git merge drivers for multi-user collaboration.</param>
     /// <param name="resolver">Conflict resolver when --multi-user is set (none, claude, copilot).</param>
+    /// <param name="llmDownload">Download the LLM plugin model without prompting (~900MB GGUF).</param>
+    /// <param name="noLlmDownload">Skip the LLM plugin model download without prompting.</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
         bool multiUser = false,
         string? resolver = null,
+        bool llmDownload = false,
+        bool noLlmDownload = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -990,6 +994,80 @@ public class ScriniaCommands
         {
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[dim]Vulkan plugin not installed — skipping GPU model download.[/]");
+        }
+
+        // ── Step 3: LLM plugin GGUF model (if plugin is installed) ──
+        string llmPluginName = WorkspaceSetup.GetPluginName("plugins:llm", "scri-plugin-llm");
+        string llmPluginExe = Path.Combine(pluginsDir, llmPluginName, $"{llmPluginName}{ext}");
+        if (!File.Exists(llmPluginExe))
+            llmPluginExe = Path.Combine(pluginsDir, $"{llmPluginName}{ext}");
+
+        if (File.Exists(llmPluginExe))
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[bold]LLM plugin (Tier 2 consolidation)[/]");
+
+            string llmModelsDir = Path.Combine(pluginsDir, llmPluginName);
+            Directory.CreateDirectory(llmModelsDir);
+
+            // Defaults intentionally inlined to avoid pulling Scrinia.Plugin.Llm (and transitively
+            // LLamaSharp) into the trimmed CLI publish. Kept in sync with LlmModelManager.
+            const string defaultLlmFile = "LFM2.5-1.2B-Thinking-Q5_K_M.gguf";
+            const string defaultLlmUrl =
+                "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q5_K_M.gguf";
+
+            string llmFile = WorkspaceSetup.GetConfigValue("Scrinia:Llm:LocalModelFile") ?? defaultLlmFile;
+            string llmUrl = WorkspaceSetup.GetConfigValue("Scrinia:Llm:LocalModelUrl") ?? defaultLlmUrl;
+
+            string llmFilePath = Path.Combine(llmModelsDir, llmFile);
+            if (File.Exists(llmFilePath))
+            {
+                AnsiConsole.MarkupLine("[green]  LLM model already downloaded.[/]");
+                AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(llmFilePath)}[/]");
+            }
+            else
+            {
+                bool proceed;
+                if (llmDownload && noLlmDownload)
+                {
+                    AnsiConsole.MarkupLine(
+                        "[yellow]  --llm-download and --no-llm-download both set; treating as decline.[/]");
+                    proceed = false;
+                }
+                else if (llmDownload) proceed = true;
+                else if (noLlmDownload) proceed = false;
+                else
+                {
+                    // Default to No so a non-interactive `scri setup` (CI, scripted install)
+                    // never silently downloads a gigabyte. Interactive users get a prompt.
+                    proceed = AnsiConsole.Confirm(
+                        $"  Download LLM model ([cyan]{Markup.Escape(llmFile)}[/], ~900MB) for Tier 2 consolidation?",
+                        defaultValue: false);
+                }
+
+                if (proceed)
+                {
+                    string llmBaseUrl = llmUrl[..llmUrl.LastIndexOf('/')];
+                    string filePart = llmUrl[(llmUrl.LastIndexOf('/') + 1)..];
+                    await DownloadFilesAsync(llmBaseUrl, [filePart], llmModelsDir, cancellationToken);
+
+                    // If the download filename differs from the configured filename
+                    // (which is what the plugin will look for), rename atomically.
+                    string downloaded = Path.Combine(llmModelsDir, filePart);
+                    if (!string.Equals(filePart, llmFile, StringComparison.OrdinalIgnoreCase)
+                        && File.Exists(downloaded))
+                    {
+                        File.Move(downloaded, llmFilePath, overwrite: true);
+                    }
+                    AnsiConsole.MarkupLine($"[green]  LLM model ready at:[/] {Markup.Escape(llmModelsDir)}");
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine(
+                        "[dim]  Skipped. Run again with --llm-download to fetch, or set " +
+                        "Scrinia:Llm:LocalModelUrl/LocalModelFile to override the default.[/]");
+                }
+            }
         }
 
         return 0;

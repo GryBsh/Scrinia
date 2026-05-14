@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>scri-plugin-llm</AssemblyName>
+    <RootNamespace>Scrinia.Plugin.Llm.Cli</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+
+    <!-- Self-contained single-file, NOT trimmed — full .NET runtime for LLamaSharp compatibility.
+         Native DLLs (ggml, llama, etc.) extract alongside the exe automatically.
+         ErrorOnDuplicatePublishOutputFiles=false: LLamaSharp.Backend.Cpu (transitive) ships
+         multiple AVX variants (avx/avx2/avx512/noavx) with the same filename. -->
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <DebugType>embedded</DebugType>
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Scrinia.Plugin.Llm\Scrinia.Plugin.Llm.csproj" />
+  </ItemGroup>
+</Project>

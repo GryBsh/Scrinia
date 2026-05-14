@@ -3,6 +3,7 @@ using LLama.Common;
 using LLama.Native;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core.Embeddings;
+using Scrinia.Plugin.Llama;
 
 namespace Scrinia.Plugin.Embeddings;
 
@@ -35,29 +36,10 @@ public sealed class VulkanEmbeddingProvider : IEmbeddingProvider
         if (!File.Exists(modelPath))
             throw new FileNotFoundException("GGUF embedding model not found.", modelPath);
 
-        // Configure LLamaSharp to use Vulkan backend BEFORE any model loading.
-        // This must happen before the first native P/Invoke call.
-        // Self-contained publish flattens native DLLs to the app root, so we
-        // add the app base directory as a search path for native library discovery.
-        NativeLibraryConfig.LLama
-            .WithCuda(false)
-            .WithVulkan()
-            .WithSearchDirectory(AppContext.BaseDirectory)
-            .WithAutoFallback();
-
-        // Force immediate native library loading so backend selection is finalized.
-        NativeLogConfig.llama_log_set((level, message) =>
-        {
-            var logLevel = level switch
-            {
-                LLamaLogLevel.Error => LogLevel.Error,
-                LLamaLogLevel.Warning => LogLevel.Warning,
-                LLamaLogLevel.Info => LogLevel.Information,
-                _ => LogLevel.Debug
-            };
-            logger.Log(logLevel, "LLamaNative: {Message}", message);
-        });
-        NativeApi.llama_empty_call();
+        // Shared one-time init: Vulkan backend selection, log routing, native resolution.
+        // Idempotent, so the embeddings plugin and the LLM plugin (in their separate
+        // processes) both call this exactly once and cannot drift on the LLamaSharp setup.
+        LlamaVulkanInit.EnsureConfigured(logger);
 
         var modelParams = new ModelParams(modelPath)
         {

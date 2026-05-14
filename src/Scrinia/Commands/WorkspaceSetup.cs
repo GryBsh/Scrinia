@@ -89,10 +89,10 @@ internal static class WorkspaceSetup
         // Step 2: Optional Vulkan plugin (child-process, overrides built-in if found)
         await TryLoadVulkanPluginAsync(ct);
 
-        // Step 3: Background LLM for Tier 2 consolidation. The bundled plugin is Phase 4 —
-        // for now we only try the OpenAI-compatible HTTP path (Ollama, llama.cpp server,
-        // LM Studio, Docker Model Runner, etc.). Probe is short-budget; failure means
-        // `scri consolidate --tier2` will exit with a setup hint, everything else works.
+        // Step 3: Background LLM for Tier 2 consolidation. Try the bundled plugin first
+        // (subprocess via MCP stdio), then fall through to the OpenAI-compatible HTTP path
+        // (Ollama, llama.cpp server, LM Studio, Docker Model Runner). Probe budget is short
+        // so a missing backend never adds noticeable startup latency.
         await TryLoadBackgroundLlmAsync(loggerFactory.CreateLogger("Scrinia.Llm"), ct);
     }
 
@@ -193,11 +193,15 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
-    /// Probes for an OpenAI-compatible chat-completions endpoint (Ollama by default)
-    /// and installs <see cref="OpenAiCompatibleBackgroundLlm"/> as <see cref="BackgroundLlmContext.Default"/>
-    /// when one responds. Provider=plugin is handled later in Phase 4; Provider=none
-    /// short-circuits the probe entirely. Probe timeout is short (2s) so we don't add
-    /// noticeable startup latency in the common no-backend case.
+    /// Installs <see cref="BackgroundLlmContext.Default"/> for Tier 2 consolidation. Provider
+    /// selection order (when <c>Scrinia:Llm:Provider</c> = "auto"):
+    /// <list type="number">
+    ///   <item>Bundled <c>scri-plugin-llm</c> subprocess if the exe is present.</item>
+    ///   <item>OpenAI-compatible HTTP endpoint at <c>Scrinia:Llm:BaseUrl</c> if it responds.</item>
+    ///   <item>None — <c>scri consolidate --with-llm</c> will print a setup hint.</item>
+    /// </list>
+    /// Explicit Provider values (<c>plugin</c>, <c>openai-compat</c>, <c>none</c>) skip the
+    /// other steps and surface a warning if the chosen backend is unavailable.
     /// </summary>
     private static async Task TryLoadBackgroundLlmAsync(ILogger logger, CancellationToken ct)
     {
@@ -205,10 +209,76 @@ internal static class WorkspaceSetup
         if (options.Provider.Equals("none", StringComparison.OrdinalIgnoreCase))
             return;
 
-        // Plugin provider is wired in Phase 4 — for now, "plugin" falls through to the HTTP
-        // probe (which will fail unless the user also has an HTTP endpoint up).
+        bool forcePlugin = options.Provider.Equals("plugin", StringComparison.OrdinalIgnoreCase);
         bool forceHttp = options.Provider.Equals("openai-compat", StringComparison.OrdinalIgnoreCase);
 
+        // Step A: bundled plugin (unless explicitly forced to HTTP).
+        if (!forceHttp)
+        {
+            if (await TryStartLlmPluginAsync(ct)) return;
+            if (forcePlugin)
+            {
+                Console.Error.WriteLine(
+                    "[scrinia:warn] Llm provider=plugin configured but scri-plugin-llm was not available.");
+                return;
+            }
+        }
+
+        // Step B: OpenAI-compatible HTTP endpoint (unless explicitly forced to plugin).
+        if (!forcePlugin)
+            await TryProbeOpenAiCompatibleAsync(options, forceHttp, ct);
+    }
+
+    private static async Task<bool> TryStartLlmPluginAsync(CancellationToken ct)
+    {
+        string exeDir = AppContext.BaseDirectory;
+        string pluginsDir = Path.Combine(exeDir, "plugins");
+        if (!Directory.Exists(pluginsDir)) return false;
+
+        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
+        string pluginName = GetPluginName("plugins:llm", "scri-plugin-llm");
+
+        // Subdirectory layout (multi-file publish) first, then flat (single-file).
+        string llmExe = Path.Combine(pluginsDir, pluginName, $"{pluginName}{ext}");
+        if (!File.Exists(llmExe))
+        {
+            llmExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
+            if (!File.Exists(llmExe)) return false;
+        }
+
+        string dataDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string modelsDir = Path.Combine(pluginsDir, pluginName);
+        Directory.CreateDirectory(modelsDir);
+
+        try
+        {
+            var host = new McpLlmPluginHost();
+            await host.StartAsync(llmExe, dataDir, modelsDir, GetConfigValue, ct);
+
+            if (!host.HasCompleteCapability)
+            {
+                await host.DisposeAsync();
+                return false;
+            }
+
+            BackgroundLlmContext.Default = host;
+            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+                host.DisposeAsync().AsTask().Wait(3000);
+
+            Console.Error.WriteLine(
+                $"[scrinia:info] Background LLM ready (provider=plugin, arch={host.ModelArchitecture}, hardware={host.Hardware})");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Failed to start LLM plugin: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static async Task TryProbeOpenAiCompatibleAsync(LlmOptions options, bool forceHttp, CancellationToken ct)
+    {
         try
         {
             var probeHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
@@ -232,7 +302,6 @@ internal static class WorkspaceSetup
             return;
         }
 
-        // Install a long-lived instance for actual use. The probe instance was throwaway.
         var llm = OpenAiCompatibleBackgroundLlm.Create(options);
         BackgroundLlmContext.Default = llm;
         AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
