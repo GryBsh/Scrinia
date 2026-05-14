@@ -8,8 +8,10 @@ public sealed class LlmOptions
 {
     /// <summary>
     /// Backend selector. "auto" lets <c>WorkspaceSetup</c> probe for an installed plugin
-    /// first, then fall back to the OpenAI-compatible HTTP endpoint. "openai-compat"
-    /// forces the HTTP path, "plugin" forces the bundled plugin, "none" disables Tier 2.
+    /// first, then fall back to the OpenAI-compatible HTTP endpoint. "openai" forces the
+    /// HTTP path (covers OpenAI itself, Ollama, llama.cpp server, LM Studio, vLLM, Docker
+    /// Model Runner — anything speaking the chat-completions API). "plugin" forces the
+    /// bundled subprocess. "none" disables Tier 2.
     /// </summary>
     public string Provider { get; set; } = "auto";
 

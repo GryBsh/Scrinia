@@ -232,7 +232,7 @@ internal static class WorkspaceSetup
     ///   <item>OpenAI-compatible HTTP endpoint at <c>Scrinia:Llm:BaseUrl</c> if it responds.</item>
     ///   <item>None — <c>scri consolidate --with-llm</c> will print a setup hint.</item>
     /// </list>
-    /// Explicit Provider values (<c>plugin</c>, <c>openai-compat</c>, <c>none</c>) skip the
+    /// Explicit Provider values (<c>plugin</c>, <c>openai</c>, <c>none</c>) skip the
     /// other steps and surface a warning if the chosen backend is unavailable.
     /// </summary>
     private static async Task TryLoadBackgroundLlmAsync(ILogger logger, CancellationToken ct)
@@ -242,7 +242,7 @@ internal static class WorkspaceSetup
             return;
 
         bool forcePlugin = options.Provider.Equals("plugin", StringComparison.OrdinalIgnoreCase);
-        bool forceHttp = options.Provider.Equals("openai-compat", StringComparison.OrdinalIgnoreCase);
+        bool forceHttp = options.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase);
 
         // Step A: bundled plugin (unless explicitly forced to HTTP).
         if (!forceHttp)
@@ -345,7 +345,7 @@ internal static class WorkspaceSetup
         AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
 
         Console.Error.WriteLine(
-            $"[scrinia:info] Background LLM ready (provider=openai-compat, model={options.Model}, baseUrl={options.BaseUrl})");
+            $"[scrinia:info] Background LLM ready (provider=openai, model={options.Model}, baseUrl={options.BaseUrl})");
     }
 
     private static LlmOptions BuildLlmOptions()
