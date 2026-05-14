@@ -58,6 +58,43 @@ public class OpenAiCompatibleBackgroundLlmTests
     }
 
     [Fact]
+    public async Task IsAvailable_FallsBackToRootProbe_When_ModelsEndpointReturns404()
+    {
+        // Reproduces Ollama-without-models behaviour: GET /v1/models 404s but the server is
+        // up and POST /v1/chat/completions works. The fallback root probe should succeed.
+        int call = 0;
+        var handler = StubHandler.Sync((req, _) =>
+        {
+            call++;
+            string url = req.RequestUri!.ToString();
+            if (call == 1)
+            {
+                url.Should().Be("http://stub.test/v1/models");
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+            // Second probe is the root of the host.
+            url.Should().Be("http://stub.test/");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("Ollama is running"),
+            };
+        });
+        using var llm = new OpenAiCompatibleBackgroundLlm(Options(), new HttpClient(handler));
+
+        (await llm.IsAvailableAsync(CancellationToken.None)).Should().BeTrue();
+        call.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task IsAvailable_ReturnsFalse_When_BothModelsAndRootFail()
+    {
+        var handler = StubHandler.Sync((_, _) => new HttpResponseMessage(HttpStatusCode.NotFound));
+        using var llm = new OpenAiCompatibleBackgroundLlm(Options(), new HttpClient(handler));
+
+        (await llm.IsAvailableAsync(CancellationToken.None)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task GenerateDescription_PostsChatCompletions_WithSystemAndUserMessages()
     {
         string? capturedBody = null;

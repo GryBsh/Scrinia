@@ -311,26 +311,32 @@ internal static class WorkspaceSetup
 
     private static async Task TryProbeOpenAiCompatibleAsync(LlmOptions options, bool forceHttp, CancellationToken ct)
     {
+        // Probe-failure messaging: when forceHttp is set the user explicitly chose this path
+        // so they want loud failures; otherwise (auto mode) a single info line lets curious
+        // users see what's happening without flooding the log on every startup.
+        const int probeTimeoutSeconds = 2;
         try
         {
-            var probeHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            var probeHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(probeTimeoutSeconds) };
             var probe = new OpenAiCompatibleBackgroundLlm(options, probeHttp, ownsHttp: true);
             using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            probeCts.CancelAfter(TimeSpan.FromSeconds(2));
+            probeCts.CancelAfter(TimeSpan.FromSeconds(probeTimeoutSeconds));
             bool available = await probe.IsAvailableAsync(probeCts.Token);
             probe.Dispose();
             if (!available)
             {
-                if (forceHttp)
-                    Console.Error.WriteLine(
-                        $"[scrinia:warn] Llm provider=openai-compat configured but {options.BaseUrl} did not respond.");
+                string severity = forceHttp ? "warn" : "info";
+                Console.Error.WriteLine(
+                    $"[scrinia:{severity}] LLM HTTP probe failed: {options.BaseUrl} did not respond at /models or /. " +
+                    $"Tier 2 will be unavailable unless a plugin is loaded.");
                 return;
             }
         }
         catch (Exception ex)
         {
-            if (forceHttp)
-                Console.Error.WriteLine($"[scrinia:warn] Llm probe failed: {ex.GetType().Name}: {ex.Message}");
+            string severity = forceHttp ? "warn" : "info";
+            Console.Error.WriteLine(
+                $"[scrinia:{severity}] LLM HTTP probe error: {ex.GetType().Name}: {ex.Message}");
             return;
         }
 

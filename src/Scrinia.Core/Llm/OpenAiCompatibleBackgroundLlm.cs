@@ -43,15 +43,44 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
 
     public async Task<bool> IsAvailableAsync(CancellationToken ct)
     {
+        // Two-tier probe. The standard OpenAI-compat check is GET {base}/models, which
+        // most servers (vLLM, llama.cpp server, LM Studio, OpenAI itself) implement.
+        // Ollama supports it too, but only returns 200 when at least one model is pulled —
+        // an empty install can return 404 even though POST {base}/chat/completions works.
+        // So if the standard probe fails, fall back to a root-of-host check: if the server
+        // responds at all there, we trust the user's BaseUrl and let the actual call
+        // surface any specific endpoint issue at use time.
+        if (await TryProbeAsync(BuildUri("models"), ct)) return true;
+        if (TryDeriveRootUri(out var rootUri) && await TryProbeAsync(rootUri, ct)) return true;
+        return false;
+    }
+
+    private async Task<bool> TryProbeAsync(Uri url, CancellationToken ct)
+    {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, BuildUri("models"));
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
             ApplyAuth(req);
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             return resp.IsSuccessStatusCode;
         }
         catch (HttpRequestException) { return false; }
         catch (TaskCanceledException) { return false; }
+    }
+
+    private bool TryDeriveRootUri(out Uri rootUri)
+    {
+        try
+        {
+            var baseUri = new Uri(_options.BaseUrl);
+            rootUri = new Uri($"{baseUri.Scheme}://{baseUri.Authority}/");
+            return true;
+        }
+        catch
+        {
+            rootUri = null!;
+            return false;
+        }
     }
 
     public Task<string?> GenerateDescriptionAsync(string content, CancellationToken ct) =>
