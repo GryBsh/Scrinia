@@ -26,41 +26,34 @@ internal static class OllamaSetup
 
     public sealed record OllamaModelInfo(string Name, long Size);
 
+    public sealed record ProbeResult(bool Reachable, List<OllamaModelInfo> Models, string? Error);
+
     /// <summary>
-    /// Returns true if Ollama responds at <paramref name="baseUrl"/> within
-    /// <paramref name="timeoutSeconds"/>. The root returns "Ollama is running" as plain text
-    /// when the server is up — a 2xx there is enough to confirm presence without depending on
-    /// /v1/models (which can 404 if no models are pulled yet).
+    /// Probes Ollama via <c>GET /api/tags</c> — the native endpoint that always returns 200
+    /// with the (possibly empty) list of pulled models when Ollama is up. Avoids depending on
+    /// <c>GET /</c>, which has varied across Ollama versions, or <c>/v1/models</c>, which can
+    /// 404 on installs without pulled models.
+    ///
+    /// <para>Returns <c>Reachable=true</c> with the model list on success. On failure,
+    /// returns <c>Reachable=false</c> and a human-readable <c>Error</c> string so the caller
+    /// can surface the actual reason to the user (timeout, connection refused, DNS, etc.).</para>
     /// </summary>
-    public static async Task<bool> IsRunningAsync(string baseUrl, int timeoutSeconds, CancellationToken ct)
+    public static async Task<ProbeResult> ProbeAsync(string baseUrl, int timeoutSeconds, CancellationToken ct)
     {
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
-            using var resp = await http.GetAsync(baseUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-            return resp.IsSuccessStatusCode;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    /// <summary>Lists installed (pulled) models via <c>/api/tags</c>.</summary>
-    public static async Task<List<OllamaModelInfo>> ListInstalledAsync(string baseUrl, CancellationToken ct)
-    {
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
             using var resp = await http.GetAsync($"{baseUrl.TrimEnd('/')}/api/tags", ct);
-            if (!resp.IsSuccessStatusCode) return [];
+            if (!resp.IsSuccessStatusCode)
+                return new ProbeResult(false, [], $"HTTP {(int)resp.StatusCode} from /api/tags");
 
             var body = await resp.Content.ReadFromJsonAsync(OllamaSetupJsonContext.Default.OllamaTagsResponse, ct);
-            return body?.Models?.Select(m => new OllamaModelInfo(m.Name ?? "", m.Size)).ToList() ?? [];
+            var models = body?.Models?.Select(m => new OllamaModelInfo(m.Name ?? "", m.Size)).ToList() ?? [];
+            return new ProbeResult(true, models, null);
         }
-        catch
+        catch (Exception ex)
         {
-            return [];
+            return new ProbeResult(false, [], $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 

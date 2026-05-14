@@ -1105,17 +1105,27 @@ public class ScriniaCommands
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Ollama auto-detect[/]");
 
-        if (!await OllamaSetup.IsRunningAsync(OllamaSetup.DefaultBaseUrl, timeoutSeconds: 2, ct))
+        // Single probe-and-list call. Setup is interactive so we can afford a generous timeout
+        // — better to wait 5s and detect than to silently miss because IPv6/firewall added a
+        // round-trip. The probe also surfaces the actual error string when it fails so the
+        // user can diagnose ("ConnectionRefused" vs "TimeoutException" vs "HTTP 503") instead
+        // of just seeing "no Ollama detected".
+        var probe = await OllamaSetup.ProbeAsync(OllamaSetup.DefaultBaseUrl, timeoutSeconds: 5, ct);
+        if (!probe.Reachable)
         {
-            AnsiConsole.MarkupLine($"[dim]  No Ollama detected at {OllamaSetup.DefaultBaseUrl} — continuing with local setup.[/]");
+            AnsiConsole.MarkupLine(
+                $"[dim]  No Ollama detected at {OllamaSetup.DefaultBaseUrl}: {Markup.Escape(probe.Error ?? "unknown")}. " +
+                "Continuing with local setup.[/]");
             return false;
         }
 
-        AnsiConsole.MarkupLine($"[green]  Ollama detected at {OllamaSetup.DefaultBaseUrl}.[/]");
+        AnsiConsole.MarkupLine(
+            $"[green]  Ollama detected at {OllamaSetup.DefaultBaseUrl}.[/] " +
+            $"[dim]({probe.Models.Count} model(s) installed)[/]");
         if (!AnsiConsole.Confirm("  Use Ollama for Scrinia embeddings + chat?", defaultValue: true))
             return false;
 
-        var installed = await OllamaSetup.ListInstalledAsync(OllamaSetup.DefaultBaseUrl, ct);
+        var installed = probe.Models;
         var pulledNames = new HashSet<string>(installed.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
         var pulledEmbedding = installed.Where(m => OllamaSetup.LooksLikeEmbeddingModel(m.Name)).ToList();
         var pulledChat = installed.Where(m => !OllamaSetup.LooksLikeEmbeddingModel(m.Name)).ToList();
