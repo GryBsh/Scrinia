@@ -16,4 +16,8 @@ public sealed record ArtifactEntry(
     DateTimeOffset? ReviewAfter = null,
     string? ReviewWhen = null,
     ChunkEntry[]? ChunkEntries = null,
-    Dictionary<string, string>? CodeRefs = null);
+    Dictionary<string, string>? CodeRefs = null,
+    // v4 field: Tier 2 (LLM-extracted) atomic facts, populated by `scri consolidate --tier2`.
+    // Stored alongside keywords for retrieval; each fact also enters TermFrequencies via the
+    // Tier 2 sidecar write so BM25 naturally picks them up.
+    string[]? Facts = null);

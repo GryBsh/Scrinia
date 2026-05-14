@@ -388,6 +388,22 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             }
         }
 
+        // Fact contains (Tier 2 / Mem0-style atomic facts). Sized at 15 — above generic
+        // description hits (10) but below curated keyword hits (12 contains / 40 exact),
+        // since facts are model-generated whereas keywords are agent- or content-curated.
+        if (entry.Facts is { Length: > 0 })
+        {
+            foreach (string fact in entry.Facts)
+            {
+                if (!string.IsNullOrEmpty(fact)
+                    && fact.Contains(term, StringComparison.OrdinalIgnoreCase))
+                {
+                    score = Math.Max(score, 15);
+                    break;
+                }
+            }
+        }
+
         // Description contains
         if (!string.IsNullOrEmpty(entry.Description)
             && entry.Description.Contains(term, StringComparison.OrdinalIgnoreCase))
