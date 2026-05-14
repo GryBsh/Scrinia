@@ -194,6 +194,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             # Temporary files from interrupted writes
             **/*.tmp
+
+            # Consolidation bookkeeping (rebuilt from sidecar state on next run)
+            .last-consolidation
+            .consolidate-progress.json
             """.Replace("            ", ""));
     }
 

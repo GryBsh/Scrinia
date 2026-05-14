@@ -10,6 +10,7 @@ using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Llm;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
@@ -1599,15 +1600,19 @@ public class ScriniaCommands
     /// <param name="debounceMinutes">Minimum minutes between auto runs. Hooks fire on every Stop event; this prevents wasted work.</param>
     /// <param name="sessionAgeDays">Compact multi-chunk session entries older than N days (preserves content, drops chunk granularity).</param>
     /// <param name="json">Output as JSON instead of a styled table.</param>
-    public Task<int> Consolidate(
+    /// <param name="withLlm">After Tier 1 mechanical compaction, run an LLM pass: backfill auto-fallback descriptions, summarize compacted sessions, and extract atomic facts. Requires a configured background LLM (OpenAI-compatible endpoint or bundled plugin). Exits 2 with a hint if no backend is available.</param>
+    public async Task<int> Consolidate(
         string? workspaceRoot = null,
         bool auto = false,
         bool dryRun = false,
         int debounceMinutes = 30,
         int sessionAgeDays = 7,
-        bool json = false)
+        bool json = false,
+        bool withLlm = false,
+        CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        if (withLlm) await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         string scriniaDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
         string debounceFile = Path.Combine(scriniaDir, ".last-consolidation");
@@ -1628,11 +1633,11 @@ public class ScriniaCommands
                         string reason = $"Last run {minutesSince:F1}m ago (debounce {debounceMinutes}m)";
                         if (json)
                             WriteJson(
-                                new CliConsolidateOutput("skipped", reason, 0, 0, 0, 0, []),
+                                new CliConsolidateOutput("skipped", reason, 0, 0, 0, 0, [], null),
                                 CliJsonContext.Default.CliConsolidateOutput);
                         else
                             AnsiConsole.MarkupLine($"[dim]consolidate: skipped — {reason}[/]");
-                        return Task.FromResult(0);
+                        return 0;
                     }
                 }
             }
@@ -1675,6 +1680,45 @@ public class ScriniaCommands
             File.WriteAllText(debounceFile, DateTimeOffset.UtcNow.ToString("o"));
         }
 
+        // ── Tier 2: LLM pass ─────────────────────────────────────────────────
+        // After mechanical compaction, optionally do the language-model work:
+        // backfill descriptions, summarize the sessions Tier 1 just touched, and
+        // extract atomic facts onto each entry. A progress file under .scrinia/
+        // makes the pass idempotent and resumable.
+        LlmConsolidator.Result? llmResult = null;
+        if (withLlm)
+        {
+            var llm = BackgroundLlmContext.Default;
+            if (llm is null)
+            {
+                if (json)
+                    WriteJsonError("--with-llm requested but no background LLM is configured. " +
+                        "Start Ollama (or another OpenAI-compatible server) at " +
+                        "http://localhost:11434/v1, or run `scri config Scrinia:Llm:BaseUrl <url>`.");
+                else
+                    AnsiConsole.MarkupLine("[red]--with-llm requested but no background LLM is configured.[/]\n" +
+                        "Start Ollama (or another OpenAI-compatible server) at [italic]http://localhost:11434/v1[/], " +
+                        "or run [italic]scri config Scrinia:Llm:BaseUrl <url>[/].");
+                return 2;
+            }
+
+            // Re-fetch entries after Tier 1: compaction changed UpdatedAt and chunk counts.
+            var freshEntries = ScriniaArtifactStore.ListScoped(null);
+            var justCompacted = new HashSet<string>(compacted, StringComparer.OrdinalIgnoreCase);
+
+            llmResult = await LlmConsolidator.RunAsync(
+                llm,
+                freshEntries,
+                justCompacted,
+                scriniaDir,
+                dryRun,
+                onWarning: msg =>
+                {
+                    if (!json) AnsiConsole.MarkupLine($"[yellow]llm: {Markup.Escape(msg)}[/]");
+                },
+                cancellationToken);
+        }
+
         if (json)
         {
             WriteJson(
@@ -1685,9 +1729,13 @@ public class ScriniaCommands
                     TotalBytes: totalBytes,
                     StaleCount: staleCount,
                     CompactionCandidates: compactionCandidates.Count,
-                    Compacted: compacted.ToArray()),
+                    Compacted: compacted.ToArray(),
+                    Llm: llmResult is null ? null : new CliConsolidateLlmStats(
+                        llmResult.Processed, llmResult.DescriptionsBackfilled,
+                        llmResult.SessionsSummarized, llmResult.FactsExtracted,
+                        llmResult.Skipped, llmResult.Failed)),
                 CliJsonContext.Default.CliConsolidateOutput);
-            return Task.FromResult(0);
+            return 0;
         }
 
         var sb = new System.Text.StringBuilder();
@@ -1705,12 +1753,22 @@ public class ScriniaCommands
             if (total > 10)
                 sb.AppendLine($"  [dim]… and {total - 10} more[/]");
         }
-        else
+        else if (llmResult is null)
         {
             sb.AppendLine("[dim]Nothing to consolidate.[/]");
         }
+        if (llmResult is not null)
+        {
+            sb.AppendLine($"[green]LLM pass[/]: processed {llmResult.Processed}, skipped {llmResult.Skipped}, failed {llmResult.Failed}");
+            if (llmResult.DescriptionsBackfilled > 0)
+                sb.AppendLine($"  [dim]•[/] {llmResult.DescriptionsBackfilled} description{(llmResult.DescriptionsBackfilled == 1 ? "" : "s")} backfilled");
+            if (llmResult.SessionsSummarized > 0)
+                sb.AppendLine($"  [dim]•[/] {llmResult.SessionsSummarized} session{(llmResult.SessionsSummarized == 1 ? "" : "s")} summarized");
+            if (llmResult.FactsExtracted > 0)
+                sb.AppendLine($"  [dim]•[/] {llmResult.FactsExtracted} entr{(llmResult.FactsExtracted == 1 ? "y" : "ies")} fact-extracted");
+        }
         AnsiConsole.Write(new Markup(sb.ToString()));
-        return Task.FromResult(0);
+        return 0;
     }
 
     /// <summary>True when the scope is the session-log scope under any namespacing variant.</summary>

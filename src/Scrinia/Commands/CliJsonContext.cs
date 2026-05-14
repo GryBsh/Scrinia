@@ -20,6 +20,7 @@ namespace Scrinia.Commands;
 [JsonSerializable(typeof(MergeConfig))]
 [JsonSerializable(typeof(CliMcpOutput))]
 [JsonSerializable(typeof(CliConsolidateOutput))]
+[JsonSerializable(typeof(ConsolidateProgressFile))]
 internal partial class CliJsonContext : JsonSerializerContext;
 
 internal sealed record MergeConfig(
@@ -82,4 +83,14 @@ internal sealed record CliConsolidateOutput(
     long TotalBytes,
     int StaleCount,
     int CompactionCandidates,
-    string[] Compacted);
+    string[] Compacted,
+    CliConsolidateLlmStats? Llm = null);
+
+/// <summary>Tier 2 stats when consolidate runs with --with-llm.</summary>
+internal sealed record CliConsolidateLlmStats(
+    int Processed,
+    int DescriptionsBackfilled,
+    int SessionsSummarized,
+    int FactsExtracted,
+    int Skipped,
+    int Failed);
