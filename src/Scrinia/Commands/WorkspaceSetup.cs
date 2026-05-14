@@ -35,16 +35,19 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
-    /// Initializes embeddings and loads optional plugins.
+    /// Initializes embeddings and loads optional plugins. Preference order (both embeddings
+    /// and LLM): explicit HTTP provider → bundled Vulkan plugin → in-process fallback. The
+    /// principle is "don't load the Vulkan rigamarole if the user already has an HTTP backend
+    /// running" — Ollama / llama.cpp server / LM Studio are usually already up in dev setups,
+    /// and spinning up a second model in our own VRAM is wasteful when we could just call out.
     ///
-    /// Two-step initialization with plugin-first detection:
-    /// 1. If the Vulkan embeddings plugin exe is installed, skip the built-in init entirely
-    ///    — the plugin will own embeddings. Saves ~50MB RAM and a model load on startup.
-    /// 2. Otherwise, load built-in (in-process Model2Vec or API provider from config) as the
-    ///    permanent embeddings backend.
-    /// 3. Try the plugin subprocess. If it starts and reports a working provider, it claims
-    ///    SearchContributorContext.Default and MemoryEventSinkContext.Default. If it fails
-    ///    AND step 1 skipped the built-in, search degrades to BM25-only for this session.
+    /// Embeddings rules:
+    /// 1. <c>Scrinia:Embeddings:Provider</c> set to anything HTTP-backed (<c>ollama</c>,
+    ///    <c>openai</c>, <c>voyageai</c>, <c>azure</c>, <c>google</c>) → use it; skip plugin
+    ///    and Model2Vec entirely.
+    /// 2. Provider is <c>model2vec</c> (the default) or unset, and the Vulkan plugin exe is
+    ///    installed → load the plugin, skip Model2Vec.
+    /// 3. Otherwise → load in-process Model2Vec.
     /// </summary>
     internal static async Task LoadPluginsAsync(CancellationToken ct = default)
     {
@@ -56,48 +59,18 @@ internal static class WorkspaceSetup
         string exeDir = AppContext.BaseDirectory;
         string modelsDir = Path.Combine(exeDir, "models");
 
+        var embeddingOptions = BuildEmbeddingOptions();
+        bool explicitHttpEmbeddings = IsHttpEmbeddingsProvider(embeddingOptions.Provider);
         bool pluginExeInstalled = IsEmbeddingsPluginInstalled();
 
-        // Step 1: Built-in embeddings — skipped when the Vulkan plugin will take over. The
-        // plugin runs as a child process with its own model load; keeping a second copy of
-        // Model2Vec in-process burns memory for no benefit since the plugin's defaults
-        // override these anyway.
-        if (!pluginExeInstalled)
+        if (explicitHttpEmbeddings)
         {
-            try
-            {
-                var options = BuildEmbeddingOptions();
-                var provider = EmbeddingProviderFactory.Create(options, modelsDir, logger);
-                _embeddingProvider = provider;
-
-                if (provider.IsAvailable)
-                {
-                    var vectorStore = new VectorStore(embeddingsDir);
-                    var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
-                    var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
-
-                    SearchContributorContext.Default = reranker;
-                    MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
-
-                    Console.Error.WriteLine(
-                        $"[scrinia:info] Built-in embeddings ready " +
-                        $"(provider={provider.GetType().Name}, dims={provider.Dimensions})");
-                }
-                else
-                {
-                    Console.Error.WriteLine(
-                        $"[scrinia:info] Built-in embeddings not available " +
-                        $"(provider={provider.GetType().Name})");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine(
-                    $"[scrinia:warn] Failed to initialize built-in embeddings: " +
-                    $"{ex.GetType().Name}: {ex.Message}");
-            }
+            // User picked Ollama/OpenAI/etc. — honor the explicit choice and skip the plugin
+            // entirely. Loading both wastes VRAM and means the plugin's defaults shadow the
+            // user's settings via SearchContributorContext override.
+            LoadExplicitHttpEmbeddings(embeddingOptions, embeddingsDir, modelsDir, logger);
         }
-        else
+        else if (pluginExeInstalled)
         {
             // Maintenance sink is independent of the embeddings provider — it handles things
             // like updating last-accessed timestamps. Wire it standalone so plugin-failure
@@ -105,16 +78,101 @@ internal static class WorkspaceSetup
             MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
             Console.Error.WriteLine(
                 "[scrinia:info] Embeddings plugin exe detected — skipping built-in Model2Vec.");
+            await TryLoadVulkanPluginAsync(ct);
+        }
+        else
+        {
+            LoadBuiltInEmbeddings(embeddingOptions, embeddingsDir, modelsDir, logger);
         }
 
-        // Step 2: Optional Vulkan plugin (child-process, overrides built-in if found)
-        await TryLoadVulkanPluginAsync(ct);
-
-        // Step 3: Background LLM for Tier 2 consolidation. Try the bundled plugin first
-        // (subprocess via MCP stdio), then fall through to the OpenAI-compatible HTTP path
-        // (Ollama, llama.cpp server, LM Studio, Docker Model Runner). Probe budget is short
-        // so a missing backend never adds noticeable startup latency.
+        // Background LLM for Tier 2 consolidation. Auto mode probes HTTP first (Ollama et al.)
+        // and only falls back to the bundled plugin if no HTTP backend responds — saves the
+        // plugin subprocess + model load + VRAM when an existing endpoint is already up.
         await TryLoadBackgroundLlmAsync(loggerFactory.CreateLogger("Scrinia.Llm"), ct);
+    }
+
+    /// <summary>True when <paramref name="provider"/> is one of the network-backed providers
+    /// — i.e. anything that talks to a remote/local HTTP endpoint rather than loading a
+    /// model in-process. Used to decide whether the Vulkan plugin should be skipped.</summary>
+    private static bool IsHttpEmbeddingsProvider(string provider) =>
+        provider.Equals("ollama", StringComparison.OrdinalIgnoreCase)
+        || provider.Equals("openai", StringComparison.OrdinalIgnoreCase)
+        || provider.Equals("voyageai", StringComparison.OrdinalIgnoreCase)
+        || provider.Equals("azure", StringComparison.OrdinalIgnoreCase)
+        || provider.Equals("google", StringComparison.OrdinalIgnoreCase);
+
+    private static void LoadExplicitHttpEmbeddings(
+        EmbeddingOptions options, string embeddingsDir, string modelsDir, ILogger logger)
+    {
+        try
+        {
+            var provider = EmbeddingProviderFactory.Create(options, modelsDir, logger);
+            _embeddingProvider = provider;
+
+            if (provider.IsAvailable)
+            {
+                var vectorStore = new VectorStore(embeddingsDir);
+                var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
+                var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
+
+                SearchContributorContext.Default = reranker;
+                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+
+                Console.Error.WriteLine(
+                    $"[scrinia:info] HTTP embeddings ready " +
+                    $"(provider={options.Provider}, type={provider.GetType().Name}, dims={provider.Dimensions})");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] HTTP embeddings provider '{options.Provider}' not available — " +
+                    $"check Scrinia:Embeddings:* config. Search degrades to BM25-only.");
+                MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Failed to initialize HTTP embeddings ('{options.Provider}'): " +
+                $"{ex.GetType().Name}: {ex.Message}");
+            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+        }
+    }
+
+    private static void LoadBuiltInEmbeddings(
+        EmbeddingOptions options, string embeddingsDir, string modelsDir, ILogger logger)
+    {
+        try
+        {
+            var provider = EmbeddingProviderFactory.Create(options, modelsDir, logger);
+            _embeddingProvider = provider;
+
+            if (provider.IsAvailable)
+            {
+                var vectorStore = new VectorStore(embeddingsDir);
+                var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
+                var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
+
+                SearchContributorContext.Default = reranker;
+                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+
+                Console.Error.WriteLine(
+                    $"[scrinia:info] Built-in embeddings ready " +
+                    $"(provider={provider.GetType().Name}, dims={provider.Dimensions})");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia:info] Built-in embeddings not available " +
+                    $"(provider={provider.GetType().Name})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Failed to initialize built-in embeddings: " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -228,12 +286,15 @@ internal static class WorkspaceSetup
     /// Installs <see cref="BackgroundLlmContext.Default"/> for Tier 2 consolidation. Provider
     /// selection order (when <c>Scrinia:Llm:Provider</c> = "auto"):
     /// <list type="number">
-    ///   <item>Bundled <c>scri-plugin-llm</c> subprocess if the exe is present.</item>
-    ///   <item>OpenAI-compatible HTTP endpoint at <c>Scrinia:Llm:BaseUrl</c> if it responds.</item>
+    ///   <item>OpenAI-compatible HTTP endpoint at <c>Scrinia:Llm:BaseUrl</c> if it responds —
+    ///         tried first because "if Ollama/llama.cpp/LM Studio is already running, there's
+    ///         no point booting our own subprocess with a separate model copy in VRAM."</item>
+    ///   <item>Bundled <c>scri-plugin-llm</c> subprocess if the HTTP probe fails and the
+    ///         plugin exe is present.</item>
     ///   <item>None — <c>scri consolidate --with-llm</c> will print a setup hint.</item>
     /// </list>
-    /// Explicit Provider values (<c>plugin</c>, <c>openai</c>, <c>none</c>) skip the
-    /// other steps and surface a warning if the chosen backend is unavailable.
+    /// Explicit Provider values (<c>plugin</c>, <c>openai</c>, <c>none</c>) skip the other
+    /// steps and surface a warning if the chosen backend is unavailable.
     /// </summary>
     private static async Task TryLoadBackgroundLlmAsync(ILogger logger, CancellationToken ct)
     {
@@ -244,7 +305,16 @@ internal static class WorkspaceSetup
         bool forcePlugin = options.Provider.Equals("plugin", StringComparison.OrdinalIgnoreCase);
         bool forceHttp = options.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase);
 
-        // Step A: bundled plugin (unless explicitly forced to HTTP).
+        // Step A: HTTP probe first (unless explicitly forced to plugin). When Ollama or
+        // another OpenAI-compatible server is already running we prefer it — avoids
+        // spinning up the plugin subprocess and loading a second model into VRAM.
+        if (!forcePlugin)
+        {
+            if (await TryProbeOpenAiCompatibleAsync(options, forceHttp, ct)) return;
+            if (forceHttp) return; // failure already logged by the probe
+        }
+
+        // Step B: bundled plugin (unless explicitly forced to HTTP).
         if (!forceHttp)
         {
             if (await TryStartLlmPluginAsync(ct)) return;
@@ -252,13 +322,8 @@ internal static class WorkspaceSetup
             {
                 Console.Error.WriteLine(
                     "[scrinia:warn] Llm provider=plugin configured but scri-plugin-llm was not available.");
-                return;
             }
         }
-
-        // Step B: OpenAI-compatible HTTP endpoint (unless explicitly forced to plugin).
-        if (!forcePlugin)
-            await TryProbeOpenAiCompatibleAsync(options, forceHttp, ct);
     }
 
     private static async Task<bool> TryStartLlmPluginAsync(CancellationToken ct)
@@ -309,11 +374,14 @@ internal static class WorkspaceSetup
         }
     }
 
-    private static async Task TryProbeOpenAiCompatibleAsync(LlmOptions options, bool forceHttp, CancellationToken ct)
+    /// <summary>
+    /// Probes the configured OpenAI-compatible endpoint and installs it as the background LLM
+    /// if reachable. Returns true on success so the caller can short-circuit further fallback.
+    /// Probe-failure logging differentiates auto vs explicit: when forceHttp is set the user
+    /// chose this path so failure is a warn; in auto mode failure is just an info breadcrumb.
+    /// </summary>
+    private static async Task<bool> TryProbeOpenAiCompatibleAsync(LlmOptions options, bool forceHttp, CancellationToken ct)
     {
-        // Probe-failure messaging: when forceHttp is set the user explicitly chose this path
-        // so they want loud failures; otherwise (auto mode) a single info line lets curious
-        // users see what's happening without flooding the log on every startup.
         const int probeTimeoutSeconds = 2;
         try
         {
@@ -328,8 +396,8 @@ internal static class WorkspaceSetup
                 string severity = forceHttp ? "warn" : "info";
                 Console.Error.WriteLine(
                     $"[scrinia:{severity}] LLM HTTP probe failed: {options.BaseUrl} did not respond at /models or /. " +
-                    $"Tier 2 will be unavailable unless a plugin is loaded.");
-                return;
+                    (forceHttp ? "Tier 2 will be unavailable." : "Falling back to bundled plugin if installed."));
+                return false;
             }
         }
         catch (Exception ex)
@@ -337,7 +405,7 @@ internal static class WorkspaceSetup
             string severity = forceHttp ? "warn" : "info";
             Console.Error.WriteLine(
                 $"[scrinia:{severity}] LLM HTTP probe error: {ex.GetType().Name}: {ex.Message}");
-            return;
+            return false;
         }
 
         var llm = OpenAiCompatibleBackgroundLlm.Create(options);
@@ -346,6 +414,7 @@ internal static class WorkspaceSetup
 
         Console.Error.WriteLine(
             $"[scrinia:info] Background LLM ready (provider=openai, model={options.Model}, baseUrl={options.BaseUrl})");
+        return true;
     }
 
     private static LlmOptions BuildLlmOptions()
