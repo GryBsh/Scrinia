@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Llm;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.Services;
@@ -87,6 +88,12 @@ internal static class WorkspaceSetup
 
         // Step 2: Optional Vulkan plugin (child-process, overrides built-in if found)
         await TryLoadVulkanPluginAsync(ct);
+
+        // Step 3: Background LLM for Tier 2 consolidation. The bundled plugin is Phase 4 —
+        // for now we only try the OpenAI-compatible HTTP path (Ollama, llama.cpp server,
+        // LM Studio, Docker Model Runner, etc.). Probe is short-budget; failure means
+        // `scri consolidate --tier2` will exit with a setup hint, everything else works.
+        await TryLoadBackgroundLlmAsync(loggerFactory.CreateLogger("Scrinia.Llm"), ct);
     }
 
     private static async Task TryLoadVulkanPluginAsync(CancellationToken ct)
@@ -181,6 +188,80 @@ internal static class WorkspaceSetup
 
         string? voyageUrl = GetConfigValue("Scrinia:Embeddings:VoyageAiBaseUrl");
         if (voyageUrl is not null) options.VoyageAiBaseUrl = voyageUrl;
+
+        return options;
+    }
+
+    /// <summary>
+    /// Probes for an OpenAI-compatible chat-completions endpoint (Ollama by default)
+    /// and installs <see cref="OpenAiCompatibleBackgroundLlm"/> as <see cref="BackgroundLlmContext.Default"/>
+    /// when one responds. Provider=plugin is handled later in Phase 4; Provider=none
+    /// short-circuits the probe entirely. Probe timeout is short (2s) so we don't add
+    /// noticeable startup latency in the common no-backend case.
+    /// </summary>
+    private static async Task TryLoadBackgroundLlmAsync(ILogger logger, CancellationToken ct)
+    {
+        var options = BuildLlmOptions();
+        if (options.Provider.Equals("none", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // Plugin provider is wired in Phase 4 — for now, "plugin" falls through to the HTTP
+        // probe (which will fail unless the user also has an HTTP endpoint up).
+        bool forceHttp = options.Provider.Equals("openai-compat", StringComparison.OrdinalIgnoreCase);
+
+        try
+        {
+            var probeHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            var probe = new OpenAiCompatibleBackgroundLlm(options, probeHttp, ownsHttp: true);
+            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            probeCts.CancelAfter(TimeSpan.FromSeconds(2));
+            bool available = await probe.IsAvailableAsync(probeCts.Token);
+            probe.Dispose();
+            if (!available)
+            {
+                if (forceHttp)
+                    Console.Error.WriteLine(
+                        $"[scrinia:warn] Llm provider=openai-compat configured but {options.BaseUrl} did not respond.");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (forceHttp)
+                Console.Error.WriteLine($"[scrinia:warn] Llm probe failed: {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+
+        // Install a long-lived instance for actual use. The probe instance was throwaway.
+        var llm = OpenAiCompatibleBackgroundLlm.Create(options);
+        BackgroundLlmContext.Default = llm;
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
+
+        Console.Error.WriteLine(
+            $"[scrinia:info] Background LLM ready (provider=openai-compat, model={options.Model}, baseUrl={options.BaseUrl})");
+    }
+
+    private static LlmOptions BuildLlmOptions()
+    {
+        var options = new LlmOptions();
+
+        string? provider = GetConfigValue("Scrinia:Llm:Provider");
+        if (provider is not null) options.Provider = provider;
+
+        string? baseUrl = GetConfigValue("Scrinia:Llm:BaseUrl");
+        if (baseUrl is not null) options.BaseUrl = baseUrl;
+
+        string? model = GetConfigValue("Scrinia:Llm:Model");
+        if (model is not null) options.Model = model;
+
+        string? apiKey = GetConfigValue("Scrinia:Llm:ApiKey");
+        if (apiKey is not null) options.ApiKey = apiKey;
+
+        string? temp = GetConfigValue("Scrinia:Llm:Temperature");
+        if (temp is not null && double.TryParse(temp, out double t)) options.Temperature = t;
+
+        string? timeout = GetConfigValue("Scrinia:Llm:RequestTimeoutSeconds");
+        if (timeout is not null && int.TryParse(timeout, out int s)) options.RequestTimeoutSeconds = s;
 
         return options;
     }
