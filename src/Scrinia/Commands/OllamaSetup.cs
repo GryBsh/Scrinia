@@ -21,8 +21,8 @@ internal static class OllamaSetup
 {
     public const string DefaultBaseUrl = "http://localhost:11434";
     public const string DefaultEmbeddingModel = "nomic-embed-text";
-    public const string DefaultChatModel = "lfm2:1.2b";
-    public const string FallbackChatModel = "llama3.2:1b";
+    public const string DefaultCompletionModel = "lfm2:1.2b";
+    public const string FallbackCompletionModel = "llama3.2:1b";
 
     public sealed record OllamaModelInfo(string Name, long Size);
 

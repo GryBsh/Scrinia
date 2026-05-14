@@ -939,7 +939,7 @@ public class ScriniaCommands
 
         string exeDir = AppContext.BaseDirectory;
 
-        // ── Step 0: Ollama auto-detect (offers to wire embeddings + chat through Ollama
+        // ── Step 0: Ollama auto-detect (offers to wire embeddings + completion through Ollama
         //           if it's already running, skipping the local-model downloads below). ──
         bool ollamaConfigured = !noOllama && await TryConfigureOllamaAsync(cancellationToken);
         if (ollamaConfigured)
@@ -1092,7 +1092,7 @@ public class ScriniaCommands
 
     /// <summary>
     /// Probes for a running Ollama at the default URL and, if detected, walks the user through
-    /// picking embedding + chat models and pulling them if missing. On success writes
+    /// picking embedding + completion models and pulling them if missing. On success writes
     /// <c>Scrinia:Embeddings:*</c> + <c>Scrinia:Llm:*</c> config and returns true so the caller
     /// can skip the local-model download steps.
     ///
@@ -1122,7 +1122,7 @@ public class ScriniaCommands
         AnsiConsole.MarkupLine(
             $"[green]  Ollama detected at {OllamaSetup.DefaultBaseUrl}.[/] " +
             $"[dim]({probe.Models.Count} model(s) installed)[/]");
-        if (!AnsiConsole.Confirm("  Use Ollama for Scrinia embeddings + chat?", defaultValue: true))
+        if (!AnsiConsole.Confirm("  Use Ollama for Scrinia embeddings + completion?", defaultValue: true))
             return false;
 
         var installed = probe.Models;
@@ -1141,15 +1141,15 @@ public class ScriniaCommands
             ct: ct);
         if (embeddingModel is null) return false;
 
-        // -- Chat model selection --
-        string? chatModel = await PromptForOllamaModelAsync(
-            label: "chat model",
-            defaultModel: OllamaSetup.DefaultChatModel,
+        // -- Completion model selection --
+        string? completionModel = await PromptForOllamaModelAsync(
+            label: "completion model",
+            defaultModel: OllamaSetup.DefaultCompletionModel,
             installedRelevant: pulledChat,
             installedAll: pulledNames,
-            fallbackOnPullFailure: OllamaSetup.FallbackChatModel,
+            fallbackOnPullFailure: OllamaSetup.FallbackCompletionModel,
             ct: ct);
-        if (chatModel is null) return false;
+        if (completionModel is null) return false;
 
         // -- Write config (Embeddings uses raw host URL, Llm uses /v1 OpenAI-compat suffix) --
         WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:Provider", "ollama");
@@ -1157,14 +1157,14 @@ public class ScriniaCommands
         WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:OllamaModel", embeddingModel);
         WorkspaceConfig.SetValue(root, "Scrinia:Llm:Provider", "openai");
         WorkspaceConfig.SetValue(root, "Scrinia:Llm:BaseUrl", $"{OllamaSetup.DefaultBaseUrl}/v1");
-        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Model", chatModel);
+        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Model", completionModel);
 
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine($"[green]  Config written:[/]");
         AnsiConsole.MarkupLine($"    [dim]Scrinia:Embeddings:Provider = ollama[/]");
         AnsiConsole.MarkupLine($"    [dim]Scrinia:Embeddings:OllamaModel = {Markup.Escape(embeddingModel)}[/]");
         AnsiConsole.MarkupLine($"    [dim]Scrinia:Llm:Provider = openai[/]");
-        AnsiConsole.MarkupLine($"    [dim]Scrinia:Llm:Model = {Markup.Escape(chatModel)}[/]");
+        AnsiConsole.MarkupLine($"    [dim]Scrinia:Llm:Model = {Markup.Escape(completionModel)}[/]");
         return true;
     }
 

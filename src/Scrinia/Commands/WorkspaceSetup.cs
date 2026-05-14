@@ -427,7 +427,11 @@ internal static class WorkspaceSetup
     /// </summary>
     private static async Task<bool> TryProbeOpenAiCompatibleAsync(LlmOptions options, bool forceHttp, CancellationToken ct)
     {
-        const int probeTimeoutSeconds = 2;
+        // 5s rather than 2s: on Windows the IPv6→IPv4 fallback for `localhost` can add a
+        // second or two on its own, and a freshly-started Ollama may stall briefly while
+        // loading model metadata into its API surface. 2s was triggering false negatives on
+        // working installs.
+        const int probeTimeoutSeconds = 5;
         try
         {
             var probeHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(probeTimeoutSeconds) };

@@ -11,7 +11,10 @@ public sealed class OllamaEmbeddingProvider : ResilientEmbeddingProvider
 {
     private readonly string _model;
 
-    public override bool IsAvailable => ObservedDimensions > 0;
+    // Inherits IsAvailable => true from the base. The previous override
+    // (ObservedDimensions > 0) gated availability on a successful first embed, which broke
+    // the construction-time check in WorkspaceSetup — there's no embedding to observe yet
+    // at wire-up time. HTTP-reachability is verified per-call inside the resilience pipeline.
     public override int Dimensions => ObservedDimensions;
     public override string Signature => $"ollama:{_model}";
     protected override string ProviderName => "Ollama";
