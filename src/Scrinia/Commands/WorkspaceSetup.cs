@@ -37,10 +37,14 @@ internal static class WorkspaceSetup
     /// <summary>
     /// Initializes embeddings and loads optional plugins.
     ///
-    /// Two-step initialization:
-    /// 1. Built-in embeddings (in-process): Model2Vec or API provider from config.
-    ///    Sets SearchContributorContext.Default and MemoryEventSinkContext.Default.
-    /// 2. Optional Vulkan plugin (child-process): if found, overrides the built-in defaults.
+    /// Two-step initialization with plugin-first detection:
+    /// 1. If the Vulkan embeddings plugin exe is installed, skip the built-in init entirely
+    ///    — the plugin will own embeddings. Saves ~50MB RAM and a model load on startup.
+    /// 2. Otherwise, load built-in (in-process Model2Vec or API provider from config) as the
+    ///    permanent embeddings backend.
+    /// 3. Try the plugin subprocess. If it starts and reports a working provider, it claims
+    ///    SearchContributorContext.Default and MemoryEventSinkContext.Default. If it fails
+    ///    AND step 1 skipped the built-in, search degrades to BM25-only for this session.
     /// </summary>
     internal static async Task LoadPluginsAsync(CancellationToken ct = default)
     {
@@ -52,38 +56,55 @@ internal static class WorkspaceSetup
         string exeDir = AppContext.BaseDirectory;
         string modelsDir = Path.Combine(exeDir, "models");
 
-        // Step 1: Built-in embeddings (in-process, zero native deps)
-        try
+        bool pluginExeInstalled = IsEmbeddingsPluginInstalled();
+
+        // Step 1: Built-in embeddings — skipped when the Vulkan plugin will take over. The
+        // plugin runs as a child process with its own model load; keeping a second copy of
+        // Model2Vec in-process burns memory for no benefit since the plugin's defaults
+        // override these anyway.
+        if (!pluginExeInstalled)
         {
-            var options = BuildEmbeddingOptions();
-            var provider = EmbeddingProviderFactory.Create(options, modelsDir, logger);
-            _embeddingProvider = provider;
-
-            if (provider.IsAvailable)
+            try
             {
-                var vectorStore = new VectorStore(embeddingsDir);
-                var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
-                var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
+                var options = BuildEmbeddingOptions();
+                var provider = EmbeddingProviderFactory.Create(options, modelsDir, logger);
+                _embeddingProvider = provider;
 
-                SearchContributorContext.Default = reranker;
-                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+                if (provider.IsAvailable)
+                {
+                    var vectorStore = new VectorStore(embeddingsDir);
+                    var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
+                    var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
 
-                Console.Error.WriteLine(
-                    $"[scrinia:info] Built-in embeddings ready " +
-                    $"(provider={provider.GetType().Name}, dims={provider.Dimensions})");
+                    SearchContributorContext.Default = reranker;
+                    MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+
+                    Console.Error.WriteLine(
+                        $"[scrinia:info] Built-in embeddings ready " +
+                        $"(provider={provider.GetType().Name}, dims={provider.Dimensions})");
+                }
+                else
+                {
+                    Console.Error.WriteLine(
+                        $"[scrinia:info] Built-in embeddings not available " +
+                        $"(provider={provider.GetType().Name})");
+                }
             }
-            else
+            catch (Exception ex)
             {
                 Console.Error.WriteLine(
-                    $"[scrinia:info] Built-in embeddings not available " +
-                    $"(provider={provider.GetType().Name})");
+                    $"[scrinia:warn] Failed to initialize built-in embeddings: " +
+                    $"{ex.GetType().Name}: {ex.Message}");
             }
         }
-        catch (Exception ex)
+        else
         {
+            // Maintenance sink is independent of the embeddings provider — it handles things
+            // like updating last-accessed timestamps. Wire it standalone so plugin-failure
+            // does not leave maintenance hooks unsubscribed.
+            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
             Console.Error.WriteLine(
-                $"[scrinia:warn] Failed to initialize built-in embeddings: " +
-                $"{ex.GetType().Name}: {ex.Message}");
+                "[scrinia:info] Embeddings plugin exe detected — skipping built-in Model2Vec.");
         }
 
         // Step 2: Optional Vulkan plugin (child-process, overrides built-in if found)
@@ -96,25 +117,36 @@ internal static class WorkspaceSetup
         await TryLoadBackgroundLlmAsync(loggerFactory.CreateLogger("Scrinia.Llm"), ct);
     }
 
-    private static async Task TryLoadVulkanPluginAsync(CancellationToken ct)
+    /// <summary>
+    /// Checks whether the embeddings plugin exe is on disk. Used to decide whether to skip
+    /// the built-in Model2Vec init — when the plugin is installed it will own embeddings.
+    /// </summary>
+    private static bool IsEmbeddingsPluginInstalled() => ResolveEmbeddingsPluginExe() is not null;
+
+    private static string? ResolveEmbeddingsPluginExe()
     {
         string exeDir = AppContext.BaseDirectory;
         string pluginsDir = Path.Combine(exeDir, "plugins");
-
-        if (!Directory.Exists(pluginsDir))
-            return;
+        if (!Directory.Exists(pluginsDir)) return null;
 
         string ext = OperatingSystem.IsWindows() ? ".exe" : "";
         string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
 
-        // Look for plugin exe: first in subdirectory (multi-file publish), then flat (single-file)
-        string embeddingsExe = Path.Combine(pluginsDir, pluginName, $"{pluginName}{ext}");
-        if (!File.Exists(embeddingsExe))
-        {
-            embeddingsExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
-            if (!File.Exists(embeddingsExe))
-                return;
-        }
+        // Subdirectory layout (multi-file publish) first, then flat (single-file).
+        string candidate = Path.Combine(pluginsDir, pluginName, $"{pluginName}{ext}");
+        if (File.Exists(candidate)) return candidate;
+        candidate = Path.Combine(pluginsDir, $"{pluginName}{ext}");
+        return File.Exists(candidate) ? candidate : null;
+    }
+
+    private static async Task TryLoadVulkanPluginAsync(CancellationToken ct)
+    {
+        string? embeddingsExe = ResolveEmbeddingsPluginExe();
+        if (embeddingsExe is null) return;
+
+        string exeDir = AppContext.BaseDirectory;
+        string pluginsDir = Path.Combine(exeDir, "plugins");
+        string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
 
         // Vector data lives in the workspace-local .scrinia/ directory (per-project isolation).
         string dataDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");

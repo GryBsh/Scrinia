@@ -32,6 +32,13 @@ internal static class LlmConsolidator
     private const string ProgressFileName = ".consolidate-progress.json";
     private const int ProgressFileVersion = 1;
 
+    // How often the progress file is flushed during a run. Writing after every entry hammers
+    // file-replication agents (OneDrive, Dropbox, Synology Drive) and triggers transient
+    // file-lock contention on Windows. Batching to every N entries keeps the skip-list usefully
+    // fresh for resume scenarios while letting sync clients keep up. The final flush at the end
+    // of the run guarantees a complete record even mid-batch.
+    private const int ProgressFlushEveryNEntries = 5;
+
     // Per-task cancellation budgets. Descriptions are short, summaries medium,
     // fact extraction long. The outer CT still wins if the run is cancelled.
     private static readonly TimeSpan DescriptionBudget = TimeSpan.FromSeconds(20);
@@ -62,6 +69,7 @@ internal static class LlmConsolidator
     {
         var progress = LoadProgress(scriniaDir);
         int processed = 0, descriptions = 0, summaries = 0, facts = 0, skipped = 0, failed = 0;
+        int pendingProgressWrites = 0;
 
         foreach (var item in entries)
         {
@@ -201,15 +209,25 @@ internal static class LlmConsolidator
             }
 
             // Update progress regardless of partial success — records hash so re-run skips
-            // the operations that did complete.
+            // the operations that did complete. Persistence batched every N entries below.
             progress.Entries[qualifiedName] = new ConsolidateEntryProgress(
                 ContentHash: hash,
                 ProcessedAt: DateTimeOffset.UtcNow.ToString("o"),
                 DescriptionDone: didDescription || (prior?.DescriptionDone ?? false),
                 SummarizedFromSession: didSummary || (prior?.SummarizedFromSession ?? false),
                 FactsDone: didFacts || (prior?.FactsDone ?? false));
-            SaveProgress(scriniaDir, progress);
+
+            pendingProgressWrites++;
+            if (pendingProgressWrites >= ProgressFlushEveryNEntries)
+            {
+                TrySaveProgress(scriniaDir, progress, onWarning);
+                pendingProgressWrites = 0;
+            }
         }
+
+        // Final flush — captures any entries since the last batched write.
+        if (pendingProgressWrites > 0)
+            TrySaveProgress(scriniaDir, progress, onWarning);
 
         return new Result(processed, descriptions, summaries, facts, skipped, failed);
     }
@@ -291,6 +309,28 @@ internal static class LlmConsolidator
         }
     }
 
+    /// <summary>
+    /// Best-effort progress-file write. The progress file is a skip-list optimisation,
+    /// not the source of truth — losing a write only forces re-processing on next run.
+    /// Common cause of failure: file-replication agents (OneDrive, Synology Drive) holding
+    /// transient handles during the atomic rename. The caller continues regardless.
+    /// </summary>
+    private static void TrySaveProgress(
+        string scriniaDir, ConsolidateProgressFile progress, Action<string>? onWarning)
+    {
+        try
+        {
+            SaveProgress(scriniaDir, progress);
+        }
+        catch (Exception ex)
+        {
+            onWarning?.Invoke(
+                $"progress file write failed ({ex.GetType().Name}: {ex.Message}) — " +
+                "continuing without skip-list updates; this run will complete but a future " +
+                "resume may re-process already-completed entries.");
+        }
+    }
+
     private static void SaveProgress(string scriniaDir, ConsolidateProgressFile progress)
     {
         Directory.CreateDirectory(scriniaDir);
@@ -300,6 +340,24 @@ internal static class LlmConsolidator
         string json = System.Text.Json.JsonSerializer.Serialize(
             updated, CliJsonContext.Default.ConsolidateProgressFile);
         File.WriteAllText(tmp, json);
+
+        // Atomic rename with retry. File.Move(overwrite: true) on Windows can throw
+        // UnauthorizedAccessException when a sync client (Synology Drive, OneDrive, Dropbox)
+        // briefly opens the destination for replication right after our previous write.
+        // Brief backoff lets the agent close its handle; final attempt is unguarded so a
+        // persistent failure surfaces to TrySaveProgress instead of being swallowed silently.
+        int[] backoffsMs = [50, 100, 250];
+        foreach (int delayMs in backoffsMs)
+        {
+            try
+            {
+                File.Move(tmp, path, overwrite: true);
+                return;
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            Thread.Sleep(delayMs);
+        }
         File.Move(tmp, path, overwrite: true);
     }
 }
