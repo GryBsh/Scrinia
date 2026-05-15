@@ -70,6 +70,29 @@ public sealed class ClaudeCodeHookInstallerTests : IDisposable
     }
 
     [Fact]
+    public void Install_WithDefaultSpecs_WritesAllThreeCanonicalEvents()
+    {
+        // Regression for "Claude Code is missing a prompt submitted hook" — installer must
+        // write all entries it's handed, including UserPromptSubmit which arrived in the
+        // pre-send hint commit. Drives off DefaultHookSpecs (the production set) rather
+        // than a hand-crafted Specs constant so adding a new canonical event without test
+        // coverage fails this assertion.
+        var installer = NewInstaller();
+        installer.InstallHooks(HookScope.Project, _workspace, AgentHookSetup.DefaultHookSpecs)
+            .Should().BeTrue();
+
+        var hooks = ParseConfig()["hooks"]!.AsObject();
+        foreach (var spec in AgentHookSetup.DefaultHookSpecs)
+        {
+            hooks.ContainsKey(spec.EventName).Should().BeTrue(
+                $"DefaultHookSpecs entry {spec.EventName} must appear in .claude/settings.json after install");
+            hooks[spec.EventName]!.AsArray().Should().HaveCount(1, $"one scrinia-managed block per event ({spec.EventName})");
+            hooks[spec.EventName]![0]!["hooks"]![0]!["command"]!.GetValue<string>()
+                .Should().Be(spec.Command);
+        }
+    }
+
+    [Fact]
     public void Install_PreservesUserAuthoredHooks_InTheSameEvent()
     {
         // Pre-existing user hook + setting in the same file. Our install must not eat them.

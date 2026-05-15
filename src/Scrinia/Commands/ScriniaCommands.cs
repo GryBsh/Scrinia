@@ -1121,7 +1121,8 @@ public class ScriniaCommands
 
         AnsiConsole.MarkupLine($"[bold]Agent CLI hooks ({scope})[/]");
         AnsiConsole.MarkupLine(
-            "  [dim]SessionStart fires `scri restore`, Stop fires `scri consolidate --auto`.[/]");
+            "  [dim]SessionStart → `scri restore`, SessionEnd → `scri consolidate --auto`, " +
+            "UserPromptSubmit → `scri hint`.[/]");
 
         int configured = await AgentHookSetup.InstallAsync(scope, workspaceRoot);
         if (configured == 0)
