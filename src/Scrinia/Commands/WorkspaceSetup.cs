@@ -423,6 +423,8 @@ internal static class WorkspaceSetup
 
         bool forcePlugin = options.Provider.Equals("plugin", StringComparison.OrdinalIgnoreCase);
         bool forceHttp = options.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase);
+        bool forceAnthropic = options.Provider.Equals("anthropic", StringComparison.OrdinalIgnoreCase);
+        bool forceGemini = options.Provider.Equals("gemini", StringComparison.OrdinalIgnoreCase);
         var explicitCliVariant = AgentCliVariant.TryFromId(options.Provider);
 
         // Explicit agent-CLI selection short-circuits everything.
@@ -431,6 +433,19 @@ internal static class WorkspaceSetup
             if (await TryStartAgentCliAsync(explicitCliVariant, options, forced: true)) return;
             Console.Error.WriteLine(
                 $"[scrinia:warn] Llm provider={options.Provider} configured but the {explicitCliVariant.DisplayName} CLI was not on PATH.");
+            return;
+        }
+
+        // Explicit Anthropic / Gemini selection — opt-in only; no auto-probe (API-key
+        // presence is the signal we'd probe anyway, so the explicit value is the contract).
+        if (forceAnthropic)
+        {
+            if (await TryStartAnthropicAsync(options, ct)) return;
+            return;
+        }
+        if (forceGemini)
+        {
+            if (await TryStartGeminiAsync(options, ct)) return;
             return;
         }
 
@@ -465,6 +480,52 @@ internal static class WorkspaceSetup
                     "[scrinia:warn] Llm provider=plugin configured but scri-plugin-llm was not available.");
             }
         }
+    }
+
+    private static async Task<bool> TryStartAnthropicAsync(LlmOptions options, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(options.AnthropicApiKey))
+        {
+            Console.Error.WriteLine(
+                "[scrinia:warn] Llm provider=anthropic configured but Scrinia:Llm:AnthropicApiKey is not set.");
+            return false;
+        }
+        var llm = Scrinia.Core.Llm.Providers.AnthropicLlmProvider.Create(options);
+        if (!await llm.IsAvailableAsync(ct))
+        {
+            llm.Dispose();
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Anthropic API at {options.AnthropicBaseUrl} did not respond or rejected the API key.");
+            return false;
+        }
+        BackgroundLlmContext.Default = llm;
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
+        Console.Error.WriteLine(
+            $"[scrinia:info] Background LLM ready (provider=anthropic, model={options.Model})");
+        return true;
+    }
+
+    private static async Task<bool> TryStartGeminiAsync(LlmOptions options, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(options.GeminiApiKey))
+        {
+            Console.Error.WriteLine(
+                "[scrinia:warn] Llm provider=gemini configured but Scrinia:Llm:GeminiApiKey is not set.");
+            return false;
+        }
+        var llm = Scrinia.Core.Llm.Providers.GeminiLlmProvider.Create(options);
+        if (!await llm.IsAvailableAsync(ct))
+        {
+            llm.Dispose();
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Gemini API at {options.GeminiBaseUrl} did not respond or rejected the API key.");
+            return false;
+        }
+        BackgroundLlmContext.Default = llm;
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
+        Console.Error.WriteLine(
+            $"[scrinia:info] Background LLM ready (provider=gemini, model={options.Model})");
+        return true;
     }
 
     /// <summary>
@@ -615,6 +676,18 @@ internal static class WorkspaceSetup
 
         string? timeout = GetConfigValue("Scrinia:Llm:RequestTimeoutSeconds");
         if (timeout is not null && int.TryParse(timeout, out int s)) options.RequestTimeoutSeconds = s;
+
+        // Anthropic native (provider=anthropic)
+        string? anthKey = GetConfigValue("Scrinia:Llm:AnthropicApiKey");
+        if (anthKey is not null) options.AnthropicApiKey = anthKey;
+        string? anthUrl = GetConfigValue("Scrinia:Llm:AnthropicBaseUrl");
+        if (anthUrl is not null) options.AnthropicBaseUrl = anthUrl;
+
+        // Gemini native (provider=gemini)
+        string? gemKey = GetConfigValue("Scrinia:Llm:GeminiApiKey");
+        if (gemKey is not null) options.GeminiApiKey = gemKey;
+        string? gemUrl = GetConfigValue("Scrinia:Llm:GeminiBaseUrl");
+        if (gemUrl is not null) options.GeminiBaseUrl = gemUrl;
 
         return options;
     }
