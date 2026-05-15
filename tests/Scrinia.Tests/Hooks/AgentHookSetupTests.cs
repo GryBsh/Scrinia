@@ -74,12 +74,32 @@ public sealed class AgentHookSetupTests
         // double quotes (when there are). Both indicate ProcessPath is the source.
         bool isQuoted = resolved.StartsWith('"') && resolved.EndsWith('"');
         string unquoted = isQuoted ? resolved.Trim('"') : resolved;
-        unquoted.Should().Be(processPath);
+
+        // On Windows the resolved path has backslashes converted to forward slashes
+        // (see ResolveScriExecutablePath docs) so compare against the converted form.
+        string expectedPath = OperatingSystem.IsWindows()
+            ? processPath.Replace('\\', '/')
+            : processPath;
+        unquoted.Should().Be(expectedPath);
 
         // If the path has whitespace, quoting MUST be applied (otherwise the agent
         // CLI's shell will tokenise mid-path and the hook silently fails).
-        if (processPath.Contains(' '))
+        if (expectedPath.Contains(' '))
             isQuoted.Should().BeTrue("paths with spaces must be quoted in shell command strings");
+    }
+
+    [Fact]
+    public void ResolveScriExecutablePath_OnWindows_UsesForwardSlashes()
+    {
+        // Claude Code and similar agent CLIs may spawn hooks via git bash on Windows
+        // even when the user's interactive terminal is PowerShell. bash interprets `\`
+        // as an escape, so the resolved path must use forward slashes to round-trip
+        // safely through every shell.
+        if (!OperatingSystem.IsWindows()) return;
+
+        string resolved = AgentHookSetup.ResolveScriExecutablePath();
+        resolved.Should().NotContain("\\",
+            "on Windows, backslashes break in git bash; forward slashes work in bash, PowerShell, and cmd alike");
     }
 
     [Fact]

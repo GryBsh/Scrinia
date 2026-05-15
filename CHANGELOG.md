@@ -18,7 +18,11 @@ and all assembly attributes.
   desktop shortcut, a different shell profile, or a CI runner — and the hook
   would silently fail to find the executable. Install-time resolution writes
   the path once into each hook's command field; paths containing whitespace
-  are shell-quoted. Re-run `scri setup --hooks` to update existing installs.
+  are shell-quoted. On Windows the path uses forward slashes — Claude Code
+  and similar CLIs spawn hooks via git bash even when the interactive terminal
+  is PowerShell, and bash interprets `\` as an escape. Forward slashes work
+  uniformly in bash, PowerShell, and cmd. Re-run `scri setup --hooks` to
+  update existing installs.
 - `scri setup` now configures the Tier 2 LLM backend explicitly. Previously the
   CLI-based provider values (`claude-cli`, `codex-cli`, `copilot-cli`) and the
   native Anthropic/Gemini providers were reachable only via raw

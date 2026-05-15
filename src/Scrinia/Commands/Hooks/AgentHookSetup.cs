@@ -57,10 +57,15 @@ public static class AgentHookSetup
     /// <c>dotnet tool</c> shims (each places a real exe shim on disk that ProcessPath
     /// reports correctly).
     ///
-    /// <para>Returned path is shell-quoted when it contains whitespace — most install
-    /// dirs on Windows are under <c>C:\Program Files\...</c> or paths with user-name
-    /// spaces and would otherwise tokenise mid-string when the hook's command field gets
-    /// split by the agent CLI's shell.</para>
+    /// <para>On Windows, backslashes are converted to forward slashes. Agent CLIs
+    /// (notably Claude Code) often execute hook commands via git bash on Windows even
+    /// when the user's interactive terminal is configured for PowerShell, and bash
+    /// interprets <c>\</c> as an escape character — so a Windows-native path like
+    /// <c>C:\Users\nickd\scri.exe</c> gets mangled into <c>C:Usersnickdscri.exe</c>.
+    /// Forward slashes work uniformly: bash treats them as literal separators, PowerShell
+    /// and cmd accept them too. The path is then shell-quoted when it contains
+    /// whitespace — common on Windows under <c>C:/Program Files/</c> or user-profile
+    /// paths with spaces — so the hook's command field doesn't tokenise mid-path.</para>
     ///
     /// <para>Falls back to the bare <c>scri</c> name if <see cref="Environment.ProcessPath"/>
     /// is somehow null (extremely unlikely on net6.0+) — preserves the previous behavior
@@ -71,6 +76,9 @@ public static class AgentHookSetup
         string? processPath = Environment.ProcessPath;
         if (string.IsNullOrEmpty(processPath))
             return "scri";
+
+        if (OperatingSystem.IsWindows())
+            processPath = processPath.Replace('\\', '/');
 
         return processPath.Contains(' ', StringComparison.Ordinal)
             ? $"\"{processPath}\""
