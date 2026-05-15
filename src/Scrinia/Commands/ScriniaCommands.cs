@@ -1586,28 +1586,38 @@ public class ScriniaCommands
             AnsiConsole.MarkupLine($"[green]Set '{Markup.Escape(key)}' = '{Markup.Escape(value)}'.[/]");
 
         // Embedding settings affect vector identity. After a Scrinia:Embeddings:* write we
-        // load the active provider against the new config and run a reindex if the on-disk
-        // vector files were built with a different signature. No-op when the change doesn't
-        // actually alter the active provider signature.
+        // load the active provider against the new config. For a Provider switch we
+        // unconditionally rebuild — the plugin path doesn't participate in the in-process
+        // signature-mismatch quarantine that drives MaybeReindexAfterModelSwitch, so a
+        // gating-on-signature approach would silently skip ollama→vulkan / vulkan→model2vec
+        // transitions. For other Embeddings:* keys we still rely on the signature gate.
         if (key.StartsWith("Scrinia:Embeddings:", StringComparison.OrdinalIgnoreCase))
-            await TryReindexAfterConfigChangeAsync(cancellationToken);
+        {
+            bool providerSwitch = key.Equals("Scrinia:Embeddings:Provider", StringComparison.OrdinalIgnoreCase);
+            await TryReindexAfterConfigChangeAsync(providerSwitch, cancellationToken);
+        }
 
         return 0;
     }
 
     /// <summary>
-    /// Builds the current embeddings provider and triggers
-    /// <see cref="EmbeddingReindexer.ReindexIfStaleAsync"/>. Used after <c>scri config</c>
-    /// writes that may have changed the embedding signature. Errors are surfaced as warnings
-    /// so a reindex failure doesn't fail the config command itself.
+    /// Reload the active embedding pipeline against the just-written config and trigger a
+    /// reindex. If <paramref name="forceReindex"/> is true (provider key changed), runs an
+    /// unconditional rebuild via <see cref="WorkspaceSetup.ForceReindexAsync"/> so the new
+    /// provider — including plugin-owned ones — gets a clean vector set. Otherwise relies on
+    /// the in-process signature-mismatch path inside <see cref="WorkspaceSetup.LoadPluginsAsync"/>.
+    /// Errors are surfaced as warnings so a reindex failure doesn't fail the config command itself.
     /// </summary>
-    private static async Task TryReindexAfterConfigChangeAsync(CancellationToken ct)
+    private static async Task TryReindexAfterConfigChangeAsync(bool forceReindex, CancellationToken ct)
     {
         try
         {
             // Configure must have already run by the caller — workspace root and
             // MemoryStoreContext.Current are populated.
             await WorkspaceSetup.LoadPluginsAsync(ct);
+
+            if (forceReindex)
+                await WorkspaceSetup.ForceReindexAsync(ct);
         }
         catch (Exception ex)
         {
