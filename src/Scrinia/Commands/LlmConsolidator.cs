@@ -236,16 +236,18 @@ internal static class LlmConsolidator
 
     /// <summary>
     /// Detects whether <paramref name="description"/> is the synthetic first-200-chars
-    /// fallback set by <c>Store</c> when no description was provided. The check is
-    /// exact-prefix equality, which is reliable because the fallback is verbatim
-    /// content, not paraphrased.
+    /// fallback set by <c>Store</c> when no description was provided. <c>Store</c> writes
+    /// exactly <c>content[..Math.Min(200, content.Length)]</c>, so the detector requires
+    /// both a length match and prefix equality — a prefix-only check was too loose and
+    /// silently overwrote user-supplied short descriptions whose words happened to lead
+    /// the content (e.g. <c>-d "OAuth API"</c> on a file starting "OAuth API documentation").
     /// </summary>
     private static bool IsAutoFallbackDescription(string description, string content)
     {
         if (string.IsNullOrWhiteSpace(description)) return true;
-        if (description.Length > 200) return false;
-        if (content.Length < description.Length) return false;
-        return content.AsSpan(0, description.Length).Equals(description.AsSpan(), StringComparison.Ordinal);
+        int autoLength = Math.Min(200, content.Length);
+        if (description.Length != autoLength) return false;
+        return content.AsSpan(0, autoLength).Equals(description.AsSpan(), StringComparison.Ordinal);
     }
 
     private static string ComputeContentHash(string content)

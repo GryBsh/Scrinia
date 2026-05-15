@@ -96,6 +96,29 @@ public class LlmConsolidatorTests : IDisposable
     }
 
     [Fact]
+    public async Task LeavesShortUserDescriptionAlone_WhenItIsAccidentallyAContentPrefix()
+    {
+        // Regression: an earlier predicate accepted any description that was a prefix of
+        // content as "auto-fallback" — so a user running `scri memory store auth ./auth.md
+        // -d 'OAuth API'` on a file beginning "OAuth API documentation..." would lose their
+        // deliberate short label to Tier 2. The fix requires LENGTH equality with the
+        // exact synthetic-fallback shape (Math.Min(200, content.Length)).
+        SeedEntry(
+            "auth-notes",
+            content: "OAuth API documentation and conventions for the v2 platform.",
+            description: "OAuth API");
+
+        var entries = ScriniaArtifactStore.ListScoped(null);
+        var result = await LlmConsolidator.RunAsync(
+            _llm, entries, justCompacted: new HashSet<string>(),
+            _scriniaDir, dryRun: false, onWarning: null, CancellationToken.None);
+
+        result.DescriptionsBackfilled.Should().Be(0);
+        _llm.DescriptionCalls.Should().Be(0);
+        Reload("auth-notes").Description.Should().Be("OAuth API");
+    }
+
+    [Fact]
     public async Task SummarizesEntry_WhenInJustCompactedSet()
     {
         SeedEntry("session-2026-05-14", "long session log content here", description: "anything");

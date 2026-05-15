@@ -205,6 +205,36 @@ public class OpenAiCompatibleBackgroundLlmTests
     }
 
     [Fact]
+    public async Task ExtractFacts_PreservesNumericalPrefixes()
+    {
+        // Regression: the earlier prefix-strip greedily consumed any contiguous run of
+        // {-, *, •, digit, ., ), space, tab} from position 0 with no requirement that the
+        // run actually looked like a list marker. That ate the leading numbers off facts
+        // exactly like the ones below — durations, sizes, dates, versions, percentages —
+        // which is precisely the kind of atomic claim Mem0-style fact extraction targets.
+        var handler = StubHandler.Sync((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    Chat("5-year project completed in 2024.\n" +
+                         "1.5 GB of memory consumed at peak.\n" +
+                         "10-04-2023 was the deploy date.\n" +
+                         "3.14 is approximately pi."),
+                    Encoding.UTF8, "application/json"),
+            });
+        using var llm = new OpenAiCompatibleBackgroundLlm(Options(), new HttpClient(handler));
+
+        string[]? facts = await llm.ExtractFactsAsync("x", CancellationToken.None);
+
+        facts.Should().NotBeNull();
+        facts!.Should().HaveCount(4);
+        facts.Should().Contain("5-year project completed in 2024.");
+        facts.Should().Contain("1.5 GB of memory consumed at peak.");
+        facts.Should().Contain("10-04-2023 was the deploy date.");
+        facts.Should().Contain("3.14 is approximately pi.");
+    }
+
+    [Fact]
     public async Task ExtractFacts_ReturnsNull_WhenNoFactsParsed()
     {
         var handler = StubHandler.Sync((_, _) =>

@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Scrinia.Core.Llm;
 
 /// <summary>
@@ -7,8 +9,14 @@ namespace Scrinia.Core.Llm;
 /// rebuild. Prompts are tuned for small (1–2B param) instruction-following models
 /// so they stay terse, schema-light, and tolerant of variation.
 /// </summary>
-internal static class LlmPrompts
+internal static partial class LlmPrompts
 {
+    // ^\s*([-*•] | \d+[.)])\s+ — matches a real list marker only. "1.5 GB ..." does not
+    // match because the digits aren't followed by space-after-./).
+    [GeneratedRegex(@"^\s*(?:[-*•]|\d+[.)])\s+", RegexOptions.CultureInvariant)]
+    private static partial Regex ListMarkerPrefixRegex();
+    private static readonly Regex ListMarkerPrefix = ListMarkerPrefixRegex();
+
     /// <summary>
     /// Hard cap on input chars sent to the model. Set well under the typical 8K context
     /// budget of small models, leaving headroom for the system prompt and the response.
@@ -63,21 +71,15 @@ internal static class LlmPrompts
         foreach (string line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string trimmed = line.Trim();
-            // Strip common prefixes: "- ", "* ", "1. ", "1) ", "• "
-            int prefixEnd = 0;
-            while (prefixEnd < trimmed.Length)
-            {
-                char c = trimmed[prefixEnd];
-                if (c == '-' || c == '*' || c == '•' || char.IsDigit(c)
-                    || c == '.' || c == ')' || c == ' ' || c == '\t')
-                {
-                    prefixEnd++;
-                    continue;
-                }
-                break;
-            }
-            if (prefixEnd > 0 && prefixEnd < trimmed.Length)
-                trimmed = trimmed[prefixEnd..].Trim();
+            // Anchored marker strip: only consume runs that actually look like a list bullet
+            // ("- ", "* ", "• ") or numbered marker ("1. ", "42) ", etc.). Earlier versions
+            // greedy-consumed any contiguous run of {-, *, •, digit, ., ), space, tab} which
+            // ate the leading "1.5" off facts like "1.5 GB of memory consumed" or the "5-"
+            // off "5-year project" — numerical facts are exactly what Mem0-style extraction
+            // targets so the regression was particularly bad.
+            var m = ListMarkerPrefix.Match(trimmed);
+            if (m.Success && m.Length < trimmed.Length)
+                trimmed = trimmed[m.Length..].Trim();
 
             // Strip surrounding quotes
             if (trimmed.Length >= 2
