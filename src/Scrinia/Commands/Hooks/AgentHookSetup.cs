@@ -24,11 +24,16 @@ public static class AgentHookSetup
     ];
 
     /// <summary>
-    /// Built-in installer set. Currently ships only Claude Code; Codex and Copilot land
-    /// in the next commit. Override via the optional ctor parameter on
-    /// <see cref="InstallAsync"/> for tests / future plugin registration.
+    /// Built-in installer set covering the three big-3 agent CLIs. Override via the
+    /// optional parameter on <see cref="InstallAsync"/> for tests / future plugin
+    /// registration.
     /// </summary>
-    public static IReadOnlyList<IAgentHookInstaller> BuiltInInstallers => [new ClaudeCodeHookInstaller()];
+    public static IReadOnlyList<IAgentHookInstaller> BuiltInInstallers =>
+    [
+        new ClaudeCodeHookInstaller(),
+        new CodexHookInstaller(),
+        new CopilotHookInstaller(),
+    ];
 
     /// <summary>
     /// Detect each registered CLI, prompt the user per-detected-CLI, and write hooks to
