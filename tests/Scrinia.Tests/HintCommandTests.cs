@@ -120,6 +120,86 @@ public sealed class HintCommandTests : IDisposable
     }
 
     [Fact]
+    public void FormatHook_NotEmitted_ReturnsEmpty()
+    {
+        HintCommand.FormatHook(HintResult.Empty).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void FormatHook_IsValidJsonEnvelope_WithExpectedShape()
+    {
+        // The shape every agent CLI agrees on:
+        // { "hookSpecificOutput": { "hookEventName": "...", "additionalContext": "..." } }
+        var result = new HintResult(true,
+        [
+            new HintMatch("local", "oauth-flow", 50.0),
+            new HintMatch("local", "jwt-validation", 30.0),
+        ]);
+
+        string json = HintCommand.FormatHook(result);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var hookOutput = doc.RootElement.GetProperty("hookSpecificOutput");
+        hookOutput.GetProperty("hookEventName").GetString().Should().Be("UserPromptSubmit");
+        string ctx = hookOutput.GetProperty("additionalContext").GetString()!;
+
+        // Imperative + tag-wrapped payload (the model should treat this as instruction).
+        ctx.Should().Contain("<scrinia-hint");
+        ctx.Should().Contain("</scrinia-hint>");
+        ctx.Should().Contain("The user has 2 stored memories");
+        ctx.Should().Contain("oauth-flow");
+        ctx.Should().Contain("jwt-validation");
+        ctx.Should().Contain("Before answering, call memory('search', 'oauth-flow')");
+        ctx.Should().Contain("the user expects you to remember",
+            "the justification clause gives the model a reason to act, not just a name to lookup");
+    }
+
+    [Fact]
+    public void FormatHook_SingularWording_ForOneMatch()
+    {
+        var result = new HintResult(true, [new HintMatch("local", "only-one", 50.0)]);
+        string json = HintCommand.FormatHook(result);
+        string ctx = System.Text.Json.JsonDocument.Parse(json).RootElement
+            .GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString()!;
+        ctx.Should().Contain("1 stored memory that match");
+    }
+
+    [Fact]
+    public void FormatHook_CustomEventName_PropagatesIntoEnvelope()
+    {
+        var result = new HintResult(true, [new HintMatch("local", "x", 50.0)]);
+        string json = HintCommand.FormatHook(result, hookEventName: "SessionStart");
+        System.Text.Json.JsonDocument.Parse(json).RootElement
+            .GetProperty("hookSpecificOutput").GetProperty("hookEventName").GetString()
+            .Should().Be("SessionStart");
+    }
+
+    [Fact]
+    public void FormatHook_EscapesEmbeddedQuotesAndNewlines_ProducesValidJson()
+    {
+        // Memory names rarely contain special characters but the JSON envelope must
+        // round-trip them safely if they do (Utf8JsonWriter handles this for us).
+        var result = new HintResult(true,
+        [
+            new HintMatch("local", "memo with \"quotes\" and\nnewlines", 50.0),
+        ]);
+
+        string json = HintCommand.FormatHook(result);
+        var act = () => System.Text.Json.JsonDocument.Parse(json);
+        act.Should().NotThrow("Utf8JsonWriter must escape control chars in the payload");
+    }
+
+    [Fact]
+    public void BuildHookEnvelope_ProducesShapeAgentCLIsExpect()
+    {
+        string envelope = HintCommand.BuildHookEnvelope("UserPromptSubmit", "raw payload text");
+        using var doc = System.Text.Json.JsonDocument.Parse(envelope);
+        var hookOutput = doc.RootElement.GetProperty("hookSpecificOutput");
+        hookOutput.GetProperty("hookEventName").GetString().Should().Be("UserPromptSubmit");
+        hookOutput.GetProperty("additionalContext").GetString().Should().Be("raw payload text");
+    }
+
+    [Fact]
     public void ExtractPromptFromStdin_PlainText_PassesThrough()
     {
         ScriniaCommands.ExtractPromptFromStdin("just a plain prompt").Should().Be("just a plain prompt");

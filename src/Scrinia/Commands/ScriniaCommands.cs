@@ -646,9 +646,11 @@ public class ScriniaCommands
     /// <summary>Resume agent context — profile, patterns, today's session log, available skills.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
+    /// <param name="hook">Emit the agent-CLI hook envelope (JSON with hookSpecificOutput.additionalContext wrapping the YAML payload in &lt;scrinia-restored-memory&gt; tags with an imperative framing line). Used by `scri setup --hooks` SessionStart wiring. Human invocations of `scri restore` should leave this off — the YAML default is more readable.</param>
     public async Task<int> Restore(
         string? workspaceRoot = null,
         bool json = false,
+        bool hook = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -656,6 +658,24 @@ public class ScriniaCommands
 
         var tools = new ScriniaMcpTools();
         string yaml = await tools.Restore(cancellationToken);
+
+        if (hook)
+        {
+            // Wrap the YAML payload in the same hook envelope shape `scri hint` uses, with
+            // a header line that reads as an instruction to the model (not a status dump).
+            // The agent CLI unwraps additionalContext into the model's context off-transcript.
+            string payload =
+                "<scrinia-restored-memory>\n" +
+                "The following memories were saved during prior sessions in this workspace. " +
+                "Reference them when relevant; call memory('search', '<name>') to retrieve " +
+                "the full content of any entry below.\n\n" +
+                yaml.TrimEnd() + "\n" +
+                "</scrinia-restored-memory>";
+
+            Console.WriteLine(HintCommand.BuildHookEnvelope("SessionStart", payload));
+            return 0;
+        }
+
         return EmitMcpResult(yaml, json, "restore");
     }
 
@@ -1860,16 +1880,21 @@ public class ScriniaCommands
         return result.Failed == 0 ? 0 : 1;
     }
 
-    /// <summary>Pre-send relevance hint. Looks up the prompt against BM25 and emits a single-line
-    /// marker telling the agent which stored memories look relevant. Wired into agent CLIs
-    /// via the UserPromptSubmit hook. Returns empty stdout (no hint) when the prompt is short,
-    /// no matches clear the score floor, or hints are disabled in config.</summary>
+    /// <summary>Pre-send relevance hint. Looks up the prompt against BM25 and emits a hook-output
+    /// envelope telling the agent which stored memories look relevant. Wired into agent CLIs
+    /// via the UserPromptSubmit hook. Default output is JSON
+    /// (<c>{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"..."}}</c>)
+    /// understood by Claude Code, Codex, and Copilot — the additionalContext channel injects
+    /// the hint without polluting the user's transcript. Returns empty stdout when the prompt
+    /// is short, no matches clear the score floor, or hints are disabled in config.</summary>
     /// <param name="prompt">Prompt text. If omitted, read from stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="json">Emit structured JSON instead of the plain hint line.</param>
+    /// <param name="plain">Emit the human-readable single-line hint instead of the hook JSON envelope. Use for direct CLI invocation; hooks use the default JSON shape.</param>
+    /// <param name="json">Emit raw structured HintResult JSON (count + matches array). For programmatic consumers.</param>
     public async Task<int> Hint(
         string? prompt = null,
         string? workspaceRoot = null,
+        bool plain = false,
         bool json = false,
         CancellationToken cancellationToken = default)
     {
@@ -1911,14 +1936,21 @@ public class ScriniaCommands
 
         if (json)
         {
-            // Tiny manual JSON to avoid source-gen ceremony for one ad-hoc shape.
+            // Raw structured HintResult shape for programmatic consumers — distinct from
+            // the hook envelope (which wraps a model-facing instruction string).
             var matches = string.Join(",", result.Matches.Select(m =>
                 $"{{\"scope\":\"{m.Scope}\",\"name\":\"{JsonEscape(m.Name)}\",\"score\":{m.Score.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"));
             Console.WriteLine($"{{\"count\":{result.Matches.Count},\"matches\":[{matches}]}}");
         }
-        else
+        else if (plain)
         {
             Console.WriteLine(HintCommand.FormatPlain(result));
+        }
+        else
+        {
+            // Default: hook envelope. The agent CLIs unwrap additionalContext and inject
+            // it into the model's context discreetly (off-transcript on Claude Code).
+            Console.WriteLine(HintCommand.FormatHook(result));
         }
         return 0;
     }

@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using Scrinia.Core;
 using Scrinia.Core.Search;
 using Spectre.Console;
@@ -57,7 +59,66 @@ public sealed class HintCommand
             Matches: entries.Select(e => new HintMatch(e.Item.Scope, e.Item.Entry.Name, e.Score)).ToList());
     }
 
-    /// <summary>Format the structured result as the single-line stdout hint string.</summary>
+    /// <summary>
+    /// Format the structured result as the hook-output JSON envelope each big-3 agent CLI
+    /// understands. Wraps an imperative, second-person callout in <c>&lt;scrinia-hint&gt;</c>
+    /// tags then nests that inside the <c>hookSpecificOutput.additionalContext</c> shape
+    /// shared across Claude Code, Codex, and Copilot (where supported).
+    ///
+    /// <para>Two design moves driven by tool-ergonomics research: (1) JSON envelope keeps
+    /// the injection off the user's transcript on Claude Code while still reaching the
+    /// model's context (plain stdout is wrapped in a visible <c>&lt;system-reminder&gt;</c>;
+    /// the JSON shape is added more discretely). (2) The payload reads as an instruction
+    /// to the model — concrete verb, justification, copy-paste-shaped tool call — rather
+    /// than a passive log line, which models triage as ignorable status output.</para>
+    /// </summary>
+    public static string FormatHook(HintResult result, string hookEventName = "UserPromptSubmit")
+    {
+        if (!result.Emitted || result.Matches.Count == 0)
+            return string.Empty;
+
+        var names = result.Matches.Select(m => m.Name).ToList();
+        string countWord = names.Count == 1 ? "memory" : "memories";
+        string list = string.Join(", ", names);
+        string firstName = names[0];
+
+        string payload =
+            $"<scrinia-hint priority=\"high\">\n" +
+            $"The user has {names.Count} stored {countWord} that match this prompt: {list}.\n" +
+            $"Before answering, call memory('search', '{firstName}') to retrieve them — they " +
+            $"contain prior decisions and context the user expects you to remember.\n" +
+            $"</scrinia-hint>";
+
+        return BuildHookEnvelope(hookEventName, payload);
+    }
+
+    /// <summary>
+    /// Builds the <c>{"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}</c>
+    /// envelope shape understood by Claude Code, Codex, and Copilot (where supported).
+    /// Uses <see cref="Utf8JsonWriter"/> so we don't pay the trim-warning tax that comes
+    /// with <c>JsonSerializer.Serialize&lt;T&gt;</c> for one ad-hoc shape — the writer
+    /// handles all JSON-string escaping (newlines, quotes, control chars) natively.
+    /// </summary>
+    internal static string BuildHookEnvelope(string hookEventName, string additionalContext)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartObject("hookSpecificOutput");
+            writer.WriteString("hookEventName", hookEventName);
+            writer.WriteString("additionalContext", additionalContext);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>
+    /// Plain single-line hint string for human inspection (e.g. <c>scri hint "auth" --plain</c>).
+    /// NOT what the hook emits — agent CLIs get <see cref="FormatHook"/> output instead, which
+    /// reads as an instruction to the model rather than a log line.
+    /// </summary>
     public static string FormatPlain(HintResult result)
     {
         if (!result.Emitted || result.Matches.Count == 0)

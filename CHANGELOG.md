@@ -11,6 +11,20 @@ and all assembly attributes.
 ## [Unreleased]
 
 ### Fixed
+- `scri hint` and `scri restore --hook` now emit the hook-output JSON envelope
+  (`{"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}`)
+  understood uniformly by Claude Code, Codex, and Copilot — replaces the bare
+  stdout line that the agents were treating as ignorable status output.
+  Payload is wrapped in semantic tags (`<scrinia-hint>` for the prompt-time
+  hint, `<scrinia-restored-memory>` for the SessionStart dump) with imperative,
+  second-person framing that reads as instruction rather than log line. On
+  Claude Code the JSON shape arrives via the discreet `additionalContext`
+  channel — context reaches the model without polluting the user's transcript
+  on every prompt submit. SessionEnd output (`scri consolidate --auto`) is left
+  un-wrapped: Claude Code routes it to debug-log only, Codex has no SessionEnd,
+  Copilot ignores it. `scri hint --plain` retains the original log-line form
+  for human inspection; `scri restore` defaults to YAML for direct invocation
+  (only `--hook` switches to the envelope).
 - Scrinia hooks now embed the **full absolute path** to the running `scri`
   executable (resolved via `Environment.ProcessPath`) rather than the bare
   `scri` name. Agent CLIs fire hooks in child shells whose `PATH` may not

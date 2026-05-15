@@ -32,19 +32,24 @@ public static class AgentHookSetup
         string scri = ResolveScriExecutablePath();
         return
         [
-            new HookSpec("SessionStart", $"{scri} restore"),
+            // SessionStart → restore. The `--hook` flag wraps the YAML payload in the
+            // hookSpecificOutput.additionalContext JSON envelope all three CLIs understand,
+            // with a `<scrinia-restored-memory>` tag + imperative framing line so the model
+            // reads it as context to attend to rather than a status dump to ignore.
+            new HookSpec("SessionStart", $"{scri} restore --hook"),
             // SessionEnd fires once at session termination — NOT after every assistant
             // response. Claude Code's per-turn event is called `Stop`; binding consolidate
             // there would burn an LLM-driven sweep on every turn. Codex has no SessionEnd
             // at all (only per-turn Stop), so its installer reports SupportsEvent
             // ("SessionEnd") = false and the orchestrator emits a one-line skip notice
-            // rather than mis-wire to per-turn `Stop`.
+            // rather than mis-wire to per-turn `Stop`. No --hook flag here: SessionEnd
+            // stdout is debug-log-only on Claude Code (never reaches the model) and
+            // ignored entirely on Codex / Copilot.
             new HookSpec("SessionEnd", $"{scri} consolidate --auto"),
             // UserPromptSubmit fires `scri hint` which reads the prompt from stdin (each CLI
             // pipes the user's input or a JSON envelope; ExtractPromptFromStdin handles both).
-            // Sub-100ms BM25 lookup → injects a one-line "matches exist" marker into the
-            // agent's context if the prompt clears Scrinia:Hint:MinPromptChars and a search
-            // result clears Scrinia:Hint:MinScore.
+            // Sub-100ms BM25 lookup → emits the hook envelope (default) with an imperative
+            // `<scrinia-hint>` payload directing the model to retrieve matching memories.
             new HookSpec("UserPromptSubmit", $"{scri} hint"),
         ];
     }

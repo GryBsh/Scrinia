@@ -115,6 +115,25 @@ public sealed class AgentHookSetupTests
     }
 
     [Fact]
+    public void DefaultHookSpecs_SessionStart_PassesHookFlagToRestore()
+    {
+        // SessionStart must invoke `scri restore --hook` so the YAML output gets wrapped
+        // in the hookSpecificOutput JSON envelope each big-3 agent CLI understands —
+        // bare `scri restore` would emit raw YAML and the model would see it as a status
+        // dump rather than instructions framed as <scrinia-restored-memory>.
+        var spec = AgentHookSetup.DefaultHookSpecs.Single(s => s.EventName == "SessionStart");
+        spec.Command.Should().EndWith(" restore --hook");
+    }
+
+    [Fact]
+    public void DefaultHookSpecs_UserPromptSubmit_InvokesHint()
+    {
+        // `scri hint` defaults to the hook JSON envelope already — no flag needed.
+        var spec = AgentHookSetup.DefaultHookSpecs.Single(s => s.EventName == "UserPromptSubmit");
+        spec.Command.Should().EndWith(" hint");
+    }
+
+    [Fact]
     public async Task InstallAsync_SkipsCliNotOnPath()
     {
         var installer = new RecordingInstaller(
