@@ -11,6 +11,14 @@ and all assembly attributes.
 ## [Unreleased]
 
 ### Fixed
+- Scrinia hooks now embed the **full absolute path** to the running `scri`
+  executable (resolved via `Environment.ProcessPath`) rather than the bare
+  `scri` name. Agent CLIs fire hooks in child shells whose `PATH` may not
+  contain scrinia's install dir — especially when the CLI is launched from a
+  desktop shortcut, a different shell profile, or a CI runner — and the hook
+  would silently fail to find the executable. Install-time resolution writes
+  the path once into each hook's command field; paths containing whitespace
+  are shell-quoted. Re-run `scri setup --hooks` to update existing installs.
 - `scri setup` now configures the Tier 2 LLM backend explicitly. Previously the
   CLI-based provider values (`claude-cli`, `codex-cli`, `copilot-cli`) and the
   native Anthropic/Gemini providers were reachable only via raw

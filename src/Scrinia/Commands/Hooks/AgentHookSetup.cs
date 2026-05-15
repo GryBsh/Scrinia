@@ -16,24 +16,66 @@ public static class AgentHookSetup
     /// event names into the CLI-specific event name + config-file shape. Adding a new
     /// event here (e.g. <c>UserPromptSubmit</c> for the pre-send relevance hint) makes
     /// every adapter pick it up uniformly.
+    ///
+    /// <para>Commands embed the full path to the running <c>scri</c> executable rather
+    /// than the bare name. Agent CLIs fire hooks in a child shell whose <c>PATH</c> may
+    /// not contain scrinia's install directory (especially when the agent is launched
+    /// from a desktop shortcut, a different user's terminal, or a CI runner), so relying
+    /// on PATH resolution at hook-firing time is fragile. Embedding the absolute path is
+    /// resolved once at install time from <see cref="Environment.ProcessPath"/> and
+    /// quoted when needed.</para>
     /// </summary>
-    public static readonly IReadOnlyList<HookSpec> DefaultHookSpecs =
-    [
-        new HookSpec("SessionStart", "scri restore"),
-        // SessionEnd fires once at session termination — NOT after every assistant
-        // response. Claude Code's per-turn event is called `Stop`; binding consolidate
-        // there would burn an LLM-driven sweep on every turn. Codex has no SessionEnd
-        // at all (only per-turn Stop), so its installer reports SupportsEvent
-        // ("SessionEnd") = false and the orchestrator emits a one-line skip notice
-        // rather than mis-wire to per-turn `Stop`.
-        new HookSpec("SessionEnd", "scri consolidate --auto"),
-        // UserPromptSubmit fires `scri hint` which reads the prompt from stdin (each CLI
-        // pipes the user's input or a JSON envelope; ExtractPromptFromStdin handles both).
-        // Sub-100ms BM25 lookup → injects a one-line "matches exist" marker into the
-        // agent's context if the prompt clears Scrinia:Hint:MinPromptChars and a search
-        // result clears Scrinia:Hint:MinScore.
-        new HookSpec("UserPromptSubmit", "scri hint"),
-    ];
+    public static IReadOnlyList<HookSpec> DefaultHookSpecs => BuildDefaultHookSpecs();
+
+    private static IReadOnlyList<HookSpec> BuildDefaultHookSpecs()
+    {
+        string scri = ResolveScriExecutablePath();
+        return
+        [
+            new HookSpec("SessionStart", $"{scri} restore"),
+            // SessionEnd fires once at session termination — NOT after every assistant
+            // response. Claude Code's per-turn event is called `Stop`; binding consolidate
+            // there would burn an LLM-driven sweep on every turn. Codex has no SessionEnd
+            // at all (only per-turn Stop), so its installer reports SupportsEvent
+            // ("SessionEnd") = false and the orchestrator emits a one-line skip notice
+            // rather than mis-wire to per-turn `Stop`.
+            new HookSpec("SessionEnd", $"{scri} consolidate --auto"),
+            // UserPromptSubmit fires `scri hint` which reads the prompt from stdin (each CLI
+            // pipes the user's input or a JSON envelope; ExtractPromptFromStdin handles both).
+            // Sub-100ms BM25 lookup → injects a one-line "matches exist" marker into the
+            // agent's context if the prompt clears Scrinia:Hint:MinPromptChars and a search
+            // result clears Scrinia:Hint:MinScore.
+            new HookSpec("UserPromptSubmit", $"{scri} hint"),
+        ];
+    }
+
+    /// <summary>
+    /// Resolves the absolute path to the running <c>scri</c> executable for embedding in
+    /// hook command strings. Uses <see cref="Environment.ProcessPath"/> as the primary
+    /// source — that's the path the OS used to launch the current process, which works
+    /// uniformly for published single-file deployments, multi-file deployments, and
+    /// <c>dotnet tool</c> shims (each places a real exe shim on disk that ProcessPath
+    /// reports correctly).
+    ///
+    /// <para>Returned path is shell-quoted when it contains whitespace — most install
+    /// dirs on Windows are under <c>C:\Program Files\...</c> or paths with user-name
+    /// spaces and would otherwise tokenise mid-string when the hook's command field gets
+    /// split by the agent CLI's shell.</para>
+    ///
+    /// <para>Falls back to the bare <c>scri</c> name if <see cref="Environment.ProcessPath"/>
+    /// is somehow null (extremely unlikely on net6.0+) — preserves the previous behavior
+    /// rather than crashing.</para>
+    /// </summary>
+    internal static string ResolveScriExecutablePath()
+    {
+        string? processPath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(processPath))
+            return "scri";
+
+        return processPath.Contains(' ', StringComparison.Ordinal)
+            ? $"\"{processPath}\""
+            : processPath;
+    }
 
     /// <summary>
     /// Built-in installer set covering the three big-3 agent CLIs. Override via the

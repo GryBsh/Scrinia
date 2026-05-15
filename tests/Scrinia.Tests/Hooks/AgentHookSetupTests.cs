@@ -54,6 +54,47 @@ public sealed class AgentHookSetupTests
     }
 
     [Fact]
+    public void ResolveScriExecutablePath_ReturnsCurrentProcessPath()
+    {
+        // The hook commands embed the full path so they work regardless of the PATH
+        // the agent CLI inherits when it spawns the hook process. Test that we use
+        // Environment.ProcessPath (or a quoted form of it) as the source.
+        string resolved = AgentHookSetup.ResolveScriExecutablePath();
+        string? processPath = Environment.ProcessPath;
+
+        resolved.Should().NotBeNullOrEmpty();
+        if (string.IsNullOrEmpty(processPath))
+        {
+            // Defensive fallback path — extremely unlikely on .NET 6+.
+            resolved.Should().Be("scri");
+            return;
+        }
+
+        // Either the raw path (when there are no spaces) or the same path wrapped in
+        // double quotes (when there are). Both indicate ProcessPath is the source.
+        bool isQuoted = resolved.StartsWith('"') && resolved.EndsWith('"');
+        string unquoted = isQuoted ? resolved.Trim('"') : resolved;
+        unquoted.Should().Be(processPath);
+
+        // If the path has whitespace, quoting MUST be applied (otherwise the agent
+        // CLI's shell will tokenise mid-path and the hook silently fails).
+        if (processPath.Contains(' '))
+            isQuoted.Should().BeTrue("paths with spaces must be quoted in shell command strings");
+    }
+
+    [Fact]
+    public void DefaultHookSpecs_EmbedResolvedScriPath_NotBareName()
+    {
+        string scri = AgentHookSetup.ResolveScriExecutablePath();
+        foreach (var spec in AgentHookSetup.DefaultHookSpecs)
+        {
+            spec.Command.Should().StartWith(scri,
+                $"each canonical hook command must invoke the resolved scri path so the hook " +
+                $"works even when PATH doesn't contain scrinia's install dir (event: {spec.EventName})");
+        }
+    }
+
+    [Fact]
     public async Task InstallAsync_SkipsCliNotOnPath()
     {
         var installer = new RecordingInstaller(
