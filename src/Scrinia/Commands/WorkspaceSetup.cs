@@ -134,26 +134,32 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
-    /// Unconditional full reindex against the currently-loaded embedding provider. Used by the
+    /// Unconditional full reindex against the currently-loaded embedding pipeline. Used by the
     /// <c>scri reindex</c> command — bypasses the signature-mismatch gate that
     /// <see cref="MaybeReindexAfterModelSwitch"/> relies on so a user who wants to force a
     /// rebuild (suspected corruption, manual recovery) actually gets one. Must be called after
-    /// <see cref="LoadPluginsAsync"/> so the active provider is wired.
+    /// <see cref="LoadPluginsAsync"/> so the active pipeline is wired.
+    ///
+    /// <para>Two paths, selected automatically:</para>
+    /// <list type="bullet">
+    ///   <item><b>In-process provider</b> (Ollama/OpenAI/Voyage HTTP or built-in Model2Vec):
+    ///   uses <see cref="EmbeddingReindexer.ForceReindexAsync"/> which batch-embeds and writes
+    ///   the host's <see cref="VectorStore"/> directly.</item>
+    ///   <item><b>Plugin-owned</b> (Vulkan plugin via MCP): replays each memory through the
+    ///   active <see cref="IMemoryEventSink"/> so the plugin's <c>upsert</c> tool rebuilds
+    ///   its vector store. The host has no <see cref="IEmbeddingProvider"/> to batch-embed
+    ///   in-process in this case.</item>
+    /// </list>
     /// </summary>
     internal static async Task<EmbeddingReindexer.Result?> ForceReindexAsync(CancellationToken ct = default)
     {
-        var provider = _embeddingProvider;
         var store = MemoryStoreContext.Current;
-        if (provider is null || !provider.IsAvailable || store is null)
+        if (store is null)
         {
             Console.Error.WriteLine(
-                "[scrinia:warn] Reindex skipped: no embedding provider is available. " +
-                "Run `scri setup` first.");
+                "[scrinia:warn] Reindex skipped: workspace not configured. Run `scri setup` first.");
             return null;
         }
-
-        var options = BuildEmbeddingOptions();
-        string embeddingsDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia", "embeddings");
 
         var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
         var logger = loggerFactory.CreateLogger("Scrinia.Reindex");
@@ -167,17 +173,46 @@ internal static class WorkspaceSetup
             if (done == total) Console.Error.WriteLine();
         }
 
-        try
+        var provider = _embeddingProvider;
+        if (provider is { IsAvailable: true })
         {
-            return await EmbeddingReindexer.ForceReindexAsync(
-                store, provider, embeddingsDir, logger, OnProgress, ct, options);
+            var options = BuildEmbeddingOptions();
+            string embeddingsDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia", "embeddings");
+            try
+            {
+                return await EmbeddingReindexer.ForceReindexAsync(
+                    store, provider, embeddingsDir, logger, OnProgress, ct, options);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] Forced reindex failed: {ex.GetType().Name}: {ex.Message}");
+                return null;
+            }
         }
-        catch (Exception ex)
+
+        // Plugin path — the plugin owns embeddings out-of-process, so we drive it through
+        // the event sink it subscribed to during startup. _pluginHost is the IMemoryEventSink
+        // (and we registered it as MemoryEventSinkContext.Default's first sink).
+        if (_pluginHost is { HasEventSinkCapability: true })
         {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Forced reindex failed: {ex.GetType().Name}: {ex.Message}");
-            return null;
+            try
+            {
+                return await EmbeddingReindexer.ReindexViaSinkAsync(
+                    store, _pluginHost, logger, OnProgress, ct);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] Forced reindex (plugin) failed: {ex.GetType().Name}: {ex.Message}");
+                return null;
+            }
         }
+
+        Console.Error.WriteLine(
+            "[scrinia:warn] Reindex skipped: no embedding provider is available. " +
+            "Run `scri setup` first.");
+        return null;
     }
 
     /// <summary>True when <paramref name="provider"/> is one of the network-backed providers

@@ -157,6 +157,77 @@ public static class EmbeddingReindexer
     }
 
     /// <summary>
+    /// Sink-driven reindex for the plugin-owned embeddings case. When a plugin (e.g. Vulkan)
+    /// owns the embedding pipeline out-of-process, the host has no in-process
+    /// <see cref="IEmbeddingProvider"/> to batch-embed against — but it does have an
+    /// <see cref="IMemoryEventSink"/> that the plugin subscribed to via MCP. Replaying every
+    /// persistent memory through <see cref="IMemoryEventSink.OnStoredAsync"/> drives the
+    /// plugin's <c>upsert</c> tool the same way a fresh write would, producing a clean
+    /// rebuild without needing to expose the plugin's internal embed/store internals.
+    ///
+    /// <para>Pass the active <see cref="MemoryEventSinkContext.Default"/> (or a specific sink
+    /// for tests). Each memory's decoded content is handed to the sink as a single-element
+    /// array; the sink does its own chunking (matches how a regular write flows through).</para>
+    /// </summary>
+    public static async Task<Result> ReindexViaSinkAsync(
+        IMemoryStore store,
+        IMemoryEventSink sink,
+        ILogger logger,
+        Action<int, int>? progress,
+        CancellationToken ct)
+    {
+        var items = store.ListScoped()
+            .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        int total = items.Count;
+        int embedded = 0, skipped = 0, failed = 0;
+
+        var decoder = new Nmp2Strategy();
+
+        for (int i = 0; i < total; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var item = items[i];
+
+            try
+            {
+                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
+                string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
+                if (string.IsNullOrWhiteSpace(artifact))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                string decoded = System.Text.Encoding.UTF8.GetString(decoder.Decode(artifact));
+                if (string.IsNullOrWhiteSpace(decoded))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                await sink.OnStoredAsync(qualifiedName, [decoded], store, ct);
+                embedded++;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (FileNotFoundException)
+            {
+                skipped++;
+                logger.LogDebug("Reindex (sink): artifact missing for {Name}", item.Entry.Name);
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                logger.LogWarning(ex, "Reindex (sink): failed for {Name}", item.Entry.Name);
+            }
+
+            progress?.Invoke(i + 1, total);
+        }
+
+        return new Result(total, embedded, skipped, failed);
+    }
+
+    /// <summary>
     /// Detect-and-reindex entry point used by <c>WorkspaceSetup</c> on startup and by the
     /// <c>scri config Scrinia:Embeddings:*</c> command after a settings write. Walks each
     /// scope directory under <paramref name="embeddingsDir"/> to force <c>LoadFromDisk</c>

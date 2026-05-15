@@ -170,6 +170,66 @@ public class EmbeddingReindexerTests : IDisposable
         vectors[0].Vector[0].Should().NotBe(99f);
     }
 
+    [Fact]
+    public async Task ReindexViaSink_FiresOnStoredPerMemory_WithDecodedContent()
+    {
+        AddMemory("alpha", "alpha content body");
+        AddMemory("beta", "beta content body");
+
+        var sink = new CaptureSink();
+
+        var result = await EmbeddingReindexer.ReindexViaSinkAsync(
+            _store, sink, NullLogger.Instance, progress: null, CancellationToken.None);
+
+        result.Total.Should().Be(2);
+        result.Embedded.Should().Be(2);
+        result.Failed.Should().Be(0);
+        sink.Stored.Should().HaveCount(2);
+        sink.Stored.Select(s => s.qualifiedName).Should().BeEquivalentTo(["alpha", "beta"]);
+        // Decoded payload should be the original raw content, not the encoded artifact.
+        sink.Stored.Should().OnlyContain(s => s.content.Single().Contains("content body"));
+    }
+
+    [Fact]
+    public async Task ReindexViaSink_SinkFailure_CountedAsFailedNotFatal()
+    {
+        AddMemory("good", "this one succeeds");
+        AddMemory("bad", "this one throws");
+
+        var sink = new CaptureSink(failOnQualifiedName: "bad");
+
+        var result = await EmbeddingReindexer.ReindexViaSinkAsync(
+            _store, sink, NullLogger.Instance, progress: null, CancellationToken.None);
+
+        result.Total.Should().Be(2);
+        result.Embedded.Should().Be(1);
+        result.Failed.Should().Be(1);
+    }
+
+    private sealed class CaptureSink : IMemoryEventSink
+    {
+        private readonly string? _failOnQualifiedName;
+        public List<(string qualifiedName, string[] content)> Stored { get; } = [];
+
+        public CaptureSink(string? failOnQualifiedName = null)
+        {
+            _failOnQualifiedName = failOnQualifiedName;
+        }
+
+        public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+        {
+            if (qualifiedName == _failOnQualifiedName)
+                throw new InvalidOperationException("simulated sink failure");
+            Stored.Add((qualifiedName, content));
+            return Task.CompletedTask;
+        }
+
+        public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+            => Task.CompletedTask;
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+            => Task.CompletedTask;
+    }
+
     private sealed class FakeBatchProvider : IEmbeddingProvider
     {
         public bool IsAvailable => true;
