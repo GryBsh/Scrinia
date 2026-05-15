@@ -13,6 +13,7 @@ using Scrinia.Core.Encoding;
 using Scrinia.Core.Llm;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using Scrinia.Commands.Hooks;
 using Scrinia.Mcp;
 using Spectre.Console;
 
@@ -921,6 +922,9 @@ public class ScriniaCommands
     /// <param name="llmDownload">Download the LLM plugin model without prompting (~900MB GGUF).</param>
     /// <param name="noLlmDownload">Skip the LLM plugin model download without prompting.</param>
     /// <param name="noOllama">Skip Ollama auto-detection even if it is running. Use to force local-only setup.</param>
+    /// <param name="hooks">Install SessionStart/Stop hooks into detected agent CLIs (Claude Code, etc.). Opt-in.</param>
+    /// <param name="uninstallHooks">Remove scrinia-managed hooks from agent CLIs and exit.</param>
+    /// <param name="project">With --hooks / --uninstall-hooks, target workspace-local config (.claude/...) instead of user-global (~/.claude/...).</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
         bool multiUser = false,
@@ -928,9 +932,23 @@ public class ScriniaCommands
         bool llmDownload = false,
         bool noLlmDownload = false,
         bool noOllama = false,
+        bool hooks = false,
+        bool uninstallHooks = false,
+        bool project = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+
+        // Hook-management flags short-circuit the model-download flow — they're standalone
+        // operations users typically run after the regular setup is complete.
+        if (uninstallHooks)
+        {
+            return await UninstallHooksFlowAsync(project);
+        }
+        if (hooks)
+        {
+            return await InstallHooksFlowAsync(project);
+        }
 
         if (multiUser)
         {
@@ -1087,6 +1105,48 @@ public class ScriniaCommands
             }
         }
 
+        return 0;
+    }
+
+    /// <summary>
+    /// Walks the user through installing scrinia SessionStart/Stop hooks for each detected
+    /// agent CLI. Prompts per CLI so the user can opt in selectively; user-authored hooks
+    /// in the target config files are preserved (we own only blocks marked with our
+    /// sentinel). Invoked by <c>scri setup --hooks</c>.
+    /// </summary>
+    private static async Task<int> InstallHooksFlowAsync(bool project)
+    {
+        var scope = project ? HookScope.Project : HookScope.User;
+        string? workspaceRoot = scope == HookScope.Project ? ScriniaArtifactStore.WorkspaceRootPath : null;
+
+        AnsiConsole.MarkupLine($"[bold]Agent CLI hooks ({scope})[/]");
+        AnsiConsole.MarkupLine(
+            "  [dim]SessionStart fires `scri restore`, Stop fires `scri consolidate --auto`.[/]");
+
+        int configured = await AgentHookSetup.InstallAsync(scope, workspaceRoot);
+        if (configured == 0)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]No hooks installed.[/] Run with at least one supported CLI (claude) on PATH.");
+            return 1;
+        }
+
+        AnsiConsole.MarkupLine($"[green]Installed hooks for {configured} agent CLI(s).[/]");
+        return 0;
+    }
+
+    /// <summary>Removes scrinia-managed hooks from every detected CLI at the chosen scope.</summary>
+    private static async Task<int> UninstallHooksFlowAsync(bool project)
+    {
+        var scope = project ? HookScope.Project : HookScope.User;
+        string? workspaceRoot = scope == HookScope.Project ? ScriniaArtifactStore.WorkspaceRootPath : null;
+
+        AnsiConsole.MarkupLine($"[bold]Removing scrinia hooks ({scope})[/]");
+        int removed = await AgentHookSetup.UninstallAsync(scope, workspaceRoot);
+        if (removed == 0)
+        {
+            AnsiConsole.MarkupLine("[dim]No supported agent CLIs detected on PATH.[/]");
+        }
         return 0;
     }
 
