@@ -20,6 +20,97 @@ and all assembly attributes.
   top-level `scri bundle` (pack-raw-files) is now `scri bundle pack`.
 - `scri migrate` is hidden from top-level `--help` (still callable for one-shot
   v1→v2 store migration).
+- `Scrinia:Llm:Provider` value renamed from `openai-compat` to `openai`; the old
+  name is no longer accepted. Run `scri config Scrinia:Llm:Provider openai` if
+  you have a workspace pinning the old value.
+
+### Added — Tier 2 LLM consolidation
+- `scri consolidate --with-llm` runs an LLM pass over the local store after the
+  existing Tier 1 mechanical compaction: regenerates auto-fallback descriptions,
+  one-paragraph summaries for compacted session entries, and extracts 3–7 atomic
+  facts per memory (Mem0-style). Resumable via `.scrinia/.tier2-progress.json`
+  keyed by qualified name + content hash — re-runs only touch memories whose
+  content changed since the last pass.
+- `ArtifactEntry.Facts: string[]?` field on the sidecar schema (v4). Each fact
+  enters `TermFrequencies` at weight +2 so BM25 picks them up naturally;
+  `WeightedFieldScorer.ScoreEntryTerm` also gives per-fact contains-match a
+  small boost.
+- `IBackgroundLlm` interface in `Scrinia.Core/Llm/` with two implementations:
+  `OpenAiCompatibleBackgroundLlm` (HTTP via `HttpClient` against any
+  OpenAI-compatible chat-completions endpoint — Ollama, llama.cpp server,
+  LM Studio, Docker Model Runner) and `PluginBackgroundLlm` (MCP `complete`
+  tool on the bundled `scri-plugin-llm`). Prompts live in `Scrinia.Core`
+  (`LlmPrompts.cs`) so new Tier 2 tasks don't require a plugin rebuild.
+- Bundled `Scrinia.Plugin.Llm` + `Scrinia.Plugin.Llm.Cli` ship LFM2.5-1.2B-Instruct
+  on Vulkan via LLamaSharp 0.25. `publish.ps1 -WithLlm` packages it into
+  `plugins/scri-plugin-llm/`. The plugin exposes a single `complete` MCP tool
+  and a `status` tool; prompts stay on the host side.
+- Provider preference for both LLM and embeddings auto-modes: existing HTTP
+  backend (Ollama et al.) wins over the bundled Vulkan plugin. The principle is
+  "if Ollama is already running, don't spin up another model in our own VRAM."
+  Force a backend with `Scrinia:Llm:Provider = plugin` or `openai`.
+
+### Added — Ollama auto-detection
+- `scri setup` probes for a running Ollama instance via `GET /api/tags`. When
+  reachable, prompts for an embedding model and a completion model (defaults:
+  `nomic-embed-text`, `lfm2:1.2b` with `llama3.2:1b` fallback), pulls any
+  missing models via streaming `POST /api/pull` with per-layer progress, and
+  writes the resulting `Scrinia:Embeddings:*` + `Scrinia:Llm:*` config so
+  subsequent `scri serve` / `scri consolidate --with-llm` "just work."
+- Skip the Ollama prompt with `scri setup --no-ollama`.
+
+### Added — Chunked embeddings + reindex
+- `TextChunker.SliceWindows` slices every memory's decoded content into
+  overlapping 1200/200-char windows. Each window becomes one vector keyed by
+  `(scope, name, chunkIndex)`. Search-time dedup in
+  `WeightedFieldScorer.SearchAll` collapses chunk matches back to one result
+  per memory but lets the best-matching window drive the score. A needle
+  buried mid-memory is now vector-reachable; the prior single-vector-per-memory
+  layout silently lost it past whatever context window the provider supported.
+- SVF3 signed vector file format: header carries the active embedding
+  signature `{provider}|c{chunkSize}o{overlap}` (e.g.
+  `ollama:nomic-embed-text|c1200o200`). On startup, vector files whose
+  signature doesn't match the active config are quarantined as
+  `vectors.bin.stale-{timestamp}` and `EmbeddingReindexer.ReindexIfStaleAsync`
+  rebuilds them. Same flow triggers when the user changes
+  `Scrinia:Embeddings:Provider`, `:OllamaModel`, `:ChunkSize`, or `:ChunkOverlap`.
+- `scri reindex` command — forces a full vector rebuild by moving every
+  `vectors.bin` to a `vectors.bin.pre-reindex-{timestamp}` backup, then letting
+  the startup flow re-embed from sidecars.
+- New config keys: `Scrinia:Embeddings:ChunkSize` (default 1200),
+  `Scrinia:Embeddings:ChunkOverlap` (default 200),
+  `Scrinia:Embeddings:MaxChunksPerMemory` (default 100, caps embed cost on
+  pathologically long memories — BM25 still indexes the full text).
+- `IEmbeddingProvider.EmbedBatchAsync(IReadOnlyList<string>)` default
+  implementation (loops `EmbedAsync`) makes per-memory batch embedding work
+  on every provider without HTTP-batch overrides; concrete providers can
+  override for a perf win.
+
+### Added — Search-path cache hardening
+- `FileMemoryStore.DiscoverTopics` switched from a 2-second TTL to fully
+  event-driven invalidation (already done in `Upsert` / `SaveIndex`). Repeated
+  search calls between mutations now skip the `Directory.GetDirectories` rescan
+  entirely.
+- `FileMemoryStore.SearchAll` derives `TopicInfo[]` from the candidates already
+  loaded by `ListScoped` instead of re-calling `LoadIndex` per topic scope inside
+  `GatherTopicInfos`. The `_indexCache` was absorbing the disk reads but every
+  duplicate call still acquired a shared file-lock and copied the entry list —
+  measurable wear over long daemon sessions on sync-watched workspaces.
+
+### Added — Resilience + observability
+- `Scrinia:Embeddings:MaxInputChars` config knob caps the input to a single
+  embed call (default 6000 chars ≈ 1500 tokens, fits nomic-embed-text's 2048-token
+  context). Applies to providers and paths that haven't migrated to the new
+  windowed chunker.
+- `ResilientEmbeddingProvider` no longer trips its circuit breaker on HTTP 4xx
+  responses. Bad payloads are per-input client errors, not provider-health
+  signals — letting them cascade-fail every subsequent embed in a reindex was
+  what produced the earlier 798/816 failure mode.
+- `EmbeddingReindexer` classifies `FileNotFoundException` (sidecar without
+  artifact) as Skipped rather than Failed and logs at Debug level.
+- Robustness around Synology Drive interference in `LlmConsolidator` progress
+  flushes: per-N-entry batched writes, atomic `.tmp` rename with [50,100,250]ms
+  retry on `IOException`/`UnauthorizedAccessException`.
 
 ### Added
 - `scri serve` auto-downloads the built-in embedding model on first run if it's
@@ -65,7 +156,29 @@ and all assembly attributes.
 - New documentation: `docs/plugin-authoring.md` (extension interfaces + worked
   example), `docs/security.md` (threat model + recommendations), embedding-provider
   selection section in `docs/architecture/embeddings.md`, `AgentChatPage` entry in
-  `docs/web-ui-guide.md`, `scri migrate` reference in `docs/cli-reference.md`.
+  `docs/web-ui-guide.md`, `scri migrate` reference in `docs/cli-reference.md`,
+  chunked-embeddings + Tier 2 LLM coverage in `docs/cli-reference.md` and
+  `docs/architecture/embeddings.md`.
+
+### Changed
+- Bundled-plugin default GGUF switched from `LFM2.5-1.2B-Thinking` to
+  `LFM2.5-1.2B-Instruct`. The thinking variant burned the token budget on
+  `<think>…</think>` reasoning blocks for Tier 2 tasks that want terse output;
+  the instruct variant gives usable completions at the same parameter count.
+  `VulkanLlmProvider` still detects and handles thinking models (heuristic via
+  filename + GGUF metadata, `StripReasoningBlocks` regex, 8× max-tokens
+  multiplier) for users who configure one explicitly.
+- Bundled LLM plugin default context bumped from 4096 to 8192 tokens.
+- Ollama probe uses `/api/tags` rather than `/` or `/v1/models` — works on every
+  Ollama version including fresh installs with no models pulled, and surfaces a
+  human-readable error string when unreachable.
+- LLM HTTP probe timeout bumped 2s → 5s to match the Ollama-setup probe
+  (Windows IPv6→IPv4 fallback latency on localhost was tripping the shorter
+  budget intermittently).
+- HybridReranker max-aggregates per-chunk vector scores under the
+  `{scope}|{name}` key the whole-memory scorer pass looks up. The chunked
+  `{scope}|{name}|{chunkIndex}` keys are still emitted alongside for any
+  future per-chunk scoring path.
 
 ### Changed
 - Trimmed CLI publish now declares `<IsTrimmable>true</IsTrimmable>` on `Scrinia` and

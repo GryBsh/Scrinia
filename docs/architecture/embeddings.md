@@ -203,15 +203,20 @@ Constructor failures (e.g., missing API key, model not downloaded) are caught an
 
 ### VectorStore
 
-Manages per-scope binary vector files in SVF2 format.
+Manages per-scope binary vector files in SVF3 format.
 
 ```csharp
 public sealed class VectorStore : IDisposable
 {
+    public VectorStore(string baseDir, string? expectedSignature = null);
+
     public IReadOnlyList<VectorEntry> GetVectors(string scope);
     public Task UpsertAsync(string scope, string name, int? chunkIndex, float[] vector, CancellationToken ct);
     public Task RemoveAsync(string scope, string name, CancellationToken ct);
-    public int TotalVectorCount();
+    public int Count();
+
+    public bool HasStaleQuarantines { get; }
+    public IReadOnlyCollection<string> StaleQuarantineScopes { get; }
 }
 ```
 
@@ -219,31 +224,122 @@ public sealed class VectorStore : IDisposable
 
 Ephemeral scope vectors are stored in-memory only.
 
-### SVF2 Binary Format
+### SVF3 Binary Format
 
-Append-only format with lazy compaction:
+Signed, append-only format with lazy compaction:
 
 ```
-[magic "SVF2" 4B] [dimensions uint16]
+[magic "SVF3" 4B] [dimensions uint16] [signatureLen uint16] [signatureUtf8]
 repeated entries:
   [op byte: 0=add, 1=delete]
   [nameLen uint16] [nameUtf8]
-  [chunkIndex int32]            // -1 = whole entry
+  [chunkIndex int32]            // -1 = whole entry, 0+ = specific window
   (add only: [vector float32[dims]])
 ```
 
-**Compaction:** Triggered when deleted entries exceed 20% of total operations AND at least 10 deletes. Rewrites the file with only live entries.
+**Signature** captures the active embedding provider + chunking config — e.g.
+`ollama:nomic-embed-text|c1200o200`. On load, if a file's signature doesn't
+match `expectedSignature` it gets renamed to `vectors.bin.stale-{timestamp}`,
+recorded in `StaleQuarantineScopes`, and the store returns empty for that scope.
+The caller (`EmbeddingReindexer.ReindexIfStaleAsync` from `WorkspaceSetup`) then
+walks scopes, observes `HasStaleQuarantines`, and rebuilds.
 
-**Concurrency:** Per-scope `SemaphoreSlim` serializes writes. Atomic file operations (write to `.tmp`, then rename).
+Legacy SVF1 and SVF2 files (no signature) are read transparently when
+`expectedSignature` is null (tests and ad-hoc tools). Production callers always
+pass a signature, so older files quarantine on first contact and reindex.
+
+**Compaction:** Triggered when deletes exceed 20% of ops AND ≥ 10 deletes.
+Rewrites the file with only live entries in SVF3.
+
+**Concurrency:** Per-scope `SemaphoreSlim` serializes writes. Atomic file
+operations (write to `.tmp`, then rename) with retry backoff for sync-client
+interference (Synology Drive, OneDrive, etc.).
 
 ### VectorEntry
 
 ```csharp
 public sealed record VectorEntry(
     string Name,          // qualified memory name (e.g., "api:auth-flow")
-    int? ChunkIndex,      // null = whole entry, 0+ = specific chunk
+    int? ChunkIndex,      // null = whole entry, 0+ = specific window
     float[] Vector);      // L2-normalized
 ```
+
+## Chunked Embeddings
+
+Long memories are sliced into overlapping windows before embedding. Each window
+becomes one vector keyed by `(scope, name, chunkIndex)`. Search dedupes results
+back to one entry per memory but lets the best-matching window drive the score —
+so a needle buried at char 12000 of a long session log is still vector-reachable
+(it was silently lost to truncation under the previous one-vector-per-memory
+layout).
+
+### TextChunker
+
+```csharp
+public static class TextChunker
+{
+    public const int DefaultWindowSize = 1200;  // ~300 tokens for English prose
+    public const int DefaultOverlap = 200;
+
+    public static IReadOnlyList<(int Index, string Text)> SliceWindows(
+        string text, int windowSize = DefaultWindowSize, int overlap = DefaultOverlap);
+}
+```
+
+- Short text (`Length <= windowSize`) returns one chunk `(0, trimmed)` so we
+  don't pay for slicing when there's nothing to slice.
+- Otherwise slides a window of `windowSize` chars stepping by `windowSize - overlap`,
+  trimming each slice's leading/trailing whitespace.
+- `overlap >= windowSize` throws — that would loop forever.
+- Char-based, not token-aware: avoids a tokenizer dependency and keeps behavior
+  deterministic across providers. The 1200/200 default fits comfortably inside
+  every supported provider's context window including nomic-embed-text's 2048-token
+  cap.
+
+### Write paths
+
+Both write paths use the same chunker:
+
+- **Hot path** (`memory('remember')`): `CoreEmbeddingEventHandler.EmbedAndIndexAsync`
+  slices the joined content, batch-embeds via `EmbedBatchAsync`, then runs an
+  atomic per-memory replace — `RemoveAsync(scope, name)` first, then `UpsertAsync`
+  per chunk. The pre-emptive Remove guards against shrink-replace orphans (a
+  memory edited from 8 windows down to 5 leaves no stale chunks 5–7).
+- **Bulk path** (`EmbeddingReindexer.ReindexAsync`): same shape, but iterating
+  every persistent memory in the store. Used after a signature-mismatch
+  quarantine, after a `Scrinia:Embeddings:*` config write, or via
+  `scri reindex`.
+
+A `MaxChunksPerMemory` cap (default 100) keeps embed cost bounded on
+pathologically long memories — excess tail is dropped from the vector path,
+BM25 still indexes the full text via the existing sidecar pipeline.
+
+### Signature composition
+
+```csharp
+public static class ChunkedSignature
+{
+    public static string Compose(string providerSignature, int chunkSize, int overlap) =>
+        $"{providerSignature}|c{chunkSize}o{overlap}";
+}
+```
+
+`WorkspaceSetup` composes the signature once when constructing each
+`VectorStore`. Any change to provider, model, chunk size, or overlap produces a
+different signature → file quarantine → reindex on next launch. Same flow for
+manual `scri config Scrinia:Embeddings:ChunkSize 1800`.
+
+### Search-time dedup
+
+`HybridReranker.ComputeScoresAsync` writes two keys per matching chunk:
+
+- `{scope}|{name}|{chunkIndex}` — per-chunk score (preserved for any future
+  per-chunk scoring path)
+- `{scope}|{name}` — max-aggregated score across all chunks of that memory
+
+`WeightedFieldScorer.SearchAll` reads the whole-memory key for the per-entry
+scoring pass and ends up with exactly one result per memory at the best chunk's
+score. No chunk-vs-chunk-vs-whole double-counting.
 
 ## Similarity Search
 

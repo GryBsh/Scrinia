@@ -8,7 +8,7 @@ The top-level surface is organized by purpose:
 
 | Group | Commands |
 |---|---|
-| Infrastructure | `serve`, `setup`, `config` |
+| Infrastructure | `serve`, `setup`, `config`, `reindex` |
 | Lifecycle | `guide`, `restore`, `reconcile`, `consolidate` |
 | Memory operations | `memory list / search / show / store / forget / append / compact / link` |
 | Bundle files | `bundle export / import / pack` |
@@ -147,25 +147,47 @@ scri memory compact session-notes --keep-recent 5  # keep last 5
 
 ### scri consolidate
 
-Run deterministic consolidation passes over the local store. Designed to be wired
-to an editor hook so workspace memory stays tidy without manual intervention. No
-LLM call — only mechanical operations (Tier 1).
+Run consolidation passes over the local store. Designed to be wired to an editor
+hook so workspace memory stays tidy without manual intervention. Operates in two
+tiers: Tier 1 (default) is deterministic and mechanical; Tier 2 (`--with-llm`)
+adds an LLM pass for description backfill, session summaries, and fact extraction.
 
-What it does today:
+**Tier 1** (always runs):
 
 - Compacts multi-chunk session entries (paths under `/sessions/` or `sessions:`)
   older than `--session-age-days` (default 7) into single-chunk form. Originals
   are archived under `versions/`.
 - Reports stats: total memories, total bytes, count of entries past `reviewAfter`.
 
+**Tier 2** (`--with-llm`): after Tier 1 completes, runs an LLM pass over the local
+store. Requires an `IBackgroundLlm` to be wired (Ollama / OpenAI-compatible
+endpoint, or the bundled `scri-plugin-llm`). Three sub-passes:
+
+1. **Description backfill** — every memory whose description still starts with
+   the auto-fallback (first 200 chars of content) gets a regenerated description.
+2. **Session summarization** — session entries that were compacted in Tier 1
+   this run get a one-paragraph summary written into their description field.
+3. **Fact extraction** — every memory gets 3–7 atomic facts extracted into
+   `ArtifactEntry.Facts: string[]`. Each fact enters `TermFrequencies` at
+   weight +2 so BM25 surfaces them automatically.
+
+Progress is checkpointed to `.scrinia/.tier2-progress.json` keyed by qualified
+name + content hash. Re-running `--with-llm` only re-prompts memories whose
+content changed since the last pass — kill-and-resume is safe.
+
+If no LLM backend is configured, `--with-llm` exits 2 with a setup hint. Run
+`scri setup` to wire one up, or set `Scrinia:Llm:BaseUrl` to a manual endpoint.
+
 ```bash
-scri consolidate [--auto] [--dry-run] [--debounce-minutes 30] [--session-age-days 7] [--json] [--workspace-root <path>]
+scri consolidate [--auto] [--dry-run] [--with-llm] [--debounce-minutes 30] \
+    [--session-age-days 7] [--json] [--workspace-root <path>]
 ```
 
 - `--auto` enables debounce: skips the run if `.scrinia/.last-consolidation` shows
   a run within `--debounce-minutes`. Hooks fire on every Stop event, so this
   prevents wasted work.
 - `--dry-run` previews actions without writing.
+- `--with-llm` adds Tier 2; no-op when no backend is available.
 - After a non-dry run, `.scrinia/.last-consolidation` is updated with the current
   UTC timestamp.
 
@@ -270,17 +292,68 @@ scri bundle pack docs "src/**/*.md" -d "Source documentation" -t docs,reference
 
 ### scri setup
 
-Download the Model2Vec embedding model (`m2v-MiniLM-L6-v2`, 384 dimensions) for built-in semantic search.
+Interactive workspace setup. Three things in order:
+
+1. **Ollama auto-detection** (`http://localhost:11434` by default). Probes
+   `GET /api/tags`; if reachable, prompts whether to use Ollama for embeddings
+   and completions. On `yes`:
+   - Picks an embedding model from already-pulled models, or pulls
+     `nomic-embed-text` (default), or accepts a typed name.
+   - Picks a completion model similarly, defaulting to `lfm2:1.2b` with
+     `llama3.2:1b` as fallback if the LFM2 pull fails.
+   - Streams `POST /api/pull` with per-layer progress for any missing models.
+   - Writes the resulting `Scrinia:Embeddings:*` and `Scrinia:Llm:*` config
+     to the workspace.
+2. **Built-in embedding model** (`m2v-MiniLM-L6-v2`, 384-dim, ~22MB) downloaded
+   from HuggingFace to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Only used when
+   Ollama isn't configured and the Vulkan embeddings plugin isn't installed.
+3. **LLM model** (`LFM2.5-1.2B-Instruct-Q5_K_M.gguf`, ~900MB) downloaded for the
+   bundled `scri-plugin-llm` plugin. Only runs when the plugin exe is installed
+   AND no Ollama/HTTP backend is configured. Use `--llm-download` to
+   force-download even when not needed; `--no-llm-download` to skip the prompt
+   entirely.
 
 ```bash
-scri setup [--workspace-root <path>]
+scri setup [--workspace-root <path>] [--no-ollama] [--llm-download] [--no-llm-download] \
+    [--multi-user] [--resolver none|claude|copilot]
 ```
 
-Downloads `model.safetensors` (~22MB) and `vocab.txt` from HuggingFace to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Shows progress bars. Skips files that already exist.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--no-ollama` | `false` | Skip the Ollama probe + prompt entirely. |
+| `--llm-download` | (prompt) | Force-download the bundled LLM GGUF without prompting. |
+| `--no-llm-download` | (prompt) | Skip the bundled LLM GGUF download without prompting. |
+| `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
+| `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. |
 
-Most users won't need to run this directly — `scri serve` auto-downloads the model on first launch (use `--no-auto-setup` on serve to opt out). Run `setup` explicitly when configuring multi-user collaboration (`--multi-user`) or when you want to control when the network call happens.
+Most users don't need to run `setup` directly — `scri serve` auto-downloads the
+embedding model on first launch (use `--no-auto-setup` to opt out). Run `setup`
+explicitly when wiring Ollama, configuring multi-user collaboration
+(`--multi-user`), or when you want to control when the network call happens.
 
-No plugin installation required -- Model2Vec is built into Scrinia Core.
+### scri reindex
+
+Force a full rebuild of every vector file in the workspace. Use when:
+
+- The embedding signature on disk has drifted from the active config and the
+  automatic startup quarantine didn't pick it up.
+- You suspect a vector file is corrupted (cosine scores look wrong despite
+  obvious matches in BM25).
+- You changed `Scrinia:Embeddings:ChunkSize` / `ChunkOverlap` and want to verify
+  the rebuild ran end-to-end instead of relying on the lazy fallback.
+
+```bash
+scri reindex [--workspace-root <path>] [--json]
+```
+
+Moves every `vectors.bin` to a timestamped `vectors.bin.pre-reindex-{stamp}`
+backup, then runs `WorkspaceSetup.LoadPluginsAsync` which sees the missing files
+and rebuilds from sidecars. The backup files are kept on disk — delete them
+manually once you've confirmed the new vectors work.
+
+For background context on the auto-quarantine flow that handles 95% of model
+switches without needing this command, see
+[docs/architecture/embeddings.md](architecture/embeddings.md#chunked-embeddings).
 
 ### scri config
 
@@ -297,7 +370,51 @@ scri config --unset <key>                # Remove a setting
 scri config plugins:embeddings my-custom-plugin
 scri config Scrinia:Embeddings:Provider ollama
 scri config Scrinia:Embeddings:OllamaModel nomic-embed-text
+scri config Scrinia:Embeddings:ChunkSize 1800
+scri config Scrinia:Llm:Provider openai
+scri config Scrinia:Llm:BaseUrl http://localhost:11434/v1
+scri config Scrinia:Llm:Model lfm2:1.2b
 ```
+
+Writes to `Scrinia:Embeddings:*` trigger an automatic vector reindex if the
+composed embedding signature changed (provider, model, chunk size, or overlap).
+
+#### Config key reference
+
+**Embeddings**
+
+| Key | Default | Description |
+|---|---|---|
+| `Scrinia:Embeddings:Provider` | `model2vec` | Provider: `model2vec`, `ollama`, `openai`, `voyageai`, `azure`, `google`, or `none`. HTTP providers skip the built-in Model2Vec + Vulkan plugin entirely. |
+| `Scrinia:Embeddings:SemanticWeight` | `50.0` | Multiplier applied to cosine similarity in hybrid scoring. |
+| `Scrinia:Embeddings:ChunkSize` | `1200` | Sliding-window size in characters for chunked embeddings. Roughly 300 tokens for English. |
+| `Scrinia:Embeddings:ChunkOverlap` | `200` | Overlap in characters between adjacent windows. Must be strictly less than `ChunkSize`. |
+| `Scrinia:Embeddings:MaxChunksPerMemory` | `100` | Safety cap on chunks per memory; excess tail is dropped from embed (BM25 still indexes full text). |
+| `Scrinia:Embeddings:MaxInputChars` | `6000` | Per-call input cap for legacy non-chunked paths. Applies only to providers and code paths that haven't migrated to `TextChunker`. |
+| `Scrinia:Embeddings:OllamaBaseUrl` | `http://localhost:11434` | Ollama API endpoint. |
+| `Scrinia:Embeddings:OllamaModel` | `all-minilm` | Ollama embedding model name. |
+| `Scrinia:Embeddings:OpenAi*` | — | `ApiKey`, `Model`, `BaseUrl` for OpenAI / compatible. |
+| `Scrinia:Embeddings:VoyageAi*` | — | `ApiKey`, `Model`, `BaseUrl` for Voyage AI. |
+| `Scrinia:Embeddings:Azure*` | — | `Endpoint`, `ApiKey`, `Deployment`, `Model`, `ApiVersion`, `UseV1` for Azure AI Foundry. |
+| `Scrinia:Embeddings:Google*` | — | `ApiKey`, `Model`, `BaseUrl`, `Dimensions` for Google Gemini. |
+
+**Background LLM (Tier 2)**
+
+| Key | Default | Description |
+|---|---|---|
+| `Scrinia:Llm:Provider` | `auto` | `auto` (HTTP-first, plugin fallback), `openai` (force HTTP), `plugin` (force bundled), or `none`. |
+| `Scrinia:Llm:BaseUrl` | `http://localhost:11434/v1` | OpenAI-compatible chat-completions endpoint. |
+| `Scrinia:Llm:Model` | `lfm2.5:1.2b-thinking` | Model name sent in the chat-completions request body. |
+| `Scrinia:Llm:ApiKey` | (none) | Sent as `Authorization: Bearer …` when set. Optional for Ollama / local servers. |
+| `Scrinia:Llm:Temperature` | `0.3` | Sampling temperature. Tier 2 tasks favour low-temperature, reproducible output. |
+| `Scrinia:Llm:RequestTimeoutSeconds` | `120` | Outer HTTP ceiling. Per-task budgets are tighter and set via `CancellationToken`. |
+| `Scrinia:Llm:LocalModelFile` | (built-in default) | Override the GGUF filename loaded by the bundled `scri-plugin-llm`. |
+| `Scrinia:Llm:LocalModelUrl` | (built-in default) | Override the HuggingFace URL the plugin downloads from on first run. |
+| `Scrinia:Llm:LocalContextSize` | `8192` | n_ctx passed to LLamaSharp for the bundled plugin's GGUF load. |
+
+Plugin-specific keys (`plugins:embeddings`, `plugins:llm`) override the executable
+name used to launch the corresponding plugin process — only useful for custom
+builds.
 
 ### scri migrate
 

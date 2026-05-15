@@ -126,7 +126,9 @@ scri config                                 # list/get/set workspace settings
 scri guide                                  # print the agent guide (run once per session)
 scri restore                                # resume agent context (profile, patterns, session log)
 scri reconcile                              # scan .scrinia/ for merge conflicts
-scri consolidate --auto                     # deterministic housekeeping (hook-friendly)
+scri consolidate --auto                     # deterministic housekeeping (hook-friendly, Tier 1)
+scri consolidate --with-llm                 # add LLM pass: descriptions, summaries, fact extraction (Tier 2)
+scri reindex                                # force rebuild of every vector file (rarely needed; auto-runs on model switch)
 
 # Memory operations (grouped under "memory")
 scri memory list                            # summary view (topics, keywords, stats)
@@ -206,9 +208,11 @@ Plans, retrospectives, agent norms, and findings are all just memories — searc
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests             # 1,206 CLI + MCP + planning + embeddings tests
-dotnet test tests/Scrinia.Server.Tests      # 86 server + 18 merge tests
-dotnet test tests/Scrinia.Plugin.Embeddings.Tests  # 12 Vulkan plugin + benchmark tests
+dotnet test tests/Scrinia.Tests                   # 716 CLI + MCP + storage + embeddings + reindex tests
+dotnet test tests/Scrinia.Server.Tests            # 63 server tests
+dotnet test tests/Scrinia.Merge.Tests             # 18 merge-conflict tests
+dotnet test tests/Scrinia.Plugin.Embeddings.Tests # 12 Vulkan embeddings plugin tests
+dotnet test tests/Scrinia.Plugin.Llm.Tests        # 15 Vulkan LLM plugin tests
 ```
 
 ## Running benchmarks
