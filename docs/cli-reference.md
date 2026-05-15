@@ -322,6 +322,7 @@ Interactive workspace setup. Three things in order:
 ```bash
 scri setup [--workspace-root <path>] [--no-ollama] [--llm-download] [--no-llm-download] \
     [--multi-user] [--resolver none|claude|copilot] \
+    [--llm auto|claude-cli|codex-cli|copilot-cli|openai|anthropic|gemini|plugin|none] \
     [--hooks] [--uninstall-hooks] [--project]
 ```
 
@@ -330,11 +331,18 @@ scri setup [--workspace-root <path>] [--no-ollama] [--llm-download] [--no-llm-do
 | `--no-ollama` | `false` | Skip the Ollama probe + prompt entirely. |
 | `--llm-download` | (prompt) | Force-download the bundled LLM GGUF without prompting. |
 | `--no-llm-download` | (prompt) | Skip the bundled LLM GGUF download without prompting. |
+| `--llm` | (auto) | Tier 2 LLM backend. `auto` (default) lets the runtime probe HTTP → agent CLIs on PATH → bundled plugin → none on every startup. Explicit values pin a backend: `claude-cli`/`codex-cli`/`copilot-cli` reuse the user's CLI subscription auth (no API key); `openai` targets any OpenAI-compatible HTTP endpoint (prompts for base URL + model + optional API key when missing); `anthropic`/`gemini` target the vendor's native API (prompts for the API key when missing); `plugin` forces the bundled subprocess; `none` disables Tier 2. When omitted, an existing provider already in config is preserved — re-runs don't silently downgrade an explicit Anthropic/Gemini configuration. |
 | `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
-| `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. |
+| `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. Strictly merge-driver semantics — does NOT affect Tier 2 LLM backend (use `--llm` for that). |
 | `--hooks` | `false` | Install SessionStart/SessionEnd/UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Codex has no SessionEnd event, so the consolidate hook is skipped there with a notice. Skips the model-download flow. |
 | `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
 | `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
+
+When the Ollama probe falls through (declined, unreachable, or `--no-ollama`),
+setup clears any prior Ollama-derived config keys
+(`Scrinia:Embeddings:Provider=ollama`, the Ollama URL + model, and the LLM
+trio if it pointed at `localhost:11434`). Custom OpenAI / Anthropic / Gemini
+configurations are preserved.
 
 Most users don't need to run `setup` directly — `scri serve` auto-downloads the
 embedding model on first launch (use `--no-auto-setup` to opt out). Run `setup`

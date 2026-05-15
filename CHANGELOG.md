@@ -10,6 +10,25 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed
+- `scri setup` now configures the Tier 2 LLM backend explicitly. Previously the
+  CLI-based provider values (`claude-cli`, `codex-cli`, `copilot-cli`) and the
+  native Anthropic/Gemini providers were reachable only via raw
+  `scri config Scrinia:Llm:Provider <value>` — setup had no LLM step at all.
+  New `--llm <value>` argument pins a backend non-interactively
+  (`claude-cli`/`codex-cli`/`copilot-cli`/`openai`/`anthropic`/`gemini`/`plugin`/
+  `none`/`auto`); when omitted, setup writes `auto` only if no provider is
+  already configured. Secondary keys (API keys for anthropic/gemini, base URL +
+  model for openai) are prompted only when missing from existing config.
+- `scri setup` clears stale Ollama-derived config when the Ollama path falls
+  through (probe failed, user declined, or `--no-ollama`). Previously, switching
+  off Ollama left `Scrinia:Embeddings:Provider=ollama` + URL + model intact, so
+  every subsequent startup tried Ollama, failed, and only then fell back.
+  Custom OpenAI / Anthropic / Gemini configurations are preserved.
+- `scri setup` now writes `Scrinia:Embeddings:Provider=model2vec` after the
+  local model download step, so re-running setup after a previous configuration
+  no longer leaves the value implicitly defaulted.
+
 ### Changed (breaking — CLI surface)
 - Memory CRUD commands are now grouped under `scri memory <action>` — `scri list`,
   `scri search`, `scri store`, `scri show`, `scri forget`, `scri append`,

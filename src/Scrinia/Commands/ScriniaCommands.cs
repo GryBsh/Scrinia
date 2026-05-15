@@ -925,6 +925,7 @@ public class ScriniaCommands
     /// <param name="hooks">Install SessionStart/Stop hooks into detected agent CLIs (Claude Code, etc.). Opt-in.</param>
     /// <param name="uninstallHooks">Remove scrinia-managed hooks from agent CLIs and exit.</param>
     /// <param name="project">With --hooks / --uninstall-hooks, target workspace-local config (.claude/...) instead of user-global (~/.claude/...).</param>
+    /// <param name="llm">Tier 2 LLM provider to configure non-interactively. Values: <c>auto</c>, <c>claude-cli</c>, <c>codex-cli</c>, <c>copilot-cli</c>, <c>openai</c>, <c>anthropic</c>, <c>gemini</c>, <c>plugin</c>, <c>none</c>. When omitted, setup writes <c>auto</c> (runtime picks the best available backend per startup). Secondary keys (API key for anthropic/gemini, base-URL + model for openai) are prompted only when missing from existing config.</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
         bool multiUser = false,
@@ -935,6 +936,7 @@ public class ScriniaCommands
         bool hooks = false,
         bool uninstallHooks = false,
         bool project = false,
+        string? llm = null,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -971,6 +973,13 @@ public class ScriniaCommands
                 "Run [cyan]scri config[/] to inspect or adjust settings.");
             return 0;
         }
+
+        // Ollama path was declined / unreachable / explicitly skipped — clear any stale
+        // Ollama-derived keys from a prior run so the user doesn't end up with a config
+        // pointing at a service they're no longer using. Without this, switching off
+        // Ollama leaves Provider=ollama in place and startup tries it every time before
+        // falling back, which surfaces as confusing "Ollama unreachable" warnings.
+        ClearStaleOllamaConfig(ScriniaArtifactStore.WorkspaceRootPath);
 
         // ── Step 1: Built-in Model2Vec model (always) ──
         AnsiConsole.MarkupLine("[bold]Built-in embeddings (Model2Vec / MiniLM-L6-v2)[/]");
@@ -1030,6 +1039,16 @@ public class ScriniaCommands
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[dim]Vulkan plugin not installed — skipping GPU model download.[/]");
         }
+
+        // Explicitly record the embeddings provider that setup just configured. The
+        // runtime defaults to model2vec when no value is set, but writing it explicitly
+        // means re-running setup after declining a previously-configured Ollama doesn't
+        // leave the user wondering which provider is active. Plugin presence still
+        // takes precedence at runtime (LoadPluginsAsync handles that branch).
+        WorkspaceConfig.SetValue(
+            ScriniaArtifactStore.WorkspaceRootPath,
+            "Scrinia:Embeddings:Provider",
+            "model2vec");
 
         // ── Step 3: LLM plugin GGUF model (if plugin is installed) ──
         string llmPluginName = WorkspaceSetup.GetPluginName("plugins:llm", "scri-plugin-llm");
@@ -1105,7 +1124,136 @@ public class ScriniaCommands
             }
         }
 
+        // ── Step 4: Tier 2 LLM backend selection ──
+        // Pick the LLM provider Scrinia uses for Tier 2 consolidation. Auto (the default)
+        // resolves at startup. Explicit values let the user pin a backend non-interactively
+        // — e.g. `scri setup --llm claude-cli` for users with an active Claude Code
+        // subscription who want zero API-key configuration.
+        ConfigureLlmBackend(llm);
+
         return 0;
+    }
+
+    /// <summary>
+    /// LLM backend selection step. Writes <c>Scrinia:Llm:Provider</c> and prompts only for
+    /// secondary keys not already present in config. When <paramref name="llmArg"/> is null
+    /// and no provider is currently set, defaults to <c>auto</c> (runtime resolves per
+    /// startup). When a provider is already set and no arg is passed, leaves config alone
+    /// so a re-run of <c>scri setup</c> doesn't silently downgrade a deliberate Anthropic /
+    /// Gemini configuration to <c>auto</c>.
+    /// </summary>
+    private static void ConfigureLlmBackend(string? llmArg)
+    {
+        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[bold]Tier 2 LLM backend[/]");
+
+        string? existingProvider = WorkspaceConfig.GetValue(root, "Scrinia:Llm:Provider");
+
+        // Re-run protection: if Ollama setup OR a prior explicit configuration already
+        // wrote a provider and the user didn't override via --llm, respect that decision.
+        if (llmArg is null && !string.IsNullOrEmpty(existingProvider))
+        {
+            AnsiConsole.MarkupLine(
+                $"  [dim]Provider already set to '{Markup.Escape(existingProvider)}' — leaving as-is. " +
+                "Pass --llm <value> to change it.[/]");
+            return;
+        }
+
+        string chosen = (llmArg ?? "auto").Trim().ToLowerInvariant();
+        if (!IsKnownLlmProvider(chosen))
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Unknown --llm value '{Markup.Escape(chosen)}'. " +
+                "Valid: auto, claude-cli, codex-cli, copilot-cli, openai, anthropic, gemini, plugin, none. " +
+                "Falling back to auto.[/]");
+            chosen = "auto";
+        }
+
+        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Provider", chosen);
+
+        switch (chosen)
+        {
+            case "auto":
+                AnsiConsole.MarkupLine(
+                    "  [green]Provider = auto[/] [dim]— runtime picks: HTTP probe → agent CLIs " +
+                    "(claude → codex → copilot) on PATH → bundled plugin → none.[/]");
+                break;
+            case "claude-cli":
+            case "codex-cli":
+            case "copilot-cli":
+                AnsiConsole.MarkupLine(
+                    $"  [green]Provider = {Markup.Escape(chosen)}[/] [dim]— reuses your existing " +
+                    "CLI subscription auth; no API key needed.[/]");
+                break;
+            case "anthropic":
+                EnsureSecretAsync(root, "Scrinia:Llm:AnthropicApiKey", "Anthropic API key");
+                EnsureValueAsync(root, "Scrinia:Llm:Model", "Model identifier", defaultValue: "claude-haiku-4-5");
+                break;
+            case "gemini":
+                EnsureSecretAsync(root, "Scrinia:Llm:GeminiApiKey", "Gemini API key");
+                EnsureValueAsync(root, "Scrinia:Llm:Model", "Model identifier", defaultValue: "gemini-2.0-flash");
+                break;
+            case "openai":
+                EnsureValueAsync(root, "Scrinia:Llm:BaseUrl", "OpenAI-compatible base URL", defaultValue: "https://api.openai.com/v1");
+                EnsureValueAsync(root, "Scrinia:Llm:Model", "Model identifier", defaultValue: "gpt-4o-mini");
+                EnsureSecretAsync(root, "Scrinia:Llm:ApiKey", "API key (leave blank for local endpoints)", allowEmpty: true);
+                break;
+            case "plugin":
+                AnsiConsole.MarkupLine(
+                    "  [green]Provider = plugin[/] [dim]— uses the bundled scri-plugin-llm subprocess. " +
+                    "Run --llm-download or pre-place the GGUF in plugins/scri-plugin-llm.[/]");
+                break;
+            case "none":
+                AnsiConsole.MarkupLine(
+                    "  [green]Provider = none[/] [dim]— Tier 2 consolidation disabled; " +
+                    "`scri consolidate --with-llm` becomes a no-op.[/]");
+                break;
+        }
+    }
+
+    private static bool IsKnownLlmProvider(string value) => value switch
+    {
+        "auto" or "claude-cli" or "codex-cli" or "copilot-cli"
+            or "openai" or "anthropic" or "gemini" or "plugin" or "none" => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Prompts the user for a value if the named config key isn't already set. Secrets
+    /// are masked. Empty input is rejected unless <paramref name="allowEmpty"/> is true.
+    /// </summary>
+    private static void EnsureSecretAsync(string root, string key, string label, bool allowEmpty = false)
+    {
+        string? existing = WorkspaceConfig.GetValue(root, key);
+        if (!string.IsNullOrEmpty(existing))
+        {
+            AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(key)} already set — keeping existing value.[/]");
+            return;
+        }
+
+        var prompt = new Spectre.Console.TextPrompt<string>($"  [cyan]{Markup.Escape(label)}:[/]")
+            .Secret();
+        if (allowEmpty) prompt.AllowEmpty();
+        string entered = AnsiConsole.Prompt(prompt);
+        if (!string.IsNullOrEmpty(entered))
+            WorkspaceConfig.SetValue(root, key, entered);
+    }
+
+    private static void EnsureValueAsync(string root, string key, string label, string defaultValue)
+    {
+        string? existing = WorkspaceConfig.GetValue(root, key);
+        if (!string.IsNullOrEmpty(existing))
+        {
+            AnsiConsole.MarkupLine(
+                $"  [dim]{Markup.Escape(key)} already set to '{Markup.Escape(existing)}' — keeping.[/]");
+            return;
+        }
+
+        string entered = AnsiConsole.Prompt(
+            new Spectre.Console.TextPrompt<string>($"  [cyan]{Markup.Escape(label)}[/] [dim](default: {Markup.Escape(defaultValue)})[/]:")
+                .DefaultValue(defaultValue));
+        WorkspaceConfig.SetValue(root, key, entered);
     }
 
     /// <summary>
@@ -1313,6 +1461,52 @@ public class ScriniaCommands
         }
 
         return targetModel;
+    }
+
+    /// <summary>
+    /// Remove Ollama-derived config keys from a prior <c>scri setup</c> run. Called on the
+    /// non-Ollama branch of setup so a user switching off Ollama doesn't carry stale
+    /// <c>Scrinia:Embeddings:Provider=ollama</c> + URL + model into the next startup. Only
+    /// touches keys that were demonstrably Ollama-installed — anything pointing elsewhere
+    /// (custom OpenAI base URL, user-set Anthropic key) is preserved.
+    /// </summary>
+    internal static void ClearStaleOllamaConfig(string root)
+    {
+        bool wasOllamaEmbeddings = string.Equals(
+            WorkspaceConfig.GetValue(root, "Scrinia:Embeddings:Provider"),
+            "ollama",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (wasOllamaEmbeddings)
+        {
+            WorkspaceConfig.UnsetValue(root, "Scrinia:Embeddings:Provider");
+            WorkspaceConfig.UnsetValue(root, "Scrinia:Embeddings:OllamaBaseUrl");
+            WorkspaceConfig.UnsetValue(root, "Scrinia:Embeddings:OllamaModel");
+        }
+
+        // LLM block written by the Ollama path points at localhost:11434/v1 with
+        // Provider=openai. If we see that exact shape, treat it as Ollama-installed and
+        // clear it. Custom user OpenAI configs (api.openai.com or a self-hosted LM Studio
+        // URL) are preserved — they aren't ours to remove.
+        string? llmProvider = WorkspaceConfig.GetValue(root, "Scrinia:Llm:Provider");
+        string? llmBaseUrl = WorkspaceConfig.GetValue(root, "Scrinia:Llm:BaseUrl");
+        bool llmWasOllamaInstalled =
+            string.Equals(llmProvider, "openai", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrEmpty(llmBaseUrl)
+            && llmBaseUrl.Contains("localhost:11434", StringComparison.OrdinalIgnoreCase);
+
+        if (llmWasOllamaInstalled)
+        {
+            WorkspaceConfig.UnsetValue(root, "Scrinia:Llm:Provider");
+            WorkspaceConfig.UnsetValue(root, "Scrinia:Llm:BaseUrl");
+            WorkspaceConfig.UnsetValue(root, "Scrinia:Llm:Model");
+        }
+
+        if (wasOllamaEmbeddings || llmWasOllamaInstalled)
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]  Cleared stale Ollama-derived config keys from a prior setup run.[/]");
+        }
     }
 
     private static void ConfigureMultiUser(string? resolver)
