@@ -16,6 +16,16 @@ namespace Scrinia.Core.Embeddings;
 /// </summary>
 public static class EmbeddingReindexer
 {
+    /// <summary>
+    /// Default character cap on text sent to an embedding provider. ~6000 chars maps to
+    /// roughly 1500 tokens — comfortably inside the 2048-token default context of Ollama's
+    /// nomic-embed-text and larger windows of every other supported provider. Long memories
+    /// get their prefix embedded; the BM25 path still indexes the full text. The limit can
+    /// be overridden via <c>Scrinia:Embeddings:MaxInputChars</c> for users on models with
+    /// bigger context budgets (mxbai-embed-large at 512, text-embedding-3-large at 8192, etc.).
+    /// </summary>
+    public const int DefaultMaxInputChars = 6000;
+
     public sealed record Result(int Total, int Embedded, int Skipped, int Failed);
 
     /// <summary>
@@ -29,7 +39,8 @@ public static class EmbeddingReindexer
         VectorStore vectorStore,
         ILogger logger,
         Action<int, int>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        int maxInputChars = DefaultMaxInputChars)
     {
         if (!provider.IsAvailable)
         {
@@ -67,7 +78,13 @@ public static class EmbeddingReindexer
                     continue;
                 }
 
-                var vec = await provider.EmbedAsync(decoded, ct);
+                // Truncate before embedding to keep within the provider's context. nomic-embed-text
+                // and the other small models cap around 2048 tokens; we send ~1500-token prefix
+                // which captures the high-signal head of session logs / docs. BM25 still indexes
+                // the full content for keyword recall on terms past the cutoff.
+                string toEmbed = decoded.Length > maxInputChars ? decoded[..maxInputChars] : decoded;
+
+                var vec = await provider.EmbedAsync(toEmbed, ct);
                 if (vec is null)
                 {
                     failed++;
@@ -80,6 +97,14 @@ public static class EmbeddingReindexer
                 }
             }
             catch (OperationCanceledException) { throw; }
+            catch (FileNotFoundException)
+            {
+                // Sidecar exists but the .nmp2 artifact is missing on disk (manual deletion,
+                // merge artifact, etc.). Count as skipped rather than failed so the result
+                // summary reflects "nothing we could do" vs "provider error."
+                skipped++;
+                logger.LogDebug("Reindex: artifact missing for {Name}", item.Entry.Name);
+            }
             catch (Exception ex)
             {
                 failed++;
@@ -106,7 +131,8 @@ public static class EmbeddingReindexer
         string embeddingsDir,
         ILogger logger,
         Action<int, int>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        int maxInputChars = DefaultMaxInputChars)
     {
         if (!Directory.Exists(embeddingsDir))
             return null;
@@ -131,6 +157,6 @@ public static class EmbeddingReindexer
             probeStore.StaleQuarantineScopes.Count,
             string.Join(", ", probeStore.StaleQuarantineScopes));
 
-        return await ReindexAsync(store, provider, probeStore, logger, progress, ct);
+        return await ReindexAsync(store, provider, probeStore, logger, progress, ct, maxInputChars);
     }
 }

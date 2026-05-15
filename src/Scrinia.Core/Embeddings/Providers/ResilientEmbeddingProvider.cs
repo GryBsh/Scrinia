@@ -68,7 +68,15 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
                 var errorBody = await response.Content.ReadAsStringAsync(ct);
                 Logger.LogWarning("{Provider} embedding request failed: HTTP {StatusCode} — {Body}",
                     ProviderName, (int)response.StatusCode, errorBody.Length > 500 ? errorBody[..500] : errorBody);
-                response.EnsureSuccessStatusCode();
+                // 4xx is a per-input client error (e.g. "input length exceeds context length")
+                // bad payload, not provider health. Do NOT trip the circuit breaker: that would
+                // cascade-fail every subsequent embed in a reindex even when the provider is
+                // healthy. Reserve breaker failures for transient signals (5xx, 429, IO/socket).
+                int statusCode = (int)response.StatusCode;
+                bool isClientError = statusCode is >= 400 and < 500;
+                if (!isClientError)
+                    _circuitBreaker.RecordFailure();
+                return null;
             }
 
             var vec = await ParseEmbeddingResponseAsync(response, ct);
@@ -87,7 +95,11 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
         }
         catch (Exception ex)
         {
-            _circuitBreaker.RecordFailure();
+            // Only count transient/infrastructure failures toward the breaker. Parse errors and
+            // unexpected exceptions are logged but don't kill the provider for the rest of the
+            // session, same rationale as the 4xx exclusion above.
+            if (TransientDetector.IsTransient(ex))
+                _circuitBreaker.RecordFailure();
             Logger.LogWarning(ex, "{Provider} embedding failed", ProviderName);
             return null;
         }

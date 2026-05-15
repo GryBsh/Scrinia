@@ -103,6 +103,14 @@ internal static class WorkspaceSetup
         var store = MemoryStoreContext.Current;
         if (store is null) return;
 
+        // User-overridable input cap (Scrinia:Embeddings:MaxInputChars). Models with smaller
+        // contexts (nomic-embed-text@2048) need ~6000 chars; bigger ones (text-embedding-3-large
+        // @8192) can take 30000+ for richer semantics.
+        int maxInputChars = EmbeddingReindexer.DefaultMaxInputChars;
+        string? cfgMax = GetConfigValue("Scrinia:Embeddings:MaxInputChars");
+        if (cfgMax is not null && int.TryParse(cfgMax, out int parsed) && parsed > 0)
+            maxInputChars = parsed;
+
         try
         {
             int lastDone = -1;
@@ -116,7 +124,7 @@ internal static class WorkspaceSetup
 
             // Sync wait — startup is a one-shot cost the user is already paying for.
             var result = EmbeddingReindexer.ReindexIfStaleAsync(
-                store, provider, embeddingsDir, logger, OnProgress, CancellationToken.None)
+                store, provider, embeddingsDir, logger, OnProgress, CancellationToken.None, maxInputChars)
                 .GetAwaiter().GetResult();
             if (result is not null)
             {
