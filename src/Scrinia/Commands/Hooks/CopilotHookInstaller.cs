@@ -127,16 +127,16 @@ public sealed class CopilotHookInstaller : IAgentHookInstaller
     }
 
     /// <summary>
-    /// Map canonical event names (<c>SessionStart</c>, <c>Stop</c>, <c>UserPromptSubmit</c>)
-    /// to Copilot's camelCase names (<c>sessionStart</c>, <c>sessionEnd</c>,
-    /// <c>userPromptSubmitted</c>). Empty string means "not mapped — skip" so a future
-    /// canonical event scrinia adds (e.g. <c>Notification</c>) doesn't get silently
-    /// misrouted before this adapter learns the mapping.
+    /// Map canonical event names (<c>SessionStart</c>, <c>SessionEnd</c>,
+    /// <c>UserPromptSubmit</c>) to Copilot's camelCase names (<c>sessionStart</c>,
+    /// <c>sessionEnd</c>, <c>userPromptSubmitted</c>). Empty string means "not mapped
+    /// — skip" so a future canonical event scrinia adds doesn't get silently misrouted
+    /// before this adapter learns the mapping.
     /// </summary>
     internal static string ToCopilotEvent(string canonical) => canonical switch
     {
         "SessionStart" => "sessionStart",
-        "Stop" => "sessionEnd",
+        "SessionEnd" => "sessionEnd",
         "UserPromptSubmit" => "userPromptSubmitted",
         "PreToolUse" => "preToolUse",
         "PostToolUse" => "postToolUse",

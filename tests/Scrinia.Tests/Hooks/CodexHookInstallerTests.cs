@@ -30,7 +30,7 @@ public sealed class CodexHookInstallerTests : IDisposable
     private static readonly IReadOnlyList<HookSpec> Specs =
     [
         new HookSpec("SessionStart", "scri restore"),
-        new HookSpec("Stop", "scri consolidate --auto"),
+        new HookSpec("UserPromptSubmit", "scri hint"),
     ];
 
     private static CodexHookInstaller NewInstaller(bool cliInstalled = true) =>
@@ -53,8 +53,27 @@ public sealed class CodexHookInstallerTests : IDisposable
         var root = ParseConfig();
         root["hooks"]!["SessionStart"]![0]!["hooks"]![0]!["command"]!.GetValue<string>()
             .Should().Be("scri restore");
-        root["hooks"]!["Stop"]![0]!["hooks"]![0]!["command"]!.GetValue<string>()
-            .Should().Be("scri consolidate --auto");
+        root["hooks"]!["UserPromptSubmit"]![0]!["hooks"]![0]!["command"]!.GetValue<string>()
+            .Should().Be("scri hint");
+    }
+
+    [Fact]
+    public void SupportsEvent_SessionEnd_ReturnsFalse()
+    {
+        // Codex (as of CLI ~0.124+) has only per-turn Stop — no once-per-session terminator.
+        // The orchestrator uses this signal to skip the canonical SessionEnd hook on Codex
+        // rather than mis-wire it to per-turn Stop.
+        NewInstaller().SupportsEvent("SessionEnd").Should().BeFalse();
+    }
+
+    [Fact]
+    public void SupportsEvent_OtherCanonicalEvents_ReturnTrue()
+    {
+        var installer = NewInstaller();
+        installer.SupportsEvent("SessionStart").Should().BeTrue();
+        installer.SupportsEvent("UserPromptSubmit").Should().BeTrue();
+        installer.SupportsEvent("PreToolUse").Should().BeTrue();
+        installer.SupportsEvent("PostToolUse").Should().BeTrue();
     }
 
     [Fact]

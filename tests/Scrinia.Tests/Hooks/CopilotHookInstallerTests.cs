@@ -32,7 +32,7 @@ public sealed class CopilotHookInstallerTests : IDisposable
     private static readonly IReadOnlyList<HookSpec> Specs =
     [
         new HookSpec("SessionStart", "scri restore"),
-        new HookSpec("Stop", "scri consolidate --auto"),
+        new HookSpec("SessionEnd", "scri consolidate --auto"),
     ];
 
     private static CopilotHookInstaller NewInstaller(bool cliInstalled = true) =>
@@ -42,7 +42,7 @@ public sealed class CopilotHookInstallerTests : IDisposable
     public void EventNameMapping_PascalCaseToCamelCase()
     {
         CopilotHookInstaller.ToCopilotEvent("SessionStart").Should().Be("sessionStart");
-        CopilotHookInstaller.ToCopilotEvent("Stop").Should().Be("sessionEnd");
+        CopilotHookInstaller.ToCopilotEvent("SessionEnd").Should().Be("sessionEnd");
         CopilotHookInstaller.ToCopilotEvent("UserPromptSubmit").Should().Be("userPromptSubmitted");
         CopilotHookInstaller.ToCopilotEvent("UnknownFutureEvent").Should().BeEmpty();
     }

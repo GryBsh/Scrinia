@@ -31,7 +31,7 @@ public sealed class ClaudeCodeHookInstallerTests : IDisposable
     private static readonly IReadOnlyList<HookSpec> Specs =
     [
         new HookSpec("SessionStart", "scri restore"),
-        new HookSpec("Stop", "scri consolidate --auto"),
+        new HookSpec("SessionEnd", "scri consolidate --auto"),
     ];
 
     private static ClaudeCodeHookInstaller NewInstaller(bool cliInstalled = true)
@@ -58,12 +58,12 @@ public sealed class ClaudeCodeHookInstallerTests : IDisposable
         var root = ParseConfig();
         var hooks = root["hooks"]!.AsObject();
         hooks["SessionStart"]!.AsArray().Should().HaveCount(1);
-        hooks["Stop"]!.AsArray().Should().HaveCount(1);
+        hooks["SessionEnd"]!.AsArray().Should().HaveCount(1);
 
         // Each managed block has our sentinel + the expected command.
         string startCmd = hooks["SessionStart"]![0]!["hooks"]![0]!["command"]!.GetValue<string>();
         startCmd.Should().Be("scri restore");
-        string stopCmd = hooks["Stop"]![0]!["hooks"]![0]!["command"]!.GetValue<string>();
+        string stopCmd = hooks["SessionEnd"]![0]!["hooks"]![0]!["command"]!.GetValue<string>();
         stopCmd.Should().Be("scri consolidate --auto");
 
         hooks["SessionStart"]![0]![ClaudeCodeHookInstaller.ManagedMarker].Should().NotBeNull();
@@ -109,7 +109,7 @@ public sealed class ClaudeCodeHookInstallerTests : IDisposable
 
         var hooks = ParseConfig()["hooks"]!.AsObject();
         hooks["SessionStart"]!.AsArray().Should().HaveCount(1, "second install must update, not duplicate");
-        hooks["Stop"]!.AsArray().Should().HaveCount(1);
+        hooks["SessionEnd"]!.AsArray().Should().HaveCount(1);
     }
 
     [Fact]
@@ -121,7 +121,7 @@ public sealed class ClaudeCodeHookInstallerTests : IDisposable
         IReadOnlyList<HookSpec> updated =
         [
             new HookSpec("SessionStart", "scri restore --new-flag"),
-            new HookSpec("Stop", "scri consolidate --auto"),
+            new HookSpec("SessionEnd", "scri consolidate --auto"),
         ];
         installer.InstallHooks(HookScope.Project, _workspace, updated).Should().BeTrue();
 
@@ -155,7 +155,7 @@ public sealed class ClaudeCodeHookInstallerTests : IDisposable
         startArr[0]!["matcher"]!.GetValue<string>().Should().Be("user");
 
         // Stop event had only our hook → key should be removed entirely.
-        hooks.ContainsKey("Stop").Should().BeFalse();
+        hooks.ContainsKey("SessionEnd").Should().BeFalse();
     }
 
     [Fact]

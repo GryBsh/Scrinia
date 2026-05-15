@@ -184,20 +184,20 @@ scri consolidate [--auto] [--dry-run] [--with-llm] [--debounce-minutes 30] \
 ```
 
 - `--auto` enables debounce: skips the run if `.scrinia/.last-consolidation` shows
-  a run within `--debounce-minutes`. Hooks fire on every Stop event, so this
-  prevents wasted work.
+  a run within `--debounce-minutes`. Defensive even on once-per-session hooks, in
+  case the user opens and closes sessions rapidly.
 - `--dry-run` previews actions without writing.
 - `--with-llm` adds Tier 2; no-op when no backend is available.
 - After a non-dry run, `.scrinia/.last-consolidation` is updated with the current
   UTC timestamp.
 
-Wire it to a Claude Code Stop hook (opt-in) by adding to your
-`.claude/settings.json`:
+Wire it to a Claude Code `SessionEnd` hook (opt-in — `scri setup --hooks` does
+this automatically) by adding to your `.claude/settings.json`:
 
 ```json
 {
   "hooks": {
-    "Stop": [
+    "SessionEnd": [
       {
         "matcher": "",
         "hooks": [
@@ -208,6 +208,12 @@ Wire it to a Claude Code Stop hook (opt-in) by adding to your
   }
 }
 ```
+
+Bind to `SessionEnd`, not `Stop` — `Stop` fires after every assistant response
+and would run a Tier 2 LLM sweep on every turn. Codex CLI has no `SessionEnd`
+event, so `scri setup --hooks` skips the consolidate hook on Codex with a notice
+(SessionStart and UserPromptSubmit are still installed). Use a scheduled task or
+manual `scri consolidate` on Codex.
 
 Stale entries (past their `reviewAfter` date) are reported but NOT deleted —
 review them with `scri memory list` and decide manually.
@@ -326,7 +332,7 @@ scri setup [--workspace-root <path>] [--no-ollama] [--llm-download] [--no-llm-do
 | `--no-llm-download` | (prompt) | Skip the bundled LLM GGUF download without prompting. |
 | `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
 | `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. |
-| `--hooks` | `false` | Install SessionStart/Stop/UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Skips the model-download flow. |
+| `--hooks` | `false` | Install SessionStart/SessionEnd/UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Codex has no SessionEnd event, so the consolidate hook is skipped there with a notice. Skips the model-download flow. |
 | `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
 | `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
 

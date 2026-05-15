@@ -20,7 +20,7 @@ namespace Scrinia.Commands.Hooks;
 ///         "_scriniaManaged": "v1"     // our sentinel
 ///       }
 ///     ],
-///     "Stop": [ ... ]
+///     "SessionEnd": [ ... ]
 ///   }
 /// }
 /// </code>

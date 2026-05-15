@@ -20,7 +20,13 @@ public static class AgentHookSetup
     public static readonly IReadOnlyList<HookSpec> DefaultHookSpecs =
     [
         new HookSpec("SessionStart", "scri restore"),
-        new HookSpec("Stop", "scri consolidate --auto"),
+        // SessionEnd fires once at session termination — NOT after every assistant
+        // response. Claude Code's per-turn event is called `Stop`; binding consolidate
+        // there would burn an LLM-driven sweep on every turn. Codex has no SessionEnd
+        // at all (only per-turn Stop), so its installer reports SupportsEvent
+        // ("SessionEnd") = false and the orchestrator emits a one-line skip notice
+        // rather than mis-wire to per-turn `Stop`.
+        new HookSpec("SessionEnd", "scri consolidate --auto"),
         // UserPromptSubmit fires `scri hint` which reads the prompt from stdin (each CLI
         // pipes the user's input or a JSON envelope; ExtractPromptFromStdin handles both).
         // Sub-100ms BM25 lookup → injects a one-line "matches exist" marker into the
@@ -77,7 +83,32 @@ public static class AgentHookSetup
                 continue;
             }
 
-            bool ok = installer.InstallHooks(scope, workspaceRoot, specs);
+            // Filter the universal spec set down to events this CLI actually supports.
+            // Surface unsupported ones inline so the user knows why (e.g. Codex doesn't
+            // have a SessionEnd event, so the consolidate hook is reported as skipped).
+            var supportedSpecs = new List<HookSpec>(specs.Count);
+            foreach (var spec in specs)
+            {
+                if (installer.SupportsEvent(spec.EventName))
+                {
+                    supportedSpecs.Add(spec);
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[dim]  {Markup.Escape(installer.CliName)}: " +
+                        $"{Markup.Escape(spec.EventName)} not supported by this CLI — skipping that hook.[/]");
+                }
+            }
+
+            if (supportedSpecs.Count == 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]  {Markup.Escape(installer.CliName)}: no supported hooks; nothing to install.[/]");
+                continue;
+            }
+
+            bool ok = installer.InstallHooks(scope, workspaceRoot, supportedSpecs);
             if (ok)
             {
                 AnsiConsole.MarkupLine(

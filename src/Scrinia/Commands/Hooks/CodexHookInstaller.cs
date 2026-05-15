@@ -33,6 +33,18 @@ public sealed class CodexHookInstaller : IAgentHookInstaller
 
     public bool IsCliInstalled() => _runner.IsExecutableOnPath("codex");
 
+    /// <summary>
+    /// Codex's hook surface (as of CLI ~0.124+) exposes <c>SessionStart</c>,
+    /// <c>UserPromptSubmit</c>, <c>PreToolUse</c>, <c>PostToolUse</c>,
+    /// <c>PermissionRequest</c>, and <c>Stop</c> — but Stop is per-turn and there is no
+    /// once-per-session terminator equivalent to Claude Code's <c>SessionEnd</c>.
+    /// Returning false here tells <see cref="AgentHookSetup"/> to skip canonical
+    /// <c>SessionEnd</c> hooks (typically the Tier-2 consolidate sweep) on Codex,
+    /// so we don't burn an LLM call on every assistant response.
+    /// </summary>
+    public bool SupportsEvent(string canonicalEvent) =>
+        !canonicalEvent.Equals("SessionEnd", StringComparison.Ordinal);
+
     public bool InstallHooks(HookScope scope, string? workspaceRoot, IReadOnlyList<HookSpec> specs)
     {
         string path = ResolveConfigPath(scope, workspaceRoot);

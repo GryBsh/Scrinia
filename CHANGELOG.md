@@ -33,10 +33,14 @@ and all assembly attributes.
   globally with `scri config Scrinia:Hint:Enabled false`. Reads prompt from
   positional arg or stdin; auto-detects JSON envelopes (`{prompt, …}`) used
   by some CLIs' hook protocols.
-- **`scri setup --hooks`** — auto-install scrinia-managed SessionStart, Stop,
-  and UserPromptSubmit hooks across detected agent CLIs (Claude Code, OpenAI
-  Codex, GitHub Copilot). Prompts per CLI on PATH. User-global scope by
-  default; `--project` writes workspace-local config that's committable for
+- **`scri setup --hooks`** — auto-install scrinia-managed SessionStart,
+  SessionEnd, and UserPromptSubmit hooks across detected agent CLIs (Claude
+  Code, OpenAI Codex, GitHub Copilot). SessionEnd fires once at session
+  termination — NOT per assistant response — so consolidate runs once when the
+  user wraps up, not on every turn. Codex CLI has no SessionEnd event, so the
+  consolidate hook is skipped there with a notice (SessionStart and
+  UserPromptSubmit still install). Prompts per CLI on PATH. User-global scope
+  by default; `--project` writes workspace-local config that's committable for
   team sharing. `--uninstall-hooks` removes only scrinia-managed blocks,
   preserving user-authored hooks.
 - **Per-CLI hook adapters** with format-appropriate writes:
@@ -47,7 +51,7 @@ and all assembly attributes.
     avoids round-tripping the user's TOML config).
   - GitHub Copilot CLI (GA Feb 2026): dedicated `scrinia.json` inside
     `~/.copilot/hooks/` (user) or `.github/hooks/` (project); event names
-    canonical→camelCase (`SessionStart` → `sessionStart`, `Stop` → `sessionEnd`).
+    canonical→camelCase (`SessionStart` → `sessionStart`, `SessionEnd` → `sessionEnd`).
   - Direct `scri` invocation in every hook — no intermediate shell scripts
     that can drift from their deployment locations (avoids the GSD #1834
     footgun).

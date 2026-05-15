@@ -65,4 +65,12 @@ public interface IAgentHookInstaller
     /// managed blocks are present, drifted, or missing — without making any writes.
     /// </summary>
     HookStatus GetStatus(HookScope scope, string? workspaceRoot, IReadOnlyList<HookSpec> specs);
+
+    /// <summary>
+    /// Whether this CLI supports the given canonical event. Lets <see cref="AgentHookSetup"/>
+    /// filter the universal hook set per-installer and surface a notice when an event isn't
+    /// available — Codex, for instance, has no <c>SessionEnd</c> event, so the consolidate
+    /// hook is skipped on that CLI rather than mis-wired to per-turn <c>Stop</c>.
+    /// </summary>
+    bool SupportsEvent(string canonicalEvent) => true;
 }
