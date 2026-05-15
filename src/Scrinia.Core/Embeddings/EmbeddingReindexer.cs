@@ -133,6 +133,30 @@ public static class EmbeddingReindexer
     }
 
     /// <summary>
+    /// Unconditional full reindex of every persistent memory through the active provider.
+    /// Used by the <c>scri reindex</c> command for the case where the user wants to force a
+    /// rebuild even when signatures match (e.g. recovering from a suspected corruption).
+    /// Unlike <see cref="ReindexIfStaleAsync"/>, this never gates on quarantine state — it
+    /// constructs a fresh signed <see cref="VectorStore"/> and runs <see cref="ReindexAsync"/>
+    /// against it directly. Existing vectors are atomically replaced per memory via the
+    /// Remove-then-Upsert sequence inside <see cref="ReindexAsync"/>.
+    /// </summary>
+    public static async Task<Result> ForceReindexAsync(
+        IMemoryStore store,
+        IEmbeddingProvider provider,
+        string embeddingsDir,
+        ILogger logger,
+        Action<int, int>? progress,
+        CancellationToken ct,
+        EmbeddingOptions? options = null)
+    {
+        options ??= new EmbeddingOptions();
+        string expectedSignature = ChunkedSignature.Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap);
+        var vectorStore = new VectorStore(embeddingsDir, expectedSignature);
+        return await ReindexAsync(store, provider, vectorStore, logger, progress, ct, options);
+    }
+
+    /// <summary>
     /// Detect-and-reindex entry point used by <c>WorkspaceSetup</c> on startup and by the
     /// <c>scri config Scrinia:Embeddings:*</c> command after a settings write. Walks each
     /// scope directory under <paramref name="embeddingsDir"/> to force <c>LoadFromDisk</c>

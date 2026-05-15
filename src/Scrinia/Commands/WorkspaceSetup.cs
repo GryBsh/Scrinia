@@ -132,6 +132,53 @@ internal static class WorkspaceSetup
         }
     }
 
+    /// <summary>
+    /// Unconditional full reindex against the currently-loaded embedding provider. Used by the
+    /// <c>scri reindex</c> command — bypasses the signature-mismatch gate that
+    /// <see cref="MaybeReindexAfterModelSwitch"/> relies on so a user who wants to force a
+    /// rebuild (suspected corruption, manual recovery) actually gets one. Must be called after
+    /// <see cref="LoadPluginsAsync"/> so the active provider is wired.
+    /// </summary>
+    internal static async Task<EmbeddingReindexer.Result?> ForceReindexAsync(CancellationToken ct = default)
+    {
+        var provider = _embeddingProvider;
+        var store = MemoryStoreContext.Current;
+        if (provider is null || !provider.IsAvailable || store is null)
+        {
+            Console.Error.WriteLine(
+                "[scrinia:warn] Reindex skipped: no embedding provider is available. " +
+                "Run `scri setup` first.");
+            return null;
+        }
+
+        var options = BuildEmbeddingOptions();
+        string embeddingsDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia", "embeddings");
+
+        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+        var logger = loggerFactory.CreateLogger("Scrinia.Reindex");
+
+        int lastDone = -1;
+        void OnProgress(int done, int total)
+        {
+            if (done == lastDone) return;
+            lastDone = done;
+            Console.Error.Write($"\r[scrinia] reindexing {done}/{total} memories…");
+            if (done == total) Console.Error.WriteLine();
+        }
+
+        try
+        {
+            return await EmbeddingReindexer.ForceReindexAsync(
+                store, provider, embeddingsDir, logger, OnProgress, ct, options);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Forced reindex failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
     /// <summary>True when <paramref name="provider"/> is one of the network-backed providers
     /// — i.e. anything that talks to a remote/local HTTP endpoint rather than loading a
     /// model in-process. Used to decide whether the Vulkan plugin should be skipped.</summary>

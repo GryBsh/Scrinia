@@ -132,6 +132,44 @@ public class EmbeddingReindexerTests : IDisposable
         vectorStore.GetVectors("local").Should().HaveCount(10);
     }
 
+    [Fact]
+    public async Task ForceReindex_RebuildsWhenSignaturesMatch()
+    {
+        // Regression for the broken `scri reindex` flow: the user wants a force rebuild even
+        // when the signature on disk matches the active config (suspected corruption / manual
+        // recovery). `ReindexIfStaleAsync` short-circuits when nothing was quarantined, so the
+        // command MUST use `ForceReindexAsync` to actually rebuild.
+        AddMemory("memo", "first content");
+
+        var provider = new FakeBatchProvider();
+        var opts = new EmbeddingOptions { ChunkSize = 1200, ChunkOverlap = 200 };
+        string signature = ChunkedSignature.Compose(provider.Signature, opts.ChunkSize, opts.ChunkOverlap);
+
+        // Seed the on-disk store with a vector using the matching signature so a stale-only
+        // path would skip the rebuild.
+        using (var seed = new VectorStore(_embeddingsDir, expectedSignature: signature))
+        {
+            await seed.UpsertAsync("local", "memo", 0, [99f, 0f, 0f]);
+        }
+
+        // ReindexIfStaleAsync would see HasStaleQuarantines == false and bail without writing.
+        var staleResult = await EmbeddingReindexer.ReindexIfStaleAsync(
+            _store, provider, _embeddingsDir, NullLogger.Instance, progress: null, CancellationToken.None, opts);
+        staleResult.Should().BeNull("signature matches so the auto-reindex correctly short-circuits");
+
+        // ForceReindexAsync must rebuild unconditionally.
+        var forced = await EmbeddingReindexer.ForceReindexAsync(
+            _store, provider, _embeddingsDir, NullLogger.Instance, progress: null, CancellationToken.None, opts);
+        forced.Total.Should().Be(1);
+        forced.Embedded.Should().Be(1);
+
+        using var verify = new VectorStore(_embeddingsDir, expectedSignature: signature);
+        var vectors = verify.GetVectors("local");
+        vectors.Should().HaveCount(1);
+        // The fresh vector has first component = chunk text length (~13), not the seeded 99f.
+        vectors[0].Vector[0].Should().NotBe(99f);
+    }
+
     private sealed class FakeBatchProvider : IEmbeddingProvider
     {
         public bool IsAvailable => true;

@@ -1567,46 +1567,32 @@ public class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
 
-        // LoadPluginsAsync wires the embedding provider and, via MaybeReindexAfterModelSwitch,
-        // will auto-reindex when the signature changed. For an explicit `scri reindex` we want
-        // to force a full pass even when signatures match (e.g., user thinks vectors are stale
-        // due to data corruption). Do that by deleting all SVF3 files and then calling
-        // LoadPluginsAsync — the next read will see no files and rebuild from scratch.
-        string embeddingsDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia", "embeddings");
-        int forcedCount = 0;
-        if (Directory.Exists(embeddingsDir))
+        // Wire the active embedding provider before forcing the rebuild. LoadPluginsAsync also
+        // runs the signature-mismatch auto-reindex (a no-op when signatures match), then we
+        // override with an unconditional pass so the command does what its name says even on
+        // a "vectors are stale, I just want them rebuilt" recovery flow.
+        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        var result = await WorkspaceSetup.ForceReindexAsync(cancellationToken);
+
+        if (result is null)
         {
-            foreach (string scopeDir in Directory.EnumerateDirectories(embeddingsDir))
-            {
-                string vectorsPath = Path.Combine(scopeDir, "vectors.bin");
-                if (File.Exists(vectorsPath))
-                {
-                    try
-                    {
-                        // Move to a timestamped backup rather than hard delete so a botched
-                        // reindex doesn't lose the user's vectors irreversibly.
-                        string stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
-                        File.Move(vectorsPath, $"{vectorsPath}.pre-reindex-{stamp}", overwrite: false);
-                        forcedCount++;
-                    }
-                    catch (Exception ex)
-                    {
-                        AnsiConsole.MarkupLine(
-                            $"[yellow]Could not move {Markup.Escape(vectorsPath)}: {ex.Message}[/]");
-                    }
-                }
-            }
+            if (json)
+                WriteJsonError("Reindex skipped — no embedding provider is available. Run `scri setup` first.");
+            else
+                AnsiConsole.MarkupLine(
+                    "[yellow]Reindex skipped[/] — no embedding provider is available. " +
+                    "Run [italic]scri setup[/] first.");
+            return 1;
         }
 
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
-
+        string summary =
+            $"Embedded {result.Embedded}/{result.Total}, " +
+            $"{result.Skipped} skipped, {result.Failed} failed.";
         if (json)
-            WriteJson(new CliReindexOutput(forcedCount, "Reindex triggered via LoadPluginsAsync."),
-                CliJsonContext.Default.CliReindexOutput);
+            WriteJson(new CliReindexOutput(result.Embedded, summary), CliJsonContext.Default.CliReindexOutput);
         else
-            AnsiConsole.MarkupLine(
-                $"[green]Reindex complete.[/] Force-rebuilt {forcedCount} scope(s).");
-        return 0;
+            AnsiConsole.MarkupLine($"[green]Reindex complete.[/] {Markup.Escape(summary)}");
+        return result.Failed == 0 ? 0 : 1;
     }
 
     private static List<string> ResolveFiles(string filesArg)
