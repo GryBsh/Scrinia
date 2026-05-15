@@ -9,7 +9,7 @@ The top-level surface is organized by purpose:
 | Group | Commands |
 |---|---|
 | Infrastructure | `serve`, `setup`, `config`, `reindex` |
-| Lifecycle | `guide`, `restore`, `reconcile`, `consolidate` |
+| Lifecycle | `guide`, `restore`, `reconcile`, `consolidate`, `hint` |
 | Memory operations | `memory list / search / show / store / forget / append / compact / link` |
 | Bundle files | `bundle export / import / pack` |
 
@@ -315,7 +315,8 @@ Interactive workspace setup. Three things in order:
 
 ```bash
 scri setup [--workspace-root <path>] [--no-ollama] [--llm-download] [--no-llm-download] \
-    [--multi-user] [--resolver none|claude|copilot]
+    [--multi-user] [--resolver none|claude|copilot] \
+    [--hooks] [--uninstall-hooks] [--project]
 ```
 
 | Option | Default | Description |
@@ -325,11 +326,55 @@ scri setup [--workspace-root <path>] [--no-ollama] [--llm-download] [--no-llm-do
 | `--no-llm-download` | (prompt) | Skip the bundled LLM GGUF download without prompting. |
 | `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
 | `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. |
+| `--hooks` | `false` | Install SessionStart/Stop/UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Skips the model-download flow. |
+| `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
+| `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
 
 Most users don't need to run `setup` directly — `scri serve` auto-downloads the
 embedding model on first launch (use `--no-auto-setup` to opt out). Run `setup`
 explicitly when wiring Ollama, configuring multi-user collaboration
-(`--multi-user`), or when you want to control when the network call happens.
+(`--multi-user`), installing agent hooks (`--hooks`), or when you want to
+control when the network call happens.
+
+#### Hook installer (`--hooks`)
+
+Wires scrinia into the user's existing agent CLI sessions:
+
+- **SessionStart** → `scri restore` — primes context (profile, patterns, today's session log) when the agent starts a session.
+- **Stop** → `scri consolidate --auto` — runs Tier 1 housekeeping when the agent stops.
+- **UserPromptSubmit** → `scri hint` — emits a one-line "relevant memories exist" marker before the agent processes each user prompt.
+
+Per-CLI write locations:
+
+| CLI | User scope | Project scope |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `<workspace>/.claude/settings.json` |
+| Codex (0.124+) | `~/.codex/hooks.json` | `<workspace>/.codex/hooks.json` |
+| GitHub Copilot (Feb 2026 GA) | `~/.copilot/hooks/scrinia.json` | `<workspace>/.github/hooks/scrinia.json` |
+
+User-authored hooks in the same config files are preserved — scrinia marks its blocks with a `_scriniaManaged` sentinel and only touches those. Re-running `--hooks` is idempotent. `--uninstall-hooks` removes only marked blocks.
+
+### scri hint
+
+Pre-send relevance hint. Emits a single-line marker telling the agent which stored memories look relevant to a prompt. No retrieval, no LLM call — just a sub-millisecond BM25 lookup.
+
+```bash
+scri hint [prompt] [--workspace-root <path>] [--json]
+echo "user prompt" | scri hint
+```
+
+Reads prompt from positional arg if given, otherwise from stdin. Auto-detects JSON envelopes (`{"prompt": "...", ...}`) used by some CLIs' hook protocols and extracts the `prompt` key.
+
+Empty stdout when:
+- The prompt is shorter than `Scrinia:Hint:MinPromptChars` (default 8 — skips "hi", "thanks").
+- No matches clear `Scrinia:Hint:MinScore` (default 10.0).
+- `Scrinia:Hint:Enabled` is set to `false`.
+
+Plain output format: `[scrinia] N memories match: name1, name2, name3. Run memory('search', 'name1') to retrieve.`
+
+`--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`.
+
+Normally invoked by the UserPromptSubmit hook installed via `scri setup --hooks`; can also be run by hand to debug threshold tuning.
 
 ### scri reindex
 
@@ -401,7 +446,7 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 
 | Key | Default | Description |
 |---|---|---|
-| `Scrinia:Llm:Provider` | `auto` | `auto` (HTTP-first, plugin fallback), `openai` (force HTTP), `plugin` (force bundled), or `none`. |
+| `Scrinia:Llm:Provider` | `auto` | `auto` (HTTP → agent-CLIs → plugin), `openai` (OpenAI-compat HTTP), `anthropic` (native Messages API), `gemini` (native generateContent), `claude-cli`/`codex-cli`/`copilot-cli` (shell out to the agent CLI), `plugin` (force bundled), or `none`. |
 | `Scrinia:Llm:BaseUrl` | `http://localhost:11434/v1` | OpenAI-compatible chat-completions endpoint. |
 | `Scrinia:Llm:Model` | `lfm2:1.2b` | Model name sent in the chat-completions request body. Matches the Ollama tag for the LFM2.5-Instruct family. |
 | `Scrinia:Llm:ApiKey` | (none) | Sent as `Authorization: Bearer …` when set. Optional for Ollama / local servers. |
@@ -410,6 +455,18 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 | `Scrinia:Llm:LocalModelFile` | (built-in default) | Override the GGUF filename loaded by the bundled `scri-plugin-llm`. |
 | `Scrinia:Llm:LocalModelUrl` | (built-in default) | Override the HuggingFace URL the plugin downloads from on first run. |
 | `Scrinia:Llm:LocalContextSize` | `8192` | n_ctx passed to LLamaSharp for the bundled plugin's GGUF load. |
+| `Scrinia:Llm:AnthropicApiKey` | (none) | API key sent as `x-api-key` to Anthropic. Required when `Provider=anthropic`. |
+| `Scrinia:Llm:AnthropicBaseUrl` | `https://api.anthropic.com` | Anthropic Messages API base URL. |
+| `Scrinia:Llm:GeminiApiKey` | (none) | API key sent as `x-goog-api-key` to Gemini. Required when `Provider=gemini`. |
+| `Scrinia:Llm:GeminiBaseUrl` | `https://generativelanguage.googleapis.com` | Gemini generateContent base URL. |
+
+**Pre-send hint (`scri hint`)**
+
+| Key | Default | Description |
+|---|---|---|
+| `Scrinia:Hint:Enabled` | `true` | When `false`, `scri hint` is a silent no-op (lets users disable globally without touching every CLI's hook config). |
+| `Scrinia:Hint:MinPromptChars` | `8` | Prompts shorter than this skip the lookup entirely (avoids firing on "hi" / "thanks"). |
+| `Scrinia:Hint:MinScore` | `10.0` | BM25 score floor — matches below this are suppressed. |
 
 Plugin-specific keys (`plugins:embeddings`, `plugins:llm`) override the executable
 name used to launch the corresponding plugin process — only useful for custom

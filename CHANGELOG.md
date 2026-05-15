@@ -24,6 +24,56 @@ and all assembly attributes.
   name is no longer accepted. Run `scri config Scrinia:Llm:Provider openai` if
   you have a workspace pinning the old value.
 
+### Added — Agent integration (CLI backends, hooks, hint)
+- **`scri hint <prompt>`** — pre-send relevance hint. Sub-millisecond BM25 lookup
+  against the workspace store; emits a single-line marker
+  (`[scrinia] N memories match: a, b, c…`) when results clear the score floor.
+  Prompts shorter than `Scrinia:Hint:MinPromptChars` (default 8) and matches
+  below `Scrinia:Hint:MinScore` (default 10.0) suppress the hint. Disable
+  globally with `scri config Scrinia:Hint:Enabled false`. Reads prompt from
+  positional arg or stdin; auto-detects JSON envelopes (`{prompt, …}`) used
+  by some CLIs' hook protocols.
+- **`scri setup --hooks`** — auto-install scrinia-managed SessionStart, Stop,
+  and UserPromptSubmit hooks across detected agent CLIs (Claude Code, OpenAI
+  Codex, GitHub Copilot). Prompts per CLI on PATH. User-global scope by
+  default; `--project` writes workspace-local config that's committable for
+  team sharing. `--uninstall-hooks` removes only scrinia-managed blocks,
+  preserving user-authored hooks.
+- **Per-CLI hook adapters** with format-appropriate writes:
+  - Claude Code: `~/.claude/settings.json` merge with `_scriniaManaged: "v1"`
+    sentinel for drift detection; user-authored hooks in the same event array
+    survive every install/uninstall.
+  - Codex 0.124+: `~/.codex/hooks.json` (loaded alongside `config.toml` —
+    avoids round-tripping the user's TOML config).
+  - GitHub Copilot CLI (GA Feb 2026): dedicated `scrinia.json` inside
+    `~/.copilot/hooks/` (user) or `.github/hooks/` (project); event names
+    canonical→camelCase (`SessionStart` → `sessionStart`, `Stop` → `sessionEnd`).
+  - Direct `scri` invocation in every hook — no intermediate shell scripts
+    that can drift from their deployment locations (avoids the GSD #1834
+    footgun).
+- **Agent CLI as background LLM** — three new `Scrinia:Llm:Provider` values
+  (`claude-cli`, `codex-cli`, `copilot-cli`) that shell out to the user's
+  installed agent CLI in non-interactive print mode. Reuses the user's
+  existing CLI authentication so Tier 2 doesn't need a separate API key or
+  bundled model. Combined system+user prompt arrives on stdin to avoid
+  Windows' 8K argument-length limit. Auto-mode (`Provider=auto`) tries HTTP
+  → agent CLIs in preference order (claude → codex → copilot) → bundled
+  plugin.
+- **Native Anthropic + Gemini LLM providers** (`Provider=anthropic`,
+  `Provider=gemini`) using each vendor's native API rather than the
+  OpenAI-compat shim. Anthropic targets `/v1/messages` with the Messages API
+  shape (system field, content blocks, x-api-key + anthropic-version
+  headers) — better feature parity than the compat shim. Gemini targets
+  `/v1beta/models/{model}:generateContent` with x-goog-api-key. Both inherit
+  from a new `ResilientLlmProvider` base.
+- **`IProcessRunner` abstraction** under `Scrinia.Core.Process` — testable
+  one-shot process invocation with Windows PATHEXT resolution (`.cmd` shims
+  for Node-based CLIs don't resolve through `Process.Start` with
+  `UseShellExecute=false`).
+- New config keys: `Scrinia:Llm:AnthropicApiKey`, `Scrinia:Llm:AnthropicBaseUrl`,
+  `Scrinia:Llm:GeminiApiKey`, `Scrinia:Llm:GeminiBaseUrl`,
+  `Scrinia:Hint:Enabled`, `Scrinia:Hint:MinScore`, `Scrinia:Hint:MinPromptChars`.
+
 ### Added — Tier 2 LLM consolidation
 - `scri consolidate --with-llm` runs an LLM pass over the local store after the
   existing Tier 1 mechanical compaction: regenerates auto-fallback descriptions,
