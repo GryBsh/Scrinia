@@ -21,6 +21,12 @@ public static class AgentHookSetup
     [
         new HookSpec("SessionStart", "scri restore"),
         new HookSpec("Stop", "scri consolidate --auto"),
+        // UserPromptSubmit fires `scri hint` which reads the prompt from stdin (each CLI
+        // pipes the user's input or a JSON envelope; ExtractPromptFromStdin handles both).
+        // Sub-100ms BM25 lookup → injects a one-line "matches exist" marker into the
+        // agent's context if the prompt clears Scrinia:Hint:MinPromptChars and a search
+        // result clears Scrinia:Hint:MinScore.
+        new HookSpec("UserPromptSubmit", "scri hint"),
     ];
 
     /// <summary>

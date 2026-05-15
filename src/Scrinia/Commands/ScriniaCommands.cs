@@ -1655,6 +1655,107 @@ public class ScriniaCommands
         return result.Failed == 0 ? 0 : 1;
     }
 
+    /// <summary>Pre-send relevance hint. Looks up the prompt against BM25 and emits a single-line
+    /// marker telling the agent which stored memories look relevant. Wired into agent CLIs
+    /// via the UserPromptSubmit hook. Returns empty stdout (no hint) when the prompt is short,
+    /// no matches clear the score floor, or hints are disabled in config.</summary>
+    /// <param name="prompt">Prompt text. If omitted, read from stdin.</param>
+    /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
+    /// <param name="json">Emit structured JSON instead of the plain hint line.</param>
+    public async Task<int> Hint(
+        string? prompt = null,
+        string? workspaceRoot = null,
+        bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+
+        // Disabled → silent zero. Single config flag so a user who finds the hint noisy
+        // can shut it off without touching every agent CLI's hook config.
+        string? enabled = WorkspaceSetup.GetConfigValue("Scrinia:Hint:Enabled");
+        if (enabled is not null && enabled.Equals("false", StringComparison.OrdinalIgnoreCase))
+            return 0;
+
+        // Resolve thresholds from config with sane defaults.
+        double minScore = HintCommand.DefaultMinScore;
+        string? cfgScore = WorkspaceSetup.GetConfigValue("Scrinia:Hint:MinScore");
+        if (cfgScore is not null && double.TryParse(cfgScore,
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                out double parsedScore))
+            minScore = parsedScore;
+
+        int minPromptChars = HintCommand.DefaultMinPromptChars;
+        string? cfgChars = WorkspaceSetup.GetConfigValue("Scrinia:Hint:MinPromptChars");
+        if (cfgChars is not null && int.TryParse(cfgChars, out int parsedChars) && parsedChars >= 0)
+            minPromptChars = parsedChars;
+
+        // Stdin fallback when no positional arg given (the common hook-invocation shape).
+        // CLIs deliver hook input as either plain prompt text or a JSON envelope like
+        // {"prompt": "...", "session_id": "...", ...}. Auto-detect: try JSON first; on
+        // failure or absent prompt key, use the raw stdin as the prompt verbatim.
+        string actualPrompt = prompt ?? ExtractPromptFromStdin(await ReadAllStdinAsync(cancellationToken));
+
+        var store = MemoryStoreContext.Current
+            ?? throw new InvalidOperationException("Workspace store not configured. Call Configure first.");
+
+        var hint = new HintCommand(store);
+        var result = hint.Compute(actualPrompt, minScore, minPromptChars);
+
+        if (!result.Emitted)
+            return 0;
+
+        if (json)
+        {
+            // Tiny manual JSON to avoid source-gen ceremony for one ad-hoc shape.
+            var matches = string.Join(",", result.Matches.Select(m =>
+                $"{{\"scope\":\"{m.Scope}\",\"name\":\"{JsonEscape(m.Name)}\",\"score\":{m.Score.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}"));
+            Console.WriteLine($"{{\"count\":{result.Matches.Count},\"matches\":[{matches}]}}");
+        }
+        else
+        {
+            Console.WriteLine(HintCommand.FormatPlain(result));
+        }
+        return 0;
+    }
+
+    private static async Task<string> ReadAllStdinAsync(CancellationToken ct)
+    {
+        if (Console.IsInputRedirected)
+        {
+            using var reader = new StreamReader(Console.OpenStandardInput(), System.Text.Encoding.UTF8);
+            return await reader.ReadToEndAsync(ct);
+        }
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Heuristically extract a prompt string from hook stdin. Each CLI delivers
+    /// UserPromptSubmit input differently — Claude Code wraps it in JSON
+    /// (<c>{prompt, session_id, ...}</c>); some setups pipe plain text. Try JSON first
+    /// looking for the canonical <c>prompt</c> key; on any failure fall back to the raw
+    /// stdin string.
+    /// </summary>
+    internal static string ExtractPromptFromStdin(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return raw;
+        string trimmed = raw.TrimStart();
+        if (trimmed.Length == 0 || trimmed[0] != '{') return raw;
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(trimmed);
+            if (doc.RootElement.TryGetProperty("prompt", out var promptEl)
+                && promptEl.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return promptEl.GetString() ?? raw;
+            }
+        }
+        catch (System.Text.Json.JsonException) { /* fall through */ }
+        return raw;
+    }
+
+    private static string JsonEscape(string s) =>
+        s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
     private static List<string> ResolveFiles(string filesArg)
     {
         var result = new List<string>();
