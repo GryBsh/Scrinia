@@ -145,13 +145,18 @@ internal static class OllamaSetup
 
     /// <summary>
     /// Best-effort classifier: returns true when <paramref name="modelName"/> looks like an
-    /// embedding model (name contains "embed", or one of the well-known embedding tags).
-    /// Used to split the installed-model list into two prompts.
+    /// embedding model (name contains "embed", "minilm", "bge-", "e5-", or starts with one
+    /// of the well-known embedding families). Used to split the installed-model list into
+    /// two prompts. "minilm" must be included because <c>all-minilm</c> is the project's
+    /// own documented default for <c>Scrinia:Embeddings:OllamaModel</c> — a user who
+    /// pre-pulled the documented default would otherwise see it offered as a completion
+    /// model.
     /// </summary>
     public static bool LooksLikeEmbeddingModel(string modelName)
     {
         string n = modelName.ToLowerInvariant();
         return n.Contains("embed", StringComparison.Ordinal)
+            || n.Contains("minilm", StringComparison.Ordinal)
             || n.Contains("bge-", StringComparison.Ordinal)
             || n.Contains("e5-", StringComparison.Ordinal)
             || n.StartsWith("nomic-", StringComparison.Ordinal)

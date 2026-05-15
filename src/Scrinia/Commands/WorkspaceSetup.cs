@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
@@ -347,7 +348,8 @@ internal static class WorkspaceSetup
         if (provider is not null) options.Provider = provider;
 
         string? weight = GetConfigValue("Scrinia:Embeddings:SemanticWeight");
-        if (weight is not null && double.TryParse(weight, out double w)) options.SemanticWeight = w;
+        if (weight is not null && double.TryParse(weight, NumberStyles.Float, CultureInfo.InvariantCulture, out double w))
+            options.SemanticWeight = w;
 
         string? ollamaUrl = GetConfigValue("Scrinia:Embeddings:OllamaBaseUrl");
         if (ollamaUrl is not null) options.OllamaBaseUrl = ollamaUrl;
@@ -552,7 +554,11 @@ internal static class WorkspaceSetup
         if (apiKey is not null) options.ApiKey = apiKey;
 
         string? temp = GetConfigValue("Scrinia:Llm:Temperature");
-        if (temp is not null && double.TryParse(temp, out double t)) options.Temperature = t;
+        // InvariantCulture so workspace config is portable across locales — de-DE / fr-FR
+        // default decimal separator is "," which would silently fail the locale-sensitive
+        // overload and leave Temperature pinned at its default.
+        if (temp is not null && double.TryParse(temp, NumberStyles.Float, CultureInfo.InvariantCulture, out double t))
+            options.Temperature = t;
 
         string? timeout = GetConfigValue("Scrinia:Llm:RequestTimeoutSeconds");
         if (timeout is not null && int.TryParse(timeout, out int s)) options.RequestTimeoutSeconds = s;

@@ -22,8 +22,14 @@ public sealed class LlmOptions
     /// </summary>
     public string BaseUrl { get; set; } = "http://localhost:11434/v1";
 
-    /// <summary>Model name passed in the chat-completions request body.</summary>
-    public string Model { get; set; } = "lfm2.5:1.2b-thinking";
+    /// <summary>
+    /// Model name passed in the chat-completions request body. Default matches
+    /// <c>OllamaSetup.DefaultCompletionModel</c> — the LFM2.5-Instruct family on Ollama.
+    /// Override with <c>scri config Scrinia:Llm:Model &lt;name&gt;</c>; the thinking variant
+    /// is intentionally not the default because it burns the token budget on reasoning
+    /// blocks for Tier 2 tasks that want terse output.
+    /// </summary>
+    public string Model { get; set; } = "lfm2:1.2b";
 
     /// <summary>Optional API key, sent as <c>Authorization: Bearer ...</c> when set.</summary>
     public string? ApiKey { get; set; }

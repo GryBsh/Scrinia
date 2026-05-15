@@ -98,10 +98,6 @@ and all assembly attributes.
   measurable wear over long daemon sessions on sync-watched workspaces.
 
 ### Added — Resilience + observability
-- `Scrinia:Embeddings:MaxInputChars` config knob caps the input to a single
-  embed call (default 6000 chars ≈ 1500 tokens, fits nomic-embed-text's 2048-token
-  context). Applies to providers and paths that haven't migrated to the new
-  windowed chunker.
 - `ResilientEmbeddingProvider` no longer trips its circuit breaker on HTTP 4xx
   responses. Bad payloads are per-input client errors, not provider-health
   signals — letting them cascade-fail every subsequent embed in a reindex was

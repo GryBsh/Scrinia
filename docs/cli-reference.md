@@ -390,7 +390,6 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 | `Scrinia:Embeddings:ChunkSize` | `1200` | Sliding-window size in characters for chunked embeddings. Roughly 300 tokens for English. |
 | `Scrinia:Embeddings:ChunkOverlap` | `200` | Overlap in characters between adjacent windows. Must be strictly less than `ChunkSize`. |
 | `Scrinia:Embeddings:MaxChunksPerMemory` | `100` | Safety cap on chunks per memory; excess tail is dropped from embed (BM25 still indexes full text). |
-| `Scrinia:Embeddings:MaxInputChars` | `6000` | Per-call input cap for legacy non-chunked paths. Applies only to providers and code paths that haven't migrated to `TextChunker`. |
 | `Scrinia:Embeddings:OllamaBaseUrl` | `http://localhost:11434` | Ollama API endpoint. |
 | `Scrinia:Embeddings:OllamaModel` | `all-minilm` | Ollama embedding model name. |
 | `Scrinia:Embeddings:OpenAi*` | — | `ApiKey`, `Model`, `BaseUrl` for OpenAI / compatible. |
@@ -404,7 +403,7 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 |---|---|---|
 | `Scrinia:Llm:Provider` | `auto` | `auto` (HTTP-first, plugin fallback), `openai` (force HTTP), `plugin` (force bundled), or `none`. |
 | `Scrinia:Llm:BaseUrl` | `http://localhost:11434/v1` | OpenAI-compatible chat-completions endpoint. |
-| `Scrinia:Llm:Model` | `lfm2.5:1.2b-thinking` | Model name sent in the chat-completions request body. |
+| `Scrinia:Llm:Model` | `lfm2:1.2b` | Model name sent in the chat-completions request body. Matches the Ollama tag for the LFM2.5-Instruct family. |
 | `Scrinia:Llm:ApiKey` | (none) | Sent as `Authorization: Bearer …` when set. Optional for Ollama / local servers. |
 | `Scrinia:Llm:Temperature` | `0.3` | Sampling temperature. Tier 2 tasks favour low-temperature, reproducible output. |
 | `Scrinia:Llm:RequestTimeoutSeconds` | `120` | Outer HTTP ceiling. Per-task budgets are tighter and set via `CancellationToken`. |
