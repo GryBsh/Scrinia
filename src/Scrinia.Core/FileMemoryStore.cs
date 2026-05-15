@@ -26,10 +26,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _indexLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CachedIndex> _indexCache = new(StringComparer.OrdinalIgnoreCase);
 
-    // Scope discovery cache with 2-second TTL
+    // Topic discovery cache. Invalidated event-driven (set to null) by Upsert / SaveIndex
+    // when a topic-scope mutation occurs. No TTL — repeated DiscoverTopics calls between
+    // mutations are O(1) cache hits rather than re-scanning the topics directory tree.
+    // The earlier 2-second TTL drove a constant ~30 directory enumerations/minute on the
+    // search hot path even when nothing had changed.
     private string[]? _cachedTopics;
-    private DateTime _topicsCacheTime;
-    private static readonly TimeSpan TopicsCacheTtl = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// In-memory cache of a scope's index entries with O(1) name→position lookup
@@ -1138,8 +1140,34 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         var searcher = new WeightedFieldScorer();
         var candidates = ListScoped(scopes);
-        var topics = GatherTopicInfos(scopes);
+        // Derive topic infos directly from the candidates we already loaded above instead of
+        // calling GatherTopicInfos — which would LoadIndex every topic scope a second time.
+        // The cache absorbs the actual disk reads but every duplicate call still acquires a
+        // shared file-lock and copies the entry list; on Synology Drive sync setups the
+        // lock-file acquisition alone is non-trivial wear over a long daemon session.
+        var topics = BuildTopicInfosFromCandidates(candidates);
         return searcher.SearchAll(query, candidates, topics, limit, supplementalScores);
+    }
+
+    private static List<TopicInfo> BuildTopicInfosFromCandidates(IReadOnlyList<ScopedArtifact> candidates)
+    {
+        var topics = new List<TopicInfo>();
+        foreach (var group in candidates
+            .Where(c => c.Scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            .GroupBy(c => c.Scope, StringComparer.OrdinalIgnoreCase))
+        {
+            string rawTopicPart = group.Key["local-topic:".Length..];
+            string topicName = MemoryNaming.StripNamespacePrefix(rawTopicPart);
+            int count = group.Count();
+            topics.Add(new TopicInfo(
+                Scope: group.Key,
+                TopicName: topicName,
+                EntryCount: count,
+                Description: $"{topicName} ({count} {(count == 1 ? "entry" : "entries")})",
+                Tags: null,
+                EntryNames: group.Select(c => c.Entry.Name).ToArray()));
+        }
+        return topics;
     }
 
     // ── Filtering overloads (excludeTopics) ──────────────────────────────────
@@ -1187,9 +1215,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         var searcher = new WeightedFieldScorer();
         var candidates = ListScoped(scopes, excludeTopics);
-        var topics = GatherTopicInfos(scopes)
-            .Where(t => !IMemoryStore.ShouldExcludeScope(t.Scope, excludeTopics))
-            .ToList();
+        // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
+        // candidates, so building topic infos from this filtered set automatically gives us
+        // the same shape as GatherTopicInfos+filter without re-LoadIndex-ing.
+        var topics = BuildTopicInfosFromCandidates(candidates);
         return searcher.SearchAll(query, candidates, topics, limit, supplementalScores: null);
     }
 
@@ -1400,8 +1429,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public string[] DiscoverTopics()
     {
-        // Return cached result if still fresh
-        if (_cachedTopics is not null && (DateTime.UtcNow - _topicsCacheTime) < TopicsCacheTtl)
+        // Cache hit — only re-scans when explicitly invalidated by Upsert / SaveIndex.
+        if (_cachedTopics is not null)
             return _cachedTopics;
 
         var results = new List<string>();
@@ -1453,7 +1482,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             DiscoverMemoriesRecursive(memoriesRoot, "", results);
 
         _cachedTopics = results.ToArray();
-        _topicsCacheTime = DateTime.UtcNow;
         return _cachedTopics;
     }
 
