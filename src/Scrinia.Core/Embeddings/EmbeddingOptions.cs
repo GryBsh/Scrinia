@@ -76,4 +76,20 @@ public sealed class EmbeddingOptions
 
     /// <summary>Seconds to wait before transitioning from open to half-open.</summary>
     public int CircuitBreakerCooldownSeconds { get; set; } = 30;
+
+    // ── Chunking ───────────────────────────────────────────────────────────
+    // Long memories get sliced into overlapping windows; each window becomes one vector.
+    // Search dedupes results back to one entry per memory but lets the best-matching
+    // chunk drive the score, so a needle buried deep in a long memory stays vector-reachable.
+    // Bake into the active embedding signature via ChunkedSignature.Compose so changes
+    // trigger automatic reindex.
+
+    /// <summary>Sliding-window size in characters when slicing for embedding (~1200 ≈ 300 tokens).</summary>
+    public int ChunkSize { get; set; } = TextChunker.DefaultWindowSize;
+
+    /// <summary>Overlap in characters between adjacent windows. Must be strictly less than <see cref="ChunkSize"/>.</summary>
+    public int ChunkOverlap { get; set; } = TextChunker.DefaultOverlap;
+
+    /// <summary>Safety cap on chunks per memory; excess tail is dropped from embedding (BM25 still indexes full text).</summary>
+    public int MaxChunksPerMemory { get; set; } = 100;
 }

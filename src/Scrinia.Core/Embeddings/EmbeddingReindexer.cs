@@ -4,33 +4,26 @@ using Scrinia.Core.Encoding;
 namespace Scrinia.Core.Embeddings;
 
 /// <summary>
-/// Walks every persistent memory in a <see cref="IMemoryStore"/>, re-embeds the decoded
-/// content via the active <see cref="IEmbeddingProvider"/>, and writes vectors into the
-/// target <see cref="VectorStore"/>. Called after a vector-file quarantine (provider
+/// Walks every persistent memory in a <see cref="IMemoryStore"/>, slices each one's decoded
+/// content into overlapping windows via <see cref="TextChunker.SliceWindows"/>, embeds the
+/// windows in a single batch call, and upserts one vector per chunk into the target
+/// <see cref="VectorStore"/>. Called after a vector-file quarantine (provider or chunk-config
 /// changed), after a <c>scri config Scrinia:Embeddings:*</c> write, or explicitly via
 /// <c>scri reindex</c>.
 ///
 /// <para>Ephemeral scope is skipped — those vectors are by definition session-bound and
-/// can't be reproduced from sidecars. Failures on individual items are logged and the
-/// batch continues so a single bad artifact doesn't abort the whole pass.</para>
+/// can't be reproduced from sidecars. Per-memory failures are logged and the batch continues
+/// so a single bad artifact doesn't abort the whole pass. Each memory is treated atomically:
+/// existing vectors for the memory are removed before the new chunks are upserted, so a
+/// shrink-replace (memory edited from 8 chunks down to 5) leaves no orphans.</para>
 /// </summary>
 public static class EmbeddingReindexer
 {
-    /// <summary>
-    /// Default character cap on text sent to an embedding provider. ~6000 chars maps to
-    /// roughly 1500 tokens — comfortably inside the 2048-token default context of Ollama's
-    /// nomic-embed-text and larger windows of every other supported provider. Long memories
-    /// get their prefix embedded; the BM25 path still indexes the full text. The limit can
-    /// be overridden via <c>Scrinia:Embeddings:MaxInputChars</c> for users on models with
-    /// bigger context budgets (mxbai-embed-large at 512, text-embedding-3-large at 8192, etc.).
-    /// </summary>
-    public const int DefaultMaxInputChars = 6000;
-
     public sealed record Result(int Total, int Embedded, int Skipped, int Failed);
 
     /// <summary>
     /// Reindex every persistent artifact through <paramref name="provider"/> into
-    /// <paramref name="vectorStore"/>. Progress callback fires per item with
+    /// <paramref name="vectorStore"/>. Progress callback fires per memory with
     /// <c>(done, total)</c>; pass null when you don't need progress reporting.
     /// </summary>
     public static async Task<Result> ReindexAsync(
@@ -40,13 +33,18 @@ public static class EmbeddingReindexer
         ILogger logger,
         Action<int, int>? progress,
         CancellationToken ct,
-        int maxInputChars = DefaultMaxInputChars)
+        EmbeddingOptions? options = null)
     {
         if (!provider.IsAvailable)
         {
             logger.LogWarning("Reindex skipped: embedding provider is not available.");
             return new Result(0, 0, 0, 0);
         }
+
+        options ??= new EmbeddingOptions();
+        int windowSize = options.ChunkSize;
+        int overlap = options.ChunkOverlap;
+        int maxChunks = options.MaxChunksPerMemory;
 
         var items = store.ListScoped()
             .Where(i => !i.Scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
@@ -78,30 +76,47 @@ public static class EmbeddingReindexer
                     continue;
                 }
 
-                // Truncate before embedding to keep within the provider's context. nomic-embed-text
-                // and the other small models cap around 2048 tokens; we send ~1500-token prefix
-                // which captures the high-signal head of session logs / docs. BM25 still indexes
-                // the full content for keyword recall on terms past the cutoff.
-                string toEmbed = decoded.Length > maxInputChars ? decoded[..maxInputChars] : decoded;
+                var chunks = TextChunker.SliceWindows(decoded, windowSize, overlap);
+                if (chunks.Count == 0)
+                {
+                    skipped++;
+                    continue;
+                }
 
-                var vec = await provider.EmbedAsync(toEmbed, ct);
-                if (vec is null)
+                if (chunks.Count > maxChunks)
+                {
+                    logger.LogWarning(
+                        "Reindex: {Name} would produce {Count} chunks; capping at {Cap}. " +
+                        "Tail content embed-skipped (BM25 still indexes it).",
+                        item.Entry.Name, chunks.Count, maxChunks);
+                    chunks = [.. chunks.Take(maxChunks)];
+                }
+
+                var texts = chunks.Select(c => c.Text).ToList();
+                var vectors = await provider.EmbedBatchAsync(texts, ct);
+                if (vectors is null || vectors.Length != chunks.Count)
                 {
                     failed++;
-                    logger.LogDebug("Reindex: empty embedding for {Name}", item.Entry.Name);
+                    logger.LogDebug("Reindex: batch embed failed or returned mismatched count for {Name}", item.Entry.Name);
+                    continue;
                 }
-                else
-                {
-                    await vectorStore.UpsertAsync(item.Scope, item.Entry.Name, null, vec, ct);
-                    embedded++;
-                }
+
+                // Atomic per-memory replace: clear any prior vectors for this name (including
+                // stale chunk indices from a previous, larger chunk count) before upserting
+                // the new set. Order matters — if the upsert loop is interrupted mid-flight,
+                // the next reindex will pick this memory back up cleanly.
+                await vectorStore.RemoveAsync(item.Scope, item.Entry.Name, ct);
+                for (int c = 0; c < chunks.Count; c++)
+                    await vectorStore.UpsertAsync(item.Scope, item.Entry.Name, chunks[c].Index, vectors[c], ct);
+
+                embedded++;
             }
             catch (OperationCanceledException) { throw; }
             catch (FileNotFoundException)
             {
                 // Sidecar exists but the .nmp2 artifact is missing on disk (manual deletion,
-                // merge artifact, etc.). Count as skipped rather than failed so the result
-                // summary reflects "nothing we could do" vs "provider error."
+                // merge artifact, etc.). Skip rather than fail so the result summary reflects
+                // "nothing we could do" vs "provider error."
                 skipped++;
                 logger.LogDebug("Reindex: artifact missing for {Name}", item.Entry.Name);
             }
@@ -132,15 +147,18 @@ public static class EmbeddingReindexer
         ILogger logger,
         Action<int, int>? progress,
         CancellationToken ct,
-        int maxInputChars = DefaultMaxInputChars)
+        EmbeddingOptions? options = null)
     {
         if (!Directory.Exists(embeddingsDir))
             return null;
 
+        options ??= new EmbeddingOptions();
+        string expectedSignature = ChunkedSignature.Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap);
+
         // Force a header read on every scope by enumerating subdirectories. The
         // signature-mismatch logic in VectorStore.LoadFromDisk handles the quarantine
         // rename and records the scope in HasStaleQuarantines.
-        var probeStore = new VectorStore(embeddingsDir, provider.Signature);
+        var probeStore = new VectorStore(embeddingsDir, expectedSignature);
         foreach (string scopeDir in Directory.EnumerateDirectories(embeddingsDir))
         {
             string scope = Path.GetFileName(scopeDir);
@@ -153,10 +171,10 @@ public static class EmbeddingReindexer
             return null;
 
         logger.LogInformation(
-            "Reindexing {Count} scope(s) after embedding model change: {Scopes}",
+            "Reindexing {Count} scope(s) after embedding config change: {Scopes}",
             probeStore.StaleQuarantineScopes.Count,
             string.Join(", ", probeStore.StaleQuarantineScopes));
 
-        return await ReindexAsync(store, provider, probeStore, logger, progress, ct, maxInputChars);
+        return await ReindexAsync(store, provider, probeStore, logger, progress, ct, options);
     }
 }

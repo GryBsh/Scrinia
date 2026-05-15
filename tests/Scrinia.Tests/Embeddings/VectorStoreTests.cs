@@ -208,6 +208,44 @@ public class VectorStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Svf3_ChunkedSignature_RoundTrips()
+    {
+        // The composed signature {provider}|c{size}o{overlap} should persist + match on
+        // reopen the same way bare signatures do — VectorStore is opaque to the format.
+        string sig = ChunkedSignature.Compose("ollama:nomic-embed-text", 1200, 200);
+
+        using (var w = new VectorStore(_tempDir, expectedSignature: sig))
+        {
+            await w.UpsertAsync("local", "memo", 0, [0.1f, 0.2f, 0.3f]);
+            await w.UpsertAsync("local", "memo", 1, [0.4f, 0.5f, 0.6f]);
+        }
+
+        using var r = new VectorStore(_tempDir, expectedSignature: sig);
+        r.HasStaleQuarantines.Should().BeFalse();
+        var vectors = r.GetVectors("local");
+        vectors.Should().HaveCount(2);
+        vectors.Select(v => v.ChunkIndex).Should().BeEquivalentTo(new int?[] { 0, 1 });
+    }
+
+    [Fact]
+    public async Task Svf3_ChunkSizeChange_TriggersQuarantine()
+    {
+        // Changing ChunkSize via config must produce a different composed signature, which
+        // must quarantine the old file — same flow as a model change.
+        string oldSig = ChunkedSignature.Compose("ollama:nomic-embed-text", 1200, 200);
+        string newSig = ChunkedSignature.Compose("ollama:nomic-embed-text", 1800, 300);
+
+        using (var old = new VectorStore(_tempDir, expectedSignature: oldSig))
+        {
+            await old.UpsertAsync("local", "memo", 0, [0.1f, 0.2f, 0.3f]);
+        }
+
+        using var fresh = new VectorStore(_tempDir, expectedSignature: newSig);
+        fresh.GetVectors("local").Should().BeEmpty();
+        fresh.HasStaleQuarantines.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Svf3_NullExpectedSignature_DisablesMismatchCheck()
     {
         // Write with one signature

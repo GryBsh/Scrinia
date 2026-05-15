@@ -98,18 +98,10 @@ internal static class WorkspaceSetup
     /// <c>scri config Scrinia:Embeddings:*</c> writes (in the Config command).
     /// </summary>
     internal static void MaybeReindexAfterModelSwitch(
-        IEmbeddingProvider provider, string embeddingsDir, ILogger logger)
+        IEmbeddingProvider provider, string embeddingsDir, ILogger logger, EmbeddingOptions options)
     {
         var store = MemoryStoreContext.Current;
         if (store is null) return;
-
-        // User-overridable input cap (Scrinia:Embeddings:MaxInputChars). Models with smaller
-        // contexts (nomic-embed-text@2048) need ~6000 chars; bigger ones (text-embedding-3-large
-        // @8192) can take 30000+ for richer semantics.
-        int maxInputChars = EmbeddingReindexer.DefaultMaxInputChars;
-        string? cfgMax = GetConfigValue("Scrinia:Embeddings:MaxInputChars");
-        if (cfgMax is not null && int.TryParse(cfgMax, out int parsed) && parsed > 0)
-            maxInputChars = parsed;
 
         try
         {
@@ -124,7 +116,7 @@ internal static class WorkspaceSetup
 
             // Sync wait — startup is a one-shot cost the user is already paying for.
             var result = EmbeddingReindexer.ReindexIfStaleAsync(
-                store, provider, embeddingsDir, logger, OnProgress, CancellationToken.None, maxInputChars)
+                store, provider, embeddingsDir, logger, OnProgress, CancellationToken.None, options)
                 .GetAwaiter().GetResult();
             if (result is not null)
             {
@@ -160,9 +152,10 @@ internal static class WorkspaceSetup
 
             if (provider.IsAvailable)
             {
-                var vectorStore = new VectorStore(embeddingsDir, provider.Signature);
+                string signature = ChunkedSignature.Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap);
+                var vectorStore = new VectorStore(embeddingsDir, signature);
                 var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
-                var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
+                var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = reranker;
                 MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
@@ -171,7 +164,7 @@ internal static class WorkspaceSetup
                     $"[scrinia:info] HTTP embeddings ready " +
                     $"(provider={options.Provider}, type={provider.GetType().Name}, dims={provider.Dimensions})");
 
-                MaybeReindexAfterModelSwitch(provider, embeddingsDir, logger);
+                MaybeReindexAfterModelSwitch(provider, embeddingsDir, logger, options);
             }
             else
             {
@@ -200,9 +193,10 @@ internal static class WorkspaceSetup
 
             if (provider.IsAvailable)
             {
-                var vectorStore = new VectorStore(embeddingsDir, provider.Signature);
+                string signature = ChunkedSignature.Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap);
+                var vectorStore = new VectorStore(embeddingsDir, signature);
                 var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
-                var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger);
+                var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = reranker;
                 MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
@@ -211,7 +205,7 @@ internal static class WorkspaceSetup
                     $"[scrinia:info] Built-in embeddings ready " +
                     $"(provider={provider.GetType().Name}, dims={provider.Dimensions})");
 
-                MaybeReindexAfterModelSwitch(provider, embeddingsDir, logger);
+                MaybeReindexAfterModelSwitch(provider, embeddingsDir, logger, options);
             }
             else
             {
@@ -331,6 +325,26 @@ internal static class WorkspaceSetup
 
         string? voyageUrl = GetConfigValue("Scrinia:Embeddings:VoyageAiBaseUrl");
         if (voyageUrl is not null) options.VoyageAiBaseUrl = voyageUrl;
+
+        string? chunkSize = GetConfigValue("Scrinia:Embeddings:ChunkSize");
+        if (chunkSize is not null && int.TryParse(chunkSize, out int cs) && cs > 0) options.ChunkSize = cs;
+
+        string? chunkOverlap = GetConfigValue("Scrinia:Embeddings:ChunkOverlap");
+        if (chunkOverlap is not null && int.TryParse(chunkOverlap, out int co) && co >= 0) options.ChunkOverlap = co;
+
+        string? maxChunks = GetConfigValue("Scrinia:Embeddings:MaxChunksPerMemory");
+        if (maxChunks is not null && int.TryParse(maxChunks, out int mc) && mc > 0) options.MaxChunksPerMemory = mc;
+
+        // Guardrail: overlap must be strictly less than chunk size, otherwise SliceWindows
+        // throws. Snap silently to sane defaults rather than crash the daemon on bad config.
+        if (options.ChunkOverlap >= options.ChunkSize)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] ChunkOverlap ({options.ChunkOverlap}) >= ChunkSize ({options.ChunkSize}); " +
+                $"reverting to defaults {TextChunker.DefaultWindowSize}/{TextChunker.DefaultOverlap}.");
+            options.ChunkSize = TextChunker.DefaultWindowSize;
+            options.ChunkOverlap = TextChunker.DefaultOverlap;
+        }
 
         return options;
     }

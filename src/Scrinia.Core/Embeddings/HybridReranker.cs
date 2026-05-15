@@ -62,11 +62,22 @@ public sealed class HybridReranker : ISearchScoreContributor
             var topK = VectorIndex.Search(queryVec, candidateVectors, candidateVectors.Count);
             foreach (var (entry, similarity) in topK)
             {
-                string key = entry.ChunkIndex is not null
-                    ? $"{group.Key}|{entry.Name}|{entry.ChunkIndex}"
-                    : $"{group.Key}|{entry.Name}";
+                // Dedupe-by-memory: under chunked embeddings every vector is keyed by
+                // ChunkIndex 0..N-1, but the downstream scorer's whole-memory pass looks up
+                // the {scope}|{name} key. Aggregate per-chunk similarities by taking the max
+                // — "the best matching window's score wins" — and emit a single supplemental
+                // entry per memory. Also write the chunked key for diagnostic/chunk-aware
+                // scoring paths (nmp2 chunk fanout) that may want the per-chunk value.
+                double score = similarity * _weight;
+                string entryKey = $"{group.Key}|{entry.Name}";
+                if (!scores.TryGetValue(entryKey, out double existing) || score > existing)
+                    scores[entryKey] = score;
 
-                scores[key] = similarity * _weight;
+                if (entry.ChunkIndex is not null)
+                {
+                    string chunkKey = $"{group.Key}|{entry.Name}|{entry.ChunkIndex}";
+                    scores[chunkKey] = score;
+                }
             }
         }
 

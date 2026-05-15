@@ -125,7 +125,11 @@ if (!pluginProvidesEmbeddings)
 
         if (embeddingProvider.IsAvailable)
         {
-            var vectorStore = new VectorStore(embeddingsDir);
+            // Bake chunk params into the signature so changing ChunkSize / ChunkOverlap via
+            // config triggers a quarantine + reindex on next launch (same flow as model switch).
+            string signature = ChunkedSignature.Compose(
+                embeddingProvider.Signature, embeddingOptions.ChunkSize, embeddingOptions.ChunkOverlap);
+            var vectorStore = new VectorStore(embeddingsDir, signature);
             builder.Services.AddSingleton(embeddingProvider);
             builder.Services.AddSingleton(vectorStore);
             builder.Services.AddSingleton(sp =>
@@ -133,7 +137,8 @@ if (!pluginProvidesEmbeddings)
                     sp.GetRequiredService<IEmbeddingProvider>(),
                     sp.GetRequiredService<VectorStore>(),
                     embeddingOptions.SemanticWeight,
-                    sp.GetRequiredService<ILogger<BuiltInEmbeddingsService>>()));
+                    sp.GetRequiredService<ILogger<BuiltInEmbeddingsService>>(),
+                    embeddingOptions));
             builder.Services.AddSingleton<ISearchScoreContributor>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
             builder.Services.AddSingleton<IMemoryEventSink>(sp =>

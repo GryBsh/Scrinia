@@ -164,6 +164,36 @@ public class HybridRerankerTests : IDisposable
     }
 
     [Fact]
+    public async Task ComputeScores_ChunkedVectors_DedupesByMaxPerMemory()
+    {
+        // Two chunks of the same memory: chunk 0 is far, chunk 1 is identical to query.
+        // After max-aggregation, the memory should have a single {scope}|{name} key with
+        // the better (chunk 1) score, plus per-chunk keys for diagnostic lookups.
+        await _vectorStore.UpsertAsync("local", "memo", 0, [0.1f, 0.99f, 0f]);
+        await _vectorStore.UpsertAsync("local", "memo", 1, [1f, 0f, 0f]);
+
+        var provider = new FakeEmbeddingProvider([1f, 0f, 0f]);
+        var reranker = new HybridReranker(provider, _vectorStore, weight: 50.0);
+
+        var candidates = new ScopedArtifact[]
+        {
+            new("local", new ArtifactEntry("memo", "", 100, 1, DateTimeOffset.UtcNow, "desc")),
+        };
+
+        var store = new FakeMemoryStore();
+        var scores = await reranker.ComputeScoresAsync("q", candidates, store, CancellationToken.None);
+
+        scores.Should().NotBeNull();
+        scores!.Should().ContainKey("local|memo");
+        scores.Should().ContainKey("local|memo|0");
+        scores.Should().ContainKey("local|memo|1");
+        // Chunk 1 is identical to the query → similarity ~1.0 * weight 50 = ~50.
+        scores["local|memo"].Should().BeApproximately(50.0, 0.5);
+        scores["local|memo"].Should().Be(scores["local|memo|1"]);
+        scores["local|memo|1"].Should().BeGreaterThan(scores["local|memo|0"]);
+    }
+
+    [Fact]
     public async Task ComputeScores_OnlyEmbedsCandidates_NotEntireCorpus()
     {
         await _vectorStore.UpsertAsync("local", "candidate", null, [1f, 0f, 0f]);

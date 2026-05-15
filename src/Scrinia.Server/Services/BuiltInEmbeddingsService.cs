@@ -17,17 +17,20 @@ public sealed class BuiltInEmbeddingsService :
     private readonly VectorStore _vectorStore;
     private readonly double _semanticWeight;
     private readonly ILogger _logger;
+    private readonly EmbeddingOptions _options;
 
     public BuiltInEmbeddingsService(
         IEmbeddingProvider provider,
         VectorStore vectorStore,
         double semanticWeight,
-        ILogger<BuiltInEmbeddingsService> logger)
+        ILogger<BuiltInEmbeddingsService> logger,
+        EmbeddingOptions? options = null)
     {
         _provider = provider;
         _vectorStore = vectorStore;
         _semanticWeight = semanticWeight;
         _logger = logger;
+        _options = options ?? new EmbeddingOptions();
     }
 
     public bool IsAvailable => _provider.IsAvailable;
@@ -58,11 +61,16 @@ public sealed class BuiltInEmbeddingsService :
             var topK = VectorIndex.Search(queryVec, vectors, vectors.Count);
             foreach (var (entry, similarity) in topK)
             {
-                string key = entry.ChunkIndex is not null
-                    ? $"{group.Key}|{entry.Name}|{entry.ChunkIndex}"
-                    : $"{group.Key}|{entry.Name}";
+                // Dedupe-by-memory for chunked embeddings: max-aggregate per-chunk scores
+                // under the {scope}|{name} key the whole-memory scorer pass looks up. Keep
+                // the chunked key too so any future per-chunk scoring path can use it.
+                double score = similarity * _semanticWeight;
+                string entryKey = $"{group.Key}|{entry.Name}";
+                if (!scores.TryGetValue(entryKey, out double existing) || score > existing)
+                    scores[entryKey] = score;
 
-                scores[key] = similarity * _semanticWeight;
+                if (entry.ChunkIndex is not null)
+                    scores[$"{group.Key}|{entry.Name}|{entry.ChunkIndex}"] = score;
             }
         }
 
@@ -132,12 +140,18 @@ public sealed class BuiltInEmbeddingsService :
                 string decoded = System.Text.Encoding.UTF8.GetString(
                     new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
 
-                var vec = await _provider.EmbedAsync(decoded, ct);
-                if (vec is not null)
-                {
-                    await _vectorStore.UpsertAsync(item.Scope, item.Entry.Name, null, vec, ct);
-                    count++;
-                }
+                var chunks = TextChunker.SliceWindows(decoded, _options.ChunkSize, _options.ChunkOverlap);
+                if (chunks.Count == 0) continue;
+                if (chunks.Count > _options.MaxChunksPerMemory)
+                    chunks = [.. chunks.Take(_options.MaxChunksPerMemory)];
+
+                var vectors = await _provider.EmbedBatchAsync(chunks.Select(c => c.Text).ToList(), ct);
+                if (vectors is null || vectors.Length != chunks.Count) continue;
+
+                await _vectorStore.RemoveAsync(item.Scope, item.Entry.Name, ct);
+                for (int i = 0; i < chunks.Count; i++)
+                    await _vectorStore.UpsertAsync(item.Scope, item.Entry.Name, chunks[i].Index, vectors[i], ct);
+                count++;
             }
             catch (Exception ex)
             {
@@ -161,21 +175,17 @@ public sealed class BuiltInEmbeddingsService :
             string joined = string.Concat(content);
             if (string.IsNullOrWhiteSpace(joined)) return;
 
-            var items = new List<(string text, int? chunkIndex)> { (joined, null) };
+            var chunks = TextChunker.SliceWindows(joined, _options.ChunkSize, _options.ChunkOverlap);
+            if (chunks.Count == 0) return;
+            if (chunks.Count > _options.MaxChunksPerMemory)
+                chunks = [.. chunks.Take(_options.MaxChunksPerMemory)];
 
-            if (content.Length > 1)
-            {
-                for (int i = 0; i < content.Length; i++)
-                    if (!string.IsNullOrWhiteSpace(content[i]))
-                        items.Add((content[i], i + 1));
-            }
+            var vectors = await _provider.EmbedBatchAsync(chunks.Select(c => c.Text).ToList(), ct);
+            if (vectors is null || vectors.Length != chunks.Count) return;
 
-            var vectors = await _provider.EmbedBatchAsync(
-                items.Select(x => x.text).ToList(), ct);
-            if (vectors is null) return;
-
-            for (int i = 0; i < vectors.Length; i++)
-                await _vectorStore.UpsertAsync(scope, subject, items[i].chunkIndex, vectors[i], ct);
+            await _vectorStore.RemoveAsync(scope, subject, ct);
+            for (int i = 0; i < chunks.Count; i++)
+                await _vectorStore.UpsertAsync(scope, subject, chunks[i].Index, vectors[i], ct);
         }
         catch (Exception ex)
         {
