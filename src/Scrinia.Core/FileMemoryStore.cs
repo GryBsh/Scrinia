@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.Core.Resilience;
 using Scrinia.Core.Search;
 
 namespace Scrinia.Core;
@@ -813,15 +814,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         string json = JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);
         string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
-        File.WriteAllText(tmp, json);
-        File.Move(tmp, metaPath, overwrite: true);
+        FileRetry.Run(() => File.WriteAllText(tmp, json));
+        FileRetry.Run(() => File.Move(tmp, metaPath, overwrite: true));
     }
 
     private static void AtomicWriteAllText(string path, string content)
     {
         string tmp = $"{path}.{Environment.ProcessId}.tmp";
-        File.WriteAllText(tmp, content);
-        File.Move(tmp, path, overwrite: true);
+        FileRetry.Run(() => File.WriteAllText(tmp, content));
+        FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
     }
 
     private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
@@ -829,8 +830,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string tmp = $"{path}.{Environment.ProcessId}.tmp";
         try
         {
-            await File.WriteAllTextAsync(tmp, content, ct);
-            File.Move(tmp, path, overwrite: true);
+            await FileRetry.RunAsync(() => File.WriteAllTextAsync(tmp, content, ct), ct: ct);
+            FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
         }
         catch
         {
@@ -842,8 +843,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
     {
         string tmp = $"{destPath}.{Environment.ProcessId}.tmp";
-        File.Copy(sourcePath, tmp, overwrite: true);
-        File.Move(tmp, destPath, overwrite: overwrite);
+        FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
+        FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
     }
 
     private void DeleteSidecar(string name, string storeDir)

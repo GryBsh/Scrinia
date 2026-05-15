@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Scrinia.Core.Embeddings.Models;
+using Scrinia.Core.Resilience;
 
 namespace Scrinia.Core.Embeddings;
 
@@ -378,9 +379,10 @@ public sealed class VectorStore : IDisposable, IVectorStore
         string signature = _expectedSignature ?? "";
         byte[] sigBytes = System.Text.Encoding.UTF8.GetBytes(signature);
 
-        await using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-        await using (var writer = new BinaryWriter(fs))
+        await FileRetry.RunAsync(async () =>
         {
+            await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None);
+            await using var writer = new BinaryWriter(fs);
             writer.Write(MagicSvf3);
             ushort dims = vectors.Count > 0 ? (ushort)vectors[0].Vector.Length : (ushort)0;
             writer.Write(dims);
@@ -397,9 +399,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
                 foreach (float f in entry.Vector)
                     writer.Write(f);
             }
-        }
+        }, ct: ct);
 
-        File.Move(tmp, path, overwrite: true);
+        // File.Move into a path Defender/OneDrive may be scanning — the prime spot for
+        // transient "file is being used by another process" failures. Retry with backoff.
+        FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
 
         _scopeDeleteCount[scope] = 0;
         _scopeOpCount[scope] = vectors.Count;
@@ -410,16 +414,19 @@ public sealed class VectorStore : IDisposable, IVectorStore
     {
         ct.ThrowIfCancellationRequested();
         using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
-        await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
-        await using var writer = new BinaryWriter(fs);
+        await FileRetry.RunAsync(async () =>
+        {
+            await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
+            await using var writer = new BinaryWriter(fs);
 
-        writer.Write((byte)0); // Add
-        byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
-        writer.Write((ushort)nameBytes.Length);
-        writer.Write(nameBytes);
-        writer.Write(chunkIndex ?? -1);
-        foreach (float f in vector)
-            writer.Write(f);
+            writer.Write((byte)0); // Add
+            byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+            writer.Write((ushort)nameBytes.Length);
+            writer.Write(nameBytes);
+            writer.Write(chunkIndex ?? -1);
+            foreach (float f in vector)
+                writer.Write(f);
+        }, ct: ct);
     }
 
     /// <summary>Appends a single delete operation to an SVF2 file.</summary>
@@ -427,14 +434,17 @@ public sealed class VectorStore : IDisposable, IVectorStore
     {
         ct.ThrowIfCancellationRequested();
         using var fileLock = FileLock.AcquireExclusive(GetVectorLockPath(path));
-        await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
-        await using var writer = new BinaryWriter(fs);
+        await FileRetry.RunAsync(async () =>
+        {
+            await using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
+            await using var writer = new BinaryWriter(fs);
 
-        writer.Write((byte)1); // Delete
-        byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
-        writer.Write((ushort)nameBytes.Length);
-        writer.Write(nameBytes);
-        writer.Write(chunkIndex ?? -1);
+            writer.Write((byte)1); // Delete
+            byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(name);
+            writer.Write((ushort)nameBytes.Length);
+            writer.Write(nameBytes);
+            writer.Write(chunkIndex ?? -1);
+        }, ct: ct);
     }
 
     /// <summary>Compacts an SVF3 file by rewriting only live entries.</summary>
