@@ -405,12 +405,15 @@ internal static class WorkspaceSetup
     ///   <item>OpenAI-compatible HTTP endpoint at <c>Scrinia:Llm:BaseUrl</c> if it responds —
     ///         tried first because "if Ollama/llama.cpp/LM Studio is already running, there's
     ///         no point booting our own subprocess with a separate model copy in VRAM."</item>
-    ///   <item>Bundled <c>scri-plugin-llm</c> subprocess if the HTTP probe fails and the
+    ///   <item>Agent CLIs (Claude Code, Codex, GitHub Copilot) in preference order if any are
+    ///         on PATH — reuses the user's existing CLI auth, no API key needed.</item>
+    ///   <item>Bundled <c>scri-plugin-llm</c> subprocess if the above fall through and the
     ///         plugin exe is present.</item>
     ///   <item>None — <c>scri consolidate --with-llm</c> will print a setup hint.</item>
     /// </list>
-    /// Explicit Provider values (<c>plugin</c>, <c>openai</c>, <c>none</c>) skip the other
-    /// steps and surface a warning if the chosen backend is unavailable.
+    /// Explicit Provider values (<c>plugin</c>, <c>openai</c>, <c>claude-cli</c>,
+    /// <c>codex-cli</c>, <c>copilot-cli</c>, <c>none</c>) skip the other steps and surface a
+    /// warning if the chosen backend is unavailable.
     /// </summary>
     private static async Task TryLoadBackgroundLlmAsync(ILogger logger, CancellationToken ct)
     {
@@ -420,6 +423,16 @@ internal static class WorkspaceSetup
 
         bool forcePlugin = options.Provider.Equals("plugin", StringComparison.OrdinalIgnoreCase);
         bool forceHttp = options.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase);
+        var explicitCliVariant = AgentCliVariant.TryFromId(options.Provider);
+
+        // Explicit agent-CLI selection short-circuits everything.
+        if (explicitCliVariant is not null)
+        {
+            if (await TryStartAgentCliAsync(explicitCliVariant, options, forced: true)) return;
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Llm provider={options.Provider} configured but the {explicitCliVariant.DisplayName} CLI was not on PATH.");
+            return;
+        }
 
         // Step A: HTTP probe first (unless explicitly forced to plugin). When Ollama or
         // another OpenAI-compatible server is already running we prefer it — avoids
@@ -430,7 +443,19 @@ internal static class WorkspaceSetup
             if (forceHttp) return; // failure already logged by the probe
         }
 
-        // Step B: bundled plugin (unless explicitly forced to HTTP).
+        // Step B: try each agent CLI in preference order. Reuses the user's existing
+        // subscription auth — no API key, no model download — and is preferred over the
+        // bundled plugin because most users authenticated to claude/codex/copilot have a
+        // larger/better model available than what the local plugin ships.
+        if (!forcePlugin)
+        {
+            foreach (var variant in AgentCliVariant.AllInAutoOrder)
+            {
+                if (await TryStartAgentCliAsync(variant, options, forced: false)) return;
+            }
+        }
+
+        // Step C: bundled plugin (unless explicitly forced to HTTP).
         if (!forceHttp)
         {
             if (await TryStartLlmPluginAsync(ct)) return;
@@ -440,6 +465,34 @@ internal static class WorkspaceSetup
                     "[scrinia:warn] Llm provider=plugin configured but scri-plugin-llm was not available.");
             }
         }
+    }
+
+    /// <summary>
+    /// Probe the agent CLI by checking if its executable is on PATH; if so, install an
+    /// <see cref="AgentCliBackgroundLlm"/> as the active background LLM. Returns true on
+    /// success. Auto-mode failures are silent (info log only); explicit-mode failures are
+    /// surfaced by the caller.
+    /// </summary>
+    private static Task<bool> TryStartAgentCliAsync(AgentCliVariant variant, LlmOptions options, bool forced)
+    {
+        var runner = new Scrinia.Core.Process.ProcessRunner();
+        var llm = new AgentCliBackgroundLlm(variant, runner, options);
+        return TryInstallAgentCliBackendAsync(llm, variant, forced);
+    }
+
+    private static async Task<bool> TryInstallAgentCliBackendAsync(AgentCliBackgroundLlm llm, AgentCliVariant variant, bool forced)
+    {
+        if (!await llm.IsAvailableAsync(CancellationToken.None))
+        {
+            if (forced)
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] {variant.DisplayName} CLI not found on PATH (expected exe: {variant.Executable}).");
+            return false;
+        }
+        BackgroundLlmContext.Default = llm;
+        Console.Error.WriteLine(
+            $"[scrinia:info] Background LLM ready (provider={variant.Id}, exe={variant.Executable})");
+        return true;
     }
 
     private static async Task<bool> TryStartLlmPluginAsync(CancellationToken ct)
