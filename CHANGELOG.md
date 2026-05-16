@@ -10,6 +10,22 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Added
+- New `IBackgroundLlm.ScoreImportanceAsync` Tier 2 capability — short prompt,
+  parses a 1–10 integer reply, clamps out-of-range / null on failure. Wired
+  through every concrete provider: OpenAI-compat (Ollama, llama.cpp, LM Studio,
+  vLLM), native Anthropic Messages API, native Gemini generateContent, agent CLI
+  (Claude Code / Codex / Copilot), and the bundled `scri-plugin-llm` subprocess.
+- New `ImportanceScoringSink` event-sink fires asynchronously after every Upsert
+  and Append, scoring the memory via Tier 2 and rewriting the sidecar's
+  `Importance` field — never blocks the user-facing response, degrades silently
+  when no Tier 2 LLM is configured. Registered alongside the embedding and
+  maintenance sinks in every workspace-bootstrap path.
+- `scri reindex --importance` backfills LLM-scored importance for any memory
+  that doesn't already have one. Reports `scored / skipped / failed` counts;
+  cancellable via Ctrl-C. Preserves prior scores so external/manual ratings
+  aren't overwritten.
+
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative
   Agents (Park et al., 2023) score shape: `α_relevance·relevance +

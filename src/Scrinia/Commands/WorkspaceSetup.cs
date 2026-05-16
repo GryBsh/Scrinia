@@ -80,7 +80,7 @@ internal static class WorkspaceSetup
             // Maintenance sink is independent of the embeddings provider — it handles things
             // like updating last-accessed timestamps. Wire it standalone so plugin-failure
             // does not leave maintenance hooks unsubscribed.
-            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
             Console.Error.WriteLine(
                 "[scrinia:info] Embeddings plugin exe detected — skipping built-in Model2Vec.");
             await TryLoadVulkanPluginAsync(ct);
@@ -219,6 +219,56 @@ internal static class WorkspaceSetup
         return null;
     }
 
+    /// <summary>
+    /// Walks every memory and populates the <c>Importance</c> field via the Tier 2 LLM for
+    /// any that don't already have a score. Used by <c>scri reindex --importance</c>. No-op
+    /// + returns null when no LLM is configured.
+    /// </summary>
+    internal static async Task<ImportanceScoringSink.BackfillResult?> ForceImportanceBackfillAsync(CancellationToken ct = default)
+    {
+        var store = MemoryStoreContext.Current;
+        if (store is null)
+        {
+            Console.Error.WriteLine(
+                "[scrinia:warn] Importance backfill skipped: workspace not configured. Run `scri setup` first.");
+            return null;
+        }
+
+        var llm = BackgroundLlmContext.Current;
+        if (llm is null)
+        {
+            Console.Error.WriteLine(
+                "[scrinia:warn] Importance backfill skipped: no Tier 2 LLM is configured. " +
+                "Set `Scrinia:Llm:Provider` and re-run `scri setup`.");
+            return null;
+        }
+
+        int lastDone = -1;
+        void OnProgress(int done, int total)
+        {
+            if (done == lastDone) return;
+            lastDone = done;
+            Console.Error.Write($"\r[scrinia] scoring importance {done}/{total} memories…");
+            if (done == total) Console.Error.WriteLine();
+        }
+
+        try
+        {
+            return await ImportanceScoringSink.BackfillAsync(store, llm, OnProgress, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Error.WriteLine("\n[scrinia:info] Importance backfill cancelled.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Importance backfill failed: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+    }
+
     /// <summary>True when <paramref name="provider"/> is one of the network-backed providers
     /// — i.e. anything that talks to a remote/local HTTP endpoint rather than loading a
     /// model in-process. Used to decide whether the Vulkan plugin should be skipped.</summary>
@@ -245,7 +295,7 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = reranker;
-                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink(), new ImportanceScoringSink()]);
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] HTTP embeddings ready " +
@@ -258,7 +308,7 @@ internal static class WorkspaceSetup
                 Console.Error.WriteLine(
                     $"[scrinia:warn] HTTP embeddings provider '{options.Provider}' not available — " +
                     $"check Scrinia:Embeddings:* config. Search degrades to BM25-only.");
-                MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
             }
         }
         catch (Exception ex)
@@ -266,7 +316,7 @@ internal static class WorkspaceSetup
             Console.Error.WriteLine(
                 $"[scrinia:warn] Failed to initialize HTTP embeddings ('{options.Provider}'): " +
                 $"{ex.GetType().Name}: {ex.Message}");
-            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
         }
     }
 
@@ -286,7 +336,7 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = reranker;
-                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink(), new ImportanceScoringSink()]);
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings ready " +
@@ -361,7 +411,7 @@ internal static class WorkspaceSetup
             if (host.HasSearchCapability)
                 SearchContributorContext.Default = host;
             if (host.HasEventSinkCapability)
-                MemoryEventSinkContext.Default = new CompositeEventSink([host, new MaintenanceEventSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([host, new MaintenanceEventSink(), new ImportanceScoringSink()]);
 
             _pluginHost = host;
 

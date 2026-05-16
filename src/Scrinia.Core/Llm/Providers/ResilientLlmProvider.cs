@@ -41,6 +41,15 @@ public abstract class ResilientLlmProvider : IBackgroundLlm, IDisposable
         return parsed.Length == 0 ? null : parsed;
     }
 
+    public async Task<int?> ScoreImportanceAsync(string content, CancellationToken ct)
+    {
+        // 16 tokens is plenty for a 1–2 digit response plus any preamble small models
+        // occasionally slip in. The parser tolerates that, but capping output keeps
+        // wall-time bounded if the model decides to explain itself anyway.
+        string? raw = await CompleteAsync(LlmPrompts.ImportanceSystem, LlmPrompts.ImportanceUser(content), maxTokens: 16, ct);
+        return LlmPrompts.ParseImportance(raw);
+    }
+
     /// <summary>
     /// Concrete providers send their native request shape and extract the model's text
     /// reply from the response. Returns null for any failure that should be treated as

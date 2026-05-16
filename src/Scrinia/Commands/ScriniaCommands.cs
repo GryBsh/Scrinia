@@ -1845,9 +1845,11 @@ public class ScriniaCommands
     /// Use after switching embedding model or recovering from a corrupted vector file.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Emit result as JSON instead of human-readable progress.</param>
+    /// <param name="importance">Backfill LLM-scored Importance values for any memory that doesn't already have one. Does not touch embeddings; requires a Tier 2 LLM to be configured.</param>
     public async Task<int> Reindex(
         string? workspaceRoot = null,
         bool json = false,
+        bool importance = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -1857,6 +1859,32 @@ public class ScriniaCommands
         // override with an unconditional pass so the command does what its name says even on
         // a "vectors are stale, I just want them rebuilt" recovery flow.
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+
+        if (importance)
+        {
+            var impResult = await WorkspaceSetup.ForceImportanceBackfillAsync(cancellationToken);
+            if (impResult is null)
+            {
+                if (json)
+                    WriteJsonError("Importance backfill skipped — no Tier 2 LLM is configured. Set `Scrinia:Llm:Provider` and re-run `scri setup`.");
+                else
+                    AnsiConsole.MarkupLine(
+                        "[yellow]Importance backfill skipped[/] — no Tier 2 LLM is configured. " +
+                        "Set [italic]Scrinia:Llm:Provider[/] and re-run [italic]scri setup[/].");
+                return 1;
+            }
+
+            string impSummary =
+                $"Scored {impResult.Scored}/{impResult.Total}, " +
+                $"{impResult.Skipped} skipped (already-scored / empty), " +
+                $"{impResult.Failed} failed.";
+            if (json)
+                WriteJson(new CliReindexOutput(impResult.Scored, impSummary), CliJsonContext.Default.CliReindexOutput);
+            else
+                AnsiConsole.MarkupLine($"[green]Importance backfill complete.[/] {Markup.Escape(impSummary)}");
+            return impResult.Failed == 0 ? 0 : 1;
+        }
+
         var result = await WorkspaceSetup.ForceReindexAsync(cancellationToken);
 
         if (result is null)

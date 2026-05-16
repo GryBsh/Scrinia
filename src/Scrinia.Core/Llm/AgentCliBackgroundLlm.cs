@@ -59,6 +59,12 @@ public sealed partial class AgentCliBackgroundLlm : IBackgroundLlm
         return parsed.Length == 0 ? null : parsed;
     }
 
+    public async Task<int?> ScoreImportanceAsync(string content, CancellationToken ct)
+    {
+        string? raw = await CompleteAsync(LlmPrompts.ImportanceSystem, LlmPrompts.ImportanceUser(content), ct);
+        return LlmPrompts.ParseImportance(raw);
+    }
+
     private async Task<string?> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken ct)
     {
         if (_resolvedExe is null) return null;

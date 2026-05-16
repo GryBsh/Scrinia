@@ -43,6 +43,17 @@ public interface IBackgroundLlm
     Task<string[]?> ExtractFactsAsync(string content, CancellationToken ct);
 
     /// <summary>
+    /// Rates a memory's importance on a 1–10 scale (Generative Agents "poignancy").
+    /// Used by <c>ImportanceScoringSink</c> after each successful Upsert to populate
+    /// <c>ArtifactEntry.Importance</c> asynchronously. Returns null on parse failure,
+    /// out-of-range output, timeout, or any other failure — the sink treats null as
+    /// "leave the field unscored" and the ranker falls back to its neutral midpoint.
+    /// </summary>
+    /// <param name="content">Decoded memory body to evaluate.</param>
+    /// <param name="ct">Per-call cancellation budget; if it fires, return null.</param>
+    Task<int?> ScoreImportanceAsync(string content, CancellationToken ct);
+
+    /// <summary>
     /// Cheap availability probe. True when the backend is reachable AND a model is
     /// loaded AND a trivial completion would likely succeed. Used by the consolidate
     /// command's pre-flight to decide whether to attempt Tier 2 at all.

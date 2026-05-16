@@ -154,6 +154,16 @@ internal sealed class McpLlmPluginHost : IBackgroundLlm, IAsyncDisposable
         return parsed.Length == 0 ? null : parsed;
     }
 
+    public async Task<int?> ScoreImportanceAsync(string content, CancellationToken ct)
+    {
+        // Importance scoring favours deterministic output even more strongly than
+        // descriptions — same number across reruns means hint ordering is stable.
+        // Temperature 0 here rather than DefaultTemperature.
+        string? raw = await CompleteAsync(LlmPrompts.ImportanceSystem, LlmPrompts.ImportanceUser(content),
+            maxTokens: 16, temperature: 0.0, ct);
+        return LlmPrompts.ParseImportance(raw);
+    }
+
     // Tier 2 favours deterministic output (descriptions and fact lists need reproducibility
     // across runs) so the default is low. Per-task overrides could be added later if needed.
     private const double DefaultTemperature = 0.3;

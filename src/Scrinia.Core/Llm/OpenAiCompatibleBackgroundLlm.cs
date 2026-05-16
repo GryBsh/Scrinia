@@ -100,6 +100,13 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
         return parsed.Length == 0 ? null : parsed;
     }
 
+    public async Task<int?> ScoreImportanceAsync(string content, CancellationToken ct)
+    {
+        string? raw = await CompleteAsync(LlmPrompts.ImportanceSystem, LlmPrompts.ImportanceUser(content),
+            maxTokens: 16, ct);
+        return LlmPrompts.ParseImportance(raw);
+    }
+
     private async Task<string?> CompleteAsync(string systemPrompt, string userPrompt,
         int maxTokens, CancellationToken ct)
     {

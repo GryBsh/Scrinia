@@ -57,6 +57,41 @@ internal static partial class LlmPrompts
     public static string FactsUser(string content) =>
         "Content:\n\n" + Truncate(content, MaxInputChars);
 
+    public const string ImportanceSystem =
+        "You are a memory librarian. Rate how important and lasting this memory is on " +
+        "a 1–10 scale (Generative Agents poignancy). 1 = trivial, ephemeral, low value " +
+        "(small talk, throwaway state). 5 = moderately useful, average context " +
+        "(routine notes, common observations). 10 = critically important, foundational " +
+        "knowledge (durable decisions, architectural facts, personal commitments). " +
+        "Output only the integer number, no preamble or explanation.";
+
+    public static string ImportanceUser(string content) =>
+        "Memory:\n\n" + Truncate(content, MaxDescriptionInputChars);
+
+    /// <summary>
+    /// Parses an LLM importance response into a 1–10 integer. Tolerates the common
+    /// failure modes of small models — extra whitespace, trailing periods, brief
+    /// explanations preceding the digit ("I'd rate this 7"), and integer-ish floats
+    /// ("7.5" → 7). Returns null when no parseable digit-run exists, when the value
+    /// is outside [1, 10], or when the input is empty/whitespace.
+    /// </summary>
+    public static int? ParseImportance(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var m = ImportanceDigitRegex().Match(raw);
+        if (!m.Success) return null;
+        if (!int.TryParse(m.Value, out int value)) return null;
+        if (value < 1 || value > 10) return null;
+        return value;
+    }
+
+    // First contiguous digit run anywhere in the response, capturing an optional leading
+    // minus so "-5" parses to -5 (then rejected as out-of-range). Without the leading `-`
+    // capture the parser would silently see "5" inside "-5" and accept it — and negative
+    // numbers are unambiguously nonsense for an importance rating.
+    [GeneratedRegex(@"-?\d+", RegexOptions.CultureInvariant)]
+    private static partial Regex ImportanceDigitRegex();
+
     /// <summary>
     /// Parse the model's facts response into a clean string array. Tolerates bullets,
     /// numbering, and bracket markers because small models often slip them in despite
