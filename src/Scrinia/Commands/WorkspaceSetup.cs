@@ -32,7 +32,11 @@ internal static class WorkspaceSetup
         }
 
         ScriniaArtifactStore.Configure(root);
-        MemoryStoreContext.Current = new FileMemoryStore(root);
+        // Build ranker weights from config so a workspace can tune α_recency / α_importance
+        // without recompiling. Defaults (RankerOptions.Default) match Generative Agents-style
+        // composition — see RankerOptions docstring for the formula and calibration notes.
+        var rankerOptions = RankerOptions.FromConfig(GetConfigValue);
+        MemoryStoreContext.Current = new FileMemoryStore(root, rankerOptions);
     }
 
     /// <summary>

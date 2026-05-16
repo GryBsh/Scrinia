@@ -10,6 +10,26 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed
+- Search ranker now uses an **additive composition** matching the Generative
+  Agents (Park et al., 2023) score shape: `α_relevance·relevance +
+  α_recency·exp(-Δt/τ)·scale + α_importance·(importance/10)·scale`. Replaces
+  the previous multiplicative "relevance × (1 + linear recency boost)" formula
+  whose maximum +10% nudge over 365 days was effectively noise on any real
+  ranker decision. Default τ = 14 days produces a meaningful exponential decay
+  (today=1.0, two-weeks=0.37, one-month=0.14) so fresh memories materially
+  outrank stale ones on near-ties. Relevance still gates the composition —
+  entries with no text match never surface regardless of recency / importance.
+  Weights and time-constant are configurable via `Scrinia:Search:Alpha:Relevance`,
+  `:Alpha:Recency`, `:Alpha:Importance`, `:TauDays`, `:NeutralImportance`,
+  `:Scale:Recency`, `:Scale:Importance`. Setting α_recency = α_importance = 0
+  reduces the ranker to pure relevance for users who want the prior behavior.
+- `ArtifactEntry` gains an `Importance` field (nullable int, 1–10). Null means
+  "not scored yet" — the ranker falls back to a neutral midpoint (5/10) so
+  unscored memories rank as if "average importance" rather than getting
+  penalised. The scoring path itself ships in a follow-up commit; this commit
+  only adds the field, the sidecar round-trip, and the ranker read path.
+
 ### Fixed
 - `scri hint` and `scri restore --hook` now emit the hook-output JSON envelope
   (`{"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}`)

@@ -169,10 +169,21 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     [JsonSerializable(typeof(ArtifactEntry))]
     private partial class FileStoreJsonContext : JsonSerializerContext;
 
-    public FileMemoryStore(string workspaceRoot)
+    /// <summary>
+    /// Tunable ranker weights — read by <see cref="SearchAll(string, string?, int)"/>
+    /// when constructing the underlying <see cref="WeightedFieldScorer"/>. Defaults to
+    /// <see cref="RankerOptions.Default"/>; <c>WorkspaceSetup.Configure</c> populates
+    /// it from <c>Scrinia:Search:*</c> config keys at workspace init.
+    /// </summary>
+    public RankerOptions RankerOptions { get; set; } = RankerOptions.Default;
+
+    public FileMemoryStore(string workspaceRoot) : this(workspaceRoot, rankerOptions: null) { }
+
+    public FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
+        RankerOptions = rankerOptions ?? RankerOptions.Default;
 
         EnsureGitIgnore(_workspaceRoot);
     }
@@ -1139,7 +1150,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer();
+        var searcher = new WeightedFieldScorer(RankerOptions);
         var candidates = ListScoped(scopes);
         // Derive topic infos directly from the candidates we already loaded above instead of
         // calling GatherTopicInfos — which would LoadIndex every topic scope a second time.

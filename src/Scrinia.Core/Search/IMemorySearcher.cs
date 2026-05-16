@@ -89,13 +89,20 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
     private const double Bm25Weight = 5.0;
 
     /// <summary>
-    /// Maximum recency boost applied to today's entries — 10% on top of the base score.
-    /// Linearly decays to zero over <see cref="RecencyDecayDays"/>. Sized so recency nudges
-    /// ranking on near-ties (the common case for session logs and pattern entries) without
-    /// dominating BM25 + field signals on substantive matches.
+    /// Ranker composition weights. <see cref="SearchAll(string, IEnumerable{ScopedArtifact},
+    /// IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/> combines
+    /// relevance (field + BM25 + supplemental), exp-decay recency, and LLM-scored
+    /// importance additively per <see cref="RankerOptions"/>. The legacy
+    /// <c>Search</c> method does not apply recency/importance — only SearchAll does.
     /// </summary>
-    private const double RecencyBoostMax = 0.10;
-    private const double RecencyDecayDays = 365.0;
+    private readonly RankerOptions _options;
+
+    public WeightedFieldScorer() : this(RankerOptions.Default) { }
+
+    public WeightedFieldScorer(RankerOptions options)
+    {
+        _options = options ?? RankerOptions.Default;
+    }
 
     public IReadOnlyList<ScoredArtifact> Search(
         string query,
@@ -209,10 +216,13 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             double fieldScore = ScoreEntry(query, candidate.Entry);
             double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
             double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
-            double total = fieldScore + normalizedBm25 * Bm25Weight + supplemental;
-            total *= ComputeRecencyMultiplier(candidate.Entry.UpdatedAt ?? candidate.Entry.CreatedAt);
-            if (total > 0)
+            double relevance = fieldScore + normalizedBm25 * Bm25Weight + supplemental;
+            // Relevance gates the composition: entries with zero text/embedding match never
+            // surface, even if they're fresh or important. This preserves "search must match"
+            // semantics — recency and importance are bumps, not standalone signals.
+            if (relevance > 0)
             {
+                double total = ComputeTotalScore(relevance, candidate.Entry);
                 string key = $"{candidate.Scope}|{candidate.Entry.Name}";
                 if (!bestPerMemory.TryGetValue(key, out var existing) || total > existing.Score)
                     bestPerMemory[key] = (new EntryResult(candidate, total), total);
@@ -227,10 +237,10 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
             double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
             double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
-            double chunkTotal = chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental;
-            chunkTotal *= ComputeRecencyMultiplier(candidate.Entry.UpdatedAt ?? candidate.Entry.CreatedAt);
-            if (chunkTotal > 0)
+            double chunkRelevance = chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental;
+            if (chunkRelevance > 0)
             {
+                double chunkTotal = ComputeTotalScore(chunkRelevance, candidate.Entry);
                 string key = $"{candidate.Scope}|{candidate.Entry.Name}";
                 if (!bestPerMemory.TryGetValue(key, out var existing) || chunkTotal > existing.Score)
                     bestPerMemory[key] = (new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, chunkTotal), chunkTotal);
@@ -591,19 +601,44 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         return Bm25Scorer.Score(queryTerms, chunk.TermFrequencies, docLen, avgDocLen, corpusSize, docFreqs);
     }
 
-    // ── Recency boost ────────────────────────────────────────────────────
+    // ── Ranker composition ───────────────────────────────────────────────
 
     /// <summary>
-    /// Linear recency multiplier: today gets a <see cref="RecencyBoostMax"/> boost,
-    /// decaying to 1.0 over <see cref="RecencyDecayDays"/>. Future-dated entries (clock skew)
-    /// are clamped to "today". Older entries get no boost (multiplier = 1.0).
+    /// Combines relevance with recency and importance terms per <see cref="RankerOptions"/>.
+    /// Relevance is presumed to already be &gt; 0 — callers gate on that before invoking this.
     /// </summary>
-    private static double ComputeRecencyMultiplier(DateTimeOffset lastUpdate)
+    private double ComputeTotalScore(double relevance, ArtifactEntry entry)
+    {
+        double recency = ComputeRecencyTerm(entry.UpdatedAt ?? entry.CreatedAt, _options.TauDays);
+        double importance = ComputeImportanceTerm(entry.Importance, _options.NeutralImportance);
+        return _options.AlphaRelevance  * relevance
+             + _options.AlphaRecency    * recency    * _options.RecencyScale
+             + _options.AlphaImportance * importance * _options.ImportanceScale;
+    }
+
+    /// <summary>
+    /// Exponential decay: returns 1.0 at Δt = 0, ~0.368 at Δt = τ, asymptotes to 0 for
+    /// older entries. Future-dated entries (clock skew across sync setups) clamp to "today".
+    /// </summary>
+    internal static double ComputeRecencyTerm(DateTimeOffset lastUpdate, double tauDays)
     {
         double daysSince = (DateTimeOffset.UtcNow - lastUpdate).TotalDays;
         if (daysSince < 0) daysSince = 0;
-        double boost = RecencyBoostMax * Math.Max(0.0, 1.0 - daysSince / RecencyDecayDays);
-        return 1.0 + boost;
+        if (tauDays <= 0) return 0; // pathological config — treat all entries as fully decayed
+        return Math.Exp(-daysSince / tauDays);
+    }
+
+    /// <summary>
+    /// Maps a 1–10 LLM-scored importance to 0..1. Null importance (unscored / no LLM
+    /// configured) falls back to the neutral midpoint so unscored memories rank as if
+    /// "average importance" rather than getting penalised.
+    /// </summary>
+    internal static double ComputeImportanceTerm(int? importance, int neutralImportance)
+    {
+        int raw = importance ?? neutralImportance;
+        if (raw < 1) raw = 1;
+        if (raw > 10) raw = 10;
+        return raw / 10.0;
     }
 
     // ── Supplemental score lookup ─────────────────────────────────────────
