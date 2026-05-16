@@ -77,13 +77,15 @@ public sealed class HintCommand
 
         // SearchAll over a wider pool than topK so MMR has alternatives to choose from when
         // breaking up a single-source flood. Below the score floor → no point feeding into
-        // MMR; filter first.
+        // MMR; filter first. Accept both EntryResult and ChunkEntryResult — SearchAll
+        // dedupes per memory so each candidate is one or the other (whichever scored higher
+        // for that memory), and dropping ChunkEntryResult would silently lose memories whose
+        // best signal came from a chunk match.
         int searchLimit = Math.Max(topK, innerLimit);
         var raw = _store.SearchAll(prompt, scopes: null, limit: searchLimit);
         var pool = raw
-            .OfType<EntryResult>()
+            .Where(r => r is EntryResult or ChunkEntryResult)
             .Where(r => r.Score >= minScore)
-            .Cast<SearchResult>()
             .ToList();
         if (pool.Count == 0)
             return HintResult.Empty;
@@ -95,8 +97,13 @@ public sealed class HintCommand
         return new HintResult(
             Emitted: true,
             Matches: diversified
-                .OfType<EntryResult>()
-                .Select(e => new HintMatch(e.Item.Scope, e.Item.Entry.Name, e.Score))
+                .Select(r => r switch
+                {
+                    EntryResult er => new HintMatch(er.Item.Scope, er.Item.Entry.Name, er.Score),
+                    ChunkEntryResult cr => new HintMatch(cr.ParentItem.Scope, cr.ParentItem.Entry.Name, cr.Score),
+                    _ => null!,
+                })
+                .Where(m => m is not null)
                 .ToList());
     }
 

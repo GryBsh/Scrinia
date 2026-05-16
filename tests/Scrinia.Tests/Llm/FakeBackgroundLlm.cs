@@ -21,6 +21,9 @@ internal sealed class FakeBackgroundLlm : IBackgroundLlm
     public int ImportanceCalls { get; private set; }
     public int AvailabilityCalls { get; private set; }
 
+    /// <summary>The content argument passed to the most recent ScoreImportanceAsync call.</summary>
+    public string? LastImportanceContent { get; private set; }
+
     public Task<bool> IsAvailableAsync(CancellationToken ct)
     {
         AvailabilityCalls++;
@@ -48,6 +51,7 @@ internal sealed class FakeBackgroundLlm : IBackgroundLlm
     public Task<int?> ScoreImportanceAsync(string content, CancellationToken ct)
     {
         ImportanceCalls++;
+        LastImportanceContent = content;
         return Task.FromResult(ImportanceResponse);
     }
 }

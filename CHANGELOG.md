@@ -10,6 +10,35 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed
+- `scri hint` no longer silently drops memories whose best score came from a
+  chunk match. `WeightedFieldScorer.SearchAll` deduplicates per memory and
+  emits one result per memory — either an `EntryResult` or a `ChunkEntryResult`
+  depending on which scored higher — and the prior hint filter dropped the
+  latter entirely, so multi-chunk session entries whose entry-level score was
+  below the floor would never appear even when a chunk matched strongly.
+- `FileMemoryStore.SearchAll(query, scopes, limit, excludeTopics)` now uses
+  the workspace's configured `RankerOptions` instead of falling back to the
+  defaults. Previously any caller exercising topic exclusion silently lost
+  `Scrinia:Search:Alpha:*` config.
+- `FileMemoryStore.Remove` invalidates the topic-discovery cache when removing
+  from a `local-topic:*` scope. Without this, `DiscoverTopics` reported topics
+  with no remaining entries until the cache flushed naturally.
+- `ImportanceScoringSink.OnAppendedAsync` now rescores against the **full**
+  memory after the append (existing + new), not the appended snippet alone.
+  Previously a one-line "Yes" append could clobber an `Importance=9`
+  architectural decision with a score derived from the snippet alone.
+- `ImportanceScoringSink` is now registered in the server-mode event-sink
+  pipeline as well as the CLI. Previously the CHANGELOG claimed coverage of
+  "every workspace-bootstrap path" but server-mode writes were skipped.
+- `MemoryTools.FireEventSinkAsync` now passes `CancellationToken.None` to the
+  sink action rather than the request CT. The sink is fire-and-forget on a
+  background `Task`, so propagating the request-scoped CT would abort the
+  sink as soon as the user-facing response returned — leaving importance
+  unscored or the vector index half-written. The synchronous
+  `OnForgottenAsync` call sites continue to use the request CT, since their
+  side effects must complete before the response returns.
+
 ### Added
 - `scri hint` now applies **Maximal Marginal Relevance (MMR)** diversity rerank
   to its top-K output. Fixes a documented retrieval failure where one chatty

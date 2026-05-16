@@ -135,6 +135,47 @@ public sealed class ImportanceScoringSinkTests : IDisposable
         entry.Importance.Should().Be(9, "re-store should produce a fresh score");
     }
 
+    // ── OnAppendedAsync ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task OnAppendedAsync_ScoresFullMemory_NotJustAppendedChunk()
+    {
+        // Regression for ultrareview finding: previously OnAppendedAsync scored only
+        // the appendage, so a "Yes" append to an "important architectural decision"
+        // memory would clobber Importance=9 with Importance≈1. Sink must re-read the
+        // full memory after the append has been persisted and score against that.
+        const string substantialBody = "Important architectural decision about authentication flow with OAuth and token rotation strategy.";
+        AddMemory("oauth-decision", substantialBody, initialImportance: 9);
+
+        // Simulate an append by extending the on-disk artifact (the MCP append path
+        // already writes before the sink fires, so this mirrors production state).
+        string path = _store.ArtifactPath("oauth-decision", "local");
+        File.WriteAllText(path, Nmp2ChunkedEncoder.Encode(substantialBody + "\nYes"));
+
+        var fakeLlm = new FakeBackgroundLlm { ImportanceResponse = 8 };
+        var sink = new ImportanceScoringSink(() => fakeLlm);
+
+        await sink.OnAppendedAsync("oauth-decision", "Yes", _store, CancellationToken.None);
+
+        fakeLlm.ImportanceCalls.Should().Be(1);
+        fakeLlm.LastImportanceContent.Should().Contain("architectural decision",
+            "the sink must score against the full memory content, not the appended snippet alone");
+        fakeLlm.LastImportanceContent.Should().Contain("Yes",
+            "appended content should be part of what's scored");
+    }
+
+    [Fact]
+    public async Task OnAppendedAsync_NoLlm_NoOp()
+    {
+        AddMemory("oauth-decision", "body", initialImportance: 9);
+        var sink = new ImportanceScoringSink(() => null);
+
+        await sink.OnAppendedAsync("oauth-decision", "extra", _store, CancellationToken.None);
+
+        var entry = _store.LoadIndex("local").Single(e => e.Name == "oauth-decision");
+        entry.Importance.Should().Be(9, "no-LLM path must leave the prior score alone");
+    }
+
     // ── Backfill ─────────────────────────────────────────────────────────────
 
     [Fact]

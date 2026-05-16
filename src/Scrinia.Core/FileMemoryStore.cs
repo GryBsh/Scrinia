@@ -966,6 +966,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 }
             }
             _indexCache[scope] = new CachedIndex(entries);
+
+            // Invalidate topic discovery cache when removing from a topic scope. Without
+            // this, DiscoverTopics keeps reporting a topic that has no remaining entries
+            // until the cache TTL eventually flushes — mirrors what SaveIndex/Upsert do
+            // at the corresponding write paths.
+            if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+                _cachedTopics = null;
+
             return true;
         }
         finally
@@ -1225,7 +1233,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer();
+        // Use the workspace's configured ranker weights — without this override, the
+        // excludeTopics path silently fell back to RankerOptions.Default no matter what
+        // the user had set Scrinia:Search:Alpha:* to.
+        var searcher = new WeightedFieldScorer(RankerOptions);
         var candidates = ListScoped(scopes, excludeTopics);
         // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
         // candidates, so building topic infos from this filtered set automatically gives us

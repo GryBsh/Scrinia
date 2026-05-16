@@ -180,7 +180,12 @@ public sealed partial class ScriniaMcpTools
 
             // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
             // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-            FireEventSinkAsync(sink => sink.OnStoredAsync($"~{key}", content, store, cancellationToken));
+            // Pass CancellationToken.None — the sink is fire-and-forget on a background
+            // Task, so it must not be aborted when the request CT cancels (which it does
+            // as soon as the user-facing response returns and the per-request scope tears
+            // down). Cancelling the sink mid-LLM-call would leave Importance unscored;
+            // mid-embed would leave the vector index inconsistent.
+            FireEventSinkAsync(sink => sink.OnStoredAsync($"~{key}", content, store, CancellationToken.None));
 
             return ResponseBuilder.Success($"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]")
                 .WithAction(actionLabel).ToYaml();
@@ -304,7 +309,8 @@ public sealed partial class ScriniaMcpTools
 
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, cancellationToken));
+        // CancellationToken.None: see the same comment on the ephemeral path above.
+        FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
             .WithFileChanges().WithAction(actionLabel).ToYaml();
@@ -930,7 +936,10 @@ public sealed partial class ScriniaMcpTools
 
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        FireEventSinkAsync(sink => sink.OnAppendedAsync(qualifiedName, content, store, cancellationToken));
+        // CancellationToken.None: append-time sinks (importance rescore, embed-new-chunk)
+        // must run to completion regardless of request lifetime — same rationale as the
+        // OnStoredAsync sites above.
+        FireEventSinkAsync(sink => sink.OnAppendedAsync(qualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
             .WithFileChanges().WithAction("appended").ToYaml();

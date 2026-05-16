@@ -38,12 +38,48 @@ public sealed class ImportanceScoringSink : IMemoryEventSink
         => await ScoreAndPersistAsync(qualifiedName, content, store, ct);
 
     /// <summary>
-    /// On append, rescore: the memory's payload has changed materially. The ranker
-    /// only ever sees the latest stored value, so re-running the LLM is the only way
-    /// the score stays representative of current content.
+    /// On append, rescore against the <b>full</b> memory (existing + appended), not the
+    /// appendage alone. Scoring just the new chunk would clobber the previous score with
+    /// one derived from a partial view — e.g. an "important architectural decision" memory
+    /// with importance 9 would drop to 2 after a one-line "fixed typo" append.
     /// </summary>
     public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
-        => await ScoreAndPersistAsync(qualifiedName, [content], store, ct);
+    {
+        var llm = _llmAccessor();
+        if (llm is null) return;
+
+        try
+        {
+            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+            var entries = store.LoadIndex(scope);
+            ArtifactEntry? existing = null;
+            foreach (var e in entries)
+            {
+                if (e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase))
+                {
+                    existing = e;
+                    break;
+                }
+            }
+            if (existing is null) return;
+
+            // Decode the full memory (the append has already been persisted by the time the
+            // sink fires) so the score reflects the cumulative content, not the snippet.
+            string fullContent = await DecodeMemoryContentAsync(store, scope, existing, ct);
+            if (string.IsNullOrWhiteSpace(fullContent)) return;
+
+            int? score = await llm.ScoreImportanceAsync(fullContent, ct);
+            if (score is null) return;
+
+            store.Upsert(existing with { Importance = score }, scope);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] ImportanceScoringSink append-rescore error on '{qualifiedName}': " +
+                $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     /// <summary>Forgotten memories don't need rescoring; their sidecar is gone.</summary>
     public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
