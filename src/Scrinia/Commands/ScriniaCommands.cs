@@ -1947,6 +1947,21 @@ public class ScriniaCommands
         if (cfgChars is not null && int.TryParse(cfgChars, out int parsedChars) && parsedChars >= 0)
             minPromptChars = parsedChars;
 
+        // MMR diversity rerank: SearchAll returns InnerLimit candidates, MMR with
+        // DiversityLambda picks the final TopK. λ=1 reverts to pre-MMR relevance-only
+        // ordering; λ=0 is pure diversity (least similar to already-selected wins).
+        int innerLimit = HintCommand.DefaultInnerLimit;
+        string? cfgInner = WorkspaceSetup.GetConfigValue("Scrinia:Hint:InnerLimit");
+        if (cfgInner is not null && int.TryParse(cfgInner, out int parsedInner) && parsedInner >= 1)
+            innerLimit = parsedInner;
+
+        double diversityLambda = HintCommand.DefaultDiversityLambda;
+        string? cfgLambda = WorkspaceSetup.GetConfigValue("Scrinia:Hint:DiversityLambda");
+        if (cfgLambda is not null && double.TryParse(cfgLambda,
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                out double parsedLambda))
+            diversityLambda = parsedLambda;
+
         // Stdin fallback when no positional arg given (the common hook-invocation shape).
         // CLIs deliver hook input as either plain prompt text or a JSON envelope like
         // {"prompt": "...", "session_id": "...", ...}. Auto-detect: try JSON first; on
@@ -1957,7 +1972,8 @@ public class ScriniaCommands
             ?? throw new InvalidOperationException("Workspace store not configured. Call Configure first.");
 
         var hint = new HintCommand(store);
-        var result = hint.Compute(actualPrompt, minScore, minPromptChars);
+        var result = hint.Compute(actualPrompt, minScore, minPromptChars,
+            HintCommand.DefaultTopK, innerLimit, diversityLambda);
 
         if (!result.Emitted)
             return 0;

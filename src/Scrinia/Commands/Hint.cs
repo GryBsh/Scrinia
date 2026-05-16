@@ -31,32 +31,73 @@ public sealed class HintCommand
     /// <summary>Default minimum prompt length — anything shorter skips the lookup entirely.</summary>
     public const int DefaultMinPromptChars = 8;
 
+    /// <summary>Default output count returned to the agent.</summary>
+    public const int DefaultTopK = 3;
+
+    /// <summary>
+    /// Default inner-K — how many candidates pass through MMR rerank. Larger gives the
+    /// reranker more diversity choices; smaller is faster. 10 is the project default.
+    /// </summary>
+    public const int DefaultInnerLimit = 10;
+
+    /// <summary>
+    /// Default MMR λ. 0.6 = "favor relevance, but break single-source floods" — empirically
+    /// good for the documented "one chatty session dominates top-K" failure pattern.
+    /// </summary>
+    public const double DefaultDiversityLambda = 0.6;
+
     private readonly IMemoryStore _store;
 
     public HintCommand(IMemoryStore store) => _store = store;
 
     /// <summary>
-    /// Resolve a hint for <paramref name="rawPrompt"/> and return the formatted output
-    /// plus a flag indicating whether a hint was emitted at all. Pure function for
-    /// testability — the CLI wrapper handles stdin / stdout / config-reading.
+    /// Resolve a hint for <paramref name="rawPrompt"/> and return the structured result.
+    /// Pure function for testability — the CLI wrapper handles stdin / stdout / config.
     /// </summary>
     public HintResult Compute(string? rawPrompt, double minScore, int minPromptChars)
+        => Compute(rawPrompt, minScore, minPromptChars, DefaultTopK, DefaultInnerLimit, DefaultDiversityLambda);
+
+    /// <summary>
+    /// Resolve a hint with explicit MMR parameters. SearchAll returns the top
+    /// <paramref name="innerLimit"/> candidates, MMR with <paramref name="diversityLambda"/>
+    /// rerank down to <paramref name="topK"/> — this is the surface the
+    /// <c>Scrinia:Hint:DiversityLambda</c> / <c>:InnerLimit</c> config keys flow into.
+    /// </summary>
+    public HintResult Compute(
+        string? rawPrompt,
+        double minScore,
+        int minPromptChars,
+        int topK,
+        int innerLimit,
+        double diversityLambda)
     {
         string prompt = (rawPrompt ?? "").Trim();
         if (prompt.Length < minPromptChars)
             return HintResult.Empty;
 
-        var results = _store.SearchAll(prompt, scopes: null, limit: 3);
-        var entries = results
+        // SearchAll over a wider pool than topK so MMR has alternatives to choose from when
+        // breaking up a single-source flood. Below the score floor → no point feeding into
+        // MMR; filter first.
+        int searchLimit = Math.Max(topK, innerLimit);
+        var raw = _store.SearchAll(prompt, scopes: null, limit: searchLimit);
+        var pool = raw
             .OfType<EntryResult>()
             .Where(r => r.Score >= minScore)
+            .Cast<SearchResult>()
             .ToList();
-        if (entries.Count == 0)
+        if (pool.Count == 0)
+            return HintResult.Empty;
+
+        var diversified = MmrReranker.Rerank(pool, topK, diversityLambda);
+        if (diversified.Count == 0)
             return HintResult.Empty;
 
         return new HintResult(
             Emitted: true,
-            Matches: entries.Select(e => new HintMatch(e.Item.Scope, e.Item.Entry.Name, e.Score)).ToList());
+            Matches: diversified
+                .OfType<EntryResult>()
+                .Select(e => new HintMatch(e.Item.Scope, e.Item.Entry.Name, e.Score))
+                .ToList());
     }
 
     /// <summary>

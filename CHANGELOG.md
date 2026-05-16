@@ -11,6 +11,17 @@ and all assembly attributes.
 ## [Unreleased]
 
 ### Added
+- `scri hint` now applies **Maximal Marginal Relevance (MMR)** diversity rerank
+  to its top-K output. Fixes a documented retrieval failure where one chatty
+  session floods the hint results because its memories share vocabulary —
+  with λ = 0.6 (default) the reranker breaks the flood by demoting candidates
+  too-similar to already-selected ones, surfacing memories from other sources
+  (`/findings/`, `/skill/`) that the BM25 top-3 would otherwise miss.
+  Similarity is TF-cosine over already-loaded `TermFrequencies` dicts — zero
+  additional I/O. Configurable via `Scrinia:Hint:DiversityLambda` (1.0 reverts
+  to pre-MMR relevance-only ordering, 0.0 = pure diversity) and
+  `Scrinia:Hint:InnerLimit` (the candidate pool size MMR diversifies down to
+  top-3; default 10).
 - New `IBackgroundLlm.ScoreImportanceAsync` Tier 2 capability — short prompt,
   parses a 1–10 integer reply, clamps out-of-range / null on failure. Wired
   through every concrete provider: OpenAI-compat (Ollama, llama.cpp, LM Studio,
