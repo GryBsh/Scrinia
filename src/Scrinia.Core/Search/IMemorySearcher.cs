@@ -206,9 +206,20 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         if (bm25Range <= 0) bm25Range = 1; // Avoid division by zero
 
         // ── Pass 2: Combine normalized BM25 with field scores, deduplicate inline ──
-        // Track best score per memory for deduplication during scoring
+        // Track best score per memory for deduplication during scoring. Relevance gates
+        // the composition (recency and importance are bumps, not standalone signals) so
+        // entries with zero text match never surface even if they're fresh or important.
         var bestPerMemory = new Dictionary<string, (SearchResult Result, double Score)>(StringComparer.OrdinalIgnoreCase);
         var topicResults = new List<SearchResult>();
+
+        void TryInsert(ScopedArtifact candidate, double relevance, Func<double, SearchResult> resultFactory)
+        {
+            if (relevance <= 0) return;
+            double total = ComputeTotalScore(relevance, candidate.Entry);
+            string key = $"{candidate.Scope}|{candidate.Entry.Name}";
+            if (!bestPerMemory.TryGetValue(key, out var existing) || total > existing.Score)
+                bestPerMemory[key] = (resultFactory(total), total);
+        }
 
         for (int i = 0; i < candidateList.Count; i++)
         {
@@ -216,20 +227,10 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             double fieldScore = ScoreEntry(query, candidate.Entry);
             double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
             double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
-            double relevance = fieldScore + normalizedBm25 * Bm25Weight + supplemental;
-            // Relevance gates the composition: entries with zero text/embedding match never
-            // surface, even if they're fresh or important. This preserves "search must match"
-            // semantics — recency and importance are bumps, not standalone signals.
-            if (relevance > 0)
-            {
-                double total = ComputeTotalScore(relevance, candidate.Entry);
-                string key = $"{candidate.Scope}|{candidate.Entry.Name}";
-                if (!bestPerMemory.TryGetValue(key, out var existing) || total > existing.Score)
-                    bestPerMemory[key] = (new EntryResult(candidate, total), total);
-            }
+            TryInsert(candidate, fieldScore + normalizedBm25 * Bm25Weight + supplemental,
+                total => new EntryResult(candidate, total));
         }
 
-        // ── Chunk-level scoring ─────────────────────────────────────────
         foreach (var (candidateIdx, chunkIdx, rawBm25) in chunkBm25List)
         {
             var candidate = candidateList[candidateIdx];
@@ -237,14 +238,8 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
             double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
             double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
-            double chunkRelevance = chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental;
-            if (chunkRelevance > 0)
-            {
-                double chunkTotal = ComputeTotalScore(chunkRelevance, candidate.Entry);
-                string key = $"{candidate.Scope}|{candidate.Entry.Name}";
-                if (!bestPerMemory.TryGetValue(key, out var existing) || chunkTotal > existing.Score)
-                    bestPerMemory[key] = (new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, chunkTotal), chunkTotal);
-            }
+            TryInsert(candidate, chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental,
+                total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
         }
 
         foreach (var topic in topics)

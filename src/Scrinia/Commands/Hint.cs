@@ -53,23 +53,18 @@ public sealed class HintCommand
     /// <summary>
     /// Resolve a hint for <paramref name="rawPrompt"/> and return the structured result.
     /// Pure function for testability — the CLI wrapper handles stdin / stdout / config.
-    /// </summary>
-    public HintResult Compute(string? rawPrompt, double minScore, int minPromptChars)
-        => Compute(rawPrompt, minScore, minPromptChars, DefaultTopK, DefaultInnerLimit, DefaultDiversityLambda);
-
-    /// <summary>
-    /// Resolve a hint with explicit MMR parameters. SearchAll returns the top
-    /// <paramref name="innerLimit"/> candidates, MMR with <paramref name="diversityLambda"/>
-    /// rerank down to <paramref name="topK"/> — this is the surface the
-    /// <c>Scrinia:Hint:DiversityLambda</c> / <c>:InnerLimit</c> config keys flow into.
+    /// SearchAll returns the top <paramref name="innerLimit"/> candidates, MMR with
+    /// <paramref name="diversityLambda"/> reranks down to <paramref name="topK"/> — the
+    /// surface the <c>Scrinia:Hint:DiversityLambda</c> / <c>:InnerLimit</c> config keys
+    /// flow into. Tests pass defaults positionally; the CLI passes config-derived values.
     /// </summary>
     public HintResult Compute(
         string? rawPrompt,
         double minScore,
         int minPromptChars,
-        int topK,
-        int innerLimit,
-        double diversityLambda)
+        int topK = DefaultTopK,
+        int innerLimit = DefaultInnerLimit,
+        double diversityLambda = DefaultDiversityLambda)
     {
         string prompt = (rawPrompt ?? "").Trim();
         if (prompt.Length < minPromptChars)

@@ -35,7 +35,21 @@ public sealed class ImportanceScoringSink : IMemoryEventSink
     }
 
     public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
-        => await ScoreAndPersistAsync(qualifiedName, content, store, ct);
+    {
+        var llm = _llmAccessor();
+        if (llm is null) return;
+
+        try
+        {
+            var (scope, existing) = FindEntry(store, qualifiedName);
+            if (existing is null) return;
+            await ScoreAndUpdateAsync(llm, store, scope, existing, string.Concat(content), ct);
+        }
+        catch (Exception ex)
+        {
+            LogWarn(qualifiedName, ex);
+        }
+    }
 
     /// <summary>
     /// On append, rescore against the <b>full</b> memory (existing + appended), not the
@@ -50,34 +64,14 @@ public sealed class ImportanceScoringSink : IMemoryEventSink
 
         try
         {
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            var entries = store.LoadIndex(scope);
-            ArtifactEntry? existing = null;
-            foreach (var e in entries)
-            {
-                if (e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase))
-                {
-                    existing = e;
-                    break;
-                }
-            }
+            var (scope, existing) = FindEntry(store, qualifiedName);
             if (existing is null) return;
-
-            // Decode the full memory (the append has already been persisted by the time the
-            // sink fires) so the score reflects the cumulative content, not the snippet.
-            string fullContent = await DecodeMemoryContentAsync(store, scope, existing, ct);
-            if (string.IsNullOrWhiteSpace(fullContent)) return;
-
-            int? score = await llm.ScoreImportanceAsync(fullContent, ct);
-            if (score is null) return;
-
-            store.Upsert(existing with { Importance = score }, scope);
+            string full = await DecodeFullContentAsync(store, scope, existing, ct);
+            await ScoreAndUpdateAsync(llm, store, scope, existing, full, ct);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] ImportanceScoringSink append-rescore error on '{qualifiedName}': " +
-                $"{ex.GetType().Name}: {ex.Message}");
+            LogWarn(qualifiedName, ex);
         }
     }
 
@@ -85,47 +79,34 @@ public sealed class ImportanceScoringSink : IMemoryEventSink
     public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
         => Task.CompletedTask;
 
-    private async Task ScoreAndPersistAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+    /// <summary>
+    /// Locates the live <see cref="ArtifactEntry"/> for <paramref name="qualifiedName"/>.
+    /// Returns (scope, null) when the memory was forgotten between the original write and
+    /// the sink running — a tolerable race for fire-and-forget background work.
+    /// </summary>
+    private static (string Scope, ArtifactEntry? Entry) FindEntry(IMemoryStore store, string qualifiedName)
     {
-        var llm = _llmAccessor();
-        if (llm is null) return;
-
-        try
+        var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+        foreach (var e in store.LoadIndex(scope))
         {
-            string joined = string.Concat(content);
-            if (string.IsNullOrWhiteSpace(joined)) return;
-
-            int? score = await llm.ScoreImportanceAsync(joined, ct);
-            if (score is null) return;
-
-            // Re-load the entry from the store to get the freshest copy — the sink runs
-            // on a background Task, so by the time we get here the user could have written
-            // the same memory again with different metadata. We only update Importance;
-            // every other field stays as-stored.
-            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
-            var entries = store.LoadIndex(scope);
-            ArtifactEntry? existing = null;
-            foreach (var e in entries)
-            {
-                if (e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase))
-                {
-                    existing = e;
-                    break;
-                }
-            }
-
-            // Memory may have been deleted between Store and sink invocation.
-            if (existing is null) return;
-
-            var updated = existing with { Importance = score };
-            store.Upsert(updated, scope);
+            if (e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase))
+                return (scope, e);
         }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] ImportanceScoringSink error on '{qualifiedName}': " +
-                $"{ex.GetType().Name}: {ex.Message}");
-        }
+        return (scope, null);
+    }
+
+    /// <summary>
+    /// Sends content through the LLM and persists the score. Treats empty content and a
+    /// null LLM response as "skip this memory" — leaves the sidecar untouched.
+    /// </summary>
+    private static async Task ScoreAndUpdateAsync(
+        IBackgroundLlm llm, IMemoryStore store, string scope, ArtifactEntry existing,
+        string content, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return;
+        int? score = await llm.ScoreImportanceAsync(content, ct);
+        if (score is null) return;
+        store.Upsert(existing with { Importance = score }, scope);
     }
 
     /// <summary>
@@ -164,7 +145,7 @@ public sealed class ImportanceScoringSink : IMemoryEventSink
                     continue;
                 }
 
-                string content = await DecodeMemoryContentAsync(store, scope, entry, ct);
+                string content = await DecodeFullContentAsync(store, scope, entry, ct);
                 if (string.IsNullOrWhiteSpace(content))
                 {
                     skipped++;
@@ -197,31 +178,28 @@ public sealed class ImportanceScoringSink : IMemoryEventSink
     }
 
     /// <summary>
-    /// Decodes the full content of a memory by concatenating every chunk. Errors fall
-    /// through as empty so the backfill caller treats them as "skip and continue."
+    /// Reads the artifact and returns the decoded text. Uses the canonical
+    /// <see cref="Nmp2Strategy.Decode(string)"/> which handles single- and multi-chunk
+    /// artifacts identically to every other content-consumer (embeddings reindexer,
+    /// LLM consolidator). Errors fall through as empty so callers treat them as skip.
     /// </summary>
-    private static async Task<string> DecodeMemoryContentAsync(IMemoryStore store, string scope, ArtifactEntry entry, CancellationToken ct)
+    private static async Task<string> DecodeFullContentAsync(IMemoryStore store, string scope, ArtifactEntry entry, CancellationToken ct)
     {
         try
         {
             string artifact = await store.ReadArtifactAsync(entry.Name, scope, ct);
             if (string.IsNullOrWhiteSpace(artifact)) return string.Empty;
-
-            int chunks = Math.Max(1, entry.ChunkCount);
-            if (chunks == 1)
-                return Nmp2ChunkedEncoder.DecodeChunk(artifact, 1);
-
-            var sb = new System.Text.StringBuilder();
-            for (int i = 1; i <= chunks; i++)
-            {
-                if (i > 1) sb.Append('\n');
-                sb.Append(Nmp2ChunkedEncoder.DecodeChunk(artifact, i));
-            }
-            return sb.ToString();
+            byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
+            return System.Text.Encoding.UTF8.GetString(bytes);
         }
         catch
         {
             return string.Empty;
         }
     }
+
+    private static void LogWarn(string qualifiedName, Exception ex) =>
+        Console.Error.WriteLine(
+            $"[scrinia:warn] ImportanceScoringSink error on '{qualifiedName}': " +
+            $"{ex.GetType().Name}: {ex.Message}");
 }

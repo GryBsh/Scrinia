@@ -180,11 +180,9 @@ public sealed partial class ScriniaMcpTools
 
             // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
             // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-            // Pass CancellationToken.None — the sink is fire-and-forget on a background
-            // Task, so it must not be aborted when the request CT cancels (which it does
-            // as soon as the user-facing response returns and the per-request scope tears
-            // down). Cancelling the sink mid-LLM-call would leave Importance unscored;
-            // mid-embed would leave the vector index inconsistent.
+            // CancellationToken.None: the sink runs detached on a background Task —
+            // propagating the per-request CT would abort it the moment the user-facing
+            // response returns, leaving importance unscored or vectors half-written.
             FireEventSinkAsync(sink => sink.OnStoredAsync($"~{key}", content, store, CancellationToken.None));
 
             return ResponseBuilder.Success($"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]")
@@ -309,7 +307,7 @@ public sealed partial class ScriniaMcpTools
 
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        // CancellationToken.None: see the same comment on the ephemeral path above.
+        // CancellationToken.None — see the ephemeral path above for rationale.
         FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
@@ -936,9 +934,7 @@ public sealed partial class ScriniaMcpTools
 
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        // CancellationToken.None: append-time sinks (importance rescore, embed-new-chunk)
-        // must run to completion regardless of request lifetime — same rationale as the
-        // OnStoredAsync sites above.
+        // CancellationToken.None — see the ephemeral path above for rationale.
         FireEventSinkAsync(sink => sink.OnAppendedAsync(qualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")

@@ -171,15 +171,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     /// <summary>
     /// Tunable ranker weights — read by <see cref="SearchAll(string, string?, int)"/>
-    /// when constructing the underlying <see cref="WeightedFieldScorer"/>. Defaults to
-    /// <see cref="RankerOptions.Default"/>; <c>WorkspaceSetup.Configure</c> populates
-    /// it from <c>Scrinia:Search:*</c> config keys at workspace init.
+    /// when constructing the underlying <see cref="WeightedFieldScorer"/>. Set at
+    /// construction; <c>WorkspaceSetup.Configure</c> passes the workspace's
+    /// <c>Scrinia:Search:*</c> config-derived values.
     /// </summary>
-    public RankerOptions RankerOptions { get; set; } = RankerOptions.Default;
+    public RankerOptions RankerOptions { get; init; } = RankerOptions.Default;
 
-    public FileMemoryStore(string workspaceRoot) : this(workspaceRoot, rankerOptions: null) { }
-
-    public FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions)
+    public FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
@@ -1233,9 +1231,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        // Use the workspace's configured ranker weights — without this override, the
-        // excludeTopics path silently fell back to RankerOptions.Default no matter what
-        // the user had set Scrinia:Search:Alpha:* to.
         var searcher = new WeightedFieldScorer(RankerOptions);
         var candidates = ListScoped(scopes, excludeTopics);
         // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
