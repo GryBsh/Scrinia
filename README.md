@@ -81,13 +81,19 @@ Separate from the token-cost comparison above, Scrinia ships a retrieval-quality
 
 Two modes: pure BM25 (apples-to-apples vs MemPalace's "raw" track) and BM25 + MiniLM embeddings via model2vec. Ablation knobs (`--alpha-recency`, `--tau-days`, `--diversity-lambda`) let us isolate each Scrinia ranker feature's contribution.
 
-```bash
-# LongMemEval — the headline benchmark
-dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
-  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json
+```powershell
+# Windows / Mac / Linux with pwsh
+./scripts/prepare-datasets.ps1
+./scripts/run-benchmarks.ps1
 ```
 
-Full instructions and per-benchmark download steps: [`benchmarks/Scrinia.Retrieval.Benchmarks/README.md`](benchmarks/Scrinia.Retrieval.Benchmarks/README.md).
+```bash
+# Bash
+./scripts/prepare-datasets.sh
+./scripts/run-benchmarks.sh
+```
+
+Full instructions, ablations, and per-question diff recipes: [`benchmarks/Scrinia.Retrieval.Benchmarks/README.md`](benchmarks/Scrinia.Retrieval.Benchmarks/README.md).
 
 ## Install
 

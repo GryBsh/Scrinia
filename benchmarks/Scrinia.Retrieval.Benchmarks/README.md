@@ -1,71 +1,59 @@
 # Scrinia.Retrieval.Benchmarks
 
-Retrieval-quality benchmark harness for Scrinia. Runs Scrinia's BM25 + (later) embeddings search against academic retrieval benchmarks (ConvoMem, LongMemEval, LoCoMo, MemBench) and reports R@5 / R@10 / R@50 / NDCG@10 with per-category breakdowns.
+Retrieval-quality benchmark harness for Scrinia. Runs Scrinia's BM25 + MiniLM embeddings against academic retrieval benchmarks (ConvoMem, LongMemEval, LoCoMo, MemBench) and reports R@5 / R@10 / R@50 / NDCG@10 with per-category breakdowns.
 
 This is **not** a microbenchmark — for `BenchmarkDotNet` perf measurements see `tests/Scrinia.Benchmarks/`.
 
-## Usage
+## Quickstart
 
+```powershell
+# PowerShell — Windows / Mac / Linux with pwsh
+./scripts/prepare-datasets.ps1
+./scripts/run-benchmarks.ps1
 ```
-scrinia-bench convomem --data <dir> [--limit N] [--top-k K] [--output file]
+
+```bash
+# Bash
+./scripts/prepare-datasets.sh
+./scripts/run-benchmarks.sh
 ```
 
-Datasets are not vendored. Download them yourself (see per-benchmark instructions below) and point `--data` at the directory.
+Both scripts are idempotent: re-runs skip already-downloaded datasets and reuse the cached build.
 
-## Benchmarks
+Results land in `benchmarks/Scrinia.Retrieval.Benchmarks/results/scrinia_<bench>_<mode>_<UTC>.json`. The schema mirrors MemPalace's per-question result files so per-question hits can be diffed across systems without a schema translator.
+
+## Selective runs
+
+```powershell
+./scripts/run-benchmarks.ps1 -Benchmark longmemeval -Split held_out
+./scripts/run-benchmarks.ps1 -Mode bm25                     # BM25-only baseline
+./scripts/run-benchmarks.ps1 -ExtraArgs "--alpha-recency","1.0","--tau-days","90"
+```
+
+```bash
+./scripts/run-benchmarks.sh longmemeval                     # just one benchmark
+SPLIT=held_out ./scripts/run-benchmarks.sh longmemeval
+MODE=bm25 ./scripts/run-benchmarks.sh                       # BM25-only baseline
+./scripts/run-benchmarks.sh -- --alpha-recency 1.0 --tau-days 90    # ablation
+```
+
+## What the benchmarks measure
 
 ### ConvoMem (Salesforce)
 
 Source: <https://huggingface.co/datasets/Salesforce/ConvoMem>
 
-Layout expected at `--data <dir>`:
-```
-<dir>/
-├── user_evidence.json
-├── assistant_facts_evidence.json
-├── preference_evidence.json
-├── changing_evidence.json
-├── abstention_evidence.json
-└── implicit_connection_evidence.json
-```
+Six category files (`user_evidence`, `assistant_facts_evidence`, `preference_evidence`, `changing_evidence`, `abstention_evidence`, `implicit_connection_evidence`). Each item ships a question, a small set of messages, and a list of message-text evidences. The loader yields one question per item; ground truth is substring-matched against the retrieved message text.
 
-Each file is `{"evidence_items": [...]}`. The loader yields one question per item, with the haystack built from every message in the item's conversations and ground truth being the verbatim text of `message_evidences` (substring-matched).
-
-```
-dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
-  convomem --data ./datasets/convomem/core_benchmark/evidence_questions --limit 50
-```
-
-MemPalace's published recall on ConvoMem (50/category, 250 total) is 92.9%. Scrinia's number lands once you run the above.
+MemPalace's published recall (50/category, 250 total): **92.9%**.
 
 ### LongMemEval (xiaowu0162/longmemeval-cleaned)
 
 Source: <https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned>
 
-The headline benchmark — 500 questions, each with its own per-question haystack of ~53 sessions. Session granularity by default (concatenated user turns per session); turn granularity available via `--granularity turn`.
+The headline benchmark — 500 questions, each with its own per-question haystack of ~53 sessions. Session granularity (concatenated user turns per session) by default; turn granularity via `--granularity turn`. MemPalace's `lme_split_50_450.json` honoured via `--split full|dev|held_out`.
 
-```
-# Download the cleaned dataset
-mkdir -p ./datasets/longmemeval
-curl -fsSL -o ./datasets/longmemeval/longmemeval_s_cleaned.json \
-  https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
-
-# Run with embeddings (headline)
-dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
-  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json
-
-# Run BM25-only (apples-to-apples against MemPalace's "raw" track)
-dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
-  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json --mode bm25
-
-# Held-out 450 (drop-in for MemPalace's lme_split_50_450.json)
-curl -fsSL -o ./datasets/longmemeval/lme_split_50_450.json \
-  https://raw.githubusercontent.com/MemPalace/mempalace/main/benchmarks/lme_split_50_450.json
-dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
-  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json --split held_out
-```
-
-MemPalace's published baselines: 96.6% R@5 raw (BM25 + ChromaDB MiniLM embeddings, no LLM). Held-out 450 with their hybrid v4: 98.4% R@5. Scrinia's number on the same 450 held-out questions, BM25 + model2vec MiniLM embeddings, lands once you run the above.
+MemPalace's published baselines: **96.6% R@5 raw** (no LLM); **98.4% R@5 on the held-out 450** with their hybrid v4. Scrinia's number on the same 450 questions lands once `run-benchmarks.ps1 -Benchmark longmemeval -Split held_out` finishes.
 
 ### MemBench (ACL 2025)
 
@@ -73,90 +61,52 @@ Source: <https://github.com/import-myself/Membench>
 
 8,500 items across 10 categories: `simple`, `highlevel`, `knowledge_update`, `comparative`, `conditional`, `noisy`, `aggregative`, `highlevel_rec`, `lowlevel_rec`, `post_processing`. Each item is its own per-question haystack (5–30 turns); ground truth matches against turn `sid`s.
 
-Layout expected at `--data <dir>`:
-```
-<dir>/
-├── simple.json
-├── highlevel.json
-├── knowledge_update.json
-├── comparative.json
-├── conditional.json
-├── noisy.json
-├── aggregative.json
-├── highlevel_rec.json
-├── lowlevel_rec.json
-└── post_processing.json
-```
-
-```
-git clone https://github.com/import-myself/Membench /tmp/membench
-dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
-  membench --data /tmp/membench/MemData/FirstAgent
-```
-
-MemPalace's published baseline: 80.3% R@5 overall, with `noisy` at 43.4% as the designed hard case (distractors mixed in with signal). Scrinia's category breakdown lands once you run the above.
+MemPalace's published baseline: **80.3% R@5 overall**, with `noisy` at 43.4% as the designed hard case.
 
 ### LoCoMo (snap-research/locomo)
 
 Source: <https://github.com/snap-research/locomo/blob/main/data/locomo10.json>
 
-10 ultra-long conversations × ~200 QA pairs each = 1986 questions. Per-conversation haystack (one fresh store per `sample_id`); same haystack drives every QA in that conversation. Session-granularity matches MemPalace's primary report (concatenated dialogs per session, doc_id = `session_N`). Dialog granularity is per-turn (`D1:3` etc.).
+10 ultra-long conversations × ~200 QA pairs each = 1986 questions. Per-conversation haystack reuse: the dialogs ingest once per `sample_id` and serve every QA in that conversation. Session granularity (default, doc_id = `session_N`) matches MemPalace's primary report.
 
-```
-git clone https://github.com/snap-research/locomo /tmp/locomo
-dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
-  locomo --data /tmp/locomo/data/locomo10.json
-```
+We report **R@5, R@10, and R@50** side-by-side. MemPalace flagged their 100% R@50 as structurally guaranteed when K exceeds session count under an LLM rerank — Scrinia's headline mode has no LLM rerank, so ranker ordering still drives R@50 and we want the data, not the assumption.
 
-We report **R@5, R@10, and R@50** side-by-side so the K=50 caveat (MemPalace flagged it as structurally guaranteed when K exceeds the conversation's session count + an LLM rerank consumes the candidate set) can be settled with data rather than theory — Scrinia's headline runs have no LLM rerank, so ranker ordering still drives R@50.
-
-MemPalace's published headline (top-10, no rerank): 60.3% R@10 raw, 88.9% R@10 hybrid v5.
-
-## Output
-
-Results are written to `benchmarks/Scrinia.Retrieval.Benchmarks/results/scrinia_<bench>_<mode>_<UTC>.json` by default. The schema mirrors MemPalace's per-question result files so a separate compare tool can diff per-question hits across systems without a schema translator.
+MemPalace's published headline (top-10, no rerank): **60.3% R@10 raw**, **88.9% R@10 hybrid v5**.
 
 ## Modes
 
 - `bm25`: pure BM25 baseline (Scrinia's `WeightedFieldScorer` without embeddings).
-- `bm25_embeddings` *(default)*: BM25 + MiniLM embeddings via model2vec, blended via the same `{scope}|{name}` supplemental-score path the production embeddings plugin uses. Falls back to `bm25` if the model isn't on disk (run `scri setup` first).
+- `bm25_embeddings` *(default)*: BM25 + MiniLM embeddings via model2vec, blended via the same `{scope}|{name}` supplemental-score path the production embeddings plugin uses. Falls back to `bm25` if the model isn't on disk (run `scri setup` first to download m2v-MiniLM-L6-v2).
 
 Headline runs zero out the workspace-tuned ranker (`α_recency = α_importance = 0`, MMR off) so the apples-to-apples comparison against MemPalace's `--mode raw` is meaningful.
 
 ## Ablations
 
-The headline numbers come from a deliberately neutral ranker so the comparison stays apples-to-apples. Ablations turn each Scrinia knob on in isolation so we can measure its contribution. All ablation flags compose with `--mode` and any benchmark subcommand.
+The headline numbers come from a deliberately neutral ranker. Ablations turn each Scrinia knob on in isolation. All flags compose with `--mode` and any benchmark subcommand.
 
-```
-# Recency contribution: zero baseline vs exponential decay at τ=30d, 90d, 365d
-scrinia-bench longmemeval --data <...> --alpha-recency 1.0 --tau-days 30
-scrinia-bench longmemeval --data <...> --alpha-recency 1.0 --tau-days 90
-scrinia-bench longmemeval --data <...> --alpha-recency 1.0 --tau-days 365
+| Flag | What it does | Default |
+|---|---|---|
+| `--alpha-recency <r>` | Weight for exp-decay recency term | 0.0 (off) |
+| `--tau-days <τ>` | Recency time-constant | 14 |
+| `--alpha-importance <i>` | Weight for importance term *(see note)* | 0.0 (off) |
+| `--diversity-lambda <λ>` | MMR diversity tradeoff [0,1] | 1.0 (no MMR) |
+| `--diversity-inner-limit <N>` | MMR candidate pool size | 50 when λ set |
 
-# MMR diversity contribution (single-answer benchmarks penalize diversity by design)
-scrinia-bench longmemeval --data <...> --diversity-lambda 0.3  # heavy diversity
-scrinia-bench longmemeval --data <...> --diversity-lambda 0.6  # workspace default
-scrinia-bench longmemeval --data <...> --diversity-lambda 0.9  # mostly relevance
-```
+Output filenames pick up tag suffixes (`scrinia_longmemeval_full_bm25_embeddings__rec1.0_tau30_<UTC>.json`) so sweep results don't collide.
 
-Output filenames pick up tags so ablation sweeps don't collide:
-```
-results/scrinia_longmemeval_full_bm25_embeddings__rec1.0_tau30_<UTC>.json
-```
-
-The importance ablation flag (`--alpha-importance`) is wired but the effect is null for benchmark ingest in this commit — haystack docs are stored without per-doc LLM importance scores (those require the Tier 2 LLM call per doc, materially different cost profile). Adding benchmark-time importance scoring is a follow-up.
+Note on `--alpha-importance`: wired but currently inert. Haystack docs are ingested without per-doc LLM importance scores (that would require a Tier 2 call per doc, materially different cost profile). The flag is plumbed so a future "score haystacks at ingest" mode can light it up without API changes.
 
 ## Methodology
 
 ### Metrics
 
-- **R@K** (recall at K): fraction of questions where at least one ground-truth document is in the top-K retrieved hits. Binary per-question (hit or no hit), averaged across the question set.
-- **NDCG@10**: normalized discounted cumulative gain at rank 10. For single-relevant-doc benchmarks (every benchmark here except the rare LoCoMo case with multiple evidence dia_ids) this reduces to `1 / log2(rank+1)` if the doc is in top-10, else 0.
-- **Per-category** aggregates are simple means over each category's question subset.
+- **R@K**: fraction of questions where at least one ground-truth document is in the top-K. Binary per-question, averaged.
+- **NDCG@10**: for single-relevant-doc benchmarks reduces to `1 / log2(rank+1)` if the doc is in top-10, else 0.
+- **Per-category**: simple means over each category's question subset.
 
 ### Ranker composition
 
-The ranker formula lives in `src/Scrinia.Core/Search/RankerOptions.cs`:
+The formula lives in `src/Scrinia.Core/Search/RankerOptions.cs`:
 
 ```
 total = α_relevance · relevance
@@ -166,33 +116,51 @@ total = α_relevance · relevance
 
 Where `relevance = fieldScore + normalizedBm25·5 + semanticSimilarity·50` (the last term only when `--mode=bm25_embeddings`).
 
-Headline runs use `α_recency = α_importance = 0`. Ablation runs vary these knobs to isolate each term's contribution.
-
 ### Ground-truth matching
 
-Two modes, dispatched by `BenchmarkScorer` based on which ground-truth set the loader populates:
+Two modes, dispatched by `BenchmarkScorer`:
 
-1. **ID match** (LongMemEval, LoCoMo, MemBench): retrieved doc's ID must equal a ground-truth ID (case-insensitive ordinal). One match in top-K is enough.
-2. **Substring text match** (ConvoMem): retrieved doc's text must contain a ground-truth evidence string as a case-insensitive substring. ConvoMem doesn't ship stable doc IDs so we match against the verbatim evidence text.
+1. **ID match** (LongMemEval, LoCoMo, MemBench): retrieved doc's ID must equal a ground-truth ID (case-insensitive ordinal).
+2. **Substring text match** (ConvoMem): retrieved doc's text must contain a ground-truth evidence string as a case-insensitive substring. ConvoMem doesn't ship stable doc IDs.
 
 ### Reproducibility
 
-- **Embeddings are deterministic.** Model2Vec is a quantized averaged-embedding model; same text gives the same vector across runs. Cosine similarity is stable to floating-point order, which we control by ingesting in dataset order.
+- **Embeddings are deterministic.** Model2Vec is a quantized averaged-embedding model; same text gives the same vector across runs.
 - **No randomness in the harness.** The runner iterates the dataset's natural order; no shuffling, no sampling unless `--limit` is set.
-- **MiniLM-L6-v2 across both systems.** MemPalace uses ChromaDB's default sentence-transformer (PyTorch); Scrinia uses model2vec quantized MiniLM-L6-v2 (pure C#). Same architecture, different inference paths — possible small cosine drift on identical text. Acceptable; documented here so deltas vs MemPalace's numbers aren't surprising.
+- **MiniLM-L6-v2 across both systems.** MemPalace uses ChromaDB's default sentence-transformer (PyTorch); Scrinia uses model2vec quantized MiniLM-L6-v2 (pure C#). Same architecture, different inference paths — possible small cosine drift on identical text. Documented here so deltas vs MemPalace's numbers aren't surprising.
 
-### Comparing against MemPalace's per-question results
+### Comparing per-question against MemPalace
 
-MemPalace commits their full per-question JSONL result files under `benchmarks/results_*.jsonl`. Both systems write `question_id` in the same shape, so a per-question diff is straightforward:
+MemPalace commits their full per-question JSONL result files under `benchmarks/results_*.jsonl`. Both systems write `question_id` consistently, so a per-question diff is straightforward:
 
-```bash
-# Hits where Scrinia hit but MemPalace missed (and vice versa) — sketch
-jq -r '.questions[] | "\(.QuestionId) \(.HitAt5)"' scrinia_longmemeval_full_*.json | sort > scrinia.txt
-jq -r '.[] | "\(.qid) \(.hit_at_5)"' results_mempal_raw_session_*.jsonl | sort > mempal.txt
-diff scrinia.txt mempal.txt
+```powershell
+# Quick sketch — match question_id between our JSON and MemPalace's JSONL.
+$ours = (Get-Content scrinia_longmemeval_full_*.json | ConvertFrom-Json).Questions |
+        ForEach-Object { "$($_.QuestionId) $($_.HitAt5)" } | Sort-Object
+$theirs = Get-Content results_mempal_raw_session_*.jsonl |
+          ForEach-Object { $j = $_ | ConvertFrom-Json; "$($j.qid) $($j.hit_at_5)" } | Sort-Object
+Compare-Object $ours $theirs
 ```
 
-This is more informative than just comparing aggregates — the *which questions* matter more than the *what fraction*.
+```bash
+jq -r '.Questions[] | "\(.QuestionId) \(.HitAt5)"' scrinia_longmemeval_full_*.json | sort > ours.txt
+jq -r '"\(.qid) \(.hit_at_5)"' results_mempal_raw_session_*.jsonl | sort > theirs.txt
+diff ours.txt theirs.txt
+```
+
+The *which questions* matter more than the *what fraction*.
+
+## Manual invocation (without the scripts)
+
+If you'd rather wire the dataset paths yourself:
+
+```
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json \
+  --split held_out --mode bm25_embeddings --top-k 50
+```
+
+See `scrinia-bench --help` for the full flag set.
 
 ## Why not just trust MemPalace's numbers?
 

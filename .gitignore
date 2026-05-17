@@ -38,3 +38,6 @@ scrinia-test/
 
 # Planning Reports
 docs/reports
+
+# Benchmark dataset downloads (scripts/prepare-datasets.{ps1,sh})
+/datasets/

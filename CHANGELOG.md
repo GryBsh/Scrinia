@@ -123,6 +123,12 @@ and all assembly attributes.
 - Root README now points at the retrieval-quality harness alongside the
   existing token-cost benchmarks (which compare Scrinia vs flat-file vs
   auto-memory token budgets — distinct work, kept distinct).
+- `scripts/prepare-datasets.{ps1,sh}` and `scripts/run-benchmarks.{ps1,sh}` —
+  idempotent setup + run for the four retrieval benchmarks. Replaces the
+  copy-pasteable curl/git/dotnet command blocks that were previously the
+  canonical run path; the manual commands remain in the bench README as a
+  fallback, but the scripts are the entry point now. Bash scripts are
+  marked executable in the index so they work as-is on Linux/Mac.
 
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative
