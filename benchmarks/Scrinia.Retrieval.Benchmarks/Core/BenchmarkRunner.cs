@@ -64,6 +64,62 @@ public sealed class BenchmarkRunner
         return new BenchmarkRunResult(meta, aggregate, perCategory, results);
     }
 
+    /// <summary>
+    /// Variant for benchmarks where multiple questions share a haystack (LoCoMo, where
+    /// each conversation hosts ~200 QA pairs). Ingests each group's haystack once and
+    /// runs every question against it before resetting for the next group — vs the
+    /// default <see cref="RunAsync"/> which ingests a fresh haystack per question.
+    /// </summary>
+    public async Task<BenchmarkRunResult> RunGroupedAsync(
+        string benchmarkName,
+        string modeLabel,
+        IAsyncEnumerable<BenchmarkQuestionGroup> groups,
+        IRetriever retriever,
+        int topK,
+        IProgress<RunProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(modeLabel);
+        ArgumentNullException.ThrowIfNull(groups);
+        ArgumentNullException.ThrowIfNull(retriever);
+
+        var startedAt = DateTimeOffset.UtcNow;
+        var results = new List<QuestionResult>();
+        bool first = true;
+
+        await foreach (var group in groups.WithCancellation(ct))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!first) await retriever.ResetAsync(ct);
+            first = false;
+
+            foreach (var doc in group.SharedHaystack)
+                await retriever.IngestAsync(doc, ct);
+
+            foreach (var q in group.Questions)
+            {
+                ct.ThrowIfCancellationRequested();
+                var hits = await retriever.RetrieveAsync(q.QueryText, topK, ct);
+                var scored = BenchmarkScorer.ScoreQuestion(q, hits);
+                results.Add(scored);
+                progress?.Report(new RunProgress(results.Count, scored));
+            }
+        }
+
+        var aggregate = BenchmarkScorer.Aggregate(results);
+        var perCategory = BenchmarkScorer.PerCategory(results);
+        var meta = new RunMetadata(
+            Benchmark: benchmarkName,
+            Mode: modeLabel,
+            TopK: topK,
+            StartedAt: startedAt,
+            CompletedAt: DateTimeOffset.UtcNow,
+            QuestionCount: results.Count,
+            ScriniaVersion: ReadScriniaVersion());
+        return new BenchmarkRunResult(meta, aggregate, perCategory, results);
+    }
+
     private static string ReadScriniaVersion() =>
         typeof(FileMemoryStore).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()

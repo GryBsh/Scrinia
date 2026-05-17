@@ -96,9 +96,21 @@ dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
 
 MemPalace's published baseline: 80.3% R@5 overall, with `noisy` at 43.4% as the designed hard case (distractors mixed in with signal). Scrinia's category breakdown lands once you run the above.
 
-### LoCoMo
+### LoCoMo (snap-research/locomo)
 
-Coming in commit 4.
+Source: <https://github.com/snap-research/locomo/blob/main/data/locomo10.json>
+
+10 ultra-long conversations × ~200 QA pairs each = 1986 questions. Per-conversation haystack (one fresh store per `sample_id`); same haystack drives every QA in that conversation. Session-granularity matches MemPalace's primary report (concatenated dialogs per session, doc_id = `session_N`). Dialog granularity is per-turn (`D1:3` etc.).
+
+```
+git clone https://github.com/snap-research/locomo /tmp/locomo
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  locomo --data /tmp/locomo/data/locomo10.json
+```
+
+We report **R@5, R@10, and R@50** side-by-side so the K=50 caveat (MemPalace flagged it as structurally guaranteed when K exceeds the conversation's session count + an LLM rerank consumes the candidate set) can be settled with data rather than theory — Scrinia's headline runs have no LLM rerank, so ranker ordering still drives R@50.
+
+MemPalace's published headline (top-10, no rerank): 60.3% R@10 raw, 88.9% R@10 hybrid v5.
 
 ## Output
 

@@ -96,6 +96,17 @@ and all assembly attributes.
   haystack of 5–30 turns; ground truth matches against turn `sid`s. Apples-to-
   apples vs MemPalace's published 80.3% R@5 overall (43.4% on the designed-hard
   `noisy` category).
+- `scrinia-bench locomo` — runs LoCoMo (10 conversations × ~200 QA pairs = 1986
+  questions). Per-conversation haystack reuse via a new
+  `BenchmarkRunner.RunGroupedAsync` path: each conversation's dialogs ingest
+  once and serve every QA in that conversation before the retriever resets.
+  Session or dialog granularity (`--granularity session|dialog`). Reports R@5,
+  R@10, and R@50 side-by-side so the K=50 structural-guarantee question can be
+  settled with data.
+- New `BenchmarkQuestionGroup` core type for benchmarks where multiple
+  questions share a haystack (LoCoMo's per-conversation shape). The runner has
+  a matching `RunGroupedAsync` overload that ingests the group's shared
+  haystack once and reuses it across every question in the group.
 
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative
