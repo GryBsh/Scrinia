@@ -67,9 +67,38 @@ dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
 
 MemPalace's published baselines: 96.6% R@5 raw (BM25 + ChromaDB MiniLM embeddings, no LLM). Held-out 450 with their hybrid v4: 98.4% R@5. Scrinia's number on the same 450 held-out questions, BM25 + model2vec MiniLM embeddings, lands once you run the above.
 
-### LoCoMo, MemBench
+### MemBench (ACL 2025)
 
-Coming in subsequent commits.
+Source: <https://github.com/import-myself/Membench>
+
+8,500 items across 10 categories: `simple`, `highlevel`, `knowledge_update`, `comparative`, `conditional`, `noisy`, `aggregative`, `highlevel_rec`, `lowlevel_rec`, `post_processing`. Each item is its own per-question haystack (5–30 turns); ground truth matches against turn `sid`s.
+
+Layout expected at `--data <dir>`:
+```
+<dir>/
+├── simple.json
+├── highlevel.json
+├── knowledge_update.json
+├── comparative.json
+├── conditional.json
+├── noisy.json
+├── aggregative.json
+├── highlevel_rec.json
+├── lowlevel_rec.json
+└── post_processing.json
+```
+
+```
+git clone https://github.com/import-myself/Membench /tmp/membench
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  membench --data /tmp/membench/MemData/FirstAgent
+```
+
+MemPalace's published baseline: 80.3% R@5 overall, with `noisy` at 43.4% as the designed hard case (distractors mixed in with signal). Scrinia's category breakdown lands once you run the above.
+
+### LoCoMo
+
+Coming in commit 4.
 
 ## Output
 

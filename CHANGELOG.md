@@ -90,6 +90,12 @@ and all assembly attributes.
   isn't present.
 - `scrinia-bench --mode bm25` — pure BM25 baseline for apples-to-apples vs
   MemPalace's `--mode raw` track without semantic search.
+- `scrinia-bench membench` — runs MemBench (ACL 2025) across all 10 categories
+  (8,500 items): simple, highlevel, knowledge_update, comparative, conditional,
+  noisy, aggregative, highlevel_rec, lowlevel_rec, post_processing. Per-item
+  haystack of 5–30 turns; ground truth matches against turn `sid`s. Apples-to-
+  apples vs MemPalace's published 80.3% R@5 overall (43.4% on the designed-hard
+  `noisy` category).
 
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative
