@@ -75,6 +75,20 @@ Run the benchmarks yourself:
 dotnet test tests/Scrinia.Tests --filter "FullyQualifiedName~Benchmarks"
 ```
 
+### Retrieval quality (academic benchmarks)
+
+Separate from the token-cost comparison above, Scrinia ships a retrieval-quality harness (`scrinia-bench`) that runs against the standard academic memory-retrieval benchmarks the field publishes against: **LongMemEval** (500 questions), **LoCoMo** (1986), **ConvoMem** (250), **MemBench** (8500). Reports R@5 / R@10 / R@50 / NDCG@10 with per-category breakdowns. JSON output schema matches MemPalace's per-question result files so per-question hits can be diffed across systems.
+
+Two modes: pure BM25 (apples-to-apples vs MemPalace's "raw" track) and BM25 + MiniLM embeddings via model2vec. Ablation knobs (`--alpha-recency`, `--tau-days`, `--diversity-lambda`) let us isolate each Scrinia ranker feature's contribution.
+
+```bash
+# LongMemEval — the headline benchmark
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json
+```
+
+Full instructions and per-benchmark download steps: [`benchmarks/Scrinia.Retrieval.Benchmarks/README.md`](benchmarks/Scrinia.Retrieval.Benchmarks/README.md).
+
 ## Install
 
 Build from source (.NET 10 SDK required):

@@ -146,6 +146,54 @@ results/scrinia_longmemeval_full_bm25_embeddings__rec1.0_tau30_<UTC>.json
 
 The importance ablation flag (`--alpha-importance`) is wired but the effect is null for benchmark ingest in this commit — haystack docs are stored without per-doc LLM importance scores (those require the Tier 2 LLM call per doc, materially different cost profile). Adding benchmark-time importance scoring is a follow-up.
 
+## Methodology
+
+### Metrics
+
+- **R@K** (recall at K): fraction of questions where at least one ground-truth document is in the top-K retrieved hits. Binary per-question (hit or no hit), averaged across the question set.
+- **NDCG@10**: normalized discounted cumulative gain at rank 10. For single-relevant-doc benchmarks (every benchmark here except the rare LoCoMo case with multiple evidence dia_ids) this reduces to `1 / log2(rank+1)` if the doc is in top-10, else 0.
+- **Per-category** aggregates are simple means over each category's question subset.
+
+### Ranker composition
+
+The ranker formula lives in `src/Scrinia.Core/Search/RankerOptions.cs`:
+
+```
+total = α_relevance · relevance
+      + α_recency   · exp(-Δt_days / τ_days) · 50
+      + α_importance · (importance/10) · 50
+```
+
+Where `relevance = fieldScore + normalizedBm25·5 + semanticSimilarity·50` (the last term only when `--mode=bm25_embeddings`).
+
+Headline runs use `α_recency = α_importance = 0`. Ablation runs vary these knobs to isolate each term's contribution.
+
+### Ground-truth matching
+
+Two modes, dispatched by `BenchmarkScorer` based on which ground-truth set the loader populates:
+
+1. **ID match** (LongMemEval, LoCoMo, MemBench): retrieved doc's ID must equal a ground-truth ID (case-insensitive ordinal). One match in top-K is enough.
+2. **Substring text match** (ConvoMem): retrieved doc's text must contain a ground-truth evidence string as a case-insensitive substring. ConvoMem doesn't ship stable doc IDs so we match against the verbatim evidence text.
+
+### Reproducibility
+
+- **Embeddings are deterministic.** Model2Vec is a quantized averaged-embedding model; same text gives the same vector across runs. Cosine similarity is stable to floating-point order, which we control by ingesting in dataset order.
+- **No randomness in the harness.** The runner iterates the dataset's natural order; no shuffling, no sampling unless `--limit` is set.
+- **MiniLM-L6-v2 across both systems.** MemPalace uses ChromaDB's default sentence-transformer (PyTorch); Scrinia uses model2vec quantized MiniLM-L6-v2 (pure C#). Same architecture, different inference paths — possible small cosine drift on identical text. Acceptable; documented here so deltas vs MemPalace's numbers aren't surprising.
+
+### Comparing against MemPalace's per-question results
+
+MemPalace commits their full per-question JSONL result files under `benchmarks/results_*.jsonl`. Both systems write `question_id` in the same shape, so a per-question diff is straightforward:
+
+```bash
+# Hits where Scrinia hit but MemPalace missed (and vice versa) — sketch
+jq -r '.questions[] | "\(.QuestionId) \(.HitAt5)"' scrinia_longmemeval_full_*.json | sort > scrinia.txt
+jq -r '.[] | "\(.qid) \(.hit_at_5)"' results_mempal_raw_session_*.jsonl | sort > mempal.txt
+diff scrinia.txt mempal.txt
+```
+
+This is more informative than just comparing aggregates — the *which questions* matter more than the *what fraction*.
+
 ## Why not just trust MemPalace's numbers?
 
-We want a Scrinia-specific headline that's auditable end-to-end on our own code. Both systems use MiniLM-L6-v2 (MemPalace via ChromaDB's default sentence-transformer, Scrinia via model2vec/Vulkan-GGUF), so the BM25 + embeddings track is apples-to-apples. Where Scrinia diverges from MemPalace, the deltas tell us something specific about our architecture.
+We want a Scrinia-specific headline that's auditable end-to-end on our own code. Both systems use MiniLM-L6-v2, so the BM25 + embeddings track is apples-to-apples. Where Scrinia diverges from MemPalace, the deltas tell us something specific about our architecture — and that's a finding worth knowing, not a number to paper over.

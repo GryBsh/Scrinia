@@ -114,6 +114,15 @@ and all assembly attributes.
   Generative-Agents-style importance, MMR diversity) against the benchmark
   ground truth. Output filenames pick up an ablation tag suffix
   (e.g. `__rec1.0_tau30_div0.6`) so sweep results don't collide.
+- `benchmarks/Scrinia.Retrieval.Benchmarks/README.md` documents the harness
+  methodology — metric definitions (R@K, NDCG@10), ranker composition formula,
+  ground-truth matching modes (ID match for LongMemEval/LoCoMo/MemBench,
+  substring match for ConvoMem), reproducibility caveats (model2vec
+  determinism, MiniLM-architecture parity vs ChromaDB's sentence-transformer
+  inference path), and per-question diff recipe vs MemPalace's published JSONL.
+- Root README now points at the retrieval-quality harness alongside the
+  existing token-cost benchmarks (which compare Scrinia vs flat-file vs
+  auto-memory token budgets — distinct work, kept distinct).
 
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative
