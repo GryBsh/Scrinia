@@ -81,8 +81,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 function Invoke-Bench {
-    param([string]$Subcommand, [string[]]$Args)
-    $allArgs = @($Subcommand, "--mode", $Mode, "--top-k", $TopK) + $Args + $ExtraArgs
+    # Parameter named "BenchArgs" rather than "Args" — PowerShell's $Args is an
+    # automatic variable that always exists in function scope; declaring a param
+    # of that name doesn't override it and the caller-supplied values get
+    # silently dropped (this script shipped broken the first time because of
+    # exactly that).
+    param([string]$Subcommand, [string[]]$BenchArgs)
+    $allArgs = @($Subcommand, "--mode", $Mode, "--top-k", $TopK) + $BenchArgs + $ExtraArgs
     Write-Host ""
     Write-Host "=== scrinia-bench $($allArgs -join ' ') ==="
     dotnet run --project $BenchProject -c $Configuration --no-build -- @allArgs
@@ -107,8 +112,10 @@ foreach ($b in $Benchmark) {
                 Write-Warning "[longmemeval] data not found at $data — run prepare-datasets.ps1"
                 continue
             }
-            $args = @("--data", $data, "--split", $Split)
-            Invoke-Bench "longmemeval" $args
+            # Local var deliberately NOT named $args — same automatic-variable
+            # trap as in Invoke-Bench's param above.
+            $lmeArgs = @("--data", $data, "--split", $Split)
+            Invoke-Bench "longmemeval" $lmeArgs
         }
         "membench" {
             $data = Join-Path $DataRoot "membench\MemData\FirstAgent"
