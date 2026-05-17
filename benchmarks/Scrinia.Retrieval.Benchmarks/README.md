@@ -38,9 +38,38 @@ dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
 
 MemPalace's published recall on ConvoMem (50/category, 250 total) is 92.9%. Scrinia's number lands once you run the above.
 
-### LongMemEval, LoCoMo, MemBench
+### LongMemEval (xiaowu0162/longmemeval-cleaned)
 
-Coming in subsequent commits. Will share the same `scrinia-bench` CLI, the same `IRetriever` abstraction, and the same JSON output schema.
+Source: <https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned>
+
+The headline benchmark — 500 questions, each with its own per-question haystack of ~53 sessions. Session granularity by default (concatenated user turns per session); turn granularity available via `--granularity turn`.
+
+```
+# Download the cleaned dataset
+mkdir -p ./datasets/longmemeval
+curl -fsSL -o ./datasets/longmemeval/longmemeval_s_cleaned.json \
+  https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+
+# Run with embeddings (headline)
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json
+
+# Run BM25-only (apples-to-apples against MemPalace's "raw" track)
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json --mode bm25
+
+# Held-out 450 (drop-in for MemPalace's lme_split_50_450.json)
+curl -fsSL -o ./datasets/longmemeval/lme_split_50_450.json \
+  https://raw.githubusercontent.com/MemPalace/mempalace/main/benchmarks/lme_split_50_450.json
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json --split held_out
+```
+
+MemPalace's published baselines: 96.6% R@5 raw (BM25 + ChromaDB MiniLM embeddings, no LLM). Held-out 450 with their hybrid v4: 98.4% R@5. Scrinia's number on the same 450 held-out questions, BM25 + model2vec MiniLM embeddings, lands once you run the above.
+
+### LoCoMo, MemBench
+
+Coming in subsequent commits.
 
 ## Output
 
@@ -48,9 +77,11 @@ Results are written to `benchmarks/Scrinia.Retrieval.Benchmarks/results/scrinia_
 
 ## Modes
 
-- `bm25`: pure BM25 baseline (Scrinia's `WeightedFieldScorer` without embeddings). Default for commit 1.
-- `bm25_embeddings`: BM25 + MiniLM embeddings via model2vec. Added in commit 2.
+- `bm25`: pure BM25 baseline (Scrinia's `WeightedFieldScorer` without embeddings).
+- `bm25_embeddings` *(default)*: BM25 + MiniLM embeddings via model2vec, blended via the same `{scope}|{name}` supplemental-score path the production embeddings plugin uses. Falls back to `bm25` if the model isn't on disk (run `scri setup` first).
 - Ablation knobs (`--alpha-recency`, `--tau-days`, `--diversity-lambda`) wired in commit 5.
+
+Headline runs zero out the workspace-tuned ranker (`α_recency = α_importance = 0`, MMR off) so the apples-to-apples comparison against MemPalace's `--mode raw` is meaningful. The ablation commit turns those knobs on so we can measure their effect.
 
 ## Why not just trust MemPalace's numbers?
 

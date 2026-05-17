@@ -21,34 +21,35 @@ internal static class ConvoMemCommand
 
         int? limit = Program.Flag(args, "--limit") is { } limRaw && int.TryParse(limRaw, out int lim) ? lim : 50;
         int topK = Program.FlagInt(args, "--top-k", 50);
+        var (retriever, mode) = RetrieverFactory.Build(args, "convomem");
         string output = Program.Flag(args, "--output")
-            ?? DefaultOutputPath("convomem", "bm25");
+            ?? DefaultOutputPath("convomem", RetrieverFactory.ModeLabel(mode));
 
-        Console.WriteLine($"convomem: data={dataRoot}, per-cat-limit={limit}, top-k={topK}");
+        Console.WriteLine($"convomem: data={dataRoot}, per-cat-limit={limit}, mode={RetrieverFactory.ModeLabel(mode)}, top-k={topK}");
 
-        string benchRoot = Path.Combine(Path.GetTempPath(), "scrinia-retbench-convomem-" + Guid.NewGuid().ToString("N")[..8]);
         var loader = new ConvoMemLoader(dataRoot, perCategoryLimit: limit);
-        await using var retriever = new ScriniaRetriever(benchRoot);
-
-        var runner = new BenchmarkRunner();
-        var progress = new Progress<RunProgress>(p =>
+        await using (retriever)
         {
-            if (p.Completed % 25 == 0 || p.Completed == 1)
-                Console.WriteLine($"  q{p.Completed:D4} [{p.LastResult.Category}] hit@5={p.LastResult.HitAt5} hit@10={p.LastResult.HitAt10}");
-        });
+            var runner = new BenchmarkRunner();
+            var progress = new Progress<RunProgress>(p =>
+            {
+                if (p.Completed % 25 == 0 || p.Completed == 1)
+                    Console.WriteLine($"  q{p.Completed:D4} [{p.LastResult.Category}] hit@5={p.LastResult.HitAt5} hit@10={p.LastResult.HitAt10}");
+            });
 
-        var result = await runner.RunAsync(
-            benchmarkName: "convomem",
-            modeLabel: "bm25",
-            questions: loader.LoadAsync(ct),
-            retriever: retriever,
-            topK: topK,
-            progress: progress,
-            ct: ct);
+            var result = await runner.RunAsync(
+                benchmarkName: "convomem",
+                modeLabel: RetrieverFactory.ModeLabel(mode),
+                questions: loader.LoadAsync(ct),
+                retriever: retriever,
+                topK: topK,
+                progress: progress,
+                ct: ct);
 
-        PrintSummary(result);
-        await WriteJsonAsync(output, result, ct);
-        Console.WriteLine($"wrote {output}");
+            PrintSummary(result);
+            await WriteJsonAsync(output, result, ct);
+            Console.WriteLine($"wrote {output}");
+        }
         return 0;
     }
 

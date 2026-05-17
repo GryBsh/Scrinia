@@ -1,4 +1,5 @@
 using Scrinia.Core;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -6,41 +7,60 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 
 /// <summary>
 /// <see cref="IRetriever"/> backed by a per-question <see cref="FileMemoryStore"/>.
-/// Pure BM25 mode: ingest populates <c>TermFrequencies</c> via
-/// <see cref="TextAnalysis.AnalyzeText"/> and stores the original doc text in
-/// <see cref="ArtifactEntry.ContentPreview"/> so the scorer can do substring matching
-/// without re-reading the artifact file. No artifact file is written at all — the
-/// metadata sidecar carries everything the BM25 path needs.
 ///
-/// Embedding-aware modes will be added in a later commit; this commit covers the
-/// apples-to-apples BM25 baseline against MemPalace's "raw" track.
+/// <para>Pure BM25 mode (constructor without an <see cref="IEmbeddingProvider"/>): ingest
+/// populates <c>TermFrequencies</c> via <see cref="TextAnalysis.AnalyzeText"/> and stores
+/// the original doc text in <see cref="ArtifactEntry.ContentPreview"/> so the scorer can
+/// do substring matching without re-reading the artifact file. No artifact file is
+/// written — the metadata sidecar carries everything the BM25 path needs.</para>
+///
+/// <para>BM25+embeddings mode (constructor with an <see cref="IEmbeddingProvider"/>):
+/// additionally embeds every ingested doc, caches the vector in memory, and at query
+/// time embeds the query, computes cosine similarity against every cached vector, and
+/// passes the result as supplemental scores to
+/// <see cref="FileMemoryStore.SearchAll(string, string?, int, IReadOnlyDictionary{string, double}?)"/>.
+/// Mirrors the production <see cref="HybridReranker"/> pattern (similarity × weight, default
+/// weight = 50.0) but with an in-memory vector cache rather than a SQLite-backed
+/// <see cref="VectorStore"/>, since each benchmark question's haystack is small and
+/// short-lived.</para>
 /// </summary>
 public sealed class ScriniaRetriever : IRetriever
 {
     private readonly string _rootDir;
     private readonly RankerOptions _rankerOptions;
+    private readonly IEmbeddingProvider? _embeddingProvider;
+    private readonly double _semanticWeight;
     private FileMemoryStore _store;
     private int _resetCount;
+    private Dictionary<string, float[]> _vectorCache;
 
-    public ScriniaRetriever(string rootDir, RankerOptions? rankerOptions = null)
+    public ScriniaRetriever(
+        string rootDir,
+        RankerOptions? rankerOptions = null,
+        IEmbeddingProvider? embeddingProvider = null,
+        double semanticWeight = 50.0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         _rootDir = rootDir;
         _rankerOptions = rankerOptions ?? RankerOptions.Default;
+        _embeddingProvider = embeddingProvider is { IsAvailable: true } ? embeddingProvider : null;
+        _semanticWeight = semanticWeight;
         _store = CreateStore();
+        _vectorCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
     }
 
-    public Task IngestAsync(HaystackDoc doc, CancellationToken ct = default)
+    public async Task IngestAsync(HaystackDoc doc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ct.ThrowIfCancellationRequested();
 
+        string sanitized = SanitizeName(doc.Id);
         var (keywords, tf) = TextAnalysis.AnalyzeText(doc.Text);
         var entry = new ArtifactEntry(
             // Description and Name are both scored by the field scorer; we keep the
             // benchmark doc ID *only* in Uri so query tokens never accidentally match
             // an ID component (e.g. "user" / "msg" in `convomem_user_5_msg_12`).
-            Name: SanitizeName(doc.Id),
+            Name: sanitized,
             Uri: $"bench://{doc.Id}",
             OriginalBytes: doc.Text.Length,
             ChunkCount: 0,
@@ -51,15 +71,28 @@ public sealed class ScriniaRetriever : IRetriever
             ContentPreview: doc.Text);
 
         _store.Upsert(entry);
-        return Task.CompletedTask;
+
+        if (_embeddingProvider is not null)
+        {
+            var vec = await _embeddingProvider.EmbedAsync(doc.Text, ct);
+            if (vec is not null) _vectorCache[sanitized] = vec;
+        }
     }
 
-    public Task<IReadOnlyList<RetrievalHit>> RetrieveAsync(string query, int topK, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RetrievalHit>> RetrieveAsync(string query, int topK, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         ct.ThrowIfCancellationRequested();
 
-        var results = _store.SearchAll(query, scopes: null, limit: Math.Max(1, topK));
+        IReadOnlyDictionary<string, double>? supplemental = null;
+        if (_embeddingProvider is not null && _vectorCache.Count > 0)
+        {
+            var queryVec = await _embeddingProvider.EmbedAsync(query, ct);
+            if (queryVec is not null)
+                supplemental = BuildSupplementalScores(queryVec);
+        }
+
+        var results = _store.SearchAll(query, scopes: null, limit: Math.Max(1, topK), supplementalScores: supplemental);
         var hits = new List<RetrievalHit>(results.Count);
         foreach (var r in results)
         {
@@ -79,7 +112,7 @@ public sealed class ScriniaRetriever : IRetriever
                     break;
             }
         }
-        return Task.FromResult<IReadOnlyList<RetrievalHit>>(hits);
+        return hits;
     }
 
     public Task ResetAsync(CancellationToken ct = default)
@@ -98,6 +131,7 @@ public sealed class ScriniaRetriever : IRetriever
 
         _resetCount++;
         _store = CreateStore();
+        _vectorCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
         return Task.CompletedTask;
     }
 
@@ -111,6 +145,32 @@ public sealed class ScriniaRetriever : IRetriever
         catch (IOException) { /* best-effort cleanup */ }
         catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Cosine similarity between the query and every cached doc vector, scaled by
+    /// <see cref="_semanticWeight"/>, keyed for the search supplemental-score lookup
+    /// (<c>"{scope}|{name}"</c>). All vectors land in scope <c>"local"</c> because
+    /// <see cref="FileMemoryStore.Upsert(ArtifactEntry, string)"/> defaults there.
+    /// Model2Vec output is already L2-normalized so dot product equals cosine.
+    /// </summary>
+    private Dictionary<string, double> BuildSupplementalScores(float[] queryVec)
+    {
+        var supplemental = new Dictionary<string, double>(_vectorCache.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var (sanitizedName, docVec) in _vectorCache)
+        {
+            double sim = CosineSimilarity(queryVec, docVec);
+            supplemental[$"local|{sanitizedName}"] = sim * _semanticWeight;
+        }
+        return supplemental;
+    }
+
+    private static double CosineSimilarity(float[] a, float[] b)
+    {
+        int n = Math.Min(a.Length, b.Length);
+        double dot = 0;
+        for (int i = 0; i < n; i++) dot += a[i] * b[i];
+        return dot; // model2vec output is L2-normalized → dot product == cosine sim
     }
 
     private FileMemoryStore CreateStore()

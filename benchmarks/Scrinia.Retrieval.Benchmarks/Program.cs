@@ -21,6 +21,7 @@ internal static class Program
             return subcommand switch
             {
                 "convomem" => await ConvoMemCommand.RunAsync(rest, CancellationToken.None),
+                "longmemeval" => await LongMemEvalCommand.RunAsync(rest, CancellationToken.None),
                 _ => UnknownCommand(subcommand),
             };
         }
@@ -44,16 +45,27 @@ internal static class Program
             scrinia-bench — Scrinia retrieval-quality benchmark harness
 
             Usage:
-              scrinia-bench convomem --data <dir> [--limit <N>] [--top-k <K>] [--output <file>]
+              scrinia-bench convomem    --data <dir> [common-flags]
+              scrinia-bench longmemeval --data <file> [--split full|dev|held_out] [--granularity session|turn] [common-flags]
 
             Subcommands:
               convomem      Run ConvoMem (Salesforce) evidence questions
+              longmemeval   Run LongMemEval (xiaowu0162/longmemeval-cleaned), the headline benchmark
 
             Common flags:
-              --data <dir>     Path to the dataset (downloaded manually; see benchmarks README)
-              --limit <N>      Cap questions per category (ConvoMem default: 50/category)
-              --top-k <K>      Retrieve top-K hits per query (default: 50)
-              --output <file>  Write JSON result to this path (default: results/<bench>_<mode>_<UTC>.json)
+              --data <path>      Dataset path (download yourself; see benchmarks README)
+              --mode <m>         bm25 | bm25_embeddings (default: bm25_embeddings; falls back to bm25 if model not found)
+              --model-dir <dir>  Override the directory that contains m2v-MiniLM-L6-v2/ (default: ./models)
+              --top-k <K>        Retrieve top-K hits per query (default: 50)
+              --output <file>    Write JSON result to this path (default: results/<bench>_<mode>_<UTC>.json)
+
+            ConvoMem flags:
+              --limit <N>        Cap questions per category file (default: 50)
+
+            LongMemEval flags:
+              --split <s>        full | dev | held_out (default: full)
+              --split-file <p>   Path to lme_split_50_450.json (default: alongside --data)
+              --granularity <g>  session | turn (default: session)
             """);
     }
 

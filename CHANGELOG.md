@@ -74,6 +74,22 @@ and all assembly attributes.
   subcommand: `convomem` against the Salesforce evidence-question dataset.
   This is distinct from the existing perf microbenchmarks under
   `tests/Scrinia.Benchmarks/` (BenchmarkDotNet).
+- `scrinia-bench longmemeval` — runs the headline LongMemEval benchmark
+  (xiaowu0162/longmemeval-cleaned, 500 questions, per-question haystacks of
+  ~53 sessions). Session/turn granularity, MemPalace's `lme_split_50_450.json`
+  honoured via `--split full|dev|held_out`. Per-question-type breakdown
+  (knowledge-update / multi-session / temporal-reasoning / single-session-{user,
+  assistant, preference}). Apples-to-apples vs MemPalace's published 96.6% raw
+  R@5 baseline.
+- `scrinia-bench --mode bm25_embeddings` (default) — wires Scrinia's model2vec
+  MiniLM-L6-v2 embedder into the harness alongside BM25. Embeds every haystack
+  doc once at ingest time, caches the vector in memory, and at query time
+  embeds the query and feeds cosine-sim supplemental scores into
+  `WeightedFieldScorer.SearchAll` via the same `{scope}|{name}` contract the
+  production `HybridReranker` uses. Falls back to BM25-only if the model
+  isn't present.
+- `scrinia-bench --mode bm25` — pure BM25 baseline for apples-to-apples vs
+  MemPalace's `--mode raw` track without semantic search.
 
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative
