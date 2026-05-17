@@ -120,9 +120,31 @@ Results are written to `benchmarks/Scrinia.Retrieval.Benchmarks/results/scrinia_
 
 - `bm25`: pure BM25 baseline (Scrinia's `WeightedFieldScorer` without embeddings).
 - `bm25_embeddings` *(default)*: BM25 + MiniLM embeddings via model2vec, blended via the same `{scope}|{name}` supplemental-score path the production embeddings plugin uses. Falls back to `bm25` if the model isn't on disk (run `scri setup` first).
-- Ablation knobs (`--alpha-recency`, `--tau-days`, `--diversity-lambda`) wired in commit 5.
 
-Headline runs zero out the workspace-tuned ranker (`α_recency = α_importance = 0`, MMR off) so the apples-to-apples comparison against MemPalace's `--mode raw` is meaningful. The ablation commit turns those knobs on so we can measure their effect.
+Headline runs zero out the workspace-tuned ranker (`α_recency = α_importance = 0`, MMR off) so the apples-to-apples comparison against MemPalace's `--mode raw` is meaningful.
+
+## Ablations
+
+The headline numbers come from a deliberately neutral ranker so the comparison stays apples-to-apples. Ablations turn each Scrinia knob on in isolation so we can measure its contribution. All ablation flags compose with `--mode` and any benchmark subcommand.
+
+```
+# Recency contribution: zero baseline vs exponential decay at τ=30d, 90d, 365d
+scrinia-bench longmemeval --data <...> --alpha-recency 1.0 --tau-days 30
+scrinia-bench longmemeval --data <...> --alpha-recency 1.0 --tau-days 90
+scrinia-bench longmemeval --data <...> --alpha-recency 1.0 --tau-days 365
+
+# MMR diversity contribution (single-answer benchmarks penalize diversity by design)
+scrinia-bench longmemeval --data <...> --diversity-lambda 0.3  # heavy diversity
+scrinia-bench longmemeval --data <...> --diversity-lambda 0.6  # workspace default
+scrinia-bench longmemeval --data <...> --diversity-lambda 0.9  # mostly relevance
+```
+
+Output filenames pick up tags so ablation sweeps don't collide:
+```
+results/scrinia_longmemeval_full_bm25_embeddings__rec1.0_tau30_<UTC>.json
+```
+
+The importance ablation flag (`--alpha-importance`) is wired but the effect is null for benchmark ingest in this commit — haystack docs are stored without per-doc LLM importance scores (those require the Tier 2 LLM call per doc, materially different cost profile). Adding benchmark-time importance scoring is a follow-up.
 
 ## Why not just trust MemPalace's numbers?
 

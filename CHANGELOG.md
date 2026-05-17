@@ -107,6 +107,13 @@ and all assembly attributes.
   questions share a haystack (LoCoMo's per-conversation shape). The runner has
   a matching `RunGroupedAsync` overload that ingests the group's shared
   haystack once and reuses it across every question in the group.
+- `scrinia-bench` ablation knobs — `--alpha-recency`, `--tau-days`,
+  `--alpha-importance`, `--diversity-lambda`, `--diversity-inner-limit`.
+  Default to "off" so the headline run stays apples-to-apples; turning them on
+  isolates the contribution of each Scrinia ranker feature (exp-decay recency,
+  Generative-Agents-style importance, MMR diversity) against the benchmark
+  ground truth. Output filenames pick up an ablation tag suffix
+  (e.g. `__rec1.0_tau30_div0.6`) so sweep results don't collide.
 
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative

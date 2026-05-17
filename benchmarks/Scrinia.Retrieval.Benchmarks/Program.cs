@@ -72,6 +72,13 @@ internal static class Program
               --split <s>        full | dev | held_out (default: full)
               --split-file <p>   Path to lme_split_50_450.json (default: alongside --data)
               --granularity <g>  session | turn (default: session)
+
+            Ablation flags (all default to "off" so headline runs are apples-to-apples):
+              --alpha-recency <r>            Weight for exp-decay recency term (default 0.0)
+              --tau-days <τ>                 Recency time-constant in days (default 14)
+              --alpha-importance <i>         Weight for importance term (default 0.0; haystack docs unscored)
+              --diversity-lambda <λ>         MMR diversity tradeoff in [0,1] (default 1.0 = no MMR)
+              --diversity-inner-limit <N>    MMR candidate pool size (default 50 if --diversity-lambda set)
             """);
     }
 

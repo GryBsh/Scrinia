@@ -26,9 +26,9 @@ internal static class LoCoMoCommand
         int topK = Program.FlagInt(args, "--top-k", 50);
         var (retriever, mode) = RetrieverFactory.Build(args, "locomo");
         string output = Program.Flag(args, "--output")
-            ?? DefaultOutputPath("locomo", RetrieverFactory.ModeLabel(mode));
+            ?? DefaultOutputPath("locomo", RetrieverFactory.ModeLabel(mode, args));
 
-        Console.WriteLine($"locomo: data={dataPath}, granularity={granularity}, mode={RetrieverFactory.ModeLabel(mode)}, top-k={topK}");
+        Console.WriteLine($"locomo: data={dataPath}, granularity={granularity}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
         var loader = new LoCoMoLoader(dataPath, granularity);
         await using (retriever)
@@ -42,7 +42,7 @@ internal static class LoCoMoCommand
 
             var result = await runner.RunGroupedAsync(
                 benchmarkName: "locomo",
-                modeLabel: RetrieverFactory.ModeLabel(mode),
+                modeLabel: RetrieverFactory.ModeLabel(mode, args),
                 groups: loader.LoadAsync(ct),
                 retriever: retriever,
                 topK: topK,

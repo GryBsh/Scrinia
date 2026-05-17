@@ -30,7 +30,7 @@ internal static class LongMemEvalCommand
 
         var (retriever, mode) = RetrieverFactory.Build(args, "longmemeval");
 
-        Console.WriteLine($"longmemeval: data={dataPath}, split={split}, granularity={granularity}, mode={RetrieverFactory.ModeLabel(mode)}, top-k={topK}");
+        Console.WriteLine($"longmemeval: data={dataPath}, split={split}, granularity={granularity}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
         var loader = new LongMemEvalLoader(dataPath, split, splitFile, granularity);
         await using (retriever)
@@ -44,7 +44,7 @@ internal static class LongMemEvalCommand
 
             var result = await runner.RunAsync(
                 benchmarkName: "longmemeval",
-                modeLabel: RetrieverFactory.ModeLabel(mode) + (split == LongMemEvalLoader.SplitMode.Full ? "" : "_" + split.ToString().ToLowerInvariant()),
+                modeLabel: RetrieverFactory.ModeLabel(mode, args) + (split == LongMemEvalLoader.SplitMode.Full ? "" : "_" + split.ToString().ToLowerInvariant()),
                 questions: loader.LoadAsync(ct),
                 retriever: retriever,
                 topK: topK,

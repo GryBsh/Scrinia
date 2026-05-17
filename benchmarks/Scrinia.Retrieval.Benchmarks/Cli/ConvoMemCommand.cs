@@ -23,9 +23,9 @@ internal static class ConvoMemCommand
         int topK = Program.FlagInt(args, "--top-k", 50);
         var (retriever, mode) = RetrieverFactory.Build(args, "convomem");
         string output = Program.Flag(args, "--output")
-            ?? DefaultOutputPath("convomem", RetrieverFactory.ModeLabel(mode));
+            ?? DefaultOutputPath("convomem", RetrieverFactory.ModeLabel(mode, args));
 
-        Console.WriteLine($"convomem: data={dataRoot}, per-cat-limit={limit}, mode={RetrieverFactory.ModeLabel(mode)}, top-k={topK}");
+        Console.WriteLine($"convomem: data={dataRoot}, per-cat-limit={limit}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
         var loader = new ConvoMemLoader(dataRoot, perCategoryLimit: limit);
         await using (retriever)
@@ -39,7 +39,7 @@ internal static class ConvoMemCommand
 
             var result = await runner.RunAsync(
                 benchmarkName: "convomem",
-                modeLabel: RetrieverFactory.ModeLabel(mode),
+                modeLabel: RetrieverFactory.ModeLabel(mode, args),
                 questions: loader.LoadAsync(ct),
                 retriever: retriever,
                 topK: topK,

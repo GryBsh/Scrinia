@@ -30,6 +30,8 @@ public sealed class ScriniaRetriever : IRetriever
     private readonly RankerOptions _rankerOptions;
     private readonly IEmbeddingProvider? _embeddingProvider;
     private readonly double _semanticWeight;
+    private readonly double _diversityLambda;
+    private readonly int _diversityInnerLimit;
     private FileMemoryStore _store;
     private int _resetCount;
     private Dictionary<string, float[]> _vectorCache;
@@ -38,13 +40,19 @@ public sealed class ScriniaRetriever : IRetriever
         string rootDir,
         RankerOptions? rankerOptions = null,
         IEmbeddingProvider? embeddingProvider = null,
-        double semanticWeight = 50.0)
+        double semanticWeight = 50.0,
+        double diversityLambda = 1.0,
+        int diversityInnerLimit = 0)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         _rootDir = rootDir;
         _rankerOptions = rankerOptions ?? RankerOptions.Default;
         _embeddingProvider = embeddingProvider is { IsAvailable: true } ? embeddingProvider : null;
         _semanticWeight = semanticWeight;
+        // diversityInnerLimit > 0 enables MMR. lambda is clamped to [0, 1] by the reranker;
+        // a 1.0 + nonzero inner-limit still applies MMR but degenerates to relevance-sort.
+        _diversityLambda = diversityLambda;
+        _diversityInnerLimit = diversityInnerLimit;
         _store = CreateStore();
         _vectorCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
     }
@@ -92,9 +100,15 @@ public sealed class ScriniaRetriever : IRetriever
                 supplemental = BuildSupplementalScores(queryVec);
         }
 
-        var results = _store.SearchAll(query, scopes: null, limit: Math.Max(1, topK), supplementalScores: supplemental);
-        var hits = new List<RetrievalHit>(results.Count);
-        foreach (var r in results)
+        int searchLimit = _diversityInnerLimit > 0 ? Math.Max(_diversityInnerLimit, topK) : Math.Max(1, topK);
+        IReadOnlyList<SearchResult> results =
+            _store.SearchAll(query, scopes: null, limit: searchLimit, supplementalScores: supplemental);
+
+        if (_diversityInnerLimit > 0)
+            results = MmrReranker.Rerank(results, Math.Max(1, topK), _diversityLambda);
+
+        var hits = new List<RetrievalHit>(Math.Min(results.Count, topK));
+        foreach (var r in results.Take(topK))
         {
             switch (r)
             {

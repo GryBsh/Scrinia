@@ -24,9 +24,9 @@ internal static class MemBenchCommand
         int topK = Program.FlagInt(args, "--top-k", 50);
         var (retriever, mode) = RetrieverFactory.Build(args, "membench");
         string output = Program.Flag(args, "--output")
-            ?? DefaultOutputPath("membench", RetrieverFactory.ModeLabel(mode));
+            ?? DefaultOutputPath("membench", RetrieverFactory.ModeLabel(mode, args));
 
-        Console.WriteLine($"membench: data={dataRoot}, per-cat-limit={limit?.ToString() ?? "none"}, mode={RetrieverFactory.ModeLabel(mode)}, top-k={topK}");
+        Console.WriteLine($"membench: data={dataRoot}, per-cat-limit={limit?.ToString() ?? "none"}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
         var loader = new MemBenchLoader(dataRoot, perCategoryLimit: limit);
         await using (retriever)
@@ -40,7 +40,7 @@ internal static class MemBenchCommand
 
             var result = await runner.RunAsync(
                 benchmarkName: "membench",
-                modeLabel: RetrieverFactory.ModeLabel(mode),
+                modeLabel: RetrieverFactory.ModeLabel(mode, args),
                 questions: loader.LoadAsync(ct),
                 retriever: retriever,
                 topK: topK,
