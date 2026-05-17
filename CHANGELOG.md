@@ -65,6 +65,15 @@ and all assembly attributes.
   that doesn't already have one. Reports `scored / skipped / failed` counts;
   cancellable via Ctrl-C. Preserves prior scores so external/manual ratings
   aren't overwritten.
+- New `scrinia-bench` CLI under `benchmarks/Scrinia.Retrieval.Benchmarks/` —
+  retrieval-quality harness that runs Scrinia against academic benchmarks
+  (ConvoMem, plus LongMemEval / LoCoMo / MemBench in upcoming commits) and
+  reports R@5 / R@10 / R@50 / NDCG@10 with per-category breakdowns. JSON
+  output schema mirrors MemPalace's per-question result files so per-question
+  hits can be diffed across systems without a schema translator. First
+  subcommand: `convomem` against the Salesforce evidence-question dataset.
+  This is distinct from the existing perf microbenchmarks under
+  `tests/Scrinia.Benchmarks/` (BenchmarkDotNet).
 
 ### Changed
 - Search ranker now uses an **additive composition** matching the Generative
