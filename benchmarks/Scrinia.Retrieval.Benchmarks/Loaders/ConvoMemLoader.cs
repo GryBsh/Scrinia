@@ -35,10 +35,21 @@ public sealed class ConvoMemLoader
         if (!Directory.Exists(_dataRoot))
             throw new DirectoryNotFoundException($"ConvoMem data root not found: {_dataRoot}");
 
+        // Per-category accumulator — the published ConvoMem layout buckets persona
+        // files under `evidence_questions/<evidence_type>/<N>_evidence/<persona>.json`,
+        // so the meaningful category is the immediate subdir under the data root
+        // (e.g. `abstention_evidence`), not the filename. Flat layouts (data root
+        // with .json files at top level) still work because the relative path's first
+        // segment is just the filename with extension; we strip that and use the bare
+        // name as category, matching the original behavior our tests assume.
+        var taken = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
         foreach (string file in Directory.EnumerateFiles(_dataRoot, "*.json", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal))
         {
             ct.ThrowIfCancellationRequested();
-            string category = Path.GetFileNameWithoutExtension(file);
+            string category = DeriveCategory(file);
+            if (_perCategoryLimit is { } pre && taken.GetValueOrDefault(category) >= pre) continue;
+
             ConvoMemFile? parsed;
             await using (var stream = File.OpenRead(file))
             {
@@ -46,10 +57,10 @@ public sealed class ConvoMemLoader
             }
             if (parsed?.EvidenceItems is null) continue;
 
-            int taken = 0;
+            string fileTag = Path.GetFileNameWithoutExtension(file);
             for (int idx = 0; idx < parsed.EvidenceItems.Count; idx++)
             {
-                if (_perCategoryLimit is { } cap && taken >= cap) break;
+                if (_perCategoryLimit is { } cap && taken.GetValueOrDefault(category) >= cap) break;
                 var item = parsed.EvidenceItems[idx];
                 if (item is null || string.IsNullOrWhiteSpace(item.Question)) continue;
 
@@ -65,7 +76,7 @@ public sealed class ConvoMemLoader
                         {
                             var msg = conv.Messages[m];
                             if (msg is null || string.IsNullOrWhiteSpace(msg.Text)) continue;
-                            string docId = $"{category}_{idx}_c{c}_m{globalMsgIdx}";
+                            string docId = $"{fileTag}_{idx}_c{c}_m{globalMsgIdx}";
                             string text = msg.Speaker is null
                                 ? msg.Text
                                 : $"{msg.Speaker}: {msg.Text}";
@@ -85,15 +96,30 @@ public sealed class ConvoMemLoader
                 if (groundTruthTexts.Length == 0) continue;
 
                 yield return new BenchmarkQuestion(
-                    Id: $"{category}_{idx}",
+                    Id: $"{fileTag}_{idx}",
                     QueryText: item.Question,
                     Haystack: haystack,
                     GroundTruthIds: [],
                     GroundTruthTexts: groundTruthTexts,
                     Category: category);
-                taken++;
+                taken[category] = taken.GetValueOrDefault(category) + 1;
             }
         }
+    }
+
+    /// <summary>
+    /// Reads the meaningful category for a file. ConvoMem's published structure has
+    /// evidence-type subdirs under <c>evidence_questions/</c> — the first relative path
+    /// segment is the right grouping. Flat layouts (file directly in data root) fall
+    /// back to the filename without extension so test fixtures keep working.
+    /// </summary>
+    private string DeriveCategory(string file)
+    {
+        string rel = Path.GetRelativePath(_dataRoot, file);
+        int sepIdx = rel.IndexOfAny(['/', '\\']);
+        return sepIdx > 0
+            ? rel[..sepIdx]
+            : Path.GetFileNameWithoutExtension(file);
     }
 
     private static DateTimeOffset? TryParseTimestamp(string? raw) =>

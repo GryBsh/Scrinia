@@ -137,9 +137,7 @@ public sealed partial class LoCoMoLoader
             string question = qEl.GetString() ?? string.Empty;
             if (string.IsNullOrWhiteSpace(question)) continue;
 
-            string category = qa.TryGetProperty("category", out var catEl) && catEl.ValueKind == JsonValueKind.String
-                ? catEl.GetString() ?? "uncategorized"
-                : "uncategorized";
+            string category = ResolveCategory(qa);
 
             var diaIds = ExtractEvidenceDiaIds(qa);
             if (diaIds.Count == 0) { qaIdx++; continue; }
@@ -181,6 +179,31 @@ public sealed partial class LoCoMoLoader
             }
         }
         return list;
+    }
+
+    /// <summary>
+    /// LoCoMo ships QA category as either a string (newer dumps) or an integer 1-5
+    /// (the snap-research <c>locomo10.json</c> we point at by default). Map ints to
+    /// the labels MemPalace's bench script uses so per-category aggregates compare
+    /// across systems without manual joining.
+    /// </summary>
+    private static string ResolveCategory(JsonElement qa)
+    {
+        if (!qa.TryGetProperty("category", out var catEl)) return "uncategorized";
+        return catEl.ValueKind switch
+        {
+            JsonValueKind.String => catEl.GetString() ?? "uncategorized",
+            JsonValueKind.Number when catEl.TryGetInt32(out int n) => n switch
+            {
+                1 => "single_hop",
+                2 => "multi_hop",
+                3 => "temporal_reasoning",
+                4 => "open_domain",
+                5 => "adversarial",
+                _ => $"category_{n}",
+            },
+            _ => "uncategorized",
+        };
     }
 
     private static IEnumerable<string> ExtractSessionIdsFromDiaIds(IReadOnlyList<string> diaIds)

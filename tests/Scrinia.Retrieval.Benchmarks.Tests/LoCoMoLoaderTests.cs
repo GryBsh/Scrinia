@@ -121,6 +121,40 @@ public class LoCoMoLoaderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Integer_category_codes_map_to_locomo_paper_labels()
+    {
+        // snap-research/locomo's locomo10.json ships QA category as an int 1-5 rather
+        // than the string label the bench script expects. The loader must remap.
+        const string json = """
+        [
+          {
+            "sample_id": "conv_int_cats",
+            "conversation": {
+              "session_1": [{"speaker": "A", "text": "hi"}],
+              "session_1_date_time": "2024-01-01"
+            },
+            "qa": [
+              {"question": "q1", "category": 1, "evidence": ["D1:1"]},
+              {"question": "q2", "category": 2, "evidence": ["D1:1"]},
+              {"question": "q3", "category": 3, "evidence": ["D1:1"]},
+              {"question": "q4", "category": 4, "evidence": ["D1:1"]},
+              {"question": "q5", "category": 5, "evidence": ["D1:1"]},
+              {"question": "q6", "category": 99, "evidence": ["D1:1"]}
+            ]
+          }
+        ]
+        """;
+        await File.WriteAllTextAsync(_dataPath, json);
+
+        var loader = new LoCoMoLoader(_dataPath);
+        var cats = new List<string>();
+        await foreach (var g in loader.LoadAsync()) cats.AddRange(g.Questions.Select(q => q.Category));
+
+        cats.Should().Equal(
+            ["single_hop", "multi_hop", "temporal_reasoning", "open_domain", "adversarial", "category_99"]);
+    }
+
+    [Fact]
     public async Task Multiple_evidence_dia_ids_dedupe_to_session_ids()
     {
         const string json = """
