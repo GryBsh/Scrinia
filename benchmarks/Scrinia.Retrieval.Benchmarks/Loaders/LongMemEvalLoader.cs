@@ -201,12 +201,16 @@ public sealed class LongMemEvalLoader
         AllowTrailingCommas = true,
     };
 
+    // `answer` is intentionally omitted — System.Text.Json skips unmapped fields, so
+    // we sidestep the fact that LongMemEval ships `answer` as either a string or a
+    // list-of-strings depending on the question_type (knowledge-update questions can
+    // have multiple correct answers across time). Retrieval scoring only uses the
+    // labelled session IDs, never the answer text.
     private sealed record LongMemEvalRecord(
         [property: JsonPropertyName("question_id")] string? QuestionId,
         [property: JsonPropertyName("question_type")] string? QuestionType,
         [property: JsonPropertyName("question")] string? Question,
         [property: JsonPropertyName("question_date")] string? QuestionDate,
-        [property: JsonPropertyName("answer")] string? Answer,
         [property: JsonPropertyName("answer_session_ids")] IReadOnlyList<string>? AnswerSessionIds,
         [property: JsonPropertyName("haystack_sessions")] IReadOnlyList<IReadOnlyList<LongMemEvalTurn>>? HaystackSessions,
         [property: JsonPropertyName("haystack_session_ids")] IReadOnlyList<string>? HaystackSessionIds,

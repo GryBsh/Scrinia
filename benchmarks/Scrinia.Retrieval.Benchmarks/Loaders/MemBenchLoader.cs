@@ -149,8 +149,11 @@ public sealed class MemBenchLoader
         [property: JsonPropertyName("assistant")] string? Assistant,
         [property: JsonPropertyName("time")] string? Time);
 
+    // `answer` is intentionally omitted — System.Text.Json skips unmapped fields, so we
+    // sidestep the fact that MemBench ships `answer` as either a string or an object
+    // (e.g. `{"A": "...", "B": "..."}` for multiple-choice categories like multi_agent).
+    // Retrieval scoring only uses target_step_id, never the answer.
     private sealed record MemBenchQa(
         [property: JsonPropertyName("question")] string? Question,
-        [property: JsonPropertyName("answer")] string? Answer,
         [property: JsonPropertyName("target_step_id")] IReadOnlyList<IReadOnlyList<int>?>? TargetStepId);
 }
