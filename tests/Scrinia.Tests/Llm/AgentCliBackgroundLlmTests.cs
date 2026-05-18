@@ -51,7 +51,8 @@ public class AgentCliBackgroundLlmTests
         runner.RunCalls.Should().ContainSingle();
         var (exe, args, stdin, _) = runner.RunCalls[0];
         exe.Should().Be("/usr/local/bin/claude");
-        args.Should().Equal("-p");
+        // Defaults pin Tier 2 to the cheap tier (sonnet + low effort).
+        args.Should().Equal("-p", "--model", "sonnet", "--effort", "low");
         stdin.Should().NotBeNullOrEmpty();
         stdin.Should().Contain("description sentence");  // System prompt content leaks into stdin
     }
@@ -68,7 +69,8 @@ public class AgentCliBackgroundLlmTests
 
         var (exe, args, _, _) = runner.RunCalls[0];
         exe.Should().Be("/opt/codex");
-        args.Should().Equal("exec", "-");
+        // Codex has no reasoning-effort knob, so only the model flag is appended.
+        args.Should().Equal("exec", "-", "-m", "gpt-5.4-mini");
     }
 
     [Fact]
@@ -81,7 +83,74 @@ public class AgentCliBackgroundLlmTests
 
         await llm.GenerateDescriptionAsync("x", CancellationToken.None);
 
-        runner.RunCalls[0].Args.Should().Equal("--print");
+        runner.RunCalls[0].Args.Should().Equal("--print", "--model", "gpt-5.4-mini", "--effort", "low");
+    }
+
+    [Fact]
+    public async Task LlmOptions_ModelOverride_ReplacesVariantDefault()
+    {
+        var runner = new FakeProcessRunner(
+            resolved: "/usr/local/bin/claude",
+            result: new ProcessResult(0, "ok\n", "", false));
+        var opts = Options();
+        opts.ClaudeCliModel = "haiku";
+        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, opts);
+
+        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+
+        runner.RunCalls[0].Args.Should().Equal("-p", "--model", "haiku", "--effort", "low");
+    }
+
+    [Fact]
+    public async Task LlmOptions_EffortOverride_ReplacesVariantDefault()
+    {
+        var runner = new FakeProcessRunner(
+            resolved: "/usr/local/bin/claude",
+            result: new ProcessResult(0, "ok\n", "", false));
+        var opts = Options();
+        opts.ClaudeCliEffort = "high";
+        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, opts);
+
+        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+
+        runner.RunCalls[0].Args.Should().Equal("-p", "--model", "sonnet", "--effort", "high");
+    }
+
+    [Fact]
+    public async Task LlmOptions_EmptyModelOverride_SuppressesFlag_InheritsCliDefault()
+    {
+        // Empty-string override is the explicit way to say "leave model selection to the
+        // host CLI" — distinct from null, which means "use the variant's cost-cap default".
+        var runner = new FakeProcessRunner(
+            resolved: "/usr/local/bin/claude",
+            result: new ProcessResult(0, "ok\n", "", false));
+        var opts = Options();
+        opts.ClaudeCliModel = "";
+        opts.ClaudeCliEffort = "";
+        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, opts);
+
+        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+
+        runner.RunCalls[0].Args.Should().Equal("-p");
+    }
+
+    [Fact]
+    public async Task Codex_PerCliEffortOptionsAreIgnored_NoSuchFlag()
+    {
+        // Codex has no effort knob. Even if other CLIs' effort overrides happen to be set
+        // in the same LlmOptions instance, Codex's argv must not pick them up.
+        var runner = new FakeProcessRunner(
+            resolved: "/opt/codex",
+            result: new ProcessResult(0, "ok\n", "", false));
+        var opts = Options();
+        opts.ClaudeCliEffort = "max";    // belongs to a different variant
+        opts.CopilotCliEffort = "high";  // belongs to a different variant
+        opts.CodexCliModel = "gpt-5.5";  // legit codex override
+        var llm = new AgentCliBackgroundLlm(AgentCliVariant.CodexCli, runner, opts);
+
+        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+
+        runner.RunCalls[0].Args.Should().Equal("exec", "-", "-m", "gpt-5.5");
     }
 
     [Fact]

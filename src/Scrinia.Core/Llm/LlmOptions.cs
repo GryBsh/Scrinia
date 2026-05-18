@@ -60,4 +60,49 @@ public sealed class LlmOptions
 
     public string? GeminiApiKey { get; set; }
     public string GeminiBaseUrl { get; set; } = "https://generativelanguage.googleapis.com";
+
+    // ── Agent-CLI overrides (provider=claude-cli / codex-cli / copilot-cli) ──
+    // Per-CLI model and effort knobs forwarded to AgentCliBackgroundLlm. Null = use the
+    // variant's cheap-tier default (see AgentCliVariant for rationale). Empty string =
+    // explicitly inherit the CLI's own default. Otherwise the value is passed verbatim
+    // as the corresponding flag value. Codex has no reasoning-effort knob, so there is
+    // no CodexCliEffort.
+
+    /// <summary>
+    /// Tier 2 model override for Claude Code. Null = variant default (<c>sonnet</c>).
+    /// Empty string = inherit the user's Claude Code default model. Otherwise passed
+    /// to <c>claude -p</c> as <c>--model &lt;value&gt;</c>. Accepts shorthand
+    /// (<c>sonnet</c>, <c>haiku</c>, <c>opus</c>) or full IDs (<c>claude-sonnet-4-6</c>).
+    /// </summary>
+    public string? ClaudeCliModel { get; set; }
+
+    /// <summary>
+    /// Tier 2 model override for Codex. Null = variant default (<c>gpt-5.4-mini</c>).
+    /// Empty string = inherit Codex's configured default. Otherwise passed to
+    /// <c>codex exec</c> as <c>-m &lt;value&gt;</c>.
+    /// </summary>
+    public string? CodexCliModel { get; set; }
+
+    /// <summary>
+    /// Tier 2 model override for GitHub Copilot. Null = variant default
+    /// (<c>gpt-5.4-mini</c>). Empty string = inherit Copilot's configured default.
+    /// Otherwise passed to <c>copilot --print</c> as <c>--model &lt;value&gt;</c>.
+    /// </summary>
+    public string? CopilotCliModel { get; set; }
+
+    /// <summary>
+    /// Tier 2 reasoning-effort override for Claude Code. Null = variant default
+    /// (<c>low</c>). Empty string = inherit Claude Code's configured effort. Otherwise
+    /// passed as <c>--effort &lt;value&gt;</c>. Valid values: <c>low, medium, high,
+    /// xhigh, max</c>.
+    /// </summary>
+    public string? ClaudeCliEffort { get; set; }
+
+    /// <summary>
+    /// Tier 2 reasoning-effort override for GitHub Copilot. Null = variant default
+    /// (<c>low</c>). Empty string = inherit Copilot's configured effort. Otherwise
+    /// passed as <c>--effort &lt;value&gt;</c>. Valid values: <c>low, medium, high,
+    /// xhigh</c> (no <c>max</c>).
+    /// </summary>
+    public string? CopilotCliEffort { get; set; }
 }

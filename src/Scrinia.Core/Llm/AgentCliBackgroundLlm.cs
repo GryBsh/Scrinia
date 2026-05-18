@@ -77,10 +77,12 @@ public sealed partial class AgentCliBackgroundLlm : IBackgroundLlm
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
         linked.CancelAfter(TimeSpan.FromSeconds(_options.RequestTimeoutSeconds));
 
+        var argv = _variant.BuildArguments(modelOverride: ModelOverride(), effortOverride: EffortOverride());
+
         ProcessResult result;
         try
         {
-            result = await _runner.RunAsync(_resolvedExe, _variant.Arguments, combined, linked.Token);
+            result = await _runner.RunAsync(_resolvedExe, argv, combined, linked.Token);
         }
         catch (InvalidOperationException) { return null; }  // process couldn't start
         catch (OperationCanceledException) { return null; } // outer cancellation
@@ -105,4 +107,31 @@ public sealed partial class AgentCliBackgroundLlm : IBackgroundLlm
 
     [GeneratedRegex(@"\x1B\[[0-?]*[ -/]*[@-~]", RegexOptions.CultureInvariant)]
     private static partial Regex AnsiEscapeRegex();
+
+    /// <summary>
+    /// Picks the right <see cref="LlmOptions"/> model field for the active variant. Each
+    /// CLI has its own override key because the model namespaces don't overlap
+    /// (<c>sonnet</c> is meaningless to codex; <c>gpt-5.4-mini</c> to claude).
+    /// Returns null for unknown variant IDs so a custom variant inherits the variant's
+    /// own <c>DefaultModel</c>.
+    /// </summary>
+    private string? ModelOverride() => _variant.Id switch
+    {
+        "claude-cli" => _options.ClaudeCliModel,
+        "codex-cli" => _options.CodexCliModel,
+        "copilot-cli" => _options.CopilotCliModel,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Picks the right <see cref="LlmOptions"/> effort field for the active variant.
+    /// Codex has no reasoning-effort flag, so the codex branch returns null regardless
+    /// of any user config.
+    /// </summary>
+    private string? EffortOverride() => _variant.Id switch
+    {
+        "claude-cli" => _options.ClaudeCliEffort,
+        "copilot-cli" => _options.CopilotCliEffort,
+        _ => null,
+    };
 }

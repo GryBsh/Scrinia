@@ -778,6 +778,20 @@ internal static class WorkspaceSetup
         string? gemUrl = GetConfigValue("Scrinia:Llm:GeminiBaseUrl");
         if (gemUrl is not null) options.GeminiBaseUrl = gemUrl;
 
+        // Agent-CLI per-CLI overrides. Null = use the variant's cheap-tier default; empty
+        // string = inherit the host CLI's own default. See AgentCliVariant for the
+        // built-in defaults and LlmOptions for per-field semantics.
+        string? claudeCliModel = GetConfigValue("Scrinia:Llm:ClaudeCliModel");
+        if (claudeCliModel is not null) options.ClaudeCliModel = claudeCliModel;
+        string? codexCliModel = GetConfigValue("Scrinia:Llm:CodexCliModel");
+        if (codexCliModel is not null) options.CodexCliModel = codexCliModel;
+        string? copilotCliModel = GetConfigValue("Scrinia:Llm:CopilotCliModel");
+        if (copilotCliModel is not null) options.CopilotCliModel = copilotCliModel;
+        string? claudeCliEffort = GetConfigValue("Scrinia:Llm:ClaudeCliEffort");
+        if (claudeCliEffort is not null) options.ClaudeCliEffort = claudeCliEffort;
+        string? copilotCliEffort = GetConfigValue("Scrinia:Llm:CopilotCliEffort");
+        if (copilotCliEffort is not null) options.CopilotCliEffort = copilotCliEffort;
+
         return options;
     }
 
