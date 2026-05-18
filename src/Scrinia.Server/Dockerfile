@@ -9,7 +9,7 @@ COPY src/Scrinia.Plugin.Embeddings/Scrinia.Plugin.Embeddings.csproj src/Scrinia.
 RUN dotnet restore src/Scrinia.Server/Scrinia.Server.csproj && \
     dotnet restore src/Scrinia.Plugin.Embeddings/Scrinia.Plugin.Embeddings.csproj
 
-FROM node:25-slim AS web-build
+FROM node:24.15.0-slim AS web-build
 WORKDIR /web
 COPY web/package*.json ./
 RUN npm install

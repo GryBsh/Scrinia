@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getEmbeddingsStatus, getEmbeddingsSettings, updateEmbeddingsSettings, reindexEmbeddings } from '../api/client'
+import type { EmbeddingsSettings, EmbeddingsSettingsUpdate } from '../api/types'
 import { RefreshCw, Save } from 'lucide-react'
 
 export default function SettingsPage() {
@@ -17,16 +18,6 @@ export default function SettingsPage() {
     queryFn: getEmbeddingsSettings,
   })
 
-  const [semanticWeight, setSemanticWeight] = useState('')
-  const [maxBatchSize, setMaxBatchSize] = useState('')
-
-  useEffect(() => {
-    if (settings) {
-      setSemanticWeight(String(settings.semanticWeight))
-      setMaxBatchSize(String(settings.maxBatchSize))
-    }
-  }, [settings])
-
   const saveMutation = useMutation({
     mutationFn: updateEmbeddingsSettings,
     onSuccess: () => {
@@ -41,14 +32,6 @@ export default function SettingsPage() {
       queryClient.invalidateQueries({ queryKey: ['embeddings-status'] })
     },
   })
-
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault()
-    saveMutation.mutate({
-      semanticWeight: parseFloat(semanticWeight),
-      maxBatchSize: parseInt(maxBatchSize, 10),
-    })
-  }
 
   const isLoading = statusLoading || settingsLoading
   const error = statusError || settingsError
@@ -111,57 +94,14 @@ export default function SettingsPage() {
 
       {/* Settings form */}
       {settings && (
-        <form onSubmit={handleSave} className="bg-white rounded-lg border mb-6">
-          <div className="px-4 py-3 border-b">
-            <h4 className="text-sm font-medium text-gray-700">Configuration</h4>
-          </div>
-          <div className="p-4 space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-xs text-gray-500">Semantic Weight (0-200)</label>
-                <input
-                  type="number"
-                  value={semanticWeight}
-                  onChange={(e) => setSemanticWeight(e.target.value)}
-                  min="0"
-                  max="200"
-                  step="0.1"
-                  className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500">Max Batch Size (1-64)</label>
-                <input
-                  type="number"
-                  value={maxBatchSize}
-                  onChange={(e) => setMaxBatchSize(e.target.value)}
-                  min="1"
-                  max="64"
-                  step="1"
-                  className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-
-            {saveMutation.error && (
-              <p className="text-red-500 text-xs">{(saveMutation.error as Error).message}</p>
-            )}
-            {saveMutation.isSuccess && (
-              <p className="text-green-600 text-xs">Settings updated.</p>
-            )}
-
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                disabled={saveMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                <Save className="w-4 h-4" />
-                {saveMutation.isPending ? 'Saving...' : 'Save Settings'}
-              </button>
-            </div>
-          </div>
-        </form>
+        <SettingsForm
+          key={`${settings.semanticWeight}-${settings.maxBatchSize}`}
+          settings={settings}
+          onSave={(values) => saveMutation.mutate(values)}
+          saving={saveMutation.isPending}
+          saveError={saveMutation.error as Error | null}
+          saveSuccess={saveMutation.isSuccess}
+        />
       )}
 
       {/* Actions */}
@@ -195,6 +135,85 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+function SettingsForm({
+  settings,
+  onSave,
+  saving,
+  saveError,
+  saveSuccess,
+}: {
+  settings: EmbeddingsSettings
+  onSave: (values: EmbeddingsSettingsUpdate) => void
+  saving: boolean
+  saveError: Error | null
+  saveSuccess: boolean
+}) {
+  const [semanticWeight, setSemanticWeight] = useState(String(settings.semanticWeight))
+  const [maxBatchSize, setMaxBatchSize] = useState(String(settings.maxBatchSize))
+
+  const handleSave = (e: React.FormEvent) => {
+    e.preventDefault()
+    onSave({
+      semanticWeight: parseFloat(semanticWeight),
+      maxBatchSize: parseInt(maxBatchSize, 10),
+    })
+  }
+
+  return (
+    <form onSubmit={handleSave} className="bg-white rounded-lg border mb-6">
+      <div className="px-4 py-3 border-b">
+        <h4 className="text-sm font-medium text-gray-700">Configuration</h4>
+      </div>
+      <div className="p-4 space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs text-gray-500">Semantic Weight (0-200)</label>
+            <input
+              type="number"
+              value={semanticWeight}
+              onChange={(e) => setSemanticWeight(e.target.value)}
+              min="0"
+              max="200"
+              step="0.1"
+              className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500">Max Batch Size (1-64)</label>
+            <input
+              type="number"
+              value={maxBatchSize}
+              onChange={(e) => setMaxBatchSize(e.target.value)}
+              min="1"
+              max="64"
+              step="1"
+              className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+        </div>
+
+        {saveError && (
+          <p className="text-red-500 text-xs">{saveError.message}</p>
+        )}
+        {saveSuccess && (
+          <p className="text-green-600 text-xs">Settings updated.</p>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={saving}
+            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            <Save className="w-4 h-4" />
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+      </div>
+    </form>
   )
 }
 

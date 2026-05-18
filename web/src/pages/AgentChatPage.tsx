@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getHealth, getChatProviders, streamChat } from '../api/client'
 import { Loader2, Search, BookOpen, Send, AlertCircle } from 'lucide-react'
@@ -12,8 +12,8 @@ interface DisplayMessage {
 }
 
 export default function AgentChatPage() {
-  const [store, setStore] = useState('default')
-  const [provider, setProvider] = useState<string>('')
+  const [storeOverride, setStore] = useState<string | undefined>(undefined)
+  const [providerOverride, setProvider] = useState<string | undefined>(undefined)
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -21,7 +21,6 @@ export default function AgentChatPage() {
   const abortRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  // Fetch available stores from health endpoint
   const { data: health } = useQuery({
     queryKey: ['health'],
     queryFn: getHealth,
@@ -32,7 +31,11 @@ export default function AgentChatPage() {
     ?.filter((c) => c.name.startsWith('store:'))
     .map((c) => c.name.replace('store:', '')) ?? []
 
-  // Fetch available providers for selected store
+  // Fall back to 'default' if available (or no stores loaded yet); otherwise the first
+  // real store. An explicit user pick wins over both.
+  const store = storeOverride
+    ?? (stores.length === 0 || stores.includes('default') ? 'default' : stores[0]!)
+
   const { data: providersData } = useQuery({
     queryKey: ['chat-providers', store],
     queryFn: () => getChatProviders(store),
@@ -42,24 +45,13 @@ export default function AgentChatPage() {
 
   const providers = providersData?.providers ?? []
 
-  // Auto-select first provider
-  useEffect(() => {
-    if (providers.length > 0 && !provider) setProvider(providers[0])
-  }, [providers, provider])
+  const provider = providerOverride ?? providers[0] ?? ''
 
-  // Auto-select first store
-  useEffect(() => {
-    if (stores.length > 0 && store === 'default' && !stores.includes('default') && stores[0]) {
-      setStore(stores[0])
-    }
-  }, [stores, store])
-
-  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const sendMessage = useCallback(async () => {
+  const sendMessage = async () => {
     const text = input.trim()
     if (!text || streaming) return
 
@@ -137,7 +129,7 @@ export default function AgentChatPage() {
       setStreaming(false)
       abortRef.current = null
     }
-  }, [input, streaming, messages, store, provider])
+  }
 
   const noProviders = providersData && providers.length === 0
 
