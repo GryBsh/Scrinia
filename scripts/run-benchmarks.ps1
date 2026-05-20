@@ -30,8 +30,20 @@
     Build config. Default Release.
 
 .PARAMETER ExtraArgs
-    Pass-through args to every scrinia-bench invocation. Useful for ablations:
-        -ExtraArgs "--alpha-recency", "1.0", "--tau-days", "90"
+    Pass-through args to every scrinia-bench invocation. Useful for ablations.
+    Both forms work; the script splits any space-containing tokens:
+        -ExtraArgs "--alpha-recency","1.0","--tau-days","90"
+        -ExtraArgs "--embed-provider vulkan"
+        -ExtraArgs "--alpha-recency 1.0","--tau-days 90"
+
+.PARAMETER Parallel
+    When set, MemBench fans out one subprocess per category (11 total), throttled
+    by -MaxConcurrency. ~10x wall-time speedup on many-cored boxes. Partial result
+    JSONs land alongside the merged final result. Other benchmarks ignore -Parallel
+    (their question counts don't justify the orchestration overhead).
+
+.PARAMETER MaxConcurrency
+    Cap on concurrent subprocesses when -Parallel is set. Default = logical CPU count.
 
 .EXAMPLE
     ./scripts/run-benchmarks.ps1
@@ -44,6 +56,19 @@
 .EXAMPLE
     ./scripts/run-benchmarks.ps1 -ExtraArgs "--alpha-recency","1.0","--tau-days","90"
     Recency ablation sweep across all four.
+
+.EXAMPLE
+    ./scripts/run-benchmarks.ps1 -ExtraArgs "--embed-provider vulkan"
+    Switch from Model2Vec (default) to the GGUF/Vulkan sentence-transformer.
+    Auto-downloads the GGUF to ./models/ on first run.
+
+.EXAMPLE
+    ./scripts/run-benchmarks.ps1 -Benchmark membench -Parallel
+    MemBench's 12k questions run as 11 concurrent category subprocesses.
+
+.EXAMPLE
+    ./scripts/run-benchmarks.ps1 -Benchmark membench -Parallel -ExtraArgs "--chunk prod"
+    Chunked MemBench run, parallel across categories.
 #>
 [CmdletBinding()]
 param(
@@ -56,10 +81,28 @@ param(
     [string]$Split = "full",
     [int]$TopK = 50,
     [string]$Configuration = "Release",
-    [string[]]$ExtraArgs = @()
+    [string[]]$ExtraArgs = @(),
+    [switch]$Parallel = $false,
+    [int]$MaxConcurrency = [Environment]::ProcessorCount
+)
+
+# Stable category list for MemBench. Pulled from the dataset's per-category groupings
+# (matches what the bench reports under per-category R@K). Hardcoded rather than
+# discovered at runtime to keep the parallel fanout deterministic — if MemBench grows
+# a new category upstream, add it here.
+$script:MemBenchCategories = @(
+    "RecMultiSession", "aggregative", "comparative", "conditional",
+    "highlevel", "highlevel_rec", "knowledge_update", "lowlevel_rec",
+    "noisy", "post_processing", "simple"
 )
 
 $ErrorActionPreference = "Stop"
+
+# Tolerate both -ExtraArgs "--foo","bar" (idiomatic [string[]]) and
+# -ExtraArgs "--foo bar" (single space-separated string). Without this,
+# the merged token "--foo bar" reaches scrinia-bench as a single argv
+# entry and the parser silently ignores it.
+$ExtraArgs = $ExtraArgs | ForEach-Object { $_ -split '\s+' } | Where-Object { $_ }
 
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 if (-not $DataRoot) {
@@ -87,12 +130,82 @@ function Invoke-Bench {
     # silently dropped (this script shipped broken the first time because of
     # exactly that).
     param([string]$Subcommand, [string[]]$BenchArgs)
+
+    if ($Parallel -and $Subcommand -eq "membench") {
+        Invoke-BenchParallelCategories -Subcommand $Subcommand -BenchArgs $BenchArgs -Categories $script:MemBenchCategories
+        return
+    }
+
     $allArgs = @($Subcommand, "--mode", $Mode, "--top-k", $TopK) + $BenchArgs + $ExtraArgs
     Write-Host ""
     Write-Host "=== scrinia-bench $($allArgs -join ' ') ==="
     dotnet run --project $BenchProject -c $Configuration --no-build -- @allArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "scrinia-bench $Subcommand exited $LASTEXITCODE"
+    }
+}
+
+function Invoke-BenchParallelCategories {
+    # Process-level fanout: one subprocess per category, throttled by $MaxConcurrency.
+    # Each subprocess writes its own partial JSON; we merge at the end. Per-category
+    # logs go to results/parallel-logs/ so interleaved stdout doesn't make a mess.
+    param([string]$Subcommand, [string[]]$BenchArgs, [string[]]$Categories)
+
+    $resultsDir = Join-Path $RepoRoot "benchmarks\Scrinia.Retrieval.Benchmarks\results"
+    $logsDir = Join-Path $resultsDir "parallel-logs"
+    New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+
+    $stamp = Get-Date -Format "yyyyMMdd_HHmm"
+    $procs = @()
+    $partials = @()
+
+    Write-Host ""
+    Write-Host "=== scrinia-bench $Subcommand (parallel: $($Categories.Count) categories, max $MaxConcurrency concurrent) ==="
+
+    foreach ($cat in $Categories) {
+        # Throttle: spin (with a short sleep) until we drop below the concurrency cap.
+        while (($procs | Where-Object { -not $_.HasExited }).Count -ge $MaxConcurrency) {
+            Start-Sleep -Milliseconds 200
+        }
+
+        $partial = Join-Path $resultsDir "partial_${Subcommand}_${cat}_${stamp}.json"
+        $log = Join-Path $logsDir "${Subcommand}-${cat}.log"
+        $errLog = Join-Path $logsDir "${Subcommand}-${cat}.err"
+        $catArgs = @(
+            "run", "--project", $BenchProject, "-c", $Configuration, "--no-build", "--",
+            $Subcommand, "--mode", $Mode, "--top-k", $TopK, "--category", $cat, "--output", $partial
+        ) + $BenchArgs + $ExtraArgs
+
+        $proc = Start-Process -FilePath "dotnet" -ArgumentList $catArgs `
+            -PassThru -NoNewWindow `
+            -RedirectStandardOutput $log -RedirectStandardError $errLog
+        $procs += $proc
+        $partials += $partial
+        Write-Host "  spawned [$cat] pid=$($proc.Id)  log=$log"
+    }
+
+    Write-Host "  waiting for $($procs.Count) subprocesses..."
+    $procs | ForEach-Object { $_.WaitForExit() }
+
+    $failed = @()
+    for ($i = 0; $i -lt $procs.Count; $i++) {
+        if ($procs[$i].ExitCode -ne 0) {
+            $failed += "$($Categories[$i]) (exit $($procs[$i].ExitCode))"
+        }
+    }
+    if ($failed.Count -gt 0) {
+        Write-Warning "subprocess failures: $($failed -join '; '); see $logsDir"
+    }
+
+    # Merge partials into one canonical result file. Skip missing partials (failed
+    # subprocesses) — the merger will emit a warning per skip.
+    $merged = Join-Path $resultsDir "scrinia_${Subcommand}_${Mode}__parallel_${stamp}.json"
+    Write-Host "  merging $($partials.Count) partials into $merged..."
+    & (Join-Path $PSScriptRoot "merge-bench-results.ps1") -Inputs $partials -Output $merged
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "merge step exited $LASTEXITCODE"
+    } else {
+        Write-Host "  wrote $merged"
     }
 }
 

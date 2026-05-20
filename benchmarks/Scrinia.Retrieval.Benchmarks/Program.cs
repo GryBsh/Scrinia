@@ -59,11 +59,16 @@ internal static class Program
               locomo        Run LoCoMo (snap-research/locomo) — 10 convs, 1986 QA pairs
 
             Common flags:
-              --data <path>      Dataset path (download yourself; see benchmarks README)
-              --mode <m>         bm25 | bm25_embeddings (default: bm25_embeddings; falls back to bm25 if model not found)
-              --model-dir <dir>  Override the directory that contains m2v-MiniLM-L6-v2/ (default: ./models)
-              --top-k <K>        Retrieve top-K hits per query (default: 50)
-              --output <file>    Write JSON result to this path (default: results/<bench>_<mode>_<UTC>.json)
+              --data <path>            Dataset path (download yourself; see benchmarks README)
+              --mode <m>               bm25 | bm25_embeddings (default: bm25_embeddings; falls back to bm25 if model not found)
+              --embed-provider <p>     model2vec (static, default) | vulkan (GGUF/sentence-transformer)
+              --model-dir <dir>        Root holding m2v-MiniLM-L6-v2/ (model2vec) or all-MiniLM-L6-v2-Q8_0.gguf (vulkan). Auto-downloaded if missing. Default: ./models
+              --top-k <K>              Retrieve top-K hits per query (default: 50)
+              --output <file>          Write JSON result to this path (default: results/<bench>_<mode>_<UTC>.json)
+              --chunk <c>              none (default; whole-doc) | prod (slice via TextChunker matching prod's 1200/200 defaults). Chunks dedup to one hit per parent at retrieval.
+              --chunk-window <N>       Override chunk window size (default 1200; only honored when --chunk prod)
+              --chunk-overlap <N>      Override chunk overlap (default 200; only honored when --chunk prod)
+              --category <name>        Run only questions in this category. Enables per-category process fanout (see run-benchmarks.ps1 -Parallel).
 
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)

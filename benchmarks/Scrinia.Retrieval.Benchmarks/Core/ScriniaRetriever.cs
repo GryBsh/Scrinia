@@ -26,12 +26,21 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 /// </summary>
 public sealed class ScriniaRetriever : IRetriever
 {
+    /// <summary>Chunk-id separator. <c>{parentId}::chunk_{index}</c> at ingest time;
+    /// <see cref="StripChunkSuffix"/> reverses at retrieve time. <c>LastIndexOf</c> is
+    /// used so parent IDs that themselves contain <c>::chunk_</c> substrings still
+    /// dedup correctly.</summary>
+    private const string ChunkSeparator = "::chunk_";
+
     private readonly string _rootDir;
     private readonly RankerOptions _rankerOptions;
     private readonly IEmbeddingProvider? _embeddingProvider;
     private readonly double _semanticWeight;
     private readonly double _diversityLambda;
     private readonly int _diversityInnerLimit;
+    private readonly bool _chunked;
+    private readonly int _chunkWindowSize;
+    private readonly int _chunkOverlap;
     private FileMemoryStore _store;
     private int _resetCount;
     private Dictionary<string, float[]> _vectorCache;
@@ -42,7 +51,10 @@ public sealed class ScriniaRetriever : IRetriever
         IEmbeddingProvider? embeddingProvider = null,
         double semanticWeight = 50.0,
         double diversityLambda = 1.0,
-        int diversityInnerLimit = 0)
+        int diversityInnerLimit = 0,
+        bool chunked = false,
+        int chunkWindowSize = TextChunker.DefaultWindowSize,
+        int chunkOverlap = TextChunker.DefaultOverlap)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         _rootDir = rootDir;
@@ -53,6 +65,9 @@ public sealed class ScriniaRetriever : IRetriever
         // a 1.0 + nonzero inner-limit still applies MMR but degenerates to relevance-sort.
         _diversityLambda = diversityLambda;
         _diversityInnerLimit = diversityInnerLimit;
+        _chunked = chunked;
+        _chunkWindowSize = chunkWindowSize;
+        _chunkOverlap = chunkOverlap;
         _store = CreateStore();
         _vectorCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
     }
@@ -62,27 +77,49 @@ public sealed class ScriniaRetriever : IRetriever
         ArgumentNullException.ThrowIfNull(doc);
         ct.ThrowIfCancellationRequested();
 
-        string sanitized = SanitizeName(doc.Id);
-        var (keywords, tf) = TextAnalysis.AnalyzeText(doc.Text);
+        if (!_chunked)
+        {
+            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, ct);
+            return;
+        }
+
+        // Chunked path: slice via prod's TextChunker so window boundaries match prod
+        // semantics, ingest each window as its own ArtifactEntry keyed by
+        // `{parentId}::chunk_{i}`. RetrieveAsync collapses chunks back to one hit per
+        // parent. Short docs (≤ windowSize) produce a single chunk and behave like
+        // the whole-doc path — that's TextChunker's contract.
+        var windows = TextChunker.SliceWindows(doc.Text, _chunkWindowSize, _chunkOverlap);
+        if (windows.Count == 0) return;
+        foreach (var (idx, text) in windows)
+        {
+            string chunkId = $"{doc.Id}{ChunkSeparator}{idx}";
+            await IngestEntryAsync(chunkId, text, doc.Timestamp, ct);
+        }
+    }
+
+    private async Task IngestEntryAsync(string id, string text, DateTimeOffset? timestamp, CancellationToken ct)
+    {
+        string sanitized = SanitizeName(id);
+        var (keywords, tf) = TextAnalysis.AnalyzeText(text);
         var entry = new ArtifactEntry(
             // Description and Name are both scored by the field scorer; we keep the
             // benchmark doc ID *only* in Uri so query tokens never accidentally match
             // an ID component (e.g. "user" / "msg" in `convomem_user_5_msg_12`).
             Name: sanitized,
-            Uri: $"bench://{doc.Id}",
-            OriginalBytes: doc.Text.Length,
+            Uri: $"bench://{id}",
+            OriginalBytes: text.Length,
             ChunkCount: 0,
-            CreatedAt: doc.Timestamp ?? DateTimeOffset.UtcNow,
+            CreatedAt: timestamp ?? DateTimeOffset.UtcNow,
             Description: string.Empty,
             Keywords: keywords,
             TermFrequencies: tf,
-            ContentPreview: doc.Text);
+            ContentPreview: text);
 
         _store.Upsert(entry);
 
         if (_embeddingProvider is not null)
         {
-            var vec = await _embeddingProvider.EmbedAsync(doc.Text, ct);
+            var vec = await _embeddingProvider.EmbedAsync(text, ct);
             if (vec is not null) _vectorCache[sanitized] = vec;
         }
     }
@@ -100,31 +137,56 @@ public sealed class ScriniaRetriever : IRetriever
                 supplemental = BuildSupplementalScores(queryVec);
         }
 
+        // In chunked mode we need a wider candidate set than topK because dedup will
+        // collapse multiple chunks of the same parent to one hit. 10x is generous;
+        // SearchAll returns whatever the store has if the limit exceeds it.
         int searchLimit = _diversityInnerLimit > 0 ? Math.Max(_diversityInnerLimit, topK) : Math.Max(1, topK);
+        if (_chunked) searchLimit = Math.Max(searchLimit, topK * 10);
+
         IReadOnlyList<SearchResult> results =
             _store.SearchAll(query, scopes: null, limit: searchLimit, supplementalScores: supplemental);
 
         if (_diversityInnerLimit > 0)
-            results = MmrReranker.Rerank(results, Math.Max(1, topK), _diversityLambda);
-
-        var hits = new List<RetrievalHit>(Math.Min(results.Count, topK));
-        foreach (var r in results.Take(topK))
         {
+            // Let MMR rerank the wider chunked set so diversity sees parents-via-chunks;
+            // dedup below still trims to topK unique parents.
+            int mmrLimit = _chunked ? Math.Max(topK * 10, 1) : Math.Max(1, topK);
+            results = MmrReranker.Rerank(results, mmrLimit, _diversityLambda);
+        }
+
+        var hits = new List<RetrievalHit>(topK);
+        HashSet<string>? seenParents = _chunked ? new HashSet<string>(StringComparer.Ordinal) : null;
+        foreach (var r in results)
+        {
+            if (hits.Count >= topK) break;
+
+            string id;
+            string text;
+            double score;
             switch (r)
             {
                 case EntryResult er:
-                    hits.Add(new RetrievalHit(
-                        Id: ExtractDocId(er.Item.Entry.Uri),
-                        Text: er.Item.Entry.ContentPreview ?? string.Empty,
-                        Score: er.Score));
+                    id = ExtractDocId(er.Item.Entry.Uri);
+                    text = er.Item.Entry.ContentPreview ?? string.Empty;
+                    score = er.Score;
                     break;
                 case ChunkEntryResult cr:
-                    hits.Add(new RetrievalHit(
-                        Id: ExtractDocId(cr.ParentItem.Entry.Uri),
-                        Text: cr.ParentItem.Entry.ContentPreview ?? string.Empty,
-                        Score: cr.Score));
+                    id = ExtractDocId(cr.ParentItem.Entry.Uri);
+                    text = cr.ParentItem.Entry.ContentPreview ?? string.Empty;
+                    score = cr.Score;
                     break;
+                default:
+                    continue;
             }
+
+            if (_chunked)
+            {
+                string parentId = StripChunkSuffix(id);
+                if (!seenParents!.Add(parentId)) continue;  // already presented this parent
+                id = parentId;
+            }
+
+            hits.Add(new RetrievalHit(Id: id, Text: text, Score: score));
         }
         return hits;
     }
@@ -214,4 +276,16 @@ public sealed class ScriniaRetriever : IRetriever
     /// <summary>Reads the benchmark doc ID from the entry's <c>bench://</c> URI.</summary>
     private static string ExtractDocId(string uri) =>
         uri.StartsWith("bench://", StringComparison.Ordinal) ? uri["bench://".Length..] : uri;
+
+    /// <summary>
+    /// Reverses <see cref="IngestAsync"/>'s chunked ID convention. Uses <c>LastIndexOf</c>
+    /// so a parent ID that itself contains <c>::chunk_</c> still strips only the trailing
+    /// chunk suffix. Returns the original id unchanged if no chunk suffix is present
+    /// (whole-doc mode or pre-existing tests).
+    /// </summary>
+    private static string StripChunkSuffix(string id)
+    {
+        int idx = id.LastIndexOf(ChunkSeparator, StringComparison.Ordinal);
+        return idx < 0 ? id : id[..idx];
+    }
 }

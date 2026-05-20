@@ -25,10 +25,13 @@ internal static class RetrieverFactory
 {
     public enum Mode { Bm25, Bm25Embeddings }
 
-    public static (ScriniaRetriever Retriever, Mode Mode) Build(string[] args, string benchmarkSlug)
+    public static async Task<(ScriniaRetriever Retriever, Mode Mode)> BuildAsync(
+        string[] args, string benchmarkSlug, CancellationToken ct)
     {
         Mode mode = ParseMode(Program.Flag(args, "--mode") ?? "bm25_embeddings");
         string? modelDir = Program.Flag(args, "--model-dir");
+        EmbedProviderKind embedKind = EmbeddingProviderLoader.ParseKind(
+            Program.Flag(args, "--embed-provider"));
 
         // Ablation knobs default to "off" so the headline run stays apples-to-apples.
         double alphaRecency = ParseDouble(Program.Flag(args, "--alpha-recency"), 0.0);
@@ -42,6 +45,14 @@ internal static class RetrieverFactory
         if (Program.Flag(args, "--diversity-lambda") is not null && diversityInnerLimit == 0)
             diversityInnerLimit = 50;
 
+        // Chunking knobs. --chunk none (default) reproduces the prior whole-doc baseline.
+        // --chunk prod slices haystack docs via Scrinia.Core's TextChunker with the same
+        // default window/overlap prod uses, so the bench measures the chunked retrieval
+        // path real users hit instead of the monolithic-doc shortcut.
+        bool chunked = ParseChunk(Program.Flag(args, "--chunk"));
+        int chunkWindow = ParseInt(Program.Flag(args, "--chunk-window"), Scrinia.Core.Embeddings.TextChunker.DefaultWindowSize);
+        int chunkOverlap = ParseInt(Program.Flag(args, "--chunk-overlap"), Scrinia.Core.Embeddings.TextChunker.DefaultOverlap);
+
         var rankerOptions = RankerOptions.Default with
         {
             AlphaRelevance = 1.0,
@@ -53,12 +64,12 @@ internal static class RetrieverFactory
         IEmbeddingProvider? embedder = null;
         if (mode == Mode.Bm25Embeddings)
         {
-            embedder = EmbeddingProviderLoader.TryLoadModel2Vec(modelDir);
+            embedder = await EmbeddingProviderLoader.LoadAsync(embedKind, modelDir, ct);
             if (embedder is null)
             {
                 Console.Error.WriteLine(
-                    "warning: --mode=bm25_embeddings requested but Model2Vec model not found. " +
-                    "Run `scri setup` or download m2v-MiniLM-L6-v2 to ./models/. " +
+                    $"warning: --mode=bm25_embeddings requested but {embedKind} provider " +
+                    "could not be loaded (missing files, download failed, or device unavailable). " +
                     "Falling back to BM25-only.");
                 mode = Mode.Bm25;
             }
@@ -71,9 +82,19 @@ internal static class RetrieverFactory
             rankerOptions: rankerOptions,
             embeddingProvider: embedder,
             diversityLambda: diversityLambda,
-            diversityInnerLimit: diversityInnerLimit);
+            diversityInnerLimit: diversityInnerLimit,
+            chunked: chunked,
+            chunkWindowSize: chunkWindow,
+            chunkOverlap: chunkOverlap);
         return (retriever, mode);
     }
+
+    private static bool ParseChunk(string? raw) => raw?.ToLowerInvariant() switch
+    {
+        null or "" or "none" or "off" or "false" => false,
+        "prod" or "on" or "true" => true,
+        _ => throw new ArgumentException($"unknown --chunk '{raw}'. Expected: none | prod"),
+    };
 
     /// <summary>
     /// Builds a mode label suffix for filenames + run metadata that captures any
@@ -92,6 +113,19 @@ internal static class RetrieverFactory
         if (args is null) return baseLabel;
 
         var tags = new List<string>();
+        // Only tag with the embed-provider if the embedder actually ran. A fallback
+        // to Bm25 (model not found / download failed / device unavailable) must not
+        // inherit the "vulkan" suffix or the result file looks like a Vulkan run
+        // when it was BM25-only.
+        if (mode == Mode.Bm25Embeddings
+            && Program.Flag(args, "--embed-provider") is { } ep
+            && !string.Equals(ep, "model2vec", StringComparison.OrdinalIgnoreCase))
+            tags.Add(ep.ToLowerInvariant());
+        if (Program.Flag(args, "--chunk") is { } ck
+            && !string.Equals(ck, "none", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(ck, "off", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(ck, "false", StringComparison.OrdinalIgnoreCase))
+            tags.Add("chunked");
         if (Program.Flag(args, "--alpha-recency") is { } r) tags.Add($"rec{r}");
         if (Program.Flag(args, "--tau-days") is { } tau) tags.Add($"tau{tau}");
         if (Program.Flag(args, "--alpha-importance") is { } imp) tags.Add($"imp{imp}");

@@ -28,7 +28,7 @@ internal static class LongMemEvalCommand
         string output = Program.Flag(args, "--output")
             ?? DefaultOutputPath("longmemeval", split);
 
-        var (retriever, mode) = RetrieverFactory.Build(args, "longmemeval");
+        var (retriever, mode) = await RetrieverFactory.BuildAsync(args, "longmemeval", ct);
 
         Console.WriteLine($"longmemeval: data={dataPath}, split={split}, granularity={granularity}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
@@ -45,7 +45,7 @@ internal static class LongMemEvalCommand
             var result = await runner.RunAsync(
                 benchmarkName: "longmemeval",
                 modeLabel: RetrieverFactory.ModeLabel(mode, args) + (split == LongMemEvalLoader.SplitMode.Full ? "" : "_" + split.ToString().ToLowerInvariant()),
-                questions: loader.LoadAsync(ct),
+                questions: CategoryFilter.ApplyAsync(loader.LoadAsync(ct), Program.Flag(args, "--category"), ct),
                 retriever: retriever,
                 topK: topK,
                 progress: progress,

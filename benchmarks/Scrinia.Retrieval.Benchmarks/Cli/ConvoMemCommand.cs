@@ -21,7 +21,7 @@ internal static class ConvoMemCommand
 
         int? limit = Program.Flag(args, "--limit") is { } limRaw && int.TryParse(limRaw, out int lim) ? lim : 50;
         int topK = Program.FlagInt(args, "--top-k", 50);
-        var (retriever, mode) = RetrieverFactory.Build(args, "convomem");
+        var (retriever, mode) = await RetrieverFactory.BuildAsync(args, "convomem", ct);
         string output = Program.Flag(args, "--output")
             ?? DefaultOutputPath("convomem", RetrieverFactory.ModeLabel(mode, args));
 
@@ -40,7 +40,7 @@ internal static class ConvoMemCommand
             var result = await runner.RunAsync(
                 benchmarkName: "convomem",
                 modeLabel: RetrieverFactory.ModeLabel(mode, args),
-                questions: loader.LoadAsync(ct),
+                questions: CategoryFilter.ApplyAsync(loader.LoadAsync(ct), Program.Flag(args, "--category"), ct),
                 retriever: retriever,
                 topK: topK,
                 progress: progress,

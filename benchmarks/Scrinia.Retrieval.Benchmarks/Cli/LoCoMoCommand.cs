@@ -24,7 +24,7 @@ internal static class LoCoMoCommand
 
         var granularity = ParseGranularity(Program.Flag(args, "--granularity") ?? "session");
         int topK = Program.FlagInt(args, "--top-k", 50);
-        var (retriever, mode) = RetrieverFactory.Build(args, "locomo");
+        var (retriever, mode) = await RetrieverFactory.BuildAsync(args, "locomo", ct);
         string output = Program.Flag(args, "--output")
             ?? DefaultOutputPath("locomo", RetrieverFactory.ModeLabel(mode, args));
 
@@ -43,7 +43,7 @@ internal static class LoCoMoCommand
             var result = await runner.RunGroupedAsync(
                 benchmarkName: "locomo",
                 modeLabel: RetrieverFactory.ModeLabel(mode, args),
-                groups: loader.LoadAsync(ct),
+                groups: CategoryFilter.ApplyGroupedAsync(loader.LoadAsync(ct), Program.Flag(args, "--category"), ct),
                 retriever: retriever,
                 topK: topK,
                 progress: progress,

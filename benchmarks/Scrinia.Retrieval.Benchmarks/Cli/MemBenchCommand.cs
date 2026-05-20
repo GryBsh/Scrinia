@@ -22,7 +22,7 @@ internal static class MemBenchCommand
 
         int? limit = Program.Flag(args, "--limit") is { } limRaw && int.TryParse(limRaw, out int lim) ? lim : null;
         int topK = Program.FlagInt(args, "--top-k", 50);
-        var (retriever, mode) = RetrieverFactory.Build(args, "membench");
+        var (retriever, mode) = await RetrieverFactory.BuildAsync(args, "membench", ct);
         string output = Program.Flag(args, "--output")
             ?? DefaultOutputPath("membench", RetrieverFactory.ModeLabel(mode, args));
 
@@ -41,7 +41,7 @@ internal static class MemBenchCommand
             var result = await runner.RunAsync(
                 benchmarkName: "membench",
                 modeLabel: RetrieverFactory.ModeLabel(mode, args),
-                questions: loader.LoadAsync(ct),
+                questions: CategoryFilter.ApplyAsync(loader.LoadAsync(ct), Program.Flag(args, "--category"), ct),
                 retriever: retriever,
                 topK: topK,
                 progress: progress,

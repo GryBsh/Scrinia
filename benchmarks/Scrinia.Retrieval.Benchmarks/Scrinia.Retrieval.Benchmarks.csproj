@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
+    <ProjectReference Include="..\..\src\Scrinia.Plugin.Embeddings\Scrinia.Plugin.Embeddings.csproj" />
   </ItemGroup>
 
 </Project>
