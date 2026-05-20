@@ -38,13 +38,25 @@ public static class VulkanModelManager
         http.Timeout = TimeSpan.FromMinutes(10);
 
         string tmpPath = filePath + ".tmp";
-        using var response = await http.GetAsync(DefaultModelUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
+        try
+        {
+            using var response = await http.GetAsync(DefaultModelUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            response.EnsureSuccessStatusCode();
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-        await stream.CopyToAsync(fs, ct);
-
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            await using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await stream.CopyToAsync(fs, ct);
+        }
+        catch
+        {
+            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best-effort cleanup */ }
+            throw;
+        }
+        // fs + stream are disposed by now (scope ended at the try-block close), so
+        // File.Move can rename the .tmp on Windows. Without the explicit scope, the
+        // method-level `await using` left fs holding a write handle through Move,
+        // which Windows refuses (Linux rename(2) tolerates it — hence the Docker
+        // build never caught this).
         File.Move(tmpPath, filePath, overwrite: true);
         logger.LogInformation("Downloaded GGUF model ({Size:F1} MB)",
             new FileInfo(filePath).Length / (1024.0 * 1024));
