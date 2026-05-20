@@ -362,7 +362,7 @@ public sealed class ScriniaMcpToolsTests
         content.Should().Contain("local");
         content.Should().Contain("Top keywords");
         content.Should().Contain("auth");
-        content.Should().Contain("memory('search'");
+        content.Should().Contain("memory_search");
     }
 
     [Fact]
@@ -1619,80 +1619,80 @@ public sealed class ScriniaMcpToolsTests
         guide.Should().Contain("reviewAfter");
         guide.Should().Contain("/checkpoint/");
         guide.Should().Contain("## Recovery");
-        guide.Should().Contain("memory('remember'");
+        guide.Should().Contain("memory_remember");
     }
 
-    // ── Memory aliases: remember / recall (4 tests) ──────────────────────────
+    // ── Per-verb memory tools: remember / recall (4 tests) ───────────────────
 
     [Fact]
-    public async Task Memory_Remember_StoresContent()
+    public async Task MemoryRemember_StoresContent()
     {
         using var scope = new TestHelpers.StoreScope();
         string original = TestHelpers.Facts.Fact1;
 
-        string storeResult = await Tools().Memory("remember",
+        string storeResult = await Tools().MemoryRemember(
             path: "remember-test", content: [original]);
 
         var parsed = ResponseParser.Parse(storeResult);
         parsed.Status.Should().Be("success",
-            because: "memory('remember') must succeed like memory('store')");
+            because: "memory_remember must succeed");
 
         // Verify content is retrievable
         string showResult = await Tools().Show("remember-test");
         ResponseParser.Parse(showResult).Content.Should().Be(original,
-            because: "content stored via 'remember' must be retrievable via Show");
+            because: "content stored via memory_remember must be retrievable via Show");
     }
 
     [Fact]
-    public async Task Memory_Remember_ResponseActionIsRemembered()
+    public async Task MemoryRemember_ResponseActionIsRemembered()
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Memory("remember",
+        string result = await Tools().MemoryRemember(
             path: "remember-action-test", content: ["test content"]);
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
         parsed.Action.Should().Be("remembered",
-            because: "memory('remember') must use action 'remembered', not 'stored'");
+            because: "memory_remember must use action 'remembered', not the lower-level 'stored'");
     }
 
     [Fact]
-    public async Task Memory_Recall_ReturnsContent()
+    public async Task MemoryRecall_ReturnsContent()
     {
         using var scope = new TestHelpers.StoreScope();
         string original = TestHelpers.Facts.Fact13;
 
         await Tools().Store([original], "recall-test");
 
-        string result = await Tools().Memory("recall", path: "recall-test");
+        string result = await Tools().MemoryRecall(path: "recall-test");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success",
-            because: "memory('recall') must succeed like memory('show')");
+            because: "memory_recall must succeed");
         parsed.Content.Should().Be(original,
-            because: "memory('recall') must return the exact stored content");
+            because: "memory_recall must return the exact stored content");
     }
 
     [Fact]
-    public async Task Memory_Recall_ResponseActionIsRecalled()
+    public async Task MemoryRecall_ResponseActionIsRecalled()
     {
         using var scope = new TestHelpers.StoreScope();
 
         await Tools().Store(["recall action content"], "recall-action-test");
 
-        string result = await Tools().Memory("recall", path: "recall-action-test");
+        string result = await Tools().MemoryRecall(path: "recall-action-test");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
         parsed.Action.Should().Be("recalled",
-            because: "memory('recall') must use action 'recalled', not 'shown'");
+            because: "memory_recall must use action 'recalled', not the lower-level 'shown'");
     }
 
-    // ── withBuiltin parameter (skill recall) — disambiguated from 'reconcile' action ──
+    // ── withBuiltin parameter (skill recall) — disambiguated from memory_reconcile ──
 
     [Fact]
-    public async Task Memory_Recall_Skill_WithBuiltin_ReturnsBothBuiltInAndOverride()
+    public async Task MemoryRecall_Skill_WithBuiltin_ReturnsBothBuiltInAndOverride()
     {
         using var scope = new TestHelpers.StoreScope();
 
@@ -1702,8 +1702,7 @@ public sealed class ScriniaMcpToolsTests
         Directory.CreateDirectory(skillsDir);
         await File.WriteAllTextAsync(Path.Combine(skillsDir, "qa.md"), overrideBody);
 
-        string result = await Tools().Memory(
-            "recall",
+        string result = await Tools().MemoryRecall(
             path: "/skill/qa",
             withBuiltin: true);
 
@@ -1719,15 +1718,14 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Memory_Recall_NonSkill_WithBuiltinFlag_IsIgnored()
+    public async Task MemoryRecall_NonSkill_WithBuiltinFlag_IsIgnored()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["plain content"], "plain-memory");
 
         // Setting withBuiltin: true on a non-/skill/ path must not change behavior —
-        // the parameter is skill-recall-only and is unrelated to the 'reconcile' action.
-        string result = await Tools().Memory(
-            "recall",
+        // the parameter is skill-recall-only and is unrelated to memory_reconcile.
+        string result = await Tools().MemoryRecall(
             path: "plain-memory",
             withBuiltin: true);
 
@@ -1738,48 +1736,39 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Memory_Reconcile_ActionIsIndependentOfWithBuiltinFlag()
+    public async Task MemoryReconcile_IsIndependentOfWithBuiltinFlag()
     {
         using var scope = new TestHelpers.StoreScope();
 
-        // The reconcile *action* scans for git merge conflicts; in a fresh store it reports zero.
-        // It must work without (and ignore) the withBuiltin skill-merge flag — they are unrelated.
-        string result = await Tools().Memory("reconcile");
+        // memory_reconcile scans for git merge conflicts; in a fresh store it reports zero.
+        // It is unrelated to the withBuiltin skill-merge flag on memory_recall.
+        string result = await Tools().MemoryReconcile();
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success",
-            because: "memory('reconcile') on a clean store must succeed");
+            because: "memory_reconcile on a clean store must succeed");
     }
 
     // ── Structured error responses: errorCode + actionNeeded recovery hints ──
+    //
+    // Note: the dispatcher's "unknown action" path no longer exists — each verb is its
+    // own tool, so unknown names fail at the MCP tool-registration layer, not at runtime
+    // inside a handler. The previous Memory_UnknownAction_ReturnsInvalidActionCode test
+    // was removed as obsolete when the dispatcher was split.
 
     [Fact]
-    public async Task Memory_UnknownAction_ReturnsInvalidActionCode()
+    public async Task MemoryRemember_MissingRequiredParameter_ReturnsInvalidParameterCode()
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Memory("frobnicate", path: "anything");
-
-        var parsed = ResponseParser.Parse(result);
-        parsed.Status.Should().Be("error");
-        parsed.ErrorCode.Should().Be(ErrorCodes.InvalidAction,
-            because: "an unknown action must surface a machine-readable INVALID_ACTION code");
-        parsed.ActionNeeded.Should().NotBeEmpty(
-            because: "every error path must surface at least one recovery hint");
-    }
-
-    [Fact]
-    public async Task Memory_MissingRequiredParameter_ReturnsInvalidParameterCode()
-    {
-        using var scope = new TestHelpers.StoreScope();
-
-        string result = await Tools().Memory("remember");  // no path, no content
+        // empty path AND empty content array — trips the validator inside the tool.
+        string result = await Tools().MemoryRemember(path: "", content: []);
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("error");
         parsed.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
         parsed.ActionNeeded.Should().NotBeEmpty();
-        parsed.ActionNeeded[0].Should().Contain("memory('remember'",
+        parsed.ActionNeeded[0].Should().Contain("memory_remember",
             because: "the recovery hint should be a concrete tool call template");
     }
 
@@ -1794,8 +1783,8 @@ public sealed class ScriniaMcpToolsTests
         parsed.Status.Should().Be("error");
         parsed.ErrorCode.Should().Be(ErrorCodes.NotFound);
         parsed.ActionNeeded.Should().NotBeEmpty();
-        parsed.ActionNeeded.Should().Contain(h => h.Contains("memory('list')"),
-            because: "a not-found error should point to memory('list') as one recovery path");
+        parsed.ActionNeeded.Should().Contain(h => h.Contains("memory_list"),
+            because: "a not-found error should point to memory_list as one recovery path");
     }
 
     [Fact]
@@ -1815,14 +1804,13 @@ public sealed class ScriniaMcpToolsTests
     // ── Reserved-prefix typo guard ────────────────────────────────────────────
 
     [Fact]
-    public async Task Memory_Remember_PluralPrefixTypo_AddsInfoHint()
+    public async Task MemoryRemember_PluralPrefixTypo_AddsInfoHint()
     {
         using var scope = new TestHelpers.StoreScope();
 
         // /patterns/ is the canonical reserved prefix; /pattern/ is the singular typo.
         // Soft-warn: store still succeeds, but the response carries an info hint.
-        string result = await Tools().Memory(
-            "remember",
+        string result = await Tools().MemoryRemember(
             path: "/pattern/auth-retry",
             content: ["use exponential backoff with jitter"]);
 
@@ -1834,12 +1822,11 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Memory_Remember_WrongCasePrefix_AddsInfoHint()
+    public async Task MemoryRemember_WrongCasePrefix_AddsInfoHint()
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Memory(
-            "remember",
+        string result = await Tools().MemoryRemember(
             path: "/Findings/SEC-001",
             content: ["api key leaked in logs"]);
 
@@ -1850,12 +1837,11 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Memory_Remember_ExactReservedPrefix_NoHint()
+    public async Task MemoryRemember_ExactReservedPrefix_NoHint()
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Memory(
-            "remember",
+        string result = await Tools().MemoryRemember(
             path: "/patterns/retry-backoff",
             content: ["use exponential backoff"]);
 
@@ -1866,13 +1852,12 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Memory_Remember_UnrelatedPath_NoHint()
+    public async Task MemoryRemember_UnrelatedPath_NoHint()
     {
         using var scope = new TestHelpers.StoreScope();
 
         // /api/ is not a reserved prefix and not similar to any — must be silent.
-        string result = await Tools().Memory(
-            "remember",
+        string result = await Tools().MemoryRemember(
             path: "/api/auth-flow",
             content: ["oauth callback handler"]);
 

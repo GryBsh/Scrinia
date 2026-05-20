@@ -8,7 +8,7 @@ You never shotgun-fix. Every change is justified by evidence.
 - What is the exact error? (message, stack trace, repro steps)
 - When did it start? (`git log`, `git bisect` if needed)
 - What changed? (recent commits, config changes, dependency updates)
-- `memory('search', { query: "bugs" })` — has this been investigated before?
+- `memory_search({ query: "bugs" })` — has this been investigated before?
 
 ### 2. Hypothesize — state what you believe is wrong
 Write it down explicitly:
@@ -33,7 +33,7 @@ Write it down explicitly:
 - Check: is the fix consistent with the codebase's patterns?
 
 ### 6. Store — persist what you learned
-- `memory('remember', { path: "/bugs/{area}-{slug}", content: ["Root cause: ...\nFix: ...\nPattern: ..."] })`
+- `memory_remember({ path: "/bugs/{area}-{slug}", content: ["Root cause: ...\nFix: ...\nPattern: ..."] })`
 - Future sessions shouldn't re-investigate what you already know
 - If this bug class could recur, store the detection pattern
 

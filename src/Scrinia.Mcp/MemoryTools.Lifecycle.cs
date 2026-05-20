@@ -78,19 +78,19 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 "'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.",
                 ErrorCodes.InvalidParameter,
-                $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
+                $"memory_reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
 
         if (!TryResolveScriniaRelativePath(scriniaDir, conflictId, out string absolutePath, out string? pathError))
             return ResponseBuilder.Error(
                 pathError!,
                 ErrorCodes.InvalidParameter,
-                "memory('reconcile') to list current conflicts by relative path").ToYaml();
+                "memory_reconcile() to list current conflicts by relative path").ToYaml();
 
         if (!File.Exists(absolutePath))
             return ResponseBuilder.Error(
                 $"Conflict '{conflictId}' not found at {absolutePath}.",
                 ErrorCodes.NotFound,
-                "memory('reconcile') to list current conflicts by relative path").ToYaml();
+                "memory_reconcile() to list current conflicts by relative path").ToYaml();
 
         string fileContent;
         try { fileContent = File.ReadAllText(absolutePath); }
@@ -106,7 +106,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"No conflict markers found in '{conflictId}'; nothing to resolve.",
                 ErrorCodes.Conflict,
-                "memory('reconcile') to list current conflicts").ToYaml();
+                "memory_reconcile() to list current conflicts").ToYaml();
 
         string type = ClassifyConflictType(absolutePath);
         string normalisedChoice = choice.ToLowerInvariant();
@@ -120,7 +120,7 @@ public sealed partial class ScriniaMcpTools
                     return ResponseBuilder.Error(
                         $"{conflictId}: {extractError}",
                         ErrorCodes.Conflict,
-                        $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'merged', mergedContent: '...' }})").ToYaml();
+                        $"memory_reconcile({{ conflictId: '{conflictId}', choice: 'merged', mergedContent: '...' }})").ToYaml();
 
                 // For .nmp2 the extracted region is an encoded artifact; decode for storage as plain text,
                 // then re-encode on write below.
@@ -137,7 +137,7 @@ public sealed partial class ScriniaMcpTools
                     return ResponseBuilder.Error(
                         "'merged' choice requires the mergedContent parameter.",
                         ErrorCodes.InvalidParameter,
-                        $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'merged', mergedContent: 'merged text here' }})").ToYaml();
+                        $"memory_reconcile({{ conflictId: '{conflictId}', choice: 'merged', mergedContent: 'merged text here' }})").ToYaml();
                 if (type == "meta.json")
                 {
                     try { JsonNode.Parse(mergedContent!); }
@@ -156,7 +156,7 @@ public sealed partial class ScriniaMcpTools
                 return ResponseBuilder.Error(
                     $"Invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.",
                     ErrorCodes.InvalidParameter,
-                    $"memory('reconcile', {{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
+                    $"memory_reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
         }
 
         try
@@ -438,8 +438,8 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Memory '{name}' not found.",
                 ErrorCodes.NotFound,
-                "memory('list') to see available memories",
-                "memory('remember', { path: '...', content: [...] }) to create it").ToYaml();
+                "memory_list() to see available memories",
+                "memory_remember({ path: '...', content: [...] }) to create it").ToYaml();
         }
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
@@ -525,7 +525,7 @@ public sealed partial class ScriniaMcpTools
     /// Build the workspace-context blocks that <see cref="Restore"/> serialises into a YAML
     /// response. Extracted so <see cref="Guide"/> can fold the same signals into the cold-start
     /// guide call — the model gets workspace warnings, available skills, and followUp pointers
-    /// on the first tool call without having to remember to <c>memory('restore')</c> separately.
+    /// on the first tool call without having to remember to call <c>memory_restore</c> separately.
     /// </summary>
     internal async Task<RestoreContext> BuildRestoreContextAsync(CancellationToken cancellationToken)
     {
@@ -556,7 +556,7 @@ public sealed partial class ScriniaMcpTools
                         catch { return false; }
                     });
                 if (hasConflicts)
-                    warnings.Add(".scrinia/ has unresolved merge conflicts. Run memory('reconcile') before continuing.");
+                    warnings.Add(".scrinia/ has unresolved merge conflicts. Run memory_reconcile before continuing.");
             }
         }
         catch { /* best-effort check */ }
@@ -641,10 +641,10 @@ public sealed partial class ScriniaMcpTools
         catch (FileNotFoundException) { /* no session log for today */ }
 
         if (contentSections.Count == 0)
-            contentSections.Add("No persistent agent context found yet. Use memory('remember') to start storing notes, patterns, and skills.");
+            contentSections.Add("No persistent agent context found yet. Use memory_remember to start storing notes, patterns, and skills.");
 
         if (followUpNames.Count > 0)
-            instruction = "Call memory('recall') for each item in followUp to load full context.";
+            instruction = "Call memory_recall for each item in followUp to load full context.";
 
         return new RestoreContext(warnings, info, contentSections, followUpNames, instruction);
     }

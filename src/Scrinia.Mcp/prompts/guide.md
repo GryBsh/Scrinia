@@ -5,39 +5,39 @@ Scrinia is your single source of truth for project knowledge. All durable findin
 ## Quick Start
 
 ```
-memory('search', { query: "..." })       — find what you know
-memory('remember', { path: "...", content: [...] }) — store something
-memory('recall', { path: "..." })        — read it back
-memory('append', { path: "...", appendContent: "..." }) — add to it
-memory('forget', { path: "..." })        — delete it
-memory('restore')                        — resume after context loss
+memory_search({ query: "..." })                          — find what you know
+memory_remember({ path: "...", content: [...] })         — store something
+memory_recall({ path: "..." })                           — read it back
+memory_append({ path: "...", content: "..." })           — add to it
+memory_forget({ path: "..." })                           — delete it
+memory_restore()                                         — resume after context loss
 ```
 
-## Action × parameter reference
+## Tool reference
 
-`memory()` dispatches to ten actions. Canonical names below — `store`/`show` are accepted as aliases for `remember`/`recall` for back-compat, but prefer the canonical form.
+Scrinia exposes one `guide()` tool plus ten per-verb memory tools. Each tool's parameter schema is enforced at the validator level — you can't accidentally pass the wrong shape.
 
-| Action | Required | Optional |
+| Tool | Required | Optional |
 |---|---|---|
-| `remember` (alias: `store`) | `path`, `content[]` | `description`, `tags[]`, `keywords[]`, `codeRefs[]`, `reviewAfter`, `reviewWhen` |
-| `recall` (alias: `show`) | `path` | `chunk`, `withBuiltin` (only for `/skill/` paths) |
-| `append` | `path`, `appendContent` | — |
-| `forget` | `path` | — |
-| `search` | `query` | `scopes`, `limit`, `excludeTopics` |
-| `list` | — | `scopes`, `mode` (`summary`/`full`/`drift`), `offset`, `limit`, `excludeTopics` |
-| `compact` | `path` | `keepRecent` |
-| `link` | `path`, `destination` | `reason` |
-| `restore` | — | — |
-| `reconcile` | — | `conflictId`, `choice` (`ours`/`theirs`/`merged`), `mergedContent` |
+| `memory_remember` | `path`, `content` (string array) | `description`, `tags`, `keywords`, `codeRefs`, `reviewAfter`, `reviewWhen` |
+| `memory_recall` | `path` | `chunk`, `withBuiltin` (only for `/skill/` paths) |
+| `memory_append` | `path`, `content` (string) | — |
+| `memory_forget` | `path` | — |
+| `memory_search` | `query` | `context`, `scopes`, `limit`, `excludeTopics` |
+| `memory_list` | — | `scopes`, `mode` (`summary`/`full`/`drift`), `offset`, `limit`, `excludeTopics` |
+| `memory_compact` | `path` | `keepRecent` |
+| `memory_link` | `path`, `destination` | `reason` |
+| `memory_restore` | — | — |
+| `memory_reconcile` | — | `conflictId`, `choice` (`ours`/`theirs`/`merged`), `mergedContent` |
 
-Two shape gotchas worth remembering:
-- `remember` uses `content: string[]` — each element is a chunk.
-- `append` uses `appendContent: string` — a single new chunk.
-- The shapes are intentionally different; passing the wrong key returns a clear error.
+The `content` parameter is shaped to its tool:
+
+- `memory_remember` takes `content: string[]` — each element becomes one chunk.
+- `memory_append` takes `content: string` — a single new chunk appended to the existing memory.
 
 ## Search before non-trivial work
 
-For new tasks, joining a project, or questions about prior decisions, `memory('search')` first. It prevents redundant investigation and keeps your work consistent with what's already been decided.
+For new tasks, joining a project, or questions about prior decisions, `memory_search` first. It prevents redundant investigation and keeps your work consistent with what's already been decided.
 
 Skip the search when the request is fully self-contained (rename a variable, reformat a function, answer a question with the code already in front of you) or when you're storing a trivial fact you just learned. A round trip you don't need is friction.
 
@@ -54,7 +54,7 @@ Paths organize memories hierarchically and are auto-tagged for search:
 - `/api/auth-flow` → searchable by `[api, auth, flow]`
 - `/patterns/retry` → searchable by `[patterns, retry]`
 
-Scope a search to a path prefix: `memory('search', { query: "auth", path: "/api/" })`.
+Scope a search to a path prefix: `memory_search({ query: "auth", scopes: "api" })`.
 
 ### Reserved paths
 
@@ -76,22 +76,22 @@ Any other path you use is treated as plain memory and grouped by its first segme
 Each element in the `content` array becomes one independently searchable chunk. Design chunks around concepts, not size.
 
 ```
-memory('remember', { path: "/api/auth", content: [
+memory_remember({ path: "/api/auth", content: [
   "OAuth flow: redirect → callback → token exchange",
   "Token refresh: background job every 55 minutes"
 ]})
 ```
 
-Retrieve a specific chunk: `memory('recall', { path: "/api/auth", chunk: 2 })`.
+Retrieve a specific chunk: `memory_recall({ path: "/api/auth", chunk: 2 })`.
 
 ## Skills
 
 Skills are reusable specialist prompts — load one mid-conversation when you hit a domain you weren't optimized for.
 
 ```
-memory('recall', { path: "/skill/qa" })       — load a skill prompt
-memory('recall', { path: "/skill/" })         — list available skills
-memory('remember', { path: "/skill/my-helper", content: [...] }) — create or override
+memory_recall({ path: "/skill/qa" })                           — load a skill prompt
+memory_recall({ path: "/skill/" })                             — list available skills
+memory_remember({ path: "/skill/my-helper", content: [...] })  — create or override
 ```
 
 Built-in skills that ship with scrinia:
@@ -105,13 +105,13 @@ Built-in skills that ship with scrinia:
 - `evolutionary` — prune stale memories, surface drift, keep skills aligned with practice
 - `self-reflector` — compare plan vs reality after a unit of work, persist lessons
 
-Skills are persisted as `.scrinia/skills/{name}.md`. Built-ins are reused from the binary unless you override them. To merge a project override against an updated built-in: `memory('recall', { path: '/skill/{name}', withBuiltin: true })`. (`withBuiltin` is the skill-merge flag; it is unrelated to the `reconcile` action which handles git merge conflicts.)
+Skills are persisted as `.scrinia/skills/{name}.md`. Built-ins are reused from the binary unless you override them. To merge a project override against an updated built-in: `memory_recall({ path: '/skill/{name}', withBuiltin: true })`. (`withBuiltin` is the skill-merge flag; it is unrelated to `memory_reconcile` which handles git merge conflicts.)
 
 ## Reading responses
 
 Every response includes structured fields the next call should respect:
 
-- `instruction` — what you should do next (e.g. "Call memory('recall') for each item in followUp"). Follow it.
+- `instruction` — what you should do next (e.g. "Call memory_recall for each item in followUp"). Follow it.
 - `followUp` — paths or memories worth loading; the response only returned a short summary to save tokens.
 - `actionNeeded` — warnings that block normal operation (unresolved merge conflicts, drifted memories). Address these before doing other work.
 - `status` and `action` — what happened.
@@ -121,19 +121,19 @@ Every response includes structured fields the next call should respect:
 Flag memories for staleness review:
 
 ```
-memory('remember', { ..., reviewAfter: "2026-06-01" })
-memory('remember', { ..., reviewWhen: "when auth changes" })
+memory_remember({ ..., reviewAfter: "2026-06-01" })
+memory_remember({ ..., reviewWhen: "when auth changes" })
 ```
 
-Memories with these markers surface as `[stale]` or `[review?]` in `memory('list')` so you know to re-check them. The store also auto-flags memories that mention specific counts (e.g. "759 tests") with a `reviewWhen: "when counts in this memory change"` marker.
+Memories with these markers surface as `[stale]` or `[review?]` in `memory_list` so you know to re-check them. The store also auto-flags memories that mention specific counts (e.g. "759 tests") with a `reviewWhen: "when counts in this memory change"` marker.
 
 ## Session logs
 
-Maintain a session log: `memory('append', { path: "/sessions/2026-04-08", appendContent: "..." })`.
+Maintain a session log: `memory_append({ path: "/sessions/2026-04-08", content: "..." })`.
 
 ## Recovery
 
-`memory('restore')` resumes agent context — agent profile, patterns, today's session log, available skills, and any unresolved merge conflicts. Read its `actionNeeded` warnings first, then follow the `followUp` list to load detailed context.
+`memory_restore` resumes agent context — agent profile, patterns, today's session log, available skills, and any unresolved merge conflicts. Read its `actionNeeded` warnings first, then follow the `followUp` list to load detailed context.
 
 ## Workspace
 

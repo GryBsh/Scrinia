@@ -183,7 +183,7 @@ A small set of paths have first-class behavior; everything else is plain memory 
 
 ### Built-in Skills
 
-The following ship with scrinia and load via `memory('recall', { path: '/skill/{name}' })`:
+The following ship with scrinia and load via `memory_recall({ path: '/skill/{name}' })`:
 
 | Skill | Purpose |
 |-------|---------|
@@ -196,7 +196,7 @@ The following ship with scrinia and load via `memory('recall', { path: '/skill/{
 | `qa` | Quality assurance validation: test coverage, acceptance criteria, regression checks |
 | `self-reflector` | Agent self-assessment: identify blind spots, biases, and improvement opportunities |
 
-Built-in skills are evolvable — `memory('remember', { path: '/skill/{name}', content: [...] })` creates a project-specific override on disk.
+Built-in skills are evolvable — `memory_remember({ path: '/skill/{name}', content: [...] })` creates a project-specific override on disk.
 
 ## What's Next
 

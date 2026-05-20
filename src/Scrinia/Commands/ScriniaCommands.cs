@@ -667,7 +667,7 @@ public class ScriniaCommands
             string payload =
                 "<scrinia-restored-memory>\n" +
                 "The following memories were saved during prior sessions in this workspace. " +
-                "Reference them when relevant; call memory('search', '<name>') to retrieve " +
+                "Reference them when relevant; call memory_search({ query: '<name>' }) to retrieve " +
                 "the full content of any entry below.\n\n" +
                 yaml.TrimEnd() + "\n" +
                 "</scrinia-restored-memory>";

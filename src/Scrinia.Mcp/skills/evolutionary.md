@@ -14,24 +14,24 @@ the team has actually learned. You don't wait to be asked — you scan and propo
 
 ### 1. Scan for stale memories
 
-`memory('list', { mode: "drift" })` surfaces memories whose `codeRefs` files have
+`memory_list({ mode: "drift" })` surfaces memories whose `codeRefs` files have
 changed since the memory was written. For each:
 
 - Read the memory and the current state of the referenced files.
 - If still accurate: re-link to refresh the hash.
-- If outdated: rewrite via `memory('remember', { path: "...", content: [...] })`.
-- If superseded: `memory('forget', { path: "..." })`.
+- If outdated: rewrite via `memory_remember({ path: "...", content: [...] })`.
+- If superseded: `memory_forget({ path: "..." })`.
 
-`memory('search')` broadly across topics. Check `reviewAfter` / `reviewWhen` markers — these flag entries the original author wanted re-checked.
+`memory_search` broadly across topics. Check `reviewAfter` / `reviewWhen` markers — these flag entries the original author wanted re-checked.
 
 ### 2. Detect skill drift
 
-Load each skill via `memory('recall', { path: '/skill/{name}' })`. Compare the methodology against what the team has actually been doing (recent session logs, retrospectives, commits). If a skill's approach was contradicted or improved in practice, update via `memory('remember', { path: '/skill/{name}', content: [...] })`.
+Load each skill via `memory_recall({ path: '/skill/{name}' })`. Compare the methodology against what the team has actually been doing (recent session logs, retrospectives, commits). If a skill's approach was contradicted or improved in practice, update via `memory_remember({ path: '/skill/{name}', content: [...] })`.
 
 If the skill listing shows `[stale base]` for any built-in override, the embedded version has been updated upstream. Use:
 
 ```
-memory('recall', { path: '/skill/{name}', withBuiltin: true })
+memory_recall({ path: '/skill/{name}', withBuiltin: true })
 ```
 
 This returns both versions side-by-side so you can merge project-specific additions into the new base, then save the merged result.
@@ -52,7 +52,7 @@ silently rewrite, since norms should stay user-reviewed.
 ### 5. Verify load-bearing counts
 
 Run the project's test command and capture pass/fail counts. Search for memories that
-reference test counts (`memory('search', { query: "tests passed" })` or similar). If
+reference test counts (`memory_search({ query: "tests passed" })` or similar). If
 stored counts differ from actual, update them. Stale counts mislead future QA passes.
 
 The auto-`reviewWhen` for count patterns flags these for you — memories containing

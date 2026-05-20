@@ -186,8 +186,8 @@ public static class McpResponseExtensions
                     sb.AppendLine(ci, $"  - {YamlEscape(name)}");
             if (r.ContentTruncated)
                 sb.AppendLine("  - " + YamlEscape(
-                    "Content truncated. Call memory('recall', { path, chunk: N+1 }) for the next chunk, " +
-                    "or memory('search') to scope down to the segment you need."));
+                    "Content truncated. Call memory_recall({ path, chunk: N+1 }) for the next chunk, " +
+                    "or memory_search to scope down to the segment you need."));
         }
 
         if (r.Content is not null)

@@ -10,7 +10,7 @@ namespace Scrinia.Commands;
 /// Pre-send relevance hint: given the user's about-to-be-submitted prompt, emit a
 /// one-line marker telling the agent which stored memories look relevant. No retrieval,
 /// no LLM call — just a fast BM25 top-K lookup so the agent (or the user) knows
-/// <c>memory('search', '...')</c> would be useful.
+/// <c>memory_search({ query: '...' })</c> would be useful.
 ///
 /// <para>Wired into agent CLIs via the <c>UserPromptSubmit</c> /
 /// <c>userPromptSubmitted</c> hook by the hook installers. The CLI invokes
@@ -128,7 +128,7 @@ public sealed class HintCommand
         string payload =
             $"<scrinia-hint priority=\"high\">\n" +
             $"The user has {names.Count} stored {countWord} that match this prompt: {list}.\n" +
-            $"Before answering, call memory('search', '{firstName}') to retrieve them — they " +
+            $"Before answering, call memory_search({{ query: '{firstName}' }}) to retrieve them — they " +
             $"contain prior decisions and context the user expects you to remember.\n" +
             $"</scrinia-hint>";
 
@@ -170,7 +170,7 @@ public sealed class HintCommand
         var names = result.Matches.Select(m => m.Name).ToList();
         string countWord = names.Count == 1 ? "memory" : "memories";
         return $"[scrinia] {names.Count} {countWord} match: {string.Join(", ", names)}. " +
-            $"Run memory('search', '{names[0]}') to retrieve.";
+            $"Run memory_search({{ query: '{names[0]}' }}) to retrieve.";
     }
 }
 

@@ -180,16 +180,25 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-2 tools available via `scri serve`.
+11 tools available via `scri serve`.
 
-| Tool | Actions | Description |
-|---|---|---|
-| `guide` | *(none — standalone)* | Returns the embedded agent guide. Call once per session. |
-| `memory` | `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, `reconcile` | Unified memory dispatcher. Skill paths (`/skill/...`) are routed through it. |
+| Tool | Description |
+|---|---|
+| `guide` | Returns the embedded agent guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session. |
+| `memory_remember` | Persist a memory at a path. `content` is a string array — each element is one chunk. |
+| `memory_recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
+| `memory_search` | Find memories by keyword or phrase. |
+| `memory_list` | List stored memories (`summary` / `full` / `drift` modes). |
+| `memory_append` | Append a chunk to an existing memory (or create it). |
+| `memory_forget` | Delete a memory by path. |
+| `memory_compact` | Merge a multi-chunk memory; archives the original. |
+| `memory_link` | Bidirectional link between two memories. |
+| `memory_restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
+| `memory_reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
 
 ### Built-in skills
 
-Eight skills ship with scrinia and load via `memory('recall', { path: '/skill/{name}' })`:
+Eight skills ship with scrinia and load via `memory_recall({ path: '/skill/{name}' })`:
 
 | Skill | Purpose |
 |-------|---------|
@@ -204,7 +213,7 @@ Eight skills ship with scrinia and load via `memory('recall', { path: '/skill/{n
 
 Projects can override any built-in by writing to `/skill/{name}` — the on-disk version takes precedence and is reusable across sessions.
 
-Plans, retrospectives, agent norms, and findings are all just memories — searchable via `memory('search')`, organized via reserved paths (`/findings/`, `/learn/`, `/agent/`, `/patterns/`, `/sessions/`). No separate database, no separate tools.
+Plans, retrospectives, agent norms, and findings are all just memories — searchable via `memory_search`, organized via reserved paths (`/findings/`, `/learn/`, `/agent/`, `/patterns/`, `/sessions/`). No separate database, no separate tools.
 
 ## Documentation
 

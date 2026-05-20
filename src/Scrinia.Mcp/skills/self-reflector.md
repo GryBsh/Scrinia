@@ -14,7 +14,7 @@ the surprises, and persist beliefs the next agent should inherit.
 
 ### 1. Read the record
 
-- The session log: `memory('recall', { path: "/sessions/{date}" })` or recent appends.
+- The session log: `memory_recall({ path: "/sessions/{date}" })` or recent appends.
 - The git history for the work: commits, PR descriptions, review comments.
 - Any QA report or findings produced along the way.
 - Prior memories on the same topic — has this lesson been learned before?
@@ -50,7 +50,7 @@ preferences, capture it:
 ### 5. Persist the retrospective
 
 ```
-memory('remember', { path: "/learn/retro-{slug}", content: [
+memory_remember({ path: "/learn/retro-{slug}", content: [
   "## What was the work\n...",
   "## Plan vs reality\n...",
   "## Lessons\n- ...",
@@ -61,7 +61,7 @@ memory('remember', { path: "/learn/retro-{slug}", content: [
 If the retrospective produced a durable belief worth indexing on its own:
 
 ```
-memory('remember', { path: "/learn/{belief-slug}", content: ["..."] })
+memory_remember({ path: "/learn/{belief-slug}", content: ["..."] })
 ```
 
 ## Key rules

@@ -249,7 +249,7 @@ Tokenization: split on non-alphanumeric characters, lowercase, filter stop words
 - **`ExtractFileRefs(content)`** -- extracts file path references matching known extensions (.cs, .ts, .json, .md, .yaml, .csproj, .sln, etc.). Anchored to avoid matching inside URLs. Results are deduplicated case-insensitively.
 - **`ExtractMemoryRefs(content)`** -- extracts both persistent memory references (`topic:subject` pattern) and ephemeral references (`~name` pattern). Avoids matching URL-like patterns (e.g., `http://`).
 
-Used by the `references` and `link` memory tools to enable drift detection (`memory('list', { mode: "drift" })`) and cross-reference tracking between memories and source files.
+Used by the `references` and `link` memory tools to enable drift detection (`memory_list({ mode: "drift" })`) and cross-reference tracking between memories and source files.
 
 ## Storage
 

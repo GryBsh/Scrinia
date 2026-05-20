@@ -14,10 +14,10 @@ act on without re-doing the discovery work.
 
 ### 1. Orient before scanning
 
-- `memory('search', { query: "applied-fixes" })` — know what's already been fixed so you don't re-flag it.
-- `memory('search', { query: "audit-false-positives" })` — known false positives in this codebase.
-- `memory('search', { query: "architecture" })` and `memory('search', { query: "patterns" })` — load conventions so your findings respect existing style.
-- `memory('list', { path: "/findings/" })` — see prior findings so you can sequence IDs and avoid duplicates.
+- `memory_search({ query: "applied-fixes" })` — know what's already been fixed so you don't re-flag it.
+- `memory_search({ query: "audit-false-positives" })` — known false positives in this codebase.
+- `memory_search({ query: "architecture" })` and `memory_search({ query: "patterns" })` — load conventions so your findings respect existing style.
+- `memory_list({ scopes: "findings" })` — see prior findings so you can sequence IDs and avoid duplicates.
 
 ### 2. Scan three streams in parallel
 
@@ -45,7 +45,7 @@ Common false positives — verify before flagging:
 
 Use sequenced IDs grouped by category. Count entries under `/findings/` to determine the next available ID.
 
-- Security: `SEC-NNN` → `memory('remember', { path: "/findings/SEC-001", content: ["..."], keywords: ["security", "high"] })`
+- Security: `SEC-NNN` → `memory_remember({ path: "/findings/SEC-001", content: ["..."], keywords: ["security", "high"] })`
 - Code quality: `QAL-NNN` → `/findings/QAL-001`
 - Documentation: `DOC-NNN` → `/findings/DOC-001`
 

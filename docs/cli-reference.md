@@ -235,7 +235,7 @@ scri memory link api:auth-flow patterns:retry -r "auth retries use the documente
 
 Resume agent context after a fresh session — emits the agent profile, recurring
 patterns, today's session log, and the list of available skills. The same call
-the MCP `memory('restore')` action makes.
+the MCP `memory_restore` call makes.
 
 ```bash
 scri restore [--workspace-root <path>] [--json]
@@ -384,7 +384,7 @@ Empty stdout when:
 - No matches clear `Scrinia:Hint:MinScore` (default 10.0).
 - `Scrinia:Hint:Enabled` is set to `false`.
 
-Plain output format: `[scrinia] N memories match: name1, name2, name3. Run memory('search', 'name1') to retrieve.`
+Plain output format: `[scrinia] N memories match: name1, name2, name3. Run memory_search({ query: 'name1' }) to retrieve.`
 
 `--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`.
 

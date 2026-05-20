@@ -68,19 +68,28 @@ scrinia/
 
 ## MCP Tools
 
-Two tools are exposed:
+Eleven tools are exposed — `guide()` plus one per memory operation:
 
 | Tool | Description |
 |------|-------------|
-| `guide()` | Returns the embedded usage guide. Call once per session and commit its content to your project's agent file. |
-| `memory(action, ...)` | Unified dispatcher: `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, `reconcile`. |
+| `guide()` | Returns the embedded usage guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session and commit its content to your project's agent file. |
+| `memory_remember` | Persist a memory at a path. `content` is a string array — each element is one chunk. |
+| `memory_recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
+| `memory_search` | Find memories by keyword or phrase. |
+| `memory_list` | List stored memories (`summary` / `full` / `drift` modes). |
+| `memory_append` | Append a chunk to an existing memory (or create it). |
+| `memory_forget` | Delete a memory by path. |
+| `memory_compact` | Merge a multi-chunk memory; archives the original. |
+| `memory_link` | Bidirectional link between two memories. |
+| `memory_restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
+| `memory_reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
 
-Skill paths are routed through `memory()`:
-- `memory('recall', { path: '/skill/qa' })` — load a skill prompt (built-in or override).
-- `memory('recall', { path: '/skill/' })` — list available skills.
-- `memory('remember', { path: '/skill/{name}', content: [...] })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
+Skill paths are routed transparently through `memory_recall` and `memory_remember`:
+- `memory_recall({ path: '/skill/qa' })` — load a skill prompt (built-in or override).
+- `memory_recall({ path: '/skill/' })` — list available skills.
+- `memory_remember({ path: '/skill/{name}', content: [...] })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
 
-`memory('restore')` resumes context — agent profile, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
+`memory_restore` resumes context — agent profile, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
 
 ## Core Abstractions
 

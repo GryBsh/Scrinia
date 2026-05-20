@@ -33,12 +33,12 @@ and where do I look for things?
 
 ### 5. Produce the walkthrough
 Store findings in scrinia for future sessions:
-- `memory('remember', { path: "arch:overview", content: [overview] })` — high-level architecture
-- `memory('remember', { path: "arch:patterns", content: [patterns] })` — conventions and patterns
-- `memory('remember', { path: "arch:pitfalls", content: [pitfalls] })` — things that will trip you up
-- `memory('remember', { path: "testing:infrastructure", content: [testing] })` — how to run and write tests
+- `memory_remember({ path: "arch:overview", content: [overview] })` — high-level architecture
+- `memory_remember({ path: "arch:patterns", content: [patterns] })` — conventions and patterns
+- `memory_remember({ path: "arch:pitfalls", content: [pitfalls] })` — things that will trip you up
+- `memory_remember({ path: "testing:infrastructure", content: [testing] })` — how to run and write tests
 
-The goal: a future agent starting a fresh session can `memory('search', { query: "architecture" })`
+The goal: a future agent starting a fresh session can `memory_search({ query: "architecture" })`
 and have enough context to start working without re-exploring the codebase.
 
 ## Key principle

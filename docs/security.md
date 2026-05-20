@@ -165,7 +165,7 @@ These are out of scope for the current design. Operators must compensate.
 **Not sensitive** (safe to commit to source control if your team agrees):
 - `skills/`, `agent/` markdown files — these are reusable prompts.
 - `.meta.json` sidecars when memory contents are public-by-design (e.g. architecture
-  docs). The agent-facing `memory('list')` only shows metadata, never bodies.
+  docs). The agent-facing `memory_list` only shows metadata, never bodies.
 
 ## Recommendations
 

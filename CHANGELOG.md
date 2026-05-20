@@ -10,6 +10,23 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed
+- **MCP surface split: `memory(action, …)` dispatcher replaced with ten per-verb
+  tools** — `memory_remember`, `memory_recall`, `memory_search`, `memory_list`,
+  `memory_append`, `memory_forget`, `memory_compact`, `memory_link`,
+  `memory_restore`, `memory_reconcile`. The dispatcher's single JSONSchema had
+  to declare every parameter across every operation, so it couldn't express
+  "if `action='remember'` then `content[]` is required and `appendContent` is
+  ignored" — the most salient parameter name won under autonomous reasoning
+  and agents reliably produced malformed calls 40 turns into a session.
+  Per-verb schemas give each operation exactly its own fields and upgrade the
+  correctness signal from prose-in-description to validator-level. Skill-path
+  routing is preserved inside `memory_recall` / `memory_remember` (no separate
+  `skill_*` surface). `memory_append` parameter renamed from `appendContent`
+  to `content` (the disambiguation suffix was an artifact of the dispatcher's
+  ambiguity and is no longer needed). `INVALID_ACTION` error code is gone —
+  unknown names now fail at MCP tool-registration, not in a runtime handler.
+
 ### Fixed
 - `scri hint` no longer silently drops memories whose best score came from a
   chunk match. `WeightedFieldScorer.SearchAll` deduplicates per memory and

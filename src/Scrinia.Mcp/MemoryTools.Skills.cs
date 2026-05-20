@@ -369,7 +369,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Success(reconContent)
                 .WithPath($"/skill/{skillName}")
                 .WithAction("loaded")
-                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call memory('remember', { path: '/skill/...' }) to save the merged version.")
+                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call memory_remember({ path: '/skill/...' }) to save the merged version.")
                 .ToYaml();
         }
 
@@ -380,7 +380,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Skill '{skillName}' not found.",
                 ErrorCodes.NotFound,
-                "memory('recall', { path: '/skill/' }) to list available skills").ToYaml();
+                "memory_recall({ path: '/skill/' }) to list available skills").ToYaml();
         }
 
         var warnings = new List<string>();
@@ -413,7 +413,7 @@ public sealed partial class ScriniaMcpTools
                     SHA256.HashData(Encoding.UTF8.GetBytes(currentBuiltIn)));
                 if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                 {
-                    warnings.Add($"built-in skill has changed since this override was created. Review with memory('recall', {{ path: '/skill/{skillName}', withBuiltin: true }})");
+                    warnings.Add($"built-in skill has changed since this override was created. Review with memory_recall({{ path: '/skill/{skillName}', withBuiltin: true }})");
                 }
             }
         }

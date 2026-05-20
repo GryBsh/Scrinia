@@ -102,7 +102,7 @@ public sealed class HintCommandTests : IDisposable
         formatted.Should().Contain("2 memories match");
         formatted.Should().Contain("oauth-flow");
         formatted.Should().Contain("jwt-validation");
-        formatted.Should().Contain("memory('search', 'oauth-flow')");
+        formatted.Should().Contain("memory_search({ query: 'oauth-flow' })");
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public sealed class HintCommandTests : IDisposable
         ctx.Should().Contain("The user has 2 stored memories");
         ctx.Should().Contain("oauth-flow");
         ctx.Should().Contain("jwt-validation");
-        ctx.Should().Contain("Before answering, call memory('search', 'oauth-flow')");
+        ctx.Should().Contain("Before answering, call memory_search({ query: 'oauth-flow' })");
         ctx.Should().Contain("the user expects you to remember",
             "the justification clause gives the model a reason to act, not just a name to lookup");
     }
