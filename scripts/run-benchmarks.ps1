@@ -102,7 +102,16 @@ $ErrorActionPreference = "Stop"
 # -ExtraArgs "--foo bar" (single space-separated string). Without this,
 # the merged token "--foo bar" reaches scrinia-bench as a single argv
 # entry and the parser silently ignores it.
-$ExtraArgs = $ExtraArgs | ForEach-Object { $_ -split '\s+' } | Where-Object { $_ }
+# Split each ExtraArgs entry on whitespace, drop empties, then strip wrapping
+# single/double quotes from each token. PowerShell does not treat inner single
+# quotes as delimiters inside an outer double-quoted string, so a literal value
+# like --enrich-model 'qwen2.5:1.5b' would otherwise reach scrinia-bench as
+# "'qwen2.5:1.5b'" (quotes and all) and downstream APIs reject it as an invalid
+# name. Stripping here is safe for typical CLI values, which don't embed quotes.
+$ExtraArgs = $ExtraArgs `
+    | ForEach-Object { $_ -split '\s+' } `
+    | Where-Object { $_ } `
+    | ForEach-Object { $_ -replace "^['""]+|['""]+$", "" }
 
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 if (-not $DataRoot) {

@@ -129,7 +129,23 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
             ApplyAuth(req);
 
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
-            if (!resp.IsSuccessStatusCode) return null;
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Surface the server's error body so misconfigured models, missing
+                // pulls, and payload-shape rejections are debuggable. Without this
+                // the bench (and prod consolidate) silently degrades to no-op on
+                // every 4xx — operator sees Tier 2 "doing nothing" with no clue why.
+                // Truncate to keep stderr readable; null still returned so callers
+                // treat this as skip-and-continue.
+                string errBody;
+                try { errBody = await resp.Content.ReadAsStringAsync(ct); }
+                catch { errBody = "<unreadable>"; }
+                if (errBody.Length > 500) errBody = errBody[..500] + "...";
+                Console.Error.WriteLine(
+                    $"[scrinia:llm] {_options.Provider}/{_options.Model} POST {req.RequestUri} -> " +
+                    $"{(int)resp.StatusCode} {resp.ReasonPhrase}: {errBody}");
+                return null;
+            }
 
             ChatResponse? body = await resp.Content.ReadFromJsonAsync(
                 LlmJsonContext.Default.ChatResponse, ct);
