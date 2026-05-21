@@ -64,10 +64,12 @@ internal static class RetrieverFactory
         {
             string provider = Program.Flag(args, "--enrich-provider")
                 ?? throw new ArgumentException(
-                    "--enrich tier2 requires --enrich-provider (claude-cli | codex-cli | copilot-cli | openai)");
+                    "--enrich tier2 requires --enrich-provider (claude-cli | codex-cli | copilot-cli | ollama | openai)");
             string? model = Program.Flag(args, "--enrich-model");
+            string? baseUrl = Program.Flag(args, "--enrich-base-url");
+            string? apiKey = Program.Flag(args, "--enrich-api-key");
             var ops = EnrichOps.Parse(Program.Flag(args, "--enrich-ops"));
-            var backend = await BenchLlmBackendBuilder.BuildAsync(provider, model, ct);
+            var backend = await BenchLlmBackendBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
             string cacheDir = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache");
             string cacheFile = Path.Combine(cacheDir, $"enrich-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
             var cache = new EnrichmentCache(cacheFile);

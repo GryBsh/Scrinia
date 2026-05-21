@@ -72,8 +72,12 @@ internal static class Program
 
             Tier 2 LLM enrichment flags (ingest-time, measures scrinia's product surface above pure retrieval):
               --enrich <c>             none (default) | tier2 — enable Tier 2 enrichment at ingest
-              --enrich-provider <p>    Required when --enrich tier2: claude-cli | codex-cli | copilot-cli | openai
-              --enrich-model <m>       Optional model override (default: provider's cheap-tier default — see AgentCliVariant)
+              --enrich-provider <p>    Required when --enrich tier2: claude-cli | codex-cli | copilot-cli | ollama | openai
+              --enrich-model <m>       Required for ollama/openai; optional for agent CLIs (defaults to variant's cheap-tier).
+                                       Ollama: try qwen2.5:0.5b, llama3.2:1b, or phi3:mini for fast iteration.
+              --enrich-base-url <url>  Optional HTTP endpoint override for ollama/openai (default: http://localhost:11434/v1 = Ollama).
+                                       Point at LM Studio (:1234), llama.cpp server (:8080), vLLM, or a remote endpoint.
+              --enrich-api-key <key>   Optional bearer token for openai. Ollama doesn't need one; real OpenAI does.
               --enrich-ops <list>      Comma-separated subset of facts,description,importance,summary (default: facts,description — the two that move R@K). 'all' enables all four.
               --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --enrich tier2 is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
 
