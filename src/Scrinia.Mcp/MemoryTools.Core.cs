@@ -637,6 +637,8 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional comma-separated topic names to exclude from results. " +
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge searches.")] string? excludeTopics = null,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when the agent knows synonyms or related concepts.")] string? context = null,
+        [Description("Optional path prefix to scope results, e.g. '/findings/'.")] string? pathPrefix = null,
+        [Description("Optional comma-separated tags; AND semantics.")] string? tags = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -661,61 +663,228 @@ public sealed partial class ScriniaMcpTools
                 .Where(r => !IMemoryStore.ShouldExcludeScope(IMemoryStore.GetResultScope(r), excludeTopics))
                 .ToList()
             : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics);
+
+        // Post-filter by path prefix and required tags. Both are AND filters — the candidate
+        // must satisfy every active constraint. Filters apply uniformly to entry, chunk, and
+        // topic results so callers don't need to know which result type to expect.
+        string[]? requiredTags = ParseTagFilter(tags);
+        matches = ApplyPostFilters(store, matches, pathPrefix, requiredTags);
+
         if (matches.Count == 0)
             return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
 
-        // Build qualified names first to compute dynamic column width (never truncate names)
-        const int typeW = 6;
-        const int scoreW = 6;
-        const int tokensW = 8;
-        var rows = new List<(string Type, string Name, double Score, string TokensStr, string Desc)>(matches.Count);
-        int nameW = 4; // min width = "name".Length
+        string body = FormatRichSearchResults(store, matches);
+        return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
+    }
+
+    private static string[]? ParseTagFilter(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length == 0 ? null : parts;
+    }
+
+    private static IReadOnlyList<SearchResult> ApplyPostFilters(
+        IMemoryStore store,
+        IReadOnlyList<SearchResult> matches,
+        string? pathPrefix,
+        string[]? requiredTags)
+    {
+        if (string.IsNullOrWhiteSpace(pathPrefix) && (requiredTags is null || requiredTags.Length == 0))
+            return matches;
+
+        var kept = new List<SearchResult>(matches.Count);
         foreach (var match in matches)
         {
-            if (match is ChunkEntryResult cr)
-            {
-                string qualifiedName = cr.ParentItem.Scope == "ephemeral"
-                    ? $"~{cr.ParentItem.Entry.Name}"
-                    : store.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
-                string chunkLabel = $"{qualifiedName} [chunk {cr.Chunk.ChunkIndex}/{cr.TotalChunks}]";
-                string desc = cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description;
-                desc = desc.Replace('\n', ' ').Replace('\r', ' ');
-                if (desc.Length > 60) desc = desc[..57] + "...";
-                int estTokens = (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4);
-                rows.Add(("chunk", chunkLabel, cr.Score, estTokens.ToString(), desc));
-                if (chunkLabel.Length > nameW) nameW = chunkLabel.Length;
-            }
-            else if (match is EntryResult er)
-            {
-                string qualifiedName = er.Item.Scope == "ephemeral"
-                    ? $"~{er.Item.Entry.Name}"
-                    : store.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name);
-                string desc = er.Item.Entry.Description.Replace('\n', ' ').Replace('\r', ' ');
-                if (desc.Length > 60) desc = desc[..57] + "...";
-                int estTokens = (int)(er.Item.Entry.OriginalBytes / 4);
-                rows.Add(("entry", qualifiedName, er.Score, estTokens.ToString(), desc));
-                if (qualifiedName.Length > nameW) nameW = qualifiedName.Length;
-            }
-            else if (match is TopicResult tr)
-            {
-                string trLabel = MemoryNaming.FormatScopeLabel(tr.Scope);
-                string desc = tr.Description.Replace('\n', ' ').Replace('\r', ' ');
-                if (desc.Length > 60) desc = desc[..57] + "...";
-                rows.Add(("topic", trLabel, tr.Score, "", desc));
-                if (trLabel.Length > nameW) nameW = trLabel.Length;
-            }
+            if (!MatchesPathPrefix(store, match, pathPrefix)) continue;
+            if (!MatchesTags(match, requiredTags)) continue;
+            kept.Add(match);
         }
+        return kept;
+    }
 
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"{"type",-typeW}  {"name".PadRight(nameW)}  {"score",scoreW}  {"~tokens",tokensW}  description");
-        sb.AppendLine(new string('-', typeW + nameW + scoreW + tokensW + 17));
-
-        foreach (var (type, name, score, tokensStr, desc) in rows)
+    private static bool MatchesPathPrefix(IMemoryStore store, SearchResult match, string? pathPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(pathPrefix)) return true;
+        string label = match switch
         {
-            sb.AppendLine($"{type,-typeW}  {name.PadRight(nameW)}  {score,scoreW:F0}  {tokensStr,tokensW}  {desc}");
+            EntryResult er => er.Item.Scope == "ephemeral"
+                ? $"~{er.Item.Entry.Name}"
+                : store.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
+            ChunkEntryResult cr => cr.ParentItem.Scope == "ephemeral"
+                ? $"~{cr.ParentItem.Entry.Name}"
+                : store.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
+            TopicResult tr => MemoryNaming.FormatScopeLabel(tr.Scope),
+            _ => string.Empty,
+        };
+        return label.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesTags(SearchResult match, string[]? requiredTags)
+    {
+        if (requiredTags is null || requiredTags.Length == 0) return true;
+        string[]? candidateTags = match switch
+        {
+            EntryResult er => er.Item.Entry.Tags,
+            ChunkEntryResult cr => cr.ParentItem.Entry.Tags,
+            TopicResult tr => tr.Tags,
+            _ => null,
+        };
+        if (candidateTags is null || candidateTags.Length == 0) return false;
+        foreach (var required in requiredTags)
+        {
+            bool found = false;
+            foreach (var have in candidateTags)
+            {
+                if (string.Equals(have, required, StringComparison.OrdinalIgnoreCase)) { found = true; break; }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Renders one block per match with the persisted Tier 2 fields surfaced. The agent
+    /// gets enough decision-making context per hit — description, tags, atomic facts — to
+    /// either answer directly or pick which hits warrant a memory_recall, without a
+    /// second round trip per candidate.
+    /// </summary>
+    /// <remarks>
+    /// Block layout (inside the YAML envelope's <c>content: |</c> body):
+    /// <code>
+    /// [1] entry  /findings/auth-refactor  score=47  ~380 tokens
+    ///     tags: security, refactor
+    ///     description: Multi-line description verbatim.
+    ///     facts:
+    ///       - Session storage migrated from cookies to JWT
+    ///       - Rotation interval is 24h
+    /// </code>
+    /// Description is sanity-capped at <see cref="MaxDescriptionChars"/> chars to bound
+    /// response size; Facts is capped at <see cref="MaxFactsPerResult"/>. Tags omitted
+    /// when empty; Facts section omitted when null/empty.
+    /// </remarks>
+    private static string FormatRichSearchResults(IMemoryStore store, IReadOnlyList<SearchResult> matches)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("results: ").Append(matches.Count).Append('\n');
+
+        for (int i = 0; i < matches.Count; i++)
+        {
+            sb.Append('\n');
+            AppendResultBlock(sb, store, matches[i], i + 1);
         }
 
-        return ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("searched").ToYaml();
+        return sb.ToString().TrimEnd();
+    }
+
+    private const int MaxDescriptionChars = 1500;
+    private const int MaxFactsPerResult = 7;
+
+    private static void AppendResultBlock(System.Text.StringBuilder sb, IMemoryStore store, SearchResult match, int index)
+    {
+        switch (match)
+        {
+            case EntryResult er:
+                {
+                    string label = er.Item.Scope == "ephemeral"
+                        ? $"~{er.Item.Entry.Name}"
+                        : store.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name);
+                    int estTokens = (int)(er.Item.Entry.OriginalBytes / 4);
+                    sb.Append('[').Append(index).Append("] entry  ").Append(label)
+                      .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
+                      .Append("  ~").Append(estTokens).Append(" tokens\n");
+                    AppendTagsLine(sb, er.Item.Entry.Tags);
+                    AppendDescription(sb, er.Item.Entry.Description);
+                    AppendFacts(sb, er.Item.Entry.Facts);
+                    break;
+                }
+            case ChunkEntryResult cr:
+                {
+                    string parentLabel = cr.ParentItem.Scope == "ephemeral"
+                        ? $"~{cr.ParentItem.Entry.Name}"
+                        : store.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
+                    int estTokens = cr.TotalChunks > 0
+                        ? (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4)
+                        : 0;
+                    sb.Append('[').Append(index).Append("] chunk  ").Append(parentLabel)
+                      .Append(" [chunk ").Append(cr.Chunk.ChunkIndex).Append('/').Append(cr.TotalChunks).Append(']')
+                      .Append("  score=").Append(cr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
+                      .Append("  ~").Append(estTokens).Append(" tokens\n");
+                    AppendTagsLine(sb, cr.ParentItem.Entry.Tags);
+                    AppendDescription(sb, cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description);
+                    AppendFacts(sb, cr.ParentItem.Entry.Facts);
+                    break;
+                }
+            case TopicResult tr:
+                {
+                    string label = MemoryNaming.FormatScopeLabel(tr.Scope);
+                    sb.Append('[').Append(index).Append("] topic  ").Append(label)
+                      .Append("  score=").Append(tr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
+                      .Append("  (").Append(tr.EntryCount).Append(" entries)\n");
+                    AppendTagsLine(sb, tr.Tags);
+                    AppendDescription(sb, tr.Description);
+                    break;
+                }
+        }
+    }
+
+    private static void AppendTagsLine(System.Text.StringBuilder sb, string[]? tags)
+    {
+        if (tags is null || tags.Length == 0) return;
+        sb.Append("    tags: ");
+        for (int i = 0; i < tags.Length; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append(tags[i]);
+        }
+        sb.Append('\n');
+    }
+
+    private static void AppendDescription(System.Text.StringBuilder sb, string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description)) return;
+
+        string text = description;
+        bool truncated = false;
+        if (text.Length > MaxDescriptionChars)
+        {
+            text = text[..MaxDescriptionChars];
+            truncated = true;
+        }
+
+        // Inline form when the description fits on one line — easier to scan. Multi-line
+        // descriptions fall back to an indented block whose continuation lines stay aligned
+        // under the block header so visual grouping survives the outer YAML's content: |
+        // re-indentation.
+        if (!text.Contains('\n') && !text.Contains('\r'))
+        {
+            sb.Append("    description: ").Append(text);
+            if (truncated) sb.Append(" (truncated)");
+            sb.Append('\n');
+            return;
+        }
+
+        sb.Append("    description: |\n");
+        foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            sb.Append("      ").Append(line).Append('\n');
+        }
+        if (truncated) sb.Append("      (truncated)\n");
+    }
+
+    private static void AppendFacts(System.Text.StringBuilder sb, string[]? facts)
+    {
+        if (facts is null || facts.Length == 0) return;
+        sb.Append("    facts:\n");
+        int emit = Math.Min(facts.Length, MaxFactsPerResult);
+        for (int i = 0; i < emit; i++)
+        {
+            sb.Append("      - ").Append(facts[i].Replace('\n', ' ').Replace('\r', ' ')).Append('\n');
+        }
+        if (facts.Length > emit)
+        {
+            sb.Append("      - (+").Append(facts.Length - emit).Append(" more)\n");
+        }
     }
 
     /// <summary>Copies a memory artifact from one scope to another.</summary>

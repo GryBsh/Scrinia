@@ -148,14 +148,17 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "memory_search"), Description(
-        "Find memories by keyword or phrase. Returns ranked matches across local + topic scopes. " +
-        "Example: memory_search({ query: 'oauth flow' }).")]
+        "Find memories by keyword or phrase. Returns ranked matches with description, tags, and " +
+        "LLM-extracted facts per hit so you can decide what to recall without a follow-up call. " +
+        "Example: memory_search({ query: 'oauth flow', pathPrefix: '/findings/' }).")]
     public async Task<string> MemorySearch(
         [Description("Search query string.")] string query,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when you know synonyms or related concepts the user didn't type.")] string? context = null,
         [Description("Optional comma-separated scope order, e.g. 'local,api,ephemeral'.")] string? scopes = null,
-        [Description("Maximum results to return (default 20).")] int limit = 20,
+        [Description("Maximum results to return (default 20). Rich-result format is verbose, so prefer 10 for broad exploratory queries.")] int limit = 20,
         [Description("Optional comma-separated topic names to exclude from results.")] string? excludeTopics = null,
+        [Description("Optional path prefix to scope results, e.g. '/findings/' or '/skill/'. Matches the qualified memory name.")] string? pathPrefix = null,
+        [Description("Optional comma-separated tags. Returns only memories whose tag set contains ALL listed tags (AND, not OR).")] string? tags = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -164,7 +167,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "memory_search({ query: 'keywords or phrase' })").ToYaml();
 
-        return await Search(query, scopes, limit, excludeTopics, context, cancellationToken);
+        return await Search(query, scopes, limit, excludeTopics, context, pathPrefix, tags, cancellationToken);
     }
 
     [McpServerTool(Name = "memory_list"), Description(

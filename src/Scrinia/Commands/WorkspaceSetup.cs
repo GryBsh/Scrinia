@@ -294,7 +294,7 @@ internal static class WorkspaceSetup
                 var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
-                SearchContributorContext.Default = reranker;
+                SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
                 MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink(), new ImportanceScoringSink()]);
 
                 Console.Error.WriteLine(
@@ -308,6 +308,7 @@ internal static class WorkspaceSetup
                 Console.Error.WriteLine(
                     $"[scrinia:warn] HTTP embeddings provider '{options.Provider}' not available — " +
                     $"check Scrinia:Embeddings:* config. Search degrades to BM25-only.");
+                SearchContributorContext.Default = new PathSegmentScoreContributor();
                 MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
             }
         }
@@ -316,6 +317,7 @@ internal static class WorkspaceSetup
             Console.Error.WriteLine(
                 $"[scrinia:warn] Failed to initialize HTTP embeddings ('{options.Provider}'): " +
                 $"{ex.GetType().Name}: {ex.Message}");
+            SearchContributorContext.Default = new PathSegmentScoreContributor();
             MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
         }
     }
@@ -335,7 +337,7 @@ internal static class WorkspaceSetup
                 var reranker = new HybridReranker(provider, vectorStore, options.SemanticWeight);
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
-                SearchContributorContext.Default = reranker;
+                SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
                 MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink(), new ImportanceScoringSink()]);
 
                 Console.Error.WriteLine(
@@ -349,6 +351,7 @@ internal static class WorkspaceSetup
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings not available " +
                     $"(provider={provider.GetType().Name})");
+                SearchContributorContext.Default ??= new PathSegmentScoreContributor();
             }
         }
         catch (Exception ex)
@@ -356,6 +359,7 @@ internal static class WorkspaceSetup
             Console.Error.WriteLine(
                 $"[scrinia:warn] Failed to initialize built-in embeddings: " +
                 $"{ex.GetType().Name}: {ex.Message}");
+            SearchContributorContext.Default ??= new PathSegmentScoreContributor();
         }
     }
 
@@ -409,7 +413,7 @@ internal static class WorkspaceSetup
             }
 
             if (host.HasSearchCapability)
-                SearchContributorContext.Default = host;
+                SearchContributorContext.Default = new CompositeSearchScoreContributor(host, new PathSegmentScoreContributor());
             if (host.HasEventSinkCapability)
                 MemoryEventSinkContext.Default = new CompositeEventSink([host, new MaintenanceEventSink(), new ImportanceScoringSink()]);
 
@@ -424,7 +428,10 @@ internal static class WorkspaceSetup
             Console.Error.WriteLine(
                 $"[scrinia:warn] Failed to start embeddings plugin: " +
                 $"{ex.GetType().Name}: {ex.Message}");
-            // Built-in embeddings remain active as fallback
+            // Plugin failed — built-in is skipped when the plugin is installed, so without
+            // this the workspace would run with no contributor at all. Path scoring is
+            // dependency-free, so at minimum we get path-prefix relevance lifts.
+            SearchContributorContext.Default ??= new PathSegmentScoreContributor();
         }
     }
 

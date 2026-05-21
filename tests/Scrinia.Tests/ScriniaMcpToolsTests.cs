@@ -1315,15 +1315,16 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Search_ContainsTokensColumn()
+    public async Task Search_SurfacesTokenCount()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["test content"], "search-tok-test");
 
         string result = await Tools().Search("search-tok-test");
 
-        ResponseParser.Parse(result).Content.Should().Contain("~tokens",
-            because: "Search output must include a ~tokens column header");
+        ResponseParser.Parse(result).Content.Should().Contain("tokens",
+            because: "Search output must surface an estimated token count per result so " +
+                     "the agent can decide whether to recall the full content");
     }
 
     // ── Append tool (3 tests) ────────────────────────────────────────────────
@@ -1865,6 +1866,147 @@ public sealed class ScriniaMcpToolsTests
         parsed.Status.Should().Be("success");
         parsed.Info.Should().NotContain(i => i.Contains("reserved prefix"),
             because: "non-reserved paths must not produce false-positive hints");
+    }
+
+    // ── Rich search surface (facts/tags/path filters/path-segment score) ────────
+
+    [Fact]
+    public async Task Search_SurfacesFactsAndTagsWhenPresent()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string[] tags = ["security", "refactor"];
+        await Tools().Store(["oauth callback details and rotation handling"],
+            "auth-rich-test", "oauth refactor", tags);
+
+        // Backfill Facts directly via the store — Tier 2 normally writes these, but the
+        // test doesn't run the consolidator. We're verifying the rendering, not the
+        // pipeline that produces facts.
+        var store = MemoryStoreContext.Current!;
+        var entries = ScriniaArtifactStore.LoadIndex();
+        var target = entries.Single(e => e.Name == "auth-rich-test");
+        store.Upsert(target with
+        {
+            Facts = [
+                "Session storage migrated from cookies to JWT",
+                "Rotation interval is 24h",
+            ],
+        });
+
+        string result = await Tools().Search("oauth");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("tags: security, refactor",
+            because: "rich search results must surface tags inline");
+        parsed.Content.Should().Contain("facts:",
+            because: "rich search results must surface Tier 2 facts when populated");
+        parsed.Content.Should().Contain("Session storage migrated from cookies to JWT");
+        parsed.Content.Should().Contain("Rotation interval is 24h");
+    }
+
+    [Fact]
+    public async Task Search_OmitsFactsLineWhenEntryHasNoFacts()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["plain content with no facts"], "no-facts-test");
+
+        string result = await Tools().Search("plain");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().NotContain("facts:",
+            because: "facts section must be omitted entirely when Facts is null/empty");
+    }
+
+    [Fact]
+    public async Task Search_PathPrefix_FiltersOutNonMatchingScopes()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "/findings/auth-refactor",
+            content: ["oauth callback handler in findings"]);
+        await Tools().MemoryRemember(path: "/learn/oauth-pkce",
+            content: ["oauth callback handler in learn"]);
+
+        string result = await Tools().MemorySearch(query: "oauth", pathPrefix: "/findings/");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("auth-refactor",
+            because: "findings entry should be retained");
+        parsed.Content.Should().NotContain("oauth-pkce",
+            because: "learn entry must be filtered out by pathPrefix=/findings/");
+    }
+
+    [Fact]
+    public async Task Search_TagsFilter_AndSemantics_RequiresAllTags()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["entry one"], "tag-both", "both tags", ["security", "refactor"]);
+        await Tools().Store(["entry two"], "tag-one", "one tag", ["security"]);
+
+        string result = await Tools().MemorySearch(query: "entry", tags: "security,refactor");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("tag-both",
+            because: "entry with both required tags must be retained");
+        parsed.Content.Should().NotContain("tag-one",
+            because: "entry missing 'refactor' must be filtered (AND semantics)");
+    }
+
+    [Fact]
+    public async Task PathSegmentScoreContributor_LiftsPathMatchWithoutContentMatch()
+    {
+        // Two candidates: one whose path mentions 'auth', one that doesn't.
+        // Neither body contains 'auth'. Path scoring must lift the path-match candidate.
+        var candidates = new List<ScopedArtifact>
+        {
+            new("local-topic:findings/auth-refactor", new ArtifactEntry(
+                Name: "notes",
+                Uri: "stub://1",
+                OriginalBytes: 100,
+                ChunkCount: 1,
+                CreatedAt: DateTimeOffset.UtcNow,
+                Description: "unrelated body text",
+                Tags: null,
+                ContentPreview: "unrelated body text")),
+            new("local-topic:archive", new ArtifactEntry(
+                Name: "shopping",
+                Uri: "stub://2",
+                OriginalBytes: 50,
+                ChunkCount: 1,
+                CreatedAt: DateTimeOffset.UtcNow,
+                Description: "unrelated body text",
+                Tags: null,
+                ContentPreview: "unrelated body text")),
+        };
+
+        var contributor = new PathSegmentScoreContributor(weight: 8.0);
+        var scores = await contributor.ComputeScoresAsync(
+            "auth", candidates, store: null!, CancellationToken.None);
+
+        scores.Should().NotBeNull();
+        scores!.Should().ContainKey("local-topic:findings/auth-refactor|notes",
+            because: "the candidate whose path contains 'auth' must receive a lift");
+        scores["local-topic:findings/auth-refactor|notes"].Should().BeApproximately(8.0, 0.01);
+        scores.Should().NotContainKey("local-topic:archive|shopping",
+            because: "candidates with no path-token overlap must receive no entry (additive, not penalizing)");
+    }
+
+    [Fact]
+    public async Task PathSegmentScoreContributor_ZeroWeightDisablesContribution()
+    {
+        var candidates = new List<ScopedArtifact>
+        {
+            new("local-topic:findings/auth-refactor", new ArtifactEntry(
+                Name: "notes",
+                Uri: "stub://1",
+                OriginalBytes: 100,
+                ChunkCount: 1,
+                CreatedAt: DateTimeOffset.UtcNow,
+                Description: "x",
+                Tags: null,
+                ContentPreview: "x")),
+        };
+
+        var contributor = new PathSegmentScoreContributor(weight: 0.0);
+        var scores = await contributor.ComputeScoresAsync(
+            "auth", candidates, store: null!, CancellationToken.None);
+
+        scores.Should().BeNull(
+            because: "weight=0 short-circuits without producing entries");
     }
 
 }

@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 using Scalar.AspNetCore;
@@ -140,8 +141,13 @@ if (!pluginProvidesEmbeddings)
                     embeddingOptions.SemanticWeight,
                     sp.GetRequiredService<ILogger<BuiltInEmbeddingsService>>(),
                     embeddingOptions));
+            // Compose embeddings semantic similarity with path-segment overlap. Path scoring
+            // is dependency-free; embeddings remains the dominant signal. See
+            // src/Scrinia.Core/Search/PathSegmentScoreContributor.cs for rationale.
             builder.Services.AddSingleton<ISearchScoreContributor>(sp =>
-                sp.GetRequiredService<BuiltInEmbeddingsService>());
+                new CompositeSearchScoreContributor(
+                    sp.GetRequiredService<BuiltInEmbeddingsService>(),
+                    new PathSegmentScoreContributor()));
             builder.Services.AddSingleton<IMemoryEventSink>(sp =>
                 new CompositeEventSink([
                     sp.GetRequiredService<BuiltInEmbeddingsService>(),
@@ -158,11 +164,15 @@ if (!pluginProvidesEmbeddings)
         {
             bootLogger.LogInformation("Built-in embeddings not available (provider={Provider}). Run 'scri setup' to download the model.",
                 embeddingProvider.GetType().Name);
+            // Path-segment scoring still works without embeddings; register it so search
+            // does more than raw BM25 when the embedding model isn't loaded.
+            builder.Services.TryAddSingleton<ISearchScoreContributor>(_ => new PathSegmentScoreContributor());
         }
     }
     catch (Exception ex)
     {
         bootLogger.LogWarning(ex, "Failed to initialize built-in embeddings");
+        builder.Services.TryAddSingleton<ISearchScoreContributor>(_ => new PathSegmentScoreContributor());
     }
 }
 

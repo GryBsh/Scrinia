@@ -53,7 +53,12 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         if (weightStr is not null && double.TryParse(weightStr, out double w))
             _semanticWeight = w;
 
-        services.AddSingleton<ISearchScoreContributor>(this);
+        // Compose with PathSegmentScoreContributor so a memory's qualified path also
+        // contributes to relevance — embeddings carry semantic similarity, the path
+        // contributor adds a small lift when the agent filed the memory under a
+        // path that overlaps the query (e.g. /findings/auth-refactor matched on "auth").
+        services.AddSingleton<ISearchScoreContributor>(_ =>
+            new CompositeSearchScoreContributor(this, new PathSegmentScoreContributor()));
         services.AddSingleton<IMemoryEventSink>(this);
         services.AddSingleton<IMemoryOperationHook>(this);
     }
