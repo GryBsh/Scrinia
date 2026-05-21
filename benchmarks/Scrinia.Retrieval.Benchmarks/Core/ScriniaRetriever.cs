@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using Scrinia.Retrieval.Benchmarks.Llm;
 
 namespace Scrinia.Retrieval.Benchmarks.Core;
 
@@ -41,9 +43,31 @@ public sealed class ScriniaRetriever : IRetriever
     private readonly bool _chunked;
     private readonly int _chunkWindowSize;
     private readonly int _chunkOverlap;
+    private readonly Tier2Enricher? _enricher;
+    // FileMemoryStore.Upsert is not thread-safe. When the runner calls IngestAsync
+    // concurrently (--ingest-concurrency > 1), this lock serializes the index write
+    // so two parallel doc-enrichments don't corrupt the in-memory index. The lock
+    // is cheap when uncontended; per-doc the enrichment + embed time dominates.
+    private readonly object _ingestLock = new();
+    // Process-lifetime embedding cache, keyed by SHA256(text). NOT wiped on
+    // ResetAsync — same doc text appearing across multiple questions is embedded
+    // exactly once. The per-question _vectorCache below is still rebuilt fresh per
+    // question (it's keyed by sanitized entry name, used by BuildSupplementalScores
+    // for the in-question lookup); this layer just feeds it without re-calling the
+    // embedder. ~1.5KB per 384-dim vector; bounded by unique haystack docs across
+    // the whole bench process (MemBench worst case ~75 MB).
+    private readonly ConcurrentDictionary<string, float[]> _embeddingCacheByContent = new();
     private FileMemoryStore _store;
     private int _resetCount;
-    private Dictionary<string, float[]> _vectorCache;
+    private ConcurrentDictionary<string, float[]> _vectorCache;
+
+    /// <summary>
+    /// The configured Tier 2 enricher, or null if Tier 2 is disabled. Exposed so
+    /// subcommands can read provider/model/cache stats off it after a run completes
+    /// and write them into <see cref="RunMetadata"/> — there's no other path between
+    /// the bench CLI args and the result file's enrichment fields.
+    /// </summary>
+    public Tier2Enricher? Enricher => _enricher;
 
     public ScriniaRetriever(
         string rootDir,
@@ -54,7 +78,8 @@ public sealed class ScriniaRetriever : IRetriever
         int diversityInnerLimit = 0,
         bool chunked = false,
         int chunkWindowSize = TextChunker.DefaultWindowSize,
-        int chunkOverlap = TextChunker.DefaultOverlap)
+        int chunkOverlap = TextChunker.DefaultOverlap,
+        Tier2Enricher? enricher = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         _rootDir = rootDir;
@@ -68,8 +93,9 @@ public sealed class ScriniaRetriever : IRetriever
         _chunked = chunked;
         _chunkWindowSize = chunkWindowSize;
         _chunkOverlap = chunkOverlap;
+        _enricher = enricher;
         _store = CreateStore();
-        _vectorCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
+        _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task IngestAsync(HaystackDoc doc, CancellationToken ct = default)
@@ -77,9 +103,17 @@ public sealed class ScriniaRetriever : IRetriever
         ArgumentNullException.ThrowIfNull(doc);
         ct.ThrowIfCancellationRequested();
 
+        // Tier 2 enrichment runs ONCE on the full doc text before any chunking. The
+        // resulting description/facts/importance are properties of the memory, not the
+        // slice — every chunk inherits them. Cached by SHA256(doc.Text), so repeated
+        // questions sharing a haystack doc reuse the same enrichment for free.
+        EnrichResult enrichment = _enricher is null
+            ? new EnrichResult(null, null, null)
+            : await _enricher.EnrichAsync(doc.Text, ct);
+
         if (!_chunked)
         {
-            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, ct);
+            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, enrichment, ct);
             return;
         }
 
@@ -93,14 +127,39 @@ public sealed class ScriniaRetriever : IRetriever
         foreach (var (idx, text) in windows)
         {
             string chunkId = $"{doc.Id}{ChunkSeparator}{idx}";
-            await IngestEntryAsync(chunkId, text, doc.Timestamp, ct);
+            await IngestEntryAsync(chunkId, text, doc.Timestamp, enrichment, ct);
         }
     }
 
-    private async Task IngestEntryAsync(string id, string text, DateTimeOffset? timestamp, CancellationToken ct)
+    private async Task IngestEntryAsync(
+        string id, string text, DateTimeOffset? timestamp, EnrichResult enrichment, CancellationToken ct)
     {
         string sanitized = SanitizeName(id);
         var (keywords, tf) = TextAnalysis.AnalyzeText(text);
+
+        // Seed Tier 2 facts into the TF dict so BM25 picks up fact-derived tokens.
+        // Replicates LlmConsolidator.cs:173-189 exactly: OrdinalIgnoreCase comparer
+        // (matches the prod-path semantics), additive merge with text-derived TF,
+        // +2 weight per fact token. The same boost prod-merged agent keywords get.
+        Dictionary<string, int> mergedTf = tf;
+        if (enrichment.Facts is { Length: > 0 })
+        {
+            mergedTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, v) in tf)
+            {
+                mergedTf.TryGetValue(k, out int existing);
+                mergedTf[k] = existing + v;
+            }
+            foreach (string fact in enrichment.Facts)
+            {
+                foreach (string token in TextAnalysis.Tokenize(fact))
+                {
+                    mergedTf.TryGetValue(token, out int count);
+                    mergedTf[token] = count + 2;
+                }
+            }
+        }
+
         var entry = new ArtifactEntry(
             // Description and Name are both scored by the field scorer; we keep the
             // benchmark doc ID *only* in Uri so query tokens never accidentally match
@@ -110,16 +169,36 @@ public sealed class ScriniaRetriever : IRetriever
             OriginalBytes: text.Length,
             ChunkCount: 0,
             CreatedAt: timestamp ?? DateTimeOffset.UtcNow,
-            Description: string.Empty,
+            // Null description means Tier 2 was disabled or failed for this doc; use
+            // empty string (the baseline) rather than overwriting with null.
+            Description: enrichment.Description ?? string.Empty,
             Keywords: keywords,
-            TermFrequencies: tf,
-            ContentPreview: text);
+            TermFrequencies: mergedTf,
+            ContentPreview: text,
+            Facts: enrichment.Facts,
+            Importance: enrichment.Importance);
 
-        _store.Upsert(entry);
+        // FileMemoryStore.Upsert isn't thread-safe — serialize it across concurrent
+        // doc ingests (parallel mode). Embedding call is awaited OUTSIDE the lock so
+        // multiple model2vec/vulkan calls can run concurrently; only the cache write
+        // is serialized via ConcurrentDictionary.
+        lock (_ingestLock)
+        {
+            _store.Upsert(entry);
+        }
 
         if (_embeddingProvider is not null)
         {
-            var vec = await _embeddingProvider.EmbedAsync(text, ct);
+            // Content-keyed shortcut: same text in a different question (or chunk of
+            // the same parent appearing across questions) reuses the prior vector.
+            // Persists across ResetAsync, so the embedding cost — model2vec at ~1 ms,
+            // vulkan/GGUF at ~50 ms — is paid exactly once per unique text body.
+            string contentHash = EnrichmentCache.Hash(text);
+            if (!_embeddingCacheByContent.TryGetValue(contentHash, out var vec))
+            {
+                vec = await _embeddingProvider.EmbedAsync(text, ct);
+                if (vec is not null) _embeddingCacheByContent[contentHash] = vec;
+            }
             if (vec is not null) _vectorCache[sanitized] = vec;
         }
     }
@@ -130,7 +209,7 @@ public sealed class ScriniaRetriever : IRetriever
         ct.ThrowIfCancellationRequested();
 
         IReadOnlyDictionary<string, double>? supplemental = null;
-        if (_embeddingProvider is not null && _vectorCache.Count > 0)
+        if (_embeddingProvider is not null && !_vectorCache.IsEmpty)
         {
             var queryVec = await _embeddingProvider.EmbedAsync(query, ct);
             if (queryVec is not null)
@@ -207,7 +286,7 @@ public sealed class ScriniaRetriever : IRetriever
 
         _resetCount++;
         _store = CreateStore();
-        _vectorCache = new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
+        _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
         return Task.CompletedTask;
     }
 
@@ -233,10 +312,14 @@ public sealed class ScriniaRetriever : IRetriever
     private Dictionary<string, double> BuildSupplementalScores(float[] queryVec)
     {
         var supplemental = new Dictionary<string, double>(_vectorCache.Count, StringComparer.OrdinalIgnoreCase);
-        foreach (var (sanitizedName, docVec) in _vectorCache)
+        // Snapshot to prevent enumeration from racing with a late embedding write —
+        // not strictly necessary because RetrieveAsync only runs after all
+        // IngestAsync awaits complete (per-question barrier in BenchmarkRunner),
+        // but cheap insurance and matches ConcurrentDictionary's enumeration contract.
+        foreach (var kvp in _vectorCache)
         {
-            double sim = CosineSimilarity(queryVec, docVec);
-            supplemental[$"local|{sanitizedName}"] = sim * _semanticWeight;
+            double sim = CosineSimilarity(queryVec, kvp.Value);
+            supplemental[$"local|{kvp.Key}"] = sim * _semanticWeight;
         }
         return supplemental;
     }

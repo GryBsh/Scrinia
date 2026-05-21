@@ -70,6 +70,13 @@ internal static class Program
               --chunk-overlap <N>      Override chunk overlap (default 200; only honored when --chunk prod)
               --category <name>        Run only questions in this category. Enables per-category process fanout (see run-benchmarks.ps1 -Parallel).
 
+            Tier 2 LLM enrichment flags (ingest-time, measures scrinia's product surface above pure retrieval):
+              --enrich <c>             none (default) | tier2 — enable Tier 2 enrichment at ingest
+              --enrich-provider <p>    Required when --enrich tier2: claude-cli | codex-cli | copilot-cli | openai
+              --enrich-model <m>       Optional model override (default: provider's cheap-tier default — see AgentCliVariant)
+              --enrich-ops <list>      Comma-separated subset of facts,description,importance,summary (default: facts,description — the two that move R@K). 'all' enables all four.
+              --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --enrich tier2 is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
+
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)
 

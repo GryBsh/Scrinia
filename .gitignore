@@ -41,3 +41,7 @@ docs/reports
 
 # Benchmark dataset downloads (scripts/prepare-datasets.{ps1,sh})
 /datasets/
+
+# Bench Tier 2 LLM enrichment cache (NDJSON, per provider+model). First run is
+# expensive; reruns hit the cache and cost ~0. Per-machine, not source-controlled.
+/benchmarks/Scrinia.Retrieval.Benchmarks/cache/

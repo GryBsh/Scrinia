@@ -22,12 +22,14 @@ public sealed class BenchmarkRunner
         IRetriever retriever,
         int topK,
         IProgress<RunProgress>? progress = null,
+        int ingestConcurrency = 1,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
         ArgumentException.ThrowIfNullOrWhiteSpace(modeLabel);
         ArgumentNullException.ThrowIfNull(questions);
         ArgumentNullException.ThrowIfNull(retriever);
+        if (ingestConcurrency < 1) ingestConcurrency = 1;
 
         var startedAt = DateTimeOffset.UtcNow;
         var results = new List<QuestionResult>();
@@ -40,8 +42,7 @@ public sealed class BenchmarkRunner
             if (n > 0)
                 await retriever.ResetAsync(ct);
 
-            foreach (var d in q.Haystack)
-                await retriever.IngestAsync(d, ct);
+            await IngestHaystackAsync(retriever, q.Haystack, ingestConcurrency, ct);
 
             var hits = await retriever.RetrieveAsync(q.QueryText, topK, ct);
             var scored = BenchmarkScorer.ScoreQuestion(q, hits);
@@ -77,12 +78,14 @@ public sealed class BenchmarkRunner
         IRetriever retriever,
         int topK,
         IProgress<RunProgress>? progress = null,
+        int ingestConcurrency = 1,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
         ArgumentException.ThrowIfNullOrWhiteSpace(modeLabel);
         ArgumentNullException.ThrowIfNull(groups);
         ArgumentNullException.ThrowIfNull(retriever);
+        if (ingestConcurrency < 1) ingestConcurrency = 1;
 
         var startedAt = DateTimeOffset.UtcNow;
         var results = new List<QuestionResult>();
@@ -94,8 +97,7 @@ public sealed class BenchmarkRunner
             if (!first) await retriever.ResetAsync(ct);
             first = false;
 
-            foreach (var doc in group.SharedHaystack)
-                await retriever.IngestAsync(doc, ct);
+            await IngestHaystackAsync(retriever, group.SharedHaystack, ingestConcurrency, ct);
 
             foreach (var q in group.Questions)
             {
@@ -118,6 +120,38 @@ public sealed class BenchmarkRunner
             QuestionCount: results.Count,
             ScriniaVersion: ReadScriniaVersion());
         return new BenchmarkRunResult(meta, aggregate, perCategory, results);
+    }
+
+    /// <summary>
+    /// Ingest a question's haystack docs into the retriever. Sequential when
+    /// <paramref name="concurrency"/> is 1 (the default — matches prior behavior).
+    /// When greater, uses <see cref="Parallel.ForEachAsync{TSource}(IEnumerable{TSource}, ParallelOptions, Func{TSource, CancellationToken, ValueTask})"/>
+    /// so multiple ingest calls — and the Tier 2 enrichment LLM calls inside them —
+    /// run concurrently. Required for the Tier 2 sweep to finish on MemBench timescale.
+    /// The retriever's <c>IngestAsync</c> implementation must be safe for concurrent
+    /// invocations; <see cref="ScriniaRetriever"/> serializes its index write internally.
+    /// </summary>
+    private static async Task IngestHaystackAsync(
+        IRetriever retriever,
+        IReadOnlyList<HaystackDoc> docs,
+        int concurrency,
+        CancellationToken ct)
+    {
+        if (concurrency <= 1)
+        {
+            foreach (var d in docs)
+                await retriever.IngestAsync(d, ct);
+            return;
+        }
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = concurrency,
+            CancellationToken = ct,
+        };
+        await Parallel.ForEachAsync(docs, options, async (doc, c) =>
+        {
+            await retriever.IngestAsync(doc, c);
+        });
     }
 
     private static string ReadScriniaVersion() =>

@@ -18,7 +18,23 @@ public sealed record RunMetadata(
     DateTimeOffset StartedAt,
     DateTimeOffset CompletedAt,
     int QuestionCount,
-    string ScriniaVersion);
+    string ScriniaVersion,
+    // Tier 2 enrichment metadata. All five fields are null when --enrich none (the
+    // default) — preserves compat with non-Tier-2 result files. When set, they
+    // record which provider/model/ops were active and the cache effectiveness,
+    // so a Tier 2 result file can't be silently compared against a non-Tier-2
+    // baseline (the consumer sees the populated fields and knows).
+    string? EnrichmentProvider = null,
+    string? EnrichmentModel = null,
+    string? EnrichmentOps = null,
+    int? EnrichmentCacheHits = null,
+    int? EnrichmentCacheMisses = null,
+    // Singleflight diagnostic: how many parallel callers collapsed into a still-
+    // running LLM task and shared its result. Distinct from CacheHits (disk-NDJSON
+    // reads) — InflightHits never read NDJSON but also never triggered an LLM
+    // call. Should equal "LLM calls saved by --ingest-concurrency stampede
+    // suppression" on cold-cache parallel runs; near-zero on warm or sequential runs.
+    int? EnrichmentInflightHits = null);
 
 public sealed record AggregateMetrics(
     int QuestionCount,

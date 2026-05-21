@@ -96,15 +96,36 @@ $first = $parts[0]
 $startedAt = ($parts | ForEach-Object { [datetime]$_.RunMetadata.StartedAt } | Sort-Object | Select-Object -First 1)
 $completedAt = ($parts | ForEach-Object { [datetime]$_.RunMetadata.CompletedAt } | Sort-Object -Descending | Select-Object -First 1)
 
+# Tier 2 enrichment fields: inherit identity from the first partial (every partial in
+# a parallel sweep shares the same provider/model/ops). Sum the cache counters across
+# partials so the merged file reflects the full run's cache effectiveness.
+$enrichProvider = $first.RunMetadata.EnrichmentProvider
+$enrichModel    = $first.RunMetadata.EnrichmentModel
+$enrichOps      = $first.RunMetadata.EnrichmentOps
+$enrichHits     = $null
+$enrichMisses   = $null
+$enrichInflight = $null
+if ($null -ne $enrichProvider) {
+    $enrichHits     = ($parts | ForEach-Object { [int]$_.RunMetadata.EnrichmentCacheHits     } | Measure-Object -Sum).Sum
+    $enrichMisses   = ($parts | ForEach-Object { [int]$_.RunMetadata.EnrichmentCacheMisses   } | Measure-Object -Sum).Sum
+    $enrichInflight = ($parts | ForEach-Object { [int]$_.RunMetadata.EnrichmentInflightHits } | Measure-Object -Sum).Sum
+}
+
 $merged = [pscustomobject]@{
     RunMetadata = [pscustomobject]@{
-        Benchmark      = $first.RunMetadata.Benchmark
-        Mode           = $first.RunMetadata.Mode
-        TopK           = $first.RunMetadata.TopK
-        StartedAt      = $startedAt.ToString("o")
-        CompletedAt    = $completedAt.ToString("o")
-        QuestionCount  = $n
-        ScriniaVersion = $first.RunMetadata.ScriniaVersion
+        Benchmark              = $first.RunMetadata.Benchmark
+        Mode                   = $first.RunMetadata.Mode
+        TopK                   = $first.RunMetadata.TopK
+        StartedAt              = $startedAt.ToString("o")
+        CompletedAt            = $completedAt.ToString("o")
+        QuestionCount          = $n
+        ScriniaVersion         = $first.RunMetadata.ScriniaVersion
+        EnrichmentProvider      = $enrichProvider
+        EnrichmentModel         = $enrichModel
+        EnrichmentOps           = $enrichOps
+        EnrichmentCacheHits     = $enrichHits
+        EnrichmentCacheMisses   = $enrichMisses
+        EnrichmentInflightHits  = $enrichInflight
     }
     Aggregate   = $aggregate
     PerCategory = $perCategory

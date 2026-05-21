@@ -44,8 +44,10 @@ internal static class ConvoMemCommand
                 retriever: retriever,
                 topK: topK,
                 progress: progress,
+                ingestConcurrency: Program.FlagInt(args, "--ingest-concurrency", 1),
                 ct: ct);
 
+            result = RetrieverFactory.WithEnrichmentMetadata(result, retriever);
             PrintSummary(result);
             await WriteJsonAsync(output, result, ct);
             Console.WriteLine($"wrote {output}");
