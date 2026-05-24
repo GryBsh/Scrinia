@@ -221,25 +221,32 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
                 bestPerMemory[key] = (resultFactory(total), total);
         }
 
-        for (int i = 0; i < candidateList.Count; i++)
+        if (_options.Fusion == FusionMode.Rrf)
         {
-            var candidate = candidateList[i];
-            double fieldScore = ScoreEntry(query, candidate.Entry);
-            double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
-            double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
-            TryInsert(candidate, fieldScore + normalizedBm25 * Bm25Weight + supplemental,
-                total => new EntryResult(candidate, total));
+            FuseRrf(query, candidateList, entryBm25, chunkBm25List, supplementalScores, TryInsert);
         }
-
-        foreach (var (candidateIdx, chunkIdx, rawBm25) in chunkBm25List)
+        else
         {
-            var candidate = candidateList[candidateIdx];
-            var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
-            double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
-            double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
-            double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
-            TryInsert(candidate, chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental,
-                total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
+            for (int i = 0; i < candidateList.Count; i++)
+            {
+                var candidate = candidateList[i];
+                double fieldScore = ScoreEntry(query, candidate.Entry);
+                double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
+                double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
+                TryInsert(candidate, fieldScore + normalizedBm25 * Bm25Weight + supplemental,
+                    total => new EntryResult(candidate, total));
+            }
+
+            foreach (var (candidateIdx, chunkIdx, rawBm25) in chunkBm25List)
+            {
+                var candidate = candidateList[candidateIdx];
+                var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
+                double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
+                double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
+                double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
+                TryInsert(candidate, chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental,
+                    total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
+            }
         }
 
         foreach (var topic in topics)
@@ -594,6 +601,113 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             docLen += kvp.Value;
 
         return Bm25Scorer.Score(queryTerms, chunk.TermFrequencies, docLen, avgDocLen, corpusSize, docFreqs);
+    }
+
+    // ── Reciprocal Rank Fusion ──────────────────────────────────────────────
+
+    /// <summary>
+    /// RRF k constant. The standard value from Cormack/Clarke/Buettcher (2009);
+    /// dampens contributions from low-ranked items so the top of each source's list
+    /// dominates the fused score. Larger k → flatter fusion; smaller k → top-heavy.
+    /// </summary>
+    private const double RrfK = 60.0;
+
+    /// <summary>
+    /// Reciprocal Rank Fusion across the three retrieval signals — field-match score,
+    /// raw BM25, and supplemental (embedding) score. Builds a unified cell list across
+    /// entry-level and chunk-level candidates, ranks each cell independently within each
+    /// source, then sums <c>1/(k + rank)</c> contributions. Cells with zero score in a
+    /// source contribute nothing from that source — the standard "not in this source's
+    /// results" semantics. Each cell is then passed to the shared <paramref name="tryInsert"/>
+    /// so recency/importance composition and dedup happen identically to the sum path.
+    /// </summary>
+    private void FuseRrf(
+        string query,
+        IList<ScopedArtifact> candidateList,
+        double[] entryBm25,
+        List<(int candidateIdx, int chunkIdx, double rawBm25)> chunkBm25List,
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        Action<ScopedArtifact, double, Func<double, SearchResult>> tryInsert)
+    {
+        int cellCount = candidateList.Count + chunkBm25List.Count;
+        if (cellCount == 0) return;
+
+        // Cell layout: entries first [0..candidateList.Count), then chunks. Field scores
+        // and supplementals are computed eagerly because we need all three signals to
+        // build per-source rankings before any single cell can be fused.
+        var fieldScores = new double[cellCount];
+        var bm25Scores = new double[cellCount];
+        var supplementals = new double[cellCount];
+
+        for (int i = 0; i < candidateList.Count; i++)
+        {
+            var candidate = candidateList[i];
+            fieldScores[i] = ScoreEntry(query, candidate.Entry);
+            bm25Scores[i] = entryBm25[i];
+            supplementals[i] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
+        }
+
+        for (int ci = 0; ci < chunkBm25List.Count; ci++)
+        {
+            int idx = candidateList.Count + ci;
+            var (candidateIdx, chunkIdx, rawBm25) = chunkBm25List[ci];
+            var candidate = candidateList[candidateIdx];
+            var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
+            fieldScores[idx] = ScoreChunkEntry(query, chunk, candidate.Entry);
+            bm25Scores[idx] = rawBm25;
+            supplementals[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
+        }
+
+        int[] rankField = ComputeRanks(fieldScores);
+        int[] rankBm25 = ComputeRanks(bm25Scores);
+        int[] rankSupp = ComputeRanks(supplementals);
+
+        for (int ci = 0; ci < chunkBm25List.Count; ci++)
+        {
+            int idx = candidateList.Count + ci;
+            var (candidateIdx, chunkIdx, _) = chunkBm25List[ci];
+            var candidate = candidateList[candidateIdx];
+            var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
+            double rrf = RrfScore(fieldScores[idx], bm25Scores[idx], supplementals[idx],
+                rankField[idx], rankBm25[idx], rankSupp[idx]);
+            if (rrf <= 0) continue;
+            tryInsert(candidate, rrf, total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
+        }
+
+        for (int i = 0; i < candidateList.Count; i++)
+        {
+            double rrf = RrfScore(fieldScores[i], bm25Scores[i], supplementals[i],
+                rankField[i], rankBm25[i], rankSupp[i]);
+            if (rrf <= 0) continue;
+            var candidate = candidateList[i];
+            tryInsert(candidate, rrf, total => new EntryResult(candidate, total));
+        }
+    }
+
+    private static double RrfScore(
+        double fieldScore, double bm25, double supplemental,
+        int rankField, int rankBm25, int rankSupp)
+    {
+        double rrf = 0;
+        if (fieldScore > 0) rrf += 1.0 / (RrfK + rankField);
+        if (bm25 > 0) rrf += 1.0 / (RrfK + rankBm25);
+        if (supplemental > 0) rrf += 1.0 / (RrfK + rankSupp);
+        return rrf;
+    }
+
+    /// <summary>
+    /// 1-based descending rank within the score array. Equal scores get sequential ranks
+    /// (no tied-rank handling) — RRF's k=60 dampens the noise from arbitrary tie ordering.
+    /// </summary>
+    private static int[] ComputeRanks(double[] scores)
+    {
+        int n = scores.Length;
+        var order = new int[n];
+        for (int i = 0; i < n; i++) order[i] = i;
+        Array.Sort(order, (a, b) => scores[b].CompareTo(scores[a]));
+        var ranks = new int[n];
+        for (int r = 0; r < n; r++) ranks[order[r]] = r + 1;
+        return ranks;
     }
 
     // ── Ranker composition ───────────────────────────────────────────────

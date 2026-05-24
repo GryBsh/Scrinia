@@ -296,4 +296,113 @@ public sealed class RankerCompositionTests
         Math.Abs(results[0].Score - results[1].Score).Should().BeLessThan(0.001,
             "with α_importance=0 the high/low importance entries should score identically");
     }
+
+    // ── Fusion mode: RRF ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void RrfFusion_LiftsEmbeddingWinnerOverBm25Magnitude()
+    {
+        // Core RRF promise: when embeddings rank a doc highest but BM25 magnitude
+        // dwarfs the cosine signal, sum-fusion buries the embedding winner; RRF
+        // surfaces it by scoring on rank, not raw magnitude.
+        //
+        // Setup:
+        //   doc-A — strong BM25 hit ("shared" appears many times), zero embedding signal.
+        //   doc-B — moderate BM25 hit ("shared" once), but strong embedding signal.
+        // Under Sum: A wins (BM25 magnitude × 5 swamps the cosine × 50).
+        // Under Rrf: B wins (B is rank-1 in embeddings AND rank-2 in BM25; A is rank-1
+        // in BM25 only, with no embedding contribution).
+        var docA = MakeEntry("doc-a",
+            keywords: ["shared"],
+            tf: new Dictionary<string, int> { ["shared"] = 20 });
+        var docB = MakeEntry("doc-b",
+            keywords: ["shared"],
+            tf: new Dictionary<string, int> { ["shared"] = 1 });
+
+        // Supplemental keyed as "{scope}|{name}" — see WeightedFieldScorer.GetSupplemental.
+        // Magnitudes mirror what the bench passes (cosine × 50.0).
+        var supplemental = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["local|doc-a"] = 0.0,
+            ["local|doc-b"] = 45.0, // strong semantic match
+        };
+
+        var sumScorer = new WeightedFieldScorer(
+            new RankerOptions(AlphaRecency: 0, AlphaImportance: 0, Fusion: FusionMode.Sum));
+        var rrfScorer = new WeightedFieldScorer(
+            new RankerOptions(AlphaRecency: 0, AlphaImportance: 0, Fusion: FusionMode.Rrf));
+
+        var sumResults = sumScorer.SearchAll("shared", [docA, docB], [], 10, supplemental);
+        var rrfResults = rrfScorer.SearchAll("shared", [docA, docB], [], 10, supplemental);
+
+        sumResults.Should().HaveCount(2);
+        rrfResults.Should().HaveCount(2);
+
+        (sumResults[0] as EntryResult)!.Item.Entry.Name.Should().Be("doc-a",
+            "sum fusion: BM25 magnitude dominates the cosine signal");
+        (rrfResults[0] as EntryResult)!.Item.Entry.Name.Should().Be("doc-b",
+            "RRF: doc-b is rank-1 in embeddings and rank-2 in BM25 → higher fused score");
+    }
+
+    [Fact]
+    public void RrfFusion_DefaultsToSum_WhenNotSpecified()
+    {
+        // Default RankerOptions() must continue to use Sum fusion — RRF is opt-in.
+        // Guards against accidental regression of production search behavior.
+        var opts = new RankerOptions();
+        opts.Fusion.Should().Be(FusionMode.Sum);
+    }
+
+    [Fact]
+    public void RrfFusion_ZeroSignalCells_AreExcluded()
+    {
+        // Cells with zero score across ALL three sources must not surface, even though
+        // they technically have a rank in each source's sort. The "if score > 0 →
+        // contribute, else 0" gate inside RrfScore enforces this.
+        var matching = MakeEntry("oauth-flow",
+            keywords: ["oauth"],
+            tf: new Dictionary<string, int> { ["oauth"] = 5 });
+        var unrelated = MakeEntry("bicycle-notes",
+            keywords: ["bicycle"],
+            tf: new Dictionary<string, int> { ["bicycle"] = 5 });
+
+        var rrfScorer = new WeightedFieldScorer(
+            new RankerOptions(AlphaRecency: 0, AlphaImportance: 0, Fusion: FusionMode.Rrf));
+
+        var results = rrfScorer.SearchAll("oauth", [matching, unrelated], [], 10);
+
+        results.Should().HaveCount(1,
+            "the unrelated entry has zero score in all three sources and must not surface");
+        (results[0] as EntryResult)!.Item.Entry.Name.Should().Be("oauth-flow");
+    }
+
+    [Fact]
+    public void RrfFusion_OnlyOneSourceMatches_StillScores()
+    {
+        // A doc with signal in only one source (e.g., only embeddings match) must still
+        // surface — RRF should not require all three sources to fire. Tests the
+        // partial-contribution path through RrfScore.
+        var bm25Only = MakeEntry("bm25-only",
+            keywords: ["shared"],
+            tf: new Dictionary<string, int> { ["shared"] = 5 });
+        var embedOnly = MakeEntry("embed-only",
+            keywords: ["unrelated"],
+            tf: new Dictionary<string, int> { ["unrelated"] = 5 });
+
+        var supplemental = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["local|bm25-only"] = 0.0,
+            ["local|embed-only"] = 40.0,
+        };
+
+        var rrfScorer = new WeightedFieldScorer(
+            new RankerOptions(AlphaRecency: 0, AlphaImportance: 0, Fusion: FusionMode.Rrf));
+
+        var results = rrfScorer.SearchAll("shared", [bm25Only, embedOnly], [], 10, supplemental);
+
+        results.Should().HaveCount(2,
+            "embed-only matches via supplemental signal and must surface alongside bm25-only");
+        results.Select(r => (r as EntryResult)!.Item.Entry.Name)
+            .Should().Contain(["bm25-only", "embed-only"]);
+    }
 }

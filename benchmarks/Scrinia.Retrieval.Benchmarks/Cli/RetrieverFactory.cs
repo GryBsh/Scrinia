@@ -78,12 +78,15 @@ internal static class RetrieverFactory
                 $"[scrinia-bench] tier2 enrichment enabled: provider={backend.ProviderId} model={backend.ModelSlug} ops={ops.Label()} cache={cacheFile}");
         }
 
+        FusionMode fusion = ParseFusion(Program.Flag(args, "--fusion"));
+
         var rankerOptions = RankerOptions.Default with
         {
             AlphaRelevance = 1.0,
             AlphaRecency = alphaRecency,
             AlphaImportance = alphaImportance,
             TauDays = tauDays,
+            Fusion = fusion,
         };
 
         IEmbeddingProvider? embedder = null;
@@ -152,6 +155,13 @@ internal static class RetrieverFactory
         _ => throw new ArgumentException($"unknown --enrich '{raw}'. Expected: none | tier2"),
     };
 
+    private static FusionMode ParseFusion(string? raw) => raw?.ToLowerInvariant() switch
+    {
+        null or "" or "sum" => FusionMode.Sum,
+        "rrf" => FusionMode.Rrf,
+        _ => throw new ArgumentException($"unknown --fusion '{raw}'. Expected: sum | rrf"),
+    };
+
     /// <summary>
     /// Builds a mode label suffix for filenames + run metadata that captures any
     /// active ablation knobs. Headline runs (no ablation) get a clean
@@ -198,6 +208,9 @@ internal static class RetrieverFactory
         if (Program.Flag(args, "--tau-days") is { } tau) tags.Add($"tau{tau}");
         if (Program.Flag(args, "--alpha-importance") is { } imp) tags.Add($"imp{imp}");
         if (Program.Flag(args, "--diversity-lambda") is { } lam) tags.Add($"div{lam}");
+        if (Program.Flag(args, "--fusion") is { } fu
+            && !string.Equals(fu, "sum", StringComparison.OrdinalIgnoreCase))
+            tags.Add(fu.ToLowerInvariant());
         return tags.Count == 0 ? baseLabel : baseLabel + "__" + string.Join("_", tags);
     }
 
