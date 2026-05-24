@@ -57,9 +57,16 @@ public sealed class ScriniaRetriever : IRetriever
     // embedder. ~1.5KB per 384-dim vector; bounded by unique haystack docs across
     // the whole bench process (MemBench worst case ~75 MB).
     private readonly ConcurrentDictionary<string, float[]> _embeddingCacheByContent = new();
+    // Sibling caches for sentence-level vectors used by the optional reranker.
+    // Same shape and rationale as the whole-doc caches: per-question reset of the
+    // name-keyed lookup, process-lifetime content-hash cache to amortize embed cost.
+    // Empty when _buildSentenceIndex is false, so the reranker-off path pays nothing.
+    private readonly ConcurrentDictionary<string, IReadOnlyList<float[]>> _sentenceCacheByContent = new();
+    private readonly bool _buildSentenceIndex;
     private FileMemoryStore _store;
     private int _resetCount;
     private ConcurrentDictionary<string, float[]> _vectorCache;
+    private ConcurrentDictionary<string, IReadOnlyList<float[]>> _sentenceVectorCache;
 
     /// <summary>
     /// The configured Tier 2 enricher, or null if Tier 2 is disabled. Exposed so
@@ -68,6 +75,23 @@ public sealed class ScriniaRetriever : IRetriever
     /// the bench CLI args and the result file's enrichment fields.
     /// </summary>
     public Tier2Enricher? Enricher => _enricher;
+
+    /// <summary>
+    /// Optional second-stage reranker. Set by <see cref="Cli.RetrieverFactory"/> after
+    /// construction so the reranker can be wired with a sentence-lookup pointing back
+    /// at this retriever's per-question index. Null disables reranking — the retriever
+    /// returns first-stage results unchanged.
+    /// </summary>
+    public ISearchReranker? Reranker { get; set; }
+
+    /// <summary>
+    /// Sentence-vector lookup for an entry by its sanitized name. Returns null when
+    /// no sentence index was built (reranker disabled, embedder unavailable, or the
+    /// doc was too short to split). Reranker captures this as a delegate at
+    /// construction time.
+    /// </summary>
+    public IReadOnlyList<float[]>? GetSentenceVectors(string name) =>
+        _sentenceVectorCache.TryGetValue(name, out var vecs) ? vecs : null;
 
     public ScriniaRetriever(
         string rootDir,
@@ -79,7 +103,8 @@ public sealed class ScriniaRetriever : IRetriever
         bool chunked = false,
         int chunkWindowSize = TextChunker.DefaultWindowSize,
         int chunkOverlap = TextChunker.DefaultOverlap,
-        Tier2Enricher? enricher = null)
+        Tier2Enricher? enricher = null,
+        bool buildSentenceIndex = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         _rootDir = rootDir;
@@ -94,8 +119,13 @@ public sealed class ScriniaRetriever : IRetriever
         _chunkWindowSize = chunkWindowSize;
         _chunkOverlap = chunkOverlap;
         _enricher = enricher;
+        // Building the sentence index only makes sense if we have an embedder. Off by
+        // default keeps the embed cost path unchanged (~1 embed per doc) when no
+        // reranker is configured.
+        _buildSentenceIndex = buildSentenceIndex && _embeddingProvider is not null;
         _store = CreateStore();
         _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
+        _sentenceVectorCache = new ConcurrentDictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task IngestAsync(HaystackDoc doc, CancellationToken ct = default)
@@ -200,6 +230,32 @@ public sealed class ScriniaRetriever : IRetriever
                 if (vec is not null) _embeddingCacheByContent[contentHash] = vec;
             }
             if (vec is not null) _vectorCache[sanitized] = vec;
+
+            // Sentence index for the optional MaxSim reranker. Built ONLY when
+            // explicitly opted in via the constructor flag — otherwise we'd pay
+            // ~30× the embedding cost per doc for nothing. Sentence vectors are
+            // content-hash-cached identically to whole-doc vectors so a 50q
+            // benchmark with repeating haystack docs pays the split + embed cost
+            // exactly once per unique text.
+            if (_buildSentenceIndex)
+            {
+                if (!_sentenceCacheByContent.TryGetValue(contentHash, out var sentenceVecs))
+                {
+                    var sentences = SentenceSplitter.Split(text);
+                    if (sentences.Count > 0)
+                    {
+                        var built = new List<float[]>(sentences.Count);
+                        foreach (string s in sentences)
+                        {
+                            var sv = await _embeddingProvider.EmbedAsync(s, ct);
+                            if (sv is not null) built.Add(sv);
+                        }
+                        sentenceVecs = built;
+                        _sentenceCacheByContent[contentHash] = sentenceVecs;
+                    }
+                }
+                if (sentenceVecs is { Count: > 0 }) _sentenceVectorCache[sanitized] = sentenceVecs;
+            }
         }
     }
 
@@ -224,6 +280,14 @@ public sealed class ScriniaRetriever : IRetriever
 
         IReadOnlyList<SearchResult> results =
             _store.SearchAll(query, scopes: null, limit: searchLimit, supplementalScores: supplemental);
+
+        // Second-stage reranker runs BEFORE MMR so diversity sees reranker-ordered
+        // scores, and before chunk dedup so per-chunk MaxSim scores are independent.
+        // No-op when reranker is null or candidates are empty.
+        if (Reranker is not null && results.Count > 0)
+        {
+            results = await Reranker.RerankAsync(query, results, ct);
+        }
 
         if (_diversityInnerLimit > 0)
         {
@@ -287,6 +351,7 @@ public sealed class ScriniaRetriever : IRetriever
         _resetCount++;
         _store = CreateStore();
         _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
+        _sentenceVectorCache = new ConcurrentDictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase);
         return Task.CompletedTask;
     }
 

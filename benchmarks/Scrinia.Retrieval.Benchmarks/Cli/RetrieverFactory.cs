@@ -26,6 +26,13 @@ internal static class RetrieverFactory
 {
     public enum Mode { Bm25, Bm25Embeddings }
 
+    /// <summary>
+    /// Second-stage reranker selection. <see cref="None"/> means first-stage retrieval
+    /// only (the historical default); <see cref="SentenceMaxSim"/> applies sentence-
+    /// level MaxSim reranking on top-K candidates using the existing embedding model.
+    /// </summary>
+    public enum RerankMode { None, SentenceMaxSim }
+
     public static async Task<(ScriniaRetriever Retriever, Mode Mode)> BuildAsync(
         string[] args, string benchmarkSlug, CancellationToken ct)
     {
@@ -79,6 +86,9 @@ internal static class RetrieverFactory
         }
 
         FusionMode fusion = ParseFusion(Program.Flag(args, "--fusion"));
+        RerankMode rerank = ParseRerank(Program.Flag(args, "--rerank"));
+        double maxSimWeight = ParseDouble(Program.Flag(args, "--maxsim-weight"),
+            SentenceMaxSimReranker.DefaultFirstStageWeight);
 
         var rankerOptions = RankerOptions.Default with
         {
@@ -105,6 +115,11 @@ internal static class RetrieverFactory
 
         string root = Path.Combine(Path.GetTempPath(),
             $"scrinia-retbench-{benchmarkSlug}-{Guid.NewGuid().ToString("N")[..8]}");
+        // Sentence index built at ingest only when a reranker that consumes it is
+        // configured AND we have an embedder. Empty index path is cheap and the
+        // reranker no-ops on empty lookups, so this gate is a cost guard, not a
+        // correctness one.
+        bool buildSentenceIndex = rerank == RerankMode.SentenceMaxSim && embedder is not null;
         var retriever = new ScriniaRetriever(
             rootDir: root,
             rankerOptions: rankerOptions,
@@ -114,7 +129,20 @@ internal static class RetrieverFactory
             chunked: chunked,
             chunkWindowSize: chunkWindow,
             chunkOverlap: chunkOverlap,
-            enricher: enricher);
+            enricher: enricher,
+            buildSentenceIndex: buildSentenceIndex);
+
+        // Two-step wiring: reranker reads the retriever's sentence index via a
+        // delegate, so it can only be constructed AFTER the retriever exists.
+        // Set as a property to break the chicken-and-egg cycle cleanly.
+        if (rerank == RerankMode.SentenceMaxSim && embedder is not null)
+        {
+            retriever.Reranker = new SentenceMaxSimReranker(
+                embedder,
+                retriever.GetSentenceVectors,
+                firstStageWeight: maxSimWeight);
+        }
+
         return (retriever, mode);
     }
 
@@ -160,6 +188,13 @@ internal static class RetrieverFactory
         null or "" or "sum" => FusionMode.Sum,
         "rrf" => FusionMode.Rrf,
         _ => throw new ArgumentException($"unknown --fusion '{raw}'. Expected: sum | rrf"),
+    };
+
+    private static RerankMode ParseRerank(string? raw) => raw?.ToLowerInvariant() switch
+    {
+        null or "" or "none" or "off" => RerankMode.None,
+        "sentence-maxsim" or "maxsim" => RerankMode.SentenceMaxSim,
+        _ => throw new ArgumentException($"unknown --rerank '{raw}'. Expected: none | sentence-maxsim"),
     };
 
     /// <summary>
@@ -211,6 +246,20 @@ internal static class RetrieverFactory
         if (Program.Flag(args, "--fusion") is { } fu
             && !string.Equals(fu, "sum", StringComparison.OrdinalIgnoreCase))
             tags.Add(fu.ToLowerInvariant());
+        if (Program.Flag(args, "--rerank") is { } rr
+            && !string.Equals(rr, "none", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(rr, "off", StringComparison.OrdinalIgnoreCase))
+        {
+            // Normalize the alias "maxsim" → "sentence-maxsim" in the file label so
+            // result files for either spelling collide cleanly under one name.
+            string normalized = string.Equals(rr, "maxsim", StringComparison.OrdinalIgnoreCase)
+                ? "sentence-maxsim" : rr.ToLowerInvariant();
+            tags.Add(normalized);
+            // Append the blend weight when non-default so result files for different
+            // sweeps don't collide. "α0.5" reads cleanly in filenames; default 0.7
+            // stays unsuffixed for the cleanest baseline.
+            if (Program.Flag(args, "--maxsim-weight") is { } mw) tags.Add($"a{mw}");
+        }
         return tags.Count == 0 ? baseLabel : baseLabel + "__" + string.Join("_", tags);
     }
 
