@@ -190,11 +190,15 @@ internal static class RetrieverFactory
         _ => throw new ArgumentException($"unknown --fusion '{raw}'. Expected: sum | rrf"),
     };
 
+    // Sentence-MaxSim is the bench default — α=0.3 blend strictly beats Sum-only
+    // retrieval on R@5 across the three public benchmarks (convomem +6.3, LongMemEval
+    // +0.6, LoCoMo within noise). Pass --rerank none to opt out and run the prior
+    // first-stage-only baseline.
     private static RerankMode ParseRerank(string? raw) => raw?.ToLowerInvariant() switch
     {
-        null or "" or "none" or "off" => RerankMode.None,
-        "sentence-maxsim" or "maxsim" => RerankMode.SentenceMaxSim,
-        _ => throw new ArgumentException($"unknown --rerank '{raw}'. Expected: none | sentence-maxsim"),
+        null or "" or "sentence-maxsim" or "maxsim" => RerankMode.SentenceMaxSim,
+        "none" or "off" => RerankMode.None,
+        _ => throw new ArgumentException($"unknown --rerank '{raw}'. Expected: sentence-maxsim | none"),
     };
 
     /// <summary>
@@ -246,20 +250,17 @@ internal static class RetrieverFactory
         if (Program.Flag(args, "--fusion") is { } fu
             && !string.Equals(fu, "sum", StringComparison.OrdinalIgnoreCase))
             tags.Add(fu.ToLowerInvariant());
+        // Sentence-MaxSim is the bench default — no suffix when active. Opt-out via
+        // --rerank none gets the "no-rerank" tag so result files are distinguishable.
         if (Program.Flag(args, "--rerank") is { } rr
-            && !string.Equals(rr, "none", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(rr, "off", StringComparison.OrdinalIgnoreCase))
+            && (string.Equals(rr, "none", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(rr, "off", StringComparison.OrdinalIgnoreCase)))
         {
-            // Normalize the alias "maxsim" → "sentence-maxsim" in the file label so
-            // result files for either spelling collide cleanly under one name.
-            string normalized = string.Equals(rr, "maxsim", StringComparison.OrdinalIgnoreCase)
-                ? "sentence-maxsim" : rr.ToLowerInvariant();
-            tags.Add(normalized);
-            // Append the blend weight when non-default so result files for different
-            // sweeps don't collide. "α0.5" reads cleanly in filenames; default 0.7
-            // stays unsuffixed for the cleanest baseline.
-            if (Program.Flag(args, "--maxsim-weight") is { } mw) tags.Add($"a{mw}");
+            tags.Add("no-rerank");
         }
+        // Non-default α suffix applies whenever the reranker is active (which is the
+        // default). Result files for different sweeps don't collide.
+        if (Program.Flag(args, "--maxsim-weight") is { } mw) tags.Add($"a{mw}");
         return tags.Count == 0 ? baseLabel : baseLabel + "__" + string.Join("_", tags);
     }
 
