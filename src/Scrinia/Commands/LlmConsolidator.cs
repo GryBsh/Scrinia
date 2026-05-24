@@ -118,23 +118,51 @@ internal static class LlmConsolidator
             bool didDescription = false, didSummary = false, didFacts = false;
             var updated = item.Entry;
 
-            // Description / summary. Sessions just-compacted by Tier 1 get the longer
-            // summary form (paragraph); other auto-fallback descriptions get a sentence.
-            // Real descriptions (set by user/agent) are left alone.
-            if (isSession || IsAutoFallbackDescription(updated.Description, content))
+            // Combined-call optimization: when both auto-fallback-description AND facts
+            // are needed for the same non-session memory, fire one JSON-mode call that
+            // returns both. Halves Tier 2 LLM volume for the typical case. Sessions are
+            // excluded because they want a paragraph SUMMARY (different prompt, different
+            // length); summary keeps its dedicated call. Agent-CLI backends return null
+            // from EnrichCombinedAsync by default — fast no-op — and the per-op blocks
+            // below proceed as before.
+            CombinedEnrichment? combined = null;
+            if (!isSession
+                && IsAutoFallbackDescription(updated.Description, content)
+                && !factsSettled)
             {
-                string? text;
                 try
                 {
-                    using var taskCts = LinkedCts(isSession ? SummaryBudget : DescriptionBudget, outerCt);
-                    text = isSession
-                        ? await llm.SummarizeAsync(content, taskCts.Token)
-                        : await llm.GenerateDescriptionAsync(content, taskCts.Token);
+                    using var taskCts = LinkedCts(FactsBudget, outerCt);
+                    combined = await llm.EnrichCombinedAsync(content, taskCts.Token);
                 }
                 catch (Exception ex)
                 {
-                    onWarning?.Invoke($"description/summary for {qualifiedName} failed: {ex.GetType().Name}");
-                    text = null;
+                    onWarning?.Invoke($"combined enrichment for {qualifiedName} failed: {ex.GetType().Name}");
+                    combined = null;
+                }
+            }
+
+            // Description / summary. Sessions just-compacted by Tier 1 get the longer
+            // summary form (paragraph); other auto-fallback descriptions get a sentence.
+            // Real descriptions (set by user/agent) are left alone. If the combined call
+            // above already produced a description, use it instead of a second LLM round.
+            if (isSession || IsAutoFallbackDescription(updated.Description, content))
+            {
+                string? text = combined?.Description;
+                if (text is null)
+                {
+                    try
+                    {
+                        using var taskCts = LinkedCts(isSession ? SummaryBudget : DescriptionBudget, outerCt);
+                        text = isSession
+                            ? await llm.SummarizeAsync(content, taskCts.Token)
+                            : await llm.GenerateDescriptionAsync(content, taskCts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        onWarning?.Invoke($"description/summary for {qualifiedName} failed: {ex.GetType().Name}");
+                        text = null;
+                    }
                 }
 
                 if (!string.IsNullOrWhiteSpace(text))
@@ -146,18 +174,23 @@ internal static class LlmConsolidator
             }
 
             // Fact extraction. Run for every memory not yet fact-extracted at this hash.
+            // Reuse the combined-call result when it populated facts; otherwise dispatch
+            // the dedicated extraction call.
             if (!factsSettled)
             {
-                string[]? extracted;
-                try
+                string[]? extracted = combined?.Facts;
+                if (extracted is null)
                 {
-                    using var taskCts = LinkedCts(FactsBudget, outerCt);
-                    extracted = await llm.ExtractFactsAsync(content, taskCts.Token);
-                }
-                catch (Exception ex)
-                {
-                    onWarning?.Invoke($"fact extraction for {qualifiedName} failed: {ex.GetType().Name}");
-                    extracted = null;
+                    try
+                    {
+                        using var taskCts = LinkedCts(FactsBudget, outerCt);
+                        extracted = await llm.ExtractFactsAsync(content, taskCts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        onWarning?.Invoke($"fact extraction for {qualifiedName} failed: {ex.GetType().Name}");
+                        extracted = null;
+                    }
                 }
 
                 if (extracted is { Length: > 0 })

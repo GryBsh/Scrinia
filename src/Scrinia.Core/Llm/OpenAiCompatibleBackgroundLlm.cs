@@ -107,7 +107,29 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
         return LlmPrompts.ParseImportance(raw);
     }
 
-    private async Task<string?> CompleteAsync(string systemPrompt, string userPrompt,
+    public async Task<CombinedEnrichment?> EnrichCombinedAsync(string content, CancellationToken ct)
+    {
+        // One round-trip producing both description and facts as a JSON object.
+        // Token budget = description (~80) + facts (~400) + JSON wrapper (~120) = 600.
+        // Wire-level json_object constraint plus the prompt's explicit JSON schema
+        // tends to produce parseable output even on small models that wouldn't honor
+        // the per-op "one fact per line" line-mode instruction reliably.
+        var request = new ChatRequest(
+            Model: _options.Model,
+            Messages:
+            [
+                new ChatMessage("system", LlmPrompts.CombinedSystem),
+                new ChatMessage("user", LlmPrompts.CombinedUser(content)),
+            ],
+            MaxTokens: 600,
+            Temperature: _options.Temperature,
+            ResponseFormat: new ResponseFormat("json_object"));
+
+        string? raw = await SendChatAsync(request, ct);
+        return raw is null ? null : LlmPrompts.ParseCombinedJson(raw);
+    }
+
+    private Task<string?> CompleteAsync(string systemPrompt, string userPrompt,
         int maxTokens, CancellationToken ct)
     {
         var request = new ChatRequest(
@@ -119,7 +141,18 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
             ],
             MaxTokens: maxTokens,
             Temperature: _options.Temperature);
+        return SendChatAsync(request, ct);
+    }
 
+    /// <summary>
+    /// Posts <paramref name="request"/> to the chat-completions endpoint and returns the
+    /// model's response content string (trimmed) or null on any failure the caller
+    /// should treat as skip-and-continue: non-success status, network error, timeout,
+    /// or JSON-deserialization failure of the response envelope. The 4xx/5xx body is
+    /// echoed to stderr so misconfigurations are debuggable without strace.
+    /// </summary>
+    private async Task<string?> SendChatAsync(ChatRequest request, CancellationToken ct)
+    {
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, BuildUri("chat/completions"))
@@ -131,12 +164,6 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);
             if (!resp.IsSuccessStatusCode)
             {
-                // Surface the server's error body so misconfigured models, missing
-                // pulls, and payload-shape rejections are debuggable. Without this
-                // the bench (and prod consolidate) silently degrades to no-op on
-                // every 4xx — operator sees Tier 2 "doing nothing" with no clue why.
-                // Truncate to keep stderr readable; null still returned so callers
-                // treat this as skip-and-continue.
                 string errBody;
                 try { errBody = await resp.Content.ReadAsStringAsync(ct); }
                 catch { errBody = "<unreadable>"; }

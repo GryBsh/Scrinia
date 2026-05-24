@@ -59,4 +59,36 @@ public interface IBackgroundLlm
     /// command's pre-flight to decide whether to attempt Tier 2 at all.
     /// </summary>
     Task<bool> IsAvailableAsync(CancellationToken ct);
+
+    /// <summary>
+    /// Combined description + facts in a single LLM round-trip, returned as a JSON
+    /// object. Halves the per-doc Tier 2 call volume vs invoking
+    /// <see cref="GenerateDescriptionAsync"/> and <see cref="ExtractFactsAsync"/> separately,
+    /// and lets the model ground facts in the same context that produced the description.
+    ///
+    /// <para>Returns null when the backend can't honor wire-level JSON-mode (agent CLIs
+    /// pipe through stdio with no <c>response_format</c> constraint), or when the model's
+    /// output fails to parse as the expected JSON shape. Callers must fall back to the
+    /// per-op methods on null — they're guaranteed to remain functional.</para>
+    ///
+    /// <para>Either field of the result may be null independently: an empty/missing
+    /// description string and an empty/missing facts array are both treated as null
+    /// per the existing per-op null semantics. A non-null result with both fields null
+    /// is permitted but rare — typically indicates content with nothing extractable.</para>
+    ///
+    /// <para>Default implementation returns null so backends that don't support combined
+    /// generation don't need to opt out explicitly.</para>
+    /// </summary>
+    /// <param name="content">Decoded memory body to describe and extract facts from.</param>
+    /// <param name="ct">Per-call cancellation budget; if it fires, return null.</param>
+    Task<CombinedEnrichment?> EnrichCombinedAsync(string content, CancellationToken ct) =>
+        Task.FromResult<CombinedEnrichment?>(null);
 }
+
+/// <summary>
+/// Result of a single combined Tier 2 call. Either field may be null independently.
+/// Construct via <see cref="IBackgroundLlm.EnrichCombinedAsync"/>; consume via
+/// <c>LlmConsolidator</c> or the bench's <c>Tier2Enricher</c>, which split the result
+/// back into per-op writes against the existing storage and cache surfaces.
+/// </summary>
+public sealed record CombinedEnrichment(string? Description, string[]? Facts);

@@ -54,7 +54,9 @@ public class AgentCliBackgroundLlmTests
         // Defaults pin Tier 2 to the cheap tier (sonnet + low effort).
         args.Should().Equal("-p", "--model", "sonnet", "--effort", "low");
         stdin.Should().NotBeNullOrEmpty();
-        stdin.Should().Contain("description sentence");  // System prompt content leaks into stdin
+        // System prompt content leaks into stdin — assert the prompt's content marker
+        // rather than a specific phrase, since the prompt wording is tuned over time.
+        stdin.Should().Contain("Content:");
     }
 
     [Fact]

@@ -101,6 +101,15 @@ public sealed class Tier2Enricher
     private readonly ConcurrentDictionary<string, Lazy<Task<string?>>> _inflightSummary = new();
     private readonly ConcurrentDictionary<string, Lazy<Task<string[]?>>> _inflightFacts = new();
     private readonly ConcurrentDictionary<string, Lazy<Task<int?>>> _inflightImportance = new();
+    // Fifth map for the combined description+facts call. Per-hash singleflight so a
+    // parallel ingest burst on the same doc.Text runs the combined call exactly once;
+    // the other N-1 callers receive its result. On success the per-op disk caches are
+    // populated, which lets the subsequent descTask/factsTask dispatches below short
+    // out to cache hits without dispatching their own LLM calls.
+    private readonly ConcurrentDictionary<string, Lazy<Task<Scrinia.Core.Llm.CombinedEnrichment?>>> _inflightCombined = new();
+    // 60s matches FactsBudget — combined output is essentially "description + facts"
+    // so the larger op's budget governs.
+    private static readonly TimeSpan CombinedBudget = TimeSpan.FromSeconds(60);
 
     public EnrichOps Ops { get; }
     public string ProviderId { get; }
@@ -127,6 +136,23 @@ public sealed class Tier2Enricher
             return new EnrichResult(null, null, null);
 
         string hash = EnrichmentCache.Hash(text);
+
+        // Combined-call optimization: when both description and facts are enabled and
+        // neither is already cached, attempt a single JSON-mode LLM call that returns
+        // both. Backends that don't support wire-level JSON-mode (agent CLIs) return
+        // null via the default interface implementation — fast no-op, no LLM cost.
+        // On success the per-op disk caches are populated; the per-op task dispatches
+        // below then cache-hit. On failure (parse error, network) we fall through and
+        // the per-op tasks dispatch individual LLM calls as before.
+        //
+        // Uses Cache.Contains (counter-free) for the precondition so the upfront peek
+        // doesn't double-count against Hits/Misses — those track real per-op lookups.
+        if (Ops.Description && Ops.Facts
+            && !_cache.Contains("description", hash)
+            && !_cache.Contains("facts", hash))
+        {
+            await GetOrComputeCombinedAsync(hash, text, outerCt);
+        }
 
         // Description and summary share the Description output slot. If both are
         // enabled, summary takes precedence — it's the longer, content-richer form.
@@ -286,6 +312,62 @@ public sealed class Tier2Enricher
         finally
         {
             _inflightImportance.TryRemove(hash, out _);
+        }
+    }
+
+    /// <summary>
+    /// Singleflight wrapper for the combined description+facts call. Same shape as
+    /// the per-op <c>GetOrCompute*</c> helpers but lives on its own inflight map so
+    /// the per-op singleflights don't block on it (they run after this returns).
+    /// </summary>
+    private Task<Scrinia.Core.Llm.CombinedEnrichment?> GetOrComputeCombinedAsync(
+        string hash, string text, CancellationToken outerCt)
+    {
+        var myLazy = new Lazy<Task<Scrinia.Core.Llm.CombinedEnrichment?>>(
+            () => RunCombinedAsync(hash, text, outerCt),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        var actual = _inflightCombined.GetOrAdd(hash, myLazy);
+        if (!ReferenceEquals(actual, myLazy))
+            _cache.RecordInflightHit();
+        return actual.Value;
+    }
+
+    private async Task<Scrinia.Core.Llm.CombinedEnrichment?> RunCombinedAsync(
+        string hash, string text, CancellationToken outerCt)
+    {
+        try
+        {
+            Scrinia.Core.Llm.CombinedEnrichment? result;
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(outerCt);
+                cts.CancelAfter(CombinedBudget);
+                result = await _llm.EnrichCombinedAsync(text, cts.Token);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !outerCt.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"[scrinia-bench] enrich:combined failed for hash {hash[..8]}: {ex.GetType().Name}: {ex.Message}");
+                result = null;
+            }
+
+            // Persist whatever the combined call produced into the per-op disk caches.
+            // The per-op task dispatch in EnrichAsync runs immediately after this and
+            // will cache-hit on whichever fields populated successfully. Fields that
+            // didn't populate (null/empty) get no cache write; the per-op fallback
+            // path then dispatches an individual LLM call for them.
+            if (result is not null)
+            {
+                if (result.Description is not null)
+                    _cache.PutString("description", hash, result.Description);
+                if (result.Facts is { Length: > 0 })
+                    _cache.PutStringArray("facts", hash, result.Facts);
+            }
+
+            return result;
+        }
+        finally
+        {
+            _inflightCombined.TryRemove(hash, out _);
         }
     }
 }

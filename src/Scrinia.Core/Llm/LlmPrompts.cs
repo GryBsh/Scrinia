@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Scrinia.Core.Llm;
@@ -32,9 +33,7 @@ internal static partial class LlmPrompts
     public const int MaxDescriptionInputChars = 4_000;
 
     public const string DescriptionSystem =
-        "You are a memory librarian. Write a single concise description sentence " +
-        "(under 120 characters) that captures what the content is about — useful for " +
-        "search and recall. Output only the description, no preamble or quotes.";
+        "Summarize this content in 120 characters or less. Plain text, no quotes.";
 
     public static string DescriptionUser(string content) =>
         "Content:\n\n" + Truncate(content, MaxDescriptionInputChars);
@@ -48,14 +47,132 @@ internal static partial class LlmPrompts
         "Text:\n\n" + Truncate(text, MaxInputChars);
 
     public const string FactsSystem =
-        "You are a memory librarian. Extract 3–7 atomic facts from the content. " +
-        "Each fact must be: (1) self-contained — understandable without surrounding " +
-        "context, (2) a single claim, (3) under 120 characters. " +
-        "Output one fact per line. No numbering, no bullets, no prefixes — just the " +
-        "fact text on its own line. Output only the facts, no preamble.";
+        "Gather up to 7 self-contained facts from this content without commentary, " +
+        "each under 120 characters, one per line, in plain text.";
 
     public static string FactsUser(string content) =>
         "Content:\n\n" + Truncate(content, MaxInputChars);
+
+    /// <summary>
+    /// Combined description + facts request. The system prompt asks for a single JSON
+    /// object so one round-trip produces both signals. Used by
+    /// <c>IBackgroundLlm.EnrichCombinedAsync</c> on backends that can honor
+    /// <c>response_format: { type: "json_object" }</c> at the wire (Ollama, llama.cpp
+    /// server, LM Studio, vLLM, OpenAI itself).
+    /// </summary>
+    public const string CombinedSystem =
+        "Summarize this content in under 120 chars and gather up to 7 self-contained " +
+        "facts from it (each under 120 chars, no commentary). Return as JSON with " +
+        "keys \"description\" and \"facts\". JSON only.";
+
+    public static string CombinedUser(string content) =>
+        "Content:\n\n" + Truncate(content, MaxInputChars);
+
+    /// <summary>
+    /// Parse a combined-enrichment LLM response into <see cref="CombinedEnrichment"/>.
+    /// Tolerates: (1) markdown code fences around the JSON (e.g. <c>```json ... ```</c>),
+    /// (2) leading or trailing prose outside the object, (3) empty strings / empty
+    /// arrays / missing fields (treated as null per the per-op null semantics),
+    /// (4) malformed JSON (returns null overall — caller falls back to per-op).
+    /// </summary>
+    public static CombinedEnrichment? ParseCombinedJson(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        string text = StripMarkdownFences(raw);
+
+        // Locate the first balanced top-level JSON object. Walking the string with a
+        // depth counter is cheap and handles arbitrary leading/trailing prose better
+        // than a regex would (regex would need to know about escaped quotes).
+        int start = text.IndexOf('{');
+        if (start < 0) return null;
+
+        int end = FindMatchingBrace(text, start);
+        if (end < 0) return null;
+
+        string jsonObj = text[start..(end + 1)];
+
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonObj);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            string? description = null;
+            if (root.TryGetProperty("description", out var descEl)
+                && descEl.ValueKind == JsonValueKind.String)
+            {
+                string? d = descEl.GetString()?.Trim();
+                description = string.IsNullOrWhiteSpace(d) ? null : d;
+            }
+
+            string[]? facts = null;
+            if (root.TryGetProperty("facts", out var factsEl)
+                && factsEl.ValueKind == JsonValueKind.Array)
+            {
+                var list = new List<string>(factsEl.GetArrayLength());
+                foreach (var item in factsEl.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String) continue;
+                    string? f = item.GetString()?.Trim();
+                    // Reuse ParseFacts' 5-char-min / 240-char-max bounds so combined and
+                    // line-mode pipelines accept the same fact shape.
+                    if (string.IsNullOrWhiteSpace(f)) continue;
+                    if (f.Length < 5 || f.Length > 240) continue;
+                    list.Add(f);
+                }
+                facts = list.Count > 0 ? list.ToArray() : null;
+            }
+
+            if (description is null && facts is null) return null;
+            return new CombinedEnrichment(description, facts);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string StripMarkdownFences(string raw)
+    {
+        string s = raw.Trim();
+        if (!s.StartsWith("```", StringComparison.Ordinal)) return s;
+
+        // ```optional-lang\n...\n``` — drop the opening fence line and the trailing
+        // ``` if present. If the model wrote an unclosed fence, fall back to dropping
+        // just the opening line; the brace-finder will still locate the JSON object.
+        int firstNewline = s.IndexOf('\n');
+        if (firstNewline > 0) s = s[(firstNewline + 1)..];
+        int lastFence = s.LastIndexOf("```", StringComparison.Ordinal);
+        if (lastFence >= 0) s = s[..lastFence];
+        return s.Trim();
+    }
+
+    private static int FindMatchingBrace(string text, int openIdx)
+    {
+        int depth = 0;
+        bool inString = false;
+        bool escape = false;
+        for (int i = openIdx; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (escape) { escape = false; continue; }
+            if (inString)
+            {
+                if (c == '\\') { escape = true; continue; }
+                if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') { inString = true; continue; }
+            if (c == '{') depth++;
+            else if (c == '}')
+            {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
 
     public const string ImportanceSystem =
         "You are a memory librarian. Rate how important and lasting this memory is on " +

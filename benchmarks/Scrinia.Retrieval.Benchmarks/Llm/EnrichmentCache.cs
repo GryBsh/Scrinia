@@ -75,6 +75,15 @@ public sealed class EnrichmentCache
     }
 
     /// <summary>
+    /// Counter-free presence check — does NOT increment <see cref="Hits"/> or
+    /// <see cref="Misses"/>. Used by callers that need to peek at cache state
+    /// (e.g. deciding whether to attempt a combined LLM call) without inflating
+    /// the bench's per-run accounting. Real lookups still go through
+    /// <see cref="TryGetString"/> / <see cref="TryGetStringArray"/> / <see cref="TryGetInt"/>.
+    /// </summary>
+    public bool Contains(string op, string hash) => _entries.ContainsKey(Key(op, hash));
+
+    /// <summary>
     /// Look up a string-valued op (description, summary). Returns true on cache hit
     /// (with <paramref name="value"/> possibly null if the cached result was null);
     /// false on miss. Increments the corresponding counter.

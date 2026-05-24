@@ -267,6 +267,83 @@ public class OpenAiCompatibleBackgroundLlmTests
     }
 
     /// <summary>
+    [Fact]
+    public async Task EnrichCombined_PostsJsonModeRequest_AndParsesBothFields()
+    {
+        string? capturedBody = null;
+        var handler = new StubHandler(async (req, _) =>
+        {
+            req.Method.Should().Be(HttpMethod.Post);
+            req.RequestUri!.ToString().Should().Be("http://stub.test/v1/chat/completions");
+            capturedBody = await req.Content!.ReadAsStringAsync();
+            string responseJson = """{"description":"User uses Salesforce CRM daily.","facts":["User uses Salesforce CRM daily.","Data entry takes as long as calls.","User prefers an old-school personal system."]}""";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(Chat(responseJson), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var llm = new OpenAiCompatibleBackgroundLlm(Options(), new HttpClient(handler));
+
+        var result = await llm.EnrichCombinedAsync("body text", CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result!.Description.Should().Be("User uses Salesforce CRM daily.");
+        result.Facts.Should().NotBeNull();
+        result.Facts!.Length.Should().Be(3);
+        result.Facts.Should().Contain("Data entry takes as long as calls.");
+
+        // Body must include response_format: { type: "json_object" } so the server
+        // enforces JSON output at the wire — prompt-only requests are unreliable on
+        // small models. The presence of the field in the serialized payload is the
+        // production signal that the request was constructed correctly.
+        capturedBody.Should().NotBeNull();
+        using var body = JsonDocument.Parse(capturedBody!);
+        body.RootElement.TryGetProperty("response_format", out var rf).Should().BeTrue(
+            because: "EnrichCombinedAsync must request wire-level JSON-mode");
+        rf.GetProperty("type").GetString().Should().Be("json_object");
+    }
+
+    [Fact]
+    public async Task EnrichCombined_ReturnsNull_OnMalformedJsonBody()
+    {
+        // Model produced freeform text instead of JSON — parser returns null, caller
+        // falls back to the per-op path.
+        var handler = StubHandler.Sync((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    Chat("Sure, I'd be happy to help with that. Here's a summary..."),
+                    Encoding.UTF8, "application/json"),
+            });
+        using var llm = new OpenAiCompatibleBackgroundLlm(Options(), new HttpClient(handler));
+
+        var result = await llm.EnrichCombinedAsync("x", CancellationToken.None);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task EnrichCombined_StripsMarkdownFences()
+    {
+        // qwen and llama family models often wrap JSON in ```json ... ``` despite
+        // instructions; the parser must strip those fences before parsing.
+        var handler = StubHandler.Sync((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    Chat("```json\n{\"description\":\"D\",\"facts\":[\"fact one\",\"fact two\"]}\n```"),
+                    Encoding.UTF8, "application/json"),
+            });
+        using var llm = new OpenAiCompatibleBackgroundLlm(Options(), new HttpClient(handler));
+
+        var result = await llm.EnrichCombinedAsync("x", CancellationToken.None);
+
+        result.Should().NotBeNull();
+        result!.Description.Should().Be("D");
+        result.Facts!.Length.Should().Be(2);
+    }
+
+    /// <summary>
     /// Stubbed message handler — async-only signature to keep callers unambiguous.
     /// Tests that don't need to await pre-build a Task.FromResult.
     /// </summary>
