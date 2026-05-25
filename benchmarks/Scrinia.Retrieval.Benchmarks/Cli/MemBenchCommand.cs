@@ -28,10 +28,11 @@ internal static class MemBenchCommand
 
         Console.WriteLine($"membench: data={dataRoot}, per-cat-limit={limit?.ToString() ?? "none"}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
+        var agent = await RetrieverFactory.BuildAgentAsync(args, ct);
         var loader = new MemBenchLoader(dataRoot, perCategoryLimit: limit);
         await using (retriever)
         {
-            var runner = new BenchmarkRunner();
+            var runner = new BenchmarkRunner(agent);
             var progress = new Progress<RunProgress>(p =>
             {
                 if (p.Completed % 100 == 0 || p.Completed == 1)

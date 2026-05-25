@@ -32,10 +32,11 @@ internal static class LongMemEvalCommand
 
         Console.WriteLine($"longmemeval: data={dataPath}, split={split}, granularity={granularity}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
+        var agent = await RetrieverFactory.BuildAgentAsync(args, ct);
         var loader = new LongMemEvalLoader(dataPath, split, splitFile, granularity);
         await using (retriever)
         {
-            var runner = new BenchmarkRunner();
+            var runner = new BenchmarkRunner(agent);
             var progress = new Progress<RunProgress>(p =>
             {
                 if (p.Completed % 25 == 0 || p.Completed == 1)

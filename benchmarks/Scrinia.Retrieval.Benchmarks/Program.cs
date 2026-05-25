@@ -81,6 +81,15 @@ internal static class Program
               --enrich-ops <list>      Comma-separated subset of facts,description,importance,summary (default: facts,description — the two that move R@K). 'all' enables all four.
               --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --enrich tier2 is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
 
+            Agent harness flags (simulates a production agent around scrinia — anchors at ingest, query rewrite/HyDE at search):
+              --agent <mode>           off (default) | anchors | rewrite | hyde | all — what the agent does.
+                                       'anchors' generates retrieval anchors per doc at ingest; 'rewrite' rewrites the query before search;
+                                       'hyde' appends a hypothetical answer to the query; 'all' enables every op.
+              --agent-provider <p>     Required when --agent != off: openai | anthropic | gemini | ollama | claude-cli | codex-cli | copilot-cli
+              --agent-base-url <url>   Optional HTTP endpoint override for ollama/openai.
+              --agent-model <m>        Required for ollama/openai/anthropic/gemini; optional for agent CLIs.
+              --agent-api-key <key>    Bearer / API key for openai/anthropic/gemini. Ollama doesn't need one.
+
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)
 

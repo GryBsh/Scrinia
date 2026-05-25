@@ -1,6 +1,7 @@
 using System.Globalization;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
+using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
 using Scrinia.Retrieval.Benchmarks.Llm;
 
@@ -145,6 +146,37 @@ internal static class RetrieverFactory
     }
 
     /// <summary>
+    /// Builds an <see cref="IAgentHarness"/> from CLI args. Returns
+    /// <see cref="NoOpAgentHarness.Instance"/> for the default <c>--agent off</c>.
+    /// When any agent op is enabled, requires <c>--agent-provider</c> and dispatches
+    /// to <see cref="AgentClientBuilder.BuildAsync"/> to construct the LLM transport.
+    /// The harness owns its own <see cref="EnrichmentCache"/> at
+    /// <c>cache/agent-{provider}-{model}.ndjson</c>, distinct from the Tier 2
+    /// enrichment cache.
+    /// </summary>
+    public static async Task<IAgentHarness> BuildAgentAsync(string[] args, CancellationToken ct)
+    {
+        AgentModes modes = ParseAgentMode(Program.Flag(args, "--agent"));
+        if (!modes.AnyEnabled) return NoOpAgentHarness.Instance;
+
+        string provider = Program.Flag(args, "--agent-provider")
+            ?? throw new ArgumentException(
+                "--agent " + modes.Label() + " requires --agent-provider " +
+                "(openai | anthropic | gemini | ollama | claude-cli | codex-cli | copilot-cli)");
+        string? model = Program.Flag(args, "--agent-model");
+        string? baseUrl = Program.Flag(args, "--agent-base-url");
+        string? apiKey = Program.Flag(args, "--agent-api-key");
+        var backend = await AgentClientBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
+        string cacheDir = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache");
+        string cacheFile = Path.Combine(cacheDir, $"agent-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
+        var cache = new EnrichmentCache(cacheFile);
+        var harness = new LlmAgentHarness(backend.Llm, cache, backend.ProviderId, backend.ModelSlug, modes);
+        Console.Error.WriteLine(
+            $"[scrinia-bench] agent harness enabled: provider={backend.ProviderId} model={backend.ModelSlug} ops={modes.Label()} cache={cacheFile}");
+        return harness;
+    }
+
+    /// <summary>
     /// Patch <see cref="RunMetadata"/> with Tier 2 enrichment stats from the retriever's
     /// enricher. Subcommands call this after <c>RunAsync</c> returns and before writing
     /// the result JSON, so a Tier 2 run's output records which provider/model/ops were
@@ -179,6 +211,23 @@ internal static class RetrieverFactory
         null or "" or "none" or "off" or "false" => false,
         "tier2" or "on" or "true" => true,
         _ => throw new ArgumentException($"unknown --enrich '{raw}'. Expected: none | tier2"),
+    };
+
+    /// <summary>
+    /// Parses <c>--agent</c> into an <see cref="AgentModes"/>. <c>off</c> (default)
+    /// disables the harness; <c>anchors</c> / <c>rewrite</c> / <c>hyde</c> enable
+    /// individual ops; <c>all</c> enables every op. Validates here so misconfiguration
+    /// fails fast at startup rather than mid-run.
+    /// </summary>
+    public static AgentModes ParseAgentMode(string? raw) => raw?.ToLowerInvariant() switch
+    {
+        null or "" or "off" or "none" or "false" => AgentModes.Off,
+        "anchors" => AgentModes.AnchorsOnly,
+        "rewrite" => AgentModes.RewriteOnly,
+        "hyde" => AgentModes.HydeOnly,
+        "all" => AgentModes.All,
+        _ => throw new ArgumentException(
+            $"unknown --agent '{raw}'. Expected: off | anchors | rewrite | hyde | all"),
     };
 
     private static FusionMode ParseFusion(string? raw) => raw?.ToLowerInvariant() switch
@@ -240,6 +289,14 @@ internal static class RetrieverFactory
             tags.Add(enrichOps.Equals(EnrichOps.Default)
                 ? "tier2"
                 : "tier2-" + enrichOps.Label().Replace(',', '-'));
+        }
+        // Agent harness tag — one of agent-anchors / agent-rewrite / agent-hyde /
+        // agent-all when the harness is active. Off (the default) emits no tag so
+        // baseline result files stay clean.
+        if (Program.Flag(args, "--agent") is { } ag)
+        {
+            var modes = ParseAgentMode(ag);
+            if (modes.AnyEnabled) tags.Add("agent-" + modes.Label());
         }
         if (Program.Flag(args, "--alpha-recency") is { } r) tags.Add($"rec{r}");
         if (Program.Flag(args, "--tau-days") is { } tau) tags.Add($"tau{tau}");

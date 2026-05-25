@@ -27,10 +27,11 @@ internal static class ConvoMemCommand
 
         Console.WriteLine($"convomem: data={dataRoot}, per-cat-limit={limit}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
+        var agent = await RetrieverFactory.BuildAgentAsync(args, ct);
         var loader = new ConvoMemLoader(dataRoot, perCategoryLimit: limit);
         await using (retriever)
         {
-            var runner = new BenchmarkRunner();
+            var runner = new BenchmarkRunner(agent);
             var progress = new Progress<RunProgress>(p =>
             {
                 if (p.Completed % 25 == 0 || p.Completed == 1)

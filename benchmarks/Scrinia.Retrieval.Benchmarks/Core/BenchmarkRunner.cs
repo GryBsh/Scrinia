@@ -1,5 +1,6 @@
 using System.Reflection;
 using Scrinia.Core;
+using Scrinia.Retrieval.Benchmarks.Agent;
 
 namespace Scrinia.Retrieval.Benchmarks.Core;
 
@@ -15,6 +16,24 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 /// </summary>
 public sealed class BenchmarkRunner
 {
+    private readonly IAgentHarness _agent;
+
+    /// <summary>Default constructor — uses the no-op agent harness (baseline runs).</summary>
+    public BenchmarkRunner() : this(NoOpAgentHarness.Instance) { }
+
+    /// <summary>
+    /// Constructor accepting a configured agent harness. When the harness is non-null
+    /// and any of its ops are enabled, the runner generates anchors per ingest doc
+    /// and/or transforms the query before each retrieval. <see cref="NoOpAgentHarness"/>
+    /// (the default) is a zero-cost passthrough so the runner code path is identical
+    /// for agent-on and agent-off runs.
+    /// </summary>
+    public BenchmarkRunner(IAgentHarness agent)
+    {
+        ArgumentNullException.ThrowIfNull(agent);
+        _agent = agent;
+    }
+
     public async Task<BenchmarkRunResult> RunAsync(
         string benchmarkName,
         string modeLabel,
@@ -42,9 +61,10 @@ public sealed class BenchmarkRunner
             if (n > 0)
                 await retriever.ResetAsync(ct);
 
-            await IngestHaystackAsync(retriever, q.Haystack, ingestConcurrency, ct);
+            await IngestHaystackAsync(retriever, q.Haystack, ingestConcurrency, _agent, ct);
 
-            var hits = await retriever.RetrieveAsync(q.QueryText, topK, ct);
+            string queryText = await TransformQueryAsync(q.QueryText, ct);
+            var hits = await retriever.RetrieveAsync(queryText, topK, ct);
             var scored = BenchmarkScorer.ScoreQuestion(q, hits);
             results.Add(scored);
             n++;
@@ -97,12 +117,13 @@ public sealed class BenchmarkRunner
             if (!first) await retriever.ResetAsync(ct);
             first = false;
 
-            await IngestHaystackAsync(retriever, group.SharedHaystack, ingestConcurrency, ct);
+            await IngestHaystackAsync(retriever, group.SharedHaystack, ingestConcurrency, _agent, ct);
 
             foreach (var q in group.Questions)
             {
                 ct.ThrowIfCancellationRequested();
-                var hits = await retriever.RetrieveAsync(q.QueryText, topK, ct);
+                string queryText = await TransformQueryAsync(q.QueryText, ct);
+                var hits = await retriever.RetrieveAsync(queryText, topK, ct);
                 var scored = BenchmarkScorer.ScoreQuestion(q, hits);
                 results.Add(scored);
                 progress?.Report(new RunProgress(results.Count, scored));
@@ -123,11 +144,11 @@ public sealed class BenchmarkRunner
     }
 
     /// <summary>
-    /// Ingest a question's haystack docs into the retriever. Sequential when
+    /// Ingest a question's haystack docs into the retriever, optionally generating
+    /// agent-harness anchors per doc first. Sequential when
     /// <paramref name="concurrency"/> is 1 (the default — matches prior behavior).
     /// When greater, uses <see cref="Parallel.ForEachAsync{TSource}(IEnumerable{TSource}, ParallelOptions, Func{TSource, CancellationToken, ValueTask})"/>
-    /// so multiple ingest calls — and the Tier 2 enrichment LLM calls inside them —
-    /// run concurrently. Required for the Tier 2 sweep to finish on MemBench timescale.
+    /// so multiple ingest calls — and any LLM calls inside them — run concurrently.
     /// The retriever's <c>IngestAsync</c> implementation must be safe for concurrent
     /// invocations; <see cref="ScriniaRetriever"/> serializes its index write internally.
     /// </summary>
@@ -135,12 +156,16 @@ public sealed class BenchmarkRunner
         IRetriever retriever,
         IReadOnlyList<HaystackDoc> docs,
         int concurrency,
+        IAgentHarness agent,
         CancellationToken ct)
     {
         if (concurrency <= 1)
         {
             foreach (var d in docs)
-                await retriever.IngestAsync(d, ct);
+            {
+                var anchors = await agent.GenerateAnchorsAsync(d.Text, ct);
+                await retriever.IngestAsync(d, anchors, ct);
+            }
             return;
         }
         var options = new ParallelOptions
@@ -150,8 +175,30 @@ public sealed class BenchmarkRunner
         };
         await Parallel.ForEachAsync(docs, options, async (doc, c) =>
         {
-            await retriever.IngestAsync(doc, c);
+            var anchors = await agent.GenerateAnchorsAsync(doc.Text, c);
+            await retriever.IngestAsync(doc, anchors, c);
         });
+    }
+
+    /// <summary>
+    /// Apply the agent's query-side transforms (rewrite and/or HyDE) before sending
+    /// the query to the retriever. Both transforms compose: if rewrite is enabled,
+    /// the original query is replaced with the rewritten form; if HyDE is enabled,
+    /// the generated hypothetical is appended to whatever query text we end up
+    /// using (separated by two newlines so an embedding-based retriever sees both
+    /// surfaces as one semantic blob). When neither op is enabled — or both return
+    /// null — the original query passes through unchanged.
+    /// </summary>
+    private async Task<string> TransformQueryAsync(string originalQuery, CancellationToken ct)
+    {
+        string current = originalQuery;
+        string? rewritten = await _agent.RewriteQueryAsync(originalQuery, ct);
+        if (!string.IsNullOrWhiteSpace(rewritten))
+            current = rewritten;
+        string? hypothetical = await _agent.GenerateHypotheticalAsync(originalQuery, ct);
+        if (!string.IsNullOrWhiteSpace(hypothetical))
+            current = current + "\n\n" + hypothetical;
+        return current;
     }
 
     private static string ReadScriniaVersion() =>

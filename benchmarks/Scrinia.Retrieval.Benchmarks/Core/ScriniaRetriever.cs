@@ -128,7 +128,19 @@ public sealed class ScriniaRetriever : IRetriever
         _sentenceVectorCache = new ConcurrentDictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase);
     }
 
-    public async Task IngestAsync(HaystackDoc doc, CancellationToken ct = default)
+    public Task IngestAsync(HaystackDoc doc, CancellationToken ct = default) =>
+        IngestAsync(doc, agentAnchors: null, ct);
+
+    /// <summary>
+    /// Ingest overload that accepts agent-harness-supplied retrieval anchors. When
+    /// <paramref name="agentAnchors"/> is non-null and non-empty, those anchors flow
+    /// into <see cref="ArtifactEntry.RetrievalAnchors"/> instead of the Tier 2
+    /// enricher's facts — agent anchors are higher-quality query-vocabulary phrases
+    /// (e.g. "what is the policy", "how do I undo") whereas Tier 2 facts are
+    /// content-vocabulary statements. The original ingest signature (without anchors)
+    /// continues to call this with null, preserving baseline behavior.
+    /// </summary>
+    public async Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? agentAnchors, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ct.ThrowIfCancellationRequested();
@@ -143,7 +155,7 @@ public sealed class ScriniaRetriever : IRetriever
 
         if (!_chunked)
         {
-            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, enrichment, ct);
+            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, enrichment, agentAnchors, ct);
             return;
         }
 
@@ -157,22 +169,37 @@ public sealed class ScriniaRetriever : IRetriever
         foreach (var (idx, text) in windows)
         {
             string chunkId = $"{doc.Id}{ChunkSeparator}{idx}";
-            await IngestEntryAsync(chunkId, text, doc.Timestamp, enrichment, ct);
+            await IngestEntryAsync(chunkId, text, doc.Timestamp, enrichment, agentAnchors, ct);
         }
     }
 
     private async Task IngestEntryAsync(
-        string id, string text, DateTimeOffset? timestamp, EnrichResult enrichment, CancellationToken ct)
+        string id, string text, DateTimeOffset? timestamp, EnrichResult enrichment,
+        IReadOnlyList<string>? agentAnchors, CancellationToken ct)
     {
         string sanitized = SanitizeName(id);
         var (keywords, tf) = TextAnalysis.AnalyzeText(text);
 
-        // Seed Tier 2 facts into the TF dict so BM25 picks up fact-derived tokens.
-        // Replicates LlmConsolidator.cs:173-189 exactly: OrdinalIgnoreCase comparer
-        // (matches the prod-path semantics), additive merge with text-derived TF,
-        // +2 weight per fact token. The same boost prod-merged agent keywords get.
+        // Pick anchor source: agent-harness anchors win over Tier 2 facts when both
+        // are present. Agent anchors are query-vocabulary phrases the user might
+        // type ("how do I undo X"), whereas Tier 2 facts are content-vocabulary
+        // statements ("X resets the index"). For query-time matching the former is
+        // strictly more useful, hence the preference.
+        string[]? anchorSource;
+        if (agentAnchors is { Count: > 0 })
+        {
+            anchorSource = agentAnchors as string[] ?? agentAnchors.ToArray();
+        }
+        else
+        {
+            anchorSource = enrichment.Facts;
+        }
+
+        // Seed anchor-derived tokens into the TF dict so BM25 picks up the
+        // query-vocabulary terms. Replicates the prod-path semantics: OrdinalIgnoreCase
+        // comparer, additive merge with text-derived TF, +2 weight per anchor token.
         Dictionary<string, int> mergedTf = tf;
-        if (enrichment.Facts is { Length: > 0 })
+        if (anchorSource is { Length: > 0 })
         {
             mergedTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var (k, v) in tf)
@@ -180,9 +207,9 @@ public sealed class ScriniaRetriever : IRetriever
                 mergedTf.TryGetValue(k, out int existing);
                 mergedTf[k] = existing + v;
             }
-            foreach (string fact in enrichment.Facts)
+            foreach (string anchor in anchorSource)
             {
-                foreach (string token in TextAnalysis.Tokenize(fact))
+                foreach (string token in TextAnalysis.Tokenize(anchor))
                 {
                     mergedTf.TryGetValue(token, out int count);
                     mergedTf[token] = count + 2;
@@ -205,7 +232,7 @@ public sealed class ScriniaRetriever : IRetriever
             Keywords: keywords,
             TermFrequencies: mergedTf,
             ContentPreview: text,
-            RetrievalAnchors: enrichment.Facts);
+            RetrievalAnchors: anchorSource);
 
         // FileMemoryStore.Upsert isn't thread-safe — serialize it across concurrent
         // doc ingests (parallel mode). Embedding call is awaited OUTSIDE the lock so
