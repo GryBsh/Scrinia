@@ -14,7 +14,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Scrinia.Core\Scrinia.Core.csproj" />
     <ProjectReference Include="..\Scrinia.Plugin.Abstractions\Scrinia.Plugin.Abstractions.csproj" />
-    <ProjectReference Include="..\Scrinia.Plugin.Llama\Scrinia.Plugin.Llama.csproj" />
   </ItemGroup>
 
   <ItemGroup>

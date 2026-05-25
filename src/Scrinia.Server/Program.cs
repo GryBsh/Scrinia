@@ -8,7 +8,6 @@ using ModelContextProtocol.Server;
 using Scalar.AspNetCore;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
-using Scrinia.Core.Llm;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.Plugin.Abstractions;
@@ -152,7 +151,6 @@ if (!pluginProvidesEmbeddings)
                 new CompositeEventSink([
                     sp.GetRequiredService<BuiltInEmbeddingsService>(),
                     new MaintenanceEventSink(),
-                    new ImportanceScoringSink(),
                 ]));
             builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());

@@ -91,9 +91,9 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
     /// <summary>
     /// Ranker composition weights. <see cref="SearchAll(string, IEnumerable{ScopedArtifact},
     /// IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/> combines
-    /// relevance (field + BM25 + supplemental), exp-decay recency, and LLM-scored
-    /// importance additively per <see cref="RankerOptions"/>. The legacy
-    /// <c>Search</c> method does not apply recency/importance — only SearchAll does.
+    /// relevance (field + BM25 + supplemental) with exp-decay recency additively per
+    /// <see cref="RankerOptions"/>. The legacy <c>Search</c> method does not apply
+    /// recency — only SearchAll does.
     /// </summary>
     private readonly RankerOptions _options;
 
@@ -207,8 +207,8 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
 
         // ── Pass 2: Combine normalized BM25 with field scores, deduplicate inline ──
         // Track best score per memory for deduplication during scoring. Relevance gates
-        // the composition (recency and importance are bumps, not standalone signals) so
-        // entries with zero text match never surface even if they're fresh or important.
+        // the composition (recency is a bump, not a standalone signal) so entries with
+        // zero text match never surface even if they're fresh.
         var bestPerMemory = new Dictionary<string, (SearchResult Result, double Score)>(StringComparer.OrdinalIgnoreCase);
         var topicResults = new List<SearchResult>();
 
@@ -713,16 +713,14 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
     // ── Ranker composition ───────────────────────────────────────────────
 
     /// <summary>
-    /// Combines relevance with recency and importance terms per <see cref="RankerOptions"/>.
+    /// Combines relevance with the recency term per <see cref="RankerOptions"/>.
     /// Relevance is presumed to already be &gt; 0 — callers gate on that before invoking this.
     /// </summary>
     private double ComputeTotalScore(double relevance, ArtifactEntry entry)
     {
         double recency = ComputeRecencyTerm(entry.UpdatedAt ?? entry.CreatedAt, _options.TauDays);
-        double importance = ComputeImportanceTerm(entry.Importance, _options.NeutralImportance);
-        return _options.AlphaRelevance  * relevance
-             + _options.AlphaRecency    * recency    * _options.RecencyScale
-             + _options.AlphaImportance * importance * _options.ImportanceScale;
+        return _options.AlphaRelevance * relevance
+             + _options.AlphaRecency   * recency * _options.RecencyScale;
     }
 
     /// <summary>
@@ -735,19 +733,6 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         if (daysSince < 0) daysSince = 0;
         if (tauDays <= 0) return 0; // pathological config — treat all entries as fully decayed
         return Math.Exp(-daysSince / tauDays);
-    }
-
-    /// <summary>
-    /// Maps a 1–10 LLM-scored importance to 0..1. Null importance (unscored / no LLM
-    /// configured) falls back to the neutral midpoint so unscored memories rank as if
-    /// "average importance" rather than getting penalised.
-    /// </summary>
-    internal static double ComputeImportanceTerm(int? importance, int neutralImportance)
-    {
-        int raw = importance ?? neutralImportance;
-        if (raw < 1) raw = 1;
-        if (raw > 10) raw = 10;
-        return raw / 10.0;
     }
 
     // ── Supplemental score lookup ─────────────────────────────────────────

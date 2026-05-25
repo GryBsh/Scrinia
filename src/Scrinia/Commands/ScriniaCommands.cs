@@ -10,7 +10,6 @@ using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
-using Scrinia.Core.Llm;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Commands.Hooks;
@@ -939,24 +938,18 @@ public class ScriniaCommands
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="multiUser">Configure git merge drivers for multi-user collaboration.</param>
     /// <param name="resolver">Conflict resolver when --multi-user is set (none, claude, copilot).</param>
-    /// <param name="llmDownload">Download the LLM plugin model without prompting (~900MB GGUF).</param>
-    /// <param name="noLlmDownload">Skip the LLM plugin model download without prompting.</param>
     /// <param name="noOllama">Skip Ollama auto-detection even if it is running. Use to force local-only setup.</param>
-    /// <param name="hooks">Install SessionStart/Stop hooks into detected agent CLIs (Claude Code, etc.). Opt-in.</param>
+    /// <param name="hooks">Install SessionStart/UserPromptSubmit hooks into detected agent CLIs (Claude Code, etc.). Opt-in.</param>
     /// <param name="uninstallHooks">Remove scrinia-managed hooks from agent CLIs and exit.</param>
     /// <param name="project">With --hooks / --uninstall-hooks, target workspace-local config (.claude/...) instead of user-global (~/.claude/...).</param>
-    /// <param name="llm">Tier 2 LLM provider to configure non-interactively. Values: <c>auto</c>, <c>claude-cli</c>, <c>codex-cli</c>, <c>copilot-cli</c>, <c>openai</c>, <c>anthropic</c>, <c>gemini</c>, <c>plugin</c>, <c>none</c>. When omitted, setup writes <c>auto</c> (runtime picks the best available backend per startup). Secondary keys (API key for anthropic/gemini, base-URL + model for openai) are prompted only when missing from existing config.</param>
     public async Task<int> Setup(
         string? workspaceRoot = null,
         bool multiUser = false,
         string? resolver = null,
-        bool llmDownload = false,
-        bool noLlmDownload = false,
         bool noOllama = false,
         bool hooks = false,
         bool uninstallHooks = false,
         bool project = false,
-        string? llm = null,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -1070,217 +1063,14 @@ public class ScriniaCommands
             "Scrinia:Embeddings:Provider",
             "model2vec");
 
-        // ── Step 3: LLM plugin GGUF model (if plugin is installed) ──
-        string llmPluginName = WorkspaceSetup.GetPluginName("plugins:llm", "scri-plugin-llm");
-        string llmPluginExe = Path.Combine(pluginsDir, llmPluginName, $"{llmPluginName}{ext}");
-        if (!File.Exists(llmPluginExe))
-            llmPluginExe = Path.Combine(pluginsDir, $"{llmPluginName}{ext}");
-
-        if (File.Exists(llmPluginExe))
-        {
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[bold]LLM plugin (Tier 2 consolidation)[/]");
-
-            string llmModelsDir = Path.Combine(pluginsDir, llmPluginName);
-            Directory.CreateDirectory(llmModelsDir);
-
-            // Defaults intentionally inlined to avoid pulling Scrinia.Plugin.Llm (and transitively
-            // LLamaSharp) into the trimmed CLI publish. Kept in sync with LlmModelManager.
-            const string defaultLlmFile = "LFM2.5-1.2B-Instruct-Q5_K_M.gguf";
-            const string defaultLlmUrl =
-                "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q5_K_M.gguf";
-
-            string llmFile = WorkspaceSetup.GetConfigValue("Scrinia:Llm:LocalModelFile") ?? defaultLlmFile;
-            string llmUrl = WorkspaceSetup.GetConfigValue("Scrinia:Llm:LocalModelUrl") ?? defaultLlmUrl;
-
-            string llmFilePath = Path.Combine(llmModelsDir, llmFile);
-            if (File.Exists(llmFilePath))
-            {
-                AnsiConsole.MarkupLine("[green]  LLM model already downloaded.[/]");
-                AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(llmFilePath)}[/]");
-            }
-            else
-            {
-                bool proceed;
-                if (llmDownload && noLlmDownload)
-                {
-                    AnsiConsole.MarkupLine(
-                        "[yellow]  --llm-download and --no-llm-download both set; treating as decline.[/]");
-                    proceed = false;
-                }
-                else if (llmDownload) proceed = true;
-                else if (noLlmDownload) proceed = false;
-                else
-                {
-                    // Default to No so a non-interactive `scri setup` (CI, scripted install)
-                    // never silently downloads a gigabyte. Interactive users get a prompt.
-                    proceed = AnsiConsole.Confirm(
-                        $"  Download LLM model ([cyan]{Markup.Escape(llmFile)}[/], ~900MB) for Tier 2 consolidation?",
-                        defaultValue: false);
-                }
-
-                if (proceed)
-                {
-                    string llmBaseUrl = llmUrl[..llmUrl.LastIndexOf('/')];
-                    string filePart = llmUrl[(llmUrl.LastIndexOf('/') + 1)..];
-                    await DownloadFilesAsync(llmBaseUrl, [filePart], llmModelsDir, cancellationToken);
-
-                    // If the download filename differs from the configured filename
-                    // (which is what the plugin will look for), rename atomically.
-                    string downloaded = Path.Combine(llmModelsDir, filePart);
-                    if (!string.Equals(filePart, llmFile, StringComparison.OrdinalIgnoreCase)
-                        && File.Exists(downloaded))
-                    {
-                        File.Move(downloaded, llmFilePath, overwrite: true);
-                    }
-                    AnsiConsole.MarkupLine($"[green]  LLM model ready at:[/] {Markup.Escape(llmModelsDir)}");
-                }
-                else
-                {
-                    AnsiConsole.MarkupLine(
-                        "[dim]  Skipped. Run again with --llm-download to fetch, or set " +
-                        "Scrinia:Llm:LocalModelUrl/LocalModelFile to override the default.[/]");
-                }
-            }
-        }
-
-        // ── Step 4: Tier 2 LLM backend selection ──
-        // Pick the LLM provider Scrinia uses for Tier 2 consolidation. Auto (the default)
-        // resolves at startup. Explicit values let the user pin a backend non-interactively
-        // — e.g. `scri setup --llm claude-cli` for users with an active Claude Code
-        // subscription who want zero API-key configuration.
-        ConfigureLlmBackend(llm);
-
         return 0;
     }
 
     /// <summary>
-    /// LLM backend selection step. Writes <c>Scrinia:Llm:Provider</c> and prompts only for
-    /// secondary keys not already present in config. When <paramref name="llmArg"/> is null
-    /// and no provider is currently set, defaults to <c>auto</c> (runtime resolves per
-    /// startup). When a provider is already set and no arg is passed, leaves config alone
-    /// so a re-run of <c>scri setup</c> doesn't silently downgrade a deliberate Anthropic /
-    /// Gemini configuration to <c>auto</c>.
-    /// </summary>
-    private static void ConfigureLlmBackend(string? llmArg)
-    {
-        string root = ScriniaArtifactStore.WorkspaceRootPath;
-        AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine("[bold]Tier 2 LLM backend[/]");
-
-        string? existingProvider = WorkspaceConfig.GetValue(root, "Scrinia:Llm:Provider");
-
-        // Re-run protection: if Ollama setup OR a prior explicit configuration already
-        // wrote a provider and the user didn't override via --llm, respect that decision.
-        if (llmArg is null && !string.IsNullOrEmpty(existingProvider))
-        {
-            AnsiConsole.MarkupLine(
-                $"  [dim]Provider already set to '{Markup.Escape(existingProvider)}' — leaving as-is. " +
-                "Pass --llm <value> to change it.[/]");
-            return;
-        }
-
-        string chosen = (llmArg ?? "auto").Trim().ToLowerInvariant();
-        if (!IsKnownLlmProvider(chosen))
-        {
-            AnsiConsole.MarkupLine(
-                $"[yellow]  Unknown --llm value '{Markup.Escape(chosen)}'. " +
-                "Valid: auto, claude-cli, codex-cli, copilot-cli, openai, anthropic, gemini, plugin, none. " +
-                "Falling back to auto.[/]");
-            chosen = "auto";
-        }
-
-        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Provider", chosen);
-
-        switch (chosen)
-        {
-            case "auto":
-                AnsiConsole.MarkupLine(
-                    "  [green]Provider = auto[/] [dim]— runtime picks: HTTP probe → agent CLIs " +
-                    "(claude → codex → copilot) on PATH → bundled plugin → none.[/]");
-                break;
-            case "claude-cli":
-            case "codex-cli":
-            case "copilot-cli":
-                AnsiConsole.MarkupLine(
-                    $"  [green]Provider = {Markup.Escape(chosen)}[/] [dim]— reuses your existing " +
-                    "CLI subscription auth; no API key needed.[/]");
-                break;
-            case "anthropic":
-                EnsureSecretAsync(root, "Scrinia:Llm:AnthropicApiKey", "Anthropic API key");
-                EnsureValueAsync(root, "Scrinia:Llm:Model", "Model identifier", defaultValue: "claude-haiku-4-5");
-                break;
-            case "gemini":
-                EnsureSecretAsync(root, "Scrinia:Llm:GeminiApiKey", "Gemini API key");
-                EnsureValueAsync(root, "Scrinia:Llm:Model", "Model identifier", defaultValue: "gemini-2.0-flash");
-                break;
-            case "openai":
-                EnsureValueAsync(root, "Scrinia:Llm:BaseUrl", "OpenAI-compatible base URL", defaultValue: "https://api.openai.com/v1");
-                EnsureValueAsync(root, "Scrinia:Llm:Model", "Model identifier", defaultValue: "gpt-4o-mini");
-                EnsureSecretAsync(root, "Scrinia:Llm:ApiKey", "API key (leave blank for local endpoints)", allowEmpty: true);
-                break;
-            case "plugin":
-                AnsiConsole.MarkupLine(
-                    "  [green]Provider = plugin[/] [dim]— uses the bundled scri-plugin-llm subprocess. " +
-                    "Run --llm-download or pre-place the GGUF in plugins/scri-plugin-llm.[/]");
-                break;
-            case "none":
-                AnsiConsole.MarkupLine(
-                    "  [green]Provider = none[/] [dim]— Tier 2 consolidation disabled; " +
-                    "`scri consolidate --with-llm` becomes a no-op.[/]");
-                break;
-        }
-    }
-
-    private static bool IsKnownLlmProvider(string value) => value switch
-    {
-        "auto" or "claude-cli" or "codex-cli" or "copilot-cli"
-            or "openai" or "anthropic" or "gemini" or "plugin" or "none" => true,
-        _ => false,
-    };
-
-    /// <summary>
-    /// Prompts the user for a value if the named config key isn't already set. Secrets
-    /// are masked. Empty input is rejected unless <paramref name="allowEmpty"/> is true.
-    /// </summary>
-    private static void EnsureSecretAsync(string root, string key, string label, bool allowEmpty = false)
-    {
-        string? existing = WorkspaceConfig.GetValue(root, key);
-        if (!string.IsNullOrEmpty(existing))
-        {
-            AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(key)} already set — keeping existing value.[/]");
-            return;
-        }
-
-        var prompt = new Spectre.Console.TextPrompt<string>($"  [cyan]{Markup.Escape(label)}:[/]")
-            .Secret();
-        if (allowEmpty) prompt.AllowEmpty();
-        string entered = AnsiConsole.Prompt(prompt);
-        if (!string.IsNullOrEmpty(entered))
-            WorkspaceConfig.SetValue(root, key, entered);
-    }
-
-    private static void EnsureValueAsync(string root, string key, string label, string defaultValue)
-    {
-        string? existing = WorkspaceConfig.GetValue(root, key);
-        if (!string.IsNullOrEmpty(existing))
-        {
-            AnsiConsole.MarkupLine(
-                $"  [dim]{Markup.Escape(key)} already set to '{Markup.Escape(existing)}' — keeping.[/]");
-            return;
-        }
-
-        string entered = AnsiConsole.Prompt(
-            new Spectre.Console.TextPrompt<string>($"  [cyan]{Markup.Escape(label)}[/] [dim](default: {Markup.Escape(defaultValue)})[/]:")
-                .DefaultValue(defaultValue));
-        WorkspaceConfig.SetValue(root, key, entered);
-    }
-
-    /// <summary>
-    /// Walks the user through installing scrinia SessionStart/Stop hooks for each detected
-    /// agent CLI. Prompts per CLI so the user can opt in selectively; user-authored hooks
-    /// in the target config files are preserved (we own only blocks marked with our
-    /// sentinel). Invoked by <c>scri setup --hooks</c>.
+    /// Walks the user through installing scrinia hooks (SessionStart, UserPromptSubmit) for
+    /// each detected agent CLI. Prompts per CLI so the user can opt in selectively;
+    /// user-authored hooks in the target config files are preserved (we own only blocks
+    /// marked with our sentinel). Invoked by <c>scri setup --hooks</c>.
     /// </summary>
     private static async Task<int> InstallHooksFlowAsync(bool project)
     {
@@ -1289,8 +1079,7 @@ public class ScriniaCommands
 
         AnsiConsole.MarkupLine($"[bold]Agent CLI hooks ({scope})[/]");
         AnsiConsole.MarkupLine(
-            "  [dim]SessionStart → `scri restore`, SessionEnd → `scri consolidate --auto`, " +
-            "UserPromptSubmit → `scri hint`.[/]");
+            "  [dim]SessionStart → `scri restore`, UserPromptSubmit → `scri hint`.[/]");
 
         int configured = await AgentHookSetup.InstallAsync(scope, workspaceRoot);
         if (configured == 0)
@@ -1321,9 +1110,9 @@ public class ScriniaCommands
 
     /// <summary>
     /// Probes for a running Ollama at the default URL and, if detected, walks the user through
-    /// picking embedding + completion models and pulling them if missing. On success writes
-    /// <c>Scrinia:Embeddings:*</c> + <c>Scrinia:Llm:*</c> config and returns true so the caller
-    /// can skip the local-model download steps.
+    /// picking an embedding model and pulling it if missing. On success writes
+    /// <c>Scrinia:Embeddings:*</c> config and returns true so the caller can skip the
+    /// local-model download steps.
     ///
     /// Returns false (continue with local setup) when Ollama isn't running, the user declines,
     /// or any required pull fails. All prompts default to safe values so an accidental Enter
@@ -1357,7 +1146,6 @@ public class ScriniaCommands
         var installed = probe.Models;
         var pulledNames = new HashSet<string>(installed.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
         var pulledEmbedding = installed.Where(m => OllamaSetup.LooksLikeEmbeddingModel(m.Name)).ToList();
-        var pulledChat = installed.Where(m => !OllamaSetup.LooksLikeEmbeddingModel(m.Name)).ToList();
 
         string root = ScriniaArtifactStore.WorkspaceRootPath;
 
@@ -1370,30 +1158,15 @@ public class ScriniaCommands
             ct: ct);
         if (embeddingModel is null) return false;
 
-        // -- Completion model selection --
-        string? completionModel = await PromptForOllamaModelAsync(
-            label: "completion model",
-            defaultModel: OllamaSetup.DefaultCompletionModel,
-            installedRelevant: pulledChat,
-            installedAll: pulledNames,
-            fallbackOnPullFailure: OllamaSetup.FallbackCompletionModel,
-            ct: ct);
-        if (completionModel is null) return false;
-
-        // -- Write config (Embeddings uses raw host URL, Llm uses /v1 OpenAI-compat suffix) --
+        // -- Write config --
         WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:Provider", "ollama");
         WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:OllamaBaseUrl", OllamaSetup.DefaultBaseUrl);
         WorkspaceConfig.SetValue(root, "Scrinia:Embeddings:OllamaModel", embeddingModel);
-        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Provider", "openai");
-        WorkspaceConfig.SetValue(root, "Scrinia:Llm:BaseUrl", $"{OllamaSetup.DefaultBaseUrl}/v1");
-        WorkspaceConfig.SetValue(root, "Scrinia:Llm:Model", completionModel);
 
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine($"[green]  Config written:[/]");
         AnsiConsole.MarkupLine($"    [dim]Scrinia:Embeddings:Provider = ollama[/]");
         AnsiConsole.MarkupLine($"    [dim]Scrinia:Embeddings:OllamaModel = {Markup.Escape(embeddingModel)}[/]");
-        AnsiConsole.MarkupLine($"    [dim]Scrinia:Llm:Provider = openai[/]");
-        AnsiConsole.MarkupLine($"    [dim]Scrinia:Llm:Model = {Markup.Escape(completionModel)}[/]");
         return true;
     }
 
@@ -1502,28 +1275,7 @@ public class ScriniaCommands
             WorkspaceConfig.UnsetValue(root, "Scrinia:Embeddings:Provider");
             WorkspaceConfig.UnsetValue(root, "Scrinia:Embeddings:OllamaBaseUrl");
             WorkspaceConfig.UnsetValue(root, "Scrinia:Embeddings:OllamaModel");
-        }
 
-        // LLM block written by the Ollama path points at localhost:11434/v1 with
-        // Provider=openai. If we see that exact shape, treat it as Ollama-installed and
-        // clear it. Custom user OpenAI configs (api.openai.com or a self-hosted LM Studio
-        // URL) are preserved — they aren't ours to remove.
-        string? llmProvider = WorkspaceConfig.GetValue(root, "Scrinia:Llm:Provider");
-        string? llmBaseUrl = WorkspaceConfig.GetValue(root, "Scrinia:Llm:BaseUrl");
-        bool llmWasOllamaInstalled =
-            string.Equals(llmProvider, "openai", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrEmpty(llmBaseUrl)
-            && llmBaseUrl.Contains("localhost:11434", StringComparison.OrdinalIgnoreCase);
-
-        if (llmWasOllamaInstalled)
-        {
-            WorkspaceConfig.UnsetValue(root, "Scrinia:Llm:Provider");
-            WorkspaceConfig.UnsetValue(root, "Scrinia:Llm:BaseUrl");
-            WorkspaceConfig.UnsetValue(root, "Scrinia:Llm:Model");
-        }
-
-        if (wasOllamaEmbeddings || llmWasOllamaInstalled)
-        {
             AnsiConsole.MarkupLine(
                 "[dim]  Cleared stale Ollama-derived config keys from a prior setup run.[/]");
         }
@@ -1845,11 +1597,9 @@ public class ScriniaCommands
     /// Use after switching embedding model or recovering from a corrupted vector file.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Emit result as JSON instead of human-readable progress.</param>
-    /// <param name="importance">Backfill LLM-scored Importance values for any memory that doesn't already have one. Does not touch embeddings; requires a Tier 2 LLM to be configured.</param>
     public async Task<int> Reindex(
         string? workspaceRoot = null,
         bool json = false,
-        bool importance = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -1859,31 +1609,6 @@ public class ScriniaCommands
         // override with an unconditional pass so the command does what its name says even on
         // a "vectors are stale, I just want them rebuilt" recovery flow.
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
-
-        if (importance)
-        {
-            var impResult = await WorkspaceSetup.ForceImportanceBackfillAsync(cancellationToken);
-            if (impResult is null)
-            {
-                if (json)
-                    WriteJsonError("Importance backfill skipped — no Tier 2 LLM is configured. Set `Scrinia:Llm:Provider` and re-run `scri setup`.");
-                else
-                    AnsiConsole.MarkupLine(
-                        "[yellow]Importance backfill skipped[/] — no Tier 2 LLM is configured. " +
-                        "Set [italic]Scrinia:Llm:Provider[/] and re-run [italic]scri setup[/].");
-                return 1;
-            }
-
-            string impSummary =
-                $"Scored {impResult.Scored}/{impResult.Total}, " +
-                $"{impResult.Skipped} skipped (already-scored / empty), " +
-                $"{impResult.Failed} failed.";
-            if (json)
-                WriteJson(new CliReindexOutput(impResult.Scored, impSummary), CliJsonContext.Default.CliReindexOutput);
-            else
-                AnsiConsole.MarkupLine($"[green]Importance backfill complete.[/] {Markup.Escape(impSummary)}");
-            return impResult.Failed == 0 ? 0 : 1;
-        }
 
         var result = await WorkspaceSetup.ForceReindexAsync(cancellationToken);
 
@@ -2363,31 +2088,28 @@ public class ScriniaCommands
         }
     }
 
-    /// <summary>Run deterministic consolidation passes against the local store. Tier 1: no LLM call, mechanical only.</summary>
+    /// <summary>Run deterministic consolidation passes against the local store. Mechanical only — no LLM calls.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="auto">When set, skip if .scrinia/.last-consolidation indicates a recent run (debounce). Intended for hook-driven invocation.</param>
     /// <param name="dryRun">Report what would change without modifying anything.</param>
-    /// <param name="debounceMinutes">Minimum minutes between auto runs. Hooks fire on every Stop event; this prevents wasted work.</param>
+    /// <param name="debounceMinutes">Minimum minutes between auto runs. Prevents wasted work when invoked repeatedly.</param>
     /// <param name="sessionAgeDays">Compact multi-chunk session entries older than N days (preserves content, drops chunk granularity).</param>
     /// <param name="json">Output as JSON instead of a styled table.</param>
-    /// <param name="withLlm">After Tier 1 mechanical compaction, run an LLM pass: backfill auto-fallback descriptions, summarize compacted sessions, and extract atomic facts. Requires a configured background LLM (OpenAI-compatible endpoint or bundled plugin). Exits 2 with a hint if no backend is available.</param>
-    public async Task<int> Consolidate(
+    public Task<int> Consolidate(
         string? workspaceRoot = null,
         bool auto = false,
         bool dryRun = false,
         int debounceMinutes = 30,
         int sessionAgeDays = 7,
         bool json = false,
-        bool withLlm = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        if (withLlm) await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         string scriniaDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
         string debounceFile = Path.Combine(scriniaDir, ".last-consolidation");
 
-        // Hook-friendly debounce: hooks fire on every Stop event, but consolidation only earns
+        // Hook-friendly debounce: hooks may fire on every event, but consolidation only earns
         // its keep if there's been new activity. The debounce file lets us cheaply no-op when
         // the last run is recent. Corrupt or missing file → proceed (fail-open).
         if (auto && File.Exists(debounceFile))
@@ -2403,11 +2125,11 @@ public class ScriniaCommands
                         string reason = $"Last run {minutesSince:F1}m ago (debounce {debounceMinutes}m)";
                         if (json)
                             WriteJson(
-                                new CliConsolidateOutput("skipped", reason, 0, 0, 0, 0, [], null),
+                                new CliConsolidateOutput("skipped", reason, 0, 0, 0, 0, []),
                                 CliJsonContext.Default.CliConsolidateOutput);
                         else
                             AnsiConsole.MarkupLine($"[dim]consolidate: skipped — {reason}[/]");
-                        return 0;
+                        return Task.FromResult(0);
                     }
                 }
             }
@@ -2450,45 +2172,6 @@ public class ScriniaCommands
             File.WriteAllText(debounceFile, DateTimeOffset.UtcNow.ToString("o"));
         }
 
-        // ── Tier 2: LLM pass ─────────────────────────────────────────────────
-        // After mechanical compaction, optionally do the language-model work:
-        // backfill descriptions, summarize the sessions Tier 1 just touched, and
-        // extract atomic facts onto each entry. A progress file under .scrinia/
-        // makes the pass idempotent and resumable.
-        LlmConsolidator.Result? llmResult = null;
-        if (withLlm)
-        {
-            var llm = BackgroundLlmContext.Default;
-            if (llm is null)
-            {
-                if (json)
-                    WriteJsonError("--with-llm requested but no background LLM is configured. " +
-                        "Start Ollama (or another OpenAI-compatible server) at " +
-                        "http://localhost:11434/v1, or run `scri config Scrinia:Llm:BaseUrl <url>`.");
-                else
-                    AnsiConsole.MarkupLine("[red]--with-llm requested but no background LLM is configured.[/]\n" +
-                        "Start Ollama (or another OpenAI-compatible server) at [italic]http://localhost:11434/v1[/], " +
-                        "or run [italic]scri config Scrinia:Llm:BaseUrl <url>[/].");
-                return 2;
-            }
-
-            // Re-fetch entries after Tier 1: compaction changed UpdatedAt and chunk counts.
-            var freshEntries = ScriniaArtifactStore.ListScoped(null);
-            var justCompacted = new HashSet<string>(compacted, StringComparer.OrdinalIgnoreCase);
-
-            llmResult = await LlmConsolidator.RunAsync(
-                llm,
-                freshEntries,
-                justCompacted,
-                scriniaDir,
-                dryRun,
-                onWarning: msg =>
-                {
-                    if (!json) AnsiConsole.MarkupLine($"[yellow]llm: {Markup.Escape(msg)}[/]");
-                },
-                cancellationToken);
-        }
-
         if (json)
         {
             WriteJson(
@@ -2499,13 +2182,9 @@ public class ScriniaCommands
                     TotalBytes: totalBytes,
                     StaleCount: staleCount,
                     CompactionCandidates: compactionCandidates.Count,
-                    Compacted: compacted.ToArray(),
-                    Llm: llmResult is null ? null : new CliConsolidateLlmStats(
-                        llmResult.Processed, llmResult.DescriptionsBackfilled,
-                        llmResult.SessionsSummarized, llmResult.FactsExtracted,
-                        llmResult.Skipped, llmResult.Failed)),
+                    Compacted: compacted.ToArray()),
                 CliJsonContext.Default.CliConsolidateOutput);
-            return 0;
+            return Task.FromResult(0);
         }
 
         var sb = new System.Text.StringBuilder();
@@ -2523,22 +2202,12 @@ public class ScriniaCommands
             if (total > 10)
                 sb.AppendLine($"  [dim]… and {total - 10} more[/]");
         }
-        else if (llmResult is null)
+        else
         {
             sb.AppendLine("[dim]Nothing to consolidate.[/]");
         }
-        if (llmResult is not null)
-        {
-            sb.AppendLine($"[green]LLM pass[/]: processed {llmResult.Processed}, skipped {llmResult.Skipped}, failed {llmResult.Failed}");
-            if (llmResult.DescriptionsBackfilled > 0)
-                sb.AppendLine($"  [dim]•[/] {llmResult.DescriptionsBackfilled} description{(llmResult.DescriptionsBackfilled == 1 ? "" : "s")} backfilled");
-            if (llmResult.SessionsSummarized > 0)
-                sb.AppendLine($"  [dim]•[/] {llmResult.SessionsSummarized} session{(llmResult.SessionsSummarized == 1 ? "" : "s")} summarized");
-            if (llmResult.FactsExtracted > 0)
-                sb.AppendLine($"  [dim]•[/] {llmResult.FactsExtracted} entr{(llmResult.FactsExtracted == 1 ? "y" : "ies")} fact-extracted");
-        }
         AnsiConsole.Write(new Markup(sb.ToString()));
-        return 0;
+        return Task.FromResult(0);
     }
 
     /// <summary>True when the scope is the session-log scope under any namespacing variant.</summary>

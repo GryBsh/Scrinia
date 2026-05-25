@@ -68,9 +68,8 @@ public interface IAgentHookInstaller
 
     /// <summary>
     /// Whether this CLI supports the given canonical event. Lets <see cref="AgentHookSetup"/>
-    /// filter the universal hook set per-installer and surface a notice when an event isn't
-    /// available — Codex, for instance, has no <c>SessionEnd</c> event, so the consolidate
-    /// hook is skipped on that CLI rather than mis-wired to per-turn <c>Stop</c>.
+    /// filter the universal hook set per-installer and surface a notice when an event
+    /// isn't available on a given CLI.
     /// </summary>
     bool SupportsEvent(string canonicalEvent) => true;
 }

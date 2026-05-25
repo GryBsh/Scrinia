@@ -3,7 +3,6 @@ using LLama.Common;
 using LLama.Native;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core.Embeddings;
-using Scrinia.Plugin.Llama;
 
 namespace Scrinia.Plugin.Embeddings;
 

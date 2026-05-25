@@ -2,7 +2,6 @@ using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
-using Scrinia.Core.Llm;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.Services;
@@ -32,19 +31,19 @@ internal static class WorkspaceSetup
         }
 
         ScriniaArtifactStore.Configure(root);
-        // Build ranker weights from config so a workspace can tune α_recency / α_importance
-        // without recompiling. Defaults (RankerOptions.Default) match Generative Agents-style
-        // composition — see RankerOptions docstring for the formula and calibration notes.
+        // Build ranker weights from config so a workspace can tune α_recency without
+        // recompiling. Defaults (RankerOptions.Default) match the historical composition —
+        // see RankerOptions docstring for the formula and calibration notes.
         var rankerOptions = RankerOptions.FromConfig(GetConfigValue);
         MemoryStoreContext.Current = new FileMemoryStore(root, rankerOptions);
     }
 
     /// <summary>
-    /// Initializes embeddings and loads optional plugins. Preference order (both embeddings
-    /// and LLM): explicit HTTP provider → bundled Vulkan plugin → in-process fallback. The
-    /// principle is "don't load the Vulkan rigamarole if the user already has an HTTP backend
-    /// running" — Ollama / llama.cpp server / LM Studio are usually already up in dev setups,
-    /// and spinning up a second model in our own VRAM is wasteful when we could just call out.
+    /// Initializes embeddings and loads optional plugins. Preference order: explicit HTTP
+    /// provider → bundled Vulkan plugin → in-process fallback. The principle is "don't load
+    /// the Vulkan rigamarole if the user already has an HTTP backend running" — Ollama /
+    /// llama.cpp server / LM Studio are usually already up in dev setups, and spinning up
+    /// a second model in our own VRAM is wasteful when we could just call out.
     ///
     /// Embeddings rules:
     /// 1. <c>Scrinia:Embeddings:Provider</c> set to anything HTTP-backed (<c>ollama</c>,
@@ -80,7 +79,7 @@ internal static class WorkspaceSetup
             // Maintenance sink is independent of the embeddings provider — it handles things
             // like updating last-accessed timestamps. Wire it standalone so plugin-failure
             // does not leave maintenance hooks unsubscribed.
-            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
+            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
             Console.Error.WriteLine(
                 "[scrinia:info] Embeddings plugin exe detected — skipping built-in Model2Vec.");
             await TryLoadVulkanPluginAsync(ct);
@@ -89,11 +88,6 @@ internal static class WorkspaceSetup
         {
             LoadBuiltInEmbeddings(embeddingOptions, embeddingsDir, modelsDir, logger);
         }
-
-        // Background LLM for Tier 2 consolidation. Auto mode probes HTTP first (Ollama et al.)
-        // and only falls back to the bundled plugin if no HTTP backend responds — saves the
-        // plugin subprocess + model load + VRAM when an existing endpoint is already up.
-        await TryLoadBackgroundLlmAsync(loggerFactory.CreateLogger("Scrinia.Llm"), ct);
     }
 
     /// <summary>
@@ -219,56 +213,6 @@ internal static class WorkspaceSetup
         return null;
     }
 
-    /// <summary>
-    /// Walks every memory and populates the <c>Importance</c> field via the Tier 2 LLM for
-    /// any that don't already have a score. Used by <c>scri reindex --importance</c>. No-op
-    /// + returns null when no LLM is configured.
-    /// </summary>
-    internal static async Task<ImportanceScoringSink.BackfillResult?> ForceImportanceBackfillAsync(CancellationToken ct = default)
-    {
-        var store = MemoryStoreContext.Current;
-        if (store is null)
-        {
-            Console.Error.WriteLine(
-                "[scrinia:warn] Importance backfill skipped: workspace not configured. Run `scri setup` first.");
-            return null;
-        }
-
-        var llm = BackgroundLlmContext.Current;
-        if (llm is null)
-        {
-            Console.Error.WriteLine(
-                "[scrinia:warn] Importance backfill skipped: no Tier 2 LLM is configured. " +
-                "Set `Scrinia:Llm:Provider` and re-run `scri setup`.");
-            return null;
-        }
-
-        int lastDone = -1;
-        void OnProgress(int done, int total)
-        {
-            if (done == lastDone) return;
-            lastDone = done;
-            Console.Error.Write($"\r[scrinia] scoring importance {done}/{total} memories…");
-            if (done == total) Console.Error.WriteLine();
-        }
-
-        try
-        {
-            return await ImportanceScoringSink.BackfillAsync(store, llm, OnProgress, ct);
-        }
-        catch (OperationCanceledException)
-        {
-            Console.Error.WriteLine("\n[scrinia:info] Importance backfill cancelled.");
-            return null;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Importance backfill failed: {ex.GetType().Name}: {ex.Message}");
-            return null;
-        }
-    }
-
     /// <summary>True when <paramref name="provider"/> is one of the network-backed providers
     /// — i.e. anything that talks to a remote/local HTTP endpoint rather than loading a
     /// model in-process. Used to decide whether the Vulkan plugin should be skipped.</summary>
@@ -295,7 +239,7 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink(), new ImportanceScoringSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] HTTP embeddings ready " +
@@ -309,7 +253,7 @@ internal static class WorkspaceSetup
                     $"[scrinia:warn] HTTP embeddings provider '{options.Provider}' not available — " +
                     $"check Scrinia:Embeddings:* config. Search degrades to BM25-only.");
                 SearchContributorContext.Default = new PathSegmentScoreContributor();
-                MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
             }
         }
         catch (Exception ex)
@@ -318,7 +262,7 @@ internal static class WorkspaceSetup
                 $"[scrinia:warn] Failed to initialize HTTP embeddings ('{options.Provider}'): " +
                 $"{ex.GetType().Name}: {ex.Message}");
             SearchContributorContext.Default = new PathSegmentScoreContributor();
-            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink(), new ImportanceScoringSink()]);
+            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
         }
     }
 
@@ -338,7 +282,7 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink(), new ImportanceScoringSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings ready " +
@@ -415,7 +359,7 @@ internal static class WorkspaceSetup
             if (host.HasSearchCapability)
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(host, new PathSegmentScoreContributor());
             if (host.HasEventSinkCapability)
-                MemoryEventSinkContext.Default = new CompositeEventSink([host, new MaintenanceEventSink(), new ImportanceScoringSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([host, new MaintenanceEventSink()]);
 
             _pluginHost = host;
 
@@ -490,314 +434,6 @@ internal static class WorkspaceSetup
             options.ChunkSize = TextChunker.DefaultWindowSize;
             options.ChunkOverlap = TextChunker.DefaultOverlap;
         }
-
-        return options;
-    }
-
-    /// <summary>
-    /// Installs <see cref="BackgroundLlmContext.Default"/> for Tier 2 consolidation. Provider
-    /// selection order (when <c>Scrinia:Llm:Provider</c> = "auto"):
-    /// <list type="number">
-    ///   <item>OpenAI-compatible HTTP endpoint at <c>Scrinia:Llm:BaseUrl</c> if it responds —
-    ///         tried first because "if Ollama/llama.cpp/LM Studio is already running, there's
-    ///         no point booting our own subprocess with a separate model copy in VRAM."</item>
-    ///   <item>Agent CLIs (Claude Code, Codex, GitHub Copilot) in preference order if any are
-    ///         on PATH — reuses the user's existing CLI auth, no API key needed.</item>
-    ///   <item>Bundled <c>scri-plugin-llm</c> subprocess if the above fall through and the
-    ///         plugin exe is present.</item>
-    ///   <item>None — <c>scri consolidate --with-llm</c> will print a setup hint.</item>
-    /// </list>
-    /// Explicit Provider values (<c>plugin</c>, <c>openai</c>, <c>claude-cli</c>,
-    /// <c>codex-cli</c>, <c>copilot-cli</c>, <c>none</c>) skip the other steps and surface a
-    /// warning if the chosen backend is unavailable.
-    /// </summary>
-    private static async Task TryLoadBackgroundLlmAsync(ILogger logger, CancellationToken ct)
-    {
-        var options = BuildLlmOptions();
-        if (options.Provider.Equals("none", StringComparison.OrdinalIgnoreCase))
-            return;
-
-        bool forcePlugin = options.Provider.Equals("plugin", StringComparison.OrdinalIgnoreCase);
-        bool forceHttp = options.Provider.Equals("openai", StringComparison.OrdinalIgnoreCase);
-        bool forceAnthropic = options.Provider.Equals("anthropic", StringComparison.OrdinalIgnoreCase);
-        bool forceGemini = options.Provider.Equals("gemini", StringComparison.OrdinalIgnoreCase);
-        var explicitCliVariant = AgentCliVariant.TryFromId(options.Provider);
-
-        // Explicit agent-CLI selection short-circuits everything.
-        if (explicitCliVariant is not null)
-        {
-            if (await TryStartAgentCliAsync(explicitCliVariant, options, forced: true)) return;
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Llm provider={options.Provider} configured but the {explicitCliVariant.DisplayName} CLI was not on PATH.");
-            return;
-        }
-
-        // Explicit Anthropic / Gemini selection — opt-in only; no auto-probe (API-key
-        // presence is the signal we'd probe anyway, so the explicit value is the contract).
-        if (forceAnthropic)
-        {
-            if (await TryStartAnthropicAsync(options, ct)) return;
-            return;
-        }
-        if (forceGemini)
-        {
-            if (await TryStartGeminiAsync(options, ct)) return;
-            return;
-        }
-
-        // Step A: HTTP probe first (unless explicitly forced to plugin). When Ollama or
-        // another OpenAI-compatible server is already running we prefer it — avoids
-        // spinning up the plugin subprocess and loading a second model into VRAM.
-        if (!forcePlugin)
-        {
-            if (await TryProbeOpenAiCompatibleAsync(options, forceHttp, ct)) return;
-            if (forceHttp) return; // failure already logged by the probe
-        }
-
-        // Step B: try each agent CLI in preference order. Reuses the user's existing
-        // subscription auth — no API key, no model download — and is preferred over the
-        // bundled plugin because most users authenticated to claude/codex/copilot have a
-        // larger/better model available than what the local plugin ships.
-        if (!forcePlugin)
-        {
-            foreach (var variant in AgentCliVariant.AllInAutoOrder)
-            {
-                if (await TryStartAgentCliAsync(variant, options, forced: false)) return;
-            }
-        }
-
-        // Step C: bundled plugin (unless explicitly forced to HTTP).
-        if (!forceHttp)
-        {
-            if (await TryStartLlmPluginAsync(ct)) return;
-            if (forcePlugin)
-            {
-                Console.Error.WriteLine(
-                    "[scrinia:warn] Llm provider=plugin configured but scri-plugin-llm was not available.");
-            }
-        }
-    }
-
-    private static async Task<bool> TryStartAnthropicAsync(LlmOptions options, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(options.AnthropicApiKey))
-        {
-            Console.Error.WriteLine(
-                "[scrinia:warn] Llm provider=anthropic configured but Scrinia:Llm:AnthropicApiKey is not set.");
-            return false;
-        }
-        var llm = Scrinia.Core.Llm.Providers.AnthropicLlmProvider.Create(options);
-        if (!await llm.IsAvailableAsync(ct))
-        {
-            llm.Dispose();
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Anthropic API at {options.AnthropicBaseUrl} did not respond or rejected the API key.");
-            return false;
-        }
-        BackgroundLlmContext.Default = llm;
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
-        Console.Error.WriteLine(
-            $"[scrinia:info] Background LLM ready (provider=anthropic, model={options.Model})");
-        return true;
-    }
-
-    private static async Task<bool> TryStartGeminiAsync(LlmOptions options, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(options.GeminiApiKey))
-        {
-            Console.Error.WriteLine(
-                "[scrinia:warn] Llm provider=gemini configured but Scrinia:Llm:GeminiApiKey is not set.");
-            return false;
-        }
-        var llm = Scrinia.Core.Llm.Providers.GeminiLlmProvider.Create(options);
-        if (!await llm.IsAvailableAsync(ct))
-        {
-            llm.Dispose();
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Gemini API at {options.GeminiBaseUrl} did not respond or rejected the API key.");
-            return false;
-        }
-        BackgroundLlmContext.Default = llm;
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
-        Console.Error.WriteLine(
-            $"[scrinia:info] Background LLM ready (provider=gemini, model={options.Model})");
-        return true;
-    }
-
-    /// <summary>
-    /// Probe the agent CLI by checking if its executable is on PATH; if so, install an
-    /// <see cref="AgentCliBackgroundLlm"/> as the active background LLM. Returns true on
-    /// success. Auto-mode failures are silent (info log only); explicit-mode failures are
-    /// surfaced by the caller.
-    /// </summary>
-    private static Task<bool> TryStartAgentCliAsync(AgentCliVariant variant, LlmOptions options, bool forced)
-    {
-        var runner = new Scrinia.Core.Process.ProcessRunner();
-        var llm = new AgentCliBackgroundLlm(variant, runner, options);
-        return TryInstallAgentCliBackendAsync(llm, variant, forced);
-    }
-
-    private static async Task<bool> TryInstallAgentCliBackendAsync(AgentCliBackgroundLlm llm, AgentCliVariant variant, bool forced)
-    {
-        if (!await llm.IsAvailableAsync(CancellationToken.None))
-        {
-            if (forced)
-                Console.Error.WriteLine(
-                    $"[scrinia:warn] {variant.DisplayName} CLI not found on PATH (expected exe: {variant.Executable}).");
-            return false;
-        }
-        BackgroundLlmContext.Default = llm;
-        Console.Error.WriteLine(
-            $"[scrinia:info] Background LLM ready (provider={variant.Id}, exe={variant.Executable})");
-        return true;
-    }
-
-    private static async Task<bool> TryStartLlmPluginAsync(CancellationToken ct)
-    {
-        string exeDir = AppContext.BaseDirectory;
-        string pluginsDir = Path.Combine(exeDir, "plugins");
-        if (!Directory.Exists(pluginsDir)) return false;
-
-        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
-        string pluginName = GetPluginName("plugins:llm", "scri-plugin-llm");
-
-        // Subdirectory layout (multi-file publish) first, then flat (single-file).
-        string llmExe = Path.Combine(pluginsDir, pluginName, $"{pluginName}{ext}");
-        if (!File.Exists(llmExe))
-        {
-            llmExe = Path.Combine(pluginsDir, $"{pluginName}{ext}");
-            if (!File.Exists(llmExe)) return false;
-        }
-
-        string dataDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
-        string modelsDir = Path.Combine(pluginsDir, pluginName);
-        Directory.CreateDirectory(modelsDir);
-
-        try
-        {
-            var host = new McpLlmPluginHost();
-            await host.StartAsync(llmExe, dataDir, modelsDir, GetConfigValue, ct);
-
-            if (!host.HasCompleteCapability)
-            {
-                await host.DisposeAsync();
-                return false;
-            }
-
-            BackgroundLlmContext.Default = host;
-            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-                host.DisposeAsync().AsTask().Wait(3000);
-
-            Console.Error.WriteLine(
-                $"[scrinia:info] Background LLM ready (provider=plugin, arch={host.ModelArchitecture}, hardware={host.Hardware})");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(
-                $"[scrinia:warn] Failed to start LLM plugin: {ex.GetType().Name}: {ex.Message}");
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Probes the configured OpenAI-compatible endpoint and installs it as the background LLM
-    /// if reachable. Returns true on success so the caller can short-circuit further fallback.
-    /// Probe-failure logging differentiates auto vs explicit: when forceHttp is set the user
-    /// chose this path so failure is a warn; in auto mode failure is just an info breadcrumb.
-    /// </summary>
-    private static async Task<bool> TryProbeOpenAiCompatibleAsync(LlmOptions options, bool forceHttp, CancellationToken ct)
-    {
-        // 5s rather than 2s: on Windows the IPv6→IPv4 fallback for `localhost` can add a
-        // second or two on its own, and a freshly-started Ollama may stall briefly while
-        // loading model metadata into its API surface. 2s was triggering false negatives on
-        // working installs.
-        const int probeTimeoutSeconds = 5;
-        try
-        {
-            var probeHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(probeTimeoutSeconds) };
-            var probe = new OpenAiCompatibleBackgroundLlm(options, probeHttp, ownsHttp: true);
-            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            probeCts.CancelAfter(TimeSpan.FromSeconds(probeTimeoutSeconds));
-            bool available = await probe.IsAvailableAsync(probeCts.Token);
-            probe.Dispose();
-            if (!available)
-            {
-                string severity = forceHttp ? "warn" : "info";
-                Console.Error.WriteLine(
-                    $"[scrinia:{severity}] LLM HTTP probe failed: {options.BaseUrl} did not respond at /models or /. " +
-                    (forceHttp ? "Tier 2 will be unavailable." : "Falling back to bundled plugin if installed."));
-                return false;
-            }
-        }
-        catch (Exception ex)
-        {
-            string severity = forceHttp ? "warn" : "info";
-            Console.Error.WriteLine(
-                $"[scrinia:{severity}] LLM HTTP probe error: {ex.GetType().Name}: {ex.Message}");
-            return false;
-        }
-
-        var llm = OpenAiCompatibleBackgroundLlm.Create(options);
-        BackgroundLlmContext.Default = llm;
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => llm.Dispose();
-
-        Console.Error.WriteLine(
-            $"[scrinia:info] Background LLM ready (provider=openai, model={options.Model}, baseUrl={options.BaseUrl})");
-        return true;
-    }
-
-    private static LlmOptions BuildLlmOptions()
-    {
-        var options = new LlmOptions();
-
-        string? provider = GetConfigValue("Scrinia:Llm:Provider");
-        if (provider is not null) options.Provider = provider;
-
-        string? baseUrl = GetConfigValue("Scrinia:Llm:BaseUrl");
-        if (baseUrl is not null) options.BaseUrl = baseUrl;
-
-        string? model = GetConfigValue("Scrinia:Llm:Model");
-        if (model is not null) options.Model = model;
-
-        string? apiKey = GetConfigValue("Scrinia:Llm:ApiKey");
-        if (apiKey is not null) options.ApiKey = apiKey;
-
-        string? temp = GetConfigValue("Scrinia:Llm:Temperature");
-        // InvariantCulture so workspace config is portable across locales — de-DE / fr-FR
-        // default decimal separator is "," which would silently fail the locale-sensitive
-        // overload and leave Temperature pinned at its default.
-        if (temp is not null && double.TryParse(temp, NumberStyles.Float, CultureInfo.InvariantCulture, out double t))
-            options.Temperature = t;
-
-        string? timeout = GetConfigValue("Scrinia:Llm:RequestTimeoutSeconds");
-        if (timeout is not null && int.TryParse(timeout, out int s)) options.RequestTimeoutSeconds = s;
-
-        // Anthropic native (provider=anthropic)
-        string? anthKey = GetConfigValue("Scrinia:Llm:AnthropicApiKey");
-        if (anthKey is not null) options.AnthropicApiKey = anthKey;
-        string? anthUrl = GetConfigValue("Scrinia:Llm:AnthropicBaseUrl");
-        if (anthUrl is not null) options.AnthropicBaseUrl = anthUrl;
-
-        // Gemini native (provider=gemini)
-        string? gemKey = GetConfigValue("Scrinia:Llm:GeminiApiKey");
-        if (gemKey is not null) options.GeminiApiKey = gemKey;
-        string? gemUrl = GetConfigValue("Scrinia:Llm:GeminiBaseUrl");
-        if (gemUrl is not null) options.GeminiBaseUrl = gemUrl;
-
-        // Agent-CLI per-CLI overrides. Null = use the variant's cheap-tier default; empty
-        // string = inherit the host CLI's own default. See AgentCliVariant for the
-        // built-in defaults and LlmOptions for per-field semantics.
-        string? claudeCliModel = GetConfigValue("Scrinia:Llm:ClaudeCliModel");
-        if (claudeCliModel is not null) options.ClaudeCliModel = claudeCliModel;
-        string? codexCliModel = GetConfigValue("Scrinia:Llm:CodexCliModel");
-        if (codexCliModel is not null) options.CodexCliModel = codexCliModel;
-        string? copilotCliModel = GetConfigValue("Scrinia:Llm:CopilotCliModel");
-        if (copilotCliModel is not null) options.CopilotCliModel = copilotCliModel;
-        string? claudeCliEffort = GetConfigValue("Scrinia:Llm:ClaudeCliEffort");
-        if (claudeCliEffort is not null) options.ClaudeCliEffort = claudeCliEffort;
-        string? copilotCliEffort = GetConfigValue("Scrinia:Llm:CopilotCliEffort");
-        if (copilotCliEffort is not null) options.CopilotCliEffort = copilotCliEffort;
 
         return options;
     }

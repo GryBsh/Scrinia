@@ -43,7 +43,6 @@ internal static class RetrieverFactory
 
         // Ablation knobs default to "off" so the headline run stays apples-to-apples.
         double alphaRecency = ParseDouble(Program.Flag(args, "--alpha-recency"), 0.0);
-        double alphaImportance = ParseDouble(Program.Flag(args, "--alpha-importance"), 0.0);
         double tauDays = ParseDouble(Program.Flag(args, "--tau-days"), RankerOptions.Default.TauDays);
         double diversityLambda = ParseDouble(Program.Flag(args, "--diversity-lambda"), 1.0);
         int diversityInnerLimit = ParseInt(Program.Flag(args, "--diversity-inner-limit"), 0);
@@ -94,7 +93,6 @@ internal static class RetrieverFactory
         {
             AlphaRelevance = 1.0,
             AlphaRecency = alphaRecency,
-            AlphaImportance = alphaImportance,
             TauDays = tauDays,
             Fusion = fusion,
         };

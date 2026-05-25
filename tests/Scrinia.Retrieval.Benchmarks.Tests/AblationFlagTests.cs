@@ -84,7 +84,6 @@ public class AblationFlagTests : IAsyncLifetime
         var ranker = new Scrinia.Core.Search.RankerOptions(
             AlphaRelevance: 1.0,
             AlphaRecency: 1.0,
-            AlphaImportance: 0.0,
             TauDays: 30.0);
 
         await using var r = new ScriniaRetriever(_root, rankerOptions: ranker);
@@ -108,8 +107,7 @@ public class AblationFlagTests : IAsyncLifetime
         // newer-created doc to the top on score ties.
         var ranker = new Scrinia.Core.Search.RankerOptions(
             AlphaRelevance: 1.0,
-            AlphaRecency: 0.0,
-            AlphaImportance: 0.0);
+            AlphaRecency: 0.0);
 
         await using var r = new ScriniaRetriever(_root, rankerOptions: ranker);
 

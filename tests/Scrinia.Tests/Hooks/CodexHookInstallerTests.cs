@@ -58,25 +58,6 @@ public sealed class CodexHookInstallerTests : IDisposable
     }
 
     [Fact]
-    public void SupportsEvent_SessionEnd_ReturnsFalse()
-    {
-        // Codex (as of CLI ~0.124+) has only per-turn Stop — no once-per-session terminator.
-        // The orchestrator uses this signal to skip the canonical SessionEnd hook on Codex
-        // rather than mis-wire it to per-turn Stop.
-        NewInstaller().SupportsEvent("SessionEnd").Should().BeFalse();
-    }
-
-    [Fact]
-    public void SupportsEvent_OtherCanonicalEvents_ReturnTrue()
-    {
-        var installer = NewInstaller();
-        installer.SupportsEvent("SessionStart").Should().BeTrue();
-        installer.SupportsEvent("UserPromptSubmit").Should().BeTrue();
-        installer.SupportsEvent("PreToolUse").Should().BeTrue();
-        installer.SupportsEvent("PostToolUse").Should().BeTrue();
-    }
-
-    [Fact]
     public void Install_PreservesUserHooksJsonContent()
     {
         Directory.CreateDirectory(Path.Combine(_workspace, ".codex"));

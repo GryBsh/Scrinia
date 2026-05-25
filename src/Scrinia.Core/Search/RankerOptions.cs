@@ -5,7 +5,7 @@ namespace Scrinia.Core.Search;
 /// <summary>
 /// How <see cref="WeightedFieldScorer.SearchAll(string, IEnumerable{ScopedArtifact}, IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/>
 /// combines the three relevance signals — field-match score, normalized BM25, and
-/// supplemental embedding cosine — into a single value passed to the recency/importance
+/// supplemental embedding cosine — into a single value passed to the recency
 /// composition.
 /// <list type="bullet">
 /// <item><see cref="Sum"/>: <c>fieldScore + normalizedBm25·5 + supplemental</c>. Historical
@@ -17,11 +17,10 @@ namespace Scrinia.Core.Search;
 /// cosine values are tiny relative to BM25 magnitudes.</item>
 /// </list>
 /// <para><b>Composition note:</b> RRF scores are ~10⁻²–10⁻¹ in magnitude. When
-/// <see cref="RankerOptions.AlphaRecency"/> or <see cref="RankerOptions.AlphaImportance"/>
-/// is non-zero, their scaled contributions (up to <see cref="RankerOptions.RecencyScale"/>
-/// and <see cref="RankerOptions.ImportanceScale"/>) completely dominate RRF. Pair RRF with
-/// alpha_recency=alpha_importance=0 for a pure-relevance run; the bench harness already
-/// does this by default.</para>
+/// <see cref="RankerOptions.AlphaRecency"/> is non-zero, its scaled contribution (up to
+/// <see cref="RankerOptions.RecencyScale"/>) completely dominates RRF. Pair RRF with
+/// alpha_recency=0 for a pure-relevance run; the bench harness already does this by
+/// default.</para>
 /// </summary>
 public enum FusionMode
 {
@@ -38,22 +37,18 @@ public enum FusionMode
 /// The score for an entry with relevance &gt; 0 is:
 ///
 /// <code>
-/// recency    = exp(-Δt_days / τ_days)                              // 0..1
-/// importance = (entry.Importance ?? NeutralImportance) / 10.0      // 0..1
+/// recency = exp(-Δt_days / τ_days)                              // 0..1
 ///
-/// total = α_relevance  · relevance
-///       + α_recency    · recency    · RecencyScale
-///       + α_importance · importance · ImportanceScale
+/// total = α_relevance · relevance
+///       + α_recency   · recency · RecencyScale
 /// </code>
 ///
-/// Defaults follow the Generative Agents (Park et al., 2023) score shape: each of the
-/// three terms contributes a meaningful but bounded share of total. A perfectly-fresh,
-/// perfectly-important memory adds ~100 points — roughly equal to a name-exact field
-/// match — so strong content matches still dominate (BM25 alone can reach ~500 after
-/// scaling) but near-ties tip toward the more recent and more important memory.
+/// A perfectly-fresh entry adds ~50 points on top of relevance, so strong content matches
+/// still dominate (BM25 alone can reach ~500 after scaling) but near-ties tip toward the
+/// more recent memory.
 ///
-/// Setting α_recency = α_importance = 0 reduces the ranker to relevance only — useful
-/// in tests that need to isolate field + BM25 signals from temporal/importance bumps.
+/// Setting α_recency = 0 reduces the ranker to relevance only — useful in tests that need
+/// to isolate field + BM25 signals from temporal bumps.
 ///
 /// <para><see cref="Fusion"/> selects how the three retrieval signals combine inside the
 /// "relevance" term. Default <see cref="FusionMode.Sum"/> matches the historical behavior;
@@ -62,11 +57,8 @@ public enum FusionMode
 public sealed record RankerOptions(
     double AlphaRelevance = 1.0,
     double AlphaRecency = 1.0,
-    double AlphaImportance = 1.0,
     double TauDays = 14.0,
-    int NeutralImportance = 5,
     double RecencyScale = 50.0,
-    double ImportanceScale = 50.0,
     FusionMode Fusion = FusionMode.Sum)
 {
     public static RankerOptions Default { get; } = new();
@@ -82,18 +74,11 @@ public sealed record RankerOptions(
         return new RankerOptions(
             AlphaRelevance:    ParseDouble(getConfig("Scrinia:Search:Alpha:Relevance"),    d.AlphaRelevance),
             AlphaRecency:      ParseDouble(getConfig("Scrinia:Search:Alpha:Recency"),      d.AlphaRecency),
-            AlphaImportance:   ParseDouble(getConfig("Scrinia:Search:Alpha:Importance"),   d.AlphaImportance),
             TauDays:           ParseDouble(getConfig("Scrinia:Search:TauDays"),            d.TauDays),
-            NeutralImportance: ParseInt   (getConfig("Scrinia:Search:NeutralImportance"),  d.NeutralImportance),
-            RecencyScale:      ParseDouble(getConfig("Scrinia:Search:Scale:Recency"),      d.RecencyScale),
-            ImportanceScale:   ParseDouble(getConfig("Scrinia:Search:Scale:Importance"),   d.ImportanceScale));
+            RecencyScale:      ParseDouble(getConfig("Scrinia:Search:Scale:Recency"),      d.RecencyScale));
     }
 
     private static double ParseDouble(string? s, double fallback)
         => s is not null && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
-           ? v : fallback;
-
-    private static int ParseInt(string? s, int fallback)
-        => s is not null && int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)
            ? v : fallback;
 }

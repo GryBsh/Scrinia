@@ -1,16 +1,14 @@
 using LLama.Native;
 using Microsoft.Extensions.Logging;
 
-namespace Scrinia.Plugin.Llama;
+namespace Scrinia.Plugin.Embeddings;
 
 /// <summary>
-/// One-time process-global LLamaSharp initialization for plugins that load GGUF models
-/// on Vulkan. Shared by <c>Scrinia.Plugin.Embeddings</c> and <c>Scrinia.Plugin.Llm</c> so
-/// the two paths cannot drift on a non-obvious invariant: <see cref="NativeLibraryConfig"/>
-/// must be configured BEFORE any native P/Invoke call and once resolved cannot be changed
-/// for the lifetime of the process.
+/// One-time process-global LLamaSharp initialization for the Vulkan embeddings provider.
+/// <see cref="NativeLibraryConfig"/> must be configured BEFORE any native P/Invoke call
+/// and once resolved cannot be changed for the lifetime of the process.
 /// </summary>
-public static class LlamaVulkanInit
+internal static class LlamaVulkanInit
 {
     private static int _initialized; // 0 = not yet, 1 = done. Interlocked-gated.
 

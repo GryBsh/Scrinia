@@ -40,20 +40,6 @@ public sealed class ClearStaleOllamaConfigTests : IDisposable
     }
 
     [Fact]
-    public void ClearsLlmKeys_WhenLlmPointedAtLocalhostOllama()
-    {
-        WorkspaceConfig.SetValue(_root, "Scrinia:Llm:Provider", "openai");
-        WorkspaceConfig.SetValue(_root, "Scrinia:Llm:BaseUrl", "http://localhost:11434/v1");
-        WorkspaceConfig.SetValue(_root, "Scrinia:Llm:Model", "lfm2:1.2b");
-
-        ScriniaCommands.ClearStaleOllamaConfig(_root);
-
-        WorkspaceConfig.GetValue(_root, "Scrinia:Llm:Provider").Should().BeNull();
-        WorkspaceConfig.GetValue(_root, "Scrinia:Llm:BaseUrl").Should().BeNull();
-        WorkspaceConfig.GetValue(_root, "Scrinia:Llm:Model").Should().BeNull();
-    }
-
-    [Fact]
     public void PreservesUserOpenAiConfig_PointingAtApiOpenAi()
     {
         // A user explicitly pointed Llm at the real OpenAI API — Ollama cleanup must
@@ -103,20 +89,4 @@ public sealed class ClearStaleOllamaConfigTests : IDisposable
         WorkspaceConfig.GetValue(_root, "Scrinia:Embeddings:Provider").Should().Be("model2vec");
     }
 
-    [Fact]
-    public void ClearsLlm_EvenWhenEmbeddingsWasAlreadyMigrated()
-    {
-        // User manually fixed Embeddings:Provider but the LLM keys were left pointing
-        // at localhost:11434 from the original Ollama install — cleanup should still
-        // catch the LLM half.
-        WorkspaceConfig.SetValue(_root, "Scrinia:Embeddings:Provider", "model2vec");
-        WorkspaceConfig.SetValue(_root, "Scrinia:Llm:Provider", "openai");
-        WorkspaceConfig.SetValue(_root, "Scrinia:Llm:BaseUrl", "http://localhost:11434/v1");
-
-        ScriniaCommands.ClearStaleOllamaConfig(_root);
-
-        WorkspaceConfig.GetValue(_root, "Scrinia:Embeddings:Provider").Should().Be("model2vec");
-        WorkspaceConfig.GetValue(_root, "Scrinia:Llm:Provider").Should().BeNull();
-        WorkspaceConfig.GetValue(_root, "Scrinia:Llm:BaseUrl").Should().BeNull();
-    }
 }
