@@ -10,6 +10,97 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Removed (breaking) — LLM-at-rest enrichment
+- **LLM-at-rest enrichment pipeline deleted.** `LlmConsolidator` and the entire
+  Tier 2 sweep over the local store is gone. Scrinia no longer consults an LLM
+  at write time, at read time, or in any background sink. The deletion was
+  driven by an empirical finding: MemBench R@5 / R@10 / NDCG@10 are
+  **identical** with and without the sentence-MaxSim reranker (0.0 / 0.0 / 0.0
+  deltas on the published runs), proving that the candidate-pool composition —
+  not the rescoring stage — is the bottleneck. Agent-supplied retrieval anchors
+  at write time are the right lever; LLM-at-rest enrichment was polishing the
+  wrong end of the system. The LLM clients themselves were moved to the bench
+  (see below) where they belong as a test harness simulating the production
+  agent.
+- `ImportanceScoringSink`, the `Importance` field on `ArtifactEntry`, the
+  `Importance` weight in `RankerOptions`, and the importance branch in
+  `ComputeTotalScore`. The ranker now composes relevance + recency only;
+  setting `α_recency = 0` falls back to pure relevance.
+- `McpLlmPluginHost` and the bundled local-LLM plugin projects:
+  `Scrinia.Plugin.Llm`, `Scrinia.Plugin.Llm.Cli`, and `Scrinia.Plugin.Llama`
+  (plus their test projects). `publish.ps1 -WithLlm` and the
+  `scri-plugin-llm` subprocess no longer exist.
+- `scri consolidate --with-llm` flag and the entire Tier-2 progress-file
+  machinery (`.scrinia/.tier2-progress.json`). Existing files in user
+  workspaces are now orphaned and can be deleted by hand.
+- `scri reindex --importance` flag and its backfill path.
+- The `SessionEnd` consolidate hook installer in `scri setup --hooks`. Only
+  `SessionStart` and `UserPromptSubmit` hooks are installed now. The Codex
+  no-SessionEnd workaround in the installer is also gone (it existed solely
+  to skip the consolidate hook on Codex).
+- The entire `Scrinia:Llm:*` configuration block (~14 keys, including
+  `Provider`, `BaseUrl`, `Model`, `ApiKey`, `Temperature`, `RequestTimeoutSeconds`,
+  `LocalModelFile`, `LocalModelUrl`, `LocalContextSize`, `AnthropicApiKey`,
+  `AnthropicBaseUrl`, `GeminiApiKey`, `GeminiBaseUrl`). `scri setup` no longer
+  prompts for any LLM provisioning — only embedding-provider config.
+- "Tier 1 / Tier 2" framing throughout the user-facing documentation. There is
+  no tier model anymore: writes happen at write time and `scri consolidate`
+  is a mechanical-only manual sweep.
+- `IBackgroundLlm` (and `BackgroundLlmContext.Default`) in `Scrinia.Core`. The
+  bench has its own simpler `IBenchLlmClient` interface.
+
+### Added
+- **`RetrievalAnchors` field on `ArtifactEntry`** (string[]? — agent-supplied
+  phrases, questions, or category-level paraphrases that bridge likely user
+  queries to the entry's content). Use the vocabulary you expect users to query
+  with, not the vocabulary already in the content (the indexer already covers
+  exact-match). Indexed via the weighted field scorer (+15 on per-anchor
+  contains-match — same weight the old `Facts` field carried) and TF-seeding
+  at +2 so BM25 picks up anchor-derived tokens naturally.
+- New `anchors` parameter on the MCP `memory_remember` tool. Optional, defaults
+  to null. Empty / whitespace-only anchors are dropped at the boundary; an
+  empty array is treated as null on the entry. The parameter is additive —
+  existing callers that don't supply `anchors` see no behavior change.
+- **Bench-side agent harness** under
+  `benchmarks/Scrinia.Retrieval.Benchmarks/Agent/` — an `IAgentHarness`
+  abstraction with `GenerateAnchorsAsync` / `RewriteQueryAsync` /
+  `GenerateHypotheticalAsync` ops, wired into the bench's ingest and query
+  paths. New CLI flags: `--agent <off|anchors|rewrite|hyde|all>`,
+  `--agent-provider <openai|anthropic|gemini|ollama|claude-cli|codex-cli|copilot-cli>`,
+  `--agent-base-url`, `--agent-model`, `--agent-api-key`. Per-op response
+  caching under `benchmarks/.../cache/agent-{provider}-{model}.ndjson` so
+  reruns hit the cache and only first-pass calls hit the LLM. See
+  [`docs/research/agent-harness.md`](research/agent-harness.md) for the full
+  design including the anti-data-leakage prompt discipline.
+- The LLM clients themselves moved to
+  `benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/`:
+  `IBenchLlmClient`, `OpenAiCompatibleBenchLlmClient` (covers
+  Ollama / LM Studio / llama.cpp / vLLM / real OpenAI),
+  `AnthropicBenchLlmClient`, `GeminiBenchLlmClient`,
+  `AgentCliBenchLlmClient` (shells out to `claude` / `codex` / `copilot` CLIs
+  reusing the user's CLI auth), and the shared `ResilientLlmProvider` base.
+
+### Changed (breaking)
+- **`ArtifactEntry.Facts` renamed to `ArtifactEntry.RetrievalAnchors`.** Hard
+  rename, no read-side migration: persisted entries with the old `Facts` JSON
+  field deserialize to `RetrievalAnchors = null` silently. Re-save any entries
+  whose anchor data must be retained (or accept the loss — the field had no
+  user-facing surface beyond ranking weight).
+- **`scri consolidate` is mechanical-only.** `--with-llm` is removed (unknown
+  flag → exit 1). The command does session compaction plus stale-entry reporting
+  and nothing else.
+- **`scri reindex` has no `--importance` flag.** Existing scripts passing it
+  get an unknown-flag error.
+- **`scri setup --hooks` no longer installs the SessionEnd consolidate hook.**
+  Existing user installs are not actively cleaned up; re-running
+  `--uninstall-hooks` removes scrinia-managed blocks including any prior
+  SessionEnd entry. Run `scri consolidate` by hand when you want session
+  housekeeping.
+- **Production `Scrinia.Core` is LLM-free.** All LLM client code moved to
+  `Scrinia.Retrieval.Benchmarks.Llm.Providers`. Downstream consumers that
+  referenced `Scrinia.Core.Llm.IBackgroundLlm` or any concrete client need to
+  either depend on the bench assembly or implement their own client.
+
 ### Changed
 - **MCP surface split: `memory(action, …)` dispatcher replaced with ten per-verb
   tools** — `memory_remember`, `memory_recall`, `memory_search`, `memory_list`,

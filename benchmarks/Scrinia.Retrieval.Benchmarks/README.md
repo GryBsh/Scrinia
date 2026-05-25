@@ -78,7 +78,7 @@ MemPalace's published headline (top-10, no rerank): **60.3% R@10 raw**, **88.9% 
 - `bm25`: pure BM25 baseline (Scrinia's `WeightedFieldScorer` without embeddings).
 - `bm25_embeddings` *(default)*: BM25 + MiniLM embeddings via model2vec, blended via the same `{scope}|{name}` supplemental-score path the production embeddings plugin uses. Falls back to `bm25` if the model isn't on disk (run `scri setup` first to download m2v-MiniLM-L6-v2).
 
-Headline runs zero out the workspace-tuned ranker (`α_recency = α_importance = 0`, MMR off) so the apples-to-apples comparison against MemPalace's `--mode raw` is meaningful.
+Headline runs zero out the workspace-tuned ranker (`α_recency = 0`, MMR off) so the apples-to-apples comparison against MemPalace's `--mode raw` is meaningful.
 
 ## Ablations
 
@@ -88,13 +88,10 @@ The headline numbers come from a deliberately neutral ranker. Ablations turn eac
 |---|---|---|
 | `--alpha-recency <r>` | Weight for exp-decay recency term | 0.0 (off) |
 | `--tau-days <τ>` | Recency time-constant | 14 |
-| `--alpha-importance <i>` | Weight for importance term *(see note)* | 0.0 (off) |
 | `--diversity-lambda <λ>` | MMR diversity tradeoff [0,1] | 1.0 (no MMR) |
 | `--diversity-inner-limit <N>` | MMR candidate pool size | 50 when λ set |
 
 Output filenames pick up tag suffixes (`scrinia_longmemeval_full_bm25_embeddings__rec1.0_tau30_<UTC>.json`) so sweep results don't collide.
-
-Note on `--alpha-importance`: wired but currently inert. Haystack docs are ingested without per-doc LLM importance scores (that would require a Tier 2 call per doc, materially different cost profile). The flag is plumbed so a future "score haystacks at ingest" mode can light it up without API changes.
 
 ## Methodology
 
@@ -111,7 +108,6 @@ The formula lives in `src/Scrinia.Core/Search/RankerOptions.cs`:
 ```
 total = α_relevance · relevance
       + α_recency   · exp(-Δt_days / τ_days) · 50
-      + α_importance · (importance/10) · 50
 ```
 
 Where `relevance = fieldScore + normalizedBm25·5 + semanticSimilarity·50` (the last term only when `--mode=bm25_embeddings`).

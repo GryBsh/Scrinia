@@ -2,7 +2,11 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
 
-Persistent, portable memory for LLMs. Compresses text into NMP/2 artifacts, stores them locally, and exposes 2 MCP tools (`guide` and `memory`) so agents can remember, search, recall, and load reusable specialist skills across sessions. Built-in semantic search via Model2Vec (384-dim, ~22MB, zero native deps). Cross-process safe via OS-enforced file locks. Zero infrastructure required.
+Persistent, portable memory for AI agents. Scrinia is a local-first MCP server that stores what agents save and serves it back — **agents bring the intelligence; scrinia provides the substrate**.
+
+Memories are compressed into NMP/2 artifacts on disk and indexed deterministically: BM25 over content + agent-supplied keywords + optional `RetrievalAnchors` (query-vocabulary phrases the agent provides at write time), weighted field scoring, semantic vectors via Model2Vec (384-dim MiniLM-L6-v2 distillation, ~22MB, zero native deps), and a sentence-MaxSim reranker on top. **There is no LLM consultation at write or read time on the server side** — write goes to disk, read runs the ranker, and that's the loop. The calling agent is the source of any LLM-driven enrichment (anchors, query refinement, summarization); scrinia just stores and surfaces.
+
+Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
 ## Benchmarks
 
@@ -146,8 +150,7 @@ scri config                                 # list/get/set workspace settings
 scri guide                                  # print the agent guide (run once per session)
 scri restore                                # resume agent context (profile, patterns, session log)
 scri reconcile                              # scan .scrinia/ for merge conflicts
-scri consolidate --auto                     # deterministic housekeeping (hook-friendly, Tier 1)
-scri consolidate --with-llm                 # add LLM pass: descriptions, summaries, fact extraction (Tier 2)
+scri consolidate                            # mechanical session compaction + stale-entry report (run manually as needed)
 scri reindex                                # force rebuild of every vector file (rarely needed; auto-runs on model switch)
 
 # Memory operations (grouped under "memory")
@@ -237,11 +240,10 @@ Plans, retrospectives, agent norms, and findings are all just memories — searc
 ## Running tests
 
 ```bash
-dotnet test tests/Scrinia.Tests                   # 716 CLI + MCP + storage + embeddings + reindex tests
-dotnet test tests/Scrinia.Server.Tests            # 63 server tests
-dotnet test tests/Scrinia.Merge.Tests             # 18 merge-conflict tests
-dotnet test tests/Scrinia.Plugin.Embeddings.Tests # 12 Vulkan embeddings plugin tests
-dotnet test tests/Scrinia.Plugin.Llm.Tests        # 15 Vulkan LLM plugin tests
+dotnet test tests/Scrinia.Tests                   # CLI + MCP + storage + embeddings + reindex tests
+dotnet test tests/Scrinia.Server.Tests            # server tests
+dotnet test tests/Scrinia.Merge.Tests             # merge-conflict tests
+dotnet test tests/Scrinia.Plugin.Embeddings.Tests # Vulkan embeddings plugin tests
 ```
 
 ## Running benchmarks

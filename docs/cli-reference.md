@@ -80,6 +80,29 @@ scri memory store api:auth ./auth.md -k oauth,jwt --review-when "when auth syste
 cat notes.md | scri memory store session-notes -
 ```
 
+**Retrieval anchors.** The `RetrievalAnchors` field on the persisted entry is
+populated through the MCP `memory_remember` tool's `anchors` parameter — the
+CLI `memory store` surface does not yet expose it as a flag. Anchors are
+agent-supplied **retrieval bridges**: short phrases, questions, or category-level
+paraphrases that bridge likely user queries to the entry's content. Use the
+vocabulary you expect users to query with, not the vocabulary already in the
+content (the indexer already covers exact-match). Each anchor enters the entry's
+term-frequency dict at weight +2 (so BM25 picks anchor-derived tokens up
+naturally) and contributes +15 to the per-anchor contains-match field score.
+
+```jsonc
+// MCP call shape — what an agent passes to memory_remember
+{
+  "path": "/findings/auth-refactor",
+  "content": ["… memory body …"],
+  "anchors": [
+    "how do I rotate session tokens",
+    "what's the OAuth grant flow used by this service",
+    "when did the auth refactor land"
+  ]
+}
+```
+
 ### scri memory show
 
 Decode and display a memory's full content. Optionally write to a file.
@@ -147,76 +170,37 @@ scri memory compact session-notes --keep-recent 5  # keep last 5
 
 ### scri consolidate
 
-Run consolidation passes over the local store. Designed to be wired to an editor
-hook so workspace memory stays tidy without manual intervention. Operates in two
-tiers: Tier 1 (default) is deterministic and mechanical; Tier 2 (`--with-llm`)
-adds an LLM pass for description backfill, session summaries, and fact extraction.
+Mechanical housekeeping over the local store. Compacts multi-chunk session
+entries and reports stale entries. There is no LLM pass — scrinia ships zero
+LLM-at-rest enrichment; anything you want an LLM to do to your memories happens
+in the agent that writes them.
 
-**Tier 1** (always runs):
+**What it does:**
 
 - Compacts multi-chunk session entries (paths under `/sessions/` or `sessions:`)
   older than `--session-age-days` (default 7) into single-chunk form. Originals
   are archived under `versions/`.
 - Reports stats: total memories, total bytes, count of entries past `reviewAfter`.
 
-**Tier 2** (`--with-llm`): after Tier 1 completes, runs an LLM pass over the local
-store. Requires an `IBackgroundLlm` to be wired (Ollama / OpenAI-compatible
-endpoint, or the bundled `scri-plugin-llm`). Three sub-passes:
-
-1. **Description backfill** — every memory whose description still starts with
-   the auto-fallback (first 200 chars of content) gets a regenerated description.
-2. **Session summarization** — session entries that were compacted in Tier 1
-   this run get a one-paragraph summary written into their description field.
-3. **Fact extraction** — every memory gets 3–7 atomic facts extracted into
-   `ArtifactEntry.Facts: string[]`. Each fact enters `TermFrequencies` at
-   weight +2 so BM25 surfaces them automatically.
-
-Progress is checkpointed to `.scrinia/.tier2-progress.json` keyed by qualified
-name + content hash. Re-running `--with-llm` only re-prompts memories whose
-content changed since the last pass — kill-and-resume is safe.
-
-If no LLM backend is configured, `--with-llm` exits 2 with a setup hint. Run
-`scri setup` to wire one up, or set `Scrinia:Llm:BaseUrl` to a manual endpoint.
+Stale entries (past their `reviewAfter` date) are reported but NOT deleted —
+review them with `scri memory list` and decide manually.
 
 ```bash
-scri consolidate [--auto] [--dry-run] [--with-llm] [--debounce-minutes 30] \
+scri consolidate [--auto] [--dry-run] [--debounce-minutes 30] \
     [--session-age-days 7] [--json] [--workspace-root <path>]
 ```
 
 - `--auto` enables debounce: skips the run if `.scrinia/.last-consolidation` shows
-  a run within `--debounce-minutes`. Defensive even on once-per-session hooks, in
-  case the user opens and closes sessions rapidly.
+  a run within `--debounce-minutes`.
 - `--dry-run` previews actions without writing.
-- `--with-llm` adds Tier 2; no-op when no backend is available.
 - After a non-dry run, `.scrinia/.last-consolidation` is updated with the current
   UTC timestamp.
 
-Wire it to a Claude Code `SessionEnd` hook (opt-in — `scri setup --hooks` does
-this automatically) by adding to your `.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionEnd": [
-      {
-        "matcher": "",
-        "hooks": [
-          { "type": "command", "command": "scri consolidate --auto" }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Bind to `SessionEnd`, not `Stop` — `Stop` fires after every assistant response
-and would run a Tier 2 LLM sweep on every turn. Codex CLI has no `SessionEnd`
-event, so `scri setup --hooks` skips the consolidate hook on Codex with a notice
-(SessionStart and UserPromptSubmit are still installed). Use a scheduled task or
-manual `scri consolidate` on Codex.
-
-Stale entries (past their `reviewAfter` date) are reported but NOT deleted —
-review them with `scri memory list` and decide manually.
+`scri consolidate` is now a **manual command** — `scri setup --hooks` no longer
+installs a SessionEnd hook for it. Run it by hand when you want session
+compaction, or wire it into a scheduled task. The previous SessionEnd-hook
+auto-install was paired with an LLM-enrichment sweep at session close; that
+pipeline is gone, so there's no reason to fire this command per-session anymore.
 
 ### scri memory link
 
@@ -298,65 +282,63 @@ scri bundle pack docs "src/**/*.md" -d "Source documentation" -t docs,reference
 
 ### scri setup
 
-Interactive workspace setup. Three things in order:
+Interactive workspace setup. Two things in order:
 
-1. **Ollama auto-detection** (`http://localhost:11434` by default). Probes
-   `GET /api/tags`; if reachable, prompts whether to use Ollama for embeddings
-   and completions. On `yes`:
+1. **Ollama auto-detection for embeddings** (`http://localhost:11434` by default).
+   Probes `GET /api/tags`; if reachable, prompts whether to use Ollama for
+   embeddings. On `yes`:
    - Picks an embedding model from already-pulled models, or pulls
      `nomic-embed-text` (default), or accepts a typed name.
-   - Picks a completion model similarly, defaulting to `lfm2:1.2b` with
-     `llama3.2:1b` as fallback if the LFM2 pull fails.
-   - Streams `POST /api/pull` with per-layer progress for any missing models.
-   - Writes the resulting `Scrinia:Embeddings:*` and `Scrinia:Llm:*` config
-     to the workspace.
+   - Streams `POST /api/pull` with per-layer progress for any missing model.
+   - Writes the resulting `Scrinia:Embeddings:*` config to the workspace.
 2. **Built-in embedding model** (`m2v-MiniLM-L6-v2`, 384-dim, ~22MB) downloaded
    from HuggingFace to `{exeDir}/models/m2v-MiniLM-L6-v2/`. Only used when
    Ollama isn't configured and the Vulkan embeddings plugin isn't installed.
-3. **LLM model** (`LFM2.5-1.2B-Instruct-Q5_K_M.gguf`, ~900MB) downloaded for the
-   bundled `scri-plugin-llm` plugin. Only runs when the plugin exe is installed
-   AND no Ollama/HTTP backend is configured. Use `--llm-download` to
-   force-download even when not needed; `--no-llm-download` to skip the prompt
-   entirely.
+
+Setup does **not** prompt for any LLM configuration. Scrinia ships zero
+LLM-at-rest enrichment — there is no background LLM the server consults at
+write or read time, so there is nothing for setup to wire up. Agents that
+want to enrich memories do so client-side and pass anchors / descriptions /
+keywords through the MCP `memory_remember` tool.
 
 ```bash
-scri setup [--workspace-root <path>] [--no-ollama] [--llm-download] [--no-llm-download] \
+scri setup [--workspace-root <path>] [--no-ollama] \
     [--multi-user] [--resolver none|claude|copilot] \
-    [--llm auto|claude-cli|codex-cli|copilot-cli|openai|anthropic|gemini|plugin|none] \
     [--hooks] [--uninstall-hooks] [--project]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--no-ollama` | `false` | Skip the Ollama probe + prompt entirely. |
-| `--llm-download` | (prompt) | Force-download the bundled LLM GGUF without prompting. |
-| `--no-llm-download` | (prompt) | Skip the bundled LLM GGUF download without prompting. |
-| `--llm` | (auto) | Tier 2 LLM backend. `auto` (default) lets the runtime probe HTTP → agent CLIs on PATH → bundled plugin → none on every startup. Explicit values pin a backend: `claude-cli`/`codex-cli`/`copilot-cli` reuse the user's CLI subscription auth (no API key); `openai` targets any OpenAI-compatible HTTP endpoint (prompts for base URL + model + optional API key when missing); `anthropic`/`gemini` target the vendor's native API (prompts for the API key when missing); `plugin` forces the bundled subprocess; `none` disables Tier 2. When omitted, an existing provider already in config is preserved — re-runs don't silently downgrade an explicit Anthropic/Gemini configuration. |
 | `--multi-user` | `false` | Configure git merge drivers for multi-user collaboration. |
-| `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. Strictly merge-driver semantics — does NOT affect Tier 2 LLM backend (use `--llm` for that). |
-| `--hooks` | `false` | Install SessionStart/SessionEnd/UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Codex has no SessionEnd event, so the consolidate hook is skipped there with a notice. Skips the model-download flow. |
+| `--resolver` | `none` | Conflict resolver under `--multi-user`: `none`, `claude`, or `copilot`. Strictly merge-driver semantics. |
+| `--hooks` | `false` | Install SessionStart + UserPromptSubmit hooks into detected agent CLIs (Claude Code, Codex, GitHub Copilot). Skips the model-download flow. |
 | `--uninstall-hooks` | `false` | Remove scrinia-managed hooks from agent CLIs. User-authored hooks are preserved. |
 | `--project` | `false` | With `--hooks` / `--uninstall-hooks`, target workspace-local config files (`.claude/`, `.codex/`, `.github/hooks/`) instead of user-global (`~/.claude/` etc.). |
 
 When the Ollama probe falls through (declined, unreachable, or `--no-ollama`),
-setup clears any prior Ollama-derived config keys
-(`Scrinia:Embeddings:Provider=ollama`, the Ollama URL + model, and the LLM
-trio if it pointed at `localhost:11434`). Custom OpenAI / Anthropic / Gemini
-configurations are preserved.
+setup clears any prior Ollama-derived embedding config keys
+(`Scrinia:Embeddings:Provider=ollama`, the Ollama URL + model). Custom OpenAI /
+Voyage / Azure / Google embedding configurations are preserved.
 
 Most users don't need to run `setup` directly — `scri serve` auto-downloads the
 embedding model on first launch (use `--no-auto-setup` to opt out). Run `setup`
-explicitly when wiring Ollama, configuring multi-user collaboration
+explicitly when wiring Ollama embeddings, configuring multi-user collaboration
 (`--multi-user`), installing agent hooks (`--hooks`), or when you want to
 control when the network call happens.
 
 #### Hook installer (`--hooks`)
 
-Wires scrinia into the user's existing agent CLI sessions:
+Wires scrinia into the user's existing agent CLI sessions. Two hooks are
+installed:
 
 - **SessionStart** → `scri restore` — primes context (profile, patterns, today's session log) when the agent starts a session.
-- **Stop** → `scri consolidate --auto` — runs Tier 1 housekeeping when the agent stops.
 - **UserPromptSubmit** → `scri hint` — emits a one-line "relevant memories exist" marker before the agent processes each user prompt.
+
+`SessionEnd` is no longer installed. The previous SessionEnd hook ran
+`scri consolidate --auto` to drive an LLM enrichment sweep at session close;
+that pipeline is gone, so the hook went with it. If you want session-compaction
+housekeeping, run `scri consolidate` manually.
 
 Per-CLI write locations:
 
@@ -430,9 +412,6 @@ scri config plugins:embeddings my-custom-plugin
 scri config Scrinia:Embeddings:Provider ollama
 scri config Scrinia:Embeddings:OllamaModel nomic-embed-text
 scri config Scrinia:Embeddings:ChunkSize 1800
-scri config Scrinia:Llm:Provider openai
-scri config Scrinia:Llm:BaseUrl http://localhost:11434/v1
-scri config Scrinia:Llm:Model lfm2:1.2b
 ```
 
 Writes to `Scrinia:Embeddings:*` trigger an automatic vector reindex if the
@@ -456,24 +435,6 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 | `Scrinia:Embeddings:Azure*` | — | `Endpoint`, `ApiKey`, `Deployment`, `Model`, `ApiVersion`, `UseV1` for Azure AI Foundry. |
 | `Scrinia:Embeddings:Google*` | — | `ApiKey`, `Model`, `BaseUrl`, `Dimensions` for Google Gemini. |
 
-**Background LLM (Tier 2)**
-
-| Key | Default | Description |
-|---|---|---|
-| `Scrinia:Llm:Provider` | `auto` | `auto` (HTTP → agent-CLIs → plugin), `openai` (OpenAI-compat HTTP), `anthropic` (native Messages API), `gemini` (native generateContent), `claude-cli`/`codex-cli`/`copilot-cli` (shell out to the agent CLI), `plugin` (force bundled), or `none`. |
-| `Scrinia:Llm:BaseUrl` | `http://localhost:11434/v1` | OpenAI-compatible chat-completions endpoint. |
-| `Scrinia:Llm:Model` | `lfm2:1.2b` | Model name sent in the chat-completions request body. Matches the Ollama tag for the LFM2.5-Instruct family. |
-| `Scrinia:Llm:ApiKey` | (none) | Sent as `Authorization: Bearer …` when set. Optional for Ollama / local servers. |
-| `Scrinia:Llm:Temperature` | `0.3` | Sampling temperature. Tier 2 tasks favour low-temperature, reproducible output. |
-| `Scrinia:Llm:RequestTimeoutSeconds` | `120` | Outer HTTP ceiling. Per-task budgets are tighter and set via `CancellationToken`. |
-| `Scrinia:Llm:LocalModelFile` | (built-in default) | Override the GGUF filename loaded by the bundled `scri-plugin-llm`. |
-| `Scrinia:Llm:LocalModelUrl` | (built-in default) | Override the HuggingFace URL the plugin downloads from on first run. |
-| `Scrinia:Llm:LocalContextSize` | `8192` | n_ctx passed to LLamaSharp for the bundled plugin's GGUF load. |
-| `Scrinia:Llm:AnthropicApiKey` | (none) | API key sent as `x-api-key` to Anthropic. Required when `Provider=anthropic`. |
-| `Scrinia:Llm:AnthropicBaseUrl` | `https://api.anthropic.com` | Anthropic Messages API base URL. |
-| `Scrinia:Llm:GeminiApiKey` | (none) | API key sent as `x-goog-api-key` to Gemini. Required when `Provider=gemini`. |
-| `Scrinia:Llm:GeminiBaseUrl` | `https://generativelanguage.googleapis.com` | Gemini generateContent base URL. |
-
 **Pre-send hint (`scri hint`)**
 
 | Key | Default | Description |
@@ -482,9 +443,9 @@ composed embedding signature changed (provider, model, chunk size, or overlap).
 | `Scrinia:Hint:MinPromptChars` | `8` | Prompts shorter than this skip the lookup entirely (avoids firing on "hi" / "thanks"). |
 | `Scrinia:Hint:MinScore` | `10.0` | BM25 score floor — matches below this are suppressed. |
 
-Plugin-specific keys (`plugins:embeddings`, `plugins:llm`) override the executable
-name used to launch the corresponding plugin process — only useful for custom
-builds.
+The `plugins:embeddings` key overrides the executable name used to launch the
+embeddings plugin process — only useful for custom builds. Scrinia ships no
+server-side LLM plugin; the historical `plugins:llm` key has been removed.
 
 ### scri migrate
 
