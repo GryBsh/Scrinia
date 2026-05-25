@@ -2,17 +2,17 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using Scrinia.Core.Llm;
-using Scrinia.Core.Llm.Providers;
+using Scrinia.Retrieval.Benchmarks.Llm.Providers;
+using Xunit;
 
-namespace Scrinia.Tests.Llm;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 /// <summary>
-/// Tests for <see cref="AnthropicLlmProvider"/>. Stubbed
+/// Tests for <see cref="AnthropicBenchLlmClient"/>. Stubbed
 /// <see cref="HttpMessageHandler"/> asserts Messages API request shape
 /// (POST /v1/messages, x-api-key header, system field, content blocks).
 /// </summary>
-public class AnthropicLlmProviderTests
+public class AnthropicBenchLlmClientTests
 {
     private static LlmOptions Options(string? apiKey = "test-key", string baseUrl = "https://stub.anthropic.test") =>
         new()
@@ -35,7 +35,7 @@ public class AnthropicLlmProviderTests
         """;
 
     [Fact]
-    public async Task GenerateDescription_PostsToMessagesEndpoint_WithApiKeyHeader()
+    public async Task CompleteAsync_PostsToMessagesEndpoint_WithApiKeyHeader()
     {
         HttpRequestMessage? captured = null;
         var handler = StubHandler.Sync((req, _) =>
@@ -43,14 +43,14 @@ public class AnthropicLlmProviderTests
             captured = req;
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(MessagesResponse("A description."), Encoding.UTF8, "application/json"),
+                Content = new StringContent(MessagesResponse("A reply."), Encoding.UTF8, "application/json"),
             };
         });
-        using var llm = new AnthropicLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new AnthropicBenchLlmClient(Options(), new HttpClient(handler));
 
-        string? desc = await llm.GenerateDescriptionAsync("test content", CancellationToken.None);
+        string? reply = await llm.CompleteAsync("sysprompt", "user content", maxTokens: 80, jsonMode: false, CancellationToken.None);
 
-        desc.Should().Be("A description.");
+        reply.Should().Be("A reply.");
         captured.Should().NotBeNull();
         captured!.Method.Should().Be(HttpMethod.Post);
         captured.RequestUri!.ToString().Should().Be("https://stub.anthropic.test/v1/messages");
@@ -70,19 +70,20 @@ public class AnthropicLlmProviderTests
                 Content = new StringContent(MessagesResponse("ok"), Encoding.UTF8, "application/json"),
             };
         });
-        using var llm = new AnthropicLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new AnthropicBenchLlmClient(Options(), new HttpClient(handler));
 
-        await llm.GenerateDescriptionAsync("the content", CancellationToken.None);
+        await llm.CompleteAsync("system text", "the content", maxTokens: 120, jsonMode: false, CancellationToken.None);
 
         bodyJson.Should().NotBeNull();
         using var doc = JsonDocument.Parse(bodyJson!);
         var root = doc.RootElement;
         root.GetProperty("model").GetString().Should().Be("claude-test-model");
-        root.GetProperty("system").GetString().Should().NotBeNullOrEmpty();
+        root.GetProperty("system").GetString().Should().Be("system text");
         var messages = root.GetProperty("messages");
         messages.GetArrayLength().Should().Be(1);
         messages[0].GetProperty("role").GetString().Should().Be("user");
-        messages[0].GetProperty("content").GetString().Should().Contain("the content");
+        messages[0].GetProperty("content").GetString().Should().Be("the content");
+        root.GetProperty("max_tokens").GetInt32().Should().Be(120);
     }
 
     [Fact]
@@ -94,9 +95,10 @@ public class AnthropicLlmProviderTests
                 """{"content": [{"type": "text", "text": "first "}, {"type": "text", "text": "second"}]}""",
                 Encoding.UTF8, "application/json"),
         });
-        using var llm = new AnthropicLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new AnthropicBenchLlmClient(Options(), new HttpClient(handler));
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().Be("first second");
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().Be("first second");
     }
 
     [Fact]
@@ -110,30 +112,32 @@ public class AnthropicLlmProviderTests
                 """{"content": [{"type": "tool_use", "id": "x"}, {"type": "text", "text": "real reply"}]}""",
                 Encoding.UTF8, "application/json"),
         });
-        using var llm = new AnthropicLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new AnthropicBenchLlmClient(Options(), new HttpClient(handler));
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().Be("real reply");
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().Be("real reply");
     }
 
     [Fact]
     public async Task Non2xx_ReturnsNull()
     {
         var handler = StubHandler.Sync((_, _) => new HttpResponseMessage(HttpStatusCode.Unauthorized));
-        using var llm = new AnthropicLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new AnthropicBenchLlmClient(Options(), new HttpClient(handler));
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().BeNull();
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().BeNull();
     }
 
     [Fact]
-    public async Task IsAvailable_TrueOn200_ProbingMessagesEndpoint()
+    public async Task IsAvailable_TrueOn405_ProbingMessagesEndpoint()
     {
         var handler = StubHandler.Sync((req, _) =>
         {
             req.Method.Should().Be(HttpMethod.Get);
             req.RequestUri!.ToString().Should().Be("https://stub.anthropic.test/v1/messages");
-            return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);  // expected: GET is not allowed
+            return new HttpResponseMessage(HttpStatusCode.MethodNotAllowed);
         });
-        using var llm = new AnthropicLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new AnthropicBenchLlmClient(Options(), new HttpClient(handler));
 
         (await llm.IsAvailableAsync(CancellationToken.None)).Should().BeTrue();
     }
@@ -142,7 +146,7 @@ public class AnthropicLlmProviderTests
     public async Task IsAvailable_FalseOn401()
     {
         var handler = StubHandler.Sync((_, _) => new HttpResponseMessage(HttpStatusCode.Unauthorized));
-        using var llm = new AnthropicLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new AnthropicBenchLlmClient(Options(), new HttpClient(handler));
 
         (await llm.IsAvailableAsync(CancellationToken.None)).Should().BeFalse();
     }

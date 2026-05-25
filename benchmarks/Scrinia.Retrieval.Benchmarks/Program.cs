@@ -70,17 +70,6 @@ internal static class Program
               --chunk-overlap <N>      Override chunk overlap (default 200; only honored when --chunk prod)
               --category <name>        Run only questions in this category. Enables per-category process fanout (see run-benchmarks.ps1 -Parallel).
 
-            Tier 2 LLM enrichment flags (ingest-time, measures scrinia's product surface above pure retrieval):
-              --enrich <c>             none (default) | tier2 — enable Tier 2 enrichment at ingest
-              --enrich-provider <p>    Required when --enrich tier2: claude-cli | codex-cli | copilot-cli | ollama | openai
-              --enrich-model <m>       Required for ollama/openai; optional for agent CLIs (defaults to variant's cheap-tier).
-                                       Ollama: try qwen2.5:0.5b, llama3.2:1b, or phi3:mini for fast iteration.
-              --enrich-base-url <url>  Optional HTTP endpoint override for ollama/openai (default: http://localhost:11434/v1 = Ollama).
-                                       Point at LM Studio (:1234), llama.cpp server (:8080), vLLM, or a remote endpoint.
-              --enrich-api-key <key>   Optional bearer token for openai. Ollama doesn't need one; real OpenAI does.
-              --enrich-ops <list>      Comma-separated subset of facts,description,importance,summary (default: facts,description — the two that move R@K). 'all' enables all four.
-              --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --enrich tier2 is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
-
             Agent harness flags (simulates a production agent around scrinia — anchors at ingest, query rewrite/HyDE at search):
               --agent <mode>           off (default) | anchors | rewrite | hyde | all — what the agent does.
                                        'anchors' generates retrieval anchors per doc at ingest; 'rewrite' rewrites the query before search;
@@ -89,6 +78,7 @@ internal static class Program
               --agent-base-url <url>   Optional HTTP endpoint override for ollama/openai.
               --agent-model <m>        Required for ollama/openai/anthropic/gemini; optional for agent CLIs.
               --agent-api-key <key>    Bearer / API key for openai/anthropic/gemini. Ollama doesn't need one.
+              --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --agent is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
 
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)

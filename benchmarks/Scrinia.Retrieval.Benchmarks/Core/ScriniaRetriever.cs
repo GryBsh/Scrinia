@@ -43,11 +43,10 @@ public sealed class ScriniaRetriever : IRetriever
     private readonly bool _chunked;
     private readonly int _chunkWindowSize;
     private readonly int _chunkOverlap;
-    private readonly Tier2Enricher? _enricher;
     // FileMemoryStore.Upsert is not thread-safe. When the runner calls IngestAsync
     // concurrently (--ingest-concurrency > 1), this lock serializes the index write
-    // so two parallel doc-enrichments don't corrupt the in-memory index. The lock
-    // is cheap when uncontended; per-doc the enrichment + embed time dominates.
+    // so two parallel docs don't corrupt the in-memory index. The lock is cheap when
+    // uncontended; per-doc the embed time dominates.
     private readonly object _ingestLock = new();
     // Process-lifetime embedding cache, keyed by SHA256(text). NOT wiped on
     // ResetAsync — same doc text appearing across multiple questions is embedded
@@ -67,14 +66,6 @@ public sealed class ScriniaRetriever : IRetriever
     private int _resetCount;
     private ConcurrentDictionary<string, float[]> _vectorCache;
     private ConcurrentDictionary<string, IReadOnlyList<float[]>> _sentenceVectorCache;
-
-    /// <summary>
-    /// The configured Tier 2 enricher, or null if Tier 2 is disabled. Exposed so
-    /// subcommands can read provider/model/cache stats off it after a run completes
-    /// and write them into <see cref="RunMetadata"/> — there's no other path between
-    /// the bench CLI args and the result file's enrichment fields.
-    /// </summary>
-    public Tier2Enricher? Enricher => _enricher;
 
     /// <summary>
     /// Optional second-stage reranker. Set by <see cref="Cli.RetrieverFactory"/> after
@@ -103,7 +94,6 @@ public sealed class ScriniaRetriever : IRetriever
         bool chunked = false,
         int chunkWindowSize = TextChunker.DefaultWindowSize,
         int chunkOverlap = TextChunker.DefaultOverlap,
-        Tier2Enricher? enricher = null,
         bool buildSentenceIndex = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
@@ -118,7 +108,6 @@ public sealed class ScriniaRetriever : IRetriever
         _chunked = chunked;
         _chunkWindowSize = chunkWindowSize;
         _chunkOverlap = chunkOverlap;
-        _enricher = enricher;
         // Building the sentence index only makes sense if we have an embedder. Off by
         // default keeps the embed cost path unchanged (~1 embed per doc) when no
         // reranker is configured.
@@ -134,28 +123,18 @@ public sealed class ScriniaRetriever : IRetriever
     /// <summary>
     /// Ingest overload that accepts agent-harness-supplied retrieval anchors. When
     /// <paramref name="agentAnchors"/> is non-null and non-empty, those anchors flow
-    /// into <see cref="ArtifactEntry.RetrievalAnchors"/> instead of the Tier 2
-    /// enricher's facts — agent anchors are higher-quality query-vocabulary phrases
-    /// (e.g. "what is the policy", "how do I undo") whereas Tier 2 facts are
-    /// content-vocabulary statements. The original ingest signature (without anchors)
-    /// continues to call this with null, preserving baseline behavior.
+    /// into <see cref="ArtifactEntry.RetrievalAnchors"/> and feed BM25 via TF seeding.
+    /// The default-args overload (without anchors) calls this with null, preserving
+    /// baseline behavior.
     /// </summary>
     public async Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? agentAnchors, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ct.ThrowIfCancellationRequested();
 
-        // Tier 2 enrichment runs ONCE on the full doc text before any chunking. The
-        // resulting description/facts/importance are properties of the memory, not the
-        // slice — every chunk inherits them. Cached by SHA256(doc.Text), so repeated
-        // questions sharing a haystack doc reuse the same enrichment for free.
-        EnrichResult enrichment = _enricher is null
-            ? new EnrichResult(null, null, null)
-            : await _enricher.EnrichAsync(doc.Text, ct);
-
         if (!_chunked)
         {
-            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, enrichment, agentAnchors, ct);
+            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, agentAnchors, ct);
             return;
         }
 
@@ -169,34 +148,25 @@ public sealed class ScriniaRetriever : IRetriever
         foreach (var (idx, text) in windows)
         {
             string chunkId = $"{doc.Id}{ChunkSeparator}{idx}";
-            await IngestEntryAsync(chunkId, text, doc.Timestamp, enrichment, agentAnchors, ct);
+            await IngestEntryAsync(chunkId, text, doc.Timestamp, agentAnchors, ct);
         }
     }
 
     private async Task IngestEntryAsync(
-        string id, string text, DateTimeOffset? timestamp, EnrichResult enrichment,
+        string id, string text, DateTimeOffset? timestamp,
         IReadOnlyList<string>? agentAnchors, CancellationToken ct)
     {
         string sanitized = SanitizeName(id);
         var (keywords, tf) = TextAnalysis.AnalyzeText(text);
 
-        // Pick anchor source: agent-harness anchors win over Tier 2 facts when both
-        // are present. Agent anchors are query-vocabulary phrases the user might
-        // type ("how do I undo X"), whereas Tier 2 facts are content-vocabulary
-        // statements ("X resets the index"). For query-time matching the former is
-        // strictly more useful, hence the preference.
-        string[]? anchorSource;
-        if (agentAnchors is { Count: > 0 })
-        {
-            anchorSource = agentAnchors as string[] ?? agentAnchors.ToArray();
-        }
-        else
-        {
-            anchorSource = enrichment.Facts;
-        }
+        // Materialise agent anchors as a plain array — the storage layer expects one
+        // and the TF-seeding loop below iterates once.
+        string[]? anchorSource = agentAnchors is { Count: > 0 }
+            ? (agentAnchors as string[] ?? agentAnchors.ToArray())
+            : null;
 
         // Seed anchor-derived tokens into the TF dict so BM25 picks up the
-        // query-vocabulary terms. Replicates the prod-path semantics: OrdinalIgnoreCase
+        // query-vocabulary terms. Mirrors the prod-path semantics: OrdinalIgnoreCase
         // comparer, additive merge with text-derived TF, +2 weight per anchor token.
         Dictionary<string, int> mergedTf = tf;
         if (anchorSource is { Length: > 0 })
@@ -226,9 +196,7 @@ public sealed class ScriniaRetriever : IRetriever
             OriginalBytes: text.Length,
             ChunkCount: 0,
             CreatedAt: timestamp ?? DateTimeOffset.UtcNow,
-            // Null description means Tier 2 was disabled or failed for this doc; use
-            // empty string (the baseline) rather than overwriting with null.
-            Description: enrichment.Description ?? string.Empty,
+            Description: string.Empty,
             Keywords: keywords,
             TermFrequencies: mergedTf,
             ContentPreview: text,
@@ -249,7 +217,7 @@ public sealed class ScriniaRetriever : IRetriever
             // the same parent appearing across questions) reuses the prior vector.
             // Persists across ResetAsync, so the embedding cost — model2vec at ~1 ms,
             // vulkan/GGUF at ~50 ms — is paid exactly once per unique text body.
-            string contentHash = EnrichmentCache.Hash(text);
+            string contentHash = LlmResponseCache.Hash(text);
             if (!_embeddingCacheByContent.TryGetValue(contentHash, out var vec))
             {
                 vec = await _embeddingProvider.EmbedAsync(text, ct);

@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace Scrinia.Core.Llm.Providers;
+namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 /// <summary>
 /// Source-generated JSON contracts for Anthropic's Messages API.

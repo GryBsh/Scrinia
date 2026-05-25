@@ -11,17 +11,14 @@ namespace Scrinia.Retrieval.Benchmarks.Cli;
 /// Builds a configured <see cref="ScriniaRetriever"/> from CLI args. Shared across
 /// subcommands so the <c>--mode</c> / <c>--model-dir</c> contract is consistent.
 ///
-/// <para><b>Headline runs (no ablation flags):</b> recency / importance / MMR all
-/// neutralized so the apples-to-apples baseline against MemPalace's "raw" track is
-/// reproducible. The workspace-tuned defaults (τ=14d, MMR=0.6) would distort
-/// months-scale temporal benchmarks like LongMemEval and LoCoMo.</para>
+/// <para><b>Headline runs (no ablation flags):</b> recency / MMR all neutralized so
+/// the apples-to-apples baseline against MemPalace's "raw" track is reproducible.
+/// The workspace-tuned defaults (τ=14d, MMR=0.6) would distort months-scale temporal
+/// benchmarks like LongMemEval and LoCoMo.</para>
 ///
 /// <para><b>Ablation runs:</b> <c>--alpha-recency</c>, <c>--tau-days</c>,
-/// <c>--alpha-importance</c>, <c>--diversity-lambda</c>, and <c>--diversity-inner-limit</c>
-/// turn the ranker knobs back on so commit 5's sweeps can isolate the contribution of
-/// each Scrinia feature. Importance ablation requires that the haystack docs already
-/// carry importance scores — not produced for benchmark ingest in this commit, so the
-/// flag is wired but the effect is null until per-doc importance scoring is added.</para>
+/// <c>--diversity-lambda</c>, and <c>--diversity-inner-limit</c> turn the ranker
+/// knobs back on so sweeps can isolate the contribution of each Scrinia feature.</para>
 /// </summary>
 internal static class RetrieverFactory
 {
@@ -60,30 +57,6 @@ internal static class RetrieverFactory
         bool chunked = ParseChunk(Program.Flag(args, "--chunk"));
         int chunkWindow = ParseInt(Program.Flag(args, "--chunk-window"), Scrinia.Core.Embeddings.TextChunker.DefaultWindowSize);
         int chunkOverlap = ParseInt(Program.Flag(args, "--chunk-overlap"), Scrinia.Core.Embeddings.TextChunker.DefaultOverlap);
-
-        // Tier 2 LLM enrichment. --enrich none (default) measures Tier 1 retrieval only —
-        // BM25 + embeddings — which is what the academic comparisons measure. --enrich tier2
-        // adds ingest-time LLM ops (default: facts + description) so the bench measures
-        // scrinia's actual product surface, where Tier 2 enrichment lifts BM25 recall via
-        // fact-token TF seeding and the field scorer's description-match signal.
-        Tier2Enricher? enricher = null;
-        if (ParseEnrich(Program.Flag(args, "--enrich")))
-        {
-            string provider = Program.Flag(args, "--enrich-provider")
-                ?? throw new ArgumentException(
-                    "--enrich tier2 requires --enrich-provider (claude-cli | codex-cli | copilot-cli | ollama | openai)");
-            string? model = Program.Flag(args, "--enrich-model");
-            string? baseUrl = Program.Flag(args, "--enrich-base-url");
-            string? apiKey = Program.Flag(args, "--enrich-api-key");
-            var ops = EnrichOps.Parse(Program.Flag(args, "--enrich-ops"));
-            var backend = await BenchLlmBackendBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
-            string cacheDir = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache");
-            string cacheFile = Path.Combine(cacheDir, $"enrich-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
-            var cache = new EnrichmentCache(cacheFile);
-            enricher = new Tier2Enricher(backend.Llm, cache, ops, backend.ProviderId, backend.ModelSlug);
-            Console.Error.WriteLine(
-                $"[scrinia-bench] tier2 enrichment enabled: provider={backend.ProviderId} model={backend.ModelSlug} ops={ops.Label()} cache={cacheFile}");
-        }
 
         FusionMode fusion = ParseFusion(Program.Flag(args, "--fusion"));
         RerankMode rerank = ParseRerank(Program.Flag(args, "--rerank"));
@@ -128,7 +101,6 @@ internal static class RetrieverFactory
             chunked: chunked,
             chunkWindowSize: chunkWindow,
             chunkOverlap: chunkOverlap,
-            enricher: enricher,
             buildSentenceIndex: buildSentenceIndex);
 
         // Two-step wiring: reranker reads the retriever's sentence index via a
@@ -150,9 +122,8 @@ internal static class RetrieverFactory
     /// <see cref="NoOpAgentHarness.Instance"/> for the default <c>--agent off</c>.
     /// When any agent op is enabled, requires <c>--agent-provider</c> and dispatches
     /// to <see cref="AgentClientBuilder.BuildAsync"/> to construct the LLM transport.
-    /// The harness owns its own <see cref="EnrichmentCache"/> at
-    /// <c>cache/agent-{provider}-{model}.ndjson</c>, distinct from the Tier 2
-    /// enrichment cache.
+    /// The harness owns its own <see cref="LlmResponseCache"/> at
+    /// <c>cache/agent-{provider}-{model}.ndjson</c>.
     /// </summary>
     public static async Task<IAgentHarness> BuildAgentAsync(string[] args, CancellationToken ct)
     {
@@ -169,34 +140,11 @@ internal static class RetrieverFactory
         var backend = await AgentClientBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
         string cacheDir = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache");
         string cacheFile = Path.Combine(cacheDir, $"agent-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
-        var cache = new EnrichmentCache(cacheFile);
+        var cache = new LlmResponseCache(cacheFile);
         var harness = new LlmAgentHarness(backend.Llm, cache, backend.ProviderId, backend.ModelSlug, modes);
         Console.Error.WriteLine(
             $"[scrinia-bench] agent harness enabled: provider={backend.ProviderId} model={backend.ModelSlug} ops={modes.Label()} cache={cacheFile}");
         return harness;
-    }
-
-    /// <summary>
-    /// Patch <see cref="RunMetadata"/> with Tier 2 enrichment stats from the retriever's
-    /// enricher. Subcommands call this after <c>RunAsync</c> returns and before writing
-    /// the result JSON, so a Tier 2 run's output records which provider/model/ops were
-    /// active and how much cache work it saved. No-op when the retriever has no enricher.
-    /// </summary>
-    public static BenchmarkRunResult WithEnrichmentMetadata(BenchmarkRunResult result, ScriniaRetriever retriever)
-    {
-        if (retriever.Enricher is not { } enr) return result;
-        return result with
-        {
-            RunMetadata = result.RunMetadata with
-            {
-                EnrichmentProvider = enr.ProviderId,
-                EnrichmentModel = enr.ModelSlug,
-                EnrichmentOps = enr.Ops.Label(),
-                EnrichmentCacheHits = enr.Cache.Hits,
-                EnrichmentCacheMisses = enr.Cache.Misses,
-                EnrichmentInflightHits = enr.Cache.InflightHits,
-            },
-        };
     }
 
     private static bool ParseChunk(string? raw) => raw?.ToLowerInvariant() switch
@@ -204,13 +152,6 @@ internal static class RetrieverFactory
         null or "" or "none" or "off" or "false" => false,
         "prod" or "on" or "true" => true,
         _ => throw new ArgumentException($"unknown --chunk '{raw}'. Expected: none | prod"),
-    };
-
-    private static bool ParseEnrich(string? raw) => raw?.ToLowerInvariant() switch
-    {
-        null or "" or "none" or "off" or "false" => false,
-        "tier2" or "on" or "true" => true,
-        _ => throw new ArgumentException($"unknown --enrich '{raw}'. Expected: none | tier2"),
     };
 
     /// <summary>
@@ -278,18 +219,6 @@ internal static class RetrieverFactory
             && !string.Equals(ck, "off", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(ck, "false", StringComparison.OrdinalIgnoreCase))
             tags.Add("chunked");
-        // tier2 enrichment tag. Default ops (facts+description) get a plain `tier2`;
-        // non-default selections get `tier2-{ops}` so result files distinguish ablations.
-        if (Program.Flag(args, "--enrich") is { } en
-            && !string.Equals(en, "none", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(en, "off", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(en, "false", StringComparison.OrdinalIgnoreCase))
-        {
-            var enrichOps = EnrichOps.Parse(Program.Flag(args, "--enrich-ops"));
-            tags.Add(enrichOps.Equals(EnrichOps.Default)
-                ? "tier2"
-                : "tier2-" + enrichOps.Label().Replace(',', '-'));
-        }
         // Agent harness tag — one of agent-anchors / agent-rewrite / agent-hyde /
         // agent-all when the harness is active. Off (the default) emits no tag so
         // baseline result files stay clean.
@@ -300,7 +229,6 @@ internal static class RetrieverFactory
         }
         if (Program.Flag(args, "--alpha-recency") is { } r) tags.Add($"rec{r}");
         if (Program.Flag(args, "--tau-days") is { } tau) tags.Add($"tau{tau}");
-        if (Program.Flag(args, "--alpha-importance") is { } imp) tags.Add($"imp{imp}");
         if (Program.Flag(args, "--diversity-lambda") is { } lam) tags.Add($"div{lam}");
         if (Program.Flag(args, "--fusion") is { } fu
             && !string.Equals(fu, "sum", StringComparison.OrdinalIgnoreCase))

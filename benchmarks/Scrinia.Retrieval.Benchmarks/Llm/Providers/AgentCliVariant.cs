@@ -1,4 +1,4 @@
-namespace Scrinia.Core.Llm;
+namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 /// <summary>
 /// Per-CLI configuration captured as data, not code. Each entry describes how to drive
@@ -6,10 +6,10 @@ namespace Scrinia.Core.Llm;
 /// non-interactive print mode for a single one-shot completion. Captured as data so
 /// version drift in CLI flags is a config-change rather than a recompile.
 ///
-/// <para>The prompt is sent via stdin rather than a command-line argument because Tier 2
-/// inputs (fact-extraction over a 6K-char memory body plus a system+user template) can
-/// exceed Windows' ~8K argument-length limit and contain newlines that are awkward to
-/// quote portably. Every supported CLI accepts stdin as a prompt source.</para>
+/// <para>The prompt is sent via stdin rather than a command-line argument because
+/// agent inputs can exceed Windows' ~8K argument-length limit and contain newlines
+/// that are awkward to quote portably. Every supported CLI accepts stdin as a prompt
+/// source.</para>
 ///
 /// <para>Combined system+user format: each CLI sees a single prompt string. We prepend
 /// the system instructions as a leading paragraph terminated with a blank line, then the
@@ -17,15 +17,12 @@ namespace Scrinia.Core.Llm;
 /// (Claude, Codex) treat the combined string as the user turn without losing system
 /// semantics.</para>
 ///
-/// <para>Model + effort defaults intentionally pin Tier 2 to a cheap tier. The user's
-/// daily-driver model (often opus + xhigh effort for Claude users, gpt-5.5 for Codex)
-/// is overkill for the four Tier 2 ops (descriptions, summaries, fact extraction,
-/// importance scoring): inputs are short, outputs are structured, and the workload
-/// wants determinism not deep reasoning. Inheriting the user's default would charge
-/// frontier-tier rates for what cleanly fits on Sonnet / gpt-5.4-mini at low effort.
-/// Overrides live on <see cref="LlmOptions"/>; per-variant defaults are the cost cap.</para>
+/// <para>Model + effort defaults intentionally pin the agent harness to a cheap tier.
+/// The user's daily-driver model is overkill for the harness ops (anchors, query rewrite,
+/// HyDE): inputs are short, outputs are structured, and the workload wants determinism
+/// not deep reasoning.</para>
 /// </summary>
-/// <param name="Id">Stable provider value used in <c>Scrinia:Llm:Provider</c> config (e.g. <c>claude-cli</c>).</param>
+/// <param name="Id">Stable provider value used in <c>--agent-provider</c> (e.g. <c>claude-cli</c>).</param>
 /// <param name="Executable">Bare exe name probed on PATH (<c>claude</c>, <c>codex</c>, <c>copilot</c>).</param>
 /// <param name="BaseArguments">Argv that triggers non-interactive print mode. Model and effort flags are appended at call time by <see cref="BuildArguments"/>.</param>
 /// <param name="DisplayName">Human-readable label for logs / setup prompts.</param>
@@ -85,7 +82,7 @@ public sealed record AgentCliVariant(
     }
 
     /// <summary>
-    /// Builds the final argv for one Tier 2 invocation by appending the resolved model
+    /// Builds the final argv for one invocation by appending the resolved model
     /// and effort flags after <see cref="BaseArguments"/>.
     ///
     /// <para>Override semantics for both <paramref name="modelOverride"/> and

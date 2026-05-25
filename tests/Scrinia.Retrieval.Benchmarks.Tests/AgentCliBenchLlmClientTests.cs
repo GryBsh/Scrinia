@@ -1,15 +1,16 @@
 using FluentAssertions;
-using Scrinia.Core.Llm;
 using Scrinia.Core.Process;
+using Scrinia.Retrieval.Benchmarks.Llm.Providers;
+using Xunit;
 
-namespace Scrinia.Tests.Llm;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 /// <summary>
-/// Tests for <see cref="AgentCliBackgroundLlm"/>. Uses a fake <see cref="IProcessRunner"/>
+/// Tests for <see cref="AgentCliBenchLlmClient"/>. Uses a fake <see cref="IProcessRunner"/>
 /// so no actual CLI is launched and the invocation shape (exe, args, stdin) can be
 /// asserted directly.
 /// </summary>
-public class AgentCliBackgroundLlmTests
+public class AgentCliBenchLlmClientTests
 {
     private static LlmOptions Options(int timeoutSeconds = 30) => new()
     {
@@ -22,7 +23,7 @@ public class AgentCliBackgroundLlmTests
     public async Task IsAvailable_True_WhenCliResolvesOnPath()
     {
         var runner = new FakeProcessRunner(resolved: "/usr/local/bin/claude");
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
         (await llm.IsAvailableAsync(CancellationToken.None)).Should().BeTrue();
         runner.ResolveCalls.Should().ContainSingle().Which.Should().Be("claude");
@@ -32,31 +33,31 @@ public class AgentCliBackgroundLlmTests
     public async Task IsAvailable_False_WhenCliMissing()
     {
         var runner = new FakeProcessRunner(resolved: null);
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
         (await llm.IsAvailableAsync(CancellationToken.None)).Should().BeFalse();
     }
 
     [Fact]
-    public async Task GenerateDescription_ShellsOutWithPrintFlag_AndReturnsCleanedStdout()
+    public async Task CompleteAsync_ShellsOutWithPrintFlag_AndReturnsCleanedStdout()
     {
         var runner = new FakeProcessRunner(
             resolved: "/usr/local/bin/claude",
-            result: new ProcessResult(0, "A concise description of the memory.\n", "", false));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+            result: new ProcessResult(0, "A concise reply.\n", "", false));
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
-        string? desc = await llm.GenerateDescriptionAsync("any content", CancellationToken.None);
+        string? reply = await llm.CompleteAsync("sysprompt", "userprompt", maxTokens: 80, jsonMode: false, CancellationToken.None);
 
-        desc.Should().Be("A concise description of the memory.");
+        reply.Should().Be("A concise reply.");
         runner.RunCalls.Should().ContainSingle();
         var (exe, args, stdin, _) = runner.RunCalls[0];
         exe.Should().Be("/usr/local/bin/claude");
-        // Defaults pin Tier 2 to the cheap tier (sonnet + low effort).
+        // Defaults pin the harness to the cheap tier (sonnet + low effort).
         args.Should().Equal("-p", "--model", "sonnet", "--effort", "low");
         stdin.Should().NotBeNullOrEmpty();
-        // System prompt content leaks into stdin — assert the prompt's content marker
-        // rather than a specific phrase, since the prompt wording is tuned over time.
-        stdin.Should().Contain("Content:");
+        // System prompt is the leading paragraph; user prompt follows.
+        stdin.Should().Contain("sysprompt");
+        stdin.Should().Contain("userprompt");
     }
 
     [Fact]
@@ -65,9 +66,9 @@ public class AgentCliBackgroundLlmTests
         var runner = new FakeProcessRunner(
             resolved: "/opt/codex",
             result: new ProcessResult(0, "ok response\n", "", false));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.CodexCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.CodexCli, runner, Options());
 
-        await llm.GenerateDescriptionAsync("anything", CancellationToken.None);
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
 
         var (exe, args, _, _) = runner.RunCalls[0];
         exe.Should().Be("/opt/codex");
@@ -81,9 +82,9 @@ public class AgentCliBackgroundLlmTests
         var runner = new FakeProcessRunner(
             resolved: "/usr/bin/copilot",
             result: new ProcessResult(0, "hello\n", "", false));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.CopilotCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.CopilotCli, runner, Options());
 
-        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
 
         runner.RunCalls[0].Args.Should().Equal("--print", "--model", "gpt-5.4-mini", "--effort", "low");
     }
@@ -96,9 +97,9 @@ public class AgentCliBackgroundLlmTests
             result: new ProcessResult(0, "ok\n", "", false));
         var opts = Options();
         opts.ClaudeCliModel = "haiku";
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, opts);
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, opts);
 
-        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
 
         runner.RunCalls[0].Args.Should().Equal("-p", "--model", "haiku", "--effort", "low");
     }
@@ -111,9 +112,9 @@ public class AgentCliBackgroundLlmTests
             result: new ProcessResult(0, "ok\n", "", false));
         var opts = Options();
         opts.ClaudeCliEffort = "high";
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, opts);
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, opts);
 
-        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
 
         runner.RunCalls[0].Args.Should().Equal("-p", "--model", "sonnet", "--effort", "high");
     }
@@ -129,9 +130,9 @@ public class AgentCliBackgroundLlmTests
         var opts = Options();
         opts.ClaudeCliModel = "";
         opts.ClaudeCliEffort = "";
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, opts);
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, opts);
 
-        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
 
         runner.RunCalls[0].Args.Should().Equal("-p");
     }
@@ -145,12 +146,12 @@ public class AgentCliBackgroundLlmTests
             resolved: "/opt/codex",
             result: new ProcessResult(0, "ok\n", "", false));
         var opts = Options();
-        opts.ClaudeCliEffort = "max";    // belongs to a different variant
-        opts.CopilotCliEffort = "high";  // belongs to a different variant
-        opts.CodexCliModel = "gpt-5.5";  // legit codex override
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.CodexCli, runner, opts);
+        opts.ClaudeCliEffort = "max";
+        opts.CopilotCliEffort = "high";
+        opts.CodexCliModel = "gpt-5.5";
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.CodexCli, runner, opts);
 
-        await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
 
         runner.RunCalls[0].Args.Should().Equal("exec", "-", "-m", "gpt-5.5");
     }
@@ -161,9 +162,10 @@ public class AgentCliBackgroundLlmTests
         var runner = new FakeProcessRunner(
             resolved: "/usr/bin/claude",
             result: new ProcessResult(1, "", "Error: rate limited\n", false));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().BeNull();
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().BeNull();
     }
 
     [Fact]
@@ -172,9 +174,10 @@ public class AgentCliBackgroundLlmTests
         var runner = new FakeProcessRunner(
             resolved: "/usr/bin/claude",
             result: new ProcessResult(-1, "partial...", "", TimedOut: true));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().BeNull();
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().BeNull();
     }
 
     [Fact]
@@ -183,9 +186,10 @@ public class AgentCliBackgroundLlmTests
         var runner = new FakeProcessRunner(
             resolved: "/usr/bin/claude",
             result: new ProcessResult(0, "   \n   ", "", false));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().BeNull();
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().BeNull();
     }
 
     [Fact]
@@ -196,28 +200,11 @@ public class AgentCliBackgroundLlmTests
         var runner = new FakeProcessRunner(
             resolved: "/usr/bin/claude",
             result: new ProcessResult(0, "\x1B[32mGreen text\x1B[0m response", "", false));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
-        string? result = await llm.GenerateDescriptionAsync("x", CancellationToken.None);
+        string? result = await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
 
         result.Should().Be("Green text response");
-    }
-
-    [Fact]
-    public async Task ExtractFacts_ParsesPlainList()
-    {
-        var runner = new FakeProcessRunner(
-            resolved: "/usr/bin/claude",
-            result: new ProcessResult(0,
-                "- First atomic fact.\n- Second atomic fact.\n- Third atomic fact.\n",
-                "", false));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
-
-        string[]? facts = await llm.ExtractFactsAsync("x", CancellationToken.None);
-
-        facts.Should().NotBeNull();
-        facts!.Should().HaveCount(3);
-        facts.Should().Contain("First atomic fact.");
     }
 
     [Fact]
@@ -226,9 +213,10 @@ public class AgentCliBackgroundLlmTests
         var runner = new FakeProcessRunner(
             resolved: "/usr/bin/claude",
             throwOnRun: new InvalidOperationException("cannot start"));
-        var llm = new AgentCliBackgroundLlm(AgentCliVariant.ClaudeCli, runner, Options());
+        var llm = new AgentCliBenchLlmClient(AgentCliVariant.ClaudeCli, runner, Options());
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().BeNull();
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().BeNull();
     }
 
     /// <summary>

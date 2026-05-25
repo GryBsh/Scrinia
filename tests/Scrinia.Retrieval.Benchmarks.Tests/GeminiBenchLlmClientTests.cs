@@ -2,18 +2,18 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
-using Scrinia.Core.Llm;
-using Scrinia.Core.Llm.Providers;
+using Scrinia.Retrieval.Benchmarks.Llm.Providers;
+using Xunit;
 
-namespace Scrinia.Tests.Llm;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 /// <summary>
-/// Tests for <see cref="GeminiLlmProvider"/>. Stubbed
+/// Tests for <see cref="GeminiBenchLlmClient"/>. Stubbed
 /// <see cref="HttpMessageHandler"/> asserts generateContent request shape
 /// (POST /v1beta/models/{model}:generateContent, x-goog-api-key header, system
 /// instruction + user turn, generation config).
 /// </summary>
-public class GeminiLlmProviderTests
+public class GeminiBenchLlmClientTests
 {
     private static LlmOptions Options(string? apiKey = "test-key", string baseUrl = "https://stub.gemini.test") =>
         new()
@@ -36,7 +36,7 @@ public class GeminiLlmProviderTests
         """;
 
     [Fact]
-    public async Task GenerateDescription_PostsToGenerateContentEndpoint_WithApiKeyHeader()
+    public async Task CompleteAsync_PostsToGenerateContentEndpoint_WithApiKeyHeader()
     {
         HttpRequestMessage? captured = null;
         var handler = StubHandler.Sync((req, _) =>
@@ -47,11 +47,11 @@ public class GeminiLlmProviderTests
                 Content = new StringContent(GenerateContentResponse("Gemini reply."), Encoding.UTF8, "application/json"),
             };
         });
-        using var llm = new GeminiLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
 
-        string? desc = await llm.GenerateDescriptionAsync("test content", CancellationToken.None);
+        string? reply = await llm.CompleteAsync("sysprompt", "userprompt", maxTokens: 80, jsonMode: false, CancellationToken.None);
 
-        desc.Should().Be("Gemini reply.");
+        reply.Should().Be("Gemini reply.");
         captured.Should().NotBeNull();
         captured!.Method.Should().Be(HttpMethod.Post);
         captured.RequestUri!.ToString().Should().Be(
@@ -71,20 +71,63 @@ public class GeminiLlmProviderTests
                 Content = new StringContent(GenerateContentResponse("ok"), Encoding.UTF8, "application/json"),
             };
         });
-        using var llm = new GeminiLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
 
-        await llm.GenerateDescriptionAsync("the content", CancellationToken.None);
+        await llm.CompleteAsync("system text", "user content", maxTokens: 120, jsonMode: false, CancellationToken.None);
 
         bodyJson.Should().NotBeNull();
         using var doc = JsonDocument.Parse(bodyJson!);
         var root = doc.RootElement;
-        root.GetProperty("system_instruction").GetProperty("parts")[0].GetProperty("text").GetString().Should().NotBeNullOrEmpty();
+        root.GetProperty("system_instruction").GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("system text");
         var contents = root.GetProperty("contents");
         contents.GetArrayLength().Should().Be(1);
         contents[0].GetProperty("role").GetString().Should().Be("user");
-        contents[0].GetProperty("parts")[0].GetProperty("text").GetString().Should().Contain("the content");
+        contents[0].GetProperty("parts")[0].GetProperty("text").GetString().Should().Be("user content");
         root.GetProperty("generationConfig").GetProperty("temperature").GetDouble().Should().Be(0.1);
-        root.GetProperty("generationConfig").GetProperty("maxOutputTokens").GetInt32().Should().BeGreaterThan(0);
+        root.GetProperty("generationConfig").GetProperty("maxOutputTokens").GetInt32().Should().Be(120);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_OmitsResponseMimeType_WhenJsonModeFalse()
+    {
+        string? bodyJson = null;
+        var handler = StubHandler.Async(async (req, ct) =>
+        {
+            bodyJson = await req.Content!.ReadAsStringAsync(ct);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(GenerateContentResponse("ok"), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
+
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None);
+
+        using var doc = JsonDocument.Parse(bodyJson!);
+        doc.RootElement.GetProperty("generationConfig")
+            .TryGetProperty("responseMimeType", out _).Should().BeFalse(
+                because: "jsonMode=false must omit responseMimeType");
+    }
+
+    [Fact]
+    public async Task CompleteAsync_SetsResponseMimeType_WhenJsonModeTrue()
+    {
+        string? bodyJson = null;
+        var handler = StubHandler.Async(async (req, ct) =>
+        {
+            bodyJson = await req.Content!.ReadAsStringAsync(ct);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(GenerateContentResponse("""{"k":"v"}"""), Encoding.UTF8, "application/json"),
+            };
+        });
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
+
+        await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: true, CancellationToken.None);
+
+        using var doc = JsonDocument.Parse(bodyJson!);
+        doc.RootElement.GetProperty("generationConfig").GetProperty("responseMimeType").GetString()
+            .Should().Be("application/json");
     }
 
     [Fact]
@@ -96,18 +139,20 @@ public class GeminiLlmProviderTests
                 """{"candidates":[{"content":{"parts":[{"text":"first reply"}]}},{"content":{"parts":[{"text":"second"}]}}]}""",
                 Encoding.UTF8, "application/json"),
         });
-        using var llm = new GeminiLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().Be("first reply");
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().Be("first reply");
     }
 
     [Fact]
     public async Task Non2xx_ReturnsNull()
     {
         var handler = StubHandler.Sync((_, _) => new HttpResponseMessage(HttpStatusCode.BadRequest));
-        using var llm = new GeminiLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().BeNull();
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().BeNull();
     }
 
     [Fact]
@@ -122,7 +167,7 @@ public class GeminiLlmProviderTests
                 Content = new StringContent("""{"models":[]}""", Encoding.UTF8, "application/json"),
             };
         });
-        using var llm = new GeminiLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
 
         (await llm.IsAvailableAsync(CancellationToken.None)).Should().BeTrue();
     }
@@ -134,9 +179,10 @@ public class GeminiLlmProviderTests
         {
             Content = new StringContent("""{"candidates": []}""", Encoding.UTF8, "application/json"),
         });
-        using var llm = new GeminiLlmProvider(Options(), new HttpClient(handler));
+        using var llm = new GeminiBenchLlmClient(Options(), new HttpClient(handler));
 
-        (await llm.GenerateDescriptionAsync("x", CancellationToken.None)).Should().BeNull();
+        (await llm.CompleteAsync("s", "u", maxTokens: 50, jsonMode: false, CancellationToken.None))
+            .Should().BeNull();
     }
 
     private sealed class StubHandler : HttpMessageHandler

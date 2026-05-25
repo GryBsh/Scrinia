@@ -53,7 +53,6 @@ internal static class LongMemEvalCommand
                 ingestConcurrency: Program.FlagInt(args, "--ingest-concurrency", 1),
                 ct: ct);
 
-            result = RetrieverFactory.WithEnrichmentMetadata(result, retriever);
             PrintSummary(result);
             await WriteJsonAsync(output, result, ct);
             Console.WriteLine($"wrote {output}");

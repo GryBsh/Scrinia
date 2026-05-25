@@ -6,18 +6,19 @@ using System.Text.Json;
 namespace Scrinia.Retrieval.Benchmarks.Llm;
 
 /// <summary>
-/// NDJSON-backed cache for Tier 2 LLM enrichment results. Reruns of the same haystack
-/// hit memory; cold reruns load from disk; the per-question Tier 2 sweep of MemBench
-/// is otherwise unrepeatable (hundreds of thousands of calls).
+/// NDJSON-backed cache for LLM responses produced by the bench's agent harness. Reruns
+/// of the same haystack / question set hit memory; cold reruns load from disk; the
+/// per-question agent sweep is otherwise unrepeatable (hundreds of thousands of calls
+/// across the larger benchmarks).
 ///
 /// <para><b>File format:</b> one JSON object per line, fields <c>op</c> (e.g.
-/// <c>"facts"</c>), <c>hash</c> (SHA256 hex of the input text), <c>value</c> (the
+/// <c>"anchors"</c>), <c>hash</c> (SHA256 hex of the input text), <c>value</c> (the
 /// LLM result, JSON-typed per op — string, string[], int, or null). Append-only —
 /// the bench never rewrites the file. Malformed lines are skipped on load (a
 /// truncated last line from a killed process is recoverable).</para>
 ///
 /// <para><b>File naming:</b> one file per <c>(provider, model)</c> tuple, e.g.
-/// <c>cache/enrich-claude-cli-sonnet.ndjson</c>. Different providers and models
+/// <c>cache/agent-claude-cli-sonnet.ndjson</c>. Different providers and models
 /// produce different outputs; cross-mixing them would invalidate the comparison.</para>
 ///
 /// <para><b>Null caching:</b> a null LLM result IS cached (as <c>"value": null</c>).
@@ -29,33 +30,19 @@ namespace Scrinia.Retrieval.Benchmarks.Llm;
 /// mid-line. Read-then-write race is benign because the file is append-only — a
 /// duplicate line at worst wastes disk; lookup keys collapse it.</para>
 /// </summary>
-public sealed class EnrichmentCache
+public sealed class LlmResponseCache
 {
     private readonly string _filePath;
     private readonly object _writeLock = new();
     private readonly ConcurrentDictionary<string, JsonElement> _entries = new();
     private int _hits;
     private int _misses;
-    private int _inflight;
 
     public int Hits => _hits;
     public int Misses => _misses;
-    /// <summary>
-    /// Number of times a caller's miss collapsed into an in-flight Tier 2 task
-    /// already running for the same content hash. Distinct from disk-cache <see cref="Hits"/>:
-    /// the second-through-Nth concurrent callers don't read from NDJSON, but they
-    /// also don't trigger an LLM call — they await the first caller's task and
-    /// share its result. Diagnostic for "did singleflight fire?" on parallel
-    /// cold-cache runs (<c>--ingest-concurrency &gt; 1</c>).
-    /// </summary>
-    public int InflightHits => _inflight;
     public string FilePath => _filePath;
 
-    /// <summary>Atomically increment the inflight counter. Called by Tier2Enricher
-    /// when a singleflight GetOrAdd returns an already-running task.</summary>
-    public void RecordInflightHit() => Interlocked.Increment(ref _inflight);
-
-    public EnrichmentCache(string filePath)
+    public LlmResponseCache(string filePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         _filePath = filePath;
@@ -75,16 +62,7 @@ public sealed class EnrichmentCache
     }
 
     /// <summary>
-    /// Counter-free presence check — does NOT increment <see cref="Hits"/> or
-    /// <see cref="Misses"/>. Used by callers that need to peek at cache state
-    /// (e.g. deciding whether to attempt a combined LLM call) without inflating
-    /// the bench's per-run accounting. Real lookups still go through
-    /// <see cref="TryGetString"/> / <see cref="TryGetStringArray"/> / <see cref="TryGetInt"/>.
-    /// </summary>
-    public bool Contains(string op, string hash) => _entries.ContainsKey(Key(op, hash));
-
-    /// <summary>
-    /// Look up a string-valued op (description, summary). Returns true on cache hit
+    /// Look up a string-valued op (rewrite, hyde). Returns true on cache hit
     /// (with <paramref name="value"/> possibly null if the cached result was null);
     /// false on miss. Increments the corresponding counter.
     /// </summary>
@@ -101,7 +79,7 @@ public sealed class EnrichmentCache
         return false;
     }
 
-    /// <summary>Look up a string-array-valued op (facts). Same semantics as <see cref="TryGetString"/>.</summary>
+    /// <summary>Look up a string-array-valued op (anchors). Same semantics as <see cref="TryGetString"/>.</summary>
     public bool TryGetStringArray(string op, string hash, out string[]? value)
     {
         if (_entries.TryGetValue(Key(op, hash), out var el))
@@ -123,28 +101,13 @@ public sealed class EnrichmentCache
         return false;
     }
 
-    /// <summary>Look up an int-valued op (importance, 1–10).</summary>
-    public bool TryGetInt(string op, string hash, out int? value)
-    {
-        if (_entries.TryGetValue(Key(op, hash), out var el))
-        {
-            value = el.ValueKind == JsonValueKind.Null ? null : el.GetInt32();
-            Interlocked.Increment(ref _hits);
-            return true;
-        }
-        Interlocked.Increment(ref _misses);
-        value = null;
-        return false;
-    }
-
     public void PutString(string op, string hash, string? value) => Put(op, hash, value);
     public void PutStringArray(string op, string hash, string[]? value) => Put(op, hash, value);
-    public void PutInt(string op, string hash, int? value) => Put(op, hash, value);
 
     private void Put(string op, string hash, object? value)
     {
         // Use anonymous object — JsonSerializer handles the value's runtime type
-        // (string, string[], int, null) without needing per-op overloads.
+        // (string, string[], null) without needing per-op overloads.
         var entry = new { op, hash, value };
         string line = JsonSerializer.Serialize(entry, SerializerOptions);
         lock (_writeLock)

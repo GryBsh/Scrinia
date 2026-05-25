@@ -1,10 +1,10 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 
-namespace Scrinia.Core.Llm;
+namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 /// <summary>
-/// <see cref="IBackgroundLlm"/> implementation that posts to an OpenAI-compatible
+/// <see cref="IBenchLlmClient"/> implementation that posts to an OpenAI-compatible
 /// chat-completions endpoint. Works with Ollama, llama.cpp server, LM Studio,
 /// Docker Model Runner, vLLM, OpenAI itself, Azure OpenAI, or any other server
 /// that speaks the chat-completions schema.
@@ -13,7 +13,7 @@ namespace Scrinia.Core.Llm;
 /// <see cref="HttpClient"/> lifetime). Tests inject a stubbed <see cref="HttpClient"/>
 /// via the internal constructor to mock <c>HttpMessageHandler</c>.</para>
 /// </summary>
-public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
+public sealed class OpenAiCompatibleBenchLlmClient : IBenchLlmClient, IDisposable
 {
     private readonly LlmOptions _options;
     private readonly HttpClient _http;
@@ -23,10 +23,10 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
     /// Factory for production use. Creates a self-owned <see cref="HttpClient"/>
     /// with the request timeout from <paramref name="options"/>.
     /// </summary>
-    public static OpenAiCompatibleBackgroundLlm Create(LlmOptions options)
+    public static OpenAiCompatibleBenchLlmClient Create(LlmOptions options)
     {
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds) };
-        return new OpenAiCompatibleBackgroundLlm(options, http, ownsHttp: true);
+        return new OpenAiCompatibleBenchLlmClient(options, http, ownsHttp: true);
     }
 
     /// <summary>
@@ -34,7 +34,7 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
     /// and controls its lifetime. Used in unit tests with a mocked
     /// <see cref="HttpMessageHandler"/>.
     /// </summary>
-    internal OpenAiCompatibleBackgroundLlm(LlmOptions options, HttpClient http, bool ownsHttp = false)
+    internal OpenAiCompatibleBenchLlmClient(LlmOptions options, HttpClient http, bool ownsHttp = false)
     {
         _options = options;
         _http = http;
@@ -83,54 +83,8 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
         }
     }
 
-    public Task<string?> GenerateDescriptionAsync(string content, CancellationToken ct) =>
-        CompleteAsync(LlmPrompts.DescriptionSystem, LlmPrompts.DescriptionUser(content),
-            maxTokens: 80, ct);
-
-    public Task<string?> SummarizeAsync(string text, CancellationToken ct) =>
-        CompleteAsync(LlmPrompts.SummarySystem, LlmPrompts.SummaryUser(text),
-            maxTokens: 320, ct);
-
-    public async Task<string[]?> ExtractFactsAsync(string content, CancellationToken ct)
-    {
-        string? raw = await CompleteAsync(LlmPrompts.FactsSystem, LlmPrompts.FactsUser(content),
-            maxTokens: 400, ct);
-        if (raw is null) return null;
-        string[] parsed = LlmPrompts.ParseFacts(raw);
-        return parsed.Length == 0 ? null : parsed;
-    }
-
-    public async Task<int?> ScoreImportanceAsync(string content, CancellationToken ct)
-    {
-        string? raw = await CompleteAsync(LlmPrompts.ImportanceSystem, LlmPrompts.ImportanceUser(content),
-            maxTokens: 16, ct);
-        return LlmPrompts.ParseImportance(raw);
-    }
-
-    public async Task<CombinedEnrichment?> EnrichCombinedAsync(string content, CancellationToken ct)
-    {
-        // One round-trip producing both description and facts as a JSON object.
-        // Token budget = description (~80) + facts (~400) + JSON wrapper (~120) = 600.
-        // Wire-level json_object constraint plus the prompt's explicit JSON schema
-        // tends to produce parseable output even on small models that wouldn't honor
-        // the per-op "one fact per line" line-mode instruction reliably.
-        var request = new ChatRequest(
-            Model: _options.Model,
-            Messages:
-            [
-                new ChatMessage("system", LlmPrompts.CombinedSystem),
-                new ChatMessage("user", LlmPrompts.CombinedUser(content)),
-            ],
-            MaxTokens: 600,
-            Temperature: _options.Temperature,
-            ResponseFormat: new ResponseFormat("json_object"));
-
-        string? raw = await SendChatAsync(request, ct);
-        return raw is null ? null : LlmPrompts.ParseCombinedJson(raw);
-    }
-
-    private Task<string?> CompleteAsync(string systemPrompt, string userPrompt,
-        int maxTokens, CancellationToken ct)
+    public Task<string?> CompleteAsync(string systemPrompt, string userPrompt,
+        int maxTokens, bool jsonMode, CancellationToken ct)
     {
         var request = new ChatRequest(
             Model: _options.Model,
@@ -140,7 +94,11 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
                 new ChatMessage("user", userPrompt),
             ],
             MaxTokens: maxTokens,
-            Temperature: _options.Temperature);
+            Temperature: _options.Temperature,
+            // Wire-level JSON-object output. Supported by Ollama, llama.cpp server,
+            // LM Studio, vLLM, OpenAI itself. Servers that don't recognize the field
+            // ignore it harmlessly — prompt-only discipline applies in that case.
+            ResponseFormat: jsonMode ? new ResponseFormat("json_object") : null);
         return SendChatAsync(request, ct);
     }
 
@@ -169,7 +127,7 @@ public sealed class OpenAiCompatibleBackgroundLlm : IBackgroundLlm, IDisposable
                 catch { errBody = "<unreadable>"; }
                 if (errBody.Length > 500) errBody = errBody[..500] + "...";
                 Console.Error.WriteLine(
-                    $"[scrinia:llm] {_options.Provider}/{_options.Model} POST {req.RequestUri} -> " +
+                    $"[scrinia-bench:llm] {_options.Provider}/{_options.Model} POST {req.RequestUri} -> " +
                     $"{(int)resp.StatusCode} {resp.ReasonPhrase}: {errBody}");
                 return null;
             }

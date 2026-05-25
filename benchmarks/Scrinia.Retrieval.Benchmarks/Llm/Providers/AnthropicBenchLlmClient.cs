@@ -1,10 +1,10 @@
 using System.Net.Http.Json;
 
-namespace Scrinia.Core.Llm.Providers;
+namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 /// <summary>
-/// <see cref="IBackgroundLlm"/> implementation against Anthropic's native Messages API
-/// (POST <c>/v1/messages</c>). Used when the user has an Anthropic API key and prefers
+/// <see cref="IBenchLlmClient"/> implementation against Anthropic's native Messages API
+/// (POST <c>/v1/messages</c>). Used when the bench has an Anthropic API key and prefers
 /// raw API access over shelling out to <c>claude</c> CLI. The Messages API has better
 /// feature parity than Anthropic's OpenAI-compat shim (tool use, thinking, prompt
 /// caching) and is on a longer support timeline.
@@ -13,18 +13,23 @@ namespace Scrinia.Core.Llm.Providers;
 /// <c>anthropic-version</c> header. <c>LlmOptions.AnthropicBaseUrl</c> defaults to
 /// <c>https://api.anthropic.com</c>; the <c>/v1/messages</c> path is appended by the
 /// provider.</para>
+///
+/// <para><b>JSON mode:</b> Anthropic doesn't expose an OpenAI-compat
+/// <c>response_format: {type: "json_object"}</c> on the Messages API. The
+/// <c>jsonMode</c> flag is therefore advisory — callers must ensure the system prompt
+/// asks for JSON when they need it.</para>
 /// </summary>
-public sealed class AnthropicLlmProvider : ResilientLlmProvider
+public sealed class AnthropicBenchLlmClient : ResilientLlmProvider
 {
     private const string ApiVersion = "2023-06-01";
 
-    public static AnthropicLlmProvider Create(LlmOptions options)
+    public static AnthropicBenchLlmClient Create(LlmOptions options)
     {
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds) };
-        return new AnthropicLlmProvider(options, http, ownsHttp: true);
+        return new AnthropicBenchLlmClient(options, http, ownsHttp: true);
     }
 
-    internal AnthropicLlmProvider(LlmOptions options, HttpClient http, bool ownsHttp = false)
+    internal AnthropicBenchLlmClient(LlmOptions options, HttpClient http, bool ownsHttp = false)
         : base(options, http, ownsHttp) { }
 
     public override async Task<bool> IsAvailableAsync(CancellationToken ct)
@@ -44,8 +49,13 @@ public sealed class AnthropicLlmProvider : ResilientLlmProvider
         catch (TaskCanceledException) { return false; }
     }
 
-    protected override async Task<string?> CompleteAsync(string systemPrompt, string userPrompt, int maxTokens, CancellationToken ct)
+    public override async Task<string?> CompleteAsync(string systemPrompt, string userPrompt, int maxTokens, bool jsonMode, CancellationToken ct)
     {
+        // jsonMode is advisory on Anthropic — the Messages API has no wire-level
+        // JSON-object knob comparable to OpenAI's response_format. Callers asking for
+        // JSON output should write the system prompt to request it.
+        _ = jsonMode;
+
         var request = new AnthropicMessagesRequest(
             Model: Options.Model,
             Messages: [new AnthropicMessage("user", userPrompt)],

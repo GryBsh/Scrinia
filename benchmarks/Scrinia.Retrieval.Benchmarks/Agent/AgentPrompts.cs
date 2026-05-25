@@ -14,14 +14,13 @@ namespace Scrinia.Retrieval.Benchmarks.Agent;
 /// content. The hypotheticals in the prompt are domain-neutral so they don't bias
 /// the model toward our benchmark categories.</para>
 ///
-/// <para><b>Hard caps</b> mirror <c>LlmPrompts.MaxInputChars</c> (12K chars) and
-/// add a per-output cap (anchors: 5–240 chars each, max 7 anchors per doc).</para>
+/// <para><b>Hard caps</b> bound input at 12K chars and add a per-output cap
+/// (anchors: 5–240 chars each, max 7 anchors per doc).</para>
 /// </summary>
 public static partial class AgentPrompts
 {
-    /// <summary>Truncation budget for content sent to the LLM. Mirrors
-    /// <c>LlmPrompts.MaxInputChars</c> so small models with ~8K context have room
-    /// for the system prompt + response.</summary>
+    /// <summary>Truncation budget for content sent to the LLM. Sized so small models
+    /// with ~8K context have room for the system prompt + response.</summary>
     public const int MaxInputChars = 12_000;
 
     /// <summary>Per-anchor character bounds. Below 5 chars is noise (single tokens

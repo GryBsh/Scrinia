@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace Scrinia.Core.Llm.Providers;
+namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 /// <summary>
 /// Source-generated JSON contracts for Google Gemini's <c>generateContent</c> API.
@@ -53,6 +53,14 @@ internal sealed class GeminiGenerationConfig
 
     [JsonPropertyName("maxOutputTokens")]
     public int MaxOutputTokens { get; set; }
+
+    /// <summary>
+    /// Wire-level JSON-mode toggle. Set to <c>"application/json"</c> when the caller
+    /// requests JSON output (<c>jsonMode=true</c>); null otherwise so plain-text
+    /// completions don't ship an unused field.
+    /// </summary>
+    [JsonPropertyName("responseMimeType")]
+    public string? ResponseMimeType { get; set; }
 }
 
 internal sealed class GeminiGenerateContentResponse
@@ -82,6 +90,7 @@ internal sealed class GeminiResponsePart
     public string Text { get; set; } = "";
 }
 
+[JsonSourceGenerationOptions(DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(GeminiGenerateContentRequest))]
 internal partial class GeminiRequestJsonContext : JsonSerializerContext;
 

@@ -1,14 +1,10 @@
-using Scrinia.Core.Llm;
-using Scrinia.Core.Llm.Providers;
 using Scrinia.Core.Process;
+using Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 namespace Scrinia.Retrieval.Benchmarks.Agent;
 
 /// <summary>
-/// Builds an <see cref="IBackgroundLlm"/> backend for the agent harness from CLI args.
-/// Modeled on <c>BenchLlmBackendBuilder</c> but kept in a separate file so the
-/// now-deprecated Tier 2 enricher's builder stays independently maintainable while
-/// it lingers through Phase 3.
+/// Builds an <see cref="IBenchLlmClient"/> backend for the agent harness from CLI args.
 ///
 /// <para><b>Supported providers</b> (explicit, no <c>auto</c>):
 /// <list type="bullet">
@@ -29,7 +25,7 @@ namespace Scrinia.Retrieval.Benchmarks.Agent;
 /// </summary>
 internal static class AgentClientBuilder
 {
-    public sealed record Backend(IBackgroundLlm Llm, string ProviderId, string ModelSlug);
+    public sealed record Backend(IBenchLlmClient Llm, string ProviderId, string ModelSlug);
 
     /// <param name="provider">claude-cli, codex-cli, copilot-cli, ollama, openai, anthropic, or gemini.</param>
     /// <param name="model">Required for ollama/openai/anthropic/gemini; optional for agent CLIs.</param>
@@ -42,7 +38,7 @@ internal static class AgentClientBuilder
         string providerId = provider.Trim().ToLowerInvariant();
         string modelSlug = Slugify(string.IsNullOrWhiteSpace(model) ? "default" : model);
 
-        IBackgroundLlm llm;
+        IBenchLlmClient llm;
         switch (providerId)
         {
             case "claude-cli":
@@ -60,7 +56,7 @@ internal static class AgentClientBuilder
                         CodexCliModel = providerId == "codex-cli" ? model : null,
                         CopilotCliModel = providerId == "copilot-cli" ? model : null,
                     };
-                    llm = new AgentCliBackgroundLlm(variant, new ProcessRunner(), options);
+                    llm = new AgentCliBenchLlmClient(variant, new ProcessRunner(), options);
                     break;
                 }
 
@@ -82,7 +78,7 @@ internal static class AgentClientBuilder
                         BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? new LlmOptions().BaseUrl : baseUrl,
                         ApiKey = apiKey,
                     };
-                    llm = OpenAiCompatibleBackgroundLlm.Create(options);
+                    llm = OpenAiCompatibleBenchLlmClient.Create(options);
                     break;
                 }
 
@@ -98,9 +94,9 @@ internal static class AgentClientBuilder
                     {
                         Provider = providerId,
                         Model = model,
-                        ApiKey = apiKey,
+                        AnthropicApiKey = apiKey,
                     };
-                    llm = AnthropicLlmProvider.Create(options);
+                    llm = AnthropicBenchLlmClient.Create(options);
                     break;
                 }
 
@@ -116,9 +112,9 @@ internal static class AgentClientBuilder
                     {
                         Provider = providerId,
                         Model = model,
-                        ApiKey = apiKey,
+                        GeminiApiKey = apiKey,
                     };
-                    llm = GeminiLlmProvider.Create(options);
+                    llm = GeminiBenchLlmClient.Create(options);
                     break;
                 }
 

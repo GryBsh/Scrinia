@@ -1,10 +1,10 @@
 using System.Text.Json.Serialization;
 
-namespace Scrinia.Core.Llm;
+namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 /// <summary>
-/// Wire shapes for the OpenAI Chat Completions API subset Scrinia uses. Source-generated
-/// to keep the published CLI trim-clean. Only the fields Scrinia actually reads/writes
+/// Wire shapes for the OpenAI Chat Completions API subset the bench uses. Source-generated
+/// to keep the published CLI trim-clean. Only the fields the bench actually reads/writes
 /// are declared — unknown JSON keys are ignored on deserialization.
 /// </summary>
 [JsonSourceGenerationOptions(
@@ -22,10 +22,8 @@ internal sealed record ChatMessage(string Role, string Content);
 /// <summary>
 /// OpenAI-compatible <c>response_format</c> directive. Set <see cref="Type"/> to
 /// <c>"json_object"</c> to constrain the server to return a syntactically valid JSON
-/// object. Supported by Ollama (<c>format: json</c> equivalent), llama.cpp server,
-/// LM Studio, vLLM, and OpenAI itself. Servers that don't recognize the field ignore
-/// it harmlessly — the prompt then carries the JSON instruction alone, which most
-/// modern models honor even without the wire-level constraint.
+/// object. Supported by Ollama, llama.cpp server, LM Studio, vLLM, and OpenAI itself.
+/// Servers that don't recognize the field ignore it harmlessly.
 /// </summary>
 internal sealed record ResponseFormat([property: JsonPropertyName("type")] string Type);
 

@@ -1,12 +1,13 @@
 using FluentAssertions;
-using Scrinia.Core.Llm;
+using Scrinia.Retrieval.Benchmarks.Llm.Providers;
+using Xunit;
 
-namespace Scrinia.Tests.Llm;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 /// <summary>
 /// Direct coverage of <see cref="AgentCliVariant.BuildArguments"/> so the override
 /// semantics (null = variant default, empty = suppress, value = pass-through) are
-/// pinned independently of the <see cref="AgentCliBackgroundLlm"/> pipeline.
+/// pinned independently of the <see cref="AgentCliBenchLlmClient"/> pipeline.
 /// </summary>
 public class AgentCliVariantTests
 {

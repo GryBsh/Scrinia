@@ -1,23 +1,27 @@
 using System.Net.Http.Json;
 
-namespace Scrinia.Core.Llm.Providers;
+namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
 /// <summary>
-/// <see cref="IBackgroundLlm"/> implementation against Google Gemini's
+/// <see cref="IBenchLlmClient"/> implementation against Google Gemini's
 /// <c>generateContent</c> API. Auth is via the <c>x-goog-api-key</c> header.
 /// <c>LlmOptions.GeminiBaseUrl</c> defaults to
 /// <c>https://generativelanguage.googleapis.com</c>; the
 /// <c>/v1beta/models/{model}:generateContent</c> path is constructed per call.
+///
+/// <para><b>JSON mode:</b> Gemini supports wire-level JSON output via
+/// <c>generationConfig.responseMimeType: application/json</c>. The
+/// <c>jsonMode</c> flag forwards through.</para>
 /// </summary>
-public sealed class GeminiLlmProvider : ResilientLlmProvider
+public sealed class GeminiBenchLlmClient : ResilientLlmProvider
 {
-    public static GeminiLlmProvider Create(LlmOptions options)
+    public static GeminiBenchLlmClient Create(LlmOptions options)
     {
         var http = new HttpClient { Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds) };
-        return new GeminiLlmProvider(options, http, ownsHttp: true);
+        return new GeminiBenchLlmClient(options, http, ownsHttp: true);
     }
 
-    internal GeminiLlmProvider(LlmOptions options, HttpClient http, bool ownsHttp = false)
+    internal GeminiBenchLlmClient(LlmOptions options, HttpClient http, bool ownsHttp = false)
         : base(options, http, ownsHttp) { }
 
     public override async Task<bool> IsAvailableAsync(CancellationToken ct)
@@ -35,13 +39,21 @@ public sealed class GeminiLlmProvider : ResilientLlmProvider
         catch (TaskCanceledException) { return false; }
     }
 
-    protected override async Task<string?> CompleteAsync(string systemPrompt, string userPrompt, int maxTokens, CancellationToken ct)
+    public override async Task<string?> CompleteAsync(string systemPrompt, string userPrompt, int maxTokens, bool jsonMode, CancellationToken ct)
     {
         var request = new GeminiGenerateContentRequest
         {
             SystemInstruction = new GeminiSystemInstruction { Parts = [new GeminiRequestPart { Text = systemPrompt }] },
             Contents = [new GeminiTurn { Role = "user", Parts = [new GeminiRequestPart { Text = userPrompt }] }],
-            GenerationConfig = new GeminiGenerationConfig { Temperature = Options.Temperature, MaxOutputTokens = maxTokens },
+            GenerationConfig = new GeminiGenerationConfig
+            {
+                Temperature = Options.Temperature,
+                MaxOutputTokens = maxTokens,
+                // Gemini's wire-level JSON mode: responseMimeType=application/json
+                // constrains the model to emit valid JSON. Plain-text completions leave
+                // this field null so the request payload stays minimal.
+                ResponseMimeType = jsonMode ? "application/json" : null,
+            },
         };
 
         try
