@@ -1871,22 +1871,21 @@ public sealed class ScriniaMcpToolsTests
     // ── Rich search surface (facts/tags/path filters/path-segment score) ────────
 
     [Fact]
-    public async Task Search_SurfacesFactsAndTagsWhenPresent()
+    public async Task Search_SurfacesAnchorsAndTagsWhenPresent()
     {
         using var scope = new TestHelpers.StoreScope();
         string[] tags = ["security", "refactor"];
         await Tools().Store(["oauth callback details and rotation handling"],
             "auth-rich-test", "oauth refactor", tags);
 
-        // Backfill Facts directly via the store — Tier 2 normally writes these, but the
-        // test doesn't run the consolidator. We're verifying the rendering, not the
-        // pipeline that produces facts.
+        // Backfill RetrievalAnchors directly via the store — the agent normally supplies
+        // these at Store() time, but the test pins the rendering layer in isolation.
         var store = MemoryStoreContext.Current!;
         var entries = ScriniaArtifactStore.LoadIndex();
         var target = entries.Single(e => e.Name == "auth-rich-test");
         store.Upsert(target with
         {
-            Facts = [
+            RetrievalAnchors = [
                 "Session storage migrated from cookies to JWT",
                 "Rotation interval is 24h",
             ],
@@ -1896,22 +1895,69 @@ public sealed class ScriniaMcpToolsTests
         var parsed = ResponseParser.Parse(result);
         parsed.Content.Should().Contain("tags: security, refactor",
             because: "rich search results must surface tags inline");
-        parsed.Content.Should().Contain("facts:",
-            because: "rich search results must surface Tier 2 facts when populated");
+        parsed.Content.Should().Contain("anchors:",
+            because: "rich search results must surface agent-supplied anchors when populated");
         parsed.Content.Should().Contain("Session storage migrated from cookies to JWT");
         parsed.Content.Should().Contain("Rotation interval is 24h");
     }
 
     [Fact]
-    public async Task Search_OmitsFactsLineWhenEntryHasNoFacts()
+    public async Task Search_OmitsAnchorsLineWhenEntryHasNoAnchors()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["plain content with no facts"], "no-facts-test");
+        await Tools().Store(["plain content with no anchors"], "no-anchors-test");
 
         string result = await Tools().Search("plain");
         var parsed = ResponseParser.Parse(result);
-        parsed.Content.Should().NotContain("facts:",
-            because: "facts section must be omitted entirely when Facts is null/empty");
+        parsed.Content.Should().NotContain("anchors:",
+            because: "anchors section must be omitted entirely when RetrievalAnchors is null/empty");
+    }
+
+    [Fact]
+    public async Task Store_WithAnchors_PersistsAnchors_SeedsTf_AndSurfacesViaSearch()
+    {
+        // End-to-end check of the agent-supplied anchor flow:
+        //   1. Store() accepts anchors[]
+        //   2. ArtifactEntry.RetrievalAnchors carries them through
+        //   3. Anchor tokens get TF-seeded at +2 so BM25 picks up anchor vocabulary
+        //   4. A query phrased in the anchor's vocabulary (not the content's) surfaces
+        //      the entry near the top — proving the anchor → retrieval bridge works.
+        using var scope = new TestHelpers.StoreScope();
+
+        string[] anchors = ["what is foo", "how does foo work"];
+        // Content uses entirely different vocabulary from the anchors. Without anchor
+        // TF seeding, "foo" would never tokenize from the content and a "what is foo"
+        // query would miss this entry.
+        await Tools().Store(
+            ["The widget subsystem orchestrates lifecycle hooks during plugin startup."],
+            "anchor-flow-test",
+            description: "widget lifecycle notes",
+            tags: null,
+            keywords: null,
+            anchors: anchors);
+
+        // (1) + (2): RetrievalAnchors persisted on the entry.
+        var entries = ScriniaArtifactStore.LoadIndex();
+        var entry = entries.Single(e => e.Name == "anchor-flow-test");
+        entry.RetrievalAnchors.Should().NotBeNull();
+        entry.RetrievalAnchors.Should().Contain("what is foo");
+        entry.RetrievalAnchors.Should().Contain("how does foo work");
+
+        // (3): "foo" is not in the content, only in the anchors. After TF seeding, it
+        // must appear with weight ≥ 2 (the anchor-tokenization boost).
+        entry.TermFrequencies.Should().NotBeNull();
+        entry.TermFrequencies!.Should().ContainKey("foo");
+        entry.TermFrequencies["foo"].Should().BeGreaterThanOrEqualTo(2,
+            because: "anchor tokenization must seed TF at the +2 weight so BM25 picks up anchor vocabulary");
+
+        // (4): A query in the anchor's vocabulary surfaces the entry. We expect it
+        // among the results (top-most candidate is fine — the store is otherwise empty
+        // for this scope so any non-empty match is the right one).
+        string result = await Tools().Search("what is foo");
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success");
+        parsed.Content.Should().Contain("anchor-flow-test",
+            because: "anchor-supplied vocabulary must bridge a user query to the entry via BM25");
     }
 
     [Fact]

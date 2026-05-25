@@ -205,7 +205,7 @@ public sealed class ScriniaRetriever : IRetriever
             Keywords: keywords,
             TermFrequencies: mergedTf,
             ContentPreview: text,
-            Facts: enrichment.Facts);
+            RetrievalAnchors: enrichment.Facts);
 
         // FileMemoryStore.Upsert isn't thread-safe — serialize it across concurrent
         // doc ingests (parallel mode). Embedding call is awaited OUTSIDE the lock so

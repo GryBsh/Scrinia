@@ -82,6 +82,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional description (falls back to first 200 chars of the joined content).")] string? description = null,
         [Description("Optional tags for categorization.")] string[]? tags = null,
         [Description("Optional keywords for search — merged with auto-extracted terms.")] string[]? keywords = null,
+        [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content.")] string[]? anchors = null,
         [Description("Optional ISO 8601 review date.")] string? reviewAfter = null,
         [Description("Optional free-text review condition (e.g. 'when auth changes').")] string? reviewWhen = null,
         [Description("Optional file paths this memory depends on. Hashes are recorded to detect drift.")] string[]? codeRefs = null,
@@ -115,7 +116,7 @@ public sealed partial class ScriniaMcpTools
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
-        string result = await Store(content, path, description ?? "", tags, keywords, reviewAfter, reviewWhen, codeRefs,
+        string result = await Store(content, path, description ?? "", tags, keywords, anchors, reviewAfter, reviewWhen, codeRefs,
             actionLabel: "remembered", cancellationToken);
         string? typoHint = ReservedPrefixGuard.HintFor(path);
         if (typoHint is not null)

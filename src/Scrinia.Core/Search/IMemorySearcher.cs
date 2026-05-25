@@ -400,15 +400,15 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             }
         }
 
-        // Fact contains (Tier 2 / Mem0-style atomic facts). Sized at 15 — above generic
-        // description hits (10) but below curated keyword hits (12 contains / 40 exact),
-        // since facts are model-generated whereas keywords are agent- or content-curated.
-        if (entry.Facts is { Length: > 0 })
+        // Anchor contains — agent-curated retrieval anchor. Sized 15: above
+        // description-contains (10), below curated keyword-contains (12 contains /
+        // 40 exact). Anchors are first-class semantic signal when the agent supplies them.
+        if (entry.RetrievalAnchors is { Length: > 0 })
         {
-            foreach (string fact in entry.Facts)
+            foreach (string anchor in entry.RetrievalAnchors)
             {
-                if (!string.IsNullOrEmpty(fact)
-                    && fact.Contains(term, StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrEmpty(anchor)
+                    && anchor.Contains(term, StringComparison.OrdinalIgnoreCase))
                 {
                     score = Math.Max(score, 15);
                     break;

@@ -418,7 +418,7 @@ public class ScriniaCommands
 
         var tools = new ScriniaMcpTools();
         string result = await tools.Store([content], name, description ?? "", tagArray,
-            keywordArray, reviewAfter, reviewWhen, cancellationToken: cancellationToken);
+            keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
 
         if (json)
         {

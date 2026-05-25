@@ -113,6 +113,8 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional description. If empty, the first 200 characters of content are used.")] string description = "",
         [Description("Optional tags for categorization.")] string[]? tags = null,
         [Description("Optional keywords for search. Merged with auto-extracted content terms.")] string[]? keywords = null,
+        [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content. Indexed for both field-score lookup and BM25 via term-frequency seeding.")]
+        string[]? anchors = null,
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
         [Description("Optional free-text condition describing when this memory should be reviewed (e.g. 'when auth system changes').")] string? reviewWhen = null,
         [Description("Optional file paths this memory depends on. Hashes are recorded to detect drift.")] string[]? codeRefs = null,
@@ -135,6 +137,31 @@ public sealed partial class ScriniaMcpTools
         {
             tf.TryGetValue(kw, out int count);
             tf[kw] = count + (agentKeywordSet.Contains(kw) ? 5 : 2);
+        }
+
+        // Seed agent-supplied retrieval anchors into the TF dict so BM25 picks up
+        // anchor-derived tokens. Each token gets +2 — the same weight auto-extracted
+        // keywords get; the field-score branch (+15) carries the agent-curated boost.
+        // Empty/whitespace anchors are dropped here; null is treated the same as [].
+        string[]? cleanedAnchors = null;
+        if (anchors is { Length: > 0 })
+        {
+            cleanedAnchors = anchors
+                .Where(a => !string.IsNullOrWhiteSpace(a))
+                .ToArray();
+            if (cleanedAnchors.Length == 0)
+                cleanedAnchors = null;
+            else
+            {
+                foreach (string anchor in cleanedAnchors)
+                {
+                    foreach (string token in TextAnalysis.Tokenize(anchor))
+                    {
+                        tf.TryGetValue(token, out int count);
+                        tf[token] = count + 2;
+                    }
+                }
+            }
         }
 
         ChunkEntry[]? chunkEntries = content.Length > 1
@@ -174,7 +201,8 @@ public sealed partial class ScriniaMcpTools
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
-                ChunkEntries: chunkEntries);
+                ChunkEntries: chunkEntries,
+                RetrievalAnchors: cleanedAnchors);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -301,7 +329,8 @@ public sealed partial class ScriniaMcpTools
             ReviewAfter: parsedReviewAfter,
             ReviewWhen: string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen,
             ChunkEntries: chunkEntries,
-            CodeRefs: codeRefDict);
+            CodeRefs: codeRefDict,
+            RetrievalAnchors: cleanedAnchors);
 
         store.Upsert(entry, scope);
 
@@ -744,10 +773,10 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>
-    /// Renders one block per match with the persisted Tier 2 fields surfaced. The agent
-    /// gets enough decision-making context per hit — description, tags, atomic facts — to
-    /// either answer directly or pick which hits warrant a memory_recall, without a
-    /// second round trip per candidate.
+    /// Renders one block per match with the persisted entry fields surfaced. The agent
+    /// gets enough decision-making context per hit — description, tags, retrieval
+    /// anchors — to either answer directly or pick which hits warrant a memory_recall,
+    /// without a second round trip per candidate.
     /// </summary>
     /// <remarks>
     /// Block layout (inside the YAML envelope's <c>content: |</c> body):
@@ -755,13 +784,13 @@ public sealed partial class ScriniaMcpTools
     /// [1] entry  /findings/auth-refactor  score=47  ~380 tokens
     ///     tags: security, refactor
     ///     description: Multi-line description verbatim.
-    ///     facts:
-    ///       - Session storage migrated from cookies to JWT
-    ///       - Rotation interval is 24h
+    ///     anchors:
+    ///       - what is the auth refactor?
+    ///       - how does session rotation work?
     /// </code>
     /// Description is sanity-capped at <see cref="MaxDescriptionChars"/> chars to bound
-    /// response size; Facts is capped at <see cref="MaxFactsPerResult"/>. Tags omitted
-    /// when empty; Facts section omitted when null/empty.
+    /// response size; anchors is capped at <see cref="MaxAnchorsPerResult"/>. Tags omitted
+    /// when empty; anchors section omitted when null/empty.
     /// </remarks>
     private static string FormatRichSearchResults(IMemoryStore store, IReadOnlyList<SearchResult> matches)
     {
@@ -778,7 +807,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     private const int MaxDescriptionChars = 1500;
-    private const int MaxFactsPerResult = 7;
+    private const int MaxAnchorsPerResult = 7;
 
     private static void AppendResultBlock(System.Text.StringBuilder sb, IMemoryStore store, SearchResult match, int index)
     {
@@ -795,7 +824,7 @@ public sealed partial class ScriniaMcpTools
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendTagsLine(sb, er.Item.Entry.Tags);
                     AppendDescription(sb, er.Item.Entry.Description);
-                    AppendFacts(sb, er.Item.Entry.Facts);
+                    AppendAnchors(sb, er.Item.Entry.RetrievalAnchors);
                     break;
                 }
             case ChunkEntryResult cr:
@@ -812,7 +841,7 @@ public sealed partial class ScriniaMcpTools
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendTagsLine(sb, cr.ParentItem.Entry.Tags);
                     AppendDescription(sb, cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description);
-                    AppendFacts(sb, cr.ParentItem.Entry.Facts);
+                    AppendAnchors(sb, cr.ParentItem.Entry.RetrievalAnchors);
                     break;
                 }
             case TopicResult tr:
@@ -872,18 +901,18 @@ public sealed partial class ScriniaMcpTools
         if (truncated) sb.Append("      (truncated)\n");
     }
 
-    private static void AppendFacts(System.Text.StringBuilder sb, string[]? facts)
+    private static void AppendAnchors(System.Text.StringBuilder sb, string[]? anchors)
     {
-        if (facts is null || facts.Length == 0) return;
-        sb.Append("    facts:\n");
-        int emit = Math.Min(facts.Length, MaxFactsPerResult);
+        if (anchors is null || anchors.Length == 0) return;
+        sb.Append("    anchors:\n");
+        int emit = Math.Min(anchors.Length, MaxAnchorsPerResult);
         for (int i = 0; i < emit; i++)
         {
-            sb.Append("      - ").Append(facts[i].Replace('\n', ' ').Replace('\r', ' ')).Append('\n');
+            sb.Append("      - ").Append(anchors[i].Replace('\n', ' ').Replace('\r', ' ')).Append('\n');
         }
-        if (facts.Length > emit)
+        if (anchors.Length > emit)
         {
-            sb.Append("      - (+").Append(facts.Length - emit).Append(" more)\n");
+            sb.Append("      - (+").Append(anchors.Length - emit).Append(" more)\n");
         }
     }
 

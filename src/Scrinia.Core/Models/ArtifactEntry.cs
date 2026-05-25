@@ -17,6 +17,8 @@ public sealed record ArtifactEntry(
     string? ReviewWhen = null,
     ChunkEntry[]? ChunkEntries = null,
     Dictionary<string, string>? CodeRefs = null,
-    // v4 field: atomic facts stored alongside keywords for retrieval. Each fact also
-    // enters TermFrequencies via the writer so BM25 naturally picks them up.
-    string[]? Facts = null);
+    /// <summary>
+    /// Agent-supplied phrases, questions, or category-level paraphrases that bridge
+    /// likely user queries to this entry's content. Indexed via field-score + TF seeding.
+    /// </summary>
+    string[]? RetrievalAnchors = null);
