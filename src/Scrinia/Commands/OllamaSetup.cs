@@ -6,23 +6,19 @@ using Spectre.Console;
 namespace Scrinia.Commands;
 
 /// <summary>
-/// Interactive Ollama discovery + model configuration used by <c>scri setup</c>. Probes for
-/// a running Ollama instance, lists its installed models, prompts the user for embedding +
-/// chat selections, pulls missing models via Ollama's streaming <c>/api/pull</c> with
-/// progress display, and writes <c>Scrinia:Embeddings:*</c> + <c>Scrinia:Llm:*</c> config so
-/// subsequent <c>scri serve</c>/<c>scri consolidate --with-llm</c> just work.
+/// Interactive Ollama discovery + embedding-model configuration used by <c>scri setup</c>.
+/// Probes for a running Ollama instance, lists its installed models, prompts the user to
+/// select an embedding model, pulls it via Ollama's streaming <c>/api/pull</c> with progress
+/// display, and writes <c>Scrinia:Embeddings:*</c> config so subsequent <c>scri serve</c>
+/// picks up the choice.
 ///
-/// Defaults match the project's documented direction: <c>nomic-embed-text</c> for embeddings
-/// (768-dim, widely available on Ollama) and <c>lfm2:1.2b</c> for chat (LFM2.5-Instruct family
-/// per <c>LlmModelManager.DefaultModelFile</c>). When LFM2 isn't available the user can pick
-/// any pulled model or type a known-available fallback like <c>llama3.2:1b</c>.
+/// Default is <c>nomic-embed-text</c> — 768-dim, widely available, and pulled by Ollama on
+/// demand if the user opts in.
 /// </summary>
 internal static class OllamaSetup
 {
     public const string DefaultBaseUrl = "http://localhost:11434";
     public const string DefaultEmbeddingModel = "nomic-embed-text";
-    public const string DefaultCompletionModel = "lfm2:1.2b";
-    public const string FallbackCompletionModel = "llama3.2:1b";
 
     public sealed record OllamaModelInfo(string Name, long Size);
 
@@ -146,11 +142,9 @@ internal static class OllamaSetup
     /// <summary>
     /// Best-effort classifier: returns true when <paramref name="modelName"/> looks like an
     /// embedding model (name contains "embed", "minilm", "bge-", "e5-", or starts with one
-    /// of the well-known embedding families). Used to split the installed-model list into
-    /// two prompts. "minilm" must be included because <c>all-minilm</c> is the project's
-    /// own documented default for <c>Scrinia:Embeddings:OllamaModel</c> — a user who
-    /// pre-pulled the documented default would otherwise see it offered as a completion
-    /// model.
+    /// of the well-known embedding families). Used to surface embedding-shaped models first
+    /// in the selection prompt so users with mixed model libraries see relevant candidates
+    /// up top.
     /// </summary>
     public static bool LooksLikeEmbeddingModel(string modelName)
     {

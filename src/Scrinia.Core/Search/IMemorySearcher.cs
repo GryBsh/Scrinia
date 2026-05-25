@@ -57,17 +57,18 @@ internal interface IMemorySearcher
 ///
 /// Entry scoring (per term):
 ///
-/// Match type               Score
-/// ─────────────────────    ─────
-/// Exact name match          100
-/// Tag exact match            50
-/// Keyword exact match        40
-/// Name starts with           30
-/// Name contains              20
-/// Tag contains               15
-/// Keyword contains           12
-/// Description contains       10
-/// Content preview contains    5
+/// Match type                  Score
+/// ─────────────────────       ─────
+/// Exact name match             100
+/// Tag exact match               50
+/// Keyword exact match           40
+/// Name starts with              30
+/// Name contains                 20
+/// Tag contains                  15
+/// Retrieval anchor contains     15
+/// Keyword contains              12
+/// Description contains          10
+/// Content preview contains       5
 ///
 /// Topic scoring (per term):
 ///
@@ -619,7 +620,7 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
     /// source, then sums <c>1/(k + rank)</c> contributions. Cells with zero score in a
     /// source contribute nothing from that source — the standard "not in this source's
     /// results" semantics. Each cell is then passed to the shared <paramref name="tryInsert"/>
-    /// so recency/importance composition and dedup happen identically to the sum path.
+    /// so recency composition and dedup happen identically to the sum path.
     /// </summary>
     private void FuseRrf(
         string query,
