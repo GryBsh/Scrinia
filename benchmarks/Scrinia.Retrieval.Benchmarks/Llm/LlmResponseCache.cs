@@ -26,9 +26,14 @@ namespace Scrinia.Retrieval.Benchmarks.Llm;
 /// retry, delete the cache file.</para>
 ///
 /// <para><b>Concurrency:</b> the in-memory dict is a <see cref="ConcurrentDictionary{TKey,TValue}"/>.
-/// File appends are guarded by a lock so parallel ingest doesn't interleave bytes
-/// mid-line. Read-then-write race is benign because the file is append-only — a
-/// duplicate line at worst wastes disk; lookup keys collapse it.</para>
+/// Within a single process, appends are guarded by <c>_writeLock</c>. Across
+/// processes (the parallel-categories bench mode spawns one subprocess per
+/// category, all sharing the same provider+model cache file), the file is opened
+/// with <c>FileShare.ReadWrite</c> and <c>FileMode.Append</c>; on Windows this
+/// maps to <c>FILE_APPEND_DATA</c>, which makes each write atomic at EOF, so two
+/// concurrent appenders can't interleave bytes within a line. Read-then-write
+/// race is benign because the file is append-only — duplicate lines collapse on
+/// the next <see cref="Load"/>.</para>
 /// </summary>
 public sealed class LlmResponseCache
 {
@@ -110,16 +115,48 @@ public sealed class LlmResponseCache
         // (string, string[], null) without needing per-op overloads.
         var entry = new { op, hash, value };
         string line = JsonSerializer.Serialize(entry, SerializerOptions);
+        byte[] payload = Encoding.UTF8.GetBytes(line + "\n");
+
         lock (_writeLock)
         {
-            // Atomic per-line append: AppendAllText is a single OS write for short
-            // payloads. If a concurrent writer is between Open and Write on Windows,
-            // FileShare.None inside AppendAllText serializes them.
-            File.AppendAllText(_filePath, line + "\n");
+            // FileMode.Append + FileShare.ReadWrite + a brief retry handles two
+            // concurrency layers: in-process callers serialize via _writeLock above,
+            // and cross-process appenders (parallel bench subprocesses) rely on
+            // Windows FILE_APPEND_DATA atomicity for the actual write. The retry
+            // window catches the transient sharing-violation that occurs if another
+            // process is between CreateFile and the first WriteFile.
+            AppendWithRetry(payload);
+
             // Update in-memory dict from the just-written JSON so the live shape
             // matches what a fresh Load() would see.
             using var doc = JsonDocument.Parse(line);
             _entries[Key(op, hash)] = doc.RootElement.GetProperty("value").Clone();
+        }
+    }
+
+    private void AppendWithRetry(byte[] payload)
+    {
+        const int maxAttempts = 8;
+        int delayMs = 5;
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var fs = new FileStream(
+                    _filePath,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.ReadWrite,
+                    bufferSize: 4096,
+                    options: FileOptions.None);
+                fs.Write(payload, 0, payload.Length);
+                return;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                Thread.Sleep(delayMs);
+                delayMs = Math.Min(delayMs * 2, 200);
+            }
         }
     }
 

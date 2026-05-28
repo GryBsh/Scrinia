@@ -59,10 +59,11 @@ if ($n -eq 0) {
 }
 
 # 3. Recompute aggregate metrics. Match BenchmarkScorer.Aggregate semantics:
-#    R@K is mean(HitAtK), NDCG@10 is mean(Ndcg10), QuestionCount is N.
-$r5 = ($allQuestions | Where-Object { $_.HitAt5 } | Measure-Object).Count / $n
-$r10 = ($allQuestions | Where-Object { $_.HitAt10 } | Measure-Object).Count / $n
-$r50 = ($allQuestions | Where-Object { $_.HitAt50 } | Measure-Object).Count / $n
+#    R@K is mean(RecallAtK) — per-question RecallAt{5,10,50} is a double in [0,1]
+#    (binary 0/1 for any-hit benchmarks; fractional in between for ConvoMem/LoCoMo).
+$r5 = ($allQuestions | Measure-Object -Property RecallAt5 -Average).Average
+$r10 = ($allQuestions | Measure-Object -Property RecallAt10 -Average).Average
+$r50 = ($allQuestions | Measure-Object -Property RecallAt50 -Average).Average
 $ndcg = ($allQuestions | Measure-Object -Property Ndcg10 -Average).Average
 
 # Emit PascalCase to match the bench's System.Text.Json output so downstream tooling
@@ -83,9 +84,9 @@ foreach ($g in $grouped) {
     $cn = $g.Count
     $perCategory[$cat] = [pscustomobject]@{
         QuestionCount = $cn
-        RecallAt5     = ($g.Group | Where-Object { $_.HitAt5 } | Measure-Object).Count / $cn
-        RecallAt10    = ($g.Group | Where-Object { $_.HitAt10 } | Measure-Object).Count / $cn
-        RecallAt50    = ($g.Group | Where-Object { $_.HitAt50 } | Measure-Object).Count / $cn
+        RecallAt5     = ($g.Group | Measure-Object -Property RecallAt5 -Average).Average
+        RecallAt10    = ($g.Group | Measure-Object -Property RecallAt10 -Average).Average
+        RecallAt50    = ($g.Group | Measure-Object -Property RecallAt50 -Average).Average
         Ndcg10        = ($g.Group | Measure-Object -Property Ndcg10 -Average).Average
     }
 }

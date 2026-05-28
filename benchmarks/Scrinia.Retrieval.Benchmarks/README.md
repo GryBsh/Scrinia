@@ -132,14 +132,14 @@ MemPalace commits their full per-question JSONL result files under `benchmarks/r
 ```powershell
 # Quick sketch — match question_id between our JSON and MemPalace's JSONL.
 $ours = (Get-Content scrinia_longmemeval_full_*.json | ConvertFrom-Json).Questions |
-        ForEach-Object { "$($_.QuestionId) $($_.HitAt5)" } | Sort-Object
+        ForEach-Object { "$($_.QuestionId) $($_.RecallAt5)" } | Sort-Object
 $theirs = Get-Content results_mempal_raw_session_*.jsonl |
           ForEach-Object { $j = $_ | ConvertFrom-Json; "$($j.qid) $($j.hit_at_5)" } | Sort-Object
 Compare-Object $ours $theirs
 ```
 
 ```bash
-jq -r '.Questions[] | "\(.QuestionId) \(.HitAt5)"' scrinia_longmemeval_full_*.json | sort > ours.txt
+jq -r '.Questions[] | "\(.QuestionId) \(.RecallAt5)"' scrinia_longmemeval_full_*.json | sort > ours.txt
 jq -r '"\(.qid) \(.hit_at_5)"' results_mempal_raw_session_*.jsonl | sort > theirs.txt
 diff ours.txt theirs.txt
 ```

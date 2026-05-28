@@ -185,7 +185,13 @@ public sealed partial class LoCoMoLoader
     /// LoCoMo ships QA category as either a string (newer dumps) or an integer 1-5
     /// (the snap-research <c>locomo10.json</c> we point at by default). Map ints to
     /// the labels MemPalace's bench script uses so per-category aggregates compare
-    /// across systems without manual joining.
+    /// across systems without manual joining. MemPalace's mapping is
+    /// <c>{1: "Single-hop", 2: "Temporal", 3: "Temporal-inference", 4: "Open-domain",
+    /// 5: "Adversarial"}</c>; we keep snake_case to match the convention used for our
+    /// other per-category labels. An earlier version of this method labeled 2 as
+    /// <c>"multi_hop"</c> and 3 as <c>"temporal_reasoning"</c> — those were silent
+    /// renames inherited from a different paper and invalidated cross-system
+    /// per-category comparisons.
     /// </summary>
     private static string ResolveCategory(JsonElement qa)
     {
@@ -196,8 +202,8 @@ public sealed partial class LoCoMoLoader
             JsonValueKind.Number when catEl.TryGetInt32(out int n) => n switch
             {
                 1 => "single_hop",
-                2 => "multi_hop",
-                3 => "temporal_reasoning",
+                2 => "temporal",
+                3 => "temporal_inference",
                 4 => "open_domain",
                 5 => "adversarial",
                 _ => $"category_{n}",

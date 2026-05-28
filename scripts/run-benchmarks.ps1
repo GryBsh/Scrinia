@@ -155,9 +155,17 @@ function Invoke-Bench {
 }
 
 function Invoke-BenchParallelCategories {
-    # Process-level fanout: one subprocess per category, throttled by $MaxConcurrency.
-    # Each subprocess writes its own partial JSON; we merge at the end. Per-category
-    # logs go to results/parallel-logs/ so interleaved stdout doesn't make a mess.
+    # Process-level fanout: one subprocess per category, throttled via
+    # ForEach-Object -Parallel -ThrottleLimit (PS 7+). Each subprocess writes its
+    # own partial JSON; we merge at the end. Per-category logs go to
+    # results/parallel-logs/ so interleaved stdout doesn't make a mess.
+    #
+    # Earlier versions used Start-Process -PassThru + a hand-rolled
+    # while($proc.HasExited) throttle. That combination is broken: with
+    # -NoNewWindow + redirected output, Start-Process closes the process handle
+    # before returning, so HasExited always returns $true and the gate never
+    # blocks. All categories then spawned simultaneously regardless of
+    # -MaxConcurrency. ForEach-Object -Parallel throttles in the runtime.
     param([string]$Subcommand, [string[]]$BenchArgs, [string[]]$Categories)
 
     $resultsDir = Join-Path $RepoRoot "benchmarks\Scrinia.Retrieval.Benchmarks\results"
@@ -165,49 +173,52 @@ function Invoke-BenchParallelCategories {
     New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 
     $stamp = Get-Date -Format "yyyyMMdd_HHmm"
-    $procs = @()
-    $partials = @()
 
     Write-Host ""
     Write-Host "=== scrinia-bench $Subcommand (parallel: $($Categories.Count) categories, max $MaxConcurrency concurrent) ==="
 
+    $jobs = @()
     foreach ($cat in $Categories) {
-        # Throttle: spin (with a short sleep) until we drop below the concurrency cap.
-        while (($procs | Where-Object { -not $_.HasExited }).Count -ge $MaxConcurrency) {
-            Start-Sleep -Milliseconds 200
+        $jobs += [pscustomobject]@{
+            Category = $cat
+            Partial  = Join-Path $resultsDir "partial_${Subcommand}_${cat}_${stamp}.json"
+            Log      = Join-Path $logsDir "${Subcommand}-${cat}.log"
+            ErrLog   = Join-Path $logsDir "${Subcommand}-${cat}.err"
         }
+    }
 
-        $partial = Join-Path $resultsDir "partial_${Subcommand}_${cat}_${stamp}.json"
-        $log = Join-Path $logsDir "${Subcommand}-${cat}.log"
-        $errLog = Join-Path $logsDir "${Subcommand}-${cat}.err"
+    $results = $jobs | ForEach-Object -ThrottleLimit $MaxConcurrency -Parallel {
+        $job = $_
+        $cat = $job.Category
+        $partial = $job.Partial
+        $log = $job.Log
+        $errLog = $job.ErrLog
+
         $catArgs = @(
-            "run", "--project", $BenchProject, "-c", $Configuration, "--no-build", "--",
-            $Subcommand, "--mode", $Mode, "--top-k", $TopK, "--category", $cat, "--output", $partial
-        ) + $BenchArgs + $ExtraArgs
+            "run", "--project", $using:BenchProject, "-c", $using:Configuration, "--no-build", "--",
+            $using:Subcommand, "--mode", $using:Mode, "--top-k", $using:TopK,
+            "--category", $cat, "--output", $partial
+        ) + $using:BenchArgs + $using:ExtraArgs
 
-        $proc = Start-Process -FilePath "dotnet" -ArgumentList $catArgs `
-            -PassThru -NoNewWindow `
-            -RedirectStandardOutput $log -RedirectStandardError $errLog
-        $procs += $proc
-        $partials += $partial
-        Write-Host "  spawned [$cat] pid=$($proc.Id)  log=$log"
+        Write-Host "  starting [$cat]"
+        $startedAt = Get-Date
+        & dotnet @catArgs > $log 2> $errLog
+        $exit = $LASTEXITCODE
+        $elapsed = (Get-Date) - $startedAt
+        Write-Host ("  done [{0}] exit={1} elapsed={2:mm\:ss}" -f $cat, $exit, $elapsed)
+
+        [pscustomobject]@{ Category = $cat; Partial = $partial; ExitCode = $exit }
     }
 
-    Write-Host "  waiting for $($procs.Count) subprocesses..."
-    $procs | ForEach-Object { $_.WaitForExit() }
-
-    $failed = @()
-    for ($i = 0; $i -lt $procs.Count; $i++) {
-        if ($procs[$i].ExitCode -ne 0) {
-            $failed += "$($Categories[$i]) (exit $($procs[$i].ExitCode))"
-        }
-    }
+    $failed = @($results | Where-Object { $_.ExitCode -ne 0 } |
+        ForEach-Object { "$($_.Category) (exit $($_.ExitCode))" })
     if ($failed.Count -gt 0) {
         Write-Warning "subprocess failures: $($failed -join '; '); see $logsDir"
     }
 
     # Merge partials into one canonical result file. Skip missing partials (failed
     # subprocesses) — the merger will emit a warning per skip.
+    $partials = @($results | ForEach-Object { $_.Partial })
     $merged = Join-Path $resultsDir "scrinia_${Subcommand}_${Mode}__parallel_${stamp}.json"
     Write-Host "  merging $($partials.Count) partials into $merged..."
     & (Join-Path $PSScriptRoot "merge-bench-results.ps1") -Inputs $partials -Output $merged

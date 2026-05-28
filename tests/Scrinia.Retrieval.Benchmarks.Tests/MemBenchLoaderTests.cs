@@ -105,6 +105,97 @@ public class MemBenchLoaderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Parses_roles_schema_with_sid_and_user_message_assistant_message()
+    {
+        // Matches the real shape used by simple/noisy/aggregative/comparative/conditional/
+        // knowledge_update/post_processing.json files. Earlier loader version only
+        // mapped `user`/`assistant`, so docs from these categories were timestamp-only
+        // and retrieval signal collapsed.
+        const string json = """
+        {
+          "roles": [
+            {
+              "tid": 1,
+              "message_list": [
+                [
+                  {"sid": 17, "user_message": "I want to talk about my brother Ethan.", "assistant_message": "Sure!", "time": "2024-10-01 08:00"},
+                  {"sid": 18, "user_message": "He's 28 years old.", "assistant_message": "Got it."}
+                ]
+              ],
+              "QA": {
+                "question": "How old is Ethan?",
+                "target_step_id": [[17], [18]]
+              }
+            }
+          ]
+        }
+        """;
+        await File.WriteAllTextAsync(Path.Combine(_root, "aggregative.json"), json);
+
+        var loader = new MemBenchLoader(_root);
+        var qs = new List<Core.BenchmarkQuestion>();
+        await foreach (var item in loader.LoadAsync()) qs.Add(item);
+
+        qs.Should().HaveCount(1);
+        var question = qs[0];
+        question.Category.Should().Be("aggregative");
+        question.Haystack.Should().HaveCount(2);
+        question.Haystack[0].Id.Should().Be("17");
+        question.Haystack[0].Text.Should().Contain("[User] I want to talk about my brother Ethan.");
+        question.Haystack[0].Text.Should().Contain("[Assistant] Sure!");
+        question.Haystack[1].Id.Should().Be("18");
+        question.Haystack[1].Text.Should().Contain("[User] He's 28 years old.");
+        question.GroundTruthIds.Should().BeEquivalentTo(new[] { "17", "18" });
+    }
+
+    [Fact]
+    public async Task Parses_multi_agent_schema_with_mid_and_user_assistant()
+    {
+        // Matches the real shape used by RecMultiSession.json (top key
+        // `multi_agent`) and the movie-style files (highlevel, highlevel_rec,
+        // lowlevel_rec). Earlier loader version mapped only `sid`, so every turn
+        // collapsed to doc id 0 and ground-truth ids like 4/9/18 never matched
+        // anything in the haystack.
+        const string json = """
+        {
+          "multi_agent": [
+            {
+              "tid": 1,
+              "message_list": [
+                [
+                  {"mid": 4, "user": "I'm looking for a movie.", "assistant": "Try Alien (1979).", "time": "2024-10-01 08:04"},
+                  {"mid": 9, "user": "Something else?", "assistant": "The Fugitive (1993)."}
+                ],
+                [
+                  {"mid": 18, "user": "A food I should try?", "assistant": "Apple Pie."}
+                ]
+              ],
+              "QA": {
+                "question": "What have you recommended?",
+                "target_step_id": [[4, 0], [9, 0], [18, 1]]
+              }
+            }
+          ]
+        }
+        """;
+        await File.WriteAllTextAsync(Path.Combine(_root, "RecMultiSession.json"), json);
+
+        var loader = new MemBenchLoader(_root);
+        var qs = new List<Core.BenchmarkQuestion>();
+        await foreach (var item in loader.LoadAsync()) qs.Add(item);
+
+        qs.Should().HaveCount(1);
+        var question = qs[0];
+        question.Category.Should().Be("RecMultiSession");
+        question.Haystack.Should().HaveCount(3);
+        question.Haystack.Select(d => d.Id).Should().BeEquivalentTo(new[] { "4", "9", "18" },
+            because: "every turn must have a distinct id; defaulting to 0 collapses the whole haystack");
+        question.Haystack[0].Text.Should().Contain("[User] I'm looking for a movie.");
+        question.Haystack[0].Text.Should().Contain("[Assistant] Try Alien (1979).");
+        question.GroundTruthIds.Should().BeEquivalentTo(new[] { "4", "9", "18" });
+    }
+
+    [Fact]
     public async Task Per_category_limit_caps_questions_per_file()
     {
         const string json = """

@@ -27,6 +27,14 @@ public sealed record AggregateMetrics(
     double RecallAt50,
     double Ndcg10);
 
+/// <summary>
+/// Per-question score. <c>RecallAt{5,10,50}</c> is a double in <c>[0, 1]</c> rather
+/// than a boolean because some benchmarks (ConvoMem, LoCoMo) report fractional recall
+/// — matched_evidence / total_evidence — while others (MemBench, LongMemEval) report
+/// binary any-hit recall (1.0 if any gold appears in top-K, 0.0 otherwise). The
+/// scorer used by each benchmark determines which semantic produces these numbers;
+/// see <see cref="BenchmarkScorer"/> for the per-benchmark variants.
+/// </summary>
 public sealed record QuestionResult(
     string QuestionId,
     string Query,
@@ -34,7 +42,7 @@ public sealed record QuestionResult(
     IReadOnlyList<string> GroundTruthIds,
     IReadOnlyList<string> GroundTruthTexts,
     IReadOnlyList<RetrievalHit> Retrieved,
-    bool HitAt5,
-    bool HitAt10,
-    bool HitAt50,
+    double RecallAt5,
+    double RecallAt10,
+    double RecallAt50,
     double Ndcg10);

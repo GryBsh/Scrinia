@@ -38,7 +38,7 @@ internal static class LoCoMoCommand
             var progress = new Progress<RunProgress>(p =>
             {
                 if (p.Completed % 100 == 0 || p.Completed == 1)
-                    Console.WriteLine($"  q{p.Completed:D4} [{p.LastResult.Category}] hit@5={p.LastResult.HitAt5} hit@10={p.LastResult.HitAt10} hit@50={p.LastResult.HitAt50}");
+                    Console.WriteLine($"  q{p.Completed:D4} [{p.LastResult.Category}] r@5={p.LastResult.RecallAt5:F2} r@10={p.LastResult.RecallAt10:F2} r@50={p.LastResult.RecallAt50:F2}");
             });
 
             var result = await runner.RunGroupedAsync(
@@ -47,6 +47,7 @@ internal static class LoCoMoCommand
                 groups: CategoryFilter.ApplyGroupedAsync(loader.LoadAsync(ct), Program.Flag(args, "--category"), ct),
                 retriever: retriever,
                 topK: topK,
+                scorer: BenchmarkScorer.ScoreFractionalById,
                 progress: progress,
                 ingestConcurrency: Program.FlagInt(args, "--ingest-concurrency", 1),
                 ct: ct);

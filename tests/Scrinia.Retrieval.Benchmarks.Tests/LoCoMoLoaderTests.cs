@@ -151,7 +151,7 @@ public class LoCoMoLoaderTests : IAsyncLifetime
         await foreach (var g in loader.LoadAsync()) cats.AddRange(g.Questions.Select(q => q.Category));
 
         cats.Should().Equal(
-            ["single_hop", "multi_hop", "temporal_reasoning", "open_domain", "adversarial", "category_99"]);
+            ["single_hop", "temporal", "temporal_inference", "open_domain", "adversarial", "category_99"]);
     }
 
     [Fact]

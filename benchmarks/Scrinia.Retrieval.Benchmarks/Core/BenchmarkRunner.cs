@@ -40,6 +40,7 @@ public sealed class BenchmarkRunner
         IAsyncEnumerable<BenchmarkQuestion> questions,
         IRetriever retriever,
         int topK,
+        BenchmarkScorer.Scorer scorer,
         IProgress<RunProgress>? progress = null,
         int ingestConcurrency = 1,
         CancellationToken ct = default)
@@ -48,6 +49,7 @@ public sealed class BenchmarkRunner
         ArgumentException.ThrowIfNullOrWhiteSpace(modeLabel);
         ArgumentNullException.ThrowIfNull(questions);
         ArgumentNullException.ThrowIfNull(retriever);
+        ArgumentNullException.ThrowIfNull(scorer);
         if (ingestConcurrency < 1) ingestConcurrency = 1;
 
         var startedAt = DateTimeOffset.UtcNow;
@@ -65,7 +67,7 @@ public sealed class BenchmarkRunner
 
             string queryText = await TransformQueryAsync(q.QueryText, ct);
             var hits = await retriever.RetrieveAsync(queryText, topK, ct);
-            var scored = BenchmarkScorer.ScoreQuestion(q, hits);
+            var scored = scorer(q, hits);
             results.Add(scored);
             n++;
             progress?.Report(new RunProgress(n, scored));
@@ -97,6 +99,7 @@ public sealed class BenchmarkRunner
         IAsyncEnumerable<BenchmarkQuestionGroup> groups,
         IRetriever retriever,
         int topK,
+        BenchmarkScorer.Scorer scorer,
         IProgress<RunProgress>? progress = null,
         int ingestConcurrency = 1,
         CancellationToken ct = default)
@@ -105,6 +108,7 @@ public sealed class BenchmarkRunner
         ArgumentException.ThrowIfNullOrWhiteSpace(modeLabel);
         ArgumentNullException.ThrowIfNull(groups);
         ArgumentNullException.ThrowIfNull(retriever);
+        ArgumentNullException.ThrowIfNull(scorer);
         if (ingestConcurrency < 1) ingestConcurrency = 1;
 
         var startedAt = DateTimeOffset.UtcNow;
@@ -124,7 +128,7 @@ public sealed class BenchmarkRunner
                 ct.ThrowIfCancellationRequested();
                 string queryText = await TransformQueryAsync(q.QueryText, ct);
                 var hits = await retriever.RetrieveAsync(queryText, topK, ct);
-                var scored = BenchmarkScorer.ScoreQuestion(q, hits);
+                var scored = scorer(q, hits);
                 results.Add(scored);
                 progress?.Report(new RunProgress(results.Count, scored));
             }

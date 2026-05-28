@@ -12,17 +12,35 @@ namespace Scrinia.Retrieval.Benchmarks.Loaders;
 /// (<c>simple.json</c>, <c>highlevel.json</c>, <c>knowledge_update.json</c>,
 /// <c>comparative.json</c>, <c>conditional.json</c>, <c>noisy.json</c>,
 /// <c>aggregative.json</c>, <c>highlevel_rec.json</c>, <c>lowlevel_rec.json</c>,
-/// <c>post_processing.json</c>). Inside each file the root is a dictionary keyed by
-/// topic (<c>movie</c>, <c>food</c>, etc.); each topic value is an array of items.
-/// Each item has a <c>tid</c>, a <c>message_list</c> (array of sessions, each a list
-/// of turns with <c>sid</c>, <c>user</c>, <c>assistant</c>, optional <c>time</c>),
+/// <c>post_processing.json</c>, <c>RecMultiSession.json</c>). Inside each file the
+/// root is a dictionary keyed by topic (<c>movie</c>, <c>roles</c>,
+/// <c>multi_agent</c>, etc.); each topic value is an array of items. Each item has
+/// a <c>tid</c>, a <c>message_list</c> (array of sessions, each a list of turns),
 /// and a <c>QA</c> block. Ground truth comes from <c>QA.target_step_id</c> — a list
-/// of inner lists; we take the first element of each inner list as a turn-sid (matches
+/// of inner lists; we take the first element of each inner list as a turn id (matches
 /// MemPalace's published harness).</para>
 ///
+/// <para><b>Dual schema:</b> MemBench ships two turn shapes and the loader supports
+/// both, matching MemPalace's upstream fallback (<c>sid = turn.get("sid",
+/// turn.get("mid"))</c>; <c>user = turn.get("user") or turn.get("user_message",
+/// "")</c>):
+/// <list type="bullet">
+/// <item><description><b>roles</b>-style files (simple, noisy, aggregative,
+/// comparative, conditional, knowledge_update, post_processing): turns have
+/// <c>sid</c>, <c>user_message</c>, <c>assistant_message</c>.</description></item>
+/// <item><description><b>movie / multi_agent</b>-style files (highlevel,
+/// highlevel_rec, lowlevel_rec, RecMultiSession): turns have <c>mid</c>,
+/// <c>user</c>, <c>assistant</c>.</description></item>
+/// </list>
+/// An earlier version of this loader only read the <c>roles</c> shape, which made
+/// every <c>movie/multi_agent</c> turn collide on doc ID 0 (default int) and zeroed
+/// out R@K for any category whose gold targets didn't happen to include 0 — and
+/// silently emptied the doc text for the <c>roles</c> categories too. Fixed by
+/// accepting either field name on both the id and the text.</para>
+///
 /// <para>Per-question haystack = every turn in the item's <c>message_list</c>. Doc IDs
-/// are the turn's <c>sid</c> formatted as a string so they round-trip against
-/// <c>target_step_id</c>.</para>
+/// are the turn's <c>sid</c>/<c>mid</c> formatted as a string so they round-trip
+/// against <c>target_step_id</c>.</para>
 /// </summary>
 public sealed class MemBenchLoader
 {
@@ -97,10 +115,12 @@ public sealed class MemBenchLoader
             foreach (var turn in session)
             {
                 if (turn is null) continue;
+                int? id = turn.Sid ?? turn.Mid;
+                if (id is null) continue;
                 string text = FormatTurn(turn);
                 if (string.IsNullOrWhiteSpace(text)) continue;
                 docs.Add(new HaystackDoc(
-                    Id: turn.Sid.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    Id: id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     Text: text,
                     Timestamp: TryParseTimestamp(turn.Time)));
             }
@@ -111,19 +131,24 @@ public sealed class MemBenchLoader
     /// <summary>
     /// Renders one MemBench turn into searchable doc text. Includes user + assistant
     /// content plus an optional timestamp prefix — matches MemPalace's loader format
-    /// so vocabulary overlap with the published comparison stays clean.
+    /// so vocabulary overlap with the published comparison stays clean. Accepts both
+    /// schemas: <c>user</c>/<c>assistant</c> (movie, multi_agent) and
+    /// <c>user_message</c>/<c>assistant_message</c> (roles).
     /// </summary>
     private static string FormatTurn(MemBenchTurn turn)
     {
+        string? userText = !string.IsNullOrWhiteSpace(turn.User) ? turn.User : turn.UserMessage;
+        string? asstText = !string.IsNullOrWhiteSpace(turn.Assistant) ? turn.Assistant : turn.AssistantMessage;
+
         var sb = new System.Text.StringBuilder();
         if (!string.IsNullOrWhiteSpace(turn.Time))
             sb.Append('[').Append(turn.Time).Append("] ");
-        if (!string.IsNullOrWhiteSpace(turn.User))
-            sb.Append("[User] ").Append(turn.User);
-        if (!string.IsNullOrWhiteSpace(turn.Assistant))
+        if (!string.IsNullOrWhiteSpace(userText))
+            sb.Append("[User] ").Append(userText);
+        if (!string.IsNullOrWhiteSpace(asstText))
         {
             if (sb.Length > 0) sb.Append(' ');
-            sb.Append("[Assistant] ").Append(turn.Assistant);
+            sb.Append("[Assistant] ").Append(asstText);
         }
         return sb.ToString();
     }
@@ -143,10 +168,15 @@ public sealed class MemBenchLoader
         [property: JsonPropertyName("message_list")] IReadOnlyList<IReadOnlyList<MemBenchTurn>>? MessageList,
         [property: JsonPropertyName("QA")] MemBenchQa? QA);
 
+    // Nullable Sid/Mid so we can detect which schema this turn used and choose the
+    // present one. Defaulting to 0 would re-create the bug fixed in this commit.
     private sealed record MemBenchTurn(
-        [property: JsonPropertyName("sid")] int Sid,
+        [property: JsonPropertyName("sid")] int? Sid,
+        [property: JsonPropertyName("mid")] int? Mid,
         [property: JsonPropertyName("user")] string? User,
+        [property: JsonPropertyName("user_message")] string? UserMessage,
         [property: JsonPropertyName("assistant")] string? Assistant,
+        [property: JsonPropertyName("assistant_message")] string? AssistantMessage,
         [property: JsonPropertyName("time")] string? Time);
 
     // `answer` is intentionally omitted — System.Text.Json skips unmapped fields, so we
