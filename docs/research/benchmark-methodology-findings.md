@@ -143,16 +143,77 @@ This is the positive counterpart to finding #1: #1 says "MemBench's pool gap was
 phantom (loader bug)"; #4 says "where a *real* pool gap exists, anchors close part
 of it, and where none exists they're inert."
 
-**Caveats.** The lift is modest and does not close the gap — single_hop R@50 is
-still only ~60% with anchors, temporal_inference ~50%. Some of the R@5/R@10 lift
-at dialog granularity is rank-shuffle the reranker also contributes to; an
-anchors + `--rerank none` run is needed to cleanly attribute pool gain (anchors)
-vs rank gain (reranker).
+**Caveat.** The lift is modest and does not close the gap — single_hop R@50 is
+still only ~60% with anchors, temporal_inference ~50%. (An earlier draft of this
+finding worried that some of the R@5 lift was rank-shuffle the reranker
+contributes to; the full 2×2 in finding #5 resolves that — anchors measured
+against the true no-anchors/no-rerank baseline are *larger* than the rerank-on
+comparison showed, +6.2 R@5 / +7.8 R@50.)
 
 **Product implication.** Ship anchors as opt-in; recommend them when retrieval
 granularity is fine-grained enough that the candidate pool isn't trivially
 complete. On coarse-grained stores where everything relevant is already retrieved,
-anchors cost ingest-time LLM calls for ~0 benefit.
+anchors cost ingest-time LLM calls for ~0 benefit. See finding #5 for the
+anchors-vs-reranker tradeoff.
+
+---
+
+## 5. Anchors and sentence-MaxSim reranking are substitutes, not complements
+
+**The full 2×2.** LoCoMo dialog granularity (1,982 q, Qwen3-4B Q4_K_M agent for
+anchors), every combination of anchors on/off × rerank on/off:
+
+| | rerank ON | rerank OFF |
+|---|---|---|
+| **no anchors** | 54.7 / 61.0 / 74.8 | 51.7 / 59.3 / 70.5 |
+| **anchors** | 58.1 / 64.9 / 79.0 | 57.9 / 65.3 / 78.3 |
+
+*(R@5 / R@10 / R@50; NDCG@10: 0.484 / 0.456 / 0.517 / 0.510 reading the same
+order)*
+
+Marginal effects:
+
+| Effect | R@5 | R@50 |
+|---|---|---|
+| Rerank, anchors OFF | +3.0 | +4.3 |
+| Rerank, anchors ON | +0.2 | +0.7 |
+| Anchors, rerank OFF | +6.2 | +7.8 |
+| Anchors, rerank ON | +3.4 | +4.2 |
+| Both vs neither | +6.4 | +8.5 |
+
+**Sub-additive.** If the two levers were independent, anchors-alone (+6.2 R@5) +
+rerank-alone (+3.0) would predict +9.2; the actual combined effect is +6.4 — a
+−2.8pp negative interaction (−3.6pp at R@50). Roughly 70% of the combined gain is
+captured by *either lever alone*. The natural reading: both promote the same
+relevant docs from the same ranks, so whichever runs first captures most of the
+gain and leaves the second little to do.
+
+**This refutes a doc-length hypothesis floated mid-investigation** — that
+sentence-MaxSim is inert on LoCoMo dialog because single-turn docs have no
+multi-sentence structure to rerank. Run #4 (no-anchors, no-rerank) disproves it:
+the reranker is worth +3.0/+4.3 on its own. It only *looked* inert in the
+anchors-on row because anchors had already captured the gain.
+
+**Operational consequence** — best config depends on budget:
+
+| Config | R@5 / R@50 | Cost |
+|---|---|---|
+| neither | 51.7 / 70.5 | cheapest |
+| rerank only | 54.7 / 74.8 | query-time compute |
+| anchors only | 57.9 / 78.3 | ingest-time LLM |
+| both | 58.1 / 79.0 | both |
+
+Anchors-only ≈ both, for less query-time work. So **if you already pay the
+ingest-time LLM for anchors, the reranker is redundant** — turn it off to save
+query-time compute. If you can't afford ingest-time LLM, the reranker is the best
+single lever. Running both is the most expensive config for a marginal gain over
+anchors-alone.
+
+Caveat on transfer: this 2×2 is one benchmark (LoCoMo) at one granularity
+(dialog). On MemBench the reranker was worth +6.4pp R@5 standalone (finding #2) —
+larger than here — so the substitute relationship's magnitude is surface-specific.
+The *direction* (sub-additive overlap) is likely general; the exact split between
+levers is not. Re-run the 2×2 on a new surface before assuming the same tradeoff.
 
 ---
 
