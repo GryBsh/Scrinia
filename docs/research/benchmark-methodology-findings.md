@@ -110,6 +110,52 @@ turn isn't even in the top-50, so reranking can't help and anchors might.
 
 ---
 
+## 4. Agent-supplied anchors are a candidate-pool lever — they help iff a pool gap exists
+
+**The controlled experiment.** LoCoMo run twice with anchors on
+(Qwen3-4B Q4_K_M agent, sentence-MaxSim, prod chunk), once per granularity. The
+only variable that differs between the two runs is whether the relevant doc is
+*already guaranteed* to be in the candidate pool: at session granularity the
+haystack (~3 sessions) is smaller than top-k=50, so R@50 is pinned at 100% by
+construction; at dialog granularity (~36 turns) there is real pool headroom.
+
+| Granularity | R@50 baseline | pool headroom | anchors Δ R@5 | anchors Δ R@50 |
+|---|---|---|---|---|
+| session | 100% | none (structural ceiling) | +0.6 (noise) | **0** |
+| dialog | 74.8% | large | **+3.4** | **+4.2** |
+
+Per-category at dialog granularity, anchors lift R@50 most on the categories with
+the largest genuine pool gap — `single_hop` 54.2→59.6 (+5.4) and
+`temporal_inference` 45.2→49.6 (+4.4). At session granularity the same anchors
+from the same model are inert: aggregate +0.6pp R@5, individual categories
+scattered in the ±noise band (temporal_inference even -2.7 R@5 on n=92).
+
+**Mechanism confirmed.** R@50 is the candidate-pool metric — whether the relevant
+doc made it into the retrieved set at all. Anchors lifting R@50 means they pull
+docs *into* the pool that pure BM25+embedding missed, which is exactly the
+theorized mechanism (agent writes query-vocabulary bridges at ingest; bridges
+surface docs whose raw text didn't lexically/semantically match the query).
+Anchors move the needle **iff there is a pool gap to close.** This retroactively
+explains why earlier anchor tests (ConvoMem, LongMemEval, session-LoCoMo) were
+unimpressive — all near the R@50 ceiling, no gap for anchors to work on.
+
+This is the positive counterpart to finding #1: #1 says "MemBench's pool gap was a
+phantom (loader bug)"; #4 says "where a *real* pool gap exists, anchors close part
+of it, and where none exists they're inert."
+
+**Caveats.** The lift is modest and does not close the gap — single_hop R@50 is
+still only ~60% with anchors, temporal_inference ~50%. Some of the R@5/R@10 lift
+at dialog granularity is rank-shuffle the reranker also contributes to; an
+anchors + `--rerank none` run is needed to cleanly attribute pool gain (anchors)
+vs rank gain (reranker).
+
+**Product implication.** Ship anchors as opt-in; recommend them when retrieval
+granularity is fine-grained enough that the candidate pool isn't trivially
+complete. On coarse-grained stores where everything relevant is already retrieved,
+anchors cost ingest-time LLM calls for ~0 benefit.
+
+---
+
 ## Scorer semantics (context for reading any result file)
 
 `87dc093` also split the scorer to match each upstream evaluator verbatim. R@K is
