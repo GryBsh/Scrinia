@@ -26,10 +26,12 @@ internal static class RetrieverFactory
 
     /// <summary>
     /// Second-stage reranker selection. <see cref="None"/> means first-stage retrieval
-    /// only (the historical default); <see cref="SentenceMaxSim"/> applies sentence-
-    /// level MaxSim reranking on top-K candidates using the existing embedding model.
+    /// only; <see cref="SentenceMaxSim"/> applies sentence-level MaxSim reranking on
+    /// top-K candidates using the existing embedding model (the bench default);
+    /// <see cref="CrossEncoder"/> runs an ONNX BERT cross-encoder over the top-N
+    /// candidates (bench experiment — see docs/research/cross-encoding-reranking.md).
     /// </summary>
-    public enum RerankMode { None, SentenceMaxSim }
+    public enum RerankMode { None, SentenceMaxSim, CrossEncoder }
 
     public static async Task<(ScriniaRetriever Retriever, Mode Mode)> BuildAsync(
         string[] args, string benchmarkSlug, CancellationToken ct)
@@ -88,9 +90,10 @@ internal static class RetrieverFactory
         string root = Path.Combine(Path.GetTempPath(),
             $"scrinia-retbench-{benchmarkSlug}-{Guid.NewGuid().ToString("N")[..8]}");
         // Sentence index built at ingest only when a reranker that consumes it is
-        // configured AND we have an embedder. Empty index path is cheap and the
-        // reranker no-ops on empty lookups, so this gate is a cost guard, not a
-        // correctness one.
+        // configured AND we have an embedder. The cross-encoder reads raw doc text at
+        // rerank time, not sentence vectors, so it never needs this index. Empty index
+        // path is cheap and the reranker no-ops on empty lookups, so this gate is a
+        // cost guard, not a correctness one.
         bool buildSentenceIndex = rerank == RerankMode.SentenceMaxSim && embedder is not null;
         var retriever = new ScriniaRetriever(
             rootDir: root,
@@ -112,6 +115,27 @@ internal static class RetrieverFactory
                 embedder,
                 retriever.GetSentenceVectors,
                 firstStageWeight: maxSimWeight);
+        }
+        else if (rerank == RerankMode.CrossEncoder)
+        {
+            int depth = ParseInt(Program.Flag(args, "--rerank-depth"), CrossEncoderReranker.DefaultDepth);
+            int maxSeqLen = ParseInt(Program.Flag(args, "--rerank-max-seq"), CrossEncoderReranker.DefaultMaxSeqLen);
+            int threads = ParseInt(Program.Flag(args, "--rerank-threads"), 4);
+            string modelUrl = Program.Flag(args, "--rerank-model-url") ?? CrossEncoderModelManager.DefaultModelUrl;
+            string vocabUrl = Program.Flag(args, "--rerank-vocab-url") ?? CrossEncoderModelManager.DefaultVocabUrl;
+            string? rerankModelDir = Program.Flag(args, "--rerank-model-dir");
+            try
+            {
+                var (modelPath, vocabPath) = await CrossEncoderModelManager.EnsureAsync(rerankModelDir, modelUrl, vocabUrl, ct);
+                retriever.Reranker = CrossEncoderReranker.Load(modelPath, vocabPath, depth, maxSeqLen, threads);
+                Console.Error.WriteLine(
+                    $"[scrinia-bench] cross-encoder reranker enabled: model={modelPath} depth={depth} maxSeq={maxSeqLen} threads={threads}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"reranker: cross-encoder load failed ({ex.Message}); falling back to no reranking.");
+                Console.Error.WriteLine("       fix: pass --rerank-model-url / --rerank-vocab-url, or drop model.onnx + vocab.txt into --rerank-model-dir.");
+            }
         }
 
         return (retriever, mode);
@@ -186,7 +210,8 @@ internal static class RetrieverFactory
     {
         null or "" or "sentence-maxsim" or "maxsim" => RerankMode.SentenceMaxSim,
         "none" or "off" => RerankMode.None,
-        _ => throw new ArgumentException($"unknown --rerank '{raw}'. Expected: sentence-maxsim | none"),
+        "cross-encoder" or "cross" or "ce" => RerankMode.CrossEncoder,
+        _ => throw new ArgumentException($"unknown --rerank '{raw}'. Expected: sentence-maxsim | cross-encoder | none"),
     };
 
     /// <summary>
@@ -234,12 +259,17 @@ internal static class RetrieverFactory
             && !string.Equals(fu, "sum", StringComparison.OrdinalIgnoreCase))
             tags.Add(fu.ToLowerInvariant());
         // Sentence-MaxSim is the bench default — no suffix when active. Opt-out via
-        // --rerank none gets the "no-rerank" tag so result files are distinguishable.
-        if (Program.Flag(args, "--rerank") is { } rr
-            && (string.Equals(rr, "none", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(rr, "off", StringComparison.OrdinalIgnoreCase)))
+        // --rerank none gets the "no-rerank" tag; --rerank cross-encoder gets a "ce"
+        // tag so result files for the reranker A/B don't collide.
+        if (Program.Flag(args, "--rerank") is { } rr)
         {
-            tags.Add("no-rerank");
+            if (string.Equals(rr, "none", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(rr, "off", StringComparison.OrdinalIgnoreCase))
+                tags.Add("no-rerank");
+            else if (string.Equals(rr, "cross-encoder", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(rr, "cross", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(rr, "ce", StringComparison.OrdinalIgnoreCase))
+                tags.Add("ce");
         }
         // Non-default α suffix applies whenever the reranker is active (which is the
         // default). Result files for different sweeps don't collide.
