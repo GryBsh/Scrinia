@@ -215,6 +215,70 @@ larger than here — so the substitute relationship's magnitude is surface-speci
 The *direction* (sub-additive overlap) is likely general; the exact split between
 levers is not. Re-run the 2×2 on a new surface before assuming the same tradeoff.
 
+**Superseded in part by finding #6:** the substitution result above is specific to
+the *weak* reranker (sentence-MaxSim, sentence-level late interaction over the
+static model2vec embeddings). With a real cross-encoder the relationship flips to
+complementary — see #6.
+
+---
+
+## 6. The anchors↔reranker substitution depends on reranker strength; a cross-encoder is complementary and stronger
+
+**Setup.** Re-ran the finding-#5 2×2 with a third reranker: an ONNX BERT
+cross-encoder (`cross-encoder/ms-marco-MiniLM-L6-v2`, INT8, depth 100) added
+bench-side via `--rerank cross-encoder` (see
+`docs/research/cross-encoding-reranking.md`). LoCoMo dialog, prod chunk, anchors
+via Qwen3-4B Q4_K_M (cached). Full ladder:
+
+| config | R@5 | R@10 | R@50 | NDCG@10 | LLM |
+|---|---|---|---|---|---|
+| none | 51.7 | 59.3 | 70.5 | 0.456 | — |
+| sentence-MaxSim | 54.7 | 61.0 | 74.8 | 0.484 | — |
+| sentence-MaxSim + anchors | 58.1 | 64.9 | **79.0** | 0.517 | ingest |
+| cross-encoder | 60.7 | 65.9 | 72.9 | 0.563 | — |
+| **cross-encoder + anchors** | **63.8** | **69.7** | 78.5 | **0.587** | ingest |
+
+**The substitution result was a property of the weak reranker, not a law.**
+Marginal value of the reranker *on top of anchors*:
+- sentence-MaxSim on top of anchors: 57.9 → 58.1 = **+0.2 R@5** (redundant — finding #5)
+- cross-encoder on top of anchors: 57.9 → 63.8 = **+5.9 R@5** (strongly additive)
+
+Marginal value of anchors is stable across rerankers (+3.4 R@5 on sentence-MaxSim,
++3.1 on cross-encoder) and anchors still add +5.6pp R@50 even on top of the
+cross-encoder. So anchors fill the candidate pool; the cross-encoder orders within
+it; the two compound. Finding #5's "substitutes" holds only when the reranker is
+too weak to extract signal the anchors didn't already surface.
+
+**The cross-encoder is a materially stronger reranker than sentence-MaxSim**,
+anchors-held-constant: **+5.7–6.0 R@5, +4.8–4.9 R@10, +0.07–0.08 NDCG@10**, at a
+cost of ~−1 to −2 pp R@50 (it reorders the depth-100 window aggressively and
+occasionally ranks a true positive below a lexically-similar hard negative;
+sentence-MaxSim is gentler and preserves a hair more deep recall). For a memory
+tool that serves top-5/10 to an agent, the precision win dominates and the R@50
+cost is near-irrelevant.
+
+**Best config: cross-encoder + anchors** — wins every metric except R@50 (78.5 vs
+79.0, a tie). Notably, **cross-encoder alone (no LLM)** beats sentence-MaxSim +
+anchors on R@5 (60.7 vs 58.1) and NDCG (0.563 vs 0.517) — relevant for deployments
+that can't pay ingest-time LLM.
+
+**Ship gate (from the research doc): ≥2–3 NDCG@10 points over the incumbent.**
+CE+anchors is +0.070 over sentence-MaxSim+anchors; CE-alone is +0.046. Both clear
+the bar. On *quality*, the cross-encoder earns a place in Core.
+
+**What still gates Core adoption — measure before importing ONNX Runtime:**
+1. **Latency.** The cross-encoder is CPU BERT forward passes, not vector dot
+   products — materially slower than sentence-MaxSim, and `--rerank-threads` fights
+   `-Parallel`. The product hot-path latency (p50/p95 at realistic depth) is unmeasured
+   here; the bench measures quality, not query latency. The research doc's "benchmark
+   on your own hardware" applies before any Core integration.
+2. **Second surface.** This is one benchmark. Confirm the cross-encoder advantage
+   holds on MemBench (where sentence-MaxSim was already worth +6.4pp R@5 standalone)
+   before generalizing.
+3. **Surface re-expansion.** Adding ONNX Runtime + a BERT tokenizer to Core reverses
+   part of the just-completed simplification (the LLM-at-rest removal). Worth it only
+   if latency clears and the second surface confirms.
+
 ---
 
 ## Scorer semantics (context for reading any result file)
