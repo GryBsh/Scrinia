@@ -20,10 +20,16 @@ public static class MemoryOrchestrator
         // Text analysis (single-pass)
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(req.Keywords, autoKeywords);
+        // Typed keywords (prefix:value) seed their tokenized VALUE so the parts are
+        // BM25-matchable; see TextAnalysis.IndexTokensForKeyword.
         foreach (string kw in mergedKeywords)
         {
-            tf.TryGetValue(kw, out int count);
-            tf[kw] = count + (agentKeywordSet.Contains(kw) ? 5 : 2);
+            int boost = agentKeywordSet.Contains(kw) ? 5 : 2;
+            foreach (string token in TextAnalysis.IndexTokensForKeyword(kw))
+            {
+                tf.TryGetValue(token, out int count);
+                tf[token] = count + boost;
+            }
         }
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1

@@ -198,6 +198,31 @@ public sealed class TextAnalysisTests
         agentSet.Should().BeEmpty();
     }
 
+    // ── IndexTokensForKeyword ───────────────────────────────────────────────
+
+    [Fact]
+    public void IndexTokensForKeyword_PlainKeyword_TokenizesWhole()
+    {
+        TextAnalysis.IndexTokensForKeyword("reranking").Should().Equal("reranking");
+        TextAnalysis.IndexTokensForKeyword("auth flow").Should().Equal("auth", "flow");
+    }
+
+    [Fact]
+    public void IndexTokensForKeyword_TypedKeyword_StripsPrefix_IndexesValue()
+    {
+        // The type prefix (file/person/ref) is structural — only the value tokenizes in.
+        TextAnalysis.IndexTokensForKeyword("file:src/Foo.cs").Should().Equal("src", "foo", "cs");
+        TextAnalysis.IndexTokensForKeyword("person:Mary").Should().Equal("mary");
+        TextAnalysis.IndexTokensForKeyword("ref:/findings/auth").Should().Equal("findings", "auth");
+    }
+
+    [Fact]
+    public void IndexTokensForKeyword_NonTypeColon_TokenizesWhole()
+    {
+        // A numeric/non-letter prefix isn't a type tag, so the whole thing tokenizes.
+        TextAnalysis.IndexTokensForKeyword("12:30").Should().Equal("12", "30");
+    }
+
     // ── AnalyzeText ──────────────────────────────────────────────────────────
 
     [Fact]

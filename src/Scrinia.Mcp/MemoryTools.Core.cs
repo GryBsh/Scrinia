@@ -132,11 +132,18 @@ public sealed partial class ScriniaMcpTools
         string rawContent = string.Join("\n", content);
         mergedKeywords = mergedKeywords.Concat(ExtractRefKeywords(rawContent)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
-        // Boost keywords in TF: agent keywords +5, auto-extracted +2
+        // Boost keywords in TF: agent keywords +5, auto-extracted +2. Typed keywords
+        // (prefix:value) seed their tokenized VALUE so the parts are BM25-matchable — the
+        // monolithic "prefix:value" string is never a tokenized query term, so seeding it
+        // as-is is dead weight. See TextAnalysis.IndexTokensForKeyword.
         foreach (string kw in mergedKeywords)
         {
-            tf.TryGetValue(kw, out int count);
-            tf[kw] = count + (agentKeywordSet.Contains(kw) ? 5 : 2);
+            int boost = agentKeywordSet.Contains(kw) ? 5 : 2;
+            foreach (string token in TextAnalysis.IndexTokensForKeyword(kw))
+            {
+                tf.TryGetValue(token, out int count);
+                tf[token] = count + boost;
+            }
         }
 
         // Seed agent-supplied retrieval anchors into the TF dict so BM25 picks up
@@ -1182,8 +1189,12 @@ public sealed partial class ScriniaMcpTools
             .ToArray();
         foreach (string kw in mergedKeywords)
         {
-            tf.TryGetValue(kw, out int count);
-            tf[kw] = count + (agentKeywordSet.Contains(kw) ? 5 : 2);
+            int boost = agentKeywordSet.Contains(kw) ? 5 : 2;
+            foreach (string token in TextAnalysis.IndexTokensForKeyword(kw))
+            {
+                tf.TryGetValue(token, out int count);
+                tf[token] = count + boost;
+            }
         }
 
         // Anchors: union of existing + new (whitespace-dropped, deduped). Seed anchor tokens

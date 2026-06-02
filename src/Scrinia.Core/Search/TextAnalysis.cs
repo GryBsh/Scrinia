@@ -144,6 +144,35 @@ public static class TextAnalysis
     }
 
     /// <summary>
+    /// Expands a keyword into the tokens that should be seeded into the BM25 term-frequency
+    /// index. A plain keyword tokenizes normally; a typed keyword of the form
+    /// <c>prefix:value</c> (e.g. <c>file:src/Foo.cs</c>, <c>person:Mary</c>, <c>ref:/findings/x</c>)
+    /// indexes the tokenized <i>value</i> only — the type prefix is structural metadata that
+    /// stays on the keyword itself (for field-score / facet / cross-link use), not a content term.
+    ///
+    /// <para>Typed keywords must not be seeded into TF as-is: the whole <c>prefix:value</c>
+    /// string is a single dictionary key that no tokenized query term can ever equal, so it
+    /// contributes nothing to BM25 (dead weight). Seeding the value tokens makes typed-keyword
+    /// values first-class search terms — a "person:Mary" keyword becomes matchable by a "Mary"
+    /// query even when "Mary" never appears in the content.</para>
+    /// </summary>
+    public static IReadOnlyList<string> IndexTokensForKeyword(string keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword)) return [];
+
+        int colon = keyword.IndexOf(':');
+        if (colon > 0 && colon < keyword.Length - 1)
+        {
+            string prefix = keyword[..colon];
+            // A type prefix is a short, all-letter tag (file, ref, person, date, related, ...).
+            // Anything else carrying a colon (URLs, times, ratios) tokenizes whole.
+            if (prefix.Length <= 16 && prefix.All(char.IsLetter))
+                return Tokenize(keyword[(colon + 1)..]);
+        }
+        return Tokenize(keyword);
+    }
+
+    /// <summary>
     /// Default cap on the term-frequency dictionary written to sidecar metadata.
     /// The long tail of TF=1 terms is mostly named entities and one-off mentions that bloat
     /// sidecar size 2–4x while contributing near-zero IDF weight to BM25 scoring. Keywords

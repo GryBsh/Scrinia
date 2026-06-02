@@ -1564,6 +1564,34 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Store_TypedKeyword_ValueIsBm25Matchable()
+    {
+        // A typed keyword (prefix:value) used to be seeded into TF as the monolithic
+        // "person:mary" string — a key no tokenized query term can ever equal, so it was
+        // dead weight in BM25. Now the tokenized VALUE is seeded so the part is matchable,
+        // while the structured token stays on entry.Keywords for field-score/facet.
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(
+            ["The subsystem orchestrates lifecycle hooks during plugin startup."], // no "Mary" in content
+            "typed-kw-test",
+            keywords: ["person:Mary"]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "typed-kw-test");
+        entry.Keywords.Should().Contain("person:mary",
+            because: "the structured typed token is preserved for field-score/facet/cross-link use");
+        entry.TermFrequencies.Should().NotBeNull();
+        entry.TermFrequencies!.Should().ContainKey("mary",
+            because: "the typed keyword's value must be seeded into TF as a real BM25 term");
+        entry.TermFrequencies.Should().NotContainKey("person:mary",
+            because: "the monolithic prefixed token is dead weight in BM25 and must not be seeded as-is");
+
+        var parsed = ResponseParser.Parse(await Tools().Search("Mary"));
+        parsed.Status.Should().Be("success");
+        parsed.Content.Should().Contain("typed-kw-test",
+            because: "a typed keyword's value must be reachable via BM25 even when absent from content");
+    }
+
+    [Fact]
     public async Task Append_PreservesCuratedAnchorsTagsAndDescription()
     {
         // Regression: append used to rebuild the entry with Tags=null, RetrievalAnchors=null,
