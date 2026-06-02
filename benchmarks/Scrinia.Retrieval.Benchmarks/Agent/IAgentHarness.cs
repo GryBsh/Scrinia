@@ -48,6 +48,16 @@ public interface IAgentHarness
     /// <para>Null when disabled or the call fails.</para>
     /// </summary>
     Task<string?> GenerateHypotheticalAsync(string query, CancellationToken ct);
+
+    /// <summary>
+    /// Generates typed retrieval keywords (`entity:<name>` / `topic:<theme>`) for one
+    /// doc at ingest. These are agent-curated content-descriptor tags whose values are
+    /// indexed into BM25 (and whose full `prefix:value` form feeds the field scorer).
+    /// <para>Default implementation returns null (op disabled); the LLM-backed harness
+    /// overrides it. Null when disabled or the call fails.</para>
+    /// </summary>
+    Task<IReadOnlyList<string>?> GenerateTypedKeywordsAsync(string content, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<string>?>(null);
 }
 
 /// <summary>

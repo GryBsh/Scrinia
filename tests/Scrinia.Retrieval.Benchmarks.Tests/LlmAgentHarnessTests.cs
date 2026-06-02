@@ -170,6 +170,59 @@ public class LlmAgentHarnessTests : IDisposable
         fake.CompleteCallCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task GenerateTypedKeywordsAsync_HitsLlmOnce_AndCachesResult()
+    {
+        var fake = new RecordingFakeLlm { CompleteResult = "entity:maria\ntopic:home renovation" };
+        var harness = new LlmAgentHarness(
+            fake, NewCache(), "fake", "test-model", AgentModes.TypedKeywordsOnly);
+
+        var first = await harness.GenerateTypedKeywordsAsync("content body", CancellationToken.None);
+        var second = await harness.GenerateTypedKeywordsAsync("content body", CancellationToken.None);
+
+        first.Should().NotBeNull().And.Equal("entity:maria", "topic:home renovation");
+        second.Should().NotBeNull().And.Equal("entity:maria", "topic:home renovation");
+        fake.CompleteCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task GenerateTypedKeywordsAsync_DisabledMode_ReturnsNull_WithoutCallingLlm()
+    {
+        var fake = new RecordingFakeLlm { CompleteResult = "entity:x" };
+        var harness = new LlmAgentHarness(
+            fake, NewCache(), "fake", "test-model", AgentModes.AnchorsOnly);  // typed disabled
+
+        var result = await harness.GenerateTypedKeywordsAsync("content", CancellationToken.None);
+        result.Should().BeNull();
+        fake.CompleteCallCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task GenerateTypedKeywordsAsync_NullLlmResult_ReturnsNull_AndCachesNull()
+    {
+        var fake = new RecordingFakeLlm { CompleteResult = null };
+        var harness = new LlmAgentHarness(
+            fake, NewCache(), "fake", "test-model", AgentModes.TypedKeywordsOnly);
+
+        (await harness.GenerateTypedKeywordsAsync("content", CancellationToken.None)).Should().BeNull();
+        (await harness.GenerateTypedKeywordsAsync("content", CancellationToken.None)).Should().BeNull();
+        fake.CompleteCallCount.Should().Be(1);  // null cached, no retry
+    }
+
+    [Fact]
+    public async Task GenerateTypedKeywordsAsync_PromptCarriesOnlyDocContent()
+    {
+        const string docContent = "Maria spent the weekend renovating her kitchen.";
+        var fake = new RecordingFakeLlm { CompleteResult = "entity:maria" };
+        var harness = new LlmAgentHarness(
+            fake, NewCache(), "fake", "test-model", AgentModes.TypedKeywordsOnly);
+
+        await harness.GenerateTypedKeywordsAsync(docContent, CancellationToken.None);
+
+        fake.LastUserPrompt.Should().Contain(docContent);
+        fake.LastSystemPrompt.Should().NotContain(docContent);
+    }
+
     /// <summary>
     /// Recording fake — captures the system/user prompts and returns a configurable
     /// canned result. Used to assert call counts and content shape (e.g. the

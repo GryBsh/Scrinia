@@ -18,4 +18,7 @@ public sealed class NoOpAgentHarness : IAgentHarness
 
     public Task<string?> GenerateHypotheticalAsync(string query, CancellationToken ct) =>
         Task.FromResult<string?>(null);
+
+    public Task<IReadOnlyList<string>?> GenerateTypedKeywordsAsync(string content, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<string>?>(null);
 }

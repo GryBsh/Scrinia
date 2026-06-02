@@ -25,12 +25,14 @@ public sealed class LlmAgentHarness : IAgentHarness
     private const string AnchorsOp = "anchors";
     private const string RewriteOp = "rewrite";
     private const string HydeOp = "hyde";
+    private const string TypedKeywordsOp = "typed";
 
     // Per-op timeout budgets. Anchors get the largest budget because we're asking
     // for a multi-line list; rewrite/HyDE are short single-output ops.
     private static readonly TimeSpan AnchorsBudget = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan RewriteBudget = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan HydeBudget = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan TypedKeywordsBudget = TimeSpan.FromSeconds(60);
 
     // Max-token budgets. Sized to cover the prompt's expected output plus headroom.
     // Anchors: 5-7 lines × ~60 chars × 1.5 tokens/char ≈ 400. Rewrite: one line ≈ 100.
@@ -38,6 +40,7 @@ public sealed class LlmAgentHarness : IAgentHarness
     private const int AnchorsMaxTokens = 400;
     private const int RewriteMaxTokens = 100;
     private const int HydeMaxTokens = 200;
+    private const int TypedKeywordsMaxTokens = 200;
 
     private readonly IBenchLlmClient _llm;
     private readonly LlmResponseCache _cache;
@@ -167,5 +170,39 @@ public sealed class LlmAgentHarness : IAgentHarness
         string? parsed = AgentPrompts.ParseHyde(raw);
         _cache.PutString(HydeOp, hash, parsed);
         return parsed;
+    }
+
+    public async Task<IReadOnlyList<string>?> GenerateTypedKeywordsAsync(string content, CancellationToken ct)
+    {
+        if (!_modes.TypedKeywords) return null;
+        if (string.IsNullOrWhiteSpace(content)) return null;
+
+        string hash = LlmResponseCache.Hash(content);
+        if (_cache.TryGetStringArray(TypedKeywordsOp, hash, out string[]? cached))
+            return cached;  // may be null — null is cached to skip retries
+
+        string? raw;
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TypedKeywordsBudget);
+            raw = await _llm.CompleteAsync(
+                AgentPrompts.TypedKeywordsSystem,
+                AgentPrompts.TypedKeywordsUser(content),
+                maxTokens: TypedKeywordsMaxTokens,
+                jsonMode: false,
+                cts.Token);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia-bench] agent:typed failed for hash {hash[..8]}: {ex.GetType().Name}: {ex.Message}");
+            raw = null;
+        }
+
+        string[] parsed = raw is null ? Array.Empty<string>() : AgentPrompts.ParseTypedKeywords(raw);
+        string[]? result = parsed.Length == 0 ? null : parsed;
+        _cache.PutStringArray(TypedKeywordsOp, hash, result);
+        return result;
     }
 }
