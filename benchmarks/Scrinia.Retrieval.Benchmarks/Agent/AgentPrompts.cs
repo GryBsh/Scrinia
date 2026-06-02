@@ -162,6 +162,72 @@ public static partial class AgentPrompts
         return s.Length == 0 ? null : s;
     }
 
+    // ---------- Typed keywords (entity / topic) ----------
+
+    /// <summary>Maximum typed keywords retained per doc. Caps TF-dict bloat the same
+    /// way <see cref="MaxAnchorsPerDoc"/> does for anchors.</summary>
+    public const int MaxTypedKeywordsPerDoc = 8;
+
+    /// <summary>Allowed type prefixes this experiment indexes. Unknown prefixes
+    /// (date:, person:, random:) are dropped by <see cref="ParseTypedKeywords"/> — the
+    /// sweep deliberately scopes to entity + topic (see the design spec).</summary>
+    private static readonly string[] TypedKeywordPrefixes = ["entity", "topic"];
+
+    public const string TypedKeywordsSystem =
+        "You are helping index a memory for retrieval. List the ENTITIES and TOPICS this memory is about. " +
+        "Output one tag per line: `entity:<name>` for a person, place, or object; `topic:<theme>` for an " +
+        "activity, theme, or subject. Use short lowercased canonical forms (e.g. `entity:maria`, " +
+        "`topic:home renovation`). 3 to 8 tags. No commentary, no numbering, no bullets.";
+
+    /// <summary>Builds the typed-keyword user prompt from doc content (truncated to
+    /// <see cref="MaxInputChars"/>). Content only — same anti-data-leakage contract as anchors.</summary>
+    public static string TypedKeywordsUser(string content) =>
+        "Memory content:\n\n" + Truncate(content, MaxInputChars);
+
+    /// <summary>
+    /// Parses typed keywords from raw LLM output. Each kept tag is `prefix:value` with
+    /// prefix ∈ {entity, topic}, both lowercased. Tolerates leading bullets/numbering and
+    /// surrounding quotes (same as <see cref="ParseAnchors"/>); drops lines without a
+    /// valid prefix:value, unknown prefixes, and empty values; dedups case-insensitively;
+    /// caps at <see cref="MaxTypedKeywordsPerDoc"/>. Returns an empty array when nothing
+    /// parses cleanly (callers convert empty → null at the cache layer).
+    /// </summary>
+    public static string[] ParseTypedKeywords(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tags = new List<string>(MaxTypedKeywordsPerDoc);
+
+        foreach (string rawLine in raw.Split('\n', StringSplitOptions.None))
+        {
+            string line = rawLine.TrimEnd('\r').Trim();
+            if (line.Length == 0) continue;
+
+            // Strip leading bullets / numbering (repeat for "- 1. foo"), then quotes.
+            string stripped = line;
+            while (true)
+            {
+                string after = ListMarkerPrefix.Replace(stripped, string.Empty, count: 1);
+                if (ReferenceEquals(after, stripped) || after == stripped) break;
+                stripped = after;
+            }
+            stripped = stripped.Trim().Trim('"', '\'').Trim();
+
+            int colon = stripped.IndexOf(':');
+            if (colon <= 0 || colon >= stripped.Length - 1) continue;   // need prefix:value
+            string prefix = stripped[..colon].Trim().ToLowerInvariant();
+            if (Array.IndexOf(TypedKeywordPrefixes, prefix) < 0) continue;  // unknown type → drop
+            string value = stripped[(colon + 1)..].Trim().ToLowerInvariant();
+            if (value.Length == 0) continue;
+
+            string tag = $"{prefix}:{value}";
+            if (!seen.Add(tag)) continue;
+            tags.Add(tag);
+            if (tags.Count >= MaxTypedKeywordsPerDoc) break;
+        }
+        return tags.ToArray();
+    }
+
     // ---------- helpers ----------
 
     private static string Truncate(string s, int max) =>

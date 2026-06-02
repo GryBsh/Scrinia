@@ -193,4 +193,61 @@ public class AgentPromptsTests
         Action act = () => AgentModes.Parse("anchors,bogus");
         act.Should().Throw<ArgumentException>();
     }
+
+    [Fact]
+    public void ParseTypedKeywords_KeepsEntityAndTopic_Lowercased()
+    {
+        string raw = "entity:Maria\ntopic:Home Renovation\nentity:Toyota Camry";
+        var tags = AgentPrompts.ParseTypedKeywords(raw);
+        tags.Should().Equal("entity:maria", "topic:home renovation", "entity:toyota camry");
+    }
+
+    [Fact]
+    public void ParseTypedKeywords_DropsUnknownPrefixes()
+    {
+        string raw = "entity:mara\ndate:2027-01-01\nperson:bob\nrandom:thing\ntopic:cooking";
+        var tags = AgentPrompts.ParseTypedKeywords(raw);
+        tags.Should().Equal("entity:mara", "topic:cooking");
+    }
+
+    [Fact]
+    public void ParseTypedKeywords_DropsLinesWithoutPrefixValue()
+    {
+        string raw = "entity:\n:orphan\njust some text\ntopic:music";
+        var tags = AgentPrompts.ParseTypedKeywords(raw);
+        tags.Should().Equal("topic:music");
+    }
+
+    [Fact]
+    public void ParseTypedKeywords_StripsBulletsAndQuotes()
+    {
+        string raw = "- entity:alice\n* topic:travel\n1. \"entity:bob\"";
+        var tags = AgentPrompts.ParseTypedKeywords(raw);
+        tags.Should().Equal("entity:alice", "topic:travel", "entity:bob");
+    }
+
+    [Fact]
+    public void ParseTypedKeywords_DedupsCaseInsensitively()
+    {
+        string raw = "entity:Maria\nENTITY:maria\ntopic:cooking";
+        var tags = AgentPrompts.ParseTypedKeywords(raw);
+        tags.Should().Equal("entity:maria", "topic:cooking");
+    }
+
+    [Fact]
+    public void ParseTypedKeywords_CapsAt_MaxTypedKeywordsPerDoc()
+    {
+        string raw = string.Join('\n',
+            Enumerable.Range(0, 20).Select(i => $"topic:theme{i}"));
+        var tags = AgentPrompts.ParseTypedKeywords(raw);
+        tags.Should().HaveCount(AgentPrompts.MaxTypedKeywordsPerDoc);
+    }
+
+    [Fact]
+    public void ParseTypedKeywords_HandlesEmptyAndWhitespace()
+    {
+        AgentPrompts.ParseTypedKeywords(null).Should().BeEmpty();
+        AgentPrompts.ParseTypedKeywords("").Should().BeEmpty();
+        AgentPrompts.ParseTypedKeywords("  \n\r\n  ").Should().BeEmpty();
+    }
 }
