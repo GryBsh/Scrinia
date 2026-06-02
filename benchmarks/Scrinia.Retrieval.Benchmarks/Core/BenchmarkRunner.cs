@@ -168,7 +168,8 @@ public sealed class BenchmarkRunner
             foreach (var d in docs)
             {
                 var anchors = await agent.GenerateAnchorsAsync(d.Text, ct);
-                await retriever.IngestAsync(d, anchors, ct);
+                var typed = await agent.GenerateTypedKeywordsAsync(d.Text, ct);
+                await retriever.IngestAsync(d, anchors, typed, ct);
             }
             return;
         }
@@ -180,7 +181,8 @@ public sealed class BenchmarkRunner
         await Parallel.ForEachAsync(docs, options, async (doc, c) =>
         {
             var anchors = await agent.GenerateAnchorsAsync(doc.Text, c);
-            await retriever.IngestAsync(doc, anchors, c);
+            var typed = await agent.GenerateTypedKeywordsAsync(doc.Text, c);
+            await retriever.IngestAsync(doc, anchors, typed, c);
         });
     }
 
