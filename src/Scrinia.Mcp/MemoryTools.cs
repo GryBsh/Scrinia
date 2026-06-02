@@ -185,11 +185,17 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "memory_append"), Description(
-        "Append a new chunk to an existing memory (or create it if missing). " +
+        "Append a new chunk to an existing memory (or create it if missing). Preserves the memory's " +
+        "existing retrieval metadata and optionally merges in new tags/keywords/anchors (deduplicated) — " +
+        "supply anchors when the appended chunk introduces concepts users may search for in different words. " +
         "Example: memory_append({ path: '/sessions/2026-05-11', content: 'session note text' }).")]
     public async Task<string> MemoryAppend(
         [Description("Memory path to append to.")] string path,
         [Description("Text content for the new chunk.")] string content,
+        [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
+        [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
+        [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
+        [Description("Optional retrieval anchors merged into the memory's existing anchors (deduplicated) — phrases/questions that bridge likely user queries to this content.")] string[]? anchors = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -208,7 +214,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "Split the append into multiple smaller memory_append calls.").ToYaml();
 
-        string result = await Append(content, path, cancellationToken);
+        string result = await Append(content, path, description, tags, keywords, anchors, cancellationToken);
         string? typoHint = ReservedPrefixGuard.HintFor(path);
         if (typoHint is not null)
             result = McpResponseExtensions.InjectInfoHint(result, typoHint);

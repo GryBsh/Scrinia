@@ -1563,6 +1563,86 @@ public sealed class ScriniaMcpToolsTests
         (c1 + c2 + c3).Should().Be(fullContent);
     }
 
+    [Fact]
+    public async Task Append_PreservesCuratedAnchorsTagsAndDescription()
+    {
+        // Regression: append used to rebuild the entry with Tags=null, RetrievalAnchors=null,
+        // and Description overwritten with a content slice — silently destroying everything
+        // remember() curated. Appending must preserve that metadata.
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(
+            ["The widget subsystem orchestrates lifecycle hooks."],
+            "append-meta-preserve",
+            description: "widget lifecycle notes",
+            tags: ["architecture", "widgets"],
+            keywords: ["widget", "lifecycle"],
+            anchors: ["what is the widget subsystem", "how do lifecycle hooks work"]);
+
+        await Tools().Append("A later addition about plugin startup ordering.", "append-meta-preserve");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-meta-preserve");
+        entry.RetrievalAnchors.Should().NotBeNull();
+        entry.RetrievalAnchors.Should().Contain("what is the widget subsystem")
+            .And.Contain("how do lifecycle hooks work");
+        entry.Tags.Should().NotBeNull();
+        entry.Tags.Should().Contain("architecture").And.Contain("widgets");
+        entry.Description.Should().Be("widget lifecycle notes",
+            because: "an append with no new description must preserve the curated one, not overwrite it with a content slice");
+        entry.Keywords.Should().Contain("widget",
+            because: "agent-supplied keywords must survive append, not be dropped");
+    }
+
+    [Fact]
+    public async Task Append_MergesNewAnchorsTagsKeywords_AndDeduplicates()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(
+            ["Initial content about the auth flow."],
+            "append-meta-merge",
+            tags: ["auth"],
+            anchors: ["how does login work"]);
+
+        await Tools().Append(
+            "Added detail about token refresh.",
+            "append-meta-merge",
+            tags: ["auth", "tokens"],                                        // "auth" duplicates existing
+            keywords: ["refresh"],
+            anchors: ["how does login work", "what triggers a token refresh"]); // first duplicates existing
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-meta-merge");
+        entry.Tags.Should().BeEquivalentTo(["auth", "tokens"],
+            because: "new tags merge with existing and dedupe case-insensitively");
+        entry.RetrievalAnchors.Should().BeEquivalentTo(["how does login work", "what triggers a token refresh"],
+            because: "new anchors merge with existing and dedupe");
+        entry.Keywords.Should().Contain("refresh");
+    }
+
+    [Fact]
+    public async Task Append_NewAnchor_BridgesQueryViaSearch()
+    {
+        // The high-value case: appended content introduces a concept users query for in
+        // vocabulary that's in neither the original nor the appended text. An anchor on the
+        // append must seed BM25 so that query surfaces the memory.
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["The subsystem orchestrates lifecycle hooks."], "append-anchor-bridge");
+
+        await Tools().Append(
+            "More notes on internal sequencing.",
+            "append-anchor-bridge",
+            anchors: ["how do I configure zorptree"]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-anchor-bridge");
+        entry.RetrievalAnchors.Should().Contain("how do I configure zorptree");
+        entry.TermFrequencies.Should().NotBeNull();
+        entry.TermFrequencies!.Should().ContainKey("zorptree",
+            because: "anchor tokens supplied on append must be TF-seeded so BM25 can match them");
+
+        var parsed = ResponseParser.Parse(await Tools().Search("how do I configure zorptree"));
+        parsed.Status.Should().Be("success");
+        parsed.Content.Should().Contain("append-anchor-bridge",
+            because: "an anchor added on append must bridge a user query to the memory");
+    }
+
     // ── Show budget recording (1 test) ───────────────────────────────────────
 
     [Fact]

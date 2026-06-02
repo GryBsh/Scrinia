@@ -998,10 +998,20 @@ public sealed partial class ScriniaMcpTools
 
     // ── Append/Reflect/Budget tools ─────────────────────────────────────────
 
-    /// <summary>Append content as a new chunk to an existing memory, or create it if it does not exist.</summary>
+    /// <summary>
+    /// Append content as a new chunk to an existing memory, or create it if it does not exist.
+    /// Preserves the memory's curated retrieval metadata (anchors, tags, keywords, description,
+    /// codeRefs) and merges any caller-supplied <paramref name="tags"/> / <paramref name="keywords"/> /
+    /// <paramref name="anchors"/> into it — appended content can introduce new concepts users will
+    /// query for, and the metadata `remember` set must not be silently discarded on append.
+    /// </summary>
     internal async Task<string> Append(
         [Description("The text content to append.")] string content,
         [Description("Memory name to append to (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string name,
+        [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
+        [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
+        [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
+        [Description("Optional retrieval anchors merged into the memory's existing anchors (deduplicated) — phrases/questions that bridge likely user queries to this content. Supply these when the appended content introduces concepts users may search for in different words.")] string[]? anchors = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -1018,8 +1028,14 @@ public sealed partial class ScriniaMcpTools
 
         if (existingArtifact is null)
         {
-            // Non-existent → create as single-chunk (same as Store)
-            return await this.Store([content], name, cancellationToken: cancellationToken);
+            // Non-existent → create as single-chunk (same as Store). Forward any
+            // caller-supplied metadata so a create-via-append is not lossy.
+            return await this.Store([content], name,
+                description: description ?? "",
+                tags: tags,
+                keywords: keywords,
+                anchors: anchors,
+                cancellationToken: cancellationToken);
         }
 
         // Append as new chunk
@@ -1030,19 +1046,6 @@ public sealed partial class ScriniaMcpTools
         string fullText = System.Text.Encoding.UTF8.GetString(fullBytes);
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
         long originalBytes = fullBytes.LongLength;
-
-        // Compute text analysis from full decoded content (single-pass)
-        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
-        var mergedKeywords = TextAnalysis.MergeKeywords(null, autoKeywords);
-
-        // Extract file and memory references as prefixed keywords
-        mergedKeywords = mergedKeywords.Concat(ExtractRefKeywords(fullText)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-
-        foreach (string kw in mergedKeywords)
-        {
-            tf.TryGetValue(kw, out int count);
-            tf[kw] = count + 2;
-        }
 
         string contentPreview = store.GenerateContentPreview(fullText);
 
@@ -1066,6 +1069,10 @@ public sealed partial class ScriniaMcpTools
             var existingEph = store.GetEphemeral(key);
             DateTimeOffset createdAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
 
+            var meta = BuildAppendMetadata(
+                fullText, description, tags, keywords, anchors,
+                existingEph?.Description, existingEph?.Tags, existingEph?.Keywords, existingEph?.RetrievalAnchors);
+
             ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
                 ? [.. existingChunks, newChunkEntry]
@@ -1077,13 +1084,14 @@ public sealed partial class ScriniaMcpTools
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: fullText[..Math.Min(200, fullText.Length)],
-                Tags: null,
+                Description: meta.Description,
+                Tags: meta.Tags,
                 ContentPreview: contentPreview,
-                Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
-                TermFrequencies: tf.Count > 0 ? tf : null,
+                Keywords: meta.Keywords,
+                TermFrequencies: meta.Tf,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                ChunkEntries: updatedChunks);
+                ChunkEntries: updatedChunks,
+                RetrievalAnchors: meta.Anchors);
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
@@ -1096,6 +1104,10 @@ public sealed partial class ScriniaMcpTools
             var existingEntries = store.LoadIndex(scope);
             var existingEntry = existingEntries.FirstOrDefault(e => e.Name == subject);
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
+
+            var meta = BuildAppendMetadata(
+                fullText, description, tags, keywords, anchors,
+                existingEntry?.Description, existingEntry?.Tags, existingEntry?.Keywords, existingEntry?.RetrievalAnchors);
 
             ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1117,15 +1129,17 @@ public sealed partial class ScriniaMcpTools
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: fullText[..Math.Min(200, fullText.Length)],
-                Tags: null,
+                Description: meta.Description,
+                Tags: meta.Tags,
                 ContentPreview: contentPreview,
-                Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
-                TermFrequencies: tf.Count > 0 ? tf : null,
+                Keywords: meta.Keywords,
+                TermFrequencies: meta.Tf,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ReviewAfter: existingEntry?.ReviewAfter,
                 ReviewWhen: existingEntry?.ReviewWhen,
-                ChunkEntries: updatedChunks);
+                ChunkEntries: updatedChunks,
+                CodeRefs: existingEntry?.CodeRefs,
+                RetrievalAnchors: meta.Anchors);
 
             store.Upsert(entry, scope);
         }
@@ -1137,6 +1151,86 @@ public sealed partial class ScriniaMcpTools
 
         return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
             .WithFileChanges().WithAction("appended").ToYaml();
+    }
+
+    /// <summary>
+    /// Computes the entry-level metadata for an append: re-indexes auto-keywords + term
+    /// frequencies over the full post-append text, then merges the memory's existing curated
+    /// metadata with any caller-supplied additions. This is the carry-forward that keeps
+    /// <c>append</c> from discarding what <c>remember</c> set — the appended content is
+    /// re-indexed, but anchors, tags, description, and curated keywords survive and grow.
+    /// </summary>
+    private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors)
+        BuildAppendMetadata(
+            string fullText,
+            string? newDescription, string[]? newTags, string[]? newKeywords, string[]? newAnchors,
+            string? existingDescription, string[]? existingTags, string[]? existingKeywords, string[]? existingAnchors)
+    {
+        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
+
+        // Existing curated keywords + caller additions are treated as "agent" terms so they
+        // survive and keep the +5 TF boost; auto-extracted terms from the full text fill the
+        // rest at +2. (Previously-auto keywords folded into the curated set get the agent
+        // boost too — a negligible, intentional over-weight in exchange for never losing a
+        // curated term.) Mirrors Store's keyword/TF contract.
+        string[] curatedKeywords = UnionDistinct(existingKeywords, newKeywords);
+        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(
+            curatedKeywords.Length > 0 ? curatedKeywords : null, autoKeywords);
+        mergedKeywords = mergedKeywords
+            .Concat(ExtractRefKeywords(fullText))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        foreach (string kw in mergedKeywords)
+        {
+            tf.TryGetValue(kw, out int count);
+            tf[kw] = count + (agentKeywordSet.Contains(kw) ? 5 : 2);
+        }
+
+        // Anchors: union of existing + new (whitespace-dropped, deduped). Seed anchor tokens
+        // into TF at +2 so BM25 picks up anchor vocabulary not present in the content —
+        // same contract as Store.
+        string[]? mergedAnchors = MergeAnchors(existingAnchors, newAnchors);
+        if (mergedAnchors is not null)
+        {
+            foreach (string anchor in mergedAnchors)
+                foreach (string token in TextAnalysis.Tokenize(anchor))
+                {
+                    tf.TryGetValue(token, out int count);
+                    tf[token] = count + 2;
+                }
+        }
+
+        string[] mergedTags = UnionDistinct(existingTags, newTags);
+
+        // Explicit new description wins; otherwise preserve the existing one; the content
+        // slice is only reached when neither the memory nor the caller supplied a description.
+        string desc = !string.IsNullOrWhiteSpace(newDescription)
+            ? newDescription!
+            : !string.IsNullOrWhiteSpace(existingDescription)
+                ? existingDescription!
+                : fullText[..Math.Min(200, fullText.Length)];
+
+        return (
+            desc,
+            mergedTags.Length > 0 ? mergedTags : null,
+            mergedKeywords.Length > 0 ? mergedKeywords : null,
+            tf.Count > 0 ? tf : null,
+            mergedAnchors);
+    }
+
+    /// <summary>Case-insensitive union of two optional string arrays, preserving first-seen casing and order; drops null/whitespace.</summary>
+    private static string[] UnionDistinct(string[]? existing, string[]? added) =>
+        (existing ?? []).Concat(added ?? [])
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>Merges anchor phrases (existing + new), trimming and deduplicating case-insensitively; null when empty.</summary>
+    private static string[]? MergeAnchors(string[]? existing, string[]? added)
+    {
+        string[] merged = UnionDistinct(existing, added);
+        return merged.Length > 0 ? merged : null;
     }
 
     // kt removed — knowledge transfer is a learnable goal, not a fixed tool.

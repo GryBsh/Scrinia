@@ -596,7 +596,7 @@ public class ScriniaCommands
         }
 
         var tools = new ScriniaMcpTools();
-        string yaml = await tools.Append(content, name, cancellationToken);
+        string yaml = await tools.Append(content, name, cancellationToken: cancellationToken);
         return EmitMcpResult(yaml, json, "append");
     }
 
