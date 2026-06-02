@@ -54,25 +54,63 @@ public interface IAgentHarness
 /// Per-op feature flags for <see cref="LlmAgentHarness"/>. Set true to enable an op;
 /// disabled ops return null from the harness without calling the LLM.
 /// </summary>
-public readonly record struct AgentModes(bool Anchors, bool Rewrite, bool Hyde)
+public readonly record struct AgentModes(bool Anchors, bool Rewrite, bool Hyde, bool TypedKeywords)
 {
-    public static AgentModes Off { get; } = new(false, false, false);
-    public static AgentModes AnchorsOnly { get; } = new(true, false, false);
-    public static AgentModes RewriteOnly { get; } = new(false, true, false);
-    public static AgentModes HydeOnly { get; } = new(false, false, true);
-    public static AgentModes All { get; } = new(true, true, true);
+    public static AgentModes Off { get; } = new(false, false, false, false);
+    public static AgentModes AnchorsOnly { get; } = new(true, false, false, false);
+    public static AgentModes RewriteOnly { get; } = new(false, true, false, false);
+    public static AgentModes HydeOnly { get; } = new(false, false, true, false);
+    public static AgentModes TypedKeywordsOnly { get; } = new(false, false, false, true);
+    public static AgentModes All { get; } = new(true, true, true, true);
 
-    public bool AnyEnabled => Anchors || Rewrite || Hyde;
+    public bool AnyEnabled => Anchors || Rewrite || Hyde || TypedKeywords;
 
-    public string Label() => (Anchors, Rewrite, Hyde) switch
+    public string Label() => (Anchors, Rewrite, Hyde, TypedKeywords) switch
     {
-        (false, false, false) => "off",
-        (true, false, false) => "anchors",
-        (false, true, false) => "rewrite",
-        (false, false, true) => "hyde",
-        (true, true, true) => "all",
+        (false, false, false, false) => "off",
+        (true, false, false, false) => "anchors",
+        (false, true, false, false) => "rewrite",
+        (false, false, true, false) => "hyde",
+        (false, false, false, true) => "typed",
+        (true, true, true, true) => "all",
         _ => string.Join("+",
-            new[] { Anchors ? "anchors" : null, Rewrite ? "rewrite" : null, Hyde ? "hyde" : null }
-                .Where(s => s is not null)),
+            new[]
+            {
+                Anchors ? "anchors" : null,
+                Rewrite ? "rewrite" : null,
+                Hyde ? "hyde" : null,
+                TypedKeywords ? "typed" : null,
+            }.Where(s => s is not null)),
     };
+
+    /// <summary>
+    /// Parses an <c>--agent</c> value: <c>off</c>/<c>none</c>/empty → <see cref="Off"/>,
+    /// <c>all</c> → <see cref="All"/>, otherwise a comma-separated list of components
+    /// (<c>anchors</c>, <c>typed</c>, <c>rewrite</c>, <c>hyde</c>) combined into one mode.
+    /// Throws <see cref="ArgumentException"/> on an unknown component so misconfiguration
+    /// fails fast at startup rather than silently running the wrong mode.
+    /// </summary>
+    public static AgentModes Parse(string? raw)
+    {
+        string s = (raw ?? string.Empty).Trim().ToLowerInvariant();
+        if (s is "" or "off" or "none" or "false") return Off;
+        if (s == "all") return All;
+
+        bool anchors = false, rewrite = false, hyde = false, typed = false;
+        foreach (string part in s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (part)
+            {
+                case "anchors": anchors = true; break;
+                case "rewrite": rewrite = true; break;
+                case "hyde": hyde = true; break;
+                case "typed" or "typed-keywords" or "keywords": typed = true; break;
+                default:
+                    throw new ArgumentException(
+                        $"unknown --agent component '{part}'. Expected: off | anchors | typed | rewrite | hyde | all " +
+                        "(comma-separated combos allowed, e.g. 'anchors,typed').");
+            }
+        }
+        return new AgentModes(anchors, rewrite, hyde, typed);
+    }
 }

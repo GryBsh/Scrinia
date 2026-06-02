@@ -178,22 +178,9 @@ internal static class RetrieverFactory
         _ => throw new ArgumentException($"unknown --chunk '{raw}'. Expected: none | prod"),
     };
 
-    /// <summary>
-    /// Parses <c>--agent</c> into an <see cref="AgentModes"/>. <c>off</c> (default)
-    /// disables the harness; <c>anchors</c> / <c>rewrite</c> / <c>hyde</c> enable
-    /// individual ops; <c>all</c> enables every op. Validates here so misconfiguration
-    /// fails fast at startup rather than mid-run.
-    /// </summary>
-    public static AgentModes ParseAgentMode(string? raw) => raw?.ToLowerInvariant() switch
-    {
-        null or "" or "off" or "none" or "false" => AgentModes.Off,
-        "anchors" => AgentModes.AnchorsOnly,
-        "rewrite" => AgentModes.RewriteOnly,
-        "hyde" => AgentModes.HydeOnly,
-        "all" => AgentModes.All,
-        _ => throw new ArgumentException(
-            $"unknown --agent '{raw}'. Expected: off | anchors | rewrite | hyde | all"),
-    };
+    /// <summary>Parses <c>--agent</c> into an <see cref="AgentModes"/>. Delegates to
+    /// <see cref="AgentModes.Parse"/> so the parse logic lives with the type and stays unit-testable.</summary>
+    public static AgentModes ParseAgentMode(string? raw) => AgentModes.Parse(raw);
 
     private static FusionMode ParseFusion(string? raw) => raw?.ToLowerInvariant() switch
     {

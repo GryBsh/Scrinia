@@ -146,7 +146,7 @@ public class LlmAgentHarnessTests : IDisposable
     {
         var fake = new RecordingFakeLlm { CompleteResult = "shared output" };
         var harness = new LlmAgentHarness(
-            fake, NewCache(), "fake", "test-model", new AgentModes(false, true, true));
+            fake, NewCache(), "fake", "test-model", new AgentModes(false, true, true, false));
 
         await harness.RewriteQueryAsync("same query text", CancellationToken.None);
         await harness.GenerateHypotheticalAsync("same query text", CancellationToken.None);

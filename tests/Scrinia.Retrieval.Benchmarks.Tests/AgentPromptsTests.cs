@@ -168,4 +168,29 @@ public class AgentPromptsTests
         AgentModes.HydeOnly.Label().Should().Be("hyde");
         AgentModes.All.Label().Should().Be("all");
     }
+
+    [Fact]
+    public void AgentModes_Label_IncludesTypedKeywords()
+    {
+        AgentModes.TypedKeywordsOnly.Label().Should().Be("typed");
+        new AgentModes(true, false, false, true).Label().Should().Be("anchors+typed");
+    }
+
+    [Fact]
+    public void AgentModes_Parse_HandlesTypedAndCombos()
+    {
+        AgentModes.Parse("typed").Should().Be(AgentModes.TypedKeywordsOnly);
+        AgentModes.Parse("anchors").Should().Be(AgentModes.AnchorsOnly);
+        AgentModes.Parse("anchors,typed").Should().Be(new AgentModes(true, false, false, true));
+        AgentModes.Parse("off").Should().Be(AgentModes.Off);
+        AgentModes.Parse("all").Should().Be(AgentModes.All);
+        AgentModes.Parse(null).Should().Be(AgentModes.Off);
+    }
+
+    [Fact]
+    public void AgentModes_Parse_ThrowsOnUnknownComponent()
+    {
+        Action act = () => AgentModes.Parse("anchors,bogus");
+        act.Should().Throw<ArgumentException>();
+    }
 }
