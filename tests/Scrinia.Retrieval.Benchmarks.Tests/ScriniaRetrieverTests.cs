@@ -69,11 +69,10 @@ public class ScriniaRetrieverTests : IAsyncLifetime
     public async Task Typed_keyword_value_is_retrievable_even_when_absent_from_content()
     {
         // Content never contains "zorptree"; only the typed keyword carries it.
-        // Positional args: (doc, agentAnchors, agentKeywords, ct).
         await _retriever.IngestAsync(
             new HaystackDoc("d1", "the subsystem orchestrates lifecycle hooks", null),
-            null,
-            new[] { "topic:zorptree" });
+            agentAnchors: null,
+            agentKeywords: new[] { "topic:zorptree" });
         await _retriever.IngestAsync(new HaystackDoc("d2", "completely unrelated gardening notes", null));
 
         var hits = await _retriever.RetrieveAsync("zorptree", topK: 5);

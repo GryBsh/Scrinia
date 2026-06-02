@@ -179,10 +179,7 @@ public sealed class ScriniaRetriever : IRetriever
         {
             mergedTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var (k, v) in tf)
-            {
-                mergedTf.TryGetValue(k, out int existing);
-                mergedTf[k] = existing + v;
-            }
+                mergedTf[k] = v;  // mergedTf starts empty — direct copy of text-derived TF
             if (anchorSource is { Length: > 0 })
             {
                 foreach (string anchor in anchorSource)
@@ -221,6 +218,9 @@ public sealed class ScriniaRetriever : IRetriever
             ContentPreview: text,
             RetrievalAnchors: anchorSource);
 
+        // FileMemoryStore.Upsert isn't thread-safe — serialize it across concurrent doc
+        // ingests (parallel mode). The embedding call below is awaited OUTSIDE this lock so
+        // multiple embed calls run concurrently; only the index write is serialized here.
         lock (_ingestLock)
         {
             _store.Upsert(entry);
