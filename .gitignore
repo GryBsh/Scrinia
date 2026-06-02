@@ -46,3 +46,4 @@ docs/reports
 # run is expensive; reruns hit the cache and cost ~0. Per-machine, not
 # source-controlled.
 /benchmarks/Scrinia.Retrieval.Benchmarks/cache/
+/benchmarks/Scrinia.Retrieval.Benchmarks/results/

@@ -281,6 +281,92 @@ the bar. On *quality*, the cross-encoder earns a place in Core.
 
 ---
 
+## 7. Typed keywords are ~3× leaner than anchors but lose retrieval — keep anchors as the write slot
+
+**The question.** Anchors are full natural-language phrases (sentences, more or
+less); typed keywords (`entity:`/`topic:` terms) are terse. If typed keywords
+reached retrieval *parity* with anchors, they'd win on token economy — the
+agent's write-time contribution would cost a fraction of the generation tokens.
+The decision rule going in: **typed ≥ anchors on recall/NDCG → switch the prod
+write slot to typed.** This is the controlled test of that rule. Cross-encoder is
+held constant (on) — this is *anchors vs typed*, not a reranker question.
+
+**Setup.** LoCoMo dialog granularity, prod chunk, cross-encoder (depth 100),
+Qwen3-4B Q4_K_M agent, 1,982 q. Prod-faithful asymmetric index weights (agent
+keywords +5, anchors +2, mirrored from production `Store`). Typed-keyword *values*
+are tokenized into BM25 (the `IndexTokensForKeyword` fix — `topic:zorptree` seeds
+the term `zorptree`, not a dead monolithic `topic:zorptree` TF key). Single shared
+cache, so the agent generated anchors once and typed keywords once across the
+sweep.
+
+| config | R@5 | R@10 | R@50 | NDCG@10 |
+|---|---|---|---|---|
+| CE only (no agent) | 60.7 | 65.9 | 72.9 | 0.563 |
+| **CE + anchors** | **63.7** | **69.8** | **78.7** | **0.588** |
+| CE + typed | 62.0 | 67.1 | 75.4 | 0.571 |
+| CE + anchors+typed | 63.9 | 70.1 | 79.5 | 0.588 |
+
+Marginal effects vs CE-only baseline:
+
+| lever | R@5 | R@10 | R@50 | NDCG@10 |
+|---|---|---|---|---|
+| anchors | +3.0 | +3.9 | +5.8 | +0.025 |
+| typed | +1.3 | +1.2 | +2.5 | +0.008 |
+| **typed − anchors** | **−1.7** | **−2.7** | **−3.3** | **−0.017** |
+| anchors+typed − anchors | +0.2 | +0.3 | +0.8 | +0.000 |
+
+**The decision rule fails.** Typed keywords help (they beat the no-agent
+baseline on every metric) but they trail anchors on every metric, by a margin
+well outside noise at R@10/R@50. Per-category R@50 (the candidate-pool metric)
+anchors beat typed everywhere — single_hop 58.8 vs 54.1, temporal_inference 44.2
+vs 41.8, open_domain 86.8 vs 83.2, adversarial 78.4 vs 75.4, temporal 85.6 vs
+83.2. There is no surface on which typed keywords overtake anchors.
+
+**Token economy (the other half of the rule).** Measured over the same 5,880
+LoCoMo dialog docs (cache intersection on content hash):
+
+| op | items/doc | chars/doc |
+|---|---|---|
+| anchors | 4.95 | 166.5 |
+| typed | 3.67 | 55.6 |
+
+Typed keywords are **~3.0× terser** per doc — the token-economy hypothesis is
+confirmed. But the rule was "parity, then save tokens." Typed don't reach parity;
+they trade −1.7 to −3.3 recall points for the 3× saving. The saving is real, the
+recall cost is real, and for a memory tool that serves top-5/10 to an agent the
+recall cost dominates.
+
+**Why typed lose despite carrying distinct signal.** The pipeline leans on
+embeddings + cross-encoder, and both reward *query-shaped natural language*.
+Anchors are paraphrases of how a user would ask — they give the cross-encoder a
+rich query↔text pair to score and the embedding model a dense sentence to match.
+A bare `entity:`/`topic:` term mostly helps BM25 lexical overlap and gives the
+cross-encoder almost nothing to chew on. Terseness is exactly what costs them:
+the tokens anchors "waste" on scaffolding are what the semantic stage scores
+against. (This is consistent with finding #6 — the cross-encoder is the dominant
+quality lever here, and it eats sentences, not keywords.)
+
+**The combined cell settles redundancy.** anchors+typed ≈ anchors: +0.2 R@5,
++0.3 R@10, +0.000 NDCG, only +0.8 R@50. Adding typed keywords on top of anchors
+buys a sliver of deep recall for a second ingest-time LLM call. Not worth a
+parallel write slot.
+
+**Decision: do not switch the write slot to typed keywords. Anchors stay the
+agent's write-time retrieval contribution.** The token economy doesn't redeem the
+recall loss, and typed keywords are nearly fully subsumed by anchors when both are
+present. Typed keywords remain a *valid* lever (they beat no-agent), so the
+`--agent typed` mode stays in the bench for future surfaces — but the product
+recommendation is unchanged: anchors.
+
+**Caveat on transfer.** One benchmark (LoCoMo), one granularity (dialog), one
+agent model (Qwen3-4B Q4_K_M). The mechanism (semantic stage rewards
+query-shaped text) is likely general, but a deployment that retrieves via BM25
+alone — no embeddings, no cross-encoder — would weight the comparison toward
+typed keywords' lexical strength. Re-run before assuming the same verdict on a
+lexical-only stack.
+
+---
+
 ## Scorer semantics (context for reading any result file)
 
 `87dc093` also split the scorer to match each upstream evaluator verbatim. R@K is
