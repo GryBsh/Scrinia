@@ -118,58 +118,64 @@ public sealed class ScriniaRetriever : IRetriever
     }
 
     public Task IngestAsync(HaystackDoc doc, CancellationToken ct = default) =>
-        IngestAsync(doc, agentAnchors: null, ct);
+        IngestAsync(doc, agentAnchors: null, agentKeywords: null, ct);
+
+    /// <inheritdoc/>
+    public Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? agentAnchors, CancellationToken ct = default) =>
+        IngestAsync(doc, agentAnchors, agentKeywords: null, ct);
 
     /// <summary>
-    /// Ingest overload that accepts agent-harness-supplied retrieval anchors. When
-    /// <paramref name="agentAnchors"/> is non-null and non-empty, those anchors flow
-    /// into <see cref="ArtifactEntry.RetrievalAnchors"/> and feed BM25 via TF seeding.
-    /// The default-args overload (without anchors) calls this with null, preserving
-    /// baseline behavior.
+    /// Full ingest overload. Agent anchors flow into <see cref="ArtifactEntry.RetrievalAnchors"/>
+    /// and seed BM25 at +2; agent typed keywords are appended to <see cref="ArtifactEntry.Keywords"/>
+    /// (for the field scorer) and their tokenized values seed BM25 at +5 — prod-faithful weights
+    /// (Store: agent keywords +5, anchors +2). Both null preserves baseline behavior.
     /// </summary>
-    public async Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? agentAnchors, CancellationToken ct = default)
+    public async Task IngestAsync(
+        HaystackDoc doc,
+        IReadOnlyList<string>? agentAnchors,
+        IReadOnlyList<string>? agentKeywords,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ct.ThrowIfCancellationRequested();
 
         if (!_chunked)
         {
-            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, agentAnchors, ct);
+            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, agentAnchors, agentKeywords, ct);
             return;
         }
 
-        // Chunked path: slice via prod's TextChunker so window boundaries match prod
-        // semantics, ingest each window as its own ArtifactEntry keyed by
-        // `{parentId}::chunk_{i}`. RetrieveAsync collapses chunks back to one hit per
-        // parent. Short docs (≤ windowSize) produce a single chunk and behave like
-        // the whole-doc path — that's TextChunker's contract.
         var windows = TextChunker.SliceWindows(doc.Text, _chunkWindowSize, _chunkOverlap);
         if (windows.Count == 0) return;
         foreach (var (idx, text) in windows)
         {
             string chunkId = $"{doc.Id}{ChunkSeparator}{idx}";
-            await IngestEntryAsync(chunkId, text, doc.Timestamp, agentAnchors, ct);
+            await IngestEntryAsync(chunkId, text, doc.Timestamp, agentAnchors, agentKeywords, ct);
         }
     }
 
     private async Task IngestEntryAsync(
         string id, string text, DateTimeOffset? timestamp,
-        IReadOnlyList<string>? agentAnchors, CancellationToken ct)
+        IReadOnlyList<string>? agentAnchors, IReadOnlyList<string>? agentKeywords, CancellationToken ct)
     {
         string sanitized = SanitizeName(id);
         var (keywords, tf) = TextAnalysis.AnalyzeText(text);
 
-        // Materialise agent anchors as a plain array — the storage layer expects one
-        // and the TF-seeding loop below iterates once.
+        // Materialise agent signals as plain arrays.
         string[]? anchorSource = agentAnchors is { Count: > 0 }
             ? (agentAnchors as string[] ?? agentAnchors.ToArray())
             : null;
+        string[]? keywordSource = agentKeywords is { Count: > 0 }
+            ? (agentKeywords as string[] ?? agentKeywords.ToArray())
+            : null;
 
-        // Seed anchor-derived tokens into the TF dict so BM25 picks up the
-        // query-vocabulary terms. Mirrors the prod-path semantics: OrdinalIgnoreCase
-        // comparer, additive merge with text-derived TF, +2 weight per anchor token.
+        // Seed agent-derived tokens into the TF dict. Prod-faithful weights: anchor
+        // tokens +2 (Store anchor seeding), typed-keyword VALUE tokens +5 (Store agent
+        // keyword seeding). IndexTokensForKeyword strips the type prefix and tokenizes
+        // the value so "topic:home renovation" seeds [home, renovation], not a dead
+        // monolithic key.
         Dictionary<string, int> mergedTf = tf;
-        if (anchorSource is { Length: > 0 })
+        if (anchorSource is { Length: > 0 } || keywordSource is { Length: > 0 })
         {
             mergedTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var (k, v) in tf)
@@ -177,35 +183,44 @@ public sealed class ScriniaRetriever : IRetriever
                 mergedTf.TryGetValue(k, out int existing);
                 mergedTf[k] = existing + v;
             }
-            foreach (string anchor in anchorSource)
+            if (anchorSource is { Length: > 0 })
             {
-                foreach (string token in TextAnalysis.Tokenize(anchor))
-                {
-                    mergedTf.TryGetValue(token, out int count);
-                    mergedTf[token] = count + 2;
-                }
+                foreach (string anchor in anchorSource)
+                    foreach (string token in TextAnalysis.Tokenize(anchor))
+                    {
+                        mergedTf.TryGetValue(token, out int count);
+                        mergedTf[token] = count + 2;
+                    }
+            }
+            if (keywordSource is { Length: > 0 })
+            {
+                foreach (string kw in keywordSource)
+                    foreach (string token in TextAnalysis.IndexTokensForKeyword(kw))
+                    {
+                        mergedTf.TryGetValue(token, out int count);
+                        mergedTf[token] = count + 5;
+                    }
             }
         }
 
+        // Entry keywords = auto-extracted ∪ typed keywords, so the field scorer's
+        // exact/contains paths see the full `prefix:value` tags.
+        string[] entryKeywords = keywordSource is { Length: > 0 }
+            ? keywords.Concat(keywordSource).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+            : keywords;
+
         var entry = new ArtifactEntry(
-            // Description and Name are both scored by the field scorer; we keep the
-            // benchmark doc ID *only* in Uri so query tokens never accidentally match
-            // an ID component (e.g. "user" / "msg" in `convomem_user_5_msg_12`).
             Name: sanitized,
             Uri: $"bench://{id}",
             OriginalBytes: text.Length,
             ChunkCount: 0,
             CreatedAt: timestamp ?? DateTimeOffset.UtcNow,
             Description: string.Empty,
-            Keywords: keywords,
+            Keywords: entryKeywords,
             TermFrequencies: mergedTf,
             ContentPreview: text,
             RetrievalAnchors: anchorSource);
 
-        // FileMemoryStore.Upsert isn't thread-safe — serialize it across concurrent
-        // doc ingests (parallel mode). Embedding call is awaited OUTSIDE the lock so
-        // multiple model2vec/vulkan calls can run concurrently; only the cache write
-        // is serialized via ConcurrentDictionary.
         lock (_ingestLock)
         {
             _store.Upsert(entry);

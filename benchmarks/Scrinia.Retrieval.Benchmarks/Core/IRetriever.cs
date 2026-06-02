@@ -24,6 +24,15 @@ public interface IRetriever : IAsyncDisposable
         IngestAsync(doc, ct);
 
     /// <summary>
+    /// Ingest overload that additionally accepts agent-supplied typed keywords
+    /// (<c>entity:</c>/<c>topic:</c> tags). Default forwards to the anchors overload, dropping
+    /// the keywords — implementations that participate in the typed-keyword experiment
+    /// (currently <c>ScriniaRetriever</c>) override this to index keyword values into BM25.
+    /// </summary>
+    Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? anchors, IReadOnlyList<string>? keywords, CancellationToken ct = default) =>
+        IngestAsync(doc, anchors, ct);
+
+    /// <summary>
     /// Returns up to <paramref name="topK"/> ranked hits for <paramref name="query"/>.
     /// </summary>
     Task<IReadOnlyList<RetrievalHit>> RetrieveAsync(string query, int topK, CancellationToken ct = default);
