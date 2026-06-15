@@ -1152,7 +1152,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         => SearchAll(query, scopes, limit, supplementalScores: null);
 
     public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit,
-        IReadOnlyDictionary<string, double>? supplementalScores)
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
     {
         if (string.IsNullOrWhiteSpace(query))
             return [];
@@ -1165,7 +1166,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // shared file-lock and copies the entry list; on Synology Drive sync setups the
         // lock-file acquisition alone is non-trivial wear over a long daemon session.
         var topics = BuildTopicInfosFromCandidates(candidates);
-        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores);
+        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores, entityGraphScores);
     }
 
     private static List<TopicInfo> BuildTopicInfosFromCandidates(IReadOnlyList<ScopedArtifact> candidates)
@@ -1224,10 +1225,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// Efficient override of the default interface method: filters candidates and topics
     /// at scope-resolution level before searching.
     /// </summary>
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics)
+    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
     {
         if (string.IsNullOrWhiteSpace(excludeTopics))
-            return SearchAll(query, scopes, limit);
+            return SearchAll(query, scopes, limit, supplementalScores: null, entityGraphScores);
 
         if (string.IsNullOrWhiteSpace(query))
             return [];
@@ -1238,7 +1240,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // candidates, so building topic infos from this filtered set automatically gives us
         // the same shape as GatherTopicInfos+filter without re-LoadIndex-ing.
         var topics = BuildTopicInfosFromCandidates(candidates);
-        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores: null);
+        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores: null, entityGraphScores);
     }
 
     /// <summary>

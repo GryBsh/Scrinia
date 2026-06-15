@@ -143,16 +143,22 @@ public sealed class PluginPipeline
         IMemoryStore store, string query, string? scopes, int limit, CancellationToken ct = default)
     {
         var contributor = SearchContributorContext.Current;
+        var entityContributor = EntityGraphScoreContext.Current;
 
         IReadOnlyDictionary<string, double>? supplemental = null;
-        if (contributor is not null)
+        IReadOnlyDictionary<string, double>? entityScores = null;
+        if (contributor is not null || entityContributor is not null)
         {
             var candidates = store.ListScoped(scopes);
-            supplemental = await contributor.ComputeScoresAsync(query, candidates, store, ct);
+            if (contributor is not null)
+                supplemental = await contributor.ComputeScoresAsync(query, candidates, store, ct);
+            if (entityContributor is not null)
+                entityScores = await entityContributor.ComputeScoresAsync(query, candidates, store, ct);
         }
 
-        return supplemental is { Count: > 0 }
-            ? store.SearchAll(query, scopes, limit, supplemental)
+        // Entity-graph scores are a separate fusion source (not summed into supplemental).
+        return supplemental is { Count: > 0 } || entityScores is { Count: > 0 }
+            ? store.SearchAll(query, scopes, limit, supplemental, entityScores)
             : store.SearchAll(query, scopes, limit);
     }
 }

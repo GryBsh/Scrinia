@@ -31,6 +31,11 @@ scrinia-test/
 
 # Downloaded models (runtime, via scri setup)
 /models/
+# Benchmark models (downloaded at runtime; ~45MB ONNX/safetensors binaries)
+/benchmarks/Scrinia.Retrieval.Benchmarks/models/
+
+# Roslyn / MSBuild language-server caches
+*.lscache
 
 # Local misc files
 .fake

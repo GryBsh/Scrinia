@@ -166,7 +166,8 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         IEnumerable<ScopedArtifact> candidates,
         IEnumerable<TopicInfo> topics,
         int limit,
-        IReadOnlyDictionary<string, double>? supplementalScores)
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
     {
         if (string.IsNullOrWhiteSpace(query))
             return [];
@@ -224,7 +225,7 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
 
         if (_options.Fusion == FusionMode.Rrf)
         {
-            FuseRrf(query, candidateList, entryBm25, chunkBm25List, supplementalScores, TryInsert);
+            FuseRrf(query, candidateList, entryBm25, chunkBm25List, supplementalScores, entityGraphScores, TryInsert);
         }
         else
         {
@@ -234,7 +235,10 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
                 double fieldScore = ScoreEntry(query, candidate.Entry);
                 double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
                 double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
-                TryInsert(candidate, fieldScore + normalizedBm25 * Bm25Weight + supplemental,
+                // Entity-graph PPR is its own additive source (keyed at entry level), not folded
+                // into supplemental — so it stays a distinct signal under any fusion mode.
+                double entityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
+                TryInsert(candidate, fieldScore + normalizedBm25 * Bm25Weight + supplemental + entityGraph,
                     total => new EntryResult(candidate, total));
             }
 
@@ -245,7 +249,9 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
                 double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
                 double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
                 double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
-                TryInsert(candidate, chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental,
+                // Entity scores are entry-level; reuse the parent's value for chunk cells.
+                double chunkEntityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
+                TryInsert(candidate, chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental + chunkEntityGraph,
                     total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
             }
         }
@@ -614,13 +620,14 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
     private const double RrfK = 60.0;
 
     /// <summary>
-    /// Reciprocal Rank Fusion across the three retrieval signals — field-match score,
-    /// raw BM25, and supplemental (embedding) score. Builds a unified cell list across
-    /// entry-level and chunk-level candidates, ranks each cell independently within each
-    /// source, then sums <c>1/(k + rank)</c> contributions. Cells with zero score in a
-    /// source contribute nothing from that source — the standard "not in this source's
-    /// results" semantics. Each cell is then passed to the shared <paramref name="tryInsert"/>
-    /// so recency composition and dedup happen identically to the sum path.
+    /// Reciprocal Rank Fusion across the retrieval signals — field-match score, raw BM25,
+    /// supplemental (embedding) score, and the entity-graph PPR score. Builds a unified cell
+    /// list across entry-level and chunk-level candidates, ranks each cell independently within
+    /// each source, then sums <c>1/(k + rank)</c> contributions. Cells with zero score in a
+    /// source contribute nothing from that source — the standard "not in this source's results"
+    /// semantics, so an empty entity-graph dict leaves the existing three-source fusion
+    /// unchanged. Each cell is then passed to the shared <paramref name="tryInsert"/> so recency
+    /// composition and dedup happen identically to the sum path.
     /// </summary>
     private void FuseRrf(
         string query,
@@ -628,17 +635,20 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
         double[] entryBm25,
         List<(int candidateIdx, int chunkIdx, double rawBm25)> chunkBm25List,
         IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores,
         Action<ScopedArtifact, double, Func<double, SearchResult>> tryInsert)
     {
         int cellCount = candidateList.Count + chunkBm25List.Count;
         if (cellCount == 0) return;
 
-        // Cell layout: entries first [0..candidateList.Count), then chunks. Field scores
-        // and supplementals are computed eagerly because we need all three signals to
-        // build per-source rankings before any single cell can be fused.
+        // Cell layout: entries first [0..candidateList.Count), then chunks. All signals are
+        // computed eagerly because we need them to build per-source rankings before any single
+        // cell can be fused. Entity-graph scores are entry-level (keyed "{scope}|{name}"), so
+        // chunk cells reuse their parent's value.
         var fieldScores = new double[cellCount];
         var bm25Scores = new double[cellCount];
         var supplementals = new double[cellCount];
+        var entityScores = new double[cellCount];
 
         for (int i = 0; i < candidateList.Count; i++)
         {
@@ -646,6 +656,7 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             fieldScores[i] = ScoreEntry(query, candidate.Entry);
             bm25Scores[i] = entryBm25[i];
             supplementals[i] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
+            entityScores[i] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
         }
 
         for (int ci = 0; ci < chunkBm25List.Count; ci++)
@@ -657,11 +668,13 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             fieldScores[idx] = ScoreChunkEntry(query, chunk, candidate.Entry);
             bm25Scores[idx] = rawBm25;
             supplementals[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
+            entityScores[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
         }
 
         int[] rankField = ComputeRanks(fieldScores);
         int[] rankBm25 = ComputeRanks(bm25Scores);
         int[] rankSupp = ComputeRanks(supplementals);
+        int[] rankEntity = ComputeRanks(entityScores);
 
         for (int ci = 0; ci < chunkBm25List.Count; ci++)
         {
@@ -669,16 +682,16 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
             var (candidateIdx, chunkIdx, _) = chunkBm25List[ci];
             var candidate = candidateList[candidateIdx];
             var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
-            double rrf = RrfScore(fieldScores[idx], bm25Scores[idx], supplementals[idx],
-                rankField[idx], rankBm25[idx], rankSupp[idx]);
+            double rrf = RrfScore(fieldScores[idx], bm25Scores[idx], supplementals[idx], entityScores[idx],
+                rankField[idx], rankBm25[idx], rankSupp[idx], rankEntity[idx]);
             if (rrf <= 0) continue;
             tryInsert(candidate, rrf, total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
         }
 
         for (int i = 0; i < candidateList.Count; i++)
         {
-            double rrf = RrfScore(fieldScores[i], bm25Scores[i], supplementals[i],
-                rankField[i], rankBm25[i], rankSupp[i]);
+            double rrf = RrfScore(fieldScores[i], bm25Scores[i], supplementals[i], entityScores[i],
+                rankField[i], rankBm25[i], rankSupp[i], rankEntity[i]);
             if (rrf <= 0) continue;
             var candidate = candidateList[i];
             tryInsert(candidate, rrf, total => new EntryResult(candidate, total));
@@ -686,13 +699,14 @@ internal sealed class WeightedFieldScorer : IMemorySearcher
     }
 
     private static double RrfScore(
-        double fieldScore, double bm25, double supplemental,
-        int rankField, int rankBm25, int rankSupp)
+        double fieldScore, double bm25, double supplemental, double entityGraph,
+        int rankField, int rankBm25, int rankSupp, int rankEntity)
     {
         double rrf = 0;
         if (fieldScore > 0) rrf += 1.0 / (RrfK + rankField);
         if (bm25 > 0) rrf += 1.0 / (RrfK + rankBm25);
         if (supplemental > 0) rrf += 1.0 / (RrfK + rankSupp);
+        if (entityGraph > 0) rrf += 1.0 / (RrfK + rankEntity);
         return rrf;
     }
 

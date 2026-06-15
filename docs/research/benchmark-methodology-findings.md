@@ -367,6 +367,94 @@ lexical-only stack.
 
 ---
 
+## 8. Entity-graph PPR is a within-pool precision lever on hard multi-hop categories — complementary to reranking; deep recall still unproven
+
+**The question.** The keyword+vector→rerank pipeline reorders a candidate pool but
+cannot surface a memory that shares no query overlap yet is *associated* to a query
+entity via a shared entity (query names A; the gold memory is about B, which co-occurs
+with A elsewhere). Does a Personalized PageRank signal over an agent-extracted entity
+graph lift those associated memories? Built as a bench-only floor (see
+`Core/EntityGraph.cs` + `scripts/entgraph-probe.ps1`): nodes are memories + `entity:`
+typed-keyword values; query entities are seeded **lexically** (no LLM); PPR (α=0.15, 20
+iterations) diffuses over the bipartite graph; per-memory mass is max-normalized and
+**summed into the existing embedding supplemental channel** (not a separate RRF source).
+Entity resolution is the crudest possible — **exact lowercased-string match** — so the
+result is a *lower bound*.
+
+**Setup.** MemBench multi-hop categories, prod-faithful, `--agent typed` (the entity
+source), `--top-k 200`. Baseline vs +`--entity-graph`, identical otherwise. Run both
+with `--rerank none` (isolate the first-stage effect) and with sentence-MaxSim (the
+production default). RecMultiSession n=500; aggregative, comparative n=1000.
+
+**R@50 is saturated (≈100%) on every cell** — MemBench per-question haystacks are tiny
+(~5–30 turns), so the whole haystack fits the top-50 (the finding #3 trap, small-haystack
+form). This experiment therefore measures **within-pool rank** (R@5/R@10/NDCG), *not* deep
+recall. The original "recover gold from rank >50" framing is structurally untestable here.
+
+**Without reranker** (first-stage pool):
+
+| category | R@5 | R@10 | flips@10 | NDCG@10 |
+|---|---|---|---|---|
+| RecMultiSession (weak: base 20% R@5) | 20.0 → 22.0 | 24.8 → 29.0 | **+24 / −3** | 0.070 → 0.077 |
+| aggregative (confident: 89.8%) | 89.8 → 89.7 | 93.2 → 93.0 | +1 / −3 | +0.001 |
+| comparative (saturated: 99.7%) | 99.7 → 99.7 | 100 → 100 | 0 / 0 | +0.002 |
+
+**With sentence-MaxSim** (production default):
+
+| category | R@5 | R@10 | flips@10 | NDCG@10 |
+|---|---|---|---|---|
+| **RecMultiSession** | 75.2 → **80.0** (+4.8) | 94.2 → **97.4** (+3.2) | **+16 / −0** | 0.384 → 0.399 (+0.015) |
+| aggregative | 90.6 → 90.6 | 93.0 → 93.0 | 0 / 0 | −0.001 |
+| comparative | 99.7 → 99.8 | 100 → 100 | +1 / −0 | +0.002 |
+
+**Three results.**
+
+1. **It lifts the weak pool, and the lift holds at scale.** RecMultiSession — the
+   genuinely hard, low-precision category — gains on both metrics in both reranker
+   conditions, with near-zero threshold regressions. This is the "value inversely
+   proportional to pool confidence" pattern (cf. #2/#5/#6) showing up for a graph signal:
+   where gold is buried in the pool, association pulls it up.
+
+2. **It stacks with the reranker — complementary, not redundant.** On top of a *reranked*
+   RecMultiSession baseline (sentence-MaxSim alone already lifts it 20→75 R@5), the entity
+   graph adds +4.8 R@5 / +3.2 R@10 with **+16/−0** top-10 flips. The reranker re-scores by
+   semantic similarity; the entity graph surfaces associative links the reranker can't see.
+   Contrast finding #5, where anchors and sentence-MaxSim were *substitutes* (both promoted
+   the same docs from the same ranks) — here the signals are orthogonal.
+
+3. **The confident-pool cost is a no-rerank artifact.** Without the reranker, aggregative
+   takes a small net-negative (R@5 +1/−2, R@10 +1/−3; rank tail 5 improved / 41 worsened).
+   *With* the reranker the threshold cost vanishes (flips 0/0; tail 4 improved / 19 worsened)
+   — the reranker absorbs the sub-threshold churn the PPR mass introduces. So an always-on
+   entity signal is near-harmless on confident pools under the production reranker;
+   conditional engagement (gate on pool weakness) is worthwhile for *cleanliness* but isn't
+   load-bearing for correctness.
+
+**Scope — what this validates and what it doesn't.**
+- **Validated:** entity-graph PPR is a within-pool *precision* lever — lifts buried-but-
+  associated gold into top-5/10 on hard multi-hop categories, stacks with reranking,
+  neutral-to-near-harmless elsewhere. Holds at n=500/1000.
+- **Not validated:** *deep recall* (pulling gold from rank >50 into the pool) — MemBench
+  can't test it (R@50 saturated). This is the original entity-linking-for-recall motivation
+  and remains open; it needs a large-haystack surface (LoCoMo dialog granularity /
+  LongMemEval), the same surfaces where finding #4 showed anchors close a real pool gap.
+
+**This is a floor.** Exact-string resolution under-links ("maria" ≠ "maria rodriguez"),
+lexical seeding misses obliquely-named entities, and summing into the embedding supplemental
+channel is the bluntest injection (PPR mass competes with embedding mass in one RRF source —
+the likely source of the tail churn). All three can only *cost* signal, so the production
+ceiling — real entity resolution, a dedicated RRF source — is plausibly higher than these
+numbers.
+
+**Decision: pursue the production path.** Entity-graph PPR earns a place as a complementary
+within-pool signal. Production shape: a real `ISearchScoreContributor` (not the summed-into-
+supplemental bench shortcut) backed by an entity index maintained incrementally via
+`IMemoryEventSink`, with conditional engagement. Validate the deep-recall claim on a
+large-haystack surface before treating the entity graph as a *recall* lever rather than a
+precision one.
+
+---
+
 ## Scorer semantics (context for reading any result file)
 
 `87dc093` also split the scorer to match each upstream evaluator verbatim. R@K is

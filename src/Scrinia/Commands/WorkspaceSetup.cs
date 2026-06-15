@@ -63,6 +63,11 @@ internal static class WorkspaceSetup
         string exeDir = AppContext.BaseDirectory;
         string modelsDir = Path.Combine(exeDir, "models");
 
+        // Entity-graph signal is embedder-independent and on by default — set it once here,
+        // unconditionally, so it's active regardless of which embeddings branch runs below
+        // (or none). Scored as its own fusion source; inert until memories carry entity: keywords.
+        EntityGraphScoreContext.Default = new EntityGraphScoreContributor();
+
         var embeddingOptions = BuildEmbeddingOptions();
         bool explicitHttpEmbeddings = IsHttpEmbeddingsProvider(embeddingOptions.Provider);
         bool pluginExeInstalled = IsEmbeddingsPluginInstalled();

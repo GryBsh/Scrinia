@@ -147,7 +147,7 @@ function Invoke-Bench {
 
     $allArgs = @($Subcommand, "--mode", $Mode, "--top-k", $TopK) + $BenchArgs + $ExtraArgs
     Write-Host ""
-    Write-Host "=== scrinia-bench $($allArgs -join ' ') ==="
+    Write-Host "=== scrinia-bench ==="
     dotnet run --project $BenchProject -c $Configuration --no-build -- @allArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "scrinia-bench $Subcommand exited $LASTEXITCODE"

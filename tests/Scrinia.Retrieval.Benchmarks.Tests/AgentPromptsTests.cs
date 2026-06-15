@@ -195,25 +195,27 @@ public class AgentPromptsTests
     }
 
     [Fact]
-    public void ParseTypedKeywords_KeepsEntityAndTopic_Lowercased()
+    public void ParseTypedKeywords_KeepsRealTypes_Lowercased()
     {
-        string raw = "entity:Maria\ntopic:Home Renovation\nentity:Toyota Camry";
+        string raw = "person:Maria\ntopic:Home Renovation\nthing:Toyota Camry";
         var tags = AgentPrompts.ParseTypedKeywords(raw);
-        tags.Should().Equal("entity:maria", "topic:home renovation", "entity:toyota camry");
+        tags.Should().Equal("person:maria", "topic:home renovation", "thing:toyota camry");
     }
 
     [Fact]
-    public void ParseTypedKeywords_DropsUnknownPrefixes()
+    public void ParseTypedKeywords_DropsUnknownAndLegacyEntityPrefixes()
     {
-        string raw = "entity:mara\ndate:2027-01-01\nperson:bob\nrandom:thing\ntopic:cooking";
+        // person/place/topic kept; date:/random: unknown and the legacy generic entity: dropped
+        // (the typed design replaced the single entity: bucket with real types).
+        string raw = "place:paris\ndate:2027-01-01\nperson:bob\nrandom:thing\nentity:mara\ntopic:cooking";
         var tags = AgentPrompts.ParseTypedKeywords(raw);
-        tags.Should().Equal("entity:mara", "topic:cooking");
+        tags.Should().Equal("place:paris", "person:bob", "topic:cooking");
     }
 
     [Fact]
     public void ParseTypedKeywords_DropsLinesWithoutPrefixValue()
     {
-        string raw = "entity:\n:orphan\njust some text\ntopic:music";
+        string raw = "person:\n:orphan\njust some text\ntopic:music";
         var tags = AgentPrompts.ParseTypedKeywords(raw);
         tags.Should().Equal("topic:music");
     }
@@ -221,17 +223,17 @@ public class AgentPromptsTests
     [Fact]
     public void ParseTypedKeywords_StripsBulletsAndQuotes()
     {
-        string raw = "- entity:alice\n* topic:travel\n1. \"entity:bob\"";
+        string raw = "- person:alice\n* topic:travel\n1. \"org:bob inc\"";
         var tags = AgentPrompts.ParseTypedKeywords(raw);
-        tags.Should().Equal("entity:alice", "topic:travel", "entity:bob");
+        tags.Should().Equal("person:alice", "topic:travel", "org:bob inc");
     }
 
     [Fact]
     public void ParseTypedKeywords_DedupsCaseInsensitively()
     {
-        string raw = "entity:Maria\nENTITY:maria\ntopic:cooking";
+        string raw = "person:Maria\nPERSON:maria\ntopic:cooking";
         var tags = AgentPrompts.ParseTypedKeywords(raw);
-        tags.Should().Equal("entity:maria", "topic:cooking");
+        tags.Should().Equal("person:maria", "topic:cooking");
     }
 
     [Fact]

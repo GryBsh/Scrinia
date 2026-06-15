@@ -27,11 +27,14 @@ public interface IMemoryStore
     IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20);
 
     /// <summary>
-    /// Searches with optional supplemental scores from plugins (e.g. embeddings).
-    /// Default implementation falls back to the standard SearchAll.
+    /// Searches with optional supplemental scores from plugins (e.g. embeddings) and an
+    /// optional entity-graph score channel scored as its own fusion source.
+    /// Default implementation falls back to the standard SearchAll (stores without a scorer
+    /// ignore both supplemental and entity-graph scores).
     /// </summary>
     IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit,
-        IReadOnlyDictionary<string, double>? supplementalScores)
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
         => SearchAll(query, scopes, limit);
 
     // Listing & Search with topic exclusion
@@ -59,10 +62,11 @@ public interface IMemoryStore
     /// <param name="scopes">Optional comma-separated scope filter.</param>
     /// <param name="limit">Maximum results to return.</param>
     /// <param name="excludeTopics">Optional comma-separated topic names to exclude (e.g. "plan,task,project,learn").</param>
-    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics)
+    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
         => string.IsNullOrWhiteSpace(excludeTopics)
-            ? SearchAll(query, scopes, limit)
-            : SearchAll(query, scopes, limit)
+            ? SearchAll(query, scopes, limit, supplementalScores: null, entityGraphScores)
+            : SearchAll(query, scopes, limit, supplementalScores: null, entityGraphScores)
                 .Where(r => !ShouldExcludeScope(GetResultScope(r), excludeTopics))
                 .ToList();
 

@@ -168,16 +168,20 @@ public static partial class AgentPrompts
     /// way <see cref="MaxAnchorsPerDoc"/> does for anchors.</summary>
     public const int MaxTypedKeywordsPerDoc = 8;
 
-    /// <summary>Allowed type prefixes this experiment indexes. Unknown prefixes
-    /// (date:, person:, random:) are dropped by <see cref="ParseTypedKeywords"/> — the
-    /// sweep deliberately scopes to entity + topic (see the design spec).</summary>
-    private static readonly string[] TypedKeywordPrefixes = ["entity", "topic"];
+    /// <summary>Allowed type prefixes this experiment indexes — the real entity types plus
+    /// topic. Mirrors <see cref="Scrinia.Core.Search.EntityGraph.RealTypes"/> (the production
+    /// graph's node types). Unknown prefixes (date:, random:, and the legacy generic entity:)
+    /// are dropped by <see cref="ParseTypedKeywords"/> so the generated tags exercise the typed
+    /// design, not the old single-bucket scheme.</summary>
+    private static readonly string[] TypedKeywordPrefixes = ["person", "place", "org", "thing", "topic"];
 
     public const string TypedKeywordsSystem =
         "You are helping index a memory for retrieval. List the ENTITIES and TOPICS this memory is about. " +
-        "Output one tag per line: `entity:<name>` for a person, place, or object; `topic:<theme>` for an " +
-        "activity, theme, or subject. Use short lowercased canonical forms (e.g. `entity:maria`, " +
-        "`topic:home renovation`). 3 to 8 tags. No commentary, no numbering, no bullets.";
+        "Output one tag per line as `type:value`, using one of these types: " +
+        "`person:` (a named person), `place:` (a location), `org:` (a company or group), " +
+        "`thing:` (a named object or work), `topic:` (an activity, theme, or subject). " +
+        "Use short lowercased canonical forms (e.g. `person:maria`, `place:london`, `org:acme`, " +
+        "`thing:toyota camry`, `topic:home renovation`). 3 to 8 tags. No commentary, no numbering, no bullets.";
 
     /// <summary>Builds the typed-keyword user prompt from doc content (truncated to
     /// <see cref="MaxInputChars"/>). Content only — same anti-data-leakage contract as anchors.</summary>

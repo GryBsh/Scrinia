@@ -33,3 +33,26 @@ public static class SearchContributorContext
     /// <summary>Process-wide default used when no AsyncLocal value is set (CLI single-session mode).</summary>
     public static ISearchScoreContributor? Default { get => _default; set => _default = value; }
 }
+
+/// <summary>
+/// Parallel to <see cref="SearchContributorContext"/>, but for the entity-graph signal,
+/// which is scored as its <i>own</i> source rather than summed into the supplemental
+/// channel (see <see cref="EntityGraphScoreContributor"/>). Kept separate so the entity
+/// scores reach <c>WeightedFieldScorer</c> as a distinct fusion source instead of being
+/// merged with embeddings/path-segment.
+/// <para>Same Current/Default contract and rationale as
+/// <see cref="SearchContributorContext"/>: the server sets <see cref="Current"/> per
+/// request; the CLI sets <see cref="Default"/> because AsyncLocal doesn't propagate
+/// through the generic host to MCP tool handlers.</para>
+/// </summary>
+public static class EntityGraphScoreContext
+{
+    private static readonly AsyncLocal<ISearchScoreContributor?> _current = new();
+    private static ISearchScoreContributor? _default;
+
+    /// <summary>Gets/sets the entity-graph contributor for the current async context, falling back to <see cref="Default"/>.</summary>
+    public static ISearchScoreContributor? Current { get => _current.Value ?? _default; set => _current.Value = value; }
+
+    /// <summary>Process-wide default used when no AsyncLocal value is set (CLI single-session mode).</summary>
+    public static ISearchScoreContributor? Default { get => _default; set => _default = value; }
+}

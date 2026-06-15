@@ -173,22 +173,22 @@ public class LlmAgentHarnessTests : IDisposable
     [Fact]
     public async Task GenerateTypedKeywordsAsync_HitsLlmOnce_AndCachesResult()
     {
-        var fake = new RecordingFakeLlm { CompleteResult = "entity:maria\ntopic:home renovation" };
+        var fake = new RecordingFakeLlm { CompleteResult = "person:maria\ntopic:home renovation" };
         var harness = new LlmAgentHarness(
             fake, NewCache(), "fake", "test-model", AgentModes.TypedKeywordsOnly);
 
         var first = await harness.GenerateTypedKeywordsAsync("content body", CancellationToken.None);
         var second = await harness.GenerateTypedKeywordsAsync("content body", CancellationToken.None);
 
-        first.Should().NotBeNull().And.Equal("entity:maria", "topic:home renovation");
-        second.Should().NotBeNull().And.Equal("entity:maria", "topic:home renovation");
+        first.Should().NotBeNull().And.Equal("person:maria", "topic:home renovation");
+        second.Should().NotBeNull().And.Equal("person:maria", "topic:home renovation");
         fake.CompleteCallCount.Should().Be(1);
     }
 
     [Fact]
     public async Task GenerateTypedKeywordsAsync_DisabledMode_ReturnsNull_WithoutCallingLlm()
     {
-        var fake = new RecordingFakeLlm { CompleteResult = "entity:x" };
+        var fake = new RecordingFakeLlm { CompleteResult = "person:x" };
         var harness = new LlmAgentHarness(
             fake, NewCache(), "fake", "test-model", AgentModes.AnchorsOnly);  // typed disabled
 
@@ -213,7 +213,7 @@ public class LlmAgentHarnessTests : IDisposable
     public async Task GenerateTypedKeywordsAsync_PromptCarriesOnlyDocContent()
     {
         const string docContent = "Maria spent the weekend renovating her kitchen.";
-        var fake = new RecordingFakeLlm { CompleteResult = "entity:maria" };
+        var fake = new RecordingFakeLlm { CompleteResult = "person:maria" };
         var harness = new LlmAgentHarness(
             fake, NewCache(), "fake", "test-model", AgentModes.TypedKeywordsOnly);
 

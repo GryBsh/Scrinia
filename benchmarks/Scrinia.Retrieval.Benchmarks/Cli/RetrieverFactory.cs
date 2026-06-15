@@ -65,6 +65,14 @@ internal static class RetrieverFactory
         double maxSimWeight = ParseDouble(Program.Flag(args, "--maxsim-weight"),
             SentenceMaxSimReranker.DefaultFirstStageWeight);
 
+        // Entity-graph recall probe. Off unless --entity-graph on|true. The entity source
+        // is the agent's `entity:` typed keywords, so BuildAgentAsync force-enables typed
+        // extraction whenever this is set (see below).
+        bool entityGraph = ParseBool(Program.Flag(args, "--entity-graph"));
+        double entityGraphAlpha = ParseDouble(Program.Flag(args, "--entity-graph-alpha"), 0.15);
+        int entityGraphIterations = ParseInt(Program.Flag(args, "--entity-graph-iterations"), 20);
+        double entityGraphWeight = ParseDouble(Program.Flag(args, "--entity-graph-weight"), 50.0);
+
         var rankerOptions = RankerOptions.Default with
         {
             AlphaRelevance = 1.0,
@@ -104,7 +112,11 @@ internal static class RetrieverFactory
             chunked: chunked,
             chunkWindowSize: chunkWindow,
             chunkOverlap: chunkOverlap,
-            buildSentenceIndex: buildSentenceIndex);
+            buildSentenceIndex: buildSentenceIndex,
+            entityGraphEnabled: entityGraph,
+            entityGraphAlpha: entityGraphAlpha,
+            entityGraphIterations: entityGraphIterations,
+            entityGraphWeight: entityGraphWeight);
 
         // Two-step wiring: reranker reads the retriever's sentence index via a
         // delegate, so it can only be constructed AFTER the retriever exists.
@@ -152,6 +164,11 @@ internal static class RetrieverFactory
     public static async Task<IAgentHarness> BuildAgentAsync(string[] args, CancellationToken ct)
     {
         AgentModes modes = ParseAgentMode(Program.Flag(args, "--agent"));
+        // The entity-graph probe sources its entities from the `entity:` typed keywords, so
+        // force typed extraction on whenever --entity-graph is set — even if the user didn't
+        // list `typed` in --agent. Without this the graph would be empty.
+        if (ParseBool(Program.Flag(args, "--entity-graph")))
+            modes = modes with { TypedKeywords = true };
         if (!modes.AnyEnabled) return NoOpAgentHarness.Instance;
 
         string provider = Program.Flag(args, "--agent-provider")
@@ -261,6 +278,15 @@ internal static class RetrieverFactory
         // Non-default α suffix applies whenever the reranker is active (which is the
         // default). Result files for different sweeps don't collide.
         if (Program.Flag(args, "--maxsim-weight") is { } mw) tags.Add($"a{mw}");
+        // Entity-graph probe tag, with optional alpha/iterations suffixes so sweep cells
+        // don't collide (e.g. entgraph, entgrapha0.25, entgraphi40).
+        if (Program.Flag(args, "--entity-graph") is { } eg && ParseBool(eg))
+        {
+            string egLabel = "entgraph";
+            if (Program.Flag(args, "--entity-graph-alpha") is { } ega) egLabel += $"a{ega}";
+            if (Program.Flag(args, "--entity-graph-iterations") is { } egi) egLabel += $"i{egi}";
+            tags.Add(egLabel);
+        }
         return tags.Count == 0 ? baseLabel : baseLabel + "__" + string.Join("_", tags);
     }
 
@@ -278,4 +304,10 @@ internal static class RetrieverFactory
     private static int ParseInt(string? raw, int @default) =>
         raw is not null && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v)
             ? v : @default;
+
+    private static bool ParseBool(string? raw) => raw?.ToLowerInvariant() switch
+    {
+        "on" or "true" or "1" or "yes" => true,
+        _ => false,
+    };
 }

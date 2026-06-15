@@ -112,7 +112,12 @@ public sealed partial class ScriniaMcpTools
                      "Naming: '/path/to/memory' (v2 path), 'topic:subject' (v1 compat), '/temp/subject' (ephemeral).")] string name,
         [Description("Optional description. If empty, the first 200 characters of content are used.")] string description = "",
         [Description("Optional tags for categorization.")] string[]? tags = null,
-        [Description("Optional keywords for search. Merged with auto-extracted content terms.")] string[]? keywords = null,
+        [Description("Optional keywords for search. Merged with auto-extracted content terms. " +
+                     "Prefer TYPED keywords using one of these types: 'person:<name>', 'place:<name>', " +
+                     "'org:<name>', 'thing:<name>', 'topic:<theme>'. These feed an entity graph, so a query " +
+                     "mentioning one entity can surface this memory via a related entity even with no text overlap. " +
+                     "Use the same canonical name for an entity across memories; the type lets a person and a " +
+                     "place that share a name stay distinct.")] string[]? keywords = null,
         [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content. Indexed for both field-score lookup and BM25 via term-frequency seeding.")]
         string[]? anchors = null,
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
@@ -684,21 +689,28 @@ public sealed partial class ScriniaMcpTools
         // alike so a single signal carries through all three.
         string effectiveQuery = string.IsNullOrWhiteSpace(context) ? query : $"{query} {context}";
 
-        // Compute supplemental scores from plugin (e.g. embeddings) if available
-        // Use excludeTopics-filtered candidates so excluded topics don't influence embeddings scoring
+        // Compute supplemental (e.g. embeddings) and entity-graph scores from plugins if available.
+        // Both run over the same excludeTopics-filtered candidates so excluded topics don't
+        // influence scoring. The entity-graph signal is a separate fusion source, not summed
+        // into supplemental — see EntityGraphScoreContributor.
         var contributor = SearchContributorContext.Current;
+        var entityContributor = EntityGraphScoreContext.Current;
         IReadOnlyDictionary<string, double>? supplemental = null;
-        if (contributor is not null)
+        IReadOnlyDictionary<string, double>? entityScores = null;
+        if (contributor is not null || entityContributor is not null)
         {
             var candidates = store.ListScoped(scopes, excludeTopics);
-            supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
+            if (contributor is not null)
+                supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
+            if (entityContributor is not null)
+                entityScores = await entityContributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
         }
 
         IReadOnlyList<SearchResult> matches = supplemental is { Count: > 0 }
-            ? store.SearchAll(effectiveQuery, scopes, limit, supplemental)
+            ? store.SearchAll(effectiveQuery, scopes, limit, supplemental, entityScores)
                 .Where(r => !IMemoryStore.ShouldExcludeScope(IMemoryStore.GetResultScope(r), excludeTopics))
                 .ToList()
-            : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics);
+            : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics, entityScores);
 
         // Post-filter by path prefix and required tags. Both are AND filters — the candidate
         // must satisfy every active constraint. Filters apply uniformly to entry, chunk, and

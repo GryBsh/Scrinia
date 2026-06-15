@@ -25,7 +25,11 @@ public sealed class LlmAgentHarness : IAgentHarness
     private const string AnchorsOp = "anchors";
     private const string RewriteOp = "rewrite";
     private const string HydeOp = "hyde";
-    private const string TypedKeywordsOp = "typed";
+    // Versioned: the cache key hashes document content only, NOT the prompt, so a prompt or
+    // type-set change would otherwise silently reuse stale tags. Bumped from "typed" (v1:
+    // single generic entity: + topic:) to "typed2" when the prompt moved to real entity types
+    // (person/place/org/thing/topic) — forces regeneration so the probe tests the typed design.
+    private const string TypedKeywordsOp = "typed2";
 
     // Per-op timeout budgets. Anchors get the largest budget because we're asking
     // for a multi-line list; rewrite/HyDE are short single-output ops.

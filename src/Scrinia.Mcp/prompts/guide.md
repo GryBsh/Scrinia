@@ -47,6 +47,17 @@ When you learn something, fix a bug, get corrected, or discover a convention —
 
 Don't store: transient working state (use `/temp/`), things derivable from code or git history (the commit message is the record), or content already covered by an existing memory (append or update instead).
 
+## Typed keywords help retrieval link across memories
+
+When you `remember`, prefer **typed keywords** over bare terms. Use one of five types: `person:<name>`, `place:<name>`, `org:<name>`, `thing:<name>`, `topic:<theme>`. Example: `keywords: ["org:acme", "person:maria", "topic:contract renewal"]`.
+
+All five types feed an entity graph: a later search that mentions one entity can surface memories about *related* entities even when they share no words with the query (e.g. asking about "Acme" can pull up a memory about Maria, who works there). Bare keywords only help exact lexical matching.
+
+Two habits make the links work:
+
+- **Name an entity the same way every time.** The graph links memories through shared entity *values*, so `person:maria` in one memory and `person:maria` in another connect; `person:maria` and `person:maria rodriguez` do not.
+- **Type honestly.** The type distinguishes a person and a place that share a name (`person:paris` vs `place:paris`), so they don't get falsely linked. Topics participate too, so `topic:`-tagged memories link by theme.
+
 ## Paths
 
 Paths organize memories hierarchically and are auto-tagged for search:
