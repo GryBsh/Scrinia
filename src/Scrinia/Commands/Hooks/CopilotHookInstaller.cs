@@ -34,6 +34,8 @@ public sealed class CopilotHookInstaller : IAgentHookInstaller
 
     public string CliName => "GitHub Copilot";
 
+    public string ClientId => "copilot";
+
     public bool IsCliInstalled() => _runner.IsExecutableOnPath("copilot");
 
     public bool InstallHooks(HookScope scope, string? workspaceRoot, IReadOnlyList<HookSpec> specs)

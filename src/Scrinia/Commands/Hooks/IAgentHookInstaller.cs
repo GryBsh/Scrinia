@@ -40,6 +40,14 @@ public interface IAgentHookInstaller
     /// <summary>Human-readable label shown in prompts and logs (e.g. "Claude Code").</summary>
     string CliName { get; }
 
+    /// <summary>
+    /// Stable client identifier stamped into hook commands as <c>--client {ClientId}</c> so
+    /// <c>scri hint</c> / <c>scri restore</c> tailor their payload to this CLI's injection channel
+    /// (e.g. <c>"codex"</c>, <c>"claude"</c>, <c>"copilot"</c>). Must match a value
+    /// <see cref="Scrinia.Commands.HintCommand.ParseClient"/> recognizes.
+    /// </summary>
+    string ClientId { get; }
+
     /// <summary>Cheap probe — does this CLI's exe exist on PATH (or in a known location)?</summary>
     bool IsCliInstalled();
 

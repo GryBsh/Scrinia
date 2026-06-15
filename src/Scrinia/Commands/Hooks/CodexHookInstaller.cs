@@ -31,6 +31,8 @@ public sealed class CodexHookInstaller : IAgentHookInstaller
 
     public string CliName => "Codex";
 
+    public string ClientId => "codex";
+
     public bool IsCliInstalled() => _runner.IsExecutableOnPath("codex");
 
     public bool InstallHooks(HookScope scope, string? workspaceRoot, IReadOnlyList<HookSpec> specs)

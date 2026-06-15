@@ -1,0 +1,43 @@
+---
+name: scrinia-memory
+description: Persistent, workspace-scoped project memory (past decisions, conventions, prior fixes, and context from earlier sessions) backed by the Scrinia MCP tools. Use when the user refers to earlier work or asks what was decided ("last time", "as we discussed", "what did we decide", "how did we handle X before"), or before starting a non-trivial or unfamiliar task in this project where prior decisions or conventions likely exist. Also use right after establishing a decision, convention, or non-obvious fix worth persisting. Not for self-contained one-off requests answerable from the code in view (renames, "what does this function do", simple syntax or lookup questions).
+---
+
+# Scrinia memory
+
+This workspace uses **Scrinia** for persistent, project-scoped memory, exposed as MCP tools. Scrinia
+is the single source of truth for project knowledge — decisions, conventions, findings, and skills.
+
+## When to act
+
+- **Search first.** For a new task, joining the project, or any question about prior decisions, call
+  `memory_search({ query: "..." })` before doing the work. Skip it only for fully self-contained
+  requests (rename a variable, answer from code already in front of you).
+- **Store proactively.** When you learn something non-obvious, fix a bug, get corrected, or discover
+  a convention, call `memory_remember({ path, content: [...] })` immediately. If you had to figure it
+  out, the next agent shouldn't have to.
+- **Restore after a reset.** `memory_restore()` resumes agent context (profile, patterns, today's
+  session log, available skills, unresolved merge conflicts).
+
+## Core tools
+
+```
+guide()                                           — full primer; call at session start
+memory_search({ query })                          — find what you know
+memory_remember({ path, content: [...] })         — store (each array element = one chunk)
+memory_recall({ path })                           — read it back
+memory_append({ path, content })                  — add a chunk
+memory_list({ scopes?, mode? })                   — browse
+memory_restore()                                  — resume after context loss
+```
+
+## Conventions
+
+- **Paths** are hierarchical and auto-tagged for search (`/api/auth-flow` → `[api, auth, flow]`).
+  Reserved prefixes: `/skill/`, `/agent/`, `/patterns/`, `/findings/`, `/learn/`, `/sessions/`,
+  `/checkpoint/`, `/temp/` (ephemeral).
+- **Typed keywords** link memories across the entity graph. Prefer `person:`, `place:`, `org:`,
+  `thing:`, `topic:` over bare terms, and name an entity the same way every time.
+- **`.scrinia/` changes are part of your commits.**
+
+Call `guide()` for the full primer — chunks, skills, review markers, and recovery details.

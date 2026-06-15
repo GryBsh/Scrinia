@@ -45,6 +45,8 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
 
     public string CliName => "Claude Code";
 
+    public string ClientId => "claude";
+
     public bool IsCliInstalled() => _runner.IsExecutableOnPath("claude");
 
     public bool InstallHooks(HookScope scope, string? workspaceRoot, IReadOnlyList<HookSpec> specs)

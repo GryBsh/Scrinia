@@ -259,6 +259,8 @@ builder.Services
     .AddMcpServer(options =>
     {
         options.ServerInfo = new() { Name = "scrinia", Version = serverVersion };
+        // Read as server guidance by tools-only CLIs (Codex/Copilot); same baseline as AGENTS.md.
+        options.ServerInstructions = ScriniaPrimer.McpInstructions;
     })
     .WithHttpTransport(options =>
     {
@@ -275,11 +277,16 @@ builder.Services
                 throw new UnauthorizedAccessException($"Access denied to store '{storeName}'.");
             MemoryStoreContext.Current = sm.GetStore(storeName);
             SearchContributorContext.Current = httpContext.RequestServices.GetService<ISearchScoreContributor>();
+            // Entity-graph signal is embedder-independent and on by default; stateless, so a
+            // per-request instance is negligible against the O(N) scan it performs.
+            EntityGraphScoreContext.Current = new EntityGraphScoreContributor();
             MemoryEventSinkContext.Current = httpContext.RequestServices.GetService<IMemoryEventSink>();
             return Task.CompletedTask;
         };
     })
-    .WithTools<ScriniaMcpTools>();
+    .WithTools<ScriniaMcpTools>()
+    .WithPrompts<ScriniaMcpPrompts>()
+    .WithResources<ScriniaMcpResources>();
 
 // JSON
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -416,6 +423,7 @@ app.Use(async (context, next) =>
 app.Use(async (context, next) =>
 {
     SearchContributorContext.Current = context.RequestServices.GetService<ISearchScoreContributor>();
+    EntityGraphScoreContext.Current = new EntityGraphScoreContributor();
     await next();
 });
 

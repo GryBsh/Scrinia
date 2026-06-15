@@ -76,11 +76,15 @@ public class ScriniaCommands
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
 
-        // Register the MCP server with stdio transport and our tool classes.
+        // Register the MCP server with stdio transport and our tool classes. The server
+        // `instructions` field is read as guidance by tools-only CLIs (Codex/Copilot); prompts and
+        // resources surface on clients that support them (Claude Code, Gemini, OpenCode).
         builder.Services
-            .AddMcpServer()
+            .AddMcpServer(options => options.ServerInstructions = ScriniaPrimer.McpInstructions)
             .WithStdioServerTransport()
-            .WithTools<ScriniaMcpTools>();
+            .WithTools<ScriniaMcpTools>()
+            .WithPrompts<ScriniaMcpPrompts>()
+            .WithResources<ScriniaMcpResources>();
 
         var host = builder.Build();
         await host.RunAsync(cancellationToken);
@@ -646,10 +650,12 @@ public class ScriniaCommands
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
     /// <param name="hook">Emit the agent-CLI hook envelope (JSON with hookSpecificOutput.additionalContext wrapping the YAML payload in &lt;scrinia-restored-memory&gt; tags with an imperative framing line). Used by `scri setup --hooks` SessionStart wiring. Human invocations of `scri restore` should leave this off — the YAML default is more readable.</param>
+    /// <param name="client">Agent CLI the hook payload is being formatted for (codex, claude, opencode, copilot). Only meaningful with --hook; tailors verbosity/envelope per client. Omit for the reference format.</param>
     public async Task<int> Restore(
         string? workspaceRoot = null,
         bool json = false,
         bool hook = false,
+        string? client = null,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -660,18 +666,10 @@ public class ScriniaCommands
 
         if (hook)
         {
-            // Wrap the YAML payload in the same hook envelope shape `scri hint` uses, with
-            // a header line that reads as an instruction to the model (not a status dump).
-            // The agent CLI unwraps additionalContext into the model's context off-transcript.
-            string payload =
-                "<scrinia-restored-memory>\n" +
-                "The following memories were saved during prior sessions in this workspace. " +
-                "Reference them when relevant; call memory_search({ query: '<name>' }) to retrieve " +
-                "the full content of any entry below.\n\n" +
-                yaml.TrimEnd() + "\n" +
-                "</scrinia-restored-memory>";
-
-            Console.WriteLine(HintCommand.BuildHookEnvelope("SessionStart", payload));
+            // Client-tailored restore payload (terser framing for Claude, bare payload for
+            // envelope-less clients). The agent CLI injects additionalContext into the model's
+            // context off-transcript; no --client → the frozen reference shape.
+            Console.WriteLine(HintCommand.FormatRestoreHook(yaml, HintCommand.ParseClient(client)));
             return 0;
         }
 
@@ -1075,25 +1073,34 @@ public class ScriniaCommands
     private static async Task<int> InstallHooksFlowAsync(bool project)
     {
         var scope = project ? HookScope.Project : HookScope.User;
-        string? workspaceRoot = scope == HookScope.Project ? ScriniaArtifactStore.WorkspaceRootPath : null;
+        string? hookWorkspaceRoot = scope == HookScope.Project ? ScriniaArtifactStore.WorkspaceRootPath : null;
 
         AnsiConsole.MarkupLine($"[bold]Agent CLI hooks ({scope})[/]");
         AnsiConsole.MarkupLine(
-            "  [dim]SessionStart → `scri restore`, UserPromptSubmit → `scri hint`.[/]");
+            "  [dim]SessionStart → `scri restore`, UserPromptSubmit → `scri hint` (tailored per client).[/]");
+        int configured = await AgentHookSetup.InstallAsync(scope, hookWorkspaceRoot);
 
-        int configured = await AgentHookSetup.InstallAsync(scope, workspaceRoot);
-        if (configured == 0)
+        // Artifacts are workspace-rooted regardless of hook scope — AGENTS.md/CLAUDE.md/plugin live
+        // in the repo and travel with it. This also covers OpenCode, which has no shell-hook channel.
+        AnsiConsole.MarkupLine("[bold]Workspace artifacts[/]");
+        AnsiConsole.MarkupLine(
+            "  [dim]AGENTS.md baseline, CLAUDE.md → @AGENTS.md, OpenCode plugin (workspace-rooted).[/]");
+        int artifacts = await AgentArtifactSetup.InstallAsync(ScriniaArtifactStore.WorkspaceRootPath);
+
+        if (configured == 0 && artifacts == 0)
         {
             AnsiConsole.MarkupLine(
-                "[yellow]No hooks installed.[/] Run with at least one supported CLI (claude) on PATH.");
+                "[yellow]Nothing installed.[/] Run with at least one supported CLI " +
+                "(claude, codex, copilot, opencode) on PATH.");
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[green]Installed hooks for {configured} agent CLI(s).[/]");
+        AnsiConsole.MarkupLine(
+            $"[green]Installed hooks for {configured} agent CLI(s); wrote {artifacts} workspace artifact(s).[/]");
         return 0;
     }
 
-    /// <summary>Removes scrinia-managed hooks from every detected CLI at the chosen scope.</summary>
+    /// <summary>Removes scrinia-managed hooks and workspace artifacts at the chosen scope.</summary>
     private static async Task<int> UninstallHooksFlowAsync(bool project)
     {
         var scope = project ? HookScope.Project : HookScope.User;
@@ -1101,9 +1108,13 @@ public class ScriniaCommands
 
         AnsiConsole.MarkupLine($"[bold]Removing scrinia hooks ({scope})[/]");
         int removed = await AgentHookSetup.UninstallAsync(scope, workspaceRoot);
-        if (removed == 0)
+
+        AnsiConsole.MarkupLine("[bold]Removing scrinia workspace artifacts[/]");
+        int artifactsRemoved = await AgentArtifactSetup.UninstallAsync(ScriniaArtifactStore.WorkspaceRootPath);
+
+        if (removed == 0 && artifactsRemoved == 0)
         {
-            AnsiConsole.MarkupLine("[dim]No supported agent CLIs detected on PATH.[/]");
+            AnsiConsole.MarkupLine("[dim]Nothing scrinia-managed found to remove.[/]");
         }
         return 0;
     }
@@ -1644,11 +1655,13 @@ public class ScriniaCommands
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="plain">Emit the human-readable single-line hint instead of the hook JSON envelope. Use for direct CLI invocation; hooks use the default JSON shape.</param>
     /// <param name="json">Emit raw structured HintResult JSON (count + matches array). For programmatic consumers.</param>
+    /// <param name="client">Agent CLI the hook payload is being formatted for (codex, claude, opencode, copilot). Stamped into each CLI's hook command at install time; tailors verbosity/envelope per client. Omit for the reference format.</param>
     public async Task<int> Hint(
         string? prompt = null,
         string? workspaceRoot = null,
         bool plain = false,
         bool json = false,
+        string? client = null,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -1717,9 +1730,11 @@ public class ScriniaCommands
         }
         else
         {
-            // Default: hook envelope. The agent CLIs unwrap additionalContext and inject
-            // it into the model's context discreetly (off-transcript on Claude Code).
-            Console.WriteLine(HintCommand.FormatHook(result));
+            // Default: hook payload, tailored to the invoking client. Envelope clients (Claude,
+            // Codex, Copilot) get the hookSpecificOutput JSON; OpenCode gets the bare payload its
+            // plugin injects directly. No --client → the frozen reference format.
+            Console.WriteLine(HintCommand.FormatHook(
+                result, "UserPromptSubmit", HintCommand.ParseClient(client)));
         }
         return 0;
     }

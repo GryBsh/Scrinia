@@ -27,6 +27,16 @@ public static class AgentHookSetup
     /// </summary>
     public static IReadOnlyList<HookSpec> DefaultHookSpecs => BuildDefaultHookSpecs();
 
+    /// <summary>
+    /// Returns <paramref name="spec"/> with <c>--client {clientId}</c> appended to its command, so
+    /// the invoked <c>scri hint</c>/<c>scri restore</c> formats its payload for that CLI. The base
+    /// <see cref="DefaultHookSpecs"/> stay the single source of truth; the client flag is the only
+    /// per-installer divergence. Reuse this anywhere specs are matched against installed commands
+    /// (e.g. a future status flow) so stamping stays consistent and drift-detection doesn't misfire.
+    /// </summary>
+    internal static HookSpec StampClient(HookSpec spec, string clientId) =>
+        spec with { Command = $"{spec.Command} --client {clientId}" };
+
     private static IReadOnlyList<HookSpec> BuildDefaultHookSpecs()
     {
         string scri = ResolveScriExecutablePath();
@@ -129,14 +139,15 @@ public static class AgentHookSetup
                 continue;
             }
 
-            // Filter the universal spec set down to events this CLI actually supports.
-            // Surface unsupported ones inline so the user knows why.
+            // Filter the universal spec set down to events this CLI actually supports, and stamp
+            // each command with --client {installer.ClientId} so the payload is tailored to this
+            // CLI's injection channel. Surface unsupported events inline so the user knows why.
             var supportedSpecs = new List<HookSpec>(specs.Count);
             foreach (var spec in specs)
             {
                 if (installer.SupportsEvent(spec.EventName))
                 {
-                    supportedSpecs.Add(spec);
+                    supportedSpecs.Add(StampClient(spec, installer.ClientId));
                 }
                 else
                 {

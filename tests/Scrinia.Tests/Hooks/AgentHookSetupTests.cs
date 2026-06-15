@@ -54,6 +54,33 @@ public sealed class AgentHookSetupTests
     }
 
     [Fact]
+    public void StampClient_AppendsClientFlagToCommand()
+    {
+        var stamped = AgentHookSetup.StampClient(new HookSpec("UserPromptSubmit", "scri hint"), "claude");
+        stamped.EventName.Should().Be("UserPromptSubmit");
+        stamped.Command.Should().Be("scri hint --client claude");
+    }
+
+    [Fact]
+    public async Task InstallAsync_StampsClientFlag_OntoEachCommand_PerInstaller()
+    {
+        var installer = new RecordingInstaller(supportsPredicate: _ => true, isCliInstalled: true);
+        IReadOnlyList<HookSpec> specs =
+        [
+            new HookSpec("SessionStart", "scri restore --hook"),
+            new HookSpec("UserPromptSubmit", "scri hint"),
+        ];
+
+        await AgentHookSetup.InstallAsync(
+            HookScope.User, workspaceRoot: null, nonInteractive: true,
+            installers: [installer], specs: specs);
+
+        installer.ReceivedSpecs.Should().NotBeNull();
+        installer.ReceivedSpecs!.Should().OnlyContain(s => s.Command.EndsWith(" --client fake"),
+            "each command must be tailored to the invoking CLI via --client {ClientId}");
+    }
+
+    [Fact]
     public void ResolveScriExecutablePath_ReturnsCurrentProcessPath()
     {
         // The hook commands embed the full path so they work regardless of the PATH
@@ -160,6 +187,8 @@ public sealed class AgentHookSetupTests
         }
 
         public string CliName => "fake-cli";
+
+        public string ClientId => "fake";
 
         public bool IsCliInstalled() => _cliInstalled;
 

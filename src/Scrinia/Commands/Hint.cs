@@ -103,21 +103,35 @@ public sealed class HintCommand
     }
 
     /// <summary>
-    /// Format the structured result as the hook-output JSON envelope each big-3 agent CLI
-    /// understands. Wraps an imperative, second-person callout in <c>&lt;scrinia-hint&gt;</c>
-    /// tags then nests that inside the <c>hookSpecificOutput.additionalContext</c> shape
-    /// shared across Claude Code, Codex, and Copilot (where supported).
+    /// Format the structured result as a client-tailored hook payload. Wraps an imperative,
+    /// second-person callout in <c>&lt;scrinia-hint&gt;</c> tags and (for clients whose hook
+    /// protocol reads stdout JSON) nests it inside the <c>hookSpecificOutput.additionalContext</c>
+    /// shape shared by Claude Code, Codex, and Copilot.
     ///
-    /// <para>Two design moves driven by tool-ergonomics research: (1) JSON envelope keeps
-    /// the injection off the user's transcript on Claude Code while still reaching the
-    /// model's context (plain stdout is wrapped in a visible <c>&lt;system-reminder&gt;</c>;
-    /// the JSON shape is added more discretely). (2) The payload reads as an instruction
-    /// to the model — concrete verb, justification, copy-paste-shaped tool call — rather
-    /// than a passive log line, which models triage as ignorable status output.</para>
+    /// <para>The payload is derived from one template, varied per client by
+    /// <see cref="HintCommand.ProfileFor"/> on three axes (emit / terseness / envelope):</para>
+    /// <list type="bullet">
+    ///   <item><b>Default / Codex / Copilot</b> — the validated reference output (full payload +
+    ///   JSON envelope). Codex follows this verbatim; <c>FormatHook(result)</c> with no client is
+    ///   byte-identical to the historical output so existing installs never regress.</item>
+    ///   <item><b>Claude Code</b> — terse payload. Claude's <c>additionalContext</c> accumulates a
+    ///   fresh <c>&lt;system-reminder&gt;</c> every turn, so the per-turn hint is kept short.</item>
+    ///   <item><b>OpenCode</b> — bare payload, no JSON envelope: the OpenCode plugin injects the
+    ///   string directly via <c>chat.messages.transform</c> rather than emitting hook stdout.</item>
+    /// </list>
+    ///
+    /// <para>Design intent (unchanged): the payload reads as an instruction to the model —
+    /// concrete verb, justification, copy-paste-shaped tool call — not a passive log line that
+    /// models triage as ignorable status output.</para>
     /// </summary>
-    public static string FormatHook(HintResult result, string hookEventName = "UserPromptSubmit")
+    public static string FormatHook(
+        HintResult result, string hookEventName = "UserPromptSubmit", HookClient client = HookClient.Default)
     {
         if (!result.Emitted || result.Matches.Count == 0)
+            return string.Empty;
+
+        var profile = ProfileFor(client);
+        if (!profile.Emit)
             return string.Empty;
 
         var names = result.Matches.Select(m => m.Name).ToList();
@@ -125,15 +139,71 @@ public sealed class HintCommand
         string list = string.Join(", ", names);
         string firstName = names[0];
 
-        string payload =
-            $"<scrinia-hint priority=\"high\">\n" +
-            $"The user has {names.Count} stored {countWord} that match this prompt: {list}.\n" +
-            $"Before answering, call memory_search({{ query: '{firstName}' }}) to retrieve them — they " +
-            $"contain prior decisions and context the user expects you to remember.\n" +
-            $"</scrinia-hint>";
+        string payload = profile.Terse
+            ? $"<scrinia-hint>{names.Count} matching {countWord}: {list}. " +
+              $"Call memory_search({{ query: '{firstName}' }}) before answering.</scrinia-hint>"
+            : $"<scrinia-hint priority=\"high\">\n" +
+              $"The user has {names.Count} stored {countWord} that match this prompt: {list}.\n" +
+              $"Before answering, call memory_search({{ query: '{firstName}' }}) to retrieve them — they " +
+              $"contain prior decisions and context the user expects you to remember.\n" +
+              $"</scrinia-hint>";
 
-        return BuildHookEnvelope(hookEventName, payload);
+        return profile.Envelope ? BuildHookEnvelope(hookEventName, payload) : payload;
     }
+
+    /// <summary>
+    /// Format the SessionStart restore payload (the prior-session memory list, already rendered
+    /// to <paramref name="yaml"/>) as a client-tailored hook payload. Same client profile axes as
+    /// <see cref="FormatHook"/>: Claude gets a terser framing line (its injection accumulates),
+    /// envelope-less clients get the bare payload. <c>FormatRestoreHook(yaml)</c> with no client is
+    /// byte-identical to the historical <c>scri restore --hook</c> output.
+    /// </summary>
+    public static string FormatRestoreHook(string yaml, HookClient client = HookClient.Default)
+    {
+        var profile = ProfileFor(client);
+        string framing = profile.Terse
+            ? "Memories from prior sessions in this workspace. " +
+              "Call memory_search({ query: '<name>' }) to retrieve full content."
+            : "The following memories were saved during prior sessions in this workspace. " +
+              "Reference them when relevant; call memory_search({ query: '<name>' }) to retrieve " +
+              "the full content of any entry below.";
+
+        string payload =
+            "<scrinia-restored-memory>\n" +
+            framing + "\n\n" +
+            yaml.TrimEnd() + "\n" +
+            "</scrinia-restored-memory>";
+
+        return profile.Envelope ? BuildHookEnvelope("SessionStart", payload) : payload;
+    }
+
+    /// <summary>
+    /// Maps a <see cref="HookClient"/> to its formatting profile. Default/Codex/Copilot share the
+    /// frozen reference shape; Claude Code is terse (accumulation); OpenCode drops the JSON envelope
+    /// (the plugin injects the bare string). Copilot stays on the reference shape until its hook
+    /// channel is verified — see the per-client plan notes.
+    /// </summary>
+    internal static HookClientProfile ProfileFor(HookClient client) => client switch
+    {
+        HookClient.ClaudeCode => new HookClientProfile(Emit: true, Terse: true, Envelope: true),
+        HookClient.OpenCode => new HookClientProfile(Emit: true, Terse: false, Envelope: false),
+        // Default, Codex, Copilot — validated reference output, kept byte-identical.
+        _ => new HookClientProfile(Emit: true, Terse: false, Envelope: true),
+    };
+
+    /// <summary>
+    /// Parses the <c>--client</c> flag value (case-insensitive) into a <see cref="HookClient"/>.
+    /// Unknown or null values fall back to <see cref="HookClient.Default"/> so an unrecognized
+    /// client degrades to the safe reference format rather than failing.
+    /// </summary>
+    public static HookClient ParseClient(string? client) => client?.Trim().ToLowerInvariant() switch
+    {
+        "codex" => HookClient.Codex,
+        "claude" or "claudecode" or "claude-code" => HookClient.ClaudeCode,
+        "opencode" => HookClient.OpenCode,
+        "copilot" => HookClient.Copilot,
+        _ => HookClient.Default,
+    };
 
     /// <summary>
     /// Builds the <c>{"hookSpecificOutput":{"hookEventName":"...","additionalContext":"..."}}</c>
@@ -186,3 +256,20 @@ public sealed record HintResult(bool Emitted, IReadOnlyList<HintMatch> Matches)
 /// <param name="Name">Memory's name within scope.</param>
 /// <param name="Score">BM25 + field-match score from the searcher.</param>
 public sealed record HintMatch(string Scope, string Name, double Score);
+
+/// <summary>
+/// Agent CLI whose hook/injection channel a hint or restore payload is being formatted for.
+/// Selected via the <c>--client</c> flag on <c>scri hint</c> / <c>scri restore</c>, stamped into
+/// each CLI's hook command at install time (and baked into the OpenCode plugin). <see cref="Default"/>
+/// is the safe reference format used when no client is specified.
+/// </summary>
+public enum HookClient { Default, Codex, ClaudeCode, OpenCode, Copilot }
+
+/// <summary>
+/// Per-client formatting profile — the three axes the one payload template varies on.
+/// </summary>
+/// <param name="Emit">Whether to emit a payload at all (false suppresses on a dead channel).</param>
+/// <param name="Terse">Use the short payload variant (Claude Code, to limit per-turn accumulation).</param>
+/// <param name="Envelope">Wrap in the <c>hookSpecificOutput</c> JSON envelope (false = bare payload,
+/// for clients like OpenCode whose plugin injects the string directly).</param>
+internal readonly record struct HookClientProfile(bool Emit, bool Terse, bool Envelope);

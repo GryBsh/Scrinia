@@ -199,6 +199,98 @@ public sealed class HintCommandTests : IDisposable
         hookOutput.GetProperty("additionalContext").GetString().Should().Be("raw payload text");
     }
 
+    // ── Client-aware formatter ─────────────────────────────────────────────
+
+    private static HintResult TwoMatches() => new(true,
+    [
+        new HintMatch("local", "oauth-flow", 50.0),
+        new HintMatch("local", "jwt-validation", 30.0),
+    ]);
+
+    [Fact]
+    public void FormatHook_NoClient_IsByteIdenticalTo_DefaultCodexCopilot()
+    {
+        var result = TwoMatches();
+        string baseline = HintCommand.FormatHook(result);
+
+        HintCommand.FormatHook(result, "UserPromptSubmit", HookClient.Default).Should().Be(baseline);
+        HintCommand.FormatHook(result, "UserPromptSubmit", HookClient.Codex).Should().Be(baseline,
+            "Codex follows the reference payload verbatim — it must not diverge");
+        HintCommand.FormatHook(result, "UserPromptSubmit", HookClient.Copilot).Should().Be(baseline,
+            "Copilot stays on the reference shape until its hook channel is verified");
+    }
+
+    [Fact]
+    public void FormatHook_ClaudeCode_IsTerser_ButStillValidEnvelope()
+    {
+        var result = TwoMatches();
+        string full = HintCommand.FormatHook(result, client: HookClient.Default);
+        string terse = HintCommand.FormatHook(result, client: HookClient.ClaudeCode);
+
+        terse.Length.Should().BeLessThan(full.Length,
+            "Claude's additionalContext accumulates per turn — the per-turn hint stays short");
+
+        string ctx = System.Text.Json.JsonDocument.Parse(terse).RootElement
+            .GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString()!;
+        ctx.Should().StartWith("<scrinia-hint>").And.Contain("</scrinia-hint>");
+        ctx.Should().Contain("oauth-flow").And.Contain("jwt-validation");
+        ctx.Should().Contain("memory_search({ query: 'oauth-flow' })");
+    }
+
+    [Fact]
+    public void FormatHook_OpenCode_OmitsJsonEnvelope_EmitsBarePayload()
+    {
+        var result = TwoMatches();
+        string bare = HintCommand.FormatHook(result, client: HookClient.OpenCode);
+
+        bare.Should().StartWith("<scrinia-hint").And.EndWith("</scrinia-hint>");
+        var parseAsJson = () => System.Text.Json.JsonDocument.Parse(bare);
+        parseAsJson.Should().Throw<System.Text.Json.JsonException>(
+            "the OpenCode plugin injects the bare payload directly — no hookSpecificOutput wrapper");
+        bare.Should().Contain("memory_search({ query: 'oauth-flow' })");
+    }
+
+    [Theory]
+    [InlineData("codex", HookClient.Codex)]
+    [InlineData("CLAUDE", HookClient.ClaudeCode)]
+    [InlineData("claude-code", HookClient.ClaudeCode)]
+    [InlineData("opencode", HookClient.OpenCode)]
+    [InlineData("copilot", HookClient.Copilot)]
+    [InlineData("", HookClient.Default)]
+    [InlineData(null, HookClient.Default)]
+    [InlineData("nonsense", HookClient.Default)]
+    public void ParseClient_MapsKnownValues_FallsBackToDefault(string? input, HookClient expected)
+    {
+        HintCommand.ParseClient(input).Should().Be(expected);
+    }
+
+    [Fact]
+    public void FormatRestoreHook_NoClient_WrapsYamlInEnvelope_WithFullFraming()
+    {
+        string json = HintCommand.FormatRestoreHook("- name: foo\n  scope: local");
+        var hookOutput = System.Text.Json.JsonDocument.Parse(json).RootElement
+            .GetProperty("hookSpecificOutput");
+        hookOutput.GetProperty("hookEventName").GetString().Should().Be("SessionStart");
+        string ctx = hookOutput.GetProperty("additionalContext").GetString()!;
+        ctx.Should().StartWith("<scrinia-restored-memory>").And.Contain("</scrinia-restored-memory>");
+        ctx.Should().Contain("The following memories were saved during prior sessions");
+        ctx.Should().Contain("- name: foo");
+    }
+
+    [Fact]
+    public void FormatRestoreHook_OpenCode_IsBare_ClaudeIsTerser()
+    {
+        const string yaml = "- name: foo";
+        string bare = HintCommand.FormatRestoreHook(yaml, HookClient.OpenCode);
+        bare.Should().StartWith("<scrinia-restored-memory>");
+        var parseAsJson = () => System.Text.Json.JsonDocument.Parse(bare);
+        parseAsJson.Should().Throw<System.Text.Json.JsonException>();
+
+        string full = HintCommand.FormatRestoreHook(yaml, HookClient.Default);
+        string terse = HintCommand.FormatRestoreHook(yaml, HookClient.ClaudeCode);
+        terse.Length.Should().BeLessThan(full.Length, "Claude restore framing is terser");
+    }
+
     [Fact]
     public void ExtractPromptFromStdin_PlainText_PassesThrough()
     {
