@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
@@ -32,8 +33,18 @@ public sealed class ScriniaMcpResources
             ?? throw new InvalidOperationException("No memory store configured for this request.");
 
         // Same resolution + decode path as the show/recall tool: resolve to the NMP/2 artifact,
-        // then decode to the original UTF-8 text.
-        string artifact = await store.ResolveArtifactAsync(name, cancellationToken);
+        // then decode to the original UTF-8 text. Translate a missing memory into a clean MCP error
+        // rather than leaking a FileNotFoundException (mirrors REST's 404 in MemoryEndpoints).
+        string artifact;
+        try
+        {
+            artifact = await store.ResolveArtifactAsync(name, cancellationToken);
+        }
+        catch (FileNotFoundException)
+        {
+            throw new McpException($"Memory '{name}' not found.");
+        }
+
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
         return Encoding.UTF8.GetString(bytes);
     }

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using ModelContextProtocol;
 using Scrinia.Core;
 using Scrinia.Mcp;
 
@@ -41,5 +42,14 @@ public sealed class ScriniaMcpPromptsResourcesTests
         MemoryStoreContext.Current = null;
         var act = async () => await ScriniaMcpResources.ReadMemory("anything", CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task ReadMemoryResource_MissingMemory_ThrowsCleanMcpError()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var act = async () => await ScriniaMcpResources.ReadMemory("does-not-exist", CancellationToken.None);
+        (await act.Should().ThrowAsync<McpException>())
+            .Which.Message.Should().Contain("not found");
     }
 }

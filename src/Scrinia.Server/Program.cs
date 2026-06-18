@@ -261,6 +261,10 @@ builder.Services
         options.ServerInfo = new() { Name = "scrinia", Version = serverVersion };
         // Read as server guidance by tools-only CLIs (Codex/Copilot); same baseline as AGENTS.md.
         options.ServerInstructions = ScriniaPrimer.McpInstructions;
+        // Enforce per-operation permissions on the MCP surface (parity with the REST endpoints):
+        // an incoming-message filter maps each tool/resource call to its permission and rejects
+        // callers whose key lacks it. CLI stdio server registers no such filter.
+        options.Filters.Message.IncomingFilters.Add(McpPermissionFilter.Filter);
     })
     .WithHttpTransport(options =>
     {
@@ -275,6 +279,10 @@ builder.Services
             var reqCtx = httpContext.RequestServices.GetRequiredService<RequestContext>();
             if (!reqCtx.CanAccessStore(storeName))
                 throw new UnauthorizedAccessException($"Access denied to store '{storeName}'.");
+            // Capture the caller's permissions for the per-op MCP auth filter. Must happen here:
+            // reqCtx is the auth-populated request-scoped context, which the message filter can't
+            // resolve (it runs in a fresh scope). Flows to the filter via the session execution context.
+            McpPermissionFilter.CurrentPermissions = reqCtx.Permissions;
             MemoryStoreContext.Current = sm.GetStore(storeName);
             SearchContributorContext.Current = httpContext.RequestServices.GetService<ISearchScoreContributor>();
             // Entity-graph signal is embedder-independent and on by default; stateless, so a
@@ -419,11 +427,16 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// Set search contributor context for REST requests (NOT event sink — hooks handle that via PluginPipeline)
+// Set search contributor context for REST requests (NOT event sink — hooks handle that via PluginPipeline).
+// Skip /mcp: those requests set their contexts per-session in ConfigureSessionOptions, so doing it
+// here too is redundant (and allocates an unused EntityGraphScoreContributor per MCP request).
 app.Use(async (context, next) =>
 {
-    SearchContributorContext.Current = context.RequestServices.GetService<ISearchScoreContributor>();
-    EntityGraphScoreContext.Current = new EntityGraphScoreContributor();
+    if (!context.Request.Path.StartsWithSegments("/mcp"))
+    {
+        SearchContributorContext.Current = context.RequestServices.GetService<ISearchScoreContributor>();
+        EntityGraphScoreContext.Current = new EntityGraphScoreContributor();
+    }
     await next();
 });
 
