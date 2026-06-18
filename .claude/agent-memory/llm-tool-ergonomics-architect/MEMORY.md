@@ -1,0 +1,4 @@
+- [Project: Scrinia memory tool](project_scrinia.md) — auto-install hooks across Claude Code, Codex, Copilot; canonical events; current ignore-the-hint bug
+- [Hook output format matrix](hook-output-format-matrix.md) — what each CLI does with hook stdout, JSON additionalContext support, Copilot userPromptSubmitted is dropped
+- [System-reminder priming for Anthropic models](claude-system-reminder-priming.md) — wrapping is necessary but not sufficient; content must read as imperative instruction
+- [SKILL.md description triggering](skill-description-triggering.md) — cross-tool skill descriptions must be third-person (opposite of hook output); noun-phrase opener, phrase anchors minus bare "remember", explicit anti-trigger
