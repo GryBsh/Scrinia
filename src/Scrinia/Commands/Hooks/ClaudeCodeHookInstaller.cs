@@ -54,15 +54,15 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
         string path = ResolveConfigPath(scope, workspaceRoot);
         try
         {
-            JsonObject root = LoadOrCreate(path);
-            JsonObject hooks = GetOrCreateObject(root, "hooks");
+            JsonObject root = HookInstallerJson.LoadOrCreate(path);
+            JsonObject hooks = HookInstallerJson.GetOrCreateObject(root, "hooks");
             foreach (var spec in specs)
             {
-                JsonArray eventArr = GetOrCreateArray(hooks, spec.EventName);
-                JsonObject managedBlock = FindOrCreateManagedBlock(eventArr);
-                WriteManagedBlock(managedBlock, spec.Command);
+                JsonArray eventArr = HookInstallerJson.GetOrCreateArray(hooks, spec.EventName);
+                JsonObject managedBlock = HookInstallerJson.FindOrCreateManagedBlock(eventArr, ManagedMarker);
+                HookInstallerJson.WriteManagedBlock(managedBlock, spec.Command, ManagedMarker, MarkerVersion);
             }
-            Save(path, root);
+            HookInstallerJson.Save(path, root);
             return true;
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
@@ -78,7 +78,7 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
 
         try
         {
-            JsonObject root = LoadOrCreate(path);
+            JsonObject root = HookInstallerJson.LoadOrCreate(path);
             if (root["hooks"] is not JsonObject hooks) return true;
 
             var emptyEvents = new List<string>();
@@ -87,7 +87,7 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
                 if (node is not JsonArray arr) continue;
                 for (int i = arr.Count - 1; i >= 0; i--)
                 {
-                    if (arr[i] is JsonObject block && IsScriniaBlock(block))
+                    if (arr[i] is JsonObject block && HookInstallerJson.IsScriniaBlock(block, ManagedMarker))
                         arr.RemoveAt(i);
                 }
                 if (arr.Count == 0) emptyEvents.Add(eventName);
@@ -96,7 +96,7 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
 
             if (hooks.Count == 0) root.Remove("hooks");
 
-            Save(path, root);
+            HookInstallerJson.Save(path, root);
             return true;
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
@@ -112,7 +112,7 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
 
         try
         {
-            JsonObject root = LoadOrCreate(path);
+            JsonObject root = HookInstallerJson.LoadOrCreate(path);
             if (root["hooks"] is not JsonObject hooks) return HookStatus.NotInstalled;
 
             int present = 0, drifted = 0;
@@ -121,9 +121,9 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
                 if (hooks[spec.EventName] is not JsonArray arr) continue;
                 foreach (var item in arr)
                 {
-                    if (item is not JsonObject block || !IsScriniaBlock(block)) continue;
+                    if (item is not JsonObject block || !HookInstallerJson.IsScriniaBlock(block, ManagedMarker)) continue;
                     present++;
-                    string? cmd = ExtractCommand(block);
+                    string? cmd = HookInstallerJson.ExtractCommand(block);
                     if (!string.Equals(cmd, spec.Command, StringComparison.Ordinal))
                         drifted++;
                     break;
@@ -152,73 +152,5 @@ public sealed class ClaudeCodeHookInstaller : IAgentHookInstaller
             _ => throw new ArgumentOutOfRangeException(nameof(scope)),
         };
         return Path.Combine(baseDir, ConfigDirName, ConfigFileName);
-    }
-
-    private static JsonObject LoadOrCreate(string path)
-    {
-        if (!File.Exists(path)) return new JsonObject();
-        string raw = File.ReadAllText(path);
-        if (string.IsNullOrWhiteSpace(raw)) return new JsonObject();
-        var node = JsonNode.Parse(raw);
-        return node as JsonObject ?? new JsonObject();
-    }
-
-    private static void Save(string path, JsonObject root)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var opts = new JsonSerializerOptions { WriteIndented = true };
-        string text = root.ToJsonString(opts);
-        File.WriteAllText(path, text);
-    }
-
-    private static JsonObject GetOrCreateObject(JsonObject parent, string key)
-    {
-        if (parent[key] is JsonObject existing) return existing;
-        var fresh = new JsonObject();
-        parent[key] = fresh;
-        return fresh;
-    }
-
-    private static JsonArray GetOrCreateArray(JsonObject parent, string key)
-    {
-        if (parent[key] is JsonArray existing) return existing;
-        var fresh = new JsonArray();
-        parent[key] = fresh;
-        return fresh;
-    }
-
-    private static JsonObject FindOrCreateManagedBlock(JsonArray events)
-    {
-        foreach (var node in events)
-        {
-            if (node is JsonObject obj && IsScriniaBlock(obj)) return obj;
-        }
-        var fresh = new JsonObject();
-        events.Add((JsonNode)fresh);
-        return fresh;
-    }
-
-    private static bool IsScriniaBlock(JsonObject block) =>
-        block[ManagedMarker] is JsonValue;
-
-    private static void WriteManagedBlock(JsonObject block, string command)
-    {
-        block["matcher"] = "";
-        var hookEntry = new JsonObject
-        {
-            ["type"] = "command",
-            ["command"] = command,
-        };
-        var hooksArr = new JsonArray();
-        hooksArr.Add((JsonNode)hookEntry);
-        block["hooks"] = hooksArr;
-        block[ManagedMarker] = MarkerVersion;
-    }
-
-    private static string? ExtractCommand(JsonObject block)
-    {
-        if (block["hooks"] is not JsonArray hooks) return null;
-        if (hooks.Count == 0 || hooks[0] is not JsonObject first) return null;
-        return first["command"]?.GetValue<string>();
     }
 }
