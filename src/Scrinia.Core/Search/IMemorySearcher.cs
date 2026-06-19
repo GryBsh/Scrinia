@@ -38,14 +38,6 @@ public sealed record TopicInfo(
     string[]? Tags,
     string[] EntryNames);
 
-internal interface IMemorySearcher
-{
-    IReadOnlyList<ScoredArtifact> Search(
-        string query,
-        IEnumerable<ScopedArtifact> candidates,
-        int limit);
-}
-
 /// <summary>
 /// Linear-scan weighted field scorer with multi-term support and BM25 content search.
 ///
@@ -85,7 +77,7 @@ internal interface IMemorySearcher
 /// All matching is case-insensitive. Results sorted by score desc, then newest first.
 /// Entries without TF data (v2 index) get bm25Score=0 (graceful degradation).
 /// </summary>
-internal sealed class WeightedFieldScorer : IMemorySearcher
+internal sealed class WeightedFieldScorer
 {
     private const double Bm25Weight = 5.0;
 
