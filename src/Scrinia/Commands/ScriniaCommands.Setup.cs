@@ -20,7 +20,7 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Download embedding and (optional) LLM models for built-in providers and installed plugins.</summary>
+    /// <summary>Download embedding models for built-in providers and installed plugins.</summary>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="multiUser">Configure git merge drivers for multi-user collaboration.</param>
     /// <param name="resolver">Conflict resolver when --multi-user is set (none, claude, copilot).</param>

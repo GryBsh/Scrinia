@@ -150,7 +150,7 @@ public sealed partial class ScriniaMcpTools
 
     [McpServerTool(Name = "memory_search"), Description(
         "Find memories by keyword or phrase. Returns ranked matches with description, tags, and " +
-        "LLM-extracted facts per hit so you can decide what to recall without a follow-up call. " +
+        "retrieval anchors per hit so you can decide what to recall without a follow-up call. " +
         "Example: memory_search({ query: 'oauth flow', pathPrefix: '/findings/' }).")]
     public async Task<string> MemorySearch(
         [Description("Search query string.")] string query,
