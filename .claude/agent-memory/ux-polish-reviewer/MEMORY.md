@@ -1,0 +1,1 @@
+- [Product voice & terminology](product_voice_terminology.md) — Scrinia's canonical positioning line, terms (AI agents, retrieval anchors), voice, and key copy surfaces
