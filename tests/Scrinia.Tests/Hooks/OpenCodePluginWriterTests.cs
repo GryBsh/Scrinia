@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Commands.Hooks;
+using Scrinia.Mcp;
 
 namespace Scrinia.Tests.Hooks;
 
@@ -48,6 +49,22 @@ public sealed class OpenCodePluginWriterTests : IDisposable
             "the experimental API must be wrapped so drift degrades to no-hint, not a crash");
         // The resolved scri path is baked in (no reliance on PATH at runtime).
         ts.Should().Contain(AgentHookSetup.ResolveScriExecutablePath().Trim('"'));
+        // The placeholder must be fully substituted — none of the raw token leaks into the output.
+        ts.Should().NotContain("$$__SCRI__$$",
+            "the install step replaces the template placeholder with the resolved path");
+    }
+
+    [Fact]
+    public void EmbeddedTemplate_IsPresent_AndCarriesMarkerAndPlaceholder()
+    {
+        // The plugin body is an independently-editable embedded .ts file; this guards that it's
+        // embedded and stays in sync with the installer's marker/placeholder contract.
+        string? template = EmbeddedPrompts.Load("plugins/opencode/scrinia.ts");
+        template.Should().NotBeNull("the plugin template must be embedded in Scrinia.Mcp");
+        template.Should().Contain("// scrinia-managed: per-turn memory hint plugin",
+            "the marker line the installer uses to detect/own the file lives in the template");
+        template.Should().Contain("$$__SCRI__$$",
+            "the template carries the placeholder the installer substitutes at install time");
     }
 
     [Fact]
