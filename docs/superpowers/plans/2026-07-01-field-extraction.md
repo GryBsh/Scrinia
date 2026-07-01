@@ -1,48 +1,46 @@
-# Mechanical Field Extraction Implementation Plan
+# Unified Fields Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Mechanically extract `key: value` fields from the YAML-ish markdown agents write into memories, persist them on the index entry, and use them as transparent ranking signal (TF seeding + weighted-field-score slots).
+**Goal:** One multi-valued `Fields` store on index entries, populated equally from agent-supplied `key:value` keywords, mechanical content extraction, and reference extraction — consumed by ranking, the entity graph, and reference tracking; prefixed-keyword writes retired.
 
-**Architecture:** A new `FieldExtractor` (sibling of `ReferenceExtractor` in `Scrinia.Core.Search`) extracts fields at write time from frontmatter, line-start `key: value` pairs, and `**Bold:** label` lines. A `Fields` dictionary is added to `ArtifactEntry`/`EphemeralEntry` (same shape as `CodeRefs`). Both write paths (MCP `MemoryTools` and server `MemoryOrchestrator`) extract + seed; `WeightedFieldScorer.ScoreEntryTerm` gains three match slots. nmp/2 encoding is untouched.
+**Architecture:** Readers migrate first (scorer, entity graph, References/orphan tracking gain dual-read of Fields ∪ legacy prefixed keywords), then the write paths switch (MCP `MemoryTools`, server `MemoryOrchestrator`, `UpdateMeta`/`Link`) to stop emitting prefixed keywords. `KnownFields` is the single schema point (merge semantics + graph/ref membership). `CodeRefs` stays as the drift-hash sidecar, fed from the `file` field. The entity graph is rebuilt per query and never persisted — no stored format migrates.
 
-**Tech Stack:** .NET 10 / C#, xUnit + FluentAssertions, source-generated regex (`GeneratedRegex`), source-generated JSON contexts.
+**Tech Stack:** .NET 10 / C#, xUnit + FluentAssertions, `GeneratedRegex`, source-generated JSON contexts.
 
-**Spec:** `docs/superpowers/specs/2026-07-01-field-extraction-design.md`
+**Spec:** `docs/superpowers/specs/2026-07-01-field-extraction-design.md` (v2 unified)
 
 ## Global Constraints
 
-- Values stored **verbatim** (trimmed, never tokenized); keys lowercased + trimmed.
-- Caps: max **32** fields per entry, key regex `[A-Za-z][A-Za-z0-9_-]{0,29}` (bold-label keys additionally allow internal spaces), value ≤ **120** chars after trim.
-- First occurrence wins within one text; **newer-wins** merge across appends.
-- Nothing inside ``` code fences is extracted; values starting with `//` (URL remainders) are skipped.
-- TF seeding boost is **+3** per token (between auto-keyword +2 and agent-keyword +5).
-- Scorer slots: compound `key:value` exact = 50, value exact = 40, value contains = 12.
-- Old index entries load with null `Fields` and must degrade gracefully (no NREs anywhere).
-- Do NOT rely on a `Dictionary` string comparer surviving JSON round-trips — deserialized dictionaries have the default comparer. All field matching iterates pairs with explicit `StringComparison.OrdinalIgnoreCase`.
+- `Fields` type is `Dictionary<string, string[]>?` everywhere. Keys lowercased + trimmed; values verbatim (trimmed, never tokenized). Caps: **32** keys/entry, values ≤ **120** chars, key regex `[A-Za-z][A-Za-z0-9_-]{0,29}`.
+- Merge semantics come ONLY from `KnownFields`: entity keys (`person,place,org,thing,topic`) and reference keys (`file,ref`) union-dedupe; all other keys are scalar newer-wins (replace whole value array). Within one extraction pass: multi-valued keys accumulate, scalar keys first-wins.
+- Keyword routing rule (verbatim from spec): part before first `:` matches `[A-Za-z][A-Za-z0-9_-]{0,29}` AND remainder is non-empty AND doesn't start with `//` → routes to Fields; otherwise stays a keyword.
+- TF seeding: +3 per token from field keys and values (between auto-keyword +2 and agent-keyword +5).
+- Scorer: compound `key:value` pair exact = 50, value exact = 40, value contains = 12; the slots ALSO parse `key:value`-shaped legacy keywords (dual-read). All string comparisons explicit `StringComparison.OrdinalIgnoreCase` — dictionary comparers do NOT survive JSON round-trips.
+- New writes stop emitting `person:`/`file:`/`ref:` prefixed keywords entirely (dual-read only, no dual-write). Old entries migrate organically on next store/append.
+- Old index entries (null `Fields`) must load and behave exactly as today — no NREs, no score changes for them beyond what dual-read intentionally adds.
 - Commit trailer for every commit: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
-- Branch setup (before Task 1): `git checkout main && git checkout -b feature/field-extraction`, then cherry-pick the spec/plan commits from `experiment/kompress-locomo` (they were authored there): `git cherry-pick fe23fff <plan-commit-sha>`. Do not carry over any other kompress-branch changes.
-- Run tests with: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "<filter>" --nologo` (append `-v q` for terse output). Pre-existing CA1707 warnings in the test project are noise — ignore them.
+- Branch setup (before Task 1): `git checkout main && git checkout -b feature/unified-fields`, then cherry-pick the doc commits from `experiment/kompress-locomo`: `git cherry-pick fe23fff aeddee8 8595ce1 <this-plan's-commit>`. Do not carry over any other kompress-branch changes.
+- Tests: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "<filter>" --nologo -v q` (server tests: `tests/Scrinia.Server.Tests/Scrinia.Server.Tests.csproj`). Pre-existing CA1707 warnings are noise.
+- Verified harness surfaces: `TestHelpers.StoreScope` exposes `WorkspaceDir` (`tests/Scrinia.Tests/TestHelpers.cs:86-92`); `FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions = null)` (`src/Scrinia.Core/FileMemoryStore.cs:180`); `IMemoryStore.SearchAll(string query, string? scopes = null, int limit = 20)` (`src/Scrinia.Core/IMemoryStore.cs:27`); `EntryResult(ScopedArtifact Item, double Score)` in `Scrinia.Core.Search` (`src/Scrinia.Core/Search/SearchResults.cs:9`); MCP tool tests use `TestHelpers.StoreScope` + `Tools()` + `ScriniaArtifactStore.LoadIndex()` (see `Store_WithAnchors_PersistsAnchors_SeedsTf_AndSurfacesViaSearch`, `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs:2025`).
 
 ---
 
-### Task 1: `FieldExtractor` in `Scrinia.Core.Search`
+### Task 1: `KnownFields` — the single schema point
 
 **Files:**
-- Create: `src/Scrinia.Core/Search/FieldExtractor.cs`
-- Test: `tests/Scrinia.Tests/FieldExtractorTests.cs`
+- Create: `src/Scrinia.Core/Search/KnownFields.cs`
+- Test: `tests/Scrinia.Tests/KnownFieldsTests.cs`
 
 **Interfaces:**
-- Consumes: `Scrinia.Core.Search.TextAnalysis.Tokenize(string) → IReadOnlyList<string>` (existing).
-- Produces (later tasks call all three):
-  - `public static Dictionary<string, string>? Extract(string? content)` — null when no fields found.
-  - `public static Dictionary<string, string>? MergeNewerWins(Dictionary<string, string>? existing, Dictionary<string, string>? extracted)` — extracted values overwrite existing keys (case-insensitive); null when both empty. Result capped at 32 (existing-first ordering; new keys admitted until cap).
-  - `public static void SeedTermFrequencies(Dictionary<string, string>? fields, Dictionary<string, int> tf)` — tokenizes each key and value via `TextAnalysis.Tokenize`, adds +3 per token occurrence into `tf`. No-op on null/empty fields.
-  - `public const int MaxFields = 32;` and `public const int MaxValueLength = 120;`
+- Produces (all later tasks consume):
+  - `public static readonly IReadOnlySet<string> EntityKeys` — `person, place, org, thing, topic` (OrdinalIgnoreCase).
+  - `public static readonly IReadOnlySet<string> ReferenceKeys` — `file, ref` (OrdinalIgnoreCase).
+  - `public static bool IsMultiValued(string key)` — true for entity ∪ reference keys.
+  - `public static Dictionary<string, string[]>? Merge(Dictionary<string, string[]>? existing, Dictionary<string, string[]>? incoming)` — per-key: multi-valued → union-dedupe (OrdinalIgnoreCase, existing order first); scalar → incoming replaces. 32-key cap (existing keys first). Null when both empty.
+  - `public const int MaxFields = 32;`
 
 - [ ] **Step 1: Write the failing tests**
-
-Create `tests/Scrinia.Tests/FieldExtractorTests.cs`:
 
 ```csharp
 using FluentAssertions;
@@ -51,152 +49,274 @@ using Scrinia.Core.Search;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Tests for <see cref="FieldExtractor"/> — mechanical key:value extraction from the
-/// YAML-ish markdown agents write (frontmatter, line-start pairs, bold labels).
-/// Values are verbatim; keys lowercased; code fences and URL remainders are skipped.
+/// Tests for <see cref="KnownFields"/> — the single schema point for unified fields:
+/// which keys are multi-valued (entity + reference) and how merges behave per class.
+/// </summary>
+public sealed class KnownFieldsTests
+{
+    [Theory]
+    [InlineData("person"), InlineData("place"), InlineData("org"), InlineData("thing"), InlineData("topic")]
+    [InlineData("file"), InlineData("ref")]
+    [InlineData("PERSON")] // case-insensitive
+    public void IsMultiValued_TrueForEntityAndReferenceKeys(string key) =>
+        KnownFields.IsMultiValued(key).Should().BeTrue();
+
+    [Theory]
+    [InlineData("status"), InlineData("verdict"), InlineData("version"), InlineData("why")]
+    public void IsMultiValued_FalseForScalarKeys(string key) =>
+        KnownFields.IsMultiValued(key).Should().BeFalse();
+
+    [Fact]
+    public void Merge_MultiValued_UnionsAndDedupes()
+    {
+        var existing = new Dictionary<string, string[]> { ["person"] = ["alice"] };
+        var incoming = new Dictionary<string, string[]> { ["person"] = ["Bob", "ALICE"] };
+
+        var merged = KnownFields.Merge(existing, incoming);
+
+        merged!["person"].Should().BeEquivalentTo(["alice", "Bob"],
+            because: "entity fields accumulate across appends, deduped case-insensitively");
+    }
+
+    [Fact]
+    public void Merge_Scalar_NewerWinsReplace()
+    {
+        var existing = new Dictionary<string, string[]> { ["status"] = ["active"], ["type"] = ["finding"] };
+        var incoming = new Dictionary<string, string[]> { ["status"] = ["done"] };
+
+        var merged = KnownFields.Merge(existing, incoming);
+
+        merged!["status"].Should().BeEquivalentTo(["done"],
+            because: "scalar fields replace — a changed status must not accumulate stale values");
+        merged["type"].Should().BeEquivalentTo(["finding"], because: "untouched keys survive");
+    }
+
+    [Fact]
+    public void Merge_NullHandling_AndCap()
+    {
+        KnownFields.Merge(null, null).Should().BeNull();
+        KnownFields.Merge(new() { ["a"] = ["1"] }, null).Should().ContainKey("a");
+        KnownFields.Merge(null, new() { ["b"] = ["2"] }).Should().ContainKey("b");
+
+        var big = Enumerable.Range(1, 40).ToDictionary(i => $"key{i}", i => new[] { $"v{i}" });
+        KnownFields.Merge(null, big)!.Should().HaveCount(KnownFields.MaxFields);
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~KnownFieldsTests" --nologo -v q`
+Expected: compile FAILURE — `KnownFields` does not exist.
+
+- [ ] **Step 3: Implement**
+
+```csharp
+namespace Scrinia.Core.Search;
+
+/// <summary>
+/// The single schema point for unified fields — the ONLY place that knows which field keys
+/// are multi-valued and what merge semantics apply. Replaces the three divergent typed-prefix
+/// lists (EntityGraph.RealTypes stays as an alias view for graph node identity; the benchmark
+/// and guide copies are retired). Entity keys feed the entity graph; reference keys feed
+/// References/Link/orphan tracking and CodeRefs hashing; everything else is scalar state.
+/// </summary>
+public static class KnownFields
+{
+    public const int MaxFields = 32;
+
+    /// <summary>Entity field keys — union-merge, graph-building. Same set as EntityGraph.RealTypes.</summary>
+    public static readonly IReadOnlySet<string> EntityKeys =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "person", "place", "org", "thing", "topic" };
+
+    /// <summary>Reference field keys — union-merge, feed References/Link/orphan + CodeRefs.</summary>
+    public static readonly IReadOnlySet<string> ReferenceKeys =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "file", "ref" };
+
+    /// <summary>Multi-valued keys accumulate across appends; everything else is scalar newer-wins.</summary>
+    public static bool IsMultiValued(string key) =>
+        EntityKeys.Contains(key) || ReferenceKeys.Contains(key);
+
+    /// <summary>
+    /// Merges incoming fields over existing per the key-class semantics: multi-valued keys
+    /// union-dedupe (existing values keep their order); scalar keys are replaced by the
+    /// incoming value array (newer-wins — first-wins would freeze stale statuses).
+    /// Existing keys count first against the <see cref="MaxFields"/> cap. Null when both empty.
+    /// </summary>
+    public static Dictionary<string, string[]>? Merge(
+        Dictionary<string, string[]>? existing,
+        Dictionary<string, string[]>? incoming)
+    {
+        if (existing is not { Count: > 0 } && incoming is not { Count: > 0 })
+            return null;
+
+        var merged = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (existing is not null)
+        {
+            foreach (var kv in existing)
+            {
+                if (merged.Count >= MaxFields) break;
+                merged[kv.Key] = kv.Value;
+            }
+        }
+        if (incoming is not null)
+        {
+            foreach (var kv in incoming)
+            {
+                if (merged.TryGetValue(kv.Key, out var current))
+                {
+                    merged[kv.Key] = IsMultiValued(kv.Key)
+                        ? current.Union(kv.Value, StringComparer.OrdinalIgnoreCase).ToArray()
+                        : kv.Value;
+                }
+                else if (merged.Count < MaxFields)
+                {
+                    merged[kv.Key] = kv.Value;
+                }
+            }
+        }
+        return merged;
+    }
+}
+```
+
+- [ ] **Step 4: Run to verify pass**
+
+Same filter as Step 2. Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/Scrinia.Core/Search/KnownFields.cs tests/Scrinia.Tests/KnownFieldsTests.cs
+git commit -m "feat(core): KnownFields — single schema point for unified fields"
+```
+
+---
+
+### Task 2: `FieldExtractor` — extraction, keyword routing, TF seeding
+
+**Files:**
+- Create: `src/Scrinia.Core/Search/FieldExtractor.cs`
+- Test: `tests/Scrinia.Tests/FieldExtractorTests.cs`
+
+**Interfaces:**
+- Consumes: `KnownFields.IsMultiValued/MaxFields` (Task 1); `TextAnalysis.Tokenize` (existing, `src/Scrinia.Core/Search/TextAnalysis.cs`).
+- Produces:
+  - `public static Dictionary<string, string[]>? Extract(string? content)` — frontmatter + line-start + bold-label patterns; null when none.
+  - `public static (Dictionary<string, string[]>? Fields, string[]? Keywords) RouteKeywords(string[]? keywords)` — splits agent keywords into field-shaped vs plain; either side null when empty.
+  - `public static void SeedTermFrequencies(Dictionary<string, string[]>? fields, Dictionary<string, int> tf)` — +3 per token from keys and all values.
+  - `public const int MaxValueLength = 120;`
+
+- [ ] **Step 1: Write the failing tests**
+
+```csharp
+using FluentAssertions;
+using Scrinia.Core.Search;
+
+namespace Scrinia.Tests;
+
+/// <summary>
+/// Tests for <see cref="FieldExtractor"/> — mechanical key:value extraction (frontmatter,
+/// line-start pairs, bold labels) and agent-keyword routing into the unified Fields store.
 /// </summary>
 public sealed class FieldExtractorTests
 {
     [Fact]
-    public void Extract_Frontmatter_YieldsLowercasedKeysAndVerbatimValues()
+    public void Extract_FrontmatterAndLineStartAndBoldLabel()
     {
-        string content = "---\nStatus: Active\ntype: finding\n---\nBody prose here.";
+        string content = "---\nStatus: Active\n---\nverdict: no-go\n**Why:** taxes retrieval\nProse: is skipped when value is prose? No — this extracts too.";
         var fields = FieldExtractor.Extract(content);
 
         fields.Should().NotBeNull();
-        fields.Should().Contain(new KeyValuePair<string, string>("status", "Active"),
-            because: "keys lowercase, values verbatim");
-        fields.Should().Contain(new KeyValuePair<string, string>("type", "finding"));
+        fields!["status"].Should().BeEquivalentTo(["Active"], because: "keys lowercase, values verbatim");
+        fields["verdict"].Should().BeEquivalentTo(["no-go"]);
+        fields["why"].Should().BeEquivalentTo(["taxes retrieval"]);
     }
 
     [Fact]
-    public void Extract_LineStartPair_Extracted()
+    public void Extract_BoldLabel_ColonOutsideVariant()
     {
-        var fields = FieldExtractor.Extract("Some intro.\nverdict: no-go\nMore prose.");
-        fields.Should().NotBeNull();
-        fields!["verdict"].Should().Be("no-go", because: "hyphenated values survive verbatim");
+        FieldExtractor.Extract("**Status**: active")!["status"].Should().BeEquivalentTo(["active"]);
     }
 
     [Fact]
-    public void Extract_BoldLabel_Extracted()
+    public void Extract_MultiValuedKey_AccumulatesWithinText()
     {
-        var fields = FieldExtractor.Extract("**Why:** taxes retrieval at ingest");
-        fields.Should().NotBeNull();
-        fields!["why"].Should().Be("taxes retrieval at ingest");
+        var fields = FieldExtractor.Extract("person: Alice\nperson: Bob");
+        fields!["person"].Should().BeEquivalentTo(["Alice", "Bob"],
+            because: "entity keys accumulate within one text");
     }
 
     [Fact]
-    public void Extract_BoldLabel_ColonOutsideVariant_Extracted()
+    public void Extract_ScalarKey_FirstWinsWithinText()
     {
-        var fields = FieldExtractor.Extract("**Status**: active");
-        fields.Should().NotBeNull();
-        fields!["status"].Should().Be("active");
+        var fields = FieldExtractor.Extract("status: first\nstatus: second");
+        fields!["status"].Should().BeEquivalentTo(["first"],
+            because: "scalar keys are first-wins within one extraction pass");
     }
 
     [Fact]
-    public void Extract_InsideCodeFence_Skipped()
+    public void Extract_Guards_FenceUrlCharsetLengthEmpty()
     {
-        string content = "```\nstatus: fenced\n```\nverdict: real";
-        var fields = FieldExtractor.Extract(content);
-        fields.Should().NotBeNull();
-        fields.Should().NotContainKey("status", because: "code-fence content is never extracted");
-        fields!["verdict"].Should().Be("real");
-    }
-
-    [Fact]
-    public void Extract_UrlLine_Skipped()
-    {
-        // "http://example.com" would parse as key "http", value "//example.com" — guarded.
-        var fields = FieldExtractor.Extract("http://example.com\nhttps://example.org");
-        fields.Should().BeNull();
-    }
-
-    [Fact]
-    public void Extract_InvalidKeys_Skipped()
-    {
-        // Key must start with a letter and stay within charset/length; value must be non-empty.
+        string longVal = new string('x', 121);
         var fields = FieldExtractor.Extract(
+            "```\nfenced: skipped\n```\n" +
+            "http://example.com\n" +          // key "http", value "//..." → URL guard
             "1key: starts with digit\n" +
-            "toolongkeytoolongkeytoolongkeyxx: over 30 chars\n" +
+            "has.dot: bad charset\n" +
+            "toolongkeytoolongkeytoolongkeyxx: over 30\n" +
+            $"longval: {longVal}\n" +
             "emptyval:\n" +
-            "has.dot: dots not in charset\n" +
             "ok: fine");
         fields.Should().NotBeNull();
         fields.Should().HaveCount(1);
-        fields!["ok"].Should().Be("fine");
+        fields!["ok"].Should().BeEquivalentTo(["fine"]);
     }
 
     [Fact]
-    public void Extract_LongValue_Skipped()
-    {
-        string longVal = new string('x', 121);
-        var fields = FieldExtractor.Extract($"key: {longVal}\nshort: ok");
-        fields.Should().NotBeNull();
-        fields.Should().NotContainKey("key", because: "values over 120 chars are noise, not fields");
-        fields!["short"].Should().Be("ok");
-    }
-
-    [Fact]
-    public void Extract_FirstOccurrenceWins_WithinOneText()
-    {
-        var fields = FieldExtractor.Extract("status: first\nstatus: second");
-        fields!["status"].Should().Be("first");
-    }
-
-    [Fact]
-    public void Extract_CapsAtMaxFields()
+    public void Extract_CapsAtMaxFields_AndNullWhenNone()
     {
         var lines = Enumerable.Range(1, 40).Select(i => $"key{i}: value{i}");
-        var fields = FieldExtractor.Extract(string.Join("\n", lines));
-        fields.Should().HaveCount(FieldExtractor.MaxFields);
-    }
-
-    [Fact]
-    public void Extract_NoFields_ReturnsNull()
-    {
-        FieldExtractor.Extract("Just prose without any structure.").Should().BeNull();
-        FieldExtractor.Extract("").Should().BeNull();
+        FieldExtractor.Extract(string.Join("\n", lines))!.Should().HaveCount(KnownFields.MaxFields);
+        FieldExtractor.Extract("Just prose.").Should().BeNull();
         FieldExtractor.Extract(null).Should().BeNull();
     }
 
     [Fact]
-    public void MergeNewerWins_ExtractedOverwritesExisting_CaseInsensitive()
+    public void RouteKeywords_SplitsFieldShapedFromPlain()
     {
-        var existing = new Dictionary<string, string> { ["status"] = "active", ["type"] = "finding" };
-        var extracted = new Dictionary<string, string> { ["STATUS"] = "done" };
+        var (fields, keywords) = FieldExtractor.RouteKeywords(
+            ["person:Nick", "status:active", "plainword", "http://x.com", "person:Maria"]);
 
-        var merged = FieldExtractor.MergeNewerWins(existing, extracted);
-
-        merged.Should().NotBeNull();
-        merged!.Should().HaveCount(2);
-        merged.Single(kv => kv.Key.Equals("status", StringComparison.OrdinalIgnoreCase))
-            .Value.Should().Be("done", because: "append merge is newer-wins");
-        merged["type"].Should().Be("finding", because: "untouched keys survive");
+        fields.Should().NotBeNull();
+        fields!["person"].Should().BeEquivalentTo(["Nick", "Maria"],
+            because: "multi-valued keys accumulate; values verbatim");
+        fields["status"].Should().BeEquivalentTo(["active"]);
+        keywords.Should().BeEquivalentTo(["plainword", "http://x.com"],
+            because: "plain and URL-guarded keywords stay keywords");
     }
 
     [Fact]
-    public void MergeNewerWins_NullInputs()
+    public void RouteKeywords_NullAndAllPlain()
     {
-        FieldExtractor.MergeNewerWins(null, null).Should().BeNull();
-        FieldExtractor.MergeNewerWins(new Dictionary<string, string> { ["a"] = "1" }, null)
-            .Should().ContainKey("a");
-        FieldExtractor.MergeNewerWins(null, new Dictionary<string, string> { ["b"] = "2" })
-            .Should().ContainKey("b");
+        FieldExtractor.RouteKeywords(null).Should().Be((null, null));
+        var (f, k) = FieldExtractor.RouteKeywords(["alpha", "beta"]);
+        f.Should().BeNull();
+        k.Should().BeEquivalentTo(["alpha", "beta"]);
     }
 
     [Fact]
-    public void SeedTermFrequencies_AddsPlus3PerTokenFromKeysAndValues()
+    public void SeedTermFrequencies_Plus3PerTokenFromKeysAndAllValues()
     {
-        var fields = new Dictionary<string, string> { ["verdict"] = "no-go decision" };
+        var fields = new Dictionary<string, string[]> { ["verdict"] = ["rejected", "quiescent decision"] };
         var tf = new Dictionary<string, int> { ["decision"] = 1 };
 
         FieldExtractor.SeedTermFrequencies(fields, tf);
 
-        tf["verdict"].Should().Be(3, because: "keys seed at +3");
+        tf["verdict"].Should().Be(3);
+        tf["rejected"].Should().Be(3);
+        tf["quiescent"].Should().Be(3);
         tf["decision"].Should().Be(4, because: "+3 stacks on the existing count");
-        // "no-go" tokenizes to "go" ("no" is a stopword, "go" is 2 chars — both survive
-        // only if TextAnalysis keeps them; assert on a token we know survives instead).
-        tf.Should().ContainKey("verdict");
     }
 
     [Fact]
@@ -204,22 +324,18 @@ public sealed class FieldExtractorTests
     {
         var tf = new Dictionary<string, int>();
         FieldExtractor.SeedTermFrequencies(null, tf);
-        FieldExtractor.SeedTermFrequencies(new Dictionary<string, string>(), tf);
+        FieldExtractor.SeedTermFrequencies(new(), tf);
         tf.Should().BeEmpty();
     }
 }
 ```
 
-Note on `SeedTermFrequencies_AddsPlus3PerTokenFromKeysAndValues`: before finalizing the assertion for `no-go`, check `TextAnalysis.Tokenize("no-go decision")` behavior in `src/Scrinia.Core/Search/TextAnalysis.cs` (stopword list membership for "no"/"go"). Assert only on tokens that actually survive tokenization; the shown assertions on `verdict`/`decision` are safe.
-
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run to verify failure**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~FieldExtractorTests" --nologo -v q`
-Expected: compile FAILURE — `FieldExtractor` does not exist yet.
+Expected: compile FAILURE.
 
-- [ ] **Step 3: Implement `FieldExtractor`**
-
-Create `src/Scrinia.Core/Search/FieldExtractor.cs`:
+- [ ] **Step 3: Implement**
 
 ```csharp
 using System.Text.RegularExpressions;
@@ -227,50 +343,46 @@ using System.Text.RegularExpressions;
 namespace Scrinia.Core.Search;
 
 /// <summary>
-/// Mechanically extracts <c>key: value</c> fields from the YAML-ish markdown agents write —
-/// frontmatter blocks, line-start pairs, and <c>**Bold:** label</c> lines. LLM-free, regex-only,
-/// run at write time (store/append); results live on <see cref="Models.ArtifactEntry.Fields"/>.
-///
-/// <para>Values are kept verbatim (trimmed, never tokenized) so exact-match signal survives for
-/// content BM25 tokenization shreds: versions, dates, hyphenated identifiers, statuses. Keys are
-/// lowercased. Conservative by design: nothing inside code fences, values that look like URL
-/// remainders are skipped, tight key charset, value length cap, and a hard field cap.</para>
+/// Populates the unified Fields store from its two mechanical sources: content extraction
+/// (frontmatter, line-start <c>key: value</c>, <c>**Bold:** label</c> lines) and agent-keyword
+/// routing (<c>key:value</c>-shaped entries in the keywords param). LLM-free, regex-only,
+/// run at write time. Values verbatim — exact-match signal for what BM25 tokenization shreds
+/// (versions, dates, hyphenated identifiers, statuses). Conservative: nothing inside code
+/// fences, URL-remainder values skipped, tight key charset, value + field caps.
+/// Merge semantics live in <see cref="KnownFields"/>, not here.
 /// </summary>
 public static partial class FieldExtractor
 {
-    public const int MaxFields = 32;
     public const int MaxValueLength = 120;
 
-    // Line-start key: value. Key charset intentionally tight (letters first, then
-    // letters/digits/underscore/hyphen, ≤30 chars) so prose colons don't match.
+    // Line-start key: value. Tight key charset so prose colons don't match.
     [GeneratedRegex(@"^([A-Za-z][A-Za-z0-9_-]{0,29}):[ \t]+(\S.*)$")]
     private static partial Regex LineStartPairPattern();
 
-    // Bold labels: **Why:** value  or  **Why**: value. Keys may contain internal spaces
-    // ("How to apply") — normalized below.
+    // Bold labels: **Why:** value  or  **Why**: value (keys may contain internal spaces).
     [GeneratedRegex(@"^\*\*([A-Za-z][A-Za-z0-9 _-]{0,29})(?::\*\*|\*\*:)[ \t]*(\S.*)$")]
     private static partial Regex BoldLabelPattern();
 
+    // Keyword routing: key charset before first colon, non-empty remainder.
+    [GeneratedRegex(@"^([A-Za-z][A-Za-z0-9_-]{0,29}):(.+)$")]
+    private static partial Regex KeywordFieldPattern();
+
     /// <summary>
-    /// Extracts fields from content. Returns null when none found (matching the nullable
-    /// metadata convention on index entries). First occurrence of a key wins; capped at
-    /// <see cref="MaxFields"/>.
+    /// Extracts fields from content. Multi-valued keys (per <see cref="KnownFields"/>)
+    /// accumulate; scalar keys are first-wins within one text. Null when none found.
     /// </summary>
-    public static Dictionary<string, string>? Extract(string? content)
+    public static Dictionary<string, string[]>? Extract(string? content)
     {
         if (string.IsNullOrWhiteSpace(content))
             return null;
 
-        Dictionary<string, string>? fields = null;
-        bool inFence = false;
-        bool inFrontmatter = false;
-        bool firstLine = true;
+        Dictionary<string, List<string>>? found = null;
+        bool inFence = false, firstLine = true, inFrontmatter = false;
 
         foreach (string rawLine in content.Split('\n'))
         {
             string line = rawLine.TrimEnd('\r');
 
-            // Code-fence tracking — nothing inside fences is a field.
             if (line.StartsWith("```", StringComparison.Ordinal))
             {
                 inFence = !inFence;
@@ -279,7 +391,6 @@ public static partial class FieldExtractor
             }
             if (inFence) { firstLine = false; continue; }
 
-            // Frontmatter tracking: a leading --- opens it; the next --- closes it.
             if (line.Trim() == "---")
             {
                 if (firstLine) inFrontmatter = true;
@@ -292,43 +403,44 @@ public static partial class FieldExtractor
             var (key, value) = MatchFieldLine(line);
             if (key is null) continue;
 
-            fields ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (fields.Count >= MaxFields) break;
-            fields.TryAdd(key, value!); // first occurrence wins
+            found ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            AddField(found, key, value!);
         }
 
-        return fields is { Count: > 0 } ? fields : null;
+        return ToFieldDict(found);
     }
 
     /// <summary>
-    /// Merges append-extracted fields over existing ones — newer values win (a changed
-    /// <c>status:</c> must update; first-wins would freeze stale values). Existing keys keep
-    /// their position; the union is capped at <see cref="MaxFields"/>. Null when both empty.
+    /// Splits agent-supplied keywords into field-shaped entries (routed to Fields) and plain
+    /// keywords. Routing rule: key charset before the first colon, non-empty remainder that
+    /// doesn't start with <c>//</c> (URL guard) and fits the value cap. Either side null when empty.
     /// </summary>
-    public static Dictionary<string, string>? MergeNewerWins(
-        Dictionary<string, string>? existing,
-        Dictionary<string, string>? extracted)
+    public static (Dictionary<string, string[]>? Fields, string[]? Keywords) RouteKeywords(string[]? keywords)
     {
-        if (existing is not { Count: > 0 } && extracted is not { Count: > 0 })
-            return null;
+        if (keywords is not { Length: > 0 })
+            return (null, null);
 
-        var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (existing is not null)
+        Dictionary<string, List<string>>? found = null;
+        List<string>? plain = null;
+
+        foreach (string kw in keywords)
         {
-            foreach (var kv in existing)
-                merged[kv.Key] = kv.Value;
-        }
-        if (extracted is not null)
-        {
-            foreach (var kv in extracted)
+            if (string.IsNullOrWhiteSpace(kw)) continue;
+            Match m = KeywordFieldPattern().Match(kw.Trim());
+            string? value = m.Success ? m.Groups[2].Value.Trim() : null;
+            if (value is { Length: > 0 and <= MaxValueLength }
+                && !value.StartsWith("//", StringComparison.Ordinal))
             {
-                if (merged.ContainsKey(kv.Key))
-                    merged[kv.Key] = kv.Value;    // newer wins
-                else if (merged.Count < MaxFields)
-                    merged[kv.Key] = kv.Value;    // new key, room left
+                found ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                AddField(found, m.Groups[1].Value.ToLowerInvariant(), value);
+            }
+            else
+            {
+                (plain ??= []).Add(kw.Trim());
             }
         }
-        return merged;
+
+        return (ToFieldDict(found), plain is { Count: > 0 } ? [.. plain] : null);
     }
 
     /// <summary>
@@ -337,20 +449,21 @@ public static partial class FieldExtractor
     /// vocabulary transparently.
     /// </summary>
     public static void SeedTermFrequencies(
-        Dictionary<string, string>? fields,
-        Dictionary<string, int> tf)
+        Dictionary<string, string[]>? fields, Dictionary<string, int> tf)
     {
         if (fields is not { Count: > 0 })
             return;
 
         foreach (var kv in fields)
         {
-            foreach (string token in TextAnalysis.Tokenize(kv.Key))
-            {
-                tf.TryGetValue(token, out int count);
-                tf[token] = count + 3;
-            }
-            foreach (string token in TextAnalysis.Tokenize(kv.Value))
+            Seed(kv.Key, tf);
+            foreach (string value in kv.Value)
+                Seed(value, tf);
+        }
+
+        static void Seed(string text, Dictionary<string, int> tf)
+        {
+            foreach (string token in TextAnalysis.Tokenize(text))
             {
                 tf.TryGetValue(token, out int count);
                 tf[token] = count + 3;
@@ -358,7 +471,27 @@ public static partial class FieldExtractor
         }
     }
 
-    /// <summary>Matches one line against the field patterns; (null, null) when no field.</summary>
+    /// <summary>Multi-valued keys accumulate (deduped); scalar keys are first-wins.</summary>
+    private static void AddField(Dictionary<string, List<string>> found, string key, string value)
+    {
+        if (found.TryGetValue(key, out var values))
+        {
+            if (KnownFields.IsMultiValued(key)
+                && !values.Contains(value, StringComparer.OrdinalIgnoreCase))
+                values.Add(value);
+            // scalar + existing → first-wins: ignore
+        }
+        else if (found.Count < KnownFields.MaxFields)
+        {
+            found[key] = [value];
+        }
+    }
+
+    private static Dictionary<string, string[]>? ToFieldDict(Dictionary<string, List<string>>? found) =>
+        found is { Count: > 0 }
+            ? found.ToDictionary(kv => kv.Key, kv => kv.Value.ToArray(), StringComparer.OrdinalIgnoreCase)
+            : null;
+
     private static (string? Key, string? Value) MatchFieldLine(string line)
     {
         Match m = BoldLabelPattern().Match(line);
@@ -370,46 +503,35 @@ public static partial class FieldExtractor
         string value = m.Groups[2].Value.Trim();
         if (value.Length == 0 || value.Length > MaxValueLength)
             return (null, null);
-        // URL remainder guard: "http://x" parses as key "http", value "//x" — not a field.
-        if (value.StartsWith("//", StringComparison.Ordinal))
+        if (value.StartsWith("//", StringComparison.Ordinal)) // URL remainder guard
             return (null, null);
 
-        string key = m.Groups[1].Value.Trim().ToLowerInvariant();
-        return (key, value);
+        return (m.Groups[1].Value.Trim().ToLowerInvariant(), value);
     }
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~FieldExtractorTests" --nologo -v q`
-Expected: PASS (all tests). If the `SeedTermFrequencies` test fails on a tokenization assumption, fix the test assertion to match actual `TextAnalysis.Tokenize` output (the implementation contract is "+3 per surviving token", not a specific token list).
+- [ ] **Step 4: Run to verify pass** — same filter; expected PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/Scrinia.Core/Search/FieldExtractor.cs tests/Scrinia.Tests/FieldExtractorTests.cs
-git commit -m "feat(core): FieldExtractor — mechanical key:value extraction from memory content
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(core): FieldExtractor — content extraction, keyword routing, TF seeding"
 ```
 
 ---
 
-### Task 2: `Fields` on the index models + round-trip
+### Task 3: `Fields` on the index models + round-trip
 
 **Files:**
-- Modify: `src/Scrinia.Core/Models/ArtifactEntry.cs`
-- Modify: `src/Scrinia.Core/Models/EphemeralEntry.cs`
-- Test: `tests/Scrinia.Tests/FieldExtractorTests.cs` (add one round-trip test — small enough to co-locate)
+- Modify: `src/Scrinia.Core/Models/ArtifactEntry.cs` and `src/Scrinia.Core/Models/EphemeralEntry.cs` (add after `RetrievalAnchors`)
+- Test: `tests/Scrinia.Tests/FieldExtractorTests.cs` (co-locate)
 
 **Interfaces:**
-- Produces: `ArtifactEntry.Fields` / `EphemeralEntry.Fields` — `Dictionary<string, string>?`, last positional parameter, default null. Later tasks pass `Fields:` by name.
-- Note: `FileStoreJsonContext` is source-generated from the type shape — the new property serializes automatically, no context change needed. Record `with`-copies (copy/move paths) carry `Fields` automatically. Explicit reconstruction sites that already drop `Keywords`/`TermFrequencies` (e.g. the lossy fallback branches in `FileMemoryStore.CopyMemory`) may also drop `Fields` — that is consistent with existing behavior and NOT in scope to change.
+- Produces: `Dictionary<string, string[]>? Fields = null` as the LAST positional parameter on both records. `FileStoreJsonContext` is source-generated from the type shape — no context edits needed. Record `with`-copies carry Fields automatically; the already-lossy reconstruction branches (e.g. `FileMemoryStore.CopyMemory` fallbacks that drop Keywords/TF) stay lossy — NOT in scope.
 
-- [ ] **Step 1: Write the failing round-trip test**
-
-Add to `tests/Scrinia.Tests/FieldExtractorTests.cs`:
+- [ ] **Step 1: Failing test** (add to `FieldExtractorTests.cs`):
 
 ```csharp
     [Fact]
@@ -419,255 +541,64 @@ Add to `tests/Scrinia.Tests/FieldExtractorTests.cs`:
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
 
         var entry = new Scrinia.Core.Models.ArtifactEntry(
-            Name: "fields-roundtrip",
-            Uri: "file:///dev/null",
-            OriginalBytes: 10,
-            ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow,
-            Description: "test",
-            Fields: new Dictionary<string, string> { ["status"] = "Active", ["verdict"] = "no-go" });
+            Name: "fields-roundtrip", Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow, Description: "test",
+            Fields: new Dictionary<string, string[]> { ["person"] = ["Alice", "Bob"], ["status"] = ["no-go"] });
 
         store.Upsert(entry, "local");
         var reloaded = store.LoadIndex("local").Single(e => e.Name == "fields-roundtrip");
 
-        reloaded.Fields.Should().NotBeNull();
-        reloaded.Fields!["status"].Should().Be("Active", because: "values are verbatim through JSON");
-        reloaded.Fields["verdict"].Should().Be("no-go");
+        reloaded.Fields!["person"].Should().BeEquivalentTo(["Alice", "Bob"]);
+        reloaded.Fields["status"].Should().BeEquivalentTo(["no-go"], because: "values verbatim through JSON");
     }
 ```
 
-Verified surfaces: `TestHelpers.StoreScope` exposes `WorkspaceDir` (`tests/Scrinia.Tests/TestHelpers.cs:86-92`); `FileMemoryStore(string workspaceRoot, RankerOptions? rankerOptions = null)` (`src/Scrinia.Core/FileMemoryStore.cs:180`).
+- [ ] **Step 2: Verify failure** — filter `FullyQualifiedName~ArtifactEntry_Fields_RoundTrips`; expected compile FAILURE (no `Fields` param).
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ArtifactEntry_Fields_RoundTrips" --nologo -v q`
-Expected: compile FAILURE — no `Fields` parameter.
-
-- [ ] **Step 3: Add the parameter to both records**
-
-In `src/Scrinia.Core/Models/ArtifactEntry.cs`, after `RetrievalAnchors`:
+- [ ] **Step 3: Add to both records** — in `ArtifactEntry.cs` after `string[]? RetrievalAnchors = null` (change its trailing `);` to `,`):
 
 ```csharp
-    string[]? RetrievalAnchors = null,
     /// <summary>
-    /// Mechanically extracted key:value fields from the content (frontmatter, line-start
-    /// pairs, bold labels — see Search.FieldExtractor). Values verbatim, keys lowercase.
-    /// Ranking signal today; queryable surface later. Null for pre-fields entries.
+    /// Unified multi-valued fields — key:value facts from agent-supplied keywords
+    /// (person:x routed at write time), mechanical content extraction, and reference
+    /// extraction (file/ref). Keys lowercase, values verbatim. See Search.FieldExtractor
+    /// and Search.KnownFields. Null for pre-fields entries (graceful degradation).
     /// </summary>
-    Dictionary<string, string>? Fields = null);
+    Dictionary<string, string[]>? Fields = null);
 ```
 
-Same addition (same doc comment) at the end of `src/Scrinia.Core/Models/EphemeralEntry.cs` after its `RetrievalAnchors`.
+Same addition (same doc comment) at the end of `EphemeralEntry.cs`.
 
-- [ ] **Step 4: Build the full solution and run the test**
-
-Run: `dotnet build --nologo -v q` then the Step 2 test command.
-Expected: build clean (positional-construction sites all use optional params — verify no CS errors), test PASS.
+- [ ] **Step 4: Build + verify pass** — `dotnet build --nologo -v q` clean, then Step 2 filter PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/Scrinia.Core/Models/ArtifactEntry.cs src/Scrinia.Core/Models/EphemeralEntry.cs tests/Scrinia.Tests/FieldExtractorTests.cs
-git commit -m "feat(core): Fields dictionary on ArtifactEntry/EphemeralEntry
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(core): multi-valued Fields on ArtifactEntry/EphemeralEntry"
 ```
 
 ---
 
-### Task 3: MCP Store path — extract, seed, persist
+### Task 4: Scorer slots with legacy dual-read
 
 **Files:**
-- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs` (the `Store` method, ~lines 128–356)
-- Test: `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs`
+- Modify: `src/Scrinia.Core/Search/WeightedFieldScorer.cs` — `ScoreEntryTerm` (line ~322, after the anchor block ending ~line 380) + the doc-comment score table (~line 14)
+- Test: `tests/Scrinia.Tests/FieldExtractorTests.cs`
 
 **Interfaces:**
-- Consumes: `FieldExtractor.Extract`, `FieldExtractor.SeedTermFrequencies` (Task 1); `ArtifactEntry.Fields` / `EphemeralEntry.Fields` (Task 2).
-- Produces: every memory stored via the MCP `Store` path carries extracted `Fields` and field-seeded TF. Task 4 relies on `entry.Fields` being populated by Store.
+- Consumes: `ArtifactEntry.Fields` (Task 3).
+- Produces: pair-exact 50 / value-exact 40 / value-contains 12, over `Fields` AND over `key:value`-shaped legacy keywords (dual-read — pre-migration entries rank identically). Query terms reach `ScoreEntryTerm` whole (split on whitespace only, `WeightedFieldScorer.cs:303`), so `verdict:quiescent` arrives as one term.
 
-- [ ] **Step 1: Write the failing test**
-
-Add to `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs`, next to `Store_WithAnchors_PersistsAnchors_SeedsTf_AndSurfacesViaSearch` (mirror its harness usage exactly — `TestHelpers.StoreScope`, `Tools()`, `ScriniaArtifactStore.LoadIndex()`):
-
-```csharp
-    [Fact]
-    public async Task Store_ExtractsFields_SeedsTf_AndSurfacesViaSearch()
-    {
-        // End-to-end check of the mechanical field-extraction flow:
-        //   1. Store() extracts frontmatter/labeled-line fields from content
-        //   2. ArtifactEntry.Fields carries them (keys lowercase, values verbatim)
-        //   3. Field tokens are TF-seeded at +3 so BM25 picks up field vocabulary
-        //   4. A query using a field VALUE surfaces the entry
-        using var scope = new TestHelpers.StoreScope();
-
-        string content = "---\nStatus: quiescent\n---\n**Verdict:** rejected\nThe subsystem review notes.";
-        await Tools().Store([content], "field-flow-test", description: "field extraction notes");
-
-        // (1) + (2): Fields persisted, key lowercased, value verbatim.
-        var entries = ScriniaArtifactStore.LoadIndex();
-        var entry = entries.Single(e => e.Name == "field-flow-test");
-        entry.Fields.Should().NotBeNull();
-        entry.Fields!["status"].Should().Be("quiescent");
-        entry.Fields["verdict"].Should().Be("rejected");
-
-        // (3): field tokens seeded at +3 (baseline: "quiescent" appears once in content
-        // as frontmatter is part of the stored text — assert ≥ 3 rather than an exact count).
-        entry.TermFrequencies.Should().NotBeNull();
-        entry.TermFrequencies!.Should().ContainKey("quiescent");
-        entry.TermFrequencies["quiescent"].Should().BeGreaterThanOrEqualTo(3,
-            because: "field key/value tokens must be TF-seeded at +3");
-
-        // (4): querying by field value surfaces the entry.
-        string result = await Tools().Search("quiescent");
-        var parsed = ResponseParser.Parse(result);
-        parsed.Status.Should().Be("success");
-        parsed.Content.Should().Contain("field-flow-test");
-    }
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~Store_ExtractsFields" --nologo -v q`
-Expected: FAIL — `entry.Fields` is null (extraction not wired).
-
-- [ ] **Step 3: Wire extraction into `Store`**
-
-In `src/Scrinia.Mcp/MemoryTools.Core.cs`, inside `Store`, directly after the anchor-seeding block (after the `cleanedAnchors` block ending ~line 177):
-
-```csharp
-        // Mechanically extract key:value fields from the content (frontmatter, line-start
-        // pairs, bold labels) and seed their tokens into TF at +3 — between auto-keyword
-        // (+2) and agent-keyword (+5). Fields land on the entry for field-score matching.
-        var fields = FieldExtractor.Extract(joined);
-        FieldExtractor.SeedTermFrequencies(fields, tf);
-```
-
-Then pass `Fields: fields` to both constructions in this method:
-- the `EphemeralEntry` at ~line 204 (after `RetrievalAnchors: cleanedAnchors`)
-- the `ArtifactEntry` at ~line 329 (after `RetrievalAnchors: cleanedAnchors`)
-
-Add `using Scrinia.Core.Search;` if not already imported (check the file head — `TextAnalysis` is already used, so the namespace is likely imported).
-
-- [ ] **Step 4: Run tests**
-
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~Store_ExtractsFields" --nologo -v q`
-Expected: PASS.
-Then run the full suite to catch regressions (existing Store tests assert on TF/keywords):
-`dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --nologo -v q`
-Expected: all PASS. If an existing test asserts an exact TF count that field seeding shifted, inspect whether the test content genuinely contains a field-shaped line; adjust the test's content (preferred: make its content field-free) rather than weakening its assertion.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/Scrinia.Mcp/MemoryTools.Core.cs tests/Scrinia.Tests/ScriniaMcpToolsTests.cs
-git commit -m "feat(mcp): extract + persist content fields on store; seed TF at +3
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
-```
-
----
-
-### Task 4: MCP Append path — newer-wins merge
-
-**Files:**
-- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs` (the `Append` method + `BuildAppendMetadata`, ~lines 1027–1242)
-- Test: `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs`
-
-**Interfaces:**
-- Consumes: `FieldExtractor.Extract`, `FieldExtractor.MergeNewerWins`, `FieldExtractor.SeedTermFrequencies`; `Fields` populated by Store (Task 3).
-- Produces: `BuildAppendMetadata` returns a 6-tuple — signature becomes:
-  `(string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors, Dictionary<string, string>? Fields)`
-  with two new parameters: `string appendedContent` and `Dictionary<string, string>? existingFields`.
-
-- [ ] **Step 1: Write the failing test**
-
-Add to `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs`:
-
-```csharp
-    [Fact]
-    public async Task Append_MergesFields_NewerWins_PreservingUntouchedKeys()
-    {
-        using var scope = new TestHelpers.StoreScope();
-
-        await Tools().Store(["status: active\ntype: finding\nInitial notes."], "field-append-test");
-        await Tools().Append("status: done\nFollow-up notes.", "field-append-test");
-
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "field-append-test");
-        entry.Fields.Should().NotBeNull();
-        entry.Fields!["status"].Should().Be("done",
-            because: "append field merge is newer-wins — a changed status must update");
-        entry.Fields["type"].Should().Be("finding",
-            because: "keys untouched by the appended chunk survive");
-    }
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~Append_MergesFields" --nologo -v q`
-Expected: FAIL — `entry.Fields["status"]` is `"active"` or Fields is stale (append rebuilds the entry without fields merge).
-
-- [ ] **Step 3: Implement the merge in `BuildAppendMetadata` and thread it through**
-
-In `BuildAppendMetadata` (~line 1182): add parameters `string appendedContent` and `Dictionary<string, string>? existingFields`; extend the return tuple with `Dictionary<string, string>? Fields`. After the anchor-merge block, add:
-
-```csharp
-        // Fields: extract from the appended chunk only and merge newer-wins over the
-        // entry's existing fields (a changed status: must update — first-wins would
-        // freeze stale values). Seed merged field tokens into TF at +3, mirroring Store.
-        var mergedFields = FieldExtractor.MergeNewerWins(
-            existingFields, FieldExtractor.Extract(appendedContent));
-        FieldExtractor.SeedTermFrequencies(mergedFields, tf);
-```
-
-and include `mergedFields` in the return tuple.
-
-In `Append`, update both `BuildAppendMetadata` call sites:
-- ephemeral (~line 1091): pass `content` and `existingEph?.Fields`; set `Fields: meta.Fields` on the `EphemeralEntry` (~line 1100).
-- persistent (~line 1127): pass `content` and `existingEntry?.Fields`; set `Fields: meta.Fields` on the `ArtifactEntry` (~line 1145).
-
-Note: the TF dict inside `BuildAppendMetadata` is recomputed from the full post-append text, and `SeedTermFrequencies(mergedFields, …)` seeds ALL merged fields (not just the new chunk's) — this is correct: TF is rebuilt from scratch on every append, so carried-forward fields must re-seed each time (same reason merged anchors re-seed).
-
-- [ ] **Step 4: Run tests**
-
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~Append_MergesFields" --nologo -v q` — expected PASS.
-Then full suite: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --nologo -v q` — expected all PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/Scrinia.Mcp/MemoryTools.Core.cs tests/Scrinia.Tests/ScriniaMcpToolsTests.cs
-git commit -m "feat(mcp): newer-wins field merge on append
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
-```
-
----
-
-### Task 5: Scorer slots
-
-**Files:**
-- Modify: `src/Scrinia.Core/Search/WeightedFieldScorer.cs` (`ScoreEntryTerm`, ~line 322; doc-comment score table, ~line 14)
-- Test: `tests/Scrinia.Tests/FieldExtractorTests.cs` (scoring exercised through the public `FileMemoryStore.SearchAll` — `WeightedFieldScorer` is internal to Core and Core has no InternalsVisibleTo)
-
-**Interfaces:**
-- Consumes: `ArtifactEntry.Fields` (Task 2).
-- Produces: three new match slots in entry term scoring — compound `key:value` pair exact = 50, field value exact = 40, field value contains = 12. All comparisons explicit `StringComparison.OrdinalIgnoreCase` (never rely on the dictionary comparer — it does not survive JSON deserialization).
-
-- [ ] **Step 1: Write the failing tests**
-
-Add to `tests/Scrinia.Tests/FieldExtractorTests.cs`. Ranking is asserted relatively: two entries identical except one carries the matching field must rank field-carrier first. Query terms pass through `ScoreEntry`'s whitespace split intact, so `status:quiescent` reaches `ScoreEntryTerm` as one term (colons are not split — the same mechanism `topic:subject` tag queries rely on).
+- [ ] **Step 1: Failing tests** (add to `FieldExtractorTests.cs`):
 
 ```csharp
     private static Scrinia.Core.Models.ArtifactEntry MakeEntry(
-        string name, Dictionary<string, string>? fields) =>
+        string name, Dictionary<string, string[]>? fields = null, string[]? keywords = null) =>
         new(
-            Name: name,
-            Uri: "file:///dev/null",
-            OriginalBytes: 10,
-            ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow,
-            Description: "unrelated description",
-            Fields: fields);
+            Name: name, Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow, Description: "unrelated description",
+            Keywords: keywords, Fields: fields);
 
     [Fact]
     public void SearchAll_FieldValueExact_OutranksFieldlessEntry()
@@ -675,14 +606,12 @@ Add to `tests/Scrinia.Tests/FieldExtractorTests.cs`. Ranking is asserted relativ
         using var scope = new TestHelpers.StoreScope();
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
         store.Upsert(MakeEntry("with-field",
-            new Dictionary<string, string> { ["verdict"] = "quiescent" }), "local");
-        store.Upsert(MakeEntry("without-field", null), "local");
+            new Dictionary<string, string[]> { ["verdict"] = ["quiescent"] }), "local");
+        store.Upsert(MakeEntry("without-field"), "local");
 
         var results = store.SearchAll("quiescent", scopes: null, limit: 10);
-
-        var first = results.OfType<Scrinia.Core.Search.EntryResult>().First();
-        first.Item.Entry.Name.Should().Be("with-field",
-            because: "a field-value exact match (40) must outrank an entry with no match");
+        results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
+            .Should().Be("with-field");
     }
 
     [Fact]
@@ -690,224 +619,731 @@ Add to `tests/Scrinia.Tests/FieldExtractorTests.cs`. Ranking is asserted relativ
     {
         using var scope = new TestHelpers.StoreScope();
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
-        // Same value under different keys: the compound query "verdict:quiescent" must
-        // prefer the entry whose KEY also matches (pair exact 50 > value exact 40).
         store.Upsert(MakeEntry("right-key",
-            new Dictionary<string, string> { ["verdict"] = "quiescent" }), "local");
+            new Dictionary<string, string[]> { ["verdict"] = ["quiescent"] }), "local");
         store.Upsert(MakeEntry("wrong-key",
-            new Dictionary<string, string> { ["mood"] = "quiescent" }), "local");
+            new Dictionary<string, string[]> { ["mood"] = ["quiescent"] }), "local");
 
         var results = store.SearchAll("verdict:quiescent", scopes: null, limit: 10);
+        results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
+            .Should().Be("right-key", because: "pair exact (50) outranks value-only exact (40)");
+    }
 
-        var first = results.OfType<Scrinia.Core.Search.EntryResult>().First();
-        first.Item.Entry.Name.Should().Be("right-key",
-            because: "compound key:value exact (50) must outrank value-only exact (40)");
+    [Fact]
+    public void SearchAll_LegacyTypedKeyword_ScoresLikeAField()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
+        // Pre-migration entry: person:maria lives in Keywords, Fields is null.
+        store.Upsert(MakeEntry("legacy", keywords: ["person:maria"]), "local");
+        store.Upsert(MakeEntry("bystander"), "local");
+
+        var results = store.SearchAll("person:maria", scopes: null, limit: 10);
+        results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
+            .Should().Be("legacy",
+            because: "dual-read parses key:value legacy keywords into the field slots");
     }
 ```
 
-Verified surfaces: `IMemoryStore.SearchAll(string query, string? scopes = null, int limit = 20)` (`src/Scrinia.Core/IMemoryStore.cs:27`); `EntryResult(ScopedArtifact Item, double Score)` lives in `Scrinia.Core.Search` (`src/Scrinia.Core/Search/SearchResults.cs:9`).
+- [ ] **Step 2: Verify failure** — filter `FullyQualifiedName~SearchAll_`; first two FAIL (no field scoring). Note: the legacy test may pass weakly via the existing keyword-exact(40) path — that's fine; the assertion holds before and after, it guards regression.
 
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~SearchAll_FieldValue|FullyQualifiedName~SearchAll_CompoundKeyValue" --nologo -v q`
-Expected: FAIL — without scorer slots, neither entry gets field-derived score (first test may find no results at all; both must fail before wiring).
-
-- [ ] **Step 3: Add the slots to `ScoreEntryTerm`**
-
-In `src/Scrinia.Core/Search/WeightedFieldScorer.cs`, inside `ScoreEntryTerm`, after the anchor block (~line 380) and before the description check:
+- [ ] **Step 3: Implement** — in `ScoreEntryTerm`, after the anchor block, before the description check:
 
 ```csharp
-        // Field matching — mechanically extracted key:value pairs (see FieldExtractor).
-        // Compound "key:value" query term hitting a pair exactly scores 50 (tag-exact
-        // parity); a term equal to a field value scores 40 (keyword-exact parity);
-        // contained in a value, 12. Comparisons are explicit OrdinalIgnoreCase — the
-        // dictionary's comparer does not survive JSON round-trips.
+        // Unified-field matching. Compound "key:value" query terms hitting a (key, value)
+        // pair score 50 (tag-exact parity); a term equal to a value scores 40 (keyword-exact
+        // parity); contained in a value, 12. Dual-read: key:value-shaped LEGACY keywords
+        // (person:maria written before unification) are parsed on the fly so pre-migration
+        // entries rank identically — the cutover needs no re-index. Explicit OrdinalIgnoreCase
+        // everywhere: dictionary comparers don't survive JSON round-trips.
+        int sep = term.IndexOf(':');
+        string? termKey = sep > 0 && sep < term.Length - 1 ? term[..sep] : null;
+        string? termValue = termKey is not null ? term[(sep + 1)..] : null;
+
         if (entry.Fields is { Count: > 0 })
         {
-            int sep = term.IndexOf(':', StringComparison.Ordinal);
-            string? termKey = sep > 0 && sep < term.Length - 1 ? term[..sep] : null;
-            string? termValue = termKey is not null ? term[(sep + 1)..] : null;
-
             foreach (var field in entry.Fields)
             {
-                if (termKey is not null
-                    && field.Key.Equals(termKey, StringComparison.OrdinalIgnoreCase)
-                    && field.Value.Equals(termValue, StringComparison.OrdinalIgnoreCase))
+                foreach (string value in field.Value)
                 {
-                    score = Math.Max(score, 50);
-                    break;
+                    if (termKey is not null
+                        && field.Key.Equals(termKey, StringComparison.OrdinalIgnoreCase)
+                        && value.Equals(termValue, StringComparison.OrdinalIgnoreCase))
+                        score = Math.Max(score, 50);
+                    else if (value.Equals(term, StringComparison.OrdinalIgnoreCase))
+                        score = Math.Max(score, 40);
+                    else if (value.Contains(term, StringComparison.OrdinalIgnoreCase))
+                        score = Math.Max(score, 12);
                 }
+            }
+        }
 
-                if (field.Value.Equals(term, StringComparison.OrdinalIgnoreCase))
+        if (entry.Keywords is { Length: > 0 })
+        {
+            foreach (string kw in entry.Keywords)
+            {
+                int kwSep = kw.IndexOf(':');
+                if (kwSep <= 0 || kwSep >= kw.Length - 1) continue;
+                string kwKey = kw[..kwSep];
+                string kwValue = kw[(kwSep + 1)..];
+
+                if (termKey is not null
+                    && kwKey.Equals(termKey, StringComparison.OrdinalIgnoreCase)
+                    && kwValue.Equals(termValue, StringComparison.OrdinalIgnoreCase))
+                    score = Math.Max(score, 50);
+                else if (kwValue.Equals(term, StringComparison.OrdinalIgnoreCase))
                     score = Math.Max(score, 40);
-                else if (field.Value.Contains(term, StringComparison.OrdinalIgnoreCase))
+                else if (kwValue.Contains(term, StringComparison.OrdinalIgnoreCase))
                     score = Math.Max(score, 12);
             }
         }
 ```
 
-Update the class doc-comment score table (~line 14) — insert into the entry-scoring table in weight order:
+Update the doc-comment entry-score table (~line 14): add `/// Field key:value pair exact    50`, `/// Field value exact match       40`, `/// Field value contains          12` rows (note "fields ∪ legacy key:value keywords").
 
-```
-/// Field key:value pair exact     50
-/// Field value exact match        40
-/// Field value contains           12
-```
-
-- [ ] **Step 4: Run tests**
-
-Run the Step 2 filter — expected PASS. Then full suite: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --nologo -v q` — expected all PASS (existing ranking tests must not shift: entries without Fields take the `is { Count: > 0 }` early skip).
+- [ ] **Step 4: Verify pass** — Step 2 filter PASS, then FULL suite `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --nologo -v q`. If an existing ranking test shifts, check whether its entries carry `key:value`-shaped keywords now scoring via dual-read (e.g. `file:x` refs matching a query term at 40 instead of contains-12); adjust the test's expectation ONLY if the new ranking is the intended semantics, otherwise fix the slot code.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/Scrinia.Core/Search/WeightedFieldScorer.cs tests/Scrinia.Tests/FieldExtractorTests.cs
-git commit -m "feat(core): field-match slots in weighted scorer (pair 50 / exact 40 / contains 12)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(core): field-match scorer slots with legacy keyword dual-read"
 ```
 
 ---
 
-### Task 6: Server orchestrator parity
+### Task 5: Entity graph + References tool dual-read
 
 **Files:**
-- Modify: `src/Scrinia.Server/Services/MemoryOrchestrator.cs` (`StoreAsync` ~lines 15–137, `AppendAsync` ~lines 139–259)
-- Test: `tests/Scrinia.Server.Tests/` — add to the existing orchestrator/endpoint test file (locate with `grep -l "StoreAsync" tests/Scrinia.Server.Tests/*.cs`; follow its store-construction pattern)
+- Modify: `src/Scrinia.Core/Search/EntityGraph.cs` — add `ParseEntityFields` + a `Build` overload taking Fields
+- Modify: `src/Scrinia.Core/Search/EntityGraphScoreContributor.cs:59-62` — pass Fields
+- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs:1263-1289` — `References` matches fields ∪ keywords
+- Test: `tests/Scrinia.Tests/KnownFieldsTests.cs` (graph), `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs` (References)
 
 **Interfaces:**
-- Consumes: `FieldExtractor` (Task 1), `Fields` params (Task 2).
-- Produces: REST-stored memories carry Fields identically to MCP-stored ones. The server already imports `Scrinia.Core.Search`.
+- Consumes: `KnownFields.EntityKeys`, `ArtifactEntry.Fields`.
+- Produces:
+  - `public static IEnumerable<(string Type, string Value)> ParseEntityFields(IReadOnlyDictionary<string, string[]>? fields)` on `EntityGraph` — yields (key, value) for keys in `EntityKeys`, lowercased, mirroring `ParseTypedEntities` output shape.
+  - `public static EntityGraph Build(IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords, IReadOnlyDictionary<string, string[]>? Fields)> docs)` — existing 2-tuple `Build` (`EntityGraph.cs:115`) delegates to it with null Fields. Per-doc tags = ParseTypedEntities(keywords) ∪ ParseEntityFields(fields).
 
-- [ ] **Step 1: Write the failing test**
-
-In the located server test file, following its existing pattern for calling `MemoryOrchestrator.StoreAsync` with an `IMemoryStore` (the tests construct a `FileMemoryStore` over a temp dir):
+- [ ] **Step 1: Failing tests** — graph parity in `KnownFieldsTests.cs`:
 
 ```csharp
     [Fact]
-    public async Task StoreAsync_ExtractsFields_AndAppendMergesNewerWins()
+    public void EntityGraph_FieldsAndLegacyKeywords_ProduceIdenticalGraphs()
     {
-        // (arrange a store per the file's existing pattern)
-        await MemoryOrchestrator.StoreAsync(store,
-            new StoreRequest(["status: active\ntype: finding\nBody."], "server-fields-test"));
+        var fromKeywords = EntityGraph.Build(
+            [("local|a", (IReadOnlyList<string>?)["person:maria", "org:acme"], null),
+             ("local|b", ["person:maria"], null)]);
+        var fromFields = EntityGraph.Build(
+            [("local|a", null, (IReadOnlyDictionary<string, string[]>?)new Dictionary<string, string[]>
+                 { ["person"] = ["Maria"], ["org"] = ["Acme"] }),
+             ("local|b", null, new Dictionary<string, string[]> { ["person"] = ["maria"] })]);
 
-        var entry = store.LoadIndex("local").Single(e => e.Name == "server-fields-test");
-        entry.Fields.Should().NotBeNull();
-        entry.Fields!["status"].Should().Be("active");
+        fromFields.EntityCount.Should().Be(fromKeywords.EntityCount);
+        fromFields.DocCount.Should().Be(fromKeywords.DocCount);
 
-        await MemoryOrchestrator.AppendAsync(store, "server-fields-test", "status: done\nMore.");
+        var scoresKw = fromKeywords.Score("tell me about maria", 0.15, 20);
+        var scoresF = fromFields.Score("tell me about maria", 0.15, 20);
+        scoresF.Should().BeEquivalentTo(scoresKw,
+            because: "a fields entry and a legacy typed-keyword entry must graph identically");
+    }
 
-        entry = store.LoadIndex("local").Single(e => e.Name == "server-fields-test");
-        entry.Fields!["status"].Should().Be("done", because: "server append merge is newer-wins");
-        entry.Fields["type"].Should().Be("finding");
+    [Fact]
+    public void EntityGraph_MixedDoc_UnionsBothSources()
+    {
+        var graph = EntityGraph.Build(
+            [("local|a", (IReadOnlyList<string>?)["person:maria"],
+              (IReadOnlyDictionary<string, string[]>?)new Dictionary<string, string[]> { ["org"] = ["acme"] })]);
+        graph.EntityCount.Should().Be(2, because: "keywords ∪ fields on the same doc");
     }
 ```
 
-(Adapt `StoreRequest` construction to its actual signature — check `src/Scrinia.Server/Models/` for the request DTO shape.)
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `dotnet test tests/Scrinia.Server.Tests/Scrinia.Server.Tests.csproj --filter "FullyQualifiedName~StoreAsync_ExtractsFields" --nologo -v q`
-Expected: FAIL — Fields null.
-
-- [ ] **Step 3: Wire extraction into both methods**
-
-In `StoreAsync`, after the keyword-boost loop (~line 33):
+References dual-read in `ScriniaMcpToolsTests.cs` — see Step 3 for what makes it pass; store one legacy-style entry by direct `ScriniaArtifactStore`/`store.Upsert` with `Keywords: ["file:src/Foo.cs"]` and one with `Fields: new() { ["file"] = ["src/Foo.cs"] }`, then:
 
 ```csharp
-        // Mechanically extract key:value fields and seed their tokens at +3 —
-        // same contract as the MCP store path (MemoryTools.Store).
-        var fields = FieldExtractor.Extract(joined);
-        FieldExtractor.SeedTermFrequencies(fields, tf);
+    [Fact]
+    public async Task References_FindsBothLegacyKeywordAndFieldEntries()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["legacy body"], "legacy-ref", keywords: ["file:src/Foo.cs"]);
+        // After Task 7 the line above routes to Fields; to pin LEGACY shape, upsert directly:
+        var store = ScriniaArtifactStore.Store; // or however tests reach the store — mirror the file's pattern
+        var legacy = store.LoadIndex("local").Single(e => e.Name == "legacy-ref");
+        store.Upsert(legacy with { Fields = null, Keywords = ["file:src/Foo.cs"] }, "local");
+
+        store.Upsert(legacy with { Name = "fields-ref", Keywords = null,
+            Fields = new Dictionary<string, string[]> { ["file"] = ["src/Foo.cs"] } }, "local");
+
+        string result = await Tools().References("src/Foo.cs");
+        result.Should().Contain("legacy-ref").And.Contain("fields-ref");
+    }
 ```
 
-Pass `Fields: fields` on both the `EphemeralEntry` (~line 57) and `ArtifactEntry` (~line 108) constructions.
+(Adapt the store-access line to the test file's existing pattern for reaching the active store — several tests in the file manipulate entries directly; mirror them.)
 
-In `AppendAsync`, after the full-text TF rebuild (~line 171), resolve the existing fields per path and merge. The existing entry lookups happen inside the ephemeral/persistent branches, so place the merge inside each branch before entry construction:
+- [ ] **Step 2: Verify failure** — graph tests: compile FAILURE (no 3-tuple Build). References test: FAIL (fields entry not found).
 
-Ephemeral branch (after `existingEph` is loaded, ~line 188):
+- [ ] **Step 3: Implement**
+
+`EntityGraph.cs` — add below `ParseTypedEntities`:
+
 ```csharp
-            var mergedFields = FieldExtractor.MergeNewerWins(
-                existingEph?.Fields, FieldExtractor.Extract(content));
-            FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+    /// <summary>
+    /// Fields-side sibling of <see cref="ParseTypedEntities"/>: yields (key, value) pairs for
+    /// entity-class fields (KnownFields.EntityKeys), lowercased, values kept whole. Together
+    /// they give Build its dual-read: legacy typed keywords ∪ unified fields.
+    /// </summary>
+    public static IEnumerable<(string Type, string Value)> ParseEntityFields(
+        IReadOnlyDictionary<string, string[]>? fields)
+    {
+        if (fields is null) yield break;
+        foreach (var kv in fields)
+        {
+            if (!KnownFields.EntityKeys.Contains(kv.Key)) continue;
+            string type = kv.Key.ToLowerInvariant();
+            foreach (string raw in kv.Value)
+            {
+                string value = raw.Trim().ToLowerInvariant();
+                if (value.Length > 0) yield return (type, value);
+            }
+        }
+    }
 ```
-and `Fields: mergedFields` on the `EphemeralEntry` (~line 194).
 
-Persistent branch (after `existingEntry` is loaded, ~line 215):
+Change the existing `Build` (2-tuple, `:115`) to delegate, and add the 3-tuple overload — inside it, replace the per-doc parse line (`foreach (var pair in ParseTypedEntities(keywords)) tags.Add(pair);`) with:
+
 ```csharp
-            var mergedFields = FieldExtractor.MergeNewerWins(
-                existingEntry?.Fields, FieldExtractor.Extract(content));
-            FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+    public static EntityGraph Build(IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords)> docs)
+        => Build(docs?.Select(d => (d.DocKey, d.Keywords, (IReadOnlyDictionary<string, string[]>?)null)) ?? []);
+
+    public static EntityGraph Build(
+        IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords, IReadOnlyDictionary<string, string[]>? Fields)> docs)
+    {
+        // ... same two-pass body as today, but per doc:
+        var tags = new List<(string Type, string Value)>();
+        foreach (var pair in ParseTypedEntities(keywords)) tags.Add(pair);
+        foreach (var pair in ParseEntityFields(fields)) tags.Add(pair);
+        // guard changes from `keywords is not { Count: > 0 }` to `tags.Count == 0` after parsing both
+    }
 ```
-and `Fields: mergedFields` on the `ArtifactEntry` (~line 229).
 
-(The shared `tf` is branch-local by the time entries are built — seeding inside each branch keeps the one `tf` dict correct because only one branch runs.)
+(Move the whole existing body into the 3-tuple overload; the skip-guard `if (string.IsNullOrWhiteSpace(docKey) || keywords is not { Count: > 0 }) continue;` becomes `if (string.IsNullOrWhiteSpace(docKey)) continue;` followed by parsing both sources and `if (tags.Count == 0) continue;`.)
 
-- [ ] **Step 4: Run tests**
+`EntityGraphScoreContributor.cs:59-61`:
 
-Run: `dotnet test tests/Scrinia.Server.Tests/Scrinia.Server.Tests.csproj --nologo -v q`
-Expected: all PASS (new test + existing 64+ server tests).
+```csharp
+        var docs = new List<(string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)>(candidates.Count);
+        foreach (var c in candidates)
+            docs.Add(($"{c.Scope}|{c.Entry.Name}", c.Entry.Keywords, c.Entry.Fields));
+        var graph = EntityGraph.Build(docs);
+```
+
+`References` (`MemoryTools.Core.cs:1273-1278`) — extend the match predicate:
+
+```csharp
+        var matches = allEntries
+            .Where(sa =>
+                (sa.Entry.Keywords is not null &&
+                 sa.Entry.Keywords.Any(k =>
+                     k.Equals(fileKey, StringComparison.OrdinalIgnoreCase) ||
+                     k.Equals(refKey, StringComparison.OrdinalIgnoreCase) ||
+                     k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
+                ||
+                (sa.Entry.Fields is not null &&
+                 (MatchesFieldRef(sa.Entry.Fields, "file", target) ||
+                  MatchesFieldRef(sa.Entry.Fields, "ref", target))))
+```
+
+with a private helper in the same file:
+
+```csharp
+    /// <summary>Reference-field match: exact value or path-suffix ("/{target}") — the fields-side
+    /// twin of the legacy file:/ref: keyword predicate in References.</summary>
+    private static bool MatchesFieldRef(Dictionary<string, string[]> fields, string key, string target)
+    {
+        foreach (var kv in fields)
+        {
+            if (!kv.Key.Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (string v in kv.Value)
+            {
+                if (v.Equals(target, StringComparison.OrdinalIgnoreCase)
+                    || v.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
+    }
+```
+
+- [ ] **Step 4: Verify pass** — graph + References filters PASS; full Scrinia.Tests suite PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/Scrinia.Server/Services/MemoryOrchestrator.cs tests/Scrinia.Server.Tests/
-git commit -m "feat(server): field extraction parity in MemoryOrchestrator store/append
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git add src/Scrinia.Core/Search/EntityGraph.cs src/Scrinia.Core/Search/EntityGraphScoreContributor.cs src/Scrinia.Mcp/MemoryTools.Core.cs tests/
+git commit -m "feat(core,mcp): entity graph + References dual-read fields ∪ legacy keywords"
 ```
 
 ---
 
-### Task 7: Docs + bench sanity
+### Task 6: MaintenanceEventSink — ref field read/write
 
 **Files:**
-- Modify: `docs/architecture/core.md` (ArtifactEntry model listing ~line 97; score table ~line 190; add a `FieldExtractor` paragraph next to the ReferenceExtractor section ~line 247)
-- No product code changes.
+- Modify: `src/Scrinia.Core/MaintenanceEventSink.cs` (whole file is 117 lines — auto-link writes `ref:{source}` keywords at `:61-69`; orphan detection reads inbound `ref:` keywords at `:88-92`)
+- Test: `tests/Scrinia.Tests/` — locate the existing MaintenanceEventSink tests with `Grep "MaintenanceEventSink" tests/`; add there (create `tests/Scrinia.Tests/MaintenanceEventSinkFieldsTests.cs` if none exist).
 
-**Interfaces:** none — documentation and verification only.
+**Interfaces:**
+- Consumes: `KnownFields.Merge`, `ArtifactEntry.Fields`.
+- Produces: auto-link writes `Fields["ref"] += sourceName` on the target (no more `ref:` keyword writes); orphan detection counts inbound refs from `Fields["ref"]` ∪ legacy `ref:` keywords.
 
-- [ ] **Step 1: Update `docs/architecture/core.md`**
+- [ ] **Step 1: Failing test**
 
-Three edits:
-1. Add `Dictionary<string, string>? Fields = null); // mechanical key:value extraction` to the `ArtifactEntry` listing (and mention on `EphemeralEntry`).
-2. Add rows to the Weighted Field Scoring table:
-   `| Field key:value pair exact | 50 |`, `| Field value exact | 40 |`, `| Field value contains | 12 |`.
-3. Add a short section after ReferenceExtractor:
+```csharp
+using FluentAssertions;
+using Scrinia.Core;
+using Scrinia.Core.Models;
 
-```markdown
-### FieldExtractor
+namespace Scrinia.Tests;
 
-`FieldExtractor` in `Scrinia.Core.Search` mechanically extracts `key: value` fields from
-memory content at write time — YAML frontmatter lines, line-start `key: value` pairs, and
-`**Bold:** label` lines. Code fences and URL remainders are skipped; keys are lowercased,
-values kept verbatim (max 32 fields, values ≤ 120 chars). Fields are stored on
-`ArtifactEntry.Fields`/`EphemeralEntry.Fields`, seeded into term frequencies at +3, and
-scored by `WeightedFieldScorer` (pair exact 50 / value exact 40 / value contains 12).
-Appends merge newer-wins. Pre-fields entries have null `Fields` and degrade gracefully.
+/// <summary>MaintenanceEventSink under unified fields: auto-links land in Fields["ref"],
+/// orphan detection sees inbound refs in fields OR legacy ref: keywords.</summary>
+public sealed class MaintenanceEventSinkFieldsTests
+{
+    [Fact]
+    public async Task AutoLink_WritesRefField_NotKeyword_AndOrphanSeesBothShapes()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
+        var sink = new MaintenanceEventSink();
+
+        // Target that will be referenced.
+        store.Upsert(new ArtifactEntry("api:auth-flow".Replace(":", "_"), "file:///dev/null", 1, 1,
+            DateTimeOffset.UtcNow, "target"), "local");
+        // NOTE: adapt the target name/scope to how ParseQualifiedName resolves "api:auth-flow"
+        // in this store — mirror existing sink tests if present; the assertion below is the contract.
+
+        await sink.OnStoredAsync("local/source-mem", ["see api:auth-flow for details"], store, default);
+
+        var target = store.LoadIndex(/* target scope per naming */ "local")
+            .Single(e => e.Name.Contains("auth-flow"));
+        target.Fields.Should().NotBeNull();
+        target.Fields!["ref"].Should().Contain(v => v.Contains("source-mem"),
+            because: "auto-link writes the ref FIELD now");
+        (target.Keywords ?? []).Should().NotContain(k => k.StartsWith("ref:"),
+            because: "prefixed ref: keywords are no longer written");
+    }
+}
 ```
 
-- [ ] **Step 2: Full build + full test suites**
+(First run `Grep "MaintenanceEventSink" tests/Scrinia.Tests/` — if existing tests cover auto-link/orphan, model the arrange section on them exactly; the name-resolution comment above disappears once the real pattern is copied. The two assertions are the contract.)
 
-Run: `dotnet build --nologo -v q` — expected clean.
-Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --nologo -v q` and `dotnet test tests/Scrinia.Server.Tests/Scrinia.Server.Tests.csproj --nologo -v q` — expected all PASS.
+- [ ] **Step 2: Verify failure** — ref lands in Keywords, not Fields.
 
-- [ ] **Step 3: Bench sanity run (regression control)**
+- [ ] **Step 3: Implement** — in `AutoLinkAndDetectOrphans`:
 
-The benchmark harness ingests via its own retriever, so bench entries carry no extracted fields unless dialog text happens to contain field-shaped lines; this run is a cheap no-regression control, not a lift measurement. From the repo root, run the LoCoMo benchmark in its default configuration (see `benchmarks/Scrinia.Retrieval.Benchmarks/` — the kompress experiment docs in `docs/reviews/kompress-locomo/` record the exact invocation and the pre-change baseline numbers). Compare R@5/R@10/NDCG against that documented baseline.
-Expected: identical or within noise. If numbers regress, STOP and investigate `ScoreEntryTerm` — a regression means fielded entries are being scored when `Fields` should be null.
+Replace the link-write block (`:61-69`):
+
+```csharp
+                // Write the ref FIELD (unified fields) — no more ref: keyword emission.
+                string[] existingRefs = targetEntry.Fields is not null
+                    && targetEntry.Fields.TryGetValue("ref", out var r) ? r : [];
+                if (existingRefs.Contains(qualifiedName, StringComparer.OrdinalIgnoreCase)
+                    || targetEntry.Keywords?.Contains($"ref:{qualifiedName}", StringComparer.OrdinalIgnoreCase) == true)
+                    continue; // already linked (either shape)
+
+                var updatedFields = KnownFields.Merge(
+                    targetEntry.Fields, new() { ["ref"] = [qualifiedName] });
+                store.Upsert(targetEntry with { Fields = updatedFields }, targetScope);
+```
+
+Replace the inbound-ref check (`:91-92`):
+
+```csharp
+            bool hasInboundRefs = allEntries.Any(sa =>
+                (sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true)
+                || (sa.Entry.Fields is not null
+                    && sa.Entry.Fields.TryGetValue("ref", out var refs)
+                    && refs.Any(v => v.Equals(sourceQualified, StringComparison.OrdinalIgnoreCase))));
+```
+
+(Note: `Fields.TryGetValue("ref", ...)` is safe here even though JSON-deserialized dictionaries lose the comparer — the write side always stores the key as lowercase `"ref"`, and this sink is the only writer. Keep the literal lowercase.)
+
+- [ ] **Step 4: Verify pass** — new test + full suite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/Scrinia.Core/MaintenanceEventSink.cs tests/Scrinia.Tests/
+git commit -m "feat(core): MaintenanceEventSink links via ref field, orphan check dual-reads"
+```
+
+---
+
+### Task 7: MCP Store path — routing, extraction, refs-as-fields, CodeRefs
+
+**Files:**
+- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs` — `Store` (~lines 128-356), `ExtractRefKeywords` (~line 1386)
+- Test: `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs`
+
+**Interfaces:**
+- Consumes: `FieldExtractor.{Extract,RouteKeywords,SeedTermFrequencies}`, `KnownFields.Merge`, `Fields` params.
+- Produces: `Store` persists `Fields` = merge of (routed keywords ∪ content extraction ∪ file/ref reference fields); `Keywords` holds ONLY plain (non-`key:value`) keywords + auto-extracted terms; CodeRefs built from `Fields["file"]` ∪ explicit `codeRefs` param. New helper replaces `ExtractRefKeywords`:
+  `private static Dictionary<string, string[]>? ExtractRefFields(string text)` — `{ ["file"] = fileRefs, ["ref"] = memoryRefs }` (keys omitted when empty; null when both empty).
+
+- [ ] **Step 1: Failing test**
+
+```csharp
+    [Fact]
+    public async Task Store_UnifiedFields_RoutesKeywordsExtractsContentAndRefs()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(
+            ["---\nstatus: active\n---\nSee notes in src/Widget.cs today.\nperson mentioned inline: nobody"],
+            "unified-store-test",
+            keywords: ["person:Nick", "plainword"]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-store-test");
+
+        // Routed keyword → field; plain keyword stays.
+        entry.Fields!["person"].Should().BeEquivalentTo(["Nick"]);
+        entry.Keywords.Should().Contain("plainword");
+        entry.Keywords.Should().NotContain(k => k.StartsWith("person:"),
+            because: "prefixed keywords are no longer written");
+
+        // Content extraction.
+        entry.Fields["status"].Should().BeEquivalentTo(["active"]);
+
+        // Reference extraction → file field (not file: keyword) → CodeRefs unaffected shape.
+        entry.Fields["file"].Should().Contain("src/Widget.cs");
+        entry.Keywords.Should().NotContain(k => k.StartsWith("file:"));
+
+        // TF seeding at +3 for routed field value.
+        entry.TermFrequencies!["nick"].Should().BeGreaterThanOrEqualTo(3);
+    }
+```
+
+- [ ] **Step 2: Verify failure** — `Fields` null / prefixed keywords present.
+
+- [ ] **Step 3: Implement** — in `Store`:
+
+(a) Route BEFORE analysis merge. Replace `var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(keywords, autoKeywords);` (~line 134):
+
+```csharp
+        // Unified fields: key:value-shaped agent keywords route to Fields; only plain
+        // keywords participate in the keyword merge. Prefixed-keyword writes are retired.
+        var (routedFields, plainKeywords) = FieldExtractor.RouteKeywords(keywords);
+        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(plainKeywords, autoKeywords);
+```
+
+(b) Replace the ref-keyword concat (~line 138) `mergedKeywords = mergedKeywords.Concat(ExtractRefKeywords(rawContent))...`:
+
+```csharp
+        // References land in Fields (file/ref), not as prefixed keywords.
+        var refFields = ExtractRefFields(rawContent);
+```
+
+(c) After the anchor-seeding block (~line 177):
+
+```csharp
+        // Assemble unified fields: routed keywords ∪ content extraction ∪ references,
+        // then seed key/value tokens into TF at +3 (between auto +2 and agent +5).
+        var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
+        FieldExtractor.SeedTermFrequencies(fields, tf);
+```
+
+(d) CodeRefs source (~lines 310-314) — replace the `file:` keyword scan:
+
+```csharp
+        var allRefPaths = (codeRefs ?? [])
+            .Concat(fields is not null && fields.TryGetValue("file", out var fileRefs)
+                ? fileRefs : [])
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+```
+
+(e) Pass `Fields: fields` on both the `EphemeralEntry` (~line 204) and `ArtifactEntry` (~line 329) constructions.
+
+(f) Replace `ExtractRefKeywords` (~line 1386) with:
+
+```csharp
+    /// <summary>File and memory references as unified fields — {file: [...], ref: [...]}.
+    /// Replaces the retired file:/ref: prefixed-keyword emission.</summary>
+    private static Dictionary<string, string[]>? ExtractRefFields(string text)
+    {
+        var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
+        var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
+        if (fileRefs.Length == 0 && memoryRefs.Length == 0) return null;
+        var fields = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (fileRefs.Length > 0) fields["file"] = fileRefs;
+        if (memoryRefs.Length > 0) fields["ref"] = memoryRefs;
+        return fields;
+    }
+```
+
+Keep `ExtractRefKeywords` deleted only if `Append`'s chunk-keyword use (`:1076`) and `BuildAppendMetadata` (`:1199`) are updated in the same commit — they are Task 8's scope, so for THIS task change them minimally to call `ExtractRefFields` and drop the concat (chunk keywords lose ref entries; chunk-level ref keywords were only feeding the same retired convention). If existing tests assert `file:` keywords on chunks, update them to the new contract.
+
+- [ ] **Step 4: Verify pass** — new test + FULL suite. Existing tests asserting `file:`/`ref:` keywords (e.g. around `References`, `ExtractRefKeywords`, keyword listings) must be updated to expect fields — each such edit is the new intended contract, not a regression.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/Scrinia.Mcp/MemoryTools.Core.cs tests/Scrinia.Tests/ScriniaMcpToolsTests.cs
+git commit -m "feat(mcp): Store writes unified fields — keyword routing, extraction, refs, CodeRefs"
+```
+
+---
+
+### Task 8: MCP Append path — KnownFields merge
+
+**Files:**
+- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs` — `Append` (~1027-1173) + `BuildAppendMetadata` (~1182-1242)
+- Test: `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs`
+
+**Interfaces:**
+- Consumes: everything from Tasks 1-2 + 7 (`ExtractRefFields` helper).
+- Produces: `BuildAppendMetadata` signature gains `string appendedContent`, `string[]? routedPlainKeywords` handling and `Dictionary<string, string[]>? existingFields`; returns 6-tuple ending `Dictionary<string, string[]>? Fields`. Fields = `KnownFields.Merge(existingFields, incoming)` where incoming = routed-new-keywords ∪ extract(appendedContent) ∪ refFields(appendedContent). Entity/ref accumulate, scalars replace.
+
+- [ ] **Step 1: Failing test**
+
+```csharp
+    [Fact]
+    public async Task Append_FieldMerge_ScalarReplacesEntityAccumulates()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(["status: active\nInitial."], "unified-append-test",
+            keywords: ["person:Alice"]);
+        await Tools().Append("status: done\nFollow-up.", "unified-append-test",
+            keywords: ["person:Bob"]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-append-test");
+        entry.Fields!["status"].Should().BeEquivalentTo(["done"], because: "scalar newer-wins");
+        entry.Fields["person"].Should().BeEquivalentTo(["Alice", "Bob"], because: "entities accumulate");
+    }
+```
+
+- [ ] **Step 2: Verify failure.**
+
+- [ ] **Step 3: Implement**
+
+In `Append`: route the caller's `keywords` once at the top of the metadata phase — `var (routedNewFields, plainNewKeywords) = FieldExtractor.RouteKeywords(keywords);` — and pass `plainNewKeywords` where `keywords` currently flows into `BuildAppendMetadata`, plus new args `content` and `existingEntry?.Fields` / `existingEph?.Fields` and `routedNewFields`. In `BuildAppendMetadata`, after the anchor merge:
+
+```csharp
+        // Unified fields: incoming = routed new keywords ∪ content extraction ∪ references
+        // from the appended chunk; merged per KnownFields (entity/ref union, scalar
+        // newer-wins). Seed the merged set at +3 — TF is rebuilt from scratch per append,
+        // so carried-forward fields must re-seed (same contract as merged anchors).
+        var incoming = KnownFields.Merge(
+            KnownFields.Merge(routedNewFields, FieldExtractor.Extract(appendedContent)),
+            ExtractRefFields(appendedContent));
+        var mergedFields = KnownFields.Merge(existingFields, incoming);
+        FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+```
+
+Return `mergedFields` in the tuple; set `Fields: meta.Fields` on both the `EphemeralEntry` (~1100) and `ArtifactEntry` (~1145) constructions. Also update the create-via-append fallback (`:1052-1057`) — it already forwards `keywords` to `Store`, which now routes; no change needed there beyond confirming the test covers it implicitly.
+
+- [ ] **Step 4: Verify pass** — new test + full suite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/Scrinia.Mcp/MemoryTools.Core.cs tests/Scrinia.Tests/ScriniaMcpToolsTests.cs
+git commit -m "feat(mcp): Append merges unified fields per KnownFields semantics"
+```
+
+---
+
+### Task 9: UpdateMeta + Link — fields-aware metadata updates
+
+**Files:**
+- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs` — `UpdateMeta` (~358-473), `Link` (~1292-1313)
+- Test: `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs`
+
+**Interfaces:**
+- Consumes: `FieldExtractor.RouteKeywords`, `KnownFields.Merge`.
+- Produces: `UpdateMeta`'s `keywords` param routes `key:value` entries into a `KnownFields.Merge` on the entry's Fields (plain ones merge into Keywords as today; routed values TF-seed at +5 — they are agent-curated). `Link` becomes two field merges: `ref → [to]` on `from`, `ref → [from]` on `to` (via `UpdateMeta(name, keywords: ["ref:..."])`, which now routes — Link's code is UNCHANGED except its doc comment; the routing does the work).
+
+- [ ] **Step 1: Failing test**
+
+```csharp
+    [Fact]
+    public async Task UpdateMeta_RoutesFieldShapedKeywords_AndLinkWritesRefFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["alpha body"], "um-alpha");
+        await Tools().Store(["beta body"], "um-beta");
+
+        await Tools().UpdateMeta("um-alpha", keywords: ["person:Carol", "plain-extra"]);
+        var alpha = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "um-alpha");
+        alpha.Fields!["person"].Should().BeEquivalentTo(["Carol"]);
+        alpha.Keywords.Should().Contain("plain-extra");
+        alpha.Keywords.Should().NotContain(k => k.StartsWith("person:"));
+
+        await Tools().Link("um-alpha", "um-beta");
+        var entries = ScriniaArtifactStore.LoadIndex();
+        entries.Single(e => e.Name == "um-alpha").Fields!["ref"].Should().Contain(v => v.Contains("um-beta"));
+        entries.Single(e => e.Name == "um-beta").Fields!["ref"].Should().Contain(v => v.Contains("um-alpha"));
+    }
+```
+
+- [ ] **Step 2: Verify failure.**
+
+- [ ] **Step 3: Implement** — in `UpdateMeta`, replace the keyword-merge block (~392-402):
+
+```csharp
+        // Route key:value-shaped additions into Fields; only plain ones merge into Keywords.
+        var (routedFields, plainAdds) = FieldExtractor.RouteKeywords(keywords);
+
+        string[]? mergedKeywords = entry.Keywords;
+        int addedCount = 0;
+        if (plainAdds is { Length: > 0 })
+        {
+            var existing = entry.Keywords ?? [];
+            mergedKeywords = existing.Union(plainAdds, StringComparer.OrdinalIgnoreCase).ToArray();
+            addedCount = mergedKeywords.Length - existing.Length;
+            if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
+        }
+
+        Dictionary<string, string[]>? mergedFields = entry.Fields;
+        if (routedFields is not null)
+        {
+            mergedFields = KnownFields.Merge(entry.Fields, routedFields);
+            changes.Add($"{routedFields.Count} field(s) merged");
+        }
+```
+
+TF update block (~438-455): keep the +5 seeding for genuinely-new plain keywords (swap `keywords` → `plainAdds`); add after it:
+
+```csharp
+        if (routedFields is not null)
+        {
+            var tfForFields = updatedTf is not null
+                ? new Dictionary<string, int>(updatedTf) : new Dictionary<string, int>();
+            // Agent-curated fields seed at +5, matching agent keywords (not the +3 auto rate).
+            foreach (var kv in routedFields)
+                foreach (string v in kv.Value)
+                    foreach (string token in TextAnalysis.Tokenize(v))
+                    {
+                        tfForFields.TryGetValue(token, out int c);
+                        tfForFields[token] = c + 5;
+                    }
+            updatedTf = tfForFields;
+        }
+```
+
+`with`-expression (~457): add `Fields = mergedFields,`. Guard (~435): the no-changes check must consider `routedFields is not null` as a change. Update `Link`'s doc comment to say it writes `ref` fields (its `UpdateMeta(..., keywords: ["ref:{to}"])` calls now route automatically).
+
+- [ ] **Step 4: Verify pass** — new test + full suite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/Scrinia.Mcp/MemoryTools.Core.cs tests/Scrinia.Tests/ScriniaMcpToolsTests.cs
+git commit -m "feat(mcp): UpdateMeta routes fields; Link writes ref fields via routing"
+```
+
+---
+
+### Task 10: Server orchestrator parity
+
+**Files:**
+- Modify: `src/Scrinia.Server/Services/MemoryOrchestrator.cs` — `StoreAsync` (~15-137), `AppendAsync` (~139-259)
+- Test: `tests/Scrinia.Server.Tests/` — locate with `Grep -l "MemoryOrchestrator" tests/Scrinia.Server.Tests/`; follow its arrange pattern (tests construct a `FileMemoryStore` over a temp dir; check `src/Scrinia.Server/Models/` for `StoreRequest`'s exact constructor).
+
+**Interfaces:**
+- Consumes: `FieldExtractor`, `KnownFields`, `Fields` params. Server already imports `Scrinia.Core.Search`.
+- Produces: REST-stored/appended memories carry Fields identically to MCP ones.
+
+- [ ] **Step 1: Failing test** (adapt arrange to the file's pattern):
+
+```csharp
+    [Fact]
+    public async Task StoreAsync_And_AppendAsync_CarryUnifiedFields()
+    {
+        // arrange store per existing pattern in this file
+        await MemoryOrchestrator.StoreAsync(store,
+            new StoreRequest(["status: active\nBody."], "server-fields", Keywords: ["person:Nick"]));
+
+        var entry = store.LoadIndex("local").Single(e => e.Name == "server-fields");
+        entry.Fields!["status"].Should().BeEquivalentTo(["active"]);
+        entry.Fields["person"].Should().BeEquivalentTo(["Nick"]);
+        entry.Keywords.Should().NotContain(k => k.StartsWith("person:"));
+
+        await MemoryOrchestrator.AppendAsync(store, "server-fields", "status: done\nperson: Maria\nMore.");
+        entry = store.LoadIndex("local").Single(e => e.Name == "server-fields");
+        entry.Fields!["status"].Should().BeEquivalentTo(["done"]);
+        entry.Fields["person"].Should().BeEquivalentTo(["Nick", "Maria"]);
+    }
+```
+
+- [ ] **Step 2: Verify failure.**
+
+- [ ] **Step 3: Implement** — mirror the MCP contract exactly:
+
+`StoreAsync`: after `AnalyzeText` (~21), route — `var (routedFields, plainKeywords) = FieldExtractor.RouteKeywords(req.Keywords);`, use `plainKeywords` in `MergeKeywordsWithSource`; after the keyword-boost loop (~33):
+
+```csharp
+        var refFields = ExtractRefFieldsForServer(joined);
+        var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
+        FieldExtractor.SeedTermFrequencies(fields, tf);
+```
+
+Add a private static twin of `ExtractRefFields` (same body as Task 7's — name it `ExtractRefFieldsForServer` locally OR promote the Task 7 helper: move `ExtractRefFields` to `FieldExtractor` as `public static Dictionary<string, string[]>? ExtractRefFields(string text)` and have both MCP and server call it — PREFERRED, do that: add it to `FieldExtractor` in this task, delete the MCP-local copy, update the MCP call sites). Pass `Fields: fields` on both entry constructions (~57, ~108).
+
+`AppendAsync`: inside each branch (after `existingEph` ~188 / `existingEntry` ~215):
+
+```csharp
+            var incoming = KnownFields.Merge(
+                FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
+            var mergedFields = KnownFields.Merge(existingEph?.Fields /* or existingEntry?.Fields */, incoming);
+            FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+```
+
+with `Fields: mergedFields` on the entry constructions (~194, ~229). (Server `AppendAsync` takes no keywords param — nothing to route.)
+
+- [ ] **Step 4: Verify pass** — `dotnet test tests/Scrinia.Server.Tests/Scrinia.Server.Tests.csproj --nologo -v q` all green, plus full Scrinia.Tests (the promoted `ExtractRefFields` touched MCP call sites).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/Scrinia.Server/Services/MemoryOrchestrator.cs src/Scrinia.Core/Search/FieldExtractor.cs src/Scrinia.Mcp/MemoryTools.Core.cs tests/
+git commit -m "feat(server): unified-fields parity in MemoryOrchestrator; promote ExtractRefFields to core"
+```
+
+---
+
+### Task 11: Peripherals, docs, bench control
+
+**Files:**
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Agent/AgentPrompts.cs:169-233` — delete `TypedKeywordPrefixes` (`:176`), use `KnownFields.EntityKeys` in `ParseTypedKeywords` (`:200-233`)
+- Modify: `src/Scrinia/Commands/ScriniaCommands.Memory.cs:156-195` — `list --summary` top-keywords aggregation: exclude `key:value`-shaped keywords from the raw display and add a fields-aware line (top field keys with counts)
+- Modify: `src/Scrinia.Mcp/prompts/guide.md:52` (typed-keywords guidance) + the `keywords` `[Description]` on `Store` (`MemoryTools.Core.cs:115-120`) — describe fields as first-class, still expressed via `keywords`
+- Modify: `docs/architecture/core.md` — `ArtifactEntry` listing (~97), scorer table (~190), replace/extend the ReferenceExtractor section (~247) with a Unified Fields section covering `KnownFields`/`FieldExtractor`/dual-read
+- Test: existing suites + bench control run
+
+- [ ] **Step 1: Make the edits.** Read each target region first; the contracts:
+  - `AgentPrompts.ParseTypedKeywords` prefix test uses `KnownFields.EntityKeys.Contains(prefix)` instead of its own list (add project reference/using if the benchmarks project lacks `Scrinia.Core` — check `benchmarks/Scrinia.Retrieval.Benchmarks/*.csproj`; it references Core already for `TextAnalysis`).
+  - CLI summary: skip keywords matching `^[A-Za-z][A-Za-z0-9_-]{0,29}:.+` in the top-keywords tally (legacy entries only now); append a `Top fields:` line aggregating `entry.Fields` keys by frequency when any entry carries fields.
+  - `guide.md` + `Store` keyword description: "Typed entries (person:/place:/org:/thing:/topic:) and any other key:value keyword become structured fields — exact-match retrieval signal and entity-graph input. Plain keywords remain search keywords."
+  - `docs/architecture/core.md`: document `Fields` on the models, the three scorer rows (50/40/12 + dual-read note), `KnownFields` table semantics, `FieldExtractor` sources (routing/extraction/refs), CodeRefs fed from the `file` field, forward-only migration.
+
+- [ ] **Step 2: Full verification.**
+
+Run: `dotnet build --nologo -v q` (whole solution incl. benchmarks) — clean.
+Run both test suites — all green.
+
+- [ ] **Step 3: Bench control run.** LoCoMo in the default configuration (invocation + pre-change baseline numbers are recorded in `docs/reviews/kompress-locomo/`; benchmark project `benchmarks/Scrinia.Retrieval.Benchmarks`). Expect R@5/R@10/NDCG within noise of baseline: bench ingest supplies typed keywords that now route to Fields, and the graph/scorer dual-read must keep scores equivalent. A regression means dual-read parity is broken — STOP and fix before commit (check `ParseEntityFields` vs `ParseTypedEntities` and the scorer slots first).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/architecture/core.md
-git commit -m "docs: field extraction in core architecture (model, scorer table, FieldExtractor)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git add benchmarks/ src/Scrinia/Commands/ScriniaCommands.Memory.cs src/Scrinia.Mcp/prompts/guide.md src/Scrinia.Mcp/MemoryTools.Core.cs docs/architecture/core.md
+git commit -m "feat: unified-fields peripherals — bench shared table, CLI summary, guide, architecture docs"
 ```
 
 ---
 
 ## Out of scope (explicitly)
 
-- Per-chunk fields; a `fields` filter on `search`/`list` (v2 — storage already supports it); backfill of pre-existing entries (forward-only per spec); the lossy copy/move fallback branches that already drop Keywords/TF; `UpdateMeta` field editing (fields are auto-extracted, not agent-curated, in v1).
+- Per-chunk fields; a `fields` filter on `search`/`list` (storage supports it; v2 follow-on); backfill of old entries (forward-only; dual-read covers reads); the already-lossy copy/move fallback branches; forget-time cleanup of stale inbound refs (pre-existing gap, spec-noted); web UI (reads no keywords today).
