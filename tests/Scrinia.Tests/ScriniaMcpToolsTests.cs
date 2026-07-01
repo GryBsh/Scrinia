@@ -1568,8 +1568,9 @@ public sealed class ScriniaMcpToolsTests
     {
         // A typed keyword (prefix:value) used to be seeded into TF as the monolithic
         // "person:mary" string — a key no tokenized query term can ever equal, so it was
-        // dead weight in BM25. Now the tokenized VALUE is seeded so the part is matchable,
-        // while the structured token stays on entry.Keywords for field-score/facet.
+        // dead weight in BM25. Now it routes to Fields["person"] (unified fields), and the
+        // tokenized VALUE is seeded into TF (via FieldExtractor.SeedTermFrequencies) so the
+        // part is matchable. The structured token no longer lives on entry.Keywords at all.
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(
             ["The subsystem orchestrates lifecycle hooks during plugin startup."], // no "Mary" in content
@@ -1577,8 +1578,11 @@ public sealed class ScriniaMcpToolsTests
             keywords: ["person:Mary"]);
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "typed-kw-test");
-        entry.Keywords.Should().Contain("person:mary",
-            because: "the structured typed token is preserved for field-score/facet/cross-link use");
+        entry.Fields.Should().NotBeNull();
+        entry.Fields!["person"].Should().BeEquivalentTo(["Mary"],
+            because: "the structured typed token routes to the unified Fields store for field-score/facet/cross-link use");
+        entry.Keywords.Should().NotContain(k => k.StartsWith("person:"),
+            because: "prefixed keywords are no longer written");
         entry.TermFrequencies.Should().NotBeNull();
         entry.TermFrequencies!.Should().ContainKey("mary",
             because: "the typed keyword's value must be seeded into TF as a real BM25 term");
@@ -2066,6 +2070,35 @@ public sealed class ScriniaMcpToolsTests
         parsed.Status.Should().Be("success");
         parsed.Content.Should().Contain("anchor-flow-test",
             because: "anchor-supplied vocabulary must bridge a user query to the entry via BM25");
+    }
+
+    [Fact]
+    public async Task Store_UnifiedFields_RoutesKeywordsExtractsContentAndRefs()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(
+            ["---\nstatus: active\n---\nSee notes in src/Widget.cs today.\nperson mentioned inline: nobody"],
+            "unified-store-test",
+            keywords: ["person:Nick", "plainword"]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-store-test");
+
+        // Routed keyword → field; plain keyword stays.
+        entry.Fields!["person"].Should().BeEquivalentTo(["Nick"]);
+        entry.Keywords.Should().Contain("plainword");
+        entry.Keywords.Should().NotContain(k => k.StartsWith("person:"),
+            because: "prefixed keywords are no longer written");
+
+        // Content extraction.
+        entry.Fields["status"].Should().BeEquivalentTo(["active"]);
+
+        // Reference extraction → file field (not file: keyword) → CodeRefs unaffected shape.
+        entry.Fields["file"].Should().Contain("src/Widget.cs");
+        entry.Keywords.Should().NotContain(k => k.StartsWith("file:"));
+
+        // TF seeding at +3 for routed field value.
+        entry.TermFrequencies!["nick"].Should().BeGreaterThanOrEqualTo(3);
     }
 
     [Fact]

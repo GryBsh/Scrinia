@@ -131,11 +131,15 @@ public sealed partial class ScriniaMcpTools
 
         // Compute text analysis: keywords + term frequencies (single-pass)
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
-        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(keywords, autoKeywords);
 
-        // Extract file and memory references as prefixed keywords
+        // Unified fields: key:value-shaped agent keywords route to Fields; only plain
+        // keywords participate in the keyword merge. Prefixed-keyword writes are retired.
+        var (routedFields, plainKeywords) = FieldExtractor.RouteKeywords(keywords);
+        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(plainKeywords, autoKeywords);
+
+        // References land in Fields (file/ref), not as prefixed keywords.
         string rawContent = string.Join("\n", content);
-        mergedKeywords = mergedKeywords.Concat(ExtractRefKeywords(rawContent)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var refFields = ExtractRefFields(rawContent);
 
         // Boost keywords in TF: agent keywords +5, auto-extracted +2. Typed keywords
         // (prefix:value) seed their tokenized VALUE so the parts are BM25-matchable — the
@@ -176,6 +180,11 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
+        // Assemble unified fields: routed keywords ∪ content extraction ∪ references,
+        // then seed key/value tokens into TF at +3 (between auto +2 and agent +5).
+        var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
+        FieldExtractor.SeedTermFrequencies(fields, tf);
+
         ChunkEntry[]? chunkEntries = content.Length > 1
             ? TextAnalysis.ComputeChunkEntries(store, content)
             : null;
@@ -214,7 +223,8 @@ public sealed partial class ScriniaMcpTools
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
-                RetrievalAnchors: cleanedAnchors);
+                RetrievalAnchors: cleanedAnchors,
+                Fields: fields);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -302,15 +312,14 @@ public sealed partial class ScriniaMcpTools
                 reviewWhen = "when counts in this memory change";
         }
 
-        // Compute code reference hashes — explicit codeRefs + auto-detected file: keywords
+        // Compute code reference hashes — explicit codeRefs + auto-detected file field values
         string storeDir = store.GetStoreDirForScope("local");
         string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
         string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
 
         var allRefPaths = (codeRefs ?? [])
-            .Concat(mergedKeywords
-                .Where(k => k.StartsWith("file:", StringComparison.Ordinal))
-                .Select(k => k["file:".Length..]))
+            .Concat(fields is not null && fields.TryGetValue("file", out var fileRefs)
+                ? fileRefs : [])
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
         Dictionary<string, string>? codeRefDict = null;
@@ -342,7 +351,8 @@ public sealed partial class ScriniaMcpTools
             ReviewWhen: string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen,
             ChunkEntries: chunkEntries,
             CodeRefs: codeRefDict,
-            RetrievalAnchors: cleanedAnchors);
+            RetrievalAnchors: cleanedAnchors,
+            Fields: fields);
 
         store.Upsert(entry, scope);
 
@@ -1072,8 +1082,8 @@ public sealed partial class ScriniaMcpTools
         var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
 
-        // Add ref keywords from the new chunk to its chunk-level keywords
-        newKw = newKw.Concat(ExtractRefKeywords(content)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        // Ref/file references are no longer folded into chunk-level keywords — they land in
+        // Fields via Store's write path. Full Append fields-merge is Task 8's scope.
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
             ContentPreview: store.GenerateContentPreview(content),
@@ -1192,13 +1202,12 @@ public sealed partial class ScriniaMcpTools
         // rest at +2. (Previously-auto keywords folded into the curated set get the agent
         // boost too — a negligible, intentional over-weight in exchange for never losing a
         // curated term.) Mirrors Store's keyword/TF contract.
+        // Ref/file references are no longer concatenated in here as prefixed keywords —
+        // Task 8 will fold them into a Fields merge for Append. Dropping the concat here
+        // is intentional: entry-level keywords no longer carry file:/ref: entries.
         string[] curatedKeywords = UnionDistinct(existingKeywords, newKeywords);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(
             curatedKeywords.Length > 0 ? curatedKeywords : null, autoKeywords);
-        mergedKeywords = mergedKeywords
-            .Concat(ExtractRefKeywords(fullText))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
         foreach (string kw in mergedKeywords)
         {
             int boost = agentKeywordSet.Contains(kw) ? 5 : 2;
@@ -1405,11 +1414,17 @@ public sealed partial class ScriniaMcpTools
         catch { return null; }
     }
 
-    private static IEnumerable<string> ExtractRefKeywords(string text)
+    /// <summary>File and memory references as unified fields — {file: [...], ref: [...]}.
+    /// Replaces the retired file:/ref: prefixed-keyword emission.</summary>
+    private static Dictionary<string, string[]>? ExtractRefFields(string text)
     {
         var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
         var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
-        return fileRefs.Select(f => $"file:{f}").Concat(memoryRefs.Select(m => $"ref:{m}"));
+        if (fileRefs.Length == 0 && memoryRefs.Length == 0) return null;
+        var fields = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (fileRefs.Length > 0) fields["file"] = fileRefs;
+        if (memoryRefs.Length > 0) fields["ref"] = memoryRefs;
+        return fields;
     }
 
     /// <summary>

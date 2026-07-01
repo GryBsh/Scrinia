@@ -89,21 +89,25 @@ public sealed class ReferenceTests : IDisposable
     // ── Integration tests ─────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Store_ExtractsFileRefsAsKeywords()
+    public async Task Store_ExtractsFileRefsAsFields()
     {
         // Arrange & Act — store a memory with content mentioning a file path
         await _tools.Store(
             ["This change modifies src/Foo.cs to add new functionality."],
             "ref-file-test");
 
-        // Assert — verify the entry's keywords include the file ref
+        // Assert — verify the entry's Fields["file"] includes the file ref, and that the
+        // legacy 'file:' prefixed keyword is no longer written.
         var store = MemoryStoreContext.Current!;
         var (scope, subject) = store.ParseQualifiedName("ref-file-test");
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        entry.Keywords.Should().Contain("file:src/Foo.cs",
-            "store should auto-extract file references as 'file:' prefixed keywords");
+        entry.Fields.Should().NotBeNull();
+        entry.Fields!["file"].Should().Contain("src/Foo.cs",
+            "store should auto-extract file references into the unified 'file' FIELD");
+        entry.Keywords.Should().NotContain(k => k.StartsWith("file:"),
+            "prefixed 'file:' keywords are no longer written");
     }
 
     [Fact]
