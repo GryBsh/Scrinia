@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Search;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -23,7 +24,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     public void Dispose() => _scope.Dispose();
 
     [Fact]
-    public async Task AutoLink_AddsRefKeywordOnTarget()
+    public async Task AutoLink_AddsRefFieldOnTarget()
     {
         // Arrange — create two topic-scoped entries
         var store = MemoryStoreContext.Current!;
@@ -37,14 +38,15 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             store,
             CancellationToken.None);
 
-        // Assert — target entry should now have ref:test:source keyword
+        // Assert — target entry should now have Fields["ref"] containing test:source
         var (targetScope, targetSubject) = store.ParseQualifiedName("test:target");
         var targetEntries = store.LoadIndex(targetScope);
         var targetEntry = targetEntries.First(e =>
             e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
 
-        targetEntry.Keywords.Should().Contain("ref:test:source",
-            "auto-linking should add ref:{source} keyword on the referenced target entry");
+        targetEntry.Fields.Should().NotBeNull();
+        targetEntry.Fields!["ref"].Should().Contain("test:source",
+            "auto-linking should add the source to the ref FIELD on the referenced target entry");
     }
 
     [Fact]
@@ -113,14 +115,15 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             store,
             CancellationToken.None);
 
-        // Assert — beta should have ref:test:alpha keyword
+        // Assert — beta should have Fields["ref"] containing test:alpha
         var (betaScope, betaSubject) = store.ParseQualifiedName("test:beta");
         var betaEntries = store.LoadIndex(betaScope);
         var betaEntry = betaEntries.First(e =>
             e.Name.Equals(betaSubject, StringComparison.OrdinalIgnoreCase));
 
-        betaEntry.Keywords.Should().Contain("ref:test:alpha",
-            "OnAppendedAsync should create ref: links for newly referenced memories");
+        betaEntry.Fields.Should().NotBeNull();
+        betaEntry.Fields!["ref"].Should().Contain("test:alpha",
+            "OnAppendedAsync should create ref FIELD links for newly referenced memories");
     }
 
     [Fact]
@@ -137,7 +140,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             store,
             CancellationToken.None);
 
-        // Assert — entry should NOT have ref:test:selfref keyword
+        // Assert — entry should NOT have a ref:test:selfref keyword or a self ref field value
         var (scope, subject) = store.ParseQualifiedName("test:selfref");
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e =>
@@ -149,6 +152,13 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         refKeywords.Should().BeEmpty(
             "self-references should be skipped — an entry should not link to itself");
+
+        var selfRefFieldValues = entry.Fields is not null && entry.Fields.TryGetValue("ref", out var refs)
+            ? refs.Where(v => v.Equals("test:selfref", StringComparison.OrdinalIgnoreCase)).ToArray()
+            : [];
+
+        selfRefFieldValues.Should().BeEmpty(
+            "self-references should be skipped — an entry should not add itself to its own ref field");
     }
 
     [Fact]
@@ -165,17 +175,18 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         await _sink.OnStoredAsync("test:src", content, store, CancellationToken.None);
         await _sink.OnStoredAsync("test:src", content, store, CancellationToken.None);
 
-        // Assert — target should have ref:test:src exactly once
+        // Assert — target should have "test:src" in Fields["ref"] exactly once
         var (dstScope, dstSubject) = store.ParseQualifiedName("test:dst");
         var dstEntries = store.LoadIndex(dstScope);
         var dstEntry = dstEntries.First(e =>
             e.Name.Equals(dstSubject, StringComparison.OrdinalIgnoreCase));
 
-        var refCount = dstEntry.Keywords?
-            .Count(k => k.Equals("ref:test:src", StringComparison.OrdinalIgnoreCase)) ?? 0;
+        var refCount = dstEntry.Fields is not null && dstEntry.Fields.TryGetValue("ref", out var refs)
+            ? refs.Count(v => v.Equals("test:src", StringComparison.OrdinalIgnoreCase))
+            : 0;
 
         refCount.Should().Be(1,
-            "auto-linking should be idempotent — running twice should not duplicate ref: keywords");
+            "auto-linking should be idempotent — running twice should not duplicate ref field values");
     }
 
     [Fact]
@@ -226,5 +237,72 @@ public sealed class MaintenanceEventSinkTests : IDisposable
 
         entry.Keywords.Should().NotContain("orphan",
             "orphan keyword should be removed when inbound references exist");
+    }
+
+    [Fact]
+    public async Task AutoLink_WritesRefField_NotKeyword()
+    {
+        // Arrange — create two topic-scoped entries
+        var store = MemoryStoreContext.Current!;
+        await _tools.Store(["Source content placeholder."], "test:fieldsource");
+        await _tools.Store(["Target content placeholder."], "test:fieldtarget");
+
+        // Act — fire OnStoredAsync with content that references test:fieldtarget
+        await _sink.OnStoredAsync(
+            "test:fieldsource",
+            ["This analysis references test:fieldtarget in its findings."],
+            store,
+            CancellationToken.None);
+
+        // Assert — target entry should have Fields["ref"] containing the source,
+        // and should NOT have a legacy ref: keyword.
+        var (targetScope, targetSubject) = store.ParseQualifiedName("test:fieldtarget");
+        var targetEntries = store.LoadIndex(targetScope);
+        var targetEntry = targetEntries.First(e =>
+            e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
+
+        targetEntry.Fields.Should().NotBeNull();
+        targetEntry.Fields!["ref"].Should().Contain(v => v.Contains("test:fieldsource"),
+            "auto-linking should write the ref FIELD now");
+        (targetEntry.Keywords ?? []).Should().NotContain(k => k.StartsWith("ref:"),
+            "prefixed ref: keywords are no longer written");
+    }
+
+    [Fact]
+    public async Task OrphanDetection_NoOrphanWhenInboundRefIsFieldOnly()
+    {
+        // Arrange — create an entry that will be referenced, and a referrer whose
+        // Fields["ref"] (not a legacy ref: keyword) points at it, simulating the new write shape.
+        var store = MemoryStoreContext.Current!;
+        await _tools.Store(["Content of field-linked entry."], "test:fieldlinked");
+        await _tools.Store(["Some referencing content."], "test:fieldreferrer");
+
+        var (referrerScope, referrerSubject) = store.ParseQualifiedName("test:fieldreferrer");
+        var referrerEntry = store.LoadIndex(referrerScope)
+            .First(e => e.Name.Equals(referrerSubject, StringComparison.OrdinalIgnoreCase));
+
+        // The sink compares Fields["ref"] values against the source's FormatQualifiedName
+        // output, which renders v1 "topic:subject" names in path form ("/topic/subject").
+        var (linkedScope, linkedSubject) = store.ParseQualifiedName("test:fieldlinked");
+        string linkedQualified = store.FormatQualifiedName(linkedScope, linkedSubject);
+
+        var referrerFields = KnownFields.Merge(referrerEntry.Fields, new() { ["ref"] = [linkedQualified] });
+        store.Upsert(referrerEntry with { Fields = referrerFields }, referrerScope);
+
+        // Act — fire OnStoredAsync for the linked entry
+        await _sink.OnStoredAsync(
+            "test:fieldlinked",
+            ["Content of field-linked entry."],
+            store,
+            CancellationToken.None);
+
+        // Assert — entry should NOT have orphan keyword; the inbound ref lives only in Fields.
+        var (scope, subject) = store.ParseQualifiedName("test:fieldlinked");
+        var entries = store.LoadIndex(scope);
+        var entry = entries.First(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        entry.Keywords.Should().NotContain("orphan",
+            "an entry with an inbound ref FIELD (no legacy keyword) should not be flagged as orphan");
     }
 }

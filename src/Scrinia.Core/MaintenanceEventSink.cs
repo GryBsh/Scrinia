@@ -4,8 +4,9 @@ using Scrinia.Core.Search;
 namespace Scrinia.Core;
 
 /// <summary>
-/// Automatic memory maintenance: creates bidirectional ref: links when content
-/// references other memories, and flags orphan memories with no inbound references.
+/// Automatic memory maintenance: creates bidirectional ref links (via <c>Fields["ref"]</c>)
+/// when content references other memories, and flags orphan memories with no inbound
+/// references (dual-reading legacy <c>ref:</c> keywords alongside the ref field).
 /// </summary>
 public sealed class MaintenanceEventSink : IMemoryEventSink
 {
@@ -42,7 +43,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         // 1. Extract memory references from content
         var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(content);
 
-        // 2. For each referenced memory that exists, add ref:{source} keyword on the target
+        // 2. For each referenced memory that exists, add the source to Fields["ref"] on the target
         foreach (var refName in memoryRefs)
         {
             // Skip self-references
@@ -58,15 +59,16 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
                 if (targetEntry is null) continue; // referenced memory doesn't exist
 
-                string refKeyword = $"ref:{qualifiedName}";
-                if (targetEntry.Keywords?.Contains(refKeyword, StringComparer.OrdinalIgnoreCase) == true)
-                    continue; // already linked
+                // Write the ref FIELD (unified fields) — no more ref: keyword emission.
+                string[] existingRefs = targetEntry.Fields is not null
+                    && targetEntry.Fields.TryGetValue("ref", out var r) ? r : [];
+                if (existingRefs.Contains(qualifiedName, StringComparer.OrdinalIgnoreCase)
+                    || targetEntry.Keywords?.Contains($"ref:{qualifiedName}", StringComparer.OrdinalIgnoreCase) == true)
+                    continue; // already linked (either shape)
 
-                // Add ref keyword to target
-                var existingKw = targetEntry.Keywords ?? [];
-                var updatedKw = existingKw.Append(refKeyword).ToArray();
-                var updatedEntry = targetEntry with { Keywords = updatedKw };
-                store.Upsert(updatedEntry, targetScope);
+                var updatedFields = KnownFields.Merge(
+                    targetEntry.Fields, new() { ["ref"] = [qualifiedName] });
+                store.Upsert(targetEntry with { Fields = updatedFields }, targetScope);
             }
             catch
             {
@@ -89,7 +91,10 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
             var allEntries = store.ListScoped(null);
             bool hasInboundRefs = allEntries.Any(sa =>
-                sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true);
+                (sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true)
+                || (sa.Entry.Fields is not null
+                    && sa.Entry.Fields.TryGetValue("ref", out var refs)
+                    && refs.Any(v => v.Equals(sourceQualified, StringComparison.OrdinalIgnoreCase))));
 
             var currentKw = sourceEntry.Keywords?.ToList() ?? [];
             bool isOrphan = currentKw.Any(k => k.Equals("orphan", StringComparison.OrdinalIgnoreCase));
