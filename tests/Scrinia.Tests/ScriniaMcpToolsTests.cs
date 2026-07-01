@@ -2238,4 +2238,25 @@ public sealed class ScriniaMcpToolsTests
         result.Should().Contain("legacy-ref").And.Contain("fields-ref");
     }
 
+    // ── UpdateMeta field routing / Link writes ref fields ────────────────────
+
+    [Fact]
+    public async Task UpdateMeta_RoutesFieldShapedKeywords_AndLinkWritesRefFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["alpha body"], "um-alpha");
+        await Tools().Store(["beta body"], "um-beta");
+
+        await Tools().UpdateMeta("um-alpha", keywords: ["person:Carol", "plain-extra"]);
+        var alpha = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "um-alpha");
+        alpha.Fields!["person"].Should().BeEquivalentTo(["Carol"]);
+        alpha.Keywords.Should().Contain("plain-extra");
+        alpha.Keywords.Should().NotContain(k => k.StartsWith("person:"));
+
+        await Tools().Link("um-alpha", "um-beta");
+        var entries = ScriniaArtifactStore.LoadIndex();
+        entries.Single(e => e.Name == "um-alpha").Fields!["ref"].Should().Contain(v => v.Contains("um-beta"));
+        entries.Single(e => e.Name == "um-beta").Fields!["ref"].Should().Contain(v => v.Contains("um-alpha"));
+    }
+
 }

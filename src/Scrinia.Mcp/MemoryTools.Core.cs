@@ -399,16 +399,24 @@ public sealed partial class ScriniaMcpTools
         // Track what changed for the response message
         var changes = new List<string>();
 
-        // Merge keywords (additive)
+        // Route key:value-shaped additions into Fields; only plain ones merge into Keywords.
+        var (routedFields, plainAdds) = FieldExtractor.RouteKeywords(keywords);
+
         string[]? mergedKeywords = entry.Keywords;
         int addedCount = 0;
-        if (keywords is { Length: > 0 })
+        if (plainAdds is { Length: > 0 })
         {
             var existing = entry.Keywords ?? [];
-            mergedKeywords = existing.Union(keywords, StringComparer.OrdinalIgnoreCase).ToArray();
+            mergedKeywords = existing.Union(plainAdds, StringComparer.OrdinalIgnoreCase).ToArray();
             addedCount = mergedKeywords.Length - existing.Length;
-            if (addedCount > 0)
-                changes.Add($"{addedCount} keyword(s) added");
+            if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
+        }
+
+        Dictionary<string, string[]>? mergedFields = entry.Fields;
+        if (routedFields is not null)
+        {
+            mergedFields = KnownFields.Merge(entry.Fields, routedFields);
+            changes.Add($"{routedFields.Count} field(s) merged");
         }
 
         // Replace description if provided
@@ -447,13 +455,13 @@ public sealed partial class ScriniaMcpTools
 
         // Build the updated entry via term frequencies merge
         var updatedTf = entry.TermFrequencies;
-        if (keywords is { Length: > 0 } && addedCount > 0)
+        if (plainAdds is { Length: > 0 } && addedCount > 0)
         {
             var tf = entry.TermFrequencies is not null
                 ? new Dictionary<string, int>(entry.TermFrequencies)
                 : new Dictionary<string, int>();
             var existing = entry.Keywords ?? [];
-            foreach (string kw in keywords)
+            foreach (string kw in plainAdds)
             {
                 if (!existing.Contains(kw, StringComparer.OrdinalIgnoreCase))
                 {
@@ -464,6 +472,21 @@ public sealed partial class ScriniaMcpTools
             updatedTf = tf;
         }
 
+        if (routedFields is not null)
+        {
+            var tfForFields = updatedTf is not null
+                ? new Dictionary<string, int>(updatedTf) : new Dictionary<string, int>();
+            // Agent-curated fields seed at +5, matching agent keywords (not the +3 auto rate).
+            foreach (var kv in routedFields)
+                foreach (string v in kv.Value)
+                    foreach (string token in TextAnalysis.Tokenize(v))
+                    {
+                        tfForFields.TryGetValue(token, out int c);
+                        tfForFields[token] = c + 5;
+                    }
+            updatedTf = tfForFields;
+        }
+
         var updated = entry with
         {
             Keywords = mergedKeywords,
@@ -471,6 +494,7 @@ public sealed partial class ScriniaMcpTools
             Description = updatedDescription,
             ReviewAfter = parsedReviewAfter,
             ReviewWhen = updatedReviewWhen,
+            Fields = mergedFields,
             UpdatedAt = DateTimeOffset.UtcNow
         };
 
@@ -1339,16 +1363,20 @@ public sealed partial class ScriniaMcpTools
         return false;
     }
 
-    /// <summary>Create a bidirectional relationship between two memories.</summary>
+    /// <summary>
+    /// Create a bidirectional relationship between two memories. Writes a unified
+    /// <c>ref</c> field on each side (via <see cref="UpdateMeta"/>, which routes the
+    /// <c>ref:{name}</c>-shaped keyword into <c>Fields["ref"]</c> instead of a legacy keyword).
+    /// </summary>
     internal async Task<string> Link(
         [Description("Source memory name.")] string from,
         [Description("Target memory name.")] string to,
         [Description("Reason for the connection.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
-        // Add ref:{to} keyword to {from}
+        // Add ref:{to} field to {from} (UpdateMeta routes the ref:-shaped keyword into Fields)
         string result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
-        // Add ref:{from} keyword to {to}
+        // Add ref:{from} field to {to}
         string result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
 
         if (result1.Contains("status: error") || result2.Contains("status: error"))

@@ -127,7 +127,7 @@ public sealed class ReferenceTests : IDisposable
     }
 
     [Fact]
-    public async Task Link_CreatesBidirectionalKeywords()
+    public async Task Link_CreatesBidirectionalRefFields()
     {
         // Arrange — create two memories
         await _tools.Store(["Memory A content"], "link-test-a");
@@ -140,20 +140,26 @@ public sealed class ReferenceTests : IDisposable
         result.Should().Contain("Linked");
         result.Should().Contain("test reason");
 
-        // Verify bidirectional ref: keywords
+        // Verify bidirectional ref FIELDS (UpdateMeta now routes ref:-shaped keywords into Fields).
         var store = MemoryStoreContext.Current!;
 
         var (scopeA, subjectA) = store.ParseQualifiedName("link-test-a");
         var entriesA = store.LoadIndex(scopeA);
         var entryA = entriesA.First(e => e.Name.Equals(subjectA, StringComparison.OrdinalIgnoreCase));
-        entryA.Keywords.Should().Contain("ref:link-test-b",
-            "linking should add ref:{target} keyword to the source entry");
+        entryA.Fields.Should().NotBeNull();
+        entryA.Fields!["ref"].Should().Contain(v => v.Contains("link-test-b"),
+            "linking should add the target to the ref FIELD on the source entry");
+        entryA.Keywords.Should().NotContain(k => k.StartsWith("ref:"),
+            "prefixed ref: keywords are no longer written");
 
         var (scopeB, subjectB) = store.ParseQualifiedName("link-test-b");
         var entriesB = store.LoadIndex(scopeB);
         var entryB = entriesB.First(e => e.Name.Equals(subjectB, StringComparison.OrdinalIgnoreCase));
-        entryB.Keywords.Should().Contain("ref:link-test-a",
-            "linking should add ref:{source} keyword to the target entry");
+        entryB.Fields.Should().NotBeNull();
+        entryB.Fields!["ref"].Should().Contain(v => v.Contains("link-test-a"),
+            "linking should add the source to the ref FIELD on the target entry");
+        entryB.Keywords.Should().NotContain(k => k.StartsWith("ref:"),
+            "prefixed ref: keywords are no longer written");
     }
 
     [Fact]
