@@ -131,6 +131,19 @@ public static partial class FieldExtractor
         }
     }
 
+    /// <summary>File and memory references as unified fields — {file: [...], ref: [...]}.
+    /// Replaces the retired file:/ref: prefixed-keyword emission.</summary>
+    public static Dictionary<string, string[]>? ExtractRefFields(string text)
+    {
+        var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
+        var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
+        if (fileRefs.Length == 0 && memoryRefs.Length == 0) return null;
+        var fields = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (fileRefs.Length > 0) fields["file"] = fileRefs;
+        if (memoryRefs.Length > 0) fields["ref"] = memoryRefs;
+        return fields;
+    }
+
     /// <summary>Multi-valued keys accumulate (deduped); scalar keys are first-wins.</summary>
     private static void AddField(Dictionary<string, List<string>> found, string key, string value)
     {

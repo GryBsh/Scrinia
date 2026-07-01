@@ -19,7 +19,11 @@ public static class MemoryOrchestrator
 
         // Text analysis (single-pass)
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
-        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(req.Keywords, autoKeywords);
+
+        // Unified fields: key:value-shaped agent keywords route to Fields; only plain
+        // keywords participate in the keyword merge.
+        var (routedFields, plainKeywords) = FieldExtractor.RouteKeywords(req.Keywords);
+        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(plainKeywords, autoKeywords);
         // Typed keywords (prefix:value) seed their tokenized VALUE so the parts are
         // BM25-matchable; see TextAnalysis.IndexTokensForKeyword.
         foreach (string kw in mergedKeywords)
@@ -31,6 +35,10 @@ public static class MemoryOrchestrator
                 tf[token] = count + boost;
             }
         }
+
+        var refFields = FieldExtractor.ExtractRefFields(joined);
+        var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
+        FieldExtractor.SeedTermFrequencies(fields, tf);
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
             ? TextAnalysis.ComputeChunkEntries(store, req.Content)
@@ -66,7 +74,8 @@ public static class MemoryOrchestrator
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
-                ChunkEntries: chunkEntries);
+                ChunkEntries: chunkEntries,
+                Fields: fields);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -119,7 +128,8 @@ public static class MemoryOrchestrator
             UpdatedAt: updatedAt,
             ReviewAfter: parsedReviewAfter,
             ReviewWhen: string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen,
-            ChunkEntries: chunkEntries);
+            ChunkEntries: chunkEntries,
+            Fields: fields);
 
         try
         {
@@ -191,6 +201,11 @@ public static class MemoryOrchestrator
                 ? [.. existingEph.ChunkEntries, newChunkEntry]
                 : [newChunkEntry];
 
+            var incoming = KnownFields.Merge(
+                FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
+            var mergedFields = KnownFields.Merge(existingEph?.Fields, incoming);
+            FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+
             var ephEntry = new EphemeralEntry(
                 Name: key,
                 Artifact: newArtifact,
@@ -203,7 +218,8 @@ public static class MemoryOrchestrator
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                ChunkEntries: updatedChunks);
+                ChunkEntries: updatedChunks,
+                Fields: mergedFields);
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
@@ -226,6 +242,11 @@ public static class MemoryOrchestrator
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
+            var incoming = KnownFields.Merge(
+                FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
+            var mergedFields = KnownFields.Merge(existingEntry?.Fields, incoming);
+            FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+
             var entry = new ArtifactEntry(
                 Name: subject,
                 Uri: uri,
@@ -240,7 +261,8 @@ public static class MemoryOrchestrator
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ReviewAfter: existingEntry?.ReviewAfter,
                 ReviewWhen: existingEntry?.ReviewWhen,
-                ChunkEntries: updatedChunks);
+                ChunkEntries: updatedChunks,
+                Fields: mergedFields);
 
             try
             {

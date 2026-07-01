@@ -139,7 +139,7 @@ public sealed partial class ScriniaMcpTools
 
         // References land in Fields (file/ref), not as prefixed keywords.
         string rawContent = string.Join("\n", content);
-        var refFields = ExtractRefFields(rawContent);
+        var refFields = FieldExtractor.ExtractRefFields(rawContent);
 
         // Boost keywords in TF: agent keywords +5, auto-extracted +2. Typed keywords
         // (prefix:value) seed their tokenized VALUE so the parts are BM25-matchable — the
@@ -1281,7 +1281,7 @@ public sealed partial class ScriniaMcpTools
         // so carried-forward fields must re-seed (same contract as merged anchors).
         var incoming = KnownFields.Merge(
             KnownFields.Merge(routedNewFields, FieldExtractor.Extract(appendedContent)),
-            ExtractRefFields(appendedContent));
+            FieldExtractor.ExtractRefFields(appendedContent));
         var mergedFields = KnownFields.Merge(existingFields, incoming);
         FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
@@ -1460,19 +1460,6 @@ public sealed partial class ScriniaMcpTools
     {
         try { return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath))); }
         catch { return null; }
-    }
-
-    /// <summary>File and memory references as unified fields — {file: [...], ref: [...]}.
-    /// Replaces the retired file:/ref: prefixed-keyword emission.</summary>
-    private static Dictionary<string, string[]>? ExtractRefFields(string text)
-    {
-        var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
-        var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
-        if (fileRefs.Length == 0 && memoryRefs.Length == 0) return null;
-        var fields = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-        if (fileRefs.Length > 0) fields["file"] = fileRefs;
-        if (memoryRefs.Length > 0) fields["ref"] = memoryRefs;
-        return fields;
     }
 
     /// <summary>
