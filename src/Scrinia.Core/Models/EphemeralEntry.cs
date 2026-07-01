@@ -18,4 +18,11 @@ public sealed record EphemeralEntry(
     /// Agent-supplied phrases, questions, or category-level paraphrases that bridge
     /// likely user queries to this entry's content. Indexed via field-score + TF seeding.
     /// </summary>
-    string[]? RetrievalAnchors = null);
+    string[]? RetrievalAnchors = null,
+    /// <summary>
+    /// Unified multi-valued fields — key:value facts from agent-supplied keywords
+    /// (person:x routed at write time), mechanical content extraction, and reference
+    /// extraction (file/ref). Keys lowercase, values verbatim. See Search.FieldExtractor
+    /// and Search.KnownFields. Null for pre-fields entries (graceful degradation).
+    /// </summary>
+    Dictionary<string, string[]>? Fields = null);
