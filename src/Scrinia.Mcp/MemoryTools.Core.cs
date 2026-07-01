@@ -114,8 +114,10 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional tags for categorization.")] string[]? tags = null,
         [Description("Optional keywords for search. Merged with auto-extracted content terms. " +
                      "Prefer TYPED keywords using one of these types: 'person:<name>', 'place:<name>', " +
-                     "'org:<name>', 'thing:<name>', 'topic:<theme>'. These feed an entity graph, so a query " +
-                     "mentioning one entity can surface this memory via a related entity even with no text overlap. " +
+                     "'org:<name>', 'thing:<name>', 'topic:<theme>'. Typed entries, and any other " +
+                     "key:value keyword, become structured fields — an exact-match retrieval signal and " +
+                     "entity-graph input, so a query mentioning one entity can surface this memory via a " +
+                     "related entity even with no text overlap. Plain keywords remain search keywords. " +
                      "Use the same canonical name for an entity across memories; the type lets a person and a " +
                      "place that share a name stay distinct.")] string[]? keywords = null,
         [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content. Indexed for both field-score lookup and BM25 via term-frequency seeding.")]

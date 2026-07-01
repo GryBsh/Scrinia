@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Scrinia.Core.Search;
 
 namespace Scrinia.Retrieval.Benchmarks.Agent;
 
@@ -168,13 +169,6 @@ public static partial class AgentPrompts
     /// way <see cref="MaxAnchorsPerDoc"/> does for anchors.</summary>
     public const int MaxTypedKeywordsPerDoc = 8;
 
-    /// <summary>Allowed type prefixes this experiment indexes — the real entity types plus
-    /// topic. Mirrors <see cref="Scrinia.Core.Search.EntityGraph.RealTypes"/> (the production
-    /// graph's node types). Unknown prefixes (date:, random:, and the legacy generic entity:)
-    /// are dropped by <see cref="ParseTypedKeywords"/> so the generated tags exercise the typed
-    /// design, not the old single-bucket scheme.</summary>
-    private static readonly string[] TypedKeywordPrefixes = ["person", "place", "org", "thing", "topic"];
-
     public const string TypedKeywordsSystem =
         "You are helping index a memory for retrieval. List the ENTITIES and TOPICS this memory is about. " +
         "Output one tag per line as `type:value`, using one of these types: " +
@@ -189,12 +183,14 @@ public static partial class AgentPrompts
         "Memory content:\n\n" + Truncate(content, MaxInputChars);
 
     /// <summary>
-    /// Parses typed keywords from raw LLM output. Each kept tag is `prefix:value` with
-    /// prefix ∈ {entity, topic}, both lowercased. Tolerates leading bullets/numbering and
-    /// surrounding quotes (same as <see cref="ParseAnchors"/>); drops lines without a
-    /// valid prefix:value, unknown prefixes, and empty values; dedups case-insensitively;
-    /// caps at <see cref="MaxTypedKeywordsPerDoc"/>. Returns an empty array when nothing
-    /// parses cleanly (callers convert empty → null at the cache layer).
+    /// Parses typed keywords from raw LLM output. Each kept tag is `prefix:value`, both
+    /// lowercased, where prefix is one of <see cref="KnownFields.EntityKeys"/> — the same
+    /// entity-key set the production entity graph and <c>FieldExtractor</c> use, so the
+    /// bench harness exercises the real typed design rather than its own list. Tolerates
+    /// leading bullets/numbering and surrounding quotes (same as <see cref="ParseAnchors"/>);
+    /// drops lines without a valid prefix:value, unknown prefixes, and empty values; dedups
+    /// case-insensitively; caps at <see cref="MaxTypedKeywordsPerDoc"/>. Returns an empty
+    /// array when nothing parses cleanly (callers convert empty → null at the cache layer).
     /// </summary>
     public static string[] ParseTypedKeywords(string? raw)
     {
@@ -220,7 +216,7 @@ public static partial class AgentPrompts
             int colon = stripped.IndexOf(':');
             if (colon <= 0 || colon >= stripped.Length - 1) continue;   // need prefix:value
             string prefix = stripped[..colon].Trim().ToLowerInvariant();
-            if (Array.IndexOf(TypedKeywordPrefixes, prefix) < 0) continue;  // unknown type → drop
+            if (!KnownFields.EntityKeys.Contains(prefix)) continue;  // unknown type → drop
             string value = stripped[(colon + 1)..].Trim().ToLowerInvariant();
             if (value.Length == 0) continue;
 

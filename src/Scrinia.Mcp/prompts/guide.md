@@ -51,6 +51,8 @@ Don't store: transient working state (use `/temp/`), things derivable from code 
 
 When you `remember`, prefer **typed keywords** over bare terms. Use one of five types: `person:<name>`, `place:<name>`, `org:<name>`, `thing:<name>`, `topic:<theme>`. Example: `keywords: ["org:acme", "person:maria", "topic:contract renewal"]`.
 
+Typed entries (`person:`/`place:`/`org:`/`thing:`/`topic:`) and any other `key:value` keyword become structured fields — exact-match retrieval signal and entity-graph input. Plain keywords remain search keywords.
+
 All five types feed an entity graph: a later search that mentions one entity can surface memories about *related* entities even when they share no words with the query (e.g. asking about "Acme" can pull up a memory about Maria, who works there). Bare keywords only help exact lexical matching.
 
 Two habits make the links work:

@@ -153,13 +153,18 @@ public partial class ScriniaCommands
         if (ephemeralCount > 0)
             scopeEntries.Add(new CliScopeEntry("ephemeral", ephemeralCount, entries.Where(e => e.Scope == "ephemeral").Sum(e => e.Entry.OriginalBytes)));
 
-        // Top keywords
+        // Top keywords — key:value-shaped keywords are legacy typed-prefix entries now
+        // routed into Fields, so exclude them here to avoid double-reporting; see the
+        // fields tally below for their structured counterpart.
         var keywordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in entries)
         {
             if (item.Entry.Keywords is { Length: > 0 })
                 foreach (var kw in item.Entry.Keywords)
+                {
+                    if (TypedKeywordShape().IsMatch(kw)) continue;
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
+                }
             if (item.Entry.Tags is { Length: > 0 })
                 foreach (var tag in item.Entry.Tags)
                     keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
@@ -169,6 +174,22 @@ public partial class ScriniaCommands
             .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
             .Take(10)
             .Select(kv => kv.Key)
+            .ToArray();
+
+        // Top fields — aggregates entry.Fields keys (KnownFields entity/reference keys
+        // plus any scalar fields) across entries that carry structured Fields.
+        var fieldCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in entries)
+        {
+            if (item.Entry.Fields is not { Count: > 0 } fields) continue;
+            foreach (var key in fields.Keys)
+                fieldCounts[key] = fieldCounts.GetValueOrDefault(key) + 1;
+        }
+        var topFields = fieldCounts
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .Select(kv => new CliFieldEntry(kv.Key, kv.Value))
             .ToArray();
 
         // Build rendered text for CLI display
@@ -194,6 +215,12 @@ public partial class ScriniaCommands
                 sb.AppendLine("[bold]Top keywords[/]");
                 sb.AppendLine($"  {Markup.Escape(string.Join(", ", topKeywords))}");
             }
+            if (topFields.Length > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("[bold]Top fields[/]");
+                sb.AppendLine($"  {Markup.Escape(string.Join(", ", topFields.Select(f => $"{f.Key} ({f.Count})")))}");
+            }
             rendered = sb.ToString();
         }
 
@@ -202,8 +229,14 @@ public partial class ScriniaCommands
             staleCount, reviewCount,
             scopeEntries.ToArray(),
             topKeywords.Length > 0 ? topKeywords : null,
+            topFields.Length > 0 ? topFields : null,
             rendered);
     }
+
+    /// <summary>Matches legacy typed-prefix keywords (e.g. <c>person:maria</c>) so the raw
+    /// keyword tally can exclude them — they're now routed into structured Fields.</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[A-Za-z][A-Za-z0-9_-]{0,29}:.+")]
+    private static partial System.Text.RegularExpressions.Regex TypedKeywordShape();
 
     /// <summary>Search memories.</summary>
     /// <param name="query">Search term to match against memory names and descriptions.</param>

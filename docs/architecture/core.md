@@ -109,8 +109,12 @@ public sealed record ArtifactEntry(
     DateTimeOffset? ReviewAfter = null,            // v3: staleness date
     string? ReviewWhen = null,                     // v3: staleness condition
     ChunkEntry[]? ChunkEntries = null,            // v3: per-chunk metadata
-    Dictionary<string, string>? CodeRefs = null); // v3: source file references
+    Dictionary<string, string>? CodeRefs = null,  // v3: source file references
+    string[]? RetrievalAnchors = null,            // agent-supplied query-bridging phrases
+    Dictionary<string, string[]>? Fields = null); // unified fields — see "Unified Fields" below
 ```
+
+`Fields` is multi-valued (`key -> string[]`), lowercase keys, values verbatim. It's `null` for pre-fields entries and degrades gracefully — there is no backfill; see [Unified Fields](#unified-fields).
 
 ### ChunkEntry
 
@@ -191,13 +195,18 @@ Each query term is matched against entry fields with different weights:
 |------------|-------|
 | Exact name match | 100 |
 | Tag exact match | 50 |
+| Field pair match (`key:value` query term matches a `Fields[key]` value) | 50 |
 | Keyword exact match | 40 |
+| Field value exact match (bare query term equals a field value, any key) | 40 |
 | Name starts with | 30 |
 | Name contains | 20 |
 | Tag contains | 15 |
 | Keyword contains | 12 |
+| Field value contains (query term is a substring of a field value) | 12 |
 | Description contains | 10 |
 | Content preview contains | 5 |
+
+Field scoring mirrors tag/keyword scoring by design: pair = tag-exact parity (50), value-exact = keyword-exact parity (40), contains = keyword-contains parity (12). **Dual-read:** the scorer also re-parses `key:value`-shaped legacy `Keywords` (e.g. `person:maria` written before unification) on the fly with the same three tiers, so pre-migration entries rank identically to `Fields`-bearing entries — the cutover needs no re-index. See `WeightedFieldScorer.ScoreEntryTerm` in `Scrinia.Core.Search`.
 
 **Chunk scoring** uses parent metadata at half weight plus chunk-specific fields.
 
@@ -242,14 +251,51 @@ public static class TextAnalysis
 
 Tokenization: split on non-alphanumeric characters, lowercase, filter stop words (~200 common English words), require minimum 2 characters.
 
-### ReferenceExtractor
+### Unified Fields
 
-`ReferenceExtractor` in `Scrinia.Core.Search` uses source-generated regexes to extract structured references from memory content. It supports two extraction modes:
+Unified fields (`ArtifactEntry.Fields`, `Dictionary<string, string[]>?`) replace the older scheme of encoding structured facts as prefixed keywords (`person:maria`, `file:src/Foo.cs`). A field key is either an **entity key** (feeds the entity graph) or a **reference key** (feeds cross-reference tracking); everything else is scalar state. Both write paths (MCP `Store`/`Append` and the server orchestrator) route agent keywords, mechanical content extraction, and reference extraction into `Fields` instead of emitting prefixed keywords. Prefixed-keyword *writes* are retired; prefixed-keyword *reads* are preserved everywhere via dual-read (see below), so entries written before this change keep working with no re-index or backfill.
 
-- **`ExtractFileRefs(content)`** -- extracts file path references matching known extensions (.cs, .ts, .json, .md, .yaml, .csproj, .sln, etc.). Anchored to avoid matching inside URLs. Results are deduplicated case-insensitively.
-- **`ExtractMemoryRefs(content)`** -- extracts both persistent memory references (`topic:subject` pattern) and ephemeral references (`~name` pattern). Avoids matching URL-like patterns (e.g., `http://`).
+#### KnownFields
 
-Used by the `references` and `link` memory tools to enable drift detection (`memory_list({ mode: "drift" })`) and cross-reference tracking between memories and source files.
+`KnownFields` in `Scrinia.Core.Search` is the single schema point — the only place that knows which field keys are multi-valued and what merge semantics apply:
+
+```csharp
+public static class KnownFields
+{
+    public const int MaxFields = 32;
+    public static readonly IReadOnlySet<string> EntityKeys;     // person, place, org, thing, topic
+    public static readonly IReadOnlySet<string> ReferenceKeys;  // file, ref
+    public static bool IsMultiValued(string key);                // true for EntityKeys ∪ ReferenceKeys
+    public static Dictionary<string, string[]>? Merge(existing, incoming);
+}
+```
+
+- **Entity keys** (`person`, `place`, `org`, `thing`, `topic`) union-merge and feed the entity graph (`EntityGraph.ParseEntityFields` in `Scrinia.Core.Search`).
+- **Reference keys** (`file`, `ref`) union-merge and feed References/Link/orphan tracking plus the `CodeRefs` builder.
+- All other keys are scalar: `Merge` treats incoming as newer-wins (first-wins would freeze stale statuses), except multi-valued keys which union-dedupe with existing values keeping their original order.
+- `MaxFields = 32` caps total field keys per entry; existing keys count first against the cap.
+
+#### FieldExtractor
+
+`FieldExtractor` in `Scrinia.Core.Search` is the single write-time entry point with three sources feeding one field bag:
+
+- **`RouteKeywords(keywords)`** -- agent-keyword routing. Splits agent-supplied keywords into field-shaped (`key:value` -> `Fields`) and plain (stay in `Keywords`, still participate in BM25/keyword scoring).
+- **`Extract(content)`** -- mechanical content extraction. Line-by-line scan for frontmatter, `key: value` line-starts, and `**Bold:** value` labels; skips code fences.
+- **`ExtractRefFields(content)`** -- reference extraction. Delegates to `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs` and packages results as `{file: [...], ref: [...]}`, replacing the retired `file:`/`ref:` prefixed-keyword emission.
+- **`SeedTermFrequencies(fields, tf)`** -- not an extraction source; seeds field keys/values into the term-frequency dictionary (+3/token) so BM25 also matches field vocabulary.
+
+`ReferenceExtractor` itself (source-generated regexes for file-path and memory-reference patterns) still exists as the low-level parser underneath `ExtractRefFields` — it's no longer called directly by the write paths to emit keywords.
+
+#### Dual-read
+
+Every consumer of typed/prefixed data reads **both** shapes so old entries (which only ever had prefixed `Keywords`, since `Fields` didn't exist yet) and new entries (which have `Fields`) retrieve identically:
+
+- **Scorer** (`WeightedFieldScorer.ScoreEntryTerm`): scores `entry.Fields` at 50/40/12 (pair/exact/contains — see the scoring table above), then re-parses `key:value`-shaped `entry.Keywords` on the fly with the same three tiers.
+- **Entity graph** (`EntityGraph.Build`): unions `ParseTypedEntities(keywords)` (legacy `type:value` keywords) with `ParseEntityFields(fields)` (Fields filtered to `KnownFields.EntityKeys`).
+- **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Fields["ref"]` for inbound references; new links are written forward-only into the `ref` field (no more `ref:` keyword emission) via `KnownFields.Merge`.
+- **CodeRefs**: the MCP `Store` write path unions the explicit `codeRefs` parameter with `Fields["file"]` (deduplicated case-insensitively) before hashing into `ArtifactEntry.CodeRefs`.
+
+This is a **forward-only migration**: `Fields` is `null` for entries written before this change and stays `null` — there is no backfill script. Dual-read at the scorer/graph/orphan layers is what keeps old and new entries behaving the same, permanently, without a re-index.
 
 ## Storage
 
