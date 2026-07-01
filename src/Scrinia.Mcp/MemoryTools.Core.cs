@@ -1271,11 +1271,16 @@ public sealed partial class ScriniaMcpTools
         // Search all scopes for entries with matching ref keywords
         var allEntries = store.ListScoped(null);
         var matches = allEntries
-            .Where(sa => sa.Entry.Keywords is not null &&
-                sa.Entry.Keywords.Any(k =>
-                    k.Equals(fileKey, StringComparison.OrdinalIgnoreCase) ||
-                    k.Equals(refKey, StringComparison.OrdinalIgnoreCase) ||
-                    k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
+            .Where(sa =>
+                (sa.Entry.Keywords is not null &&
+                 sa.Entry.Keywords.Any(k =>
+                     k.Equals(fileKey, StringComparison.OrdinalIgnoreCase) ||
+                     k.Equals(refKey, StringComparison.OrdinalIgnoreCase) ||
+                     k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
+                ||
+                (sa.Entry.Fields is not null &&
+                 (MatchesFieldRef(sa.Entry.Fields, "file", target) ||
+                  MatchesFieldRef(sa.Entry.Fields, "ref", target))))
             .Select(sa => store.FormatQualifiedName(sa.Scope, sa.Entry.Name))
             .Distinct()
             .ToList();
@@ -1286,6 +1291,23 @@ public sealed partial class ScriniaMcpTools
         string result = $"Found {matches.Count} memory(s) referencing '{target}':\n" +
             string.Join("\n", matches.Select(m => $"- {m}"));
         return Task.FromResult(ResponseBuilder.Success(result).WithAction("searched").ToYaml());
+    }
+
+    /// <summary>Reference-field match: exact value or path-suffix ("/{target}") — the fields-side
+    /// twin of the legacy file:/ref: keyword predicate in References.</summary>
+    private static bool MatchesFieldRef(Dictionary<string, string[]> fields, string key, string target)
+    {
+        foreach (var kv in fields)
+        {
+            if (!kv.Key.Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (string v in kv.Value)
+            {
+                if (v.Equals(target, StringComparison.OrdinalIgnoreCase)
+                    || v.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>Create a bidirectional relationship between two memories.</summary>

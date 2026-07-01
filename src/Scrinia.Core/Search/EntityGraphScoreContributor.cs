@@ -56,9 +56,9 @@ public sealed class EntityGraphScoreContributor : ISearchScoreContributor
         // "{scope}|{name}" the scorer looks up supplemental scores with. Build applies
         // conflict-driven node identity over the whole candidate set (a value claimed by 2+
         // real types splits into per-type nodes), so it needs the full set up front.
-        var docs = new List<(string, IReadOnlyList<string>?)>(candidates.Count);
+        var docs = new List<(string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)>(candidates.Count);
         foreach (var c in candidates)
-            docs.Add(($"{c.Scope}|{c.Entry.Name}", c.Entry.Keywords));
+            docs.Add(($"{c.Scope}|{c.Entry.Name}", c.Entry.Keywords, c.Entry.Fields));
         var graph = EntityGraph.Build(docs);
         if (graph.DocCount == 0) return None;
 

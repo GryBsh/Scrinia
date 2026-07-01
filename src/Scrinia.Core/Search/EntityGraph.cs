@@ -101,18 +101,51 @@ public sealed class EntityGraph
     }
 
     /// <summary>
-    /// Builds a graph from a set of <c>(memory, keywords)</c> docs, applying <b>conflict-driven
-    /// node identity</b>: a tag's node is its bare <c>value</c> unless that value is claimed by
-    /// two or more <see cref="RealTypes"/> across the whole set — then it splits to
-    /// <c>type:value</c> so e.g. a person and a place sharing a name stop being one node.
-    /// Single-type values never split (no needless fragmentation); the legacy untyped
+    /// Fields-side sibling of <see cref="ParseTypedEntities"/>: yields (key, value) pairs for
+    /// entity-class fields (KnownFields.EntityKeys), lowercased, values kept whole. Together
+    /// they give Build its dual-read: legacy typed keywords ∪ unified fields.
+    /// </summary>
+    public static IEnumerable<(string Type, string Value)> ParseEntityFields(
+        IReadOnlyDictionary<string, string[]>? fields)
+    {
+        if (fields is null) yield break;
+        foreach (var kv in fields)
+        {
+            if (!KnownFields.EntityKeys.Contains(kv.Key)) continue;
+            string type = kv.Key.ToLowerInvariant();
+            foreach (string raw in kv.Value)
+            {
+                string value = raw.Trim().ToLowerInvariant();
+                if (value.Length > 0) yield return (type, value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds a graph from a set of <c>(memory, keywords)</c> docs. Delegates to the
+    /// <see cref="Build(IEnumerable{ValueTuple{string, IReadOnlyList{string}, IReadOnlyDictionary{string, string[]}}})"/>
+    /// 3-tuple overload with no fields, so behavior for legacy typed-keyword-only callers is
+    /// unchanged.
+    /// </summary>
+    public static EntityGraph Build(IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords)> docs)
+        => Build(docs?.Select(d => (d.DocKey, d.Keywords, (IReadOnlyDictionary<string, string[]>?)null)) ?? []);
+
+    /// <summary>
+    /// Builds a graph from a set of <c>(memory, keywords, fields)</c> docs, applying
+    /// <b>conflict-driven node identity</b>: a tag's node is its bare <c>value</c> unless that
+    /// value is claimed by two or more <see cref="RealTypes"/> across the whole set — then it
+    /// splits to <c>type:value</c> so e.g. a person and a place sharing a name stop being one
+    /// node. Single-type values never split (no needless fragmentation); the legacy untyped
     /// <c>entity:</c> marker always folds to bare <c>value</c> and never triggers or joins a
     /// split (conservative — under-linking is the documented lower-bound stance, never a false
     /// bridge). Two passes are required: the conflict set must be known before any node key is
-    /// assigned. Use this rather than per-doc <see cref="AddDoc"/> whenever the input carries
-    /// typed keywords, so splitting is applied consistently.
+    /// assigned. Per-doc tags are the union of <see cref="ParseTypedEntities"/> (legacy typed
+    /// keywords) and <see cref="ParseEntityFields"/> (unified Fields), so a doc carrying either
+    /// or both sources graphs identically. Use this rather than per-doc <see cref="AddDoc"/>
+    /// whenever the input carries typed keywords or fields, so splitting is applied consistently.
     /// </summary>
-    public static EntityGraph Build(IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords)> docs)
+    public static EntityGraph Build(
+        IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords, IReadOnlyDictionary<string, string[]>? Fields)> docs)
     {
         var graph = new EntityGraph();
         if (docs is null) return graph;
@@ -120,11 +153,12 @@ public sealed class EntityGraph
         // Pass 1: parse tags per doc; record which real types claim each value.
         var parsed = new List<(string DocKey, List<(string Type, string Value)> Tags)>();
         var realTypesByValue = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (docKey, keywords) in docs)
+        foreach (var (docKey, keywords, fields) in docs)
         {
-            if (string.IsNullOrWhiteSpace(docKey) || keywords is not { Count: > 0 }) continue;
+            if (string.IsNullOrWhiteSpace(docKey)) continue;
             var tags = new List<(string Type, string Value)>();
             foreach (var pair in ParseTypedEntities(keywords)) tags.Add(pair);
+            foreach (var pair in ParseEntityFields(fields)) tags.Add(pair);
             if (tags.Count == 0) continue;
             parsed.Add((docKey, tags));
             foreach (var (type, value) in tags)

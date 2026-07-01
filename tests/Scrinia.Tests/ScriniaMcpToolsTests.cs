@@ -2163,4 +2163,31 @@ public sealed class ScriniaMcpToolsTests
             because: "weight=0 short-circuits without producing entries");
     }
 
+    // ── References dual-read (fields ∪ legacy keywords) ─────────────────────
+
+    [Fact]
+    public async Task References_FindsBothLegacyKeywordAndFieldEntries()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["legacy body"], "legacy-ref", keywords: ["file:src/Foo.cs"]);
+
+        var store = MemoryStoreContext.Current!;
+        var entries = ScriniaArtifactStore.LoadIndex();
+        var legacy = entries.Single(e => e.Name == "legacy-ref");
+
+        // Pin the LEGACY shape explicitly (Fields null, Keywords carries the typed marker).
+        store.Upsert(legacy with { Fields = null, Keywords = ["file:src/Foo.cs"] });
+
+        // A sibling entry that only carries the unified Fields form of the same reference.
+        store.Upsert(legacy with
+        {
+            Name = "fields-ref",
+            Keywords = null,
+            Fields = new Dictionary<string, string[]> { ["file"] = ["src/Foo.cs"] },
+        });
+
+        string result = await Tools().References("src/Foo.cs");
+        result.Should().Contain("legacy-ref").And.Contain("fields-ref");
+    }
+
 }

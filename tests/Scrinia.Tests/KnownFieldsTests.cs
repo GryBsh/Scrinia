@@ -56,4 +56,33 @@ public sealed class KnownFieldsTests
         var big = Enumerable.Range(1, 40).ToDictionary(i => $"key{i}", i => new[] { $"v{i}" });
         KnownFields.Merge(null, big)!.Should().HaveCount(KnownFields.MaxFields);
     }
+
+    [Fact]
+    public void EntityGraph_FieldsAndLegacyKeywords_ProduceIdenticalGraphs()
+    {
+        var fromKeywords = EntityGraph.Build(
+            [("local|a", (IReadOnlyList<string>?)["person:maria", "org:acme"], null),
+             ("local|b", ["person:maria"], null)]);
+        var fromFields = EntityGraph.Build(
+            [("local|a", null, (IReadOnlyDictionary<string, string[]>?)new Dictionary<string, string[]>
+                 { ["person"] = ["Maria"], ["org"] = ["Acme"] }),
+             ("local|b", null, new Dictionary<string, string[]> { ["person"] = ["maria"] })]);
+
+        fromFields.EntityCount.Should().Be(fromKeywords.EntityCount);
+        fromFields.DocCount.Should().Be(fromKeywords.DocCount);
+
+        var scoresKw = fromKeywords.Score("tell me about maria", 0.15, 20);
+        var scoresF = fromFields.Score("tell me about maria", 0.15, 20);
+        scoresF.Should().BeEquivalentTo(scoresKw,
+            because: "a fields entry and a legacy typed-keyword entry must graph identically");
+    }
+
+    [Fact]
+    public void EntityGraph_MixedDoc_UnionsBothSources()
+    {
+        var graph = EntityGraph.Build(
+            [("local|a", (IReadOnlyList<string>?)["person:maria"],
+              (IReadOnlyDictionary<string, string[]>?)new Dictionary<string, string[]> { ["org"] = ["acme"] })]);
+        graph.EntityCount.Should().Be(2, because: "keywords ∪ fields on the same doc");
+    }
 }
