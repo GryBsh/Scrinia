@@ -32,7 +32,7 @@ Rules:
 - Populated automatically at `store`.
 - `append` extracts from the new chunk text and merges **newer-wins** into the entry dictionary (a changed `status:` updates; first-wins would freeze stale statuses).
 - **Entry-level only** in v1 — no per-chunk fields (YAGNI until something needs them).
-- Backfill: `memory_reconcile` regenerates fields for pre-existing entries — the tool already exists.
+- Backfill: **forward-only**. Fields populate on `store`/`append` going forward; pre-existing entries keep null `Fields` and degrade gracefully, exactly like v2 entries without TF data do for BM25. (Correction from the approved draft: `memory_reconcile` is a merge-conflict resolver, not a metadata regenerator — there is no existing re-index-metadata tool, and adding one is not worth it for v1.)
 
 ## 3. Ranking (ships first)
 
@@ -53,7 +53,7 @@ The dictionary storage means a follow-on `fields` filter on `search`/`list` (mod
 ## 5. Verification
 
 - Extractor unit tests: frontmatter, line-start pairs, bold labels, code-fence skip, URL guard, key charset/length caps, 32-field cap, first-wins within text, newer-wins across append.
-- Scorer tests for the three new slots; store round-trip and append-merge tests; reconcile backfill test.
+- Scorer tests for the three new slots; store round-trip and append-merge tests; old-index-without-fields graceful-load test.
 - Bench sanity: a LoCoMo run to confirm no ranking regression (fields are additive signal, but measure, don't theorize).
 
 ## Risks
