@@ -1082,8 +1082,12 @@ public sealed partial class ScriniaMcpTools
         var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
 
+        // Unified fields: key:value-shaped agent keywords route to Fields, same as Store.
+        // Only the plain remainder participates in the entry-level keyword merge below.
+        var (routedNewFields, plainNewKeywords) = FieldExtractor.RouteKeywords(keywords);
+
         // Ref/file references are no longer folded into chunk-level keywords — they land in
-        // Fields via Store's write path. Full Append fields-merge is Task 8's scope.
+        // Fields via the entry-level merge in BuildAppendMetadata.
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
             ContentPreview: store.GenerateContentPreview(content),
@@ -1099,8 +1103,9 @@ public sealed partial class ScriniaMcpTools
             DateTimeOffset createdAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
 
             var meta = BuildAppendMetadata(
-                fullText, description, tags, keywords, anchors,
-                existingEph?.Description, existingEph?.Tags, existingEph?.Keywords, existingEph?.RetrievalAnchors);
+                fullText, description, tags, plainNewKeywords, anchors,
+                existingEph?.Description, existingEph?.Tags, existingEph?.Keywords, existingEph?.RetrievalAnchors,
+                content, routedNewFields, existingEph?.Fields);
 
             ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1120,7 +1125,8 @@ public sealed partial class ScriniaMcpTools
                 TermFrequencies: meta.Tf,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ChunkEntries: updatedChunks,
-                RetrievalAnchors: meta.Anchors);
+                RetrievalAnchors: meta.Anchors,
+                Fields: meta.Fields);
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
@@ -1135,8 +1141,9 @@ public sealed partial class ScriniaMcpTools
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
 
             var meta = BuildAppendMetadata(
-                fullText, description, tags, keywords, anchors,
-                existingEntry?.Description, existingEntry?.Tags, existingEntry?.Keywords, existingEntry?.RetrievalAnchors);
+                fullText, description, tags, plainNewKeywords, anchors,
+                existingEntry?.Description, existingEntry?.Tags, existingEntry?.Keywords, existingEntry?.RetrievalAnchors,
+                content, routedNewFields, existingEntry?.Fields);
 
             ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1168,7 +1175,8 @@ public sealed partial class ScriniaMcpTools
                 ReviewWhen: existingEntry?.ReviewWhen,
                 ChunkEntries: updatedChunks,
                 CodeRefs: existingEntry?.CodeRefs,
-                RetrievalAnchors: meta.Anchors);
+                RetrievalAnchors: meta.Anchors,
+                Fields: meta.Fields);
 
             store.Upsert(entry, scope);
         }
@@ -1189,11 +1197,12 @@ public sealed partial class ScriniaMcpTools
     /// <c>append</c> from discarding what <c>remember</c> set — the appended content is
     /// re-indexed, but anchors, tags, description, and curated keywords survive and grow.
     /// </summary>
-    private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors)
+    private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors, Dictionary<string, string[]>? Fields)
         BuildAppendMetadata(
             string fullText,
             string? newDescription, string[]? newTags, string[]? newKeywords, string[]? newAnchors,
-            string? existingDescription, string[]? existingTags, string[]? existingKeywords, string[]? existingAnchors)
+            string? existingDescription, string[]? existingTags, string[]? existingKeywords, string[]? existingAnchors,
+            string appendedContent, Dictionary<string, string[]>? routedNewFields, Dictionary<string, string[]>? existingFields)
     {
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
 
@@ -1203,8 +1212,8 @@ public sealed partial class ScriniaMcpTools
         // boost too — a negligible, intentional over-weight in exchange for never losing a
         // curated term.) Mirrors Store's keyword/TF contract.
         // Ref/file references are no longer concatenated in here as prefixed keywords —
-        // Task 8 will fold them into a Fields merge for Append. Dropping the concat here
-        // is intentional: entry-level keywords no longer carry file:/ref: entries.
+        // they land in Fields via the merge below. Dropping the concat here is intentional:
+        // entry-level keywords no longer carry file:/ref: entries.
         string[] curatedKeywords = UnionDistinct(existingKeywords, newKeywords);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(
             curatedKeywords.Length > 0 ? curatedKeywords : null, autoKeywords);
@@ -1242,12 +1251,23 @@ public sealed partial class ScriniaMcpTools
                 ? existingDescription!
                 : fullText[..Math.Min(200, fullText.Length)];
 
+        // Unified fields: incoming = routed new keywords ∪ content extraction ∪ references
+        // from the appended chunk; merged per KnownFields (entity/ref union, scalar
+        // newer-wins). Seed the merged set at +3 — TF is rebuilt from scratch per append,
+        // so carried-forward fields must re-seed (same contract as merged anchors).
+        var incoming = KnownFields.Merge(
+            KnownFields.Merge(routedNewFields, FieldExtractor.Extract(appendedContent)),
+            ExtractRefFields(appendedContent));
+        var mergedFields = KnownFields.Merge(existingFields, incoming);
+        FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+
         return (
             desc,
             mergedTags.Length > 0 ? mergedTags : null,
             mergedKeywords.Length > 0 ? mergedKeywords : null,
             tf.Count > 0 ? tf : null,
-            mergedAnchors);
+            mergedAnchors,
+            mergedFields);
     }
 
     /// <summary>Case-insensitive union of two optional string arrays, preserving first-seen casing and order; drops null/whitespace.</summary>

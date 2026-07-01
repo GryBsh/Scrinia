@@ -1675,6 +1675,21 @@ public sealed class ScriniaMcpToolsTests
             because: "an anchor added on append must bridge a user query to the memory");
     }
 
+    [Fact]
+    public async Task Append_FieldMerge_ScalarReplacesEntityAccumulates()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(["status: active\nInitial."], "unified-append-test",
+            keywords: ["person:Alice"]);
+        await Tools().Append("status: done\nFollow-up.", "unified-append-test",
+            keywords: ["person:Bob"]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-append-test");
+        entry.Fields!["status"].Should().BeEquivalentTo(["done"], because: "scalar newer-wins");
+        entry.Fields["person"].Should().BeEquivalentTo(["Alice", "Bob"], because: "entities accumulate");
+    }
+
     // ── Show budget recording (1 test) ───────────────────────────────────────
 
     [Fact]
