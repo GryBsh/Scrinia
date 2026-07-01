@@ -1,63 +1,85 @@
-# Mechanical Field Extraction for Memories — Design
+# Unified Fields — Design
 
 **Date:** 2026-07-01
-**Status:** Approved
+**Status:** Approved (v2 — supersedes the v1 "mechanical field extraction" draft in this file's history; v1 layered fields alongside typed keywords, v2 unifies them)
 
 ## Problem
 
-Agents already write YAML-ish structure into memory content — frontmatter blocks, `key: value` lines, `**Why:** ...` bold labels — but none of it survives as structure. `TextAnalysis.Tokenize` is deliberately lossy (lowercase, split on non-alphanumerics, drop stopwords and short tokens), which shreds exactly the values that structure carries best: versions (`1.2.3`), dates, hyphenated identifiers (`no-go`), enum-ish statuses. These are high-value points of specific similarity that BM25 and field scoring currently can't use.
+The index already stores `key: value`-shaped facts four different ways:
 
-nmp/2 is opaque at rest; everything searchable lives in the index entry. So "storing structured data" means extracting field pairs at write time and persisting them on the index entry — the format itself is untouched. No per-type schema is maintained and no graph queries are intended; fields are flat key→value pairs used as retrieval signal.
+1. **Typed entity keywords** — `person:maria` strings in `Keywords`, parsed per query by `EntityGraph.ParseTypedEntities` (`src/Scrinia.Core/Search/EntityGraph.cs:88`) to build the (never-persisted) entity graph.
+2. **Reference keywords** — `file:path` / `ref:name` strings in `Keywords`, emitted by `ExtractRefKeywords`, consumed by the `References`/`Link` tools, `MaintenanceEventSink` orphan tracking, and the CodeRefs builder.
+3. **`CodeRefs`** — a path→hash dictionary for drift detection.
+4. **(planned v1)** extracted content fields — a fifth variant.
 
-**Goal (decided):** design storage to support both transparent ranking and an explicit query surface, but ship the ranking signal first.
+Same shape, four codepaths, three divergent copies of the typed-prefix list (`EntityGraph.RealTypes`, benchmark `AgentPrompts.TypedKeywordPrefixes`, `guide.md` prose). Meanwhile the agent-written content itself carries extractable structure (frontmatter, `key: value` lines, `**Why:** ...` labels) that `TextAnalysis.Tokenize` shreds — versions, dates, hyphenated identifiers, statuses are lost as exact-match signal.
 
-## 1. Extraction — `FieldExtractor`
+**Decision: it's all just fields.** One multi-valued `Fields` store on the index entry, populated equally from agent self-report and mechanical extraction, consumed by ranking, the entity graph, and reference tracking. nmp/2 is untouched (everything searchable lives in the index). No per-type schema, no deep graph queries — flat key→values as points of specific similarity.
 
-New static class in `Scrinia.Core.Search`, sibling of `ReferenceExtractor` (same source-generated-regex, LLM-free, write-time style).
+## 1. Storage
 
-Scans line-by-line with a code-fence state guard — nothing inside ``` fences is extracted. Three patterns (decided scope: frontmatter + labeled lines; tables/headers explicitly out):
+- `Dictionary<string, string[]>? Fields` on `ArtifactEntry` and `EphemeralEntry` (last positional param, default null). Multi-valued: a memory can reference two people.
+- Keys lowercased + trimmed; values verbatim (trimmed, never tokenized). Caps: 32 keys per entry, values ≤ 120 chars.
+- Index stays v3-compatible; pre-fields entries have null and degrade gracefully (like v2 entries without TF).
+- **CodeRefs stays** as the drift-hash sidecar (path→hash), now fed from the `file` field's values ∪ the explicit `codeRefs` param. The field states the fact ("references path X"); CodeRefs holds metadata about it (the hash). Drift detection is unchanged.
 
-1. **Frontmatter**: `key: value` lines inside a leading `---` fenced block.
-2. **Line-start pairs**: `^key: value` where key matches `[A-Za-z][A-Za-z0-9_-]{0,29}` and value is ≤ 120 chars. Skipped when the value starts with `//` (URL remainder guard, same philosophy as `ReferenceExtractor`).
-3. **Bold labels**: `**Why:** taxes retrieval` → key `why`, value `taxes retrieval`.
+## 2. Known-fields table — the single point of schema
 
-Rules:
-- Keys lowercased; values kept **verbatim** (no tokenization — that is the point).
-- First occurrence wins within a single text.
-- Hard cap: 32 fields per entry.
+New `KnownFields` in `Scrinia.Core.Search` — one table replacing the three divergent lists:
 
-## 2. Storage — `Fields` on the index
+| Class | Keys | Merge semantics | Extra role |
+|---|---|---|---|
+| Entity | `person, place, org, thing, topic` | union-dedupe (accumulate across appends) | feed the entity graph |
+| Reference | `file, ref` | union-dedupe | feed References/Link/orphan + CodeRefs hashing |
+| Everything else | any | scalar: newer-wins replace across appends; first-wins within one text | — |
 
-- `Dictionary<string, string>? Fields` added to `ArtifactEntry` and `EphemeralEntry` (same shape as the existing `CodeRefs`). Index stays v3-compatible; old entries have null.
-- Populated automatically at `store`.
-- `append` extracts from the new chunk text and merges **newer-wins** into the entry dictionary (a changed `status:` updates; first-wins would freeze stale statuses).
-- **Entry-level only** in v1 — no per-chunk fields (YAGNI until something needs them).
-- Backfill: **forward-only**. Fields populate on `store`/`append` going forward; pre-existing entries keep null `Fields` and degrade gracefully, exactly like v2 entries without TF data do for BM25. (Correction from the approved draft: `memory_reconcile` is a merge-conflict resolver, not a metadata regenerator — there is no existing re-index-metadata tool, and adding one is not worth it for v1.)
+That table is the entire schema: merge semantics + graph membership, one place. Legacy `entity:` prefix remains recognized read-side (parity with `ParseTypedEntities`).
 
-## 3. Ranking (ships first)
+## 3. Sources — all land in Fields with equal standing
 
-Two transparent hooks; no query-syntax change:
+1. **Agent-supplied**: `key:value`-shaped entries in the existing `keywords` param are routed into Fields at write time. Routing rule: the part before the first `:` matches the extractor's key charset (`[A-Za-z][A-Za-z0-9_-]{0,29}`) and the remainder is non-empty and doesn't start with `//` (URL guard) — so `person:nick` routes, `http://x` and plain `nick` don't. Non-routed keywords stay in `Keywords`. Zero API change — the natural `keywords: ["person:nick", "status:active"]` expression agents already use keeps working, it just lands in the right store.
+2. **Mechanical extraction** — `FieldExtractor` (new, sibling of `ReferenceExtractor`): line-scan with code-fence guard; three patterns — frontmatter `key: value` lines inside a leading `---` block; line-start `key: value` (key `[A-Za-z][A-Za-z0-9_-]{0,29}`, value ≤ 120 chars, URL-remainder `//...` guard); bold labels `**Why:** value` / `**Why**: value`.
+3. **Reference extraction** — `ReferenceExtractor` output becomes `file`/`ref` field values instead of prefixed keywords.
 
-- **TF seeding**: field keys and value tokens seeded into `TermFrequencies` at **+3** boost — between auto-keyword (+2) and agent-keyword (+5). BM25 picks fields up for free.
-- **`WeightedFieldScorer` slot**:
+New writes **stop emitting prefixed keywords entirely** (no dual-write). Store/append rebuild all metadata, so old entries migrate organically on next touch.
+
+## 4. Consumers — redirected at the confirmed choke points
+
+- **Entity graph**: `ParseTypedEntities` (or its caller `EntityGraph.Build`) reads Fields entity keys ∪ legacy typed keywords (dual-read). The graph is rebuilt per query and never persisted, so no stored format migrates.
+- **References tool** (`MemoryTools.Core.cs:1263`): matches `file`/`ref` field values ∪ legacy `file:`/`ref:` keywords.
+- **Link tool** (`MemoryTools.Core.cs:1298`): writes `ref` field values instead of `ref:` keywords.
+- **MaintenanceEventSink**: auto-links and orphan detection read/write the `ref` field ∪ legacy keywords.
+- **CodeRefs builder** (`MemoryTools.Core.cs:310`): reads the `file` field instead of scanning `file:` keywords.
+- **TF seeding**: field keys + value tokens seeded at +3 (between auto-keyword +2 and agent-keyword +5). `IndexTokensForKeyword` keeps working for legacy entries.
+- **CLI `list --summary`**: top-keywords display gains a fields-aware rendering (no more raw `person:x` strings).
+- **Benchmark harness**: `AgentPrompts.TypedKeywordPrefixes` deleted, pointed at `KnownFields`.
+- **`guide.md` / tool descriptions**: updated so agents learn fields are first-class (still expressed via `keywords`).
+
+## 5. Ranking (ships with this change)
+
+- `WeightedFieldScorer.ScoreEntryTerm` slots, iterating multi-values:
   | Match | Score |
   |---|---|
-  | Compound `key:value` query term exact-matches a pair | 50 (tag-exact parity) |
+  | Compound `key:value` query term exact-matches key + one value | 50 (tag-exact parity) |
   | Term exact-matches a field value | 40 (keyword-exact parity) |
   | Term contained in a field value | 12 |
+- **Scorer dual-read**: the field slots also parse `key:value`-shaped legacy keywords on the fly, so pre-migration entries rank identically to new ones — the cutover is invisible, no re-index needed.
+- All comparisons explicit `OrdinalIgnoreCase` (dictionary comparers don't survive JSON round-trips).
+- Query surface beyond ranking (a `fields` filter on `search`/`list`) remains v2 follow-on; storage already supports it.
 
-## 4. Query surface (designed-for, shipped later)
+## 6. Verification
 
-The dictionary storage means a follow-on `fields` filter on `search`/`list` (modeled on `excludeTopics`) requires no storage change — v2 is scoring/API surface only.
-
-## 5. Verification
-
-- Extractor unit tests: frontmatter, line-start pairs, bold labels, code-fence skip, URL guard, key charset/length caps, 32-field cap, first-wins within text, newer-wins across append.
-- Scorer tests for the three new slots; store round-trip and append-merge tests; old-index-without-fields graceful-load test.
-- Bench sanity: a LoCoMo run to confirm no ranking regression (fields are additive signal, but measure, don't theorize).
+- `FieldExtractor` unit tests: frontmatter, line-start, bold labels, fence-skip, URL guard, caps, first-wins within text.
+- `KnownFields` merge tests: entity/ref union vs scalar newer-wins.
+- Keyword-routing tests: `person:nick` in the keywords param → Fields, plain keyword stays; store + append paths (MCP and server orchestrator both).
+- Consumer parity tests: entity graph scores identical for a legacy-keywords entry vs a fields entry; References/Link/orphan work across both; drift detection unchanged; scorer dual-read parity.
+- Round-trip + old-index graceful-load tests.
+- Bench: LoCoMo control run (no regression expected; entity-graph benchmark path must produce identical scores through the shared table).
 
 ## Risks
 
-- **Extraction noise** — prose colons, code snippets. Mitigated by line-start anchoring, tight key charset, value length cap, fence guard, URL guard.
-- **Index growth** — index.json loads per scope. Mitigated by the 32-field cap and 120-char value cap.
-- **Append key collisions** — newer-wins is a judgment call (decided); the alternative freezes stale values.
+- **Extraction noise** — mitigated by anchoring, tight key charset, value cap, fence + URL guards.
+- **Index growth** — 32-key / 120-char caps; multi-values bounded by the same 32-key budget.
+- **Semantics leak** — union-vs-replace is per-key-class; deliberately confined to the one `KnownFields` table.
+- **Stale inbound `ref:` links on forget** — pre-existing gap (`OnForgotten` is a no-op); unchanged by this design, noted for a future pass.
+- **Bigger blast radius than v1** — ~6 consumer redirects; mitigated by dual-read everywhere and organic migration (no big-bang re-index).
