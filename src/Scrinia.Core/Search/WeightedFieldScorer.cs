@@ -17,14 +17,20 @@ namespace Scrinia.Core.Search;
 /// ─────────────────────       ─────
 /// Exact name match             100
 /// Tag exact match               50
+/// Field key:value pair exact    50
 /// Keyword exact match           40
+/// Field value exact match       40
 /// Name starts with              30
 /// Name contains                 20
 /// Tag contains                  15
 /// Retrieval anchor contains     15
 /// Keyword contains              12
+/// Field value contains          12
 /// Description contains          10
 /// Content preview contains       5
+///
+/// Field rows score over Fields ∪ legacy key:value keywords (dual-read: pre-migration
+/// entries with key:value-shaped Keywords score identically without re-indexing).
 ///
 /// Topic scoring (per term):
 ///
@@ -376,6 +382,54 @@ internal sealed class WeightedFieldScorer
                     score = Math.Max(score, 15);
                     break;
                 }
+            }
+        }
+
+        // Unified-field matching. Compound "key:value" query terms hitting a (key, value)
+        // pair score 50 (tag-exact parity); a term equal to a value scores 40 (keyword-exact
+        // parity); contained in a value, 12. Dual-read: key:value-shaped LEGACY keywords
+        // (person:maria written before unification) are parsed on the fly so pre-migration
+        // entries rank identically — the cutover needs no re-index. Explicit OrdinalIgnoreCase
+        // everywhere: dictionary comparers don't survive JSON round-trips.
+        int sep = term.IndexOf(':');
+        string? termKey = sep > 0 && sep < term.Length - 1 ? term[..sep] : null;
+        string? termValue = termKey is not null ? term[(sep + 1)..] : null;
+
+        if (entry.Fields is { Count: > 0 })
+        {
+            foreach (var field in entry.Fields)
+            {
+                foreach (string value in field.Value)
+                {
+                    if (termKey is not null
+                        && field.Key.Equals(termKey, StringComparison.OrdinalIgnoreCase)
+                        && value.Equals(termValue, StringComparison.OrdinalIgnoreCase))
+                        score = Math.Max(score, 50);
+                    else if (value.Equals(term, StringComparison.OrdinalIgnoreCase))
+                        score = Math.Max(score, 40);
+                    else if (value.Contains(term, StringComparison.OrdinalIgnoreCase))
+                        score = Math.Max(score, 12);
+                }
+            }
+        }
+
+        if (entry.Keywords is { Length: > 0 })
+        {
+            foreach (string kw in entry.Keywords)
+            {
+                int kwSep = kw.IndexOf(':');
+                if (kwSep <= 0 || kwSep >= kw.Length - 1) continue;
+                string kwKey = kw[..kwSep];
+                string kwValue = kw[(kwSep + 1)..];
+
+                if (termKey is not null
+                    && kwKey.Equals(termKey, StringComparison.OrdinalIgnoreCase)
+                    && kwValue.Equals(termValue, StringComparison.OrdinalIgnoreCase))
+                    score = Math.Max(score, 50);
+                else if (kwValue.Equals(term, StringComparison.OrdinalIgnoreCase))
+                    score = Math.Max(score, 40);
+                else if (kwValue.Contains(term, StringComparison.OrdinalIgnoreCase))
+                    score = Math.Max(score, 12);
             }
         }
 

@@ -133,4 +133,55 @@ public sealed class FieldExtractorTests
         reloaded.Fields!["person"].Should().BeEquivalentTo(["Alice", "Bob"]);
         reloaded.Fields["status"].Should().BeEquivalentTo(["no-go"], because: "values verbatim through JSON");
     }
+
+    private static Scrinia.Core.Models.ArtifactEntry MakeEntry(
+        string name, Dictionary<string, string[]>? fields = null, string[]? keywords = null) =>
+        new(
+            Name: name, Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow, Description: "unrelated description",
+            Keywords: keywords, Fields: fields);
+
+    [Fact]
+    public void SearchAll_FieldValueExact_OutranksFieldlessEntry()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
+        store.Upsert(MakeEntry("with-field",
+            new Dictionary<string, string[]> { ["verdict"] = ["quiescent"] }), "local");
+        store.Upsert(MakeEntry("without-field"), "local");
+
+        var results = store.SearchAll("quiescent", scopes: null, limit: 10);
+        results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
+            .Should().Be("with-field");
+    }
+
+    [Fact]
+    public void SearchAll_CompoundKeyValueTerm_OutranksValueOnlyMatch()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
+        store.Upsert(MakeEntry("right-key",
+            new Dictionary<string, string[]> { ["verdict"] = ["quiescent"] }), "local");
+        store.Upsert(MakeEntry("wrong-key",
+            new Dictionary<string, string[]> { ["mood"] = ["quiescent"] }), "local");
+
+        var results = store.SearchAll("verdict:quiescent", scopes: null, limit: 10);
+        results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
+            .Should().Be("right-key", because: "pair exact (50) outranks value-only exact (40)");
+    }
+
+    [Fact]
+    public void SearchAll_LegacyTypedKeyword_ScoresLikeAField()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
+        // Pre-migration entry: person:maria lives in Keywords, Fields is null.
+        store.Upsert(MakeEntry("legacy", keywords: ["person:maria"]), "local");
+        store.Upsert(MakeEntry("bystander"), "local");
+
+        var results = store.SearchAll("person:maria", scopes: null, limit: 10);
+        results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
+            .Should().Be("legacy",
+            because: "dual-read parses key:value legacy keywords into the field slots");
+    }
 }
