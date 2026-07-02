@@ -27,5 +27,6 @@
     <EmbeddedResource Include="skills\**\*.md" />
     <EmbeddedResource Include="workflows\**\*.yaml" />
     <EmbeddedResource Include="prompts\**\*.md" />
+    <EmbeddedResource Include="plugins\**\*.ts" />
   </ItemGroup>
 </Project>
