@@ -20,11 +20,14 @@ public sealed record BenchmarkQuestion(
 /// <summary>
 /// One document in a benchmark question's haystack. <see cref="Id"/> must be unique
 /// within the question and is what the scorer matches against for ID-match benchmarks.
+/// <see cref="SessionId"/> groups sub-session slices into one agentic-ingest episode;
+/// null means the doc already is a whole session.
 /// </summary>
 public sealed record HaystackDoc(
     string Id,
     string Text,
-    DateTimeOffset? Timestamp);
+    DateTimeOffset? Timestamp,
+    string? SessionId = null);
 
 /// <summary>
 /// A set of questions that share a haystack — LoCoMo's shape (one conversation,
