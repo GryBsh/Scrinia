@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Scrinia.Retrieval.Benchmarks.Agent;
 
 namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
@@ -14,7 +15,7 @@ namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 /// <see cref="HttpClient"/> lifetime). Tests inject a stubbed <see cref="HttpClient"/>
 /// via the internal constructor to mock <c>HttpMessageHandler</c>.</para>
 /// </summary>
-public sealed class OpenAiCompatibleBenchLlmClient : IBenchLlmClient, IDisposable
+public sealed class OpenAiCompatibleBenchLlmClient : IBenchLlmClient, IToolCallingClient, IDisposable
 {
     private readonly LlmOptions _options;
     private readonly HttpClient _http;
