@@ -53,6 +53,8 @@ internal static class LoCoMoCommand
                 ct: ct);
 
             PrintSummary(result);
+            if (retriever is AgenticScriniaRetriever ag)
+                RetrieverFactory.PrintAgenticStats(ag.Stats);
             await WriteJsonAsync(output, result, ct);
             Console.WriteLine($"wrote {output}");
         }

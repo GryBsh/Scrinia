@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
@@ -15,6 +16,8 @@ namespace Scrinia.Retrieval.Benchmarks.Llm.Providers;
 [JsonSerializable(typeof(ChatErrorResponse))]
 [JsonSerializable(typeof(ModelsResponse))]
 [JsonSerializable(typeof(ResponseFormat))]
+[JsonSerializable(typeof(ToolChatRequest))]
+[JsonSerializable(typeof(ToolChatResponse))]
 internal partial class LlmJsonContext : JsonSerializerContext;
 
 internal sealed record ChatMessage(string Role, string Content);
@@ -46,3 +49,43 @@ internal sealed record ChatErrorResponse(ChatErrorBody? Error);
 internal sealed record ModelInfo(string Id);
 
 internal sealed record ModelsResponse(ModelInfo[]? Data);
+
+// Tool-calling wire shapes. Free-form JSON (tool parameter schemas, tool-call arguments)
+// is represented as JsonElement so the source-generated context stays closed over known
+// types even though the schema/argument shapes are model- and tool-defined.
+
+internal sealed record ToolFunctionSpec(
+    string Name, string Description,
+    [property: JsonPropertyName("parameters")] JsonElement Parameters);
+
+internal sealed record ToolDefinition(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("function")] ToolFunctionSpec Function);
+
+internal sealed record ToolCallFunction(string Name, string Arguments);
+
+internal sealed record ToolCall(
+    string Id,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("function")] ToolCallFunction Function);
+
+// Extend the existing message/response shapes with tool fields. Because ChatMessage
+// is used by CompleteAsync too, add a SEPARATE request/response message record for the
+// tools path rather than widening ChatMessage.
+internal sealed record ToolWireMessage(
+    string Role,
+    string? Content,
+    [property: JsonPropertyName("tool_calls")] ToolCall[]? ToolCalls = null,
+    [property: JsonPropertyName("tool_call_id")] string? ToolCallId = null);
+
+internal sealed record ToolChatRequest(
+    string Model,
+    ToolWireMessage[] Messages,
+    ToolDefinition[] Tools,
+    [property: JsonPropertyName("tool_choice")] string ToolChoice,
+    [property: JsonPropertyName("max_tokens")] int? MaxTokens,
+    double? Temperature,
+    bool Stream = false);
+
+internal sealed record ToolChatResponseChoice(int Index, ToolWireMessage Message, string? FinishReason);
+internal sealed record ToolChatResponse(string? Id, string? Model, ToolChatResponseChoice[]? Choices);

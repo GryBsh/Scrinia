@@ -93,6 +93,24 @@ The headline numbers come from a deliberately neutral ranker. Ablations turn eac
 
 Output filenames pick up tag suffixes (`scrinia_longmemeval_full_bm25_embeddings__rec1.0_tau30_<UTC>.json`) so sweep results don't collide.
 
+## Agentic ingestion arm
+
+The other arms all ingest mechanically: Scrinia writes one entry per haystack doc and the ranker does the rest. The agentic-ingest arm instead measures **ingestion quality** — what happens when a real LLM decides what's worth remembering, the way a live agent actually would.
+
+```powershell
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  locomo --data ./datasets/locomo/locomo10.json \
+  --agentic-ingest --agent-provider openai --agent-model gpt-4o-mini
+```
+
+- `--agentic-ingest` swaps in `AgenticScriniaRetriever` for the mechanical `ScriniaRetriever`. Each session becomes one **episode**: a real tool-calling loop (`memory_remember` / `memory_search`) against the actual Scrinia MCP tools, capped at `--episode-max-turns <n>` (default 16). No embedder, no reranker — this arm is BM25 + fields only, so it's directly comparable to the BM25 mechanical baseline (`--mode bm25`, no `--agentic-ingest`).
+- `--agentic-ingest` requires `--agent-provider` (OpenAI-compatible providers only — the harness needs real tool-calling support) and is mutually exclusive with `--agent <ops>` (that flag decorates mechanical ingest/query; here the episode itself *is* the agent).
+- Recall is scored the same way as the other arms: each agent-authored memory is mapped back to the haystack doc IDs it cited (via `ref:` provenance fields), so R@k still compares doc IDs.
+- Episodes are cached NDJSON at `benchmarks/Scrinia.Retrieval.Benchmarks/cache/episodes-{provider}-{model}.ndjson`, keyed on `(model, prompt version, session transcript)`. Reruns replay the recorded tool calls instead of re-invoking the LLM — required to make repeated per-question sweeps tractable (one episode per session, times hundreds of questions). A session whose episode fails twice falls back to mechanical verbatim ingest for that session (never cached), so the benchmark always has something to retrieve.
+- After the run, a stats block prints to stdout: episode count (agentic vs. mechanical-fallback), memories written, memories without a usable `ref:` citation, unresolvable refs, and tool-call errors — read this before trusting the R@k number, since a high fallback rate means the run mostly measured the mechanical baseline, not the agent.
+
+**What to compare it against:** the BM25 mechanical arm on the same dataset (`--mode bm25`, no ablation flags). The delta tells you whether an agent deciding what to remember actually beats Scrinia's own mechanical per-doc ingest — not whether it beats `bm25_embeddings` (a different, unrelated axis: retrieval-time semantic matching vs. ingest-time curation).
+
 ## Methodology
 
 ### Metrics

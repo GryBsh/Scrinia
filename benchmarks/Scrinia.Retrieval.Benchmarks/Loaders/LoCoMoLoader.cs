@@ -116,7 +116,8 @@ public sealed partial class LoCoMoLoader
                 {
                     string text = FormatDialog(dialog);
                     if (!string.IsNullOrWhiteSpace(text))
-                        haystack.Add(new HaystackDoc($"D{n}:{dialogIdx}", text, date));
+                        // dialog docs carry their parent session so one agentic-ingest episode sees the whole session.
+                        haystack.Add(new HaystackDoc($"D{n}:{dialogIdx}", text, date, SessionId: key));
                     dialogIdx++;
                 }
             }

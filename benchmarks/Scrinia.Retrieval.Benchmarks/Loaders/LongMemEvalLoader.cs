@@ -114,7 +114,8 @@ public sealed class LongMemEvalLoader
                     if (turn is null) continue;
                     if (!string.Equals(turn.Role, "user", StringComparison.OrdinalIgnoreCase)) continue;
                     if (string.IsNullOrWhiteSpace(turn.Content)) continue;
-                    docs.Add(new HaystackDoc($"{sessionId}_turn_{turnIdx}", turn.Content, sessionDate));
+                    // turn docs carry their parent session so one agentic-ingest episode sees the whole session.
+                    docs.Add(new HaystackDoc($"{sessionId}_turn_{turnIdx}", turn.Content, sessionDate, SessionId: sessionId));
                     turnIdx++;
                 }
             }

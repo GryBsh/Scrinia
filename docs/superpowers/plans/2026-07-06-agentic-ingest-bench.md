@@ -19,8 +19,8 @@
   ```
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   ```
-- Build/test the bench project directly (`dotnet build benchmarks/Scrinia.Retrieval.Benchmarks`, `dotnet test tests/Scrinia.Tests`) — the solution-level `dotnet test` fails on an unrelated `Scrinia.AppHost` NuGet audit error.
-- Bench tests live in `tests/Scrinia.Tests` (the existing test project that already references the bench assembly — confirm in Task 0; if no bench test project references it, create `tests/Scrinia.Retrieval.Benchmarks.Tests`).
+- Build/test the bench project directly (`dotnet build benchmarks/Scrinia.Retrieval.Benchmarks`, `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests`) — the solution-level `dotnet test` fails on an unrelated `Scrinia.AppHost` NuGet audit error.
+- Bench tests live in `tests/Scrinia.Retrieval.Benchmarks.Tests` — a **flat** layout (no subfolders), namespace `Scrinia.Retrieval.Benchmarks.Tests`, xUnit + FluentAssertions. It already references the bench assembly, so it transitively gains `Scrinia.Mcp` once Task 0 adds that reference to the bench project. Reuse existing sibling tests for patterns: `OpenAiCompatibleBenchLlmClientTests.cs` (stubbed `HttpMessageHandler`), `LoCoMoLoaderTests.cs` / `LongMemEvalLoaderTests.cs` (loader fixtures), `LlmAgentHarnessTests.cs`, `ScriniaRetrieverTests.cs`.
 
 ---
 
@@ -44,14 +44,15 @@
 
 ---
 
-## Task 0: Project wiring — reference Scrinia.Mcp and confirm test project
+## Task 0: Project wiring — reference Scrinia.Mcp from the bench project
 
 **Files:**
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Scrinia.Retrieval.Benchmarks.csproj`
-- Inspect: `tests/Scrinia.Tests/Scrinia.Tests.csproj` (confirm it references the bench project)
 
 **Interfaces:**
-- Produces: bench project can `using Scrinia.Mcp;` and construct `ScriniaMcpTools`.
+- Produces: bench project (and the test project transitively) can `using Scrinia.Mcp;` and construct `ScriniaMcpTools`.
+
+**Confirmed:** `tests/Scrinia.Retrieval.Benchmarks.Tests` already references the bench project, so it needs no edit — it inherits `Scrinia.Mcp` transitively once the bench project references it.
 
 - [ ] **Step 1: Confirm the current bench project references**
 
@@ -66,20 +67,16 @@ In the `<ItemGroup>` that holds the `Scrinia.Core` reference, add:
 <ProjectReference Include="..\..\src\Scrinia.Mcp\Scrinia.Mcp.csproj" />
 ```
 
-- [ ] **Step 3: Confirm which test project references the bench assembly**
-
-Run: `Grep` for `Scrinia.Retrieval.Benchmarks` in `tests/**/*.csproj`.
-Expected: identify the test project that references the bench assembly (likely `tests/Scrinia.Tests`). All new tests in this plan go there. If **none** references it, add a `<ProjectReference>` to `tests/Scrinia.Tests/Scrinia.Tests.csproj` pointing at the bench project.
-
-- [ ] **Step 4: Build to confirm the reference resolves**
+- [ ] **Step 3: Build both projects to confirm the reference resolves**
 
 Run: `dotnet build benchmarks/Scrinia.Retrieval.Benchmarks -c Debug`
-Expected: build succeeds (no code changes yet, only the reference).
+Then: `dotnet build tests/Scrinia.Retrieval.Benchmarks.Tests -c Debug`
+Expected: both succeed (no code changes yet, only the reference).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add benchmarks/Scrinia.Retrieval.Benchmarks/Scrinia.Retrieval.Benchmarks.csproj tests/Scrinia.Tests/Scrinia.Tests.csproj
+git add benchmarks/Scrinia.Retrieval.Benchmarks/Scrinia.Retrieval.Benchmarks.csproj
 git commit -m "build(bench): reference Scrinia.Mcp for agentic-ingest arm
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -93,7 +90,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkQuestion.cs`
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Loaders/LoCoMoLoader.cs`
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Loaders/LongMemEvalLoader.cs`
-- Test: `tests/Scrinia.Tests/Bench/HaystackSessionGroupingTests.cs` (new)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/HaystackSessionGroupingTests.cs` (new)
 
 **Interfaces:**
 - Produces: `HaystackDoc.SessionId` (`string?`) — null when the doc already IS a session; set to the parent session ID when the doc is a sub-session slice. `AgenticScriniaRetriever` (Task 5) groups episodes by `SessionId ?? Id`.
@@ -102,13 +99,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/Scrinia.Tests/Bench/HaystackSessionGroupingTests.cs`:
+Create `tests/Scrinia.Retrieval.Benchmarks.Tests/HaystackSessionGroupingTests.cs`:
 
 ```csharp
 using FluentAssertions;
 using Scrinia.Retrieval.Benchmarks.Core;
 
-namespace Scrinia.Tests.Bench;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class HaystackSessionGroupingTests
 {
@@ -130,7 +127,7 @@ public sealed class HaystackSessionGroupingTests
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `dotnet test tests/Scrinia.Tests --filter HaystackSessionGroupingTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter HaystackSessionGroupingTests`
 Expected: FAIL — `SessionId` not defined on `HaystackDoc`.
 
 - [ ] **Step 3: Add the SessionId param**
@@ -149,7 +146,7 @@ Update the doc-comment above it to note: `SessionId` groups sub-session slices i
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `dotnet test tests/Scrinia.Tests --filter HaystackSessionGroupingTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter HaystackSessionGroupingTests`
 Expected: PASS.
 
 - [ ] **Step 5: Populate SessionId in LoCoMoLoader dialog granularity**
@@ -166,11 +163,11 @@ Add an inline comment mirroring the LoCoMo one.
 
 - [ ] **Step 7: Write loader assertions**
 
-Append to `HaystackSessionGroupingTests.cs` two tests that load a tiny fixture (reuse whatever fixture pattern the existing loader tests use — inspect `tests/Scrinia.Tests/**` for an existing `LoCoMoLoaderTests`/`LongMemEvalLoaderTests` and copy its fixture-loading approach). Assert: in dialog/turn granularity every doc has a non-null `SessionId`; in session granularity every doc has a null `SessionId`. If no loader-test fixture exists, assert the narrower invariant against a hand-built loader input instead — do not fabricate a dataset file.
+Append to `HaystackSessionGroupingTests.cs` two tests that load a tiny fixture (reuse the fixture pattern in the existing `tests/Scrinia.Retrieval.Benchmarks.Tests/LoCoMoLoaderTests.cs` and `LongMemEvalLoaderTests.cs` — copy their fixture-loading approach). Assert: in dialog/turn granularity every doc has a non-null `SessionId`; in session granularity every doc has a null `SessionId`. If no loader-test fixture exists, assert the narrower invariant against a hand-built loader input instead — do not fabricate a dataset file.
 
 - [ ] **Step 8: Run tests and build**
 
-Run: `dotnet test tests/Scrinia.Tests --filter HaystackSessionGroupingTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter HaystackSessionGroupingTests`
 Expected: PASS.
 Run: `dotnet build benchmarks/Scrinia.Retrieval.Benchmarks -c Debug`
 Expected: build succeeds (all existing `HaystackDoc` construction sites still compile).
@@ -178,7 +175,7 @@ Expected: build succeeds (all existing `HaystackDoc` construction sites still co
 - [ ] **Step 9: Commit**
 
 ```bash
-git add benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkQuestion.cs benchmarks/Scrinia.Retrieval.Benchmarks/Loaders/LoCoMoLoader.cs benchmarks/Scrinia.Retrieval.Benchmarks/Loaders/LongMemEvalLoader.cs tests/Scrinia.Tests/Bench/HaystackSessionGroupingTests.cs
+git add benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkQuestion.cs benchmarks/Scrinia.Retrieval.Benchmarks/Loaders/LoCoMoLoader.cs benchmarks/Scrinia.Retrieval.Benchmarks/Loaders/LongMemEvalLoader.cs tests/Scrinia.Retrieval.Benchmarks.Tests/HaystackSessionGroupingTests.cs
 git commit -m "feat(bench): HaystackDoc.SessionId for agentic-ingest episode grouping
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -192,7 +189,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/ToolCallTypes.cs`
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/LlmJsonContext.cs`
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/OpenAiCompatibleBenchLlmClient.cs`
-- Test: `tests/Scrinia.Tests/Bench/ChatWithToolsWireTests.cs` (new)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/ChatWithToolsWireTests.cs` (new)
 
 **Interfaces:**
 - Consumes: existing `LlmOptions` (`Model`, `Temperature`, `BaseUrl`, `ApiKey`, `Provider`), `BuildUri`, `ApplyAuth` (private helpers already in the client).
@@ -244,13 +241,13 @@ Because `arguments` and `parameters` are raw JSON with model-defined shapes, rep
 
 - [ ] **Step 1: Write the failing wire-serialization test**
 
-Create `tests/Scrinia.Tests/Bench/ChatWithToolsWireTests.cs`. Test the client against a stubbed `HttpMessageHandler` (copy the stub pattern from the existing `OpenAiCompatibleBenchLlmClient` unit tests — find them via `Grep` for `OpenAiCompatibleBenchLlmClient` in `tests/`). Two cases:
+Create `tests/Scrinia.Retrieval.Benchmarks.Tests/ChatWithToolsWireTests.cs`. Test the client against a stubbed `HttpMessageHandler` (copy the stub pattern from the existing `OpenAiCompatibleBenchLlmClient` unit tests — find them via `Grep` for `OpenAiCompatibleBenchLlmClient` in `tests/`). Two cases:
 
 ```csharp
 using FluentAssertions;
 using Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
-namespace Scrinia.Tests.Bench;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class ChatWithToolsWireTests
 {
@@ -283,7 +280,7 @@ Fill in the stub bodies using the existing test's handler-stub helper.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `dotnet test tests/Scrinia.Tests --filter ChatWithToolsWireTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter ChatWithToolsWireTests`
 Expected: FAIL — `ToolSpec`/`ChatWithToolsAsync` not defined.
 
 - [ ] **Step 3: Add the provider-agnostic DTOs**
@@ -399,13 +396,13 @@ Note the deviation from the summary's remembered client shape: **transport failu
 
 - [ ] **Step 6: Run the test to verify it passes**
 
-Run: `dotnet test tests/Scrinia.Tests --filter ChatWithToolsWireTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter ChatWithToolsWireTests`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/ToolCallTypes.cs benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/LlmJsonContext.cs benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/OpenAiCompatibleBenchLlmClient.cs tests/Scrinia.Tests/Bench/ChatWithToolsWireTests.cs
+git add benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/ToolCallTypes.cs benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/LlmJsonContext.cs benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/OpenAiCompatibleBenchLlmClient.cs tests/Scrinia.Retrieval.Benchmarks.Tests/ChatWithToolsWireTests.cs
 git commit -m "feat(bench): OpenAI tool-calling support for agentic ingest
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -417,7 +414,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Agent/AgenticIngestPrompts.cs`
-- Test: `tests/Scrinia.Tests/Bench/AgenticIngestPromptsTests.cs` (new)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestPromptsTests.cs` (new)
 
 **Interfaces:**
 - Consumes: `Scrinia.Mcp.EmbeddedPrompts.LoadGuide()` (returns the guide markdown, or null), `HaystackDoc`, `ToolSpec` (Task 2).
@@ -444,14 +441,14 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `tests/Scrinia.Tests/Bench/AgenticIngestPromptsTests.cs`:
+Create `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestPromptsTests.cs`:
 
 ```csharp
 using FluentAssertions;
 using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
 
-namespace Scrinia.Tests.Bench;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class AgenticIngestPromptsTests
 {
@@ -492,7 +489,7 @@ public sealed class AgenticIngestPromptsTests
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticIngestPromptsTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticIngestPromptsTests`
 Expected: FAIL — type not defined.
 
 - [ ] **Step 3: Implement AgenticIngestPrompts**
@@ -596,13 +593,13 @@ public static class AgenticIngestPrompts
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticIngestPromptsTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticIngestPromptsTests`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add benchmarks/Scrinia.Retrieval.Benchmarks/Agent/AgenticIngestPrompts.cs tests/Scrinia.Tests/Bench/AgenticIngestPromptsTests.cs
+git add benchmarks/Scrinia.Retrieval.Benchmarks/Agent/AgenticIngestPrompts.cs tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestPromptsTests.cs
 git commit -m "feat(bench): episode system prompt + tool schemas for agentic ingest
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -614,7 +611,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Agent/AgenticIngestHarness.cs`
-- Test: `tests/Scrinia.Tests/Bench/AgenticIngestHarnessTests.cs` (new)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestHarnessTests.cs` (new)
 
 **Interfaces:**
 - Consumes: `OpenAiCompatibleBenchLlmClient.ChatWithToolsAsync` (Task 2) via a narrow interface (below), `AgenticIngestPrompts` (Task 3), `Scrinia.Mcp.ScriniaMcpTools`, `Scrinia.Core.MemoryStoreContext`, `Scrinia.Core.IMemoryStore`.
@@ -666,7 +663,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests with a scripted client**
 
-Create `tests/Scrinia.Tests/Bench/AgenticIngestHarnessTests.cs`. Define a `ScriptedToolClient : IToolCallingClient` that returns a queued list of `ToolTurnResult`s in order (last one with empty `ToolCalls` to end the loop). Use a real `FileMemoryStore` in a temp dir set on `MemoryStoreContext.Current`.
+Create `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestHarnessTests.cs`. Define a `ScriptedToolClient : IToolCallingClient` that returns a queued list of `ToolTurnResult`s in order (last one with empty `ToolCalls` to end the loop). Use a real `FileMemoryStore` in a temp dir set on `MemoryStoreContext.Current`.
 
 ```csharp
 using FluentAssertions;
@@ -675,7 +672,7 @@ using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
 using Scrinia.Retrieval.Benchmarks.Llm.Providers;
 
-namespace Scrinia.Tests.Bench;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class AgenticIngestHarnessTests : IDisposable
 {
@@ -773,7 +770,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticIngestHarnessTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticIngestHarnessTests`
 Expected: FAIL — types not defined.
 
 - [ ] **Step 3: Implement AgenticIngestHarness**
@@ -792,13 +789,13 @@ Make `OpenAiCompatibleBenchLlmClient` implement `IToolCallingClient` (add the in
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticIngestHarnessTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticIngestHarnessTests`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add benchmarks/Scrinia.Retrieval.Benchmarks/Agent/AgenticIngestHarness.cs benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/OpenAiCompatibleBenchLlmClient.cs tests/Scrinia.Tests/Bench/AgenticIngestHarnessTests.cs
+git add benchmarks/Scrinia.Retrieval.Benchmarks/Agent/AgenticIngestHarness.cs benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/OpenAiCompatibleBenchLlmClient.cs tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestHarnessTests.cs
 git commit -m "feat(bench): AgenticIngestHarness episode driver + tool dispatch
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -811,7 +808,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Agent/EpisodeCache.cs`
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/AgenticScriniaRetriever.cs`
-- Test: `tests/Scrinia.Tests/Bench/EpisodeCacheTests.cs`, `tests/Scrinia.Tests/Bench/AgenticScriniaRetrieverTests.cs` (new)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/EpisodeCacheTests.cs`, `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticScriniaRetrieverTests.cs` (new)
 
 **Interfaces:**
 - Consumes: `AgenticIngestHarness` + `EpisodeResult`/`EpisodeToolCall` (Task 4), `FileMemoryStore`, `MemoryStoreContext`, `RankerOptions`, `EntryResult`/`ChunkEntryResult`, `ArtifactEntry.Fields`, `AgenticIngestPrompts.PromptVersion`.
@@ -858,13 +855,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing EpisodeCache test**
 
-Create `tests/Scrinia.Tests/Bench/EpisodeCacheTests.cs`:
+Create `tests/Scrinia.Retrieval.Benchmarks.Tests/EpisodeCacheTests.cs`:
 
 ```csharp
 using FluentAssertions;
 using Scrinia.Retrieval.Benchmarks.Agent;
 
-namespace Scrinia.Tests.Bench;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class EpisodeCacheTests : IDisposable
 {
@@ -898,7 +895,7 @@ public sealed class EpisodeCacheTests : IDisposable
 
 - [ ] **Step 2: Run to verify fail, then implement EpisodeCache**
 
-Run: `dotnet test tests/Scrinia.Tests --filter EpisodeCacheTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter EpisodeCacheTests`
 Expected: FAIL.
 
 Implement `EpisodeCache` modeled on `LlmResponseCache` (append-only ndjson, `FileShare.ReadWrite` append, `Load()` on construct, malformed-line skip). Each line: `{"key": "<key>", "calls": [{"tool":"...","args":"<json string>"}, ...]}`. `Key` = `LlmResponseCache.Hash(model + "" + promptVersion + "" + transcript)` (reuse the existing SHA256 helper). Serialize `EpisodeToolCall` as `{tool, args}`.
@@ -907,7 +904,7 @@ Run again: Expected PASS.
 
 - [ ] **Step 3: Write the failing retriever tests (scripted harness)**
 
-Create `tests/Scrinia.Tests/Bench/AgenticScriniaRetrieverTests.cs`. Reuse the `ScriptedToolClient` idea (make it accept a map from a marker in the user message to a scripted turn list, OR simpler: script a fixed sequence and use a single-session haystack). Cover:
+Create `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticScriniaRetrieverTests.cs`. Reuse the `ScriptedToolClient` idea (make it accept a map from a marker in the user message to a scripted turn list, OR simpler: script a fixed sequence and use a single-session haystack). Cover:
 
 1. **Provenance expansion**: one episode stores a memory citing `ref: d1` and `ref: d2`; a query that matches it returns hits `d1`, `d2` (both present, in cited order), scored.
 2. **Dedup across memories**: two memories both cite `d1`; `d1` appears once in results.
@@ -919,7 +916,7 @@ Each test constructs `AgenticScriniaRetriever` with a temp `rootDir`, a `Agentic
 
 - [ ] **Step 4: Run to verify fail, then implement AgenticScriniaRetriever**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticScriniaRetrieverTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticScriniaRetrieverTests`
 Expected: FAIL.
 
 Implement per the behavior spec above. Reuse `ScriniaRetriever`'s helpers where identical in spirit (`SanitizeName`, `bench://` uri, `q{n}` dir lifecycle) — copy the small private statics rather than making them public. For reading `Fields["ref"]`, iterate the store's entries; if the store lacks a public enumerate-all, add one **only if needed** — first check whether `SearchAll` with a broad query or an existing enumeration method suffices (inspect `FileMemoryStore` for a list/enumerate method; `memory_list` implies one exists). Prefer the existing enumeration path.
@@ -929,7 +926,7 @@ Run again: Expected PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add benchmarks/Scrinia.Retrieval.Benchmarks/Agent/EpisodeCache.cs benchmarks/Scrinia.Retrieval.Benchmarks/Core/AgenticScriniaRetriever.cs tests/Scrinia.Tests/Bench/EpisodeCacheTests.cs tests/Scrinia.Tests/Bench/AgenticScriniaRetrieverTests.cs
+git add benchmarks/Scrinia.Retrieval.Benchmarks/Agent/EpisodeCache.cs benchmarks/Scrinia.Retrieval.Benchmarks/Core/AgenticScriniaRetriever.cs tests/Scrinia.Retrieval.Benchmarks.Tests/EpisodeCacheTests.cs tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticScriniaRetrieverTests.cs
 git commit -m "feat(bench): AgenticScriniaRetriever + episode cache with provenance R@k
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -945,7 +942,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/LongMemEvalCommand.cs`
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Program.cs` (help text)
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/README.md`
-- Test: `tests/Scrinia.Tests/Bench/AgenticIngestCliTests.cs` (new)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestCliTests.cs` (new)
 
 **Interfaces:**
 - Consumes: `AgentClientBuilder.BuildAsync` (existing — returns `.Llm`, `.ProviderId`, `.ModelSlug`), `AgenticScriniaRetriever` (Task 5).
@@ -958,13 +955,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing CLI parse test**
 
-Create `tests/Scrinia.Tests/Bench/AgenticIngestCliTests.cs`:
+Create `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestCliTests.cs`:
 
 ```csharp
 using FluentAssertions;
 using Scrinia.Retrieval.Benchmarks.Cli;
 
-namespace Scrinia.Tests.Bench;
+namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class AgenticIngestCliTests
 {
@@ -989,7 +986,7 @@ public sealed class AgenticIngestCliTests
 
 - [ ] **Step 2: Run to verify fail**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticIngestCliTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticIngestCliTests`
 Expected: FAIL.
 
 - [ ] **Step 3: Change BuildAsync return type and add the agentic branch**
@@ -1055,7 +1052,7 @@ In `README.md`, add a subsection "Agentic ingestion arm" describing what it meas
 
 - [ ] **Step 6: Run tests and build**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticIngestCliTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticIngestCliTests`
 Expected: PASS.
 Run: `dotnet build benchmarks/Scrinia.Retrieval.Benchmarks -c Release`
 Expected: build succeeds.
@@ -1063,7 +1060,7 @@ Expected: build succeeds.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add benchmarks/Scrinia.Retrieval.Benchmarks/Cli benchmarks/Scrinia.Retrieval.Benchmarks/Program.cs benchmarks/Scrinia.Retrieval.Benchmarks/README.md tests/Scrinia.Tests/Bench/AgenticIngestCliTests.cs
+git add benchmarks/Scrinia.Retrieval.Benchmarks/Cli benchmarks/Scrinia.Retrieval.Benchmarks/Program.cs benchmarks/Scrinia.Retrieval.Benchmarks/README.md tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestCliTests.cs
 git commit -m "feat(bench): --agentic-ingest CLI wiring, stats summary, docs
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
@@ -1074,7 +1071,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ## Task 7: End-to-end smoke test and full-suite green
 
 **Files:**
-- Test: `tests/Scrinia.Tests/Bench/AgenticIngestEndToEndTests.cs` (new)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestEndToEndTests.cs` (new)
 
 **Interfaces:**
 - Consumes: everything above, with the scripted tool client (still no network).
@@ -1094,18 +1091,18 @@ result.Aggregate.RecallAt10.Should().BeGreaterThan(0);
 
 - [ ] **Step 2: Run the end-to-end test**
 
-Run: `dotnet test tests/Scrinia.Tests --filter AgenticIngestEndToEndTests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests --filter AgenticIngestEndToEndTests`
 Expected: PASS.
 
 - [ ] **Step 3: Full bench-test suite green**
 
-Run: `dotnet test tests/Scrinia.Tests`
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests`
 Expected: all green (new bench tests + existing). If an unrelated pre-existing failure appears (e.g. AppHost audit), confirm it is not in `Bench/` and note it.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/Scrinia.Tests/Bench/AgenticIngestEndToEndTests.cs
+git add tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticIngestEndToEndTests.cs
 git commit -m "test(bench): end-to-end agentic-ingest through runner + scorer
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
