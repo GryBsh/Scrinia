@@ -167,15 +167,19 @@ public static partial class AgentPrompts
 
     /// <summary>Maximum typed keywords retained per doc. Caps TF-dict bloat the same
     /// way <see cref="MaxAnchorsPerDoc"/> does for anchors.</summary>
-    public const int MaxTypedKeywordsPerDoc = 8;
+    public const int MaxTypedKeywordsPerDoc = 24;
 
     public const string TypedKeywordsSystem =
-        "You are helping index a memory for retrieval. List the ENTITIES and TOPICS this memory is about. " +
-        "Output one tag per line as `type:value`, using one of these types: " +
+        "You are helping index a memory for retrieval. Summarize this content as typed tags for the memory index. " +
+        "Example tags include (but aren't limited to):" +
         "`person:` (a named person), `place:` (a location), `org:` (a company or group), " +
-        "`thing:` (a named object or work), `topic:` (an activity, theme, or subject). " +
+        "`thing:` (a named object or work), `topic:` (an activity, theme, or subject), `date:` (a specific date). " +
+        "`keyword:` is a catch-all for any other relevant keyword. " +
         "Use short lowercased canonical forms (e.g. `person:maria`, `place:london`, `org:acme`, " +
-        "`thing:toyota camry`, `topic:home renovation`). 3 to 8 tags. No commentary, no numbering, no bullets.";
+        "`thing:toyota camry`, `topic:home renovation`, `date:1-1-2026`, `keyword:example`). "+
+        "If a tag is implied, provide the tag without any commentary or citation." +
+        "Output one tag per line. If possible, provide multiple tags including a subject and topic. You must provide at least one tag." +
+        "No commentary, no numbering, no bullets. ";
 
     /// <summary>Builds the typed-keyword user prompt from doc content (truncated to
     /// <see cref="MaxInputChars"/>). Content only — same anti-data-leakage contract as anchors.</summary>
@@ -194,7 +198,7 @@ public static partial class AgentPrompts
     /// </summary>
     public static string[] ParseTypedKeywords(string? raw)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(raw)) return [];
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var tags = new List<string>(MaxTypedKeywordsPerDoc);
 
@@ -214,18 +218,25 @@ public static partial class AgentPrompts
             stripped = stripped.Trim().Trim('"', '\'').Trim();
 
             int colon = stripped.IndexOf(':');
-            if (colon <= 0 || colon >= stripped.Length - 1) continue;   // need prefix:value
-            string prefix = stripped[..colon].Trim().ToLowerInvariant();
-            if (!KnownFields.EntityKeys.Contains(prefix)) continue;  // unknown type → drop
-            string value = stripped[(colon + 1)..].Trim().ToLowerInvariant();
-            if (value.Length == 0) continue;
-
-            string tag = $"{prefix}:{value}";
+            string? tag = null;
+            if (colon > 0) {
+                if (colon <= 0 || colon >= stripped.Length - 1) continue;   // need prefix:value
+                string prefix = stripped[..colon].Trim().ToLowerInvariant();
+                if (!KnownFields.EntityKeys.Contains(prefix)) continue;  // unknown type → drop
+                string value = stripped[(colon + 1)..].Trim().ToLowerInvariant();
+                if (value.Length == 0) continue;
+                tag = $"{prefix}:{value}";
+            }
+            else
+            {
+                continue;  // no colon → drop                
+            }
+            
             if (!seen.Add(tag)) continue;
             tags.Add(tag);
             if (tags.Count >= MaxTypedKeywordsPerDoc) break;
         }
-        return tags.ToArray();
+        return [.. tags];
     }
 
     // ---------- helpers ----------

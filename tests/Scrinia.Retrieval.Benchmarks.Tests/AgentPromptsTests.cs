@@ -239,8 +239,10 @@ public class AgentPromptsTests
     [Fact]
     public void ParseTypedKeywords_CapsAt_MaxTypedKeywordsPerDoc()
     {
+        // Feed more than the cap so the clamp is actually exercised (derive the count
+        // from the constant so this stays correct if MaxTypedKeywordsPerDoc is retuned).
         string raw = string.Join('\n',
-            Enumerable.Range(0, 20).Select(i => $"topic:theme{i}"));
+            Enumerable.Range(0, AgentPrompts.MaxTypedKeywordsPerDoc + 6).Select(i => $"topic:theme{i}"));
         var tags = AgentPrompts.ParseTypedKeywords(raw);
         tags.Should().HaveCount(AgentPrompts.MaxTypedKeywordsPerDoc);
     }
