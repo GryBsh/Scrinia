@@ -85,6 +85,7 @@ internal static class Program
             No embedder, no reranker; compare against the BM25 mechanical arm (--mode bm25).
               --agentic-ingest         Enable the agentic-ingest arm. Requires --agent-provider (openai-compatible only). Mutually exclusive with --agent <ops>.
               --episode-max-turns <n> Max tool-call turns per session episode (default 16)
+              --episode-max-tokens <n> Max completion tokens per turn — caps reasoning + tool-call args together (default 4096; raise for reasoning models to avoid truncated tool calls)
 
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)

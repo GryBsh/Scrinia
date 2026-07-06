@@ -106,16 +106,21 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     }
 
     [Fact]
-    public async Task Fallback_OnDoubleNull_IngestsRawDoc_AndIncrementsStat()
+    public async Task FailedEpisode_OnDoubleNull_StoresNothing_NoMechanicalFallback()
     {
+        // Both the attempt and its retry fail (null turns). There is deliberately NO
+        // mechanical-ingestion fallback — the session stores nothing, so the doc is NOT
+        // retrievable, and the failure is counted honestly rather than papered over with
+        // verbatim ingest that would inflate the arm's recall.
         var (retriever, _, _) = MakeRetriever((ToolTurnResult?)null, (ToolTurnResult?)null);
 
         await retriever.IngestAsync(new HaystackDoc("d1", "Maria: Booked a unique Lisbon getaway.", null, "s1"));
 
         var hits = await retriever.RetrieveAsync("unique Lisbon getaway", topK: 5);
 
-        hits.Select(h => h.Id).Should().Contain("d1");
-        retriever.Stats.FallbackEpisodes.Should().Be(1);
+        hits.Should().BeEmpty("a failed episode must not fall back to mechanical ingest");
+        retriever.Stats.FailedEpisodes.Should().Be(1);
+        retriever.Stats.AgenticEpisodes.Should().Be(0);
     }
 
     [Fact]
@@ -173,7 +178,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
 
         hits.Select(h => h.Id).Should().Contain("d2");
         hits.Select(h => h.Id).Should().NotContain("d1");
-        retriever.Stats.FallbackEpisodes.Should().Be(0);
+        retriever.Stats.FailedEpisodes.Should().Be(0);
         retriever.Stats.AgenticEpisodes.Should().Be(1);
     }
 }

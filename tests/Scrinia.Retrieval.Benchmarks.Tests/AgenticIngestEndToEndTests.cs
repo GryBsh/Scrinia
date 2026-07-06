@@ -88,6 +88,6 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         result.Questions.Should().Contain(q => q.QuestionId == "q1" && q.RecallAt10 > 0);
         result.Questions.Should().Contain(q => q.QuestionId == "q2" && q.RecallAt10 > 0);
         retriever.Stats.AgenticEpisodes.Should().Be(2);
-        retriever.Stats.FallbackEpisodes.Should().Be(0);
+        retriever.Stats.FailedEpisodes.Should().Be(0);
     }
 }

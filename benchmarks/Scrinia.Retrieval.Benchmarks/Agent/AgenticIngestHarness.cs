@@ -23,7 +23,7 @@ public sealed record EpisodeToolCall(string ToolName, string ArgumentsJson);
 /// <summary>Outcome of running one session episode.</summary>
 public sealed record EpisodeResult(
     IReadOnlyList<EpisodeToolCall> ToolCalls,  // ordered remember/search calls actually executed
-    bool Succeeded,                            // false → caller falls back to mechanical ingest
+    bool Succeeded,                            // false → the session stores nothing (no mechanical fallback)
     int LlmTurns,
     int ToolCallErrors);                       // count of malformed/errored tool calls this episode
 
@@ -36,8 +36,14 @@ public sealed record EpisodeResult(
 /// <para>The harness does not own store lifecycle (the caller sets
 /// <see cref="Scrinia.Core.MemoryStoreContext.Current"/> before invoking) and does not
 /// touch any cache — it returns the executed tool-call sequence plus a success flag so
-/// the retriever can decide whether to cache the episode and/or fall back to mechanical
-/// ingest.</para>
+/// the retriever can decide whether to cache the episode.</para>
+///
+/// <para><paramref name="maxTokens"/> caps the WHOLE assistant turn — any reasoning,
+/// the assistant text, AND the tool-call <c>arguments</c> JSON all draw from it. Set it
+/// too low and a tool call carrying real memory content is truncated mid-arguments
+/// (<c>finish_reason=length</c>), yielding invalid JSON that reads as a bogus
+/// "malformed tool call". The default is generous for that reason; the CLI exposes
+/// <c>--episode-max-tokens</c> to tune it. A turn that hits the cap is logged loudly.</para>
 /// </summary>
 public sealed class AgenticIngestHarness
 {
@@ -45,7 +51,7 @@ public sealed class AgenticIngestHarness
     private readonly int _maxTurns;
     private readonly int _maxTokens;
 
-    public AgenticIngestHarness(IToolCallingClient client, int maxTurns, int maxTokens = 1024)
+    public AgenticIngestHarness(IToolCallingClient client, int maxTurns, int maxTokens = 4096)
     {
         _client = client;
         _maxTurns = maxTurns;
@@ -81,6 +87,15 @@ public sealed class AgenticIngestHarness
                 LogSummary(turnsUsed, rememberCount, searchCount, malformedCount, succeeded: false);
                 return new EpisodeResult(executed, Succeeded: false, LlmTurns: turnsUsed, ToolCallErrors: malformedCount);
             }
+
+            // A turn that hit the token cap almost certainly truncated its tool-call
+            // arguments — the JSON will fail to parse and read as a bogus "malformed
+            // call". Surface it loudly rather than letting it masquerade as a bad call.
+            if (string.Equals(turnResult.StopReason, "length", StringComparison.OrdinalIgnoreCase))
+                Console.Error.WriteLine(
+                    $"[scrinia-bench:agentic-ingest] WARNING: turn {turnsUsed} hit the token cap " +
+                    $"(finish_reason=length, max_tokens={_maxTokens}) — the tool call was likely " +
+                    "truncated. Raise --episode-max-tokens.");
 
             if (turnResult.ToolCalls.Count == 0)
             {

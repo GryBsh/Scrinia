@@ -9,17 +9,18 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 /// Whole-run summary counters for the agentic-ingest arm (Task 6 reads this after
 /// the benchmark completes). <see cref="Episodes"/> is the total number of session
 /// episodes attempted; <see cref="AgenticEpisodes"/> counts those resolved by a
-/// (fresh or cache-replayed) successful LLM episode; <see cref="FallbackEpisodes"/>
-/// counts those that fell back to mechanical verbatim ingest after two failures.
-/// <see cref="MemoriesWritten"/> counts agent-authored memory entries (excludes
-/// fallback verbatim doc entries); <see cref="MemoriesWithoutRefs"/> counts those
-/// with no usable <c>ref:</c> citation (unscoreable); <see cref="UnresolvableRefs"/>
-/// counts individual <c>ref:</c> ids that didn't match any buffered doc id.
+/// (fresh or cache-replayed) successful LLM episode; <see cref="FailedEpisodes"/>
+/// counts those that failed twice and stored NOTHING for the session — there is no
+/// mechanical fallback, so a failed episode honestly degrades the arm's recall rather
+/// than borrowing non-agentic results. <see cref="MemoriesWritten"/> counts
+/// agent-authored memory entries; <see cref="MemoriesWithoutRefs"/> counts those with
+/// no usable <c>ref:</c> citation (unscoreable); <see cref="UnresolvableRefs"/> counts
+/// individual <c>ref:</c> ids that didn't match any buffered doc id.
 /// </summary>
 public sealed record AgenticIngestStats(
     int Episodes,
     int AgenticEpisodes,
-    int FallbackEpisodes,
+    int FailedEpisodes,
     int MemoriesWritten,
     int MemoriesWithoutRefs,
     int UnresolvableRefs,
@@ -44,9 +45,10 @@ public sealed record AgenticIngestStats(
 /// <para>Episode results are cached by <see cref="EpisodeCache"/>, keyed on
 /// (model, prompt version, session transcript), so reruns of the same haystack
 /// replay the recorded tool calls instead of re-invoking the LLM. A failed episode
-/// is retried once; a second failure falls back to mechanical verbatim ingest of
-/// that session's docs (mirroring <see cref="ScriniaRetriever"/>'s minimal entry
-/// shape) so the benchmark always has *something* to retrieve. Failed/fallback
+/// is retried ONCE (to absorb a transient transport blip); a second failure stores
+/// NOTHING for that session and is counted as a failed episode. There is deliberately
+/// no mechanical-ingestion fallback — substituting verbatim doc ingest would prop the
+/// agentic arm's recall up with non-agentic work and measure the wrong thing. Failed
 /// episodes are never cached.</para>
 /// </summary>
 public sealed class AgenticScriniaRetriever : IRetriever
@@ -71,16 +73,12 @@ public sealed class AgenticScriniaRetriever : IRetriever
     private readonly SemaphoreSlim _episodeGate = new(1, 1);
     // entryName -> ordered doc ids the memory resolves to (empty = no usable citation).
     private Dictionary<string, IReadOnlyList<string>> _provenance = new(StringComparer.Ordinal);
-    // Sanitized names of entries written by mechanical fallback (verbatim docs, not
-    // agent-authored memories) — these map identity-wise to their own doc id rather
-    // than being scored against ref-field provenance.
-    private readonly HashSet<string> _fallbackEntryNames = new(StringComparer.Ordinal);
 
     // Cumulative run stats — NOT reset by ResetAsync; this is a whole-run summary
     // (Task 6 reads Stats after the full benchmark completes).
     private int _episodes;
     private int _agenticEpisodes;
-    private int _fallbackEpisodes;
+    private int _failedEpisodes;
     private int _memoriesWritten;
     private int _memoriesWithoutRefs;
     private int _unresolvableRefs;
@@ -89,7 +87,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
     public AgenticIngestStats Stats => new(
         Episodes: _episodes,
         AgenticEpisodes: _agenticEpisodes,
-        FallbackEpisodes: _fallbackEpisodes,
+        FailedEpisodes: _failedEpisodes,
         MemoriesWritten: _memoriesWritten,
         MemoriesWithoutRefs: _memoriesWithoutRefs,
         UnresolvableRefs: _unresolvableRefs,
@@ -255,7 +253,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
         _toolCallErrors += result.ToolCallErrors;
         if (!result.Succeeded)
         {
-            // One retry before falling back to mechanical ingest. Roll back the failed
+            // One retry to absorb a transient transport blip. Roll back the failed
             // attempt's partial writes first so the retry starts from clean pre-episode
             // state (otherwise residue would survive alongside the retry's writes and
             // diverge from cache-replay, which only replays the successful attempt).
@@ -266,22 +264,22 @@ public sealed class AgenticScriniaRetriever : IRetriever
 
         if (result.Succeeded)
         {
-            // NEVER cache a failed/fallback episode — only a Succeeded run.
+            // NEVER cache a failed episode — only a Succeeded run.
             _cache.Put(key, result.ToolCalls);
             _agenticEpisodes++;
             return;
         }
 
-        // Both attempts failed — discard the second attempt's partial writes too, so
-        // they don't sit alongside the mechanical fallback entries.
+        // Both attempts failed. Discard partial writes and store NOTHING for this
+        // session — there is deliberately no mechanical-ingestion fallback. Substituting
+        // verbatim doc ingest would inflate the agentic arm's recall with non-agentic
+        // work; a failed episode must honestly degrade recall instead. Counted + logged
+        // loudly so the failure is visible, not silently absorbed.
         RollbackTo(preEpisode);
-
         Console.Error.WriteLine(
-            $"[scrinia-bench:agentic-ingest] session fallback: episode failed twice " +
-            $"(session of {sessionDocs.Count} doc(s)); mechanical-ingesting verbatim.");
-        foreach (var doc in sessionDocs)
-            MechanicalIngest(doc);
-        _fallbackEpisodes++;
+            $"[scrinia-bench:agentic-ingest] session FAILED (episode failed twice, " +
+            $"session of {sessionDocs.Count} doc(s)); nothing stored for this session.");
+        _failedEpisodes++;
     }
 
     /// Removes every entry added to the store since <paramref name="preEpisode"/> was
@@ -296,34 +294,9 @@ public sealed class AgenticScriniaRetriever : IRetriever
                 _store.Remove(a.Entry.Name, a.Scope);
     }
 
-    /// <summary>Verbatim mechanical ingest for a session whose episode failed twice.
-    /// Mirrors <see cref="ScriniaRetriever"/>'s minimal, pre-fields entry shape.</summary>
-    private void MechanicalIngest(HaystackDoc doc)
-    {
-        string sanitized = SanitizeName(doc.Id);
-        var (keywords, tf) = TextAnalysis.AnalyzeText(doc.Text);
-        var entry = new ArtifactEntry(
-            Name: sanitized,
-            Uri: $"bench://{doc.Id}",
-            OriginalBytes: doc.Text.Length,
-            ChunkCount: 0,
-            CreatedAt: doc.Timestamp ?? DateTimeOffset.UtcNow,
-            Description: string.Empty,
-            Keywords: keywords,
-            TermFrequencies: tf,
-            ContentPreview: doc.Text);
-
-        lock (_ingestLock)
-        {
-            _store.Upsert(entry);
-        }
-        _fallbackEntryNames.Add(sanitized);
-    }
-
     /// <summary>
-    /// Builds entryName → ordered doc-ids provenance from every entry currently in
-    /// the store. Fallback (verbatim) entries map identity-wise to their own doc id.
-    /// Agent-authored memories resolve via <c>Fields["ref"]</c> (JSON round-trip
+    /// Builds entryName → ordered doc-ids provenance from every agent-authored memory
+    /// currently in the store, resolving each via <c>Fields["ref"]</c> (JSON round-trip
     /// drops the dictionary's original comparer, so the "ref" key is matched with an
     /// explicit OrdinalIgnoreCase comparison rather than a direct dictionary lookup).
     /// </summary>
@@ -334,12 +307,6 @@ public sealed class AgenticScriniaRetriever : IRetriever
         foreach (var sa in _store.ListScoped())
         {
             ArtifactEntry entry = sa.Entry;
-
-            if (_fallbackEntryNames.Contains(entry.Name))
-            {
-                provenance[entry.Name] = [ExtractDocId(entry.Uri)];
-                continue;
-            }
 
             string[]? refs = null;
             if (entry.Fields is not null)
@@ -404,7 +371,6 @@ public sealed class AgenticScriniaRetriever : IRetriever
         }
         _ingested = false;
         _provenance = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
-        _fallbackEntryNames.Clear();
 
         return Task.CompletedTask;
     }
@@ -427,20 +393,4 @@ public sealed class AgenticScriniaRetriever : IRetriever
         Directory.CreateDirectory(per);
         return new FileMemoryStore(per) { RankerOptions = _rankerOptions };
     }
-
-    /// <summary>Mirrors <see cref="ScriniaRetriever"/>'s id sanitization for fallback entries.</summary>
-    private static string SanitizeName(string id)
-    {
-        Span<char> buf = stackalloc char[id.Length];
-        for (int i = 0; i < id.Length; i++)
-        {
-            char c = id[i];
-            buf[i] = char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '_';
-        }
-        return new string(buf);
-    }
-
-    /// <summary>Reads the benchmark doc ID from the entry's <c>bench://</c> URI.</summary>
-    private static string ExtractDocId(string uri) =>
-        uri.StartsWith("bench://", StringComparison.Ordinal) ? uri["bench://".Length..] : uri;
 }

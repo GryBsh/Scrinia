@@ -28,4 +28,13 @@ public sealed class AgenticIngestCliTests
         RetrieverFactory.EpisodeMaxTurns(["--x", "y"]).Should().Be(16);
         RetrieverFactory.EpisodeMaxTurns(["--episode-max-turns", "8"]).Should().Be(8);
     }
+
+    [Fact]
+    public void EpisodeMaxTokens_ParsesDefault4096()
+    {
+        // Guards the truncation fix: the per-turn budget must default well above the old
+        // 1024 so a tool call carrying real memory content isn't cut off mid-arguments.
+        RetrieverFactory.EpisodeMaxTokens(["--x", "y"]).Should().Be(4096);
+        RetrieverFactory.EpisodeMaxTokens(["--episode-max-tokens", "8192"]).Should().Be(8192);
+    }
 }

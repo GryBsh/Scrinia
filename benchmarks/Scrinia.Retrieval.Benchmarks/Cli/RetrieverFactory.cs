@@ -73,13 +73,14 @@ internal static class RetrieverFactory
                 throw new ArgumentException($"--agentic-ingest requires an OpenAI-compatible provider; '{backend.ProviderId}' does not support tool-calling in this bench.");
 
             int maxTurns = EpisodeMaxTurns(args);
-            var harness = new AgenticIngestHarness(toolClient, maxTurns);
+            int maxTokens = EpisodeMaxTokens(args);
+            var harness = new AgenticIngestHarness(toolClient, maxTurns, maxTokens);
             string epCache = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache",
                 $"episodes-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
             string agRoot = Path.Combine(Path.GetTempPath(), $"scrinia-retbench-{benchmarkSlug}-ag-{Guid.NewGuid().ToString("N")[..8]}");
             var agentic = new AgenticScriniaRetriever(agRoot, harness, new EpisodeCache(epCache), backend.ModelSlug,
                 RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 });
-            Console.Error.WriteLine($"[scrinia-bench] agentic-ingest enabled: provider={backend.ProviderId} model={backend.ModelSlug} maxTurns={maxTurns} cache={epCache}");
+            Console.Error.WriteLine($"[scrinia-bench] agentic-ingest enabled: provider={backend.ProviderId} model={backend.ModelSlug} maxTurns={maxTurns} maxTokens={maxTokens} cache={epCache}");
             return (agentic, Mode.Bm25);
         }
 
@@ -240,6 +241,12 @@ internal static class RetrieverFactory
     /// <see cref="ParseAgentMode"/> public/internal helper style so it's unit-testable.</summary>
     internal static int EpisodeMaxTurns(string[] args) => ParseInt(Program.Flag(args, "--episode-max-turns"), 16);
 
+    /// <summary>Max completion tokens per agentic-ingest turn. Caps reasoning + assistant
+    /// text + tool-call arguments together, so it must be generous enough that a
+    /// memory_remember carrying real content isn't truncated (which would surface as a
+    /// bogus malformed-tool-call). Default 4096; raise for heavy-reasoning models.</summary>
+    internal static int EpisodeMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--episode-max-tokens"), 4096);
+
     /// <summary>Prints the agentic-ingest run's whole-run stats block to stdout. Shared by
     /// <c>LoCoMoCommand</c> and <c>LongMemEvalCommand</c> so the format stays consistent.</summary>
     public static void PrintAgenticStats(AgenticIngestStats s)
@@ -248,7 +255,7 @@ internal static class RetrieverFactory
         Console.WriteLine("=== agentic-ingest stats ===");
         Console.WriteLine($"episodes:              {s.Episodes}");
         Console.WriteLine($"  agentic (LLM/cache):  {s.AgenticEpisodes}");
-        Console.WriteLine($"  fallback (mechanical):{s.FallbackEpisodes}");
+        Console.WriteLine($"  failed (unstored):    {s.FailedEpisodes}");
         Console.WriteLine($"memories written:      {s.MemoriesWritten}");
         Console.WriteLine($"memories without refs: {s.MemoriesWithoutRefs}");
         Console.WriteLine($"unresolvable refs:     {s.UnresolvableRefs}");
