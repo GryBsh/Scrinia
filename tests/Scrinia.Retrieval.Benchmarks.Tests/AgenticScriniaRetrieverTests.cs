@@ -134,4 +134,19 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         retriever.Stats.MemoriesWithoutRefs.Should().Be(1);
         hits.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task MalformedToolCall_SurfacesInStats_ToolCallErrors()
+    {
+        var bad = new ToolCallRequest("c1", "memory_remember", "{ not json");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [bad], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("d1", "Maria: Booked Lisbon.", null, "s1"));
+
+        await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        retriever.Stats.ToolCallErrors.Should().BeGreaterThanOrEqualTo(1);
+    }
 }

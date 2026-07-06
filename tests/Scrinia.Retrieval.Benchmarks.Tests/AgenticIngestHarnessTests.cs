@@ -77,6 +77,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
             var docs = new List<HaystackDoc> { new("d1", "x", null, "s1") };
             var result = await harness.RunEpisodeAsync(docs, CancellationToken.None);
             result.Succeeded.Should().BeTrue("malformed args don't kill the episode");
+            result.ToolCallErrors.Should().Be(1);
         }
         finally { MemoryStoreContext.Current = null; }
     }

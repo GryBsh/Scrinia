@@ -249,10 +249,12 @@ public sealed class AgenticScriniaRetriever : IRetriever
         }
 
         EpisodeResult result = await _harness.RunEpisodeAsync(sessionDocs, ct);
+        _toolCallErrors += result.ToolCallErrors;
         if (!result.Succeeded)
         {
             // One retry before falling back to mechanical ingest.
             result = await _harness.RunEpisodeAsync(sessionDocs, ct);
+            _toolCallErrors += result.ToolCallErrors;
         }
 
         if (result.Succeeded)

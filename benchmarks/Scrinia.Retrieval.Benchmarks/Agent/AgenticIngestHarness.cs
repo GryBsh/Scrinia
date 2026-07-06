@@ -24,7 +24,8 @@ public sealed record EpisodeToolCall(string ToolName, string ArgumentsJson);
 public sealed record EpisodeResult(
     IReadOnlyList<EpisodeToolCall> ToolCalls,  // ordered remember/search calls actually executed
     bool Succeeded,                            // false → caller falls back to mechanical ingest
-    int LlmTurns);
+    int LlmTurns,
+    int ToolCallErrors);                       // count of malformed/errored tool calls this episode
 
 /// <summary>
 /// Drives one agentic-ingest "episode": a chat + tool-calling loop against an
@@ -78,13 +79,13 @@ public sealed class AgenticIngestHarness
             if (turnResult is null)
             {
                 LogSummary(turnsUsed, rememberCount, searchCount, malformedCount, succeeded: false);
-                return new EpisodeResult(executed, Succeeded: false, LlmTurns: turnsUsed);
+                return new EpisodeResult(executed, Succeeded: false, LlmTurns: turnsUsed, ToolCallErrors: malformedCount);
             }
 
             if (turnResult.ToolCalls.Count == 0)
             {
                 LogSummary(turnsUsed, rememberCount, searchCount, malformedCount, succeeded: true);
-                return new EpisodeResult(executed, Succeeded: true, LlmTurns: turnsUsed);
+                return new EpisodeResult(executed, Succeeded: true, LlmTurns: turnsUsed, ToolCallErrors: malformedCount);
             }
 
             messages.Add(new ToolChatMessage("assistant", turnResult.AssistantContent, turnResult.ToolCalls));
@@ -111,7 +112,7 @@ public sealed class AgenticIngestHarness
         // maxTurns reached: stop with success (mirrors "the model kept working right up
         // to the budget" rather than treating the turn cap itself as a failure).
         LogSummary(turnsUsed, rememberCount, searchCount, malformedCount, succeeded: true);
-        return new EpisodeResult(executed, Succeeded: true, LlmTurns: turnsUsed);
+        return new EpisodeResult(executed, Succeeded: true, LlmTurns: turnsUsed, ToolCallErrors: malformedCount);
     }
 
     /// <summary>
