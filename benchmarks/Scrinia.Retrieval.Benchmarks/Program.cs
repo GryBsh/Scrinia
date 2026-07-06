@@ -80,6 +80,12 @@ internal static class Program
               --agent-api-key <key>    Bearer / API key for openai/anthropic/gemini. Ollama doesn't need one.
               --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --agent is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
 
+            Agentic-ingest arm (locomo, longmemeval): the LLM IS the ingestion — a real tool-calling
+            episode per session decides what to remember, instead of Scrinia's mechanical per-doc ingest.
+            No embedder, no reranker; compare against the BM25 mechanical arm (--mode bm25).
+              --agentic-ingest         Enable the agentic-ingest arm. Requires --agent-provider (openai-compatible only). Mutually exclusive with --agent <ops>.
+              --episode-max-turns <n> Max tool-call turns per session episode (default 16)
+
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)
 

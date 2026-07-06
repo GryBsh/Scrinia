@@ -33,13 +33,48 @@ internal static class RetrieverFactory
     /// </summary>
     public enum RerankMode { None, SentenceMaxSim, CrossEncoder }
 
-    public static async Task<(ScriniaRetriever Retriever, Mode Mode)> BuildAsync(
+    public static async Task<(IRetriever Retriever, Mode Mode)> BuildAsync(
         string[] args, string benchmarkSlug, CancellationToken ct)
     {
         Mode mode = ParseMode(Program.Flag(args, "--mode") ?? "bm25_embeddings");
         string? modelDir = Program.Flag(args, "--model-dir");
         EmbedProviderKind embedKind = EmbeddingProviderLoader.ParseKind(
             Program.Flag(args, "--embed-provider"));
+
+        // Agentic-ingest arm: the LLM episode IS the ingestion, so this branch is
+        // checked EARLY — before the embedder loads — and returns immediately. No
+        // embedder, no ScriniaRetriever, no reranker; this arm scores BM25 + fields
+        // against the mechanical BM25 arm. --agentic-ingest is a bare boolean flag
+        // (no value token), so presence is checked positionally via HasFlag rather
+        // than the `--flag value` pair idiom Program.Flag uses.
+        if (HasFlag(args, "--agentic-ingest"))
+        {
+            // Mutually exclusive with query/ingest agent decorations — this arm's
+            // ingestion IS the agent episode.
+            if (ParseAgentMode(Program.Flag(args, "--agent")).AnyEnabled)
+                throw new ArgumentException("--agentic-ingest cannot be combined with --agent <ops>; the episode is the agent.");
+
+            string provider = Program.Flag(args, "--agent-provider")
+                ?? throw new ArgumentException("--agentic-ingest requires --agent-provider (openai | anthropic | ...).");
+            string? model = Program.Flag(args, "--agent-model");
+            string? baseUrl = Program.Flag(args, "--agent-base-url");
+            string? apiKey = Program.Flag(args, "--agent-api-key");
+            var backend = await AgentClientBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
+
+            // The tool-calling client is the OpenAI-compatible client; other providers are v1-unsupported.
+            if (backend.Llm is not IToolCallingClient toolClient)
+                throw new ArgumentException($"--agentic-ingest requires an OpenAI-compatible provider; '{backend.ProviderId}' does not support tool-calling in this bench.");
+
+            int maxTurns = EpisodeMaxTurns(args);
+            var harness = new AgenticIngestHarness(toolClient, maxTurns);
+            string epCache = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache",
+                $"episodes-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
+            string agRoot = Path.Combine(Path.GetTempPath(), $"scrinia-retbench-{benchmarkSlug}-ag-{Guid.NewGuid().ToString("N")[..8]}");
+            var agentic = new AgenticScriniaRetriever(agRoot, harness, new EpisodeCache(epCache), backend.ModelSlug,
+                RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 });
+            Console.Error.WriteLine($"[scrinia-bench] agentic-ingest enabled: provider={backend.ProviderId} model={backend.ModelSlug} maxTurns={maxTurns} cache={epCache}");
+            return (agentic, Mode.Bm25);
+        }
 
         // Ablation knobs default to "off" so the headline run stays apples-to-apples.
         double alphaRecency = ParseDouble(Program.Flag(args, "--alpha-recency"), 0.0);
@@ -188,6 +223,31 @@ internal static class RetrieverFactory
         return harness;
     }
 
+    /// <summary>Bare boolean-presence check for flags with no value token (e.g. <c>--agentic-ingest</c>).
+    /// Unlike <see cref="Program.Flag"/> (which expects <c>--flag value</c> pairs and never matches a
+    /// flag in the final array slot), this matches the flag anywhere in <paramref name="args"/>
+    /// regardless of position.</summary>
+    private static bool HasFlag(string[] args, string name) => Array.IndexOf(args, name) >= 0;
+
+    /// <summary>Max tool-call turns per agentic-ingest session episode. Mirrors the
+    /// <see cref="ParseAgentMode"/> public/internal helper style so it's unit-testable.</summary>
+    internal static int EpisodeMaxTurns(string[] args) => ParseInt(Program.Flag(args, "--episode-max-turns"), 16);
+
+    /// <summary>Prints the agentic-ingest run's whole-run stats block to stdout. Shared by
+    /// <c>LoCoMoCommand</c> and <c>LongMemEvalCommand</c> so the format stays consistent.</summary>
+    public static void PrintAgenticStats(AgenticIngestStats s)
+    {
+        Console.WriteLine();
+        Console.WriteLine("=== agentic-ingest stats ===");
+        Console.WriteLine($"episodes:              {s.Episodes}");
+        Console.WriteLine($"  agentic (LLM/cache):  {s.AgenticEpisodes}");
+        Console.WriteLine($"  fallback (mechanical):{s.FallbackEpisodes}");
+        Console.WriteLine($"memories written:      {s.MemoriesWritten}");
+        Console.WriteLine($"memories without refs: {s.MemoriesWithoutRefs}");
+        Console.WriteLine($"unresolvable refs:     {s.UnresolvableRefs}");
+        Console.WriteLine($"tool-call errors:      {s.ToolCallErrors}");
+    }
+
     private static bool ParseChunk(string? raw) => raw?.ToLowerInvariant() switch
     {
         null or "" or "none" or "off" or "false" => false,
@@ -256,6 +316,8 @@ internal static class RetrieverFactory
             var modes = ParseAgentMode(ag);
             if (modes.AnyEnabled) tags.Add("agent-" + modes.Label());
         }
+        // Agentic-ingest tag so its result files never collide with the mechanical arms.
+        if (HasFlag(args, "--agentic-ingest")) tags.Add("agentic-ingest");
         if (Program.Flag(args, "--alpha-recency") is { } r) tags.Add($"rec{r}");
         if (Program.Flag(args, "--tau-days") is { } tau) tags.Add($"tau{tau}");
         if (Program.Flag(args, "--diversity-lambda") is { } lam) tags.Add($"div{lam}");
