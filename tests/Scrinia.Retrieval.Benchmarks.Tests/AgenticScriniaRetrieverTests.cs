@@ -149,4 +149,31 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
 
         retriever.Stats.ToolCallErrors.Should().BeGreaterThanOrEqualTo(1);
     }
+
+    [Fact]
+    public async Task FailedAttempt_PartialWrite_IsRolledBackBeforeRetry()
+    {
+        // Attempt 1: writes a memory citing d1, then fails (null turn).
+        var rememberD1 = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: d1"]}""");
+        // Attempt 2 (retry): writes a memory citing d2, then stops cleanly.
+        var rememberD2 = new ToolCallRequest("c2", "memory_remember",
+            """{"path":"/findings/b","content":["Lisbon trip confirmed.\nref: d2"]}""");
+
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [rememberD1], "tool_calls"),
+            null,
+            new ToolTurnResult(null, [rememberD2], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("d1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("d2", "Maria: Flight is on Tuesday.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        hits.Select(h => h.Id).Should().Contain("d2");
+        hits.Select(h => h.Id).Should().NotContain("d1");
+        retriever.Stats.FallbackEpisodes.Should().Be(0);
+        retriever.Stats.AgenticEpisodes.Should().Be(1);
+    }
 }

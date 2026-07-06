@@ -248,11 +248,18 @@ public sealed class AgenticScriniaRetriever : IRetriever
             return;
         }
 
+        var preEpisode = new HashSet<string>(
+            _store.ListScoped().Select(a => a.Entry.Name), StringComparer.Ordinal);
+
         EpisodeResult result = await _harness.RunEpisodeAsync(sessionDocs, ct);
         _toolCallErrors += result.ToolCallErrors;
         if (!result.Succeeded)
         {
-            // One retry before falling back to mechanical ingest.
+            // One retry before falling back to mechanical ingest. Roll back the failed
+            // attempt's partial writes first so the retry starts from clean pre-episode
+            // state (otherwise residue would survive alongside the retry's writes and
+            // diverge from cache-replay, which only replays the successful attempt).
+            RollbackTo(preEpisode);
             result = await _harness.RunEpisodeAsync(sessionDocs, ct);
             _toolCallErrors += result.ToolCallErrors;
         }
@@ -265,12 +272,28 @@ public sealed class AgenticScriniaRetriever : IRetriever
             return;
         }
 
+        // Both attempts failed — discard the second attempt's partial writes too, so
+        // they don't sit alongside the mechanical fallback entries.
+        RollbackTo(preEpisode);
+
         Console.Error.WriteLine(
             $"[scrinia-bench:agentic-ingest] session fallback: episode failed twice " +
             $"(session of {sessionDocs.Count} doc(s)); mechanical-ingesting verbatim.");
         foreach (var doc in sessionDocs)
             MechanicalIngest(doc);
         _fallbackEpisodes++;
+    }
+
+    /// Removes every entry added to the store since <paramref name="preEpisode"/> was
+    /// captured — used to discard a failed episode attempt's partial writes so retry and
+    /// cache-replay see identical state. Cross-session memories committed by earlier
+    /// sessions are in the snapshot and are preserved.
+    private void RollbackTo(HashSet<string> preEpisode)
+    {
+        // Snapshot the current list first — Remove mutates the store, don't enumerate live.
+        foreach (var a in _store.ListScoped().ToList())
+            if (!preEpisode.Contains(a.Entry.Name))
+                _store.Remove(a.Entry.Name, a.Scope);
     }
 
     /// <summary>Verbatim mechanical ingest for a session whose episode failed twice.
