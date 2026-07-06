@@ -97,6 +97,8 @@ public sealed class AgenticIngestHarness
                 if (isError)
                 {
                     malformedCount++;
+                    Console.Error.WriteLine(
+                        $"[scrinia-bench:agentic-ingest] episode: {call.ToolName} call failed, skipping: {toolResult}");
                     continue;
                 }
 
@@ -121,11 +123,11 @@ public sealed class AgenticIngestHarness
         var tools = new ScriniaMcpTools();
         foreach (var call in calls)
         {
-            var (_, isError) = await ExecuteCallAsync(
+            var (result, isError) = await ExecuteCallAsync(
                 tools, new ToolCallRequest(Id: "replay", call.ToolName, call.ArgumentsJson), ct);
             if (isError)
                 Console.Error.WriteLine(
-                    $"[scrinia-bench:agentic-ingest] replay: {call.ToolName} failed, skipping.");
+                    $"[scrinia-bench:agentic-ingest] replay: {call.ToolName} failed, skipping: {result}");
         }
     }
 
