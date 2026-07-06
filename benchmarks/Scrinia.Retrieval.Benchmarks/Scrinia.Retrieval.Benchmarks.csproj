@@ -15,6 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
     <ProjectReference Include="..\..\src\Scrinia.Plugin.Embeddings\Scrinia.Plugin.Embeddings.csproj" />
+    <ProjectReference Include="..\..\src\Scrinia.Mcp\Scrinia.Mcp.csproj" />
   </ItemGroup>
 
   <!-- Cross-encoder reranker (bench-only): ONNX Runtime for inference, ML.Tokenizers
