@@ -15,6 +15,14 @@ public sealed class AgenticIngestCliTests
     }
 
     [Fact]
+    public void AgenticIngest_RejectsExplicitRerank()
+    {
+        string[] args = ["locomo", "--data", "x.json", "--agentic-ingest", "--agent-provider", "openai", "--rerank", "cross-encoder"];
+        var act = async () => await RetrieverFactory.BuildAsync(args, "locomo", default);
+        act.Should().ThrowAsync<ArgumentException>().WithMessage("*rerank*");
+    }
+
+    [Fact]
     public void EpisodeMaxTurns_ParsesDefault16()
     {
         RetrieverFactory.EpisodeMaxTurns(["--x", "y"]).Should().Be(16);
