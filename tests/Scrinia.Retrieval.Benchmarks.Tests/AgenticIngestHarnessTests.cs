@@ -83,6 +83,26 @@ public sealed class AgenticIngestHarnessTests : IDisposable
     }
 
     [Fact]
+    public async Task Episode_NullArgs_ReturnsErrorToModel_AndSurvives()
+    {
+        Directory.CreateDirectory(_dir);
+        MemoryStoreContext.Current = new FileMemoryStore(_dir);
+        try
+        {
+            var bad = new ToolCallRequest("c1", "memory_remember", null!);
+            var client = new ScriptedToolClient(
+                new ToolTurnResult(null, [bad], "tool_calls"),
+                new ToolTurnResult("done", [], "stop"));
+            var harness = new AgenticIngestHarness(client, maxTurns: 8);
+            var docs = new List<HaystackDoc> { new("d1", "x", null, "s1") };
+            var result = await harness.RunEpisodeAsync(docs, CancellationToken.None);
+            result.Succeeded.Should().BeTrue("null args don't kill the episode");
+            result.ToolCallErrors.Should().Be(1);
+        }
+        finally { MemoryStoreContext.Current = null; }
+    }
+
+    [Fact]
     public async Task Replay_ReproducesStoreState_WithoutClient()
     {
         Directory.CreateDirectory(_dir);

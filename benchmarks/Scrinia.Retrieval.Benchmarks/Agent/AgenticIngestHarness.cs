@@ -141,6 +141,9 @@ public sealed class AgenticIngestHarness
     private static async Task<(string ToolResult, bool IsError)> ExecuteCallAsync(
         ScriniaMcpTools tools, ToolCallRequest call, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(call.ArgumentsJson))
+            return ($"error: {call.ToolName} arguments are not valid JSON", true);
+
         JsonDocument doc;
         try
         {

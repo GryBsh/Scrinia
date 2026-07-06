@@ -74,7 +74,16 @@ public sealed class EpisodeCache
 
         lock (_writeLock)
         {
-            AppendWithRetry(payload);
+            try
+            {
+                AppendWithRetry(payload);
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia-bench:episode-cache] failed to persist episode after retries, skipping cache write: {ex.Message}");
+                return;
+            }
             _entries[key] = calls;
         }
     }
