@@ -208,8 +208,11 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task SurfaceFullContent_JudgePath_UsesFullMemory_NotTruncatedPreview()
     {
         string longContent = "Lisbon trip planning. " + new string('x', 520) + " TAILTOKEN-AFTER-500\\nref: d1";
+        // Bare path (no folder) — the scope whose name->artifact round-trip was lossy and
+        // made the old FormatQualifiedName-based resolve fail 100% at run time. Resolving
+        // via the entry Uri must handle it.
         var remember = new ToolCallRequest("c1", "memory_remember",
-            "{\"path\":\"/f/x\",\"content\":[\"" + longContent + "\"]}");
+            "{\"path\":\"summer-plans-summary\",\"content\":[\"" + longContent + "\"]}");
         var (retriever, _, _) = MakeRetriever(surfaceFullContent: true,
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
