@@ -66,6 +66,21 @@ public sealed class AnswerabilityJudgeTests : IDisposable
     }
 
     [Fact]
+    public async Task Judge_GraderFailure_ReturnsNull_CountsFailed_NotCached()
+    {
+        var j = Judge(new ScriptedLlmClient("Lisbon", (string?)null));
+        var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default);
+        v.Should().BeNull();
+        j.FailedCount.Should().Be(1);
+        // A fresh judge over the same inputs re-attempts the grader (not cached). The
+        // answerer's genuine "Lisbon" completion from attempt 1 *was* cache-through
+        // persisted (that's correct, per-call behavior), so it is not re-asked here --
+        // only the grader reply needs to be scripted for this second call to succeed.
+        var j2 = Judge(new ScriptedLlmClient("correct"));
+        (await j2.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default))!.Answerable.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Judge_CachesVerdict_NoSecondLlmCall_OnIdenticalInputs()
     {
         _ = await Judge(new ScriptedLlmClient("Lisbon", "correct"))
