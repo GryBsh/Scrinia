@@ -164,15 +164,18 @@ public sealed class AgenticScriniaRetriever : IRetriever
             if (hits.Count >= topK) break;
 
             string entryName;
+            string entryContent;
             double score;
             switch (r)
             {
                 case EntryResult er:
                     entryName = er.Item.Entry.Name;
+                    entryContent = er.Item.Entry.ContentPreview ?? string.Empty;
                     score = er.Score;
                     break;
                 case ChunkEntryResult cr:
                     entryName = cr.ParentItem.Entry.Name;
+                    entryContent = cr.ParentItem.Entry.ContentPreview ?? string.Empty;
                     score = cr.Score;
                     break;
                 default:
@@ -186,8 +189,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
             {
                 if (hits.Count >= topK) break;
                 if (!seenDocIds.Add(docId)) continue;
-                string text = _docsById.TryGetValue(docId, out var doc) ? doc.Text : string.Empty;
-                hits.Add(new RetrievalHit(Id: docId, Text: text, Score: score));
+                hits.Add(new RetrievalHit(Id: docId, Text: entryContent, Score: score));
             }
         }
         return hits;

@@ -181,4 +181,22 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         retriever.Stats.FailedEpisodes.Should().Be(0);
         retriever.Stats.AgenticEpisodes.Should().Be(1);
     }
+
+    [Fact]
+    public async Task RetrievedHit_Text_IsMemoryContent_NotDocText()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/f/x","content":["MEMORY-SUMMARY-TOKEN about Lisbon.\nref: d1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("d1", "RAW-DOC-TOKEN Maria booked Lisbon.", null, "s1"));
+        var hits = await retriever.RetrieveAsync("Lisbon", topK: 5);
+
+        hits.Should().NotBeEmpty();
+        hits[0].Id.Should().Be("d1", "R@k still maps to the source doc id");
+        hits[0].Text.Should().Contain("MEMORY-SUMMARY-TOKEN", "the judge must see the stored memory content");
+        hits[0].Text.Should().NotContain("RAW-DOC-TOKEN", "not the original doc text");
+    }
 }
