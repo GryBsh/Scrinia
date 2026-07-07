@@ -91,11 +91,11 @@ public sealed class GoldAnswerLoadingTests : IAsyncLifetime
         var qs = new List<BenchmarkQuestion>();
         await foreach (var q in loader.LoadAsync()) qs.Add(q);
 
-        qs.Should().ContainSingle().Which.GoldAnswer.Should().Contain("a").And.Contain("b");
+        qs.Should().ContainSingle().Which.GoldAnswer.Should().Be("acceptable answers: a; b");
     }
 
     [Fact]
-    public async Task LoCoMoLoader_StringNumericAnswer_YieldsGoldAnswer()
+    public async Task LoCoMoLoader_NumericAnswer_YieldsGoldAnswer()
     {
         const string json = """
         [
@@ -108,7 +108,7 @@ public sealed class GoldAnswerLoadingTests : IAsyncLifetime
             "qa": [
               {
                 "question": "How many cats does Alice have?",
-                "answer": "5",
+                "answer": 5,
                 "category": "count",
                 "evidence": [{"dia_id": "D1:1", "text": "I have 5 cats"}]
               }
@@ -125,5 +125,38 @@ public sealed class GoldAnswerLoadingTests : IAsyncLifetime
 
         groups.Should().ContainSingle();
         groups[0].Questions.Should().ContainSingle().Which.GoldAnswer.Should().Be("5");
+    }
+
+    [Fact]
+    public async Task LoCoMoLoader_BooleanAnswer_YieldsGoldAnswer()
+    {
+        const string json = """
+        [
+          {
+            "sample_id": "conv_a",
+            "conversation": {
+              "session_1": [{"speaker": "Alice", "text": "I own a cat"}],
+              "session_1_date_time": "2024-01-15 10:00"
+            },
+            "qa": [
+              {
+                "question": "Does Alice own a cat?",
+                "answer": true,
+                "category": "count",
+                "evidence": [{"dia_id": "D1:1", "text": "I own a cat"}]
+              }
+            ]
+          }
+        ]
+        """;
+        string dataPath = Path.Combine(_dir, "locomo10.json");
+        await File.WriteAllTextAsync(dataPath, json);
+
+        var loader = new LoCoMoLoader(dataPath);
+        var groups = new List<BenchmarkQuestionGroup>();
+        await foreach (var g in loader.LoadAsync()) groups.Add(g);
+
+        groups.Should().ContainSingle();
+        groups[0].Questions.Should().ContainSingle().Which.GoldAnswer.Should().Be("true");
     }
 }
