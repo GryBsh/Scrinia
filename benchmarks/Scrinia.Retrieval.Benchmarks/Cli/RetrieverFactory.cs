@@ -266,6 +266,15 @@ internal static class RetrieverFactory
 
     internal static int JudgeK(string[] args) => ParseInt(Program.Flag(args, "--judge-k"), 10);
 
+    /// <summary>Answerer completion cap. Default 512 suits a short factual answer; raise for a
+    /// reasoning judge model that spends tokens thinking before answering.</summary>
+    internal static int JudgeAnswerMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--judge-answer-max-tokens"), 512);
+
+    /// <summary>Grader completion cap. Default 16 fits a one-word verdict from a non-reasoning
+    /// model; raise it well above the verdict length for a reasoning judge model, or the verdict
+    /// is consumed by reasoning and never emitted (every question then counts as failed).</summary>
+    internal static int JudgeGradeMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--judge-grade-max-tokens"), 16);
+
     /// <summary>Builds the answerability judge when --judge is set, else null. One model
     /// (via --judge-provider/--judge-model/--judge-base-url/--judge-api-key) drives both the
     /// answerer and grader; warns if it equals --agent-model.</summary>
@@ -285,8 +294,10 @@ internal static class RetrieverFactory
         var backend = await AgentClientBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
         string cacheFile = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache",
             $"judge-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
-        var judge = new AnswerabilityJudge(backend.Llm, new LlmResponseCache(cacheFile), backend.ProviderId, backend.ModelSlug, JudgeK(args));
-        Console.Error.WriteLine($"[scrinia-bench] judge enabled: provider={backend.ProviderId} model={backend.ModelSlug} judgeK={JudgeK(args)} cache={cacheFile}");
+        int answerMax = JudgeAnswerMaxTokens(args);
+        int gradeMax = JudgeGradeMaxTokens(args);
+        var judge = new AnswerabilityJudge(backend.Llm, new LlmResponseCache(cacheFile), backend.ProviderId, backend.ModelSlug, JudgeK(args), answerMax, gradeMax);
+        Console.Error.WriteLine($"[scrinia-bench] judge enabled: provider={backend.ProviderId} model={backend.ModelSlug} judgeK={JudgeK(args)} answerMaxTokens={answerMax} gradeMaxTokens={gradeMax} cache={cacheFile}");
         return judge;
     }
 

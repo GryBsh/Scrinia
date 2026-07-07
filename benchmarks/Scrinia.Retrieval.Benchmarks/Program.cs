@@ -94,6 +94,8 @@ internal static class Program
               --judge-base-url <u>    OpenAI-compatible endpoint for the judge.
               --judge-api-key <k>     API key for the judge provider.
               --judge-k <n>           Retrieved items the answerer sees (default 10).
+              --judge-answer-max-tokens <n>  Answerer completion cap (default 512; raise for a reasoning judge model).
+              --judge-grade-max-tokens <n>   Grader completion cap (default 16; raise well above the verdict for a reasoning judge model, else the verdict truncates to empty and every question counts as failed).
 
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)

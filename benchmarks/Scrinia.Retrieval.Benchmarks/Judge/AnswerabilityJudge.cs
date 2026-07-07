@@ -27,19 +27,30 @@ public sealed class AnswerabilityJudge
     private readonly LlmResponseCache _cache;
     private readonly string _providerId;
     private readonly string _modelSlug;
+    private readonly int _answerMaxTokens;
+    private readonly int _graderMaxTokens;
 
     private int _judgedCount;
     private int _noGoldCount;
     private int _failedCount;
 
+    /// <param name="answerMaxTokens">Completion cap for the answerer call. The default suits a
+    /// short factual answer; raise it for a reasoning judge model that spends tokens thinking
+    /// before it answers, or its output truncates to empty and the question is counted failed.</param>
+    /// <param name="graderMaxTokens">Completion cap for the grader call. The default fits a
+    /// one-word verdict from a non-reasoning model; a reasoning judge model needs it raised well
+    /// above the verdict length or the verdict is consumed by reasoning and never emitted.</param>
     public AnswerabilityJudge(IBenchLlmClient llm, LlmResponseCache cache,
-        string providerId, string modelSlug, int judgeK)
+        string providerId, string modelSlug, int judgeK,
+        int answerMaxTokens = 512, int graderMaxTokens = 16)
     {
         _llm = llm;
         _cache = cache;
         _providerId = providerId;
         _modelSlug = modelSlug;
         JudgeK = judgeK;
+        _answerMaxTokens = answerMaxTokens;
+        _graderMaxTokens = graderMaxTokens;
     }
 
     public int JudgeK { get; }
@@ -66,7 +77,7 @@ public sealed class AnswerabilityJudge
         string? answer = await GetOrCallAsync(
             AnswerOp,
             LlmResponseCache.Hash(string.Join("|", _modelSlug, question, JudgeK, string.Join("", distinctContents))),
-            () => _llm.CompleteAsync(JudgePrompts.AnswererSystem, JudgePrompts.AnswererUser(question, distinctContents), 512, false, ct),
+            () => _llm.CompleteAsync(JudgePrompts.AnswererSystem, JudgePrompts.AnswererUser(question, distinctContents), _answerMaxTokens, false, ct),
             failureLabel: "answerer",
             questionId).ConfigureAwait(false);
         if (answer is null) return null;
@@ -74,7 +85,7 @@ public sealed class AnswerabilityJudge
         string? graderReply = await GetOrCallAsync(
             GradeOp,
             LlmResponseCache.Hash(string.Join("|", _modelSlug, question, answer, goldAnswer)),
-            () => _llm.CompleteAsync(JudgePrompts.GraderSystem, JudgePrompts.GraderUser(question, answer, goldAnswer), 16, false, ct),
+            () => _llm.CompleteAsync(JudgePrompts.GraderSystem, JudgePrompts.GraderUser(question, answer, goldAnswer), _graderMaxTokens, false, ct),
             failureLabel: "grader",
             questionId).ConfigureAwait(false);
         if (graderReply is null) return null;
