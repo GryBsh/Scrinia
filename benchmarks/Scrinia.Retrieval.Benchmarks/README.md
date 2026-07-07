@@ -112,6 +112,24 @@ dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
 
 **What to compare it against:** the BM25 mechanical arm on the same dataset (`--mode bm25`, no ablation flags). The delta tells you whether an agent deciding what to remember actually beats Scrinia's own mechanical per-doc ingest — not whether it beats `bm25_embeddings` (a different, unrelated axis: retrieval-time semantic matching vs. ingest-time curation).
 
+## Judge answerability metric
+
+R@k tells you whether the gold document made it into the top-K; it doesn't tell you whether that content is actually *usable* — retrieval can hit the right doc ID and still surface something too thin, stale, or off-topic to answer the question from. `--judge` adds a second, LLM-based metric that measures that directly: **can the top-K retrieved content answer the question at all.**
+
+```powershell
+dotnet run -c Release --project benchmarks/Scrinia.Retrieval.Benchmarks -- \
+  longmemeval --data ./datasets/longmemeval/longmemeval_s_cleaned.json \
+  --judge --judge-provider openai --judge-model gpt-4o-mini
+```
+
+- **Generate-then-grade**: for each question, an ANSWERER call sees the question plus the top `--judge-k` (default 10) retrieved items — no gold answer — and produces an answer; a GRADER call then compares that answer against the gold answer and returns correct/incorrect. Both calls are cached NDJSON (see below), so reruns don't re-pay the LLM cost.
+- **One held-constant judge model** drives both the answerer and grader roles, configured via `--judge-provider` / `--judge-model` / `--judge-base-url` / `--judge-api-key`. Keep this model fixed across arms and sweeps so `answerable@k` numbers stay comparable to each other.
+- **The judge model must differ from the agent model.** If `--judge-model` matches `--agent-model`, the CLI prints a warning (it does not fail the run) — a model judging content it authored is a self-preference risk that would bias the metric toward whichever arm it wrote.
+- **Applies to both arms** (mechanical and `--agentic-ingest`) so `answerable@k` is directly comparable across them, unlike R@k for the agentic arm (see below).
+- **Provenance R@k is a lower bound for the agentic arm.** The agentic arm's R@k is computed from `ref:` provenance fields the agent chose to cite when writing a memory — it undercounts any case where the agent's memory answers the question using content it didn't explicitly cite. When `--judge` is on, the agentic arm's R@5/R@10/R@50 lines print with a `(provenance lower bound)` suffix as a reminder; `answerable@k` from the judge is the metric that isn't subject to that undercount.
+- Judge verdicts are cached at `benchmarks/Scrinia.Retrieval.Benchmarks/cache/judge-{provider}-{model}.ndjson`, keyed on `(model, question, judge-k, retrieved content)` — separate from the agent/episode caches so judge reruns don't collide with agent-harness caches for the same provider.
+- After the run, a summary block prints: `answerable@k` (the aggregate), plus `judged` / `no gold` (questions with no gold answer to grade against, excluded from the aggregate) / `failed` (judge calls that errored, also excluded) counts — check these before trusting the number, since a high `no gold` or `failed` count means the aggregate is over fewer questions than `questions:` implies.
+
 ## Methodology
 
 ### Metrics

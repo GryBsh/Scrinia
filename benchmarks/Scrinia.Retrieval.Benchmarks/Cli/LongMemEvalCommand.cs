@@ -33,10 +33,11 @@ internal static class LongMemEvalCommand
         Console.WriteLine($"longmemeval: data={dataPath}, split={split}, granularity={granularity}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
         var agent = await RetrieverFactory.BuildAgentAsync(args, ct);
+        var judge = await RetrieverFactory.BuildJudgeAsync(args, ct);
         var loader = new LongMemEvalLoader(dataPath, split, splitFile, granularity);
         await using (retriever)
         {
-            var runner = new BenchmarkRunner(agent);
+            var runner = new BenchmarkRunner(agent, judge);
             var progress = new Progress<RunProgress>(p =>
             {
                 if (p.Completed % 25 == 0 || p.Completed == 1)
@@ -55,6 +56,8 @@ internal static class LongMemEvalCommand
                 ct: ct);
 
             PrintSummary(result);
+            if (judge is not null)
+                RetrieverFactory.PrintJudgeSummary(judge, result);
             if (retriever is AgenticScriniaRetriever ag)
                 RetrieverFactory.PrintAgenticStats(ag.Stats);
             await WriteJsonAsync(output, result, ct);
@@ -91,10 +94,11 @@ internal static class LongMemEvalCommand
     {
         Console.WriteLine();
         Console.WriteLine($"=== {result.RunMetadata.Benchmark} / {result.RunMetadata.Mode} ===");
+        string lowerBoundSuffix = result.RunMetadata.Mode.Contains("agentic-ingest") ? " (provenance lower bound)" : "";
         Console.WriteLine($"questions: {result.Aggregate.QuestionCount}");
-        Console.WriteLine($"R@5:   {result.Aggregate.RecallAt5:P1}");
-        Console.WriteLine($"R@10:  {result.Aggregate.RecallAt10:P1}");
-        Console.WriteLine($"R@50:  {result.Aggregate.RecallAt50:P1}");
+        Console.WriteLine($"R@5:   {result.Aggregate.RecallAt5:P1}{lowerBoundSuffix}");
+        Console.WriteLine($"R@10:  {result.Aggregate.RecallAt10:P1}{lowerBoundSuffix}");
+        Console.WriteLine($"R@50:  {result.Aggregate.RecallAt50:P1}{lowerBoundSuffix}");
         Console.WriteLine($"NDCG@10: {result.Aggregate.Ndcg10:F3}");
         Console.WriteLine();
         Console.WriteLine("per-question-type R@5 / R@10:");
