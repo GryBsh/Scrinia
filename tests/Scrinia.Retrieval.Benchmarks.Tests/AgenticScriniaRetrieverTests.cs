@@ -33,12 +33,16 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     }
 
     private (AgenticScriniaRetriever retriever, ScriptedToolClient client, EpisodeCache cache) MakeRetriever(
-        params ToolTurnResult?[] turns)
+        params ToolTurnResult?[] turns) => MakeRetriever(surfaceFullContent: false, turns);
+
+    private (AgenticScriniaRetriever retriever, ScriptedToolClient client, EpisodeCache cache) MakeRetriever(
+        bool surfaceFullContent, params ToolTurnResult?[] turns)
     {
         var client = new ScriptedToolClient(turns);
         var harness = new AgenticIngestHarness(client, maxTurns: 8);
         var cache = new EpisodeCache(_cacheFile);
-        var retriever = new AgenticScriniaRetriever(_rootDir, harness, cache, modelSlug: "test-model");
+        var retriever = new AgenticScriniaRetriever(_rootDir, harness, cache, modelSlug: "test-model",
+            rankerOptions: null, surfaceFullContent: surfaceFullContent);
         return (retriever, client, cache);
     }
 
@@ -180,5 +184,42 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         hits.Select(h => h.Id).Should().NotContain("d1");
         retriever.Stats.FailedEpisodes.Should().Be(0);
         retriever.Stats.AgenticEpisodes.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RetrievedHit_Text_IsMemoryContent_NotDocText()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/f/x","content":["MEMORY-SUMMARY-TOKEN about Lisbon.\nref: d1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("d1", "RAW-DOC-TOKEN Maria booked Lisbon.", null, "s1"));
+        var hits = await retriever.RetrieveAsync("Lisbon", topK: 5);
+
+        hits.Should().NotBeEmpty();
+        hits[0].Id.Should().Be("d1", "R@k still maps to the source doc id");
+        hits[0].Text.Should().Contain("MEMORY-SUMMARY-TOKEN", "the judge must see the stored memory content");
+        hits[0].Text.Should().NotContain("RAW-DOC-TOKEN", "not the original doc text");
+    }
+
+    [Fact]
+    public async Task SurfaceFullContent_JudgePath_UsesFullMemory_NotTruncatedPreview()
+    {
+        string longContent = "Lisbon trip planning. " + new string('x', 520) + " TAILTOKEN-AFTER-500\\nref: d1";
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            "{\"path\":\"/f/x\",\"content\":[\"" + longContent + "\"]}");
+        var (retriever, _, _) = MakeRetriever(surfaceFullContent: true,
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("d1", "some doc text", null, "s1"));
+        var hits = await retriever.RetrieveAsync("Lisbon", topK: 5);
+
+        hits.Should().NotBeEmpty();
+        hits[0].Id.Should().Be("d1");
+        hits[0].Text.Should().Contain("TAILTOKEN-AFTER-500",
+            "surfaceFullContent must feed the judge the full memory, not the 500-char ContentPreview");
     }
 }

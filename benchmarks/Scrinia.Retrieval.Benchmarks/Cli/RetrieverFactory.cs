@@ -3,6 +3,7 @@ using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
 using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
+using Scrinia.Retrieval.Benchmarks.Judge;
 using Scrinia.Retrieval.Benchmarks.Llm;
 
 namespace Scrinia.Retrieval.Benchmarks.Cli;
@@ -79,7 +80,8 @@ internal static class RetrieverFactory
                 $"episodes-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
             string agRoot = Path.Combine(Path.GetTempPath(), $"scrinia-retbench-{benchmarkSlug}-ag-{Guid.NewGuid().ToString("N")[..8]}");
             var agentic = new AgenticScriniaRetriever(agRoot, harness, new EpisodeCache(epCache), backend.ModelSlug,
-                RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 });
+                RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 },
+                surfaceFullContent: HasFlag(args, "--judge"));
             Console.Error.WriteLine($"[scrinia-bench] agentic-ingest enabled: provider={backend.ProviderId} model={backend.ModelSlug} maxTurns={maxTurns} maxTokens={maxTokens} cache={epCache}");
             return (agentic, Mode.Bm25);
         }
@@ -260,6 +262,44 @@ internal static class RetrieverFactory
         Console.WriteLine($"memories without refs: {s.MemoriesWithoutRefs}");
         Console.WriteLine($"unresolvable refs:     {s.UnresolvableRefs}");
         Console.WriteLine($"tool-call errors:      {s.ToolCallErrors}");
+    }
+
+    internal static int JudgeK(string[] args) => ParseInt(Program.Flag(args, "--judge-k"), 10);
+
+    /// <summary>Builds the answerability judge when --judge is set, else null. One model
+    /// (via --judge-provider/--judge-model/--judge-base-url/--judge-api-key) drives both the
+    /// answerer and grader; warns if it equals --agent-model.</summary>
+    public static async Task<AnswerabilityJudge?> BuildJudgeAsync(string[] args, CancellationToken ct)
+    {
+        if (!HasFlag(args, "--judge")) return null;
+
+        string provider = Program.Flag(args, "--judge-provider")
+            ?? throw new ArgumentException("--judge requires --judge-provider (openai | anthropic | gemini | ollama | claude-cli | ...).");
+        string? model = Program.Flag(args, "--judge-model");
+        string? baseUrl = Program.Flag(args, "--judge-base-url");
+        string? apiKey = Program.Flag(args, "--judge-api-key");
+
+        if (model is not null && string.Equals(model, Program.Flag(args, "--agent-model"), StringComparison.OrdinalIgnoreCase))
+            Console.Error.WriteLine("[scrinia-bench] WARNING: --judge-model equals --agent-model; the model that authored the store is also judging it (self-preference risk).");
+
+        var backend = await AgentClientBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
+        string cacheFile = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache",
+            $"judge-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
+        var judge = new AnswerabilityJudge(backend.Llm, new LlmResponseCache(cacheFile), backend.ProviderId, backend.ModelSlug, JudgeK(args));
+        Console.Error.WriteLine($"[scrinia-bench] judge enabled: provider={backend.ProviderId} model={backend.ModelSlug} judgeK={JudgeK(args)} cache={cacheFile}");
+        return judge;
+    }
+
+    /// <summary>Prints the judge answerability summary block. Shared by <c>LoCoMoCommand</c>
+    /// and <c>LongMemEvalCommand</c> so the format stays consistent.</summary>
+    public static void PrintJudgeSummary(AnswerabilityJudge judge, BenchmarkRunResult result)
+    {
+        Console.WriteLine();
+        Console.WriteLine("=== judge answerability ===");
+        Console.WriteLine($"answerable@{judge.JudgeK}:  {result.Aggregate.Answerable:P1}");
+        Console.WriteLine($"  judged:   {judge.JudgedCount}");
+        Console.WriteLine($"  no gold:  {judge.NoGoldCount}");
+        Console.WriteLine($"  failed:   {judge.FailedCount}");
     }
 
     private static bool ParseChunk(string? raw) => raw?.ToLowerInvariant() switch

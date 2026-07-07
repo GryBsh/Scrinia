@@ -25,7 +25,8 @@ public sealed record AggregateMetrics(
     double RecallAt5,
     double RecallAt10,
     double RecallAt50,
-    double Ndcg10);
+    double Ndcg10,
+    double Answerable = 0.0);
 
 /// <summary>
 /// Per-question score. <c>RecallAt{5,10,50}</c> is a double in <c>[0, 1]</c> rather
@@ -45,4 +46,7 @@ public sealed record QuestionResult(
     double RecallAt5,
     double RecallAt10,
     double RecallAt50,
-    double Ndcg10);
+    double Ndcg10,
+    bool? Answerable = null,
+    string? JudgeAnswer = null,
+    string? JudgeGraderVerdict = null);

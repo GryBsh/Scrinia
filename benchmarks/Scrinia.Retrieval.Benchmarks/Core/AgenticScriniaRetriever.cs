@@ -1,4 +1,5 @@
 using Scrinia.Core;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Retrieval.Benchmarks.Agent;
@@ -58,6 +59,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
     private readonly EpisodeCache _cache;
     private readonly string _modelSlug;
     private readonly RankerOptions _rankerOptions;
+    private readonly bool _surfaceFullContent;
 
     // Buffering — under _ingestLock. Sessions preserve first-seen order, both within
     // and across sessions, so episodes run in the order docs arrived.
@@ -98,7 +100,8 @@ public sealed class AgenticScriniaRetriever : IRetriever
         AgenticIngestHarness harness,
         EpisodeCache cache,
         string modelSlug,
-        RankerOptions? rankerOptions = null)
+        RankerOptions? rankerOptions = null,
+        bool surfaceFullContent = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         ArgumentNullException.ThrowIfNull(harness);
@@ -109,6 +112,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
         _cache = cache;
         _modelSlug = modelSlug;
         _rankerOptions = rankerOptions ?? RankerOptions.Default;
+        _surfaceFullContent = surfaceFullContent;
         _store = CreateStore();
     }
 
@@ -159,24 +163,59 @@ public sealed class AgenticScriniaRetriever : IRetriever
 
         var hits = new List<RetrievalHit>(topK);
         var seenDocIds = new HashSet<string>(StringComparer.Ordinal);
+        // Memoizes resolved+decoded full content per QUALIFIED memory name — provenance
+        // expansion can emit multiple doc-hits from one memory, so each memory is
+        // resolved and NMP/2-decoded at most once per RetrieveAsync call.
+        var resolvedFullContent = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var r in results)
         {
             if (hits.Count >= topK) break;
 
             string entryName;
+            string entryScope;
+            string previewContent;
             double score;
             switch (r)
             {
                 case EntryResult er:
                     entryName = er.Item.Entry.Name;
+                    entryScope = er.Item.Scope;
+                    previewContent = er.Item.Entry.ContentPreview ?? string.Empty;
                     score = er.Score;
                     break;
                 case ChunkEntryResult cr:
                     entryName = cr.ParentItem.Entry.Name;
+                    entryScope = cr.ParentItem.Scope;
+                    previewContent = cr.ParentItem.Entry.ContentPreview ?? string.Empty;
                     score = cr.Score;
                     break;
                 default:
                     continue;
+            }
+
+            string entryContent = previewContent;
+            if (_surfaceFullContent)
+            {
+                // entry.Name is the bare subject; ResolveArtifactAsync needs the
+                // scope-qualified name, and it returns the raw NMP/2 artifact, so decode
+                // it to plaintext (mirrors MemoryTools.Skills.ReadLegacySkillNmpAsync).
+                string qualified = _store.FormatQualifiedName(entryScope, entryName);
+                if (!resolvedFullContent.TryGetValue(qualified, out string? full))
+                {
+                    try
+                    {
+                        string artifact = await _store.ResolveArtifactAsync(qualified, ct);
+                        full = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(artifact));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"[scrinia-bench:agentic-ingest] full-content resolve failed for {entryName}: {ex.Message}; using preview");
+                        full = previewContent;
+                    }
+                    resolvedFullContent[qualified] = full;
+                }
+                entryContent = full;
             }
 
             if (!_provenance.TryGetValue(entryName, out var docIds) || docIds.Count == 0)
@@ -186,8 +225,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
             {
                 if (hits.Count >= topK) break;
                 if (!seenDocIds.Add(docId)) continue;
-                string text = _docsById.TryGetValue(docId, out var doc) ? doc.Text : string.Empty;
-                hits.Add(new RetrievalHit(Id: docId, Text: text, Score: score));
+                hits.Add(new RetrievalHit(Id: docId, Text: entryContent, Score: score));
             }
         }
         return hits;

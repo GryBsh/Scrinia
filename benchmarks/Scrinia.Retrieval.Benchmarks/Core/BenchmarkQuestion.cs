@@ -15,7 +15,8 @@ public sealed record BenchmarkQuestion(
     IReadOnlyList<HaystackDoc> Haystack,
     IReadOnlyList<string> GroundTruthIds,
     IReadOnlyList<string> GroundTruthTexts,
-    string Category);
+    string Category,
+    string? GoldAnswer = null);
 
 /// <summary>
 /// One document in a benchmark question's haystack. <see cref="Id"/> must be unique

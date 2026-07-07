@@ -87,6 +87,14 @@ internal static class Program
               --episode-max-turns <n> Max tool-call turns per session episode (default 16)
               --episode-max-tokens <n> Max completion tokens per turn — caps reasoning + tool-call args together (default 4096; raise for reasoning models to avoid truncated tool calls)
 
+            Judge answerability flags (longmemeval, locomo):
+              --judge                 Enable the LLM-judge answerability metric (needs --judge-provider). Works with or without --agentic-ingest.
+              --judge-provider <p>    Judge model provider (openai | anthropic | gemini | ollama | claude-cli | ...). Held constant across arms.
+              --judge-model <m>       Judge model (both answerer and grader).
+              --judge-base-url <u>    OpenAI-compatible endpoint for the judge.
+              --judge-api-key <k>     API key for the judge provider.
+              --judge-k <n>           Retrieved items the answerer sees (default 10).
+
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)
 

@@ -142,13 +142,18 @@ public static class BenchmarkScorer
             ndcg += r.Ndcg10;
         }
 
+        double answerableSum = 0; int judged = 0;
+        foreach (var r in results)
+            if (r.Answerable is { } a) { answerableSum += a ? 1.0 : 0.0; judged++; }
+
         int n = results.Count;
         return new AggregateMetrics(
             QuestionCount: n,
             RecallAt5: r5 / n,
             RecallAt10: r10 / n,
             RecallAt50: r50 / n,
-            Ndcg10: ndcg / n);
+            Ndcg10: ndcg / n,
+            Answerable: judged > 0 ? answerableSum / judged : 0.0);
     }
 
     /// <summary>
