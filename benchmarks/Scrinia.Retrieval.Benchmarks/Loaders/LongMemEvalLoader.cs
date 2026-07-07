@@ -81,7 +81,8 @@ public sealed class LongMemEvalLoader
                 Haystack: haystack,
                 GroundTruthIds: expandedGroundTruth,
                 GroundTruthTexts: [],
-                Category: rec.QuestionType ?? "uncategorized");
+                Category: rec.QuestionType ?? "uncategorized",
+                GoldAnswer: FormatGoldAnswer(rec.Answer));
         }
     }
 
@@ -195,6 +196,26 @@ public sealed class LongMemEvalLoader
     private static DateTimeOffset? TryParseDate(string? raw) =>
         DateTimeOffset.TryParse(raw, out var dto) ? dto : null;
 
+    internal static string? FormatGoldAnswer(System.Text.Json.JsonElement answer)
+    {
+        switch (answer.ValueKind)
+        {
+            case System.Text.Json.JsonValueKind.String:
+                string? s = answer.GetString();
+                return string.IsNullOrWhiteSpace(s) ? null : s;
+            case System.Text.Json.JsonValueKind.Array:
+                var parts = new List<string>();
+                foreach (var el in answer.EnumerateArray())
+                    if (el.ValueKind == System.Text.Json.JsonValueKind.String && el.GetString() is { } a && a.Length > 0)
+                        parts.Add(a);
+                return parts.Count == 0 ? null : "acceptable answers: " + string.Join("; ", parts);
+            case System.Text.Json.JsonValueKind.Number:
+                return answer.GetRawText();
+            default:
+                return null;  // Undefined (field absent) / Null / object
+        }
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -202,17 +223,13 @@ public sealed class LongMemEvalLoader
         AllowTrailingCommas = true,
     };
 
-    // `answer` is intentionally omitted — System.Text.Json skips unmapped fields, so
-    // we sidestep the fact that LongMemEval ships `answer` as either a string or a
-    // list-of-strings depending on the question_type (knowledge-update questions can
-    // have multiple correct answers across time). Retrieval scoring only uses the
-    // labelled session IDs, never the answer text.
     private sealed record LongMemEvalRecord(
         [property: JsonPropertyName("question_id")] string? QuestionId,
         [property: JsonPropertyName("question_type")] string? QuestionType,
         [property: JsonPropertyName("question")] string? Question,
         [property: JsonPropertyName("question_date")] string? QuestionDate,
         [property: JsonPropertyName("answer_session_ids")] IReadOnlyList<string>? AnswerSessionIds,
+        [property: JsonPropertyName("answer")] System.Text.Json.JsonElement Answer,
         [property: JsonPropertyName("haystack_sessions")] IReadOnlyList<IReadOnlyList<LongMemEvalTurn>>? HaystackSessions,
         [property: JsonPropertyName("haystack_session_ids")] IReadOnlyList<string>? HaystackSessionIds,
         [property: JsonPropertyName("haystack_dates")] IReadOnlyList<string>? HaystackDates);

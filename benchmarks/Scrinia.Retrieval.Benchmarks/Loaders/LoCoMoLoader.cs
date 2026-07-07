@@ -140,6 +140,20 @@ public sealed partial class LoCoMoLoader
 
             string category = ResolveCategory(qa);
 
+            string? goldAnswer = null;
+            if (qa.TryGetProperty("answer", out var ansEl))
+            {
+                goldAnswer = ansEl.ValueKind switch
+                {
+                    JsonValueKind.String => ansEl.GetString(),
+                    JsonValueKind.Number => ansEl.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    _ => null,
+                };
+                if (string.IsNullOrWhiteSpace(goldAnswer)) goldAnswer = null;
+            }
+
             var diaIds = ExtractEvidenceDiaIds(qa);
             if (diaIds.Count == 0) { qaIdx++; continue; }
 
@@ -153,7 +167,8 @@ public sealed partial class LoCoMoLoader
                 Haystack: haystack,
                 GroundTruthIds: groundTruth,
                 GroundTruthTexts: [],
-                Category: category));
+                Category: category,
+                GoldAnswer: goldAnswer));
             qaIdx++;
         }
         return result;
