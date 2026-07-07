@@ -1,6 +1,7 @@
 using System.Reflection;
 using Scrinia.Core;
 using Scrinia.Retrieval.Benchmarks.Agent;
+using Scrinia.Retrieval.Benchmarks.Judge;
 
 namespace Scrinia.Retrieval.Benchmarks.Core;
 
@@ -17,6 +18,7 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 public sealed class BenchmarkRunner
 {
     private readonly IAgentHarness _agent;
+    private readonly AnswerabilityJudge? _judge;
 
     /// <summary>Default constructor — uses the no-op agent harness (baseline runs).</summary>
     public BenchmarkRunner() : this(NoOpAgentHarness.Instance) { }
@@ -32,6 +34,18 @@ public sealed class BenchmarkRunner
     {
         ArgumentNullException.ThrowIfNull(agent);
         _agent = agent;
+    }
+
+    /// <summary>
+    /// Constructor additionally accepting an <see cref="AnswerabilityJudge"/>. When
+    /// non-null, the runner runs the judge as a post-scoring pass on every question,
+    /// attaching its verdict to the <see cref="QuestionResult"/> without altering the
+    /// R@k/NDCG numbers produced by <see cref="BenchmarkScorer"/>. Null (the other
+    /// constructors) skips the judge pass entirely — zero-cost when unused.
+    /// </summary>
+    public BenchmarkRunner(IAgentHarness agent, AnswerabilityJudge? judge) : this(agent)
+    {
+        _judge = judge;
     }
 
     public async Task<BenchmarkRunResult> RunAsync(
@@ -68,6 +82,14 @@ public sealed class BenchmarkRunner
             string queryText = await TransformQueryAsync(q.QueryText, ct);
             var hits = await retriever.RetrieveAsync(queryText, topK, ct);
             var scored = scorer(q, hits);
+            if (_judge is not null)
+            {
+                var verdict = await _judge.JudgeAsync(
+                    q.Id, q.QueryText, q.GoldAnswer,
+                    hits.Select(h => h.Text).ToList(), ct);
+                if (verdict is not null)
+                    scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
+            }
             results.Add(scored);
             n++;
             progress?.Report(new RunProgress(n, scored));
@@ -129,6 +151,14 @@ public sealed class BenchmarkRunner
                 string queryText = await TransformQueryAsync(q.QueryText, ct);
                 var hits = await retriever.RetrieveAsync(queryText, topK, ct);
                 var scored = scorer(q, hits);
+                if (_judge is not null)
+                {
+                    var verdict = await _judge.JudgeAsync(
+                        q.Id, q.QueryText, q.GoldAnswer,
+                        hits.Select(h => h.Text).ToList(), ct);
+                    if (verdict is not null)
+                        scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
+                }
                 results.Add(scored);
                 progress?.Report(new RunProgress(results.Count, scored));
             }
