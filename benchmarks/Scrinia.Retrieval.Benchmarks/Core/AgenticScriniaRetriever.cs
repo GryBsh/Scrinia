@@ -75,6 +75,9 @@ public sealed class AgenticScriniaRetriever : IRetriever
     private readonly SemaphoreSlim _episodeGate = new(1, 1);
     // entryName -> ordered doc ids the memory resolves to (empty = no usable citation).
     private Dictionary<string, IReadOnlyList<string>> _provenance = new(StringComparer.Ordinal);
+    // Memory names whose full-content resolve already failed and was logged — dedupes
+    // the warning so a systemic resolve failure logs once per memory, not once per hit.
+    private readonly HashSet<string> _loggedResolveFailures = new(StringComparer.Ordinal);
 
     // Cumulative run stats — NOT reset by ResetAsync; this is a whole-run summary
     // (Task 6 reads Stats after the full benchmark completes).
@@ -172,20 +175,20 @@ public sealed class AgenticScriniaRetriever : IRetriever
             if (hits.Count >= topK) break;
 
             string entryName;
-            string entryScope;
+            string entryUri;
             string previewContent;
             double score;
             switch (r)
             {
                 case EntryResult er:
                     entryName = er.Item.Entry.Name;
-                    entryScope = er.Item.Scope;
+                    entryUri = er.Item.Entry.Uri;
                     previewContent = er.Item.Entry.ContentPreview ?? string.Empty;
                     score = er.Score;
                     break;
                 case ChunkEntryResult cr:
                     entryName = cr.ParentItem.Entry.Name;
-                    entryScope = cr.ParentItem.Scope;
+                    entryUri = cr.ParentItem.Entry.Uri;
                     previewContent = cr.ParentItem.Entry.ContentPreview ?? string.Empty;
                     score = cr.Score;
                     break;
@@ -196,24 +199,29 @@ public sealed class AgenticScriniaRetriever : IRetriever
             string entryContent = previewContent;
             if (_surfaceFullContent)
             {
-                // entry.Name is the bare subject; ResolveArtifactAsync needs the
-                // scope-qualified name, and it returns the raw NMP/2 artifact, so decode
-                // it to plaintext (mirrors MemoryTools.Skills.ReadLegacySkillNmpAsync).
-                string qualified = _store.FormatQualifiedName(entryScope, entryName);
-                if (!resolvedFullContent.TryGetValue(qualified, out string? full))
+                // Resolve full plaintext via the entry's own Uri — for an agent-written
+                // memory that's the authoritative file://…nmp2 artifact path (set at write
+                // time by ArtifactUri). ResolveArtifactAsync reads the file directly, then
+                // we NMP/2-decode it (mirrors MemoryTools.Skills.ReadLegacySkillNmpAsync).
+                // The Uri is used rather than a reconstructed qualified name because the
+                // name→artifact mapping is lossy for some scopes.
+                if (!resolvedFullContent.TryGetValue(entryUri, out string? full))
                 {
                     try
                     {
-                        string artifact = await _store.ResolveArtifactAsync(qualified, ct);
+                        string artifact = await _store.ResolveArtifactAsync(entryUri, ct);
                         full = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(artifact));
                     }
                     catch (Exception ex)
                     {
-                        Console.Error.WriteLine(
-                            $"[scrinia-bench:agentic-ingest] full-content resolve failed for {entryName}: {ex.Message}; using preview");
+                        // Log each unresolvable memory at most once per run so a systemic
+                        // failure can't flood the console (it recurs on every question).
+                        if (_loggedResolveFailures.Add(entryName))
+                            Console.Error.WriteLine(
+                                $"[scrinia-bench:agentic-ingest] full-content resolve failed for {entryName}: {ex.Message}; using preview");
                         full = previewContent;
                     }
-                    resolvedFullContent[qualified] = full;
+                    resolvedFullContent[entryUri] = full;
                 }
                 entryContent = full;
             }
