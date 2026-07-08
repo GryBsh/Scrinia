@@ -160,6 +160,30 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     }
 
     [Fact]
+    public async Task ToolExecutionThrows_InvalidPath_SurfacesInStats_DoesNotAbortRun()
+    {
+        // A well-formed tool call whose PATH VALUE the store rejects: '/findings/trip:lisbon'
+        // is a v2 path (leading '/') with a colon in a segment, so PathParser.Parse throws
+        // ArgumentException out of memory_remember. That throw must be caught and counted as a
+        // tool-call error — NOT allowed to escape and abort the whole run (previously it bubbled
+        // to Program.Main's top-level catch: "error: ArgumentException: Path must not contain
+        // colons" and the entire benchmark exited 2).
+        var badPath = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip:lisbon","content":["Booked the Lisbon trip.\nref: d1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [badPath], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("d1", "Maria: Booked Lisbon.", null, "s1"));
+
+        // The whole point: this line must not throw.
+        var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        retriever.Stats.ToolCallErrors.Should().BeGreaterThanOrEqualTo(1);
+        hits.Should().BeEmpty("the rejected memory was never stored, so nothing maps back to a doc");
+    }
+
+    [Fact]
     public async Task FailedAttempt_PartialWrite_IsRolledBackBeforeRetry()
     {
         // Attempt 1: writes a memory citing d1, then fails (null turn).

@@ -149,9 +149,15 @@ public sealed class AgenticIngestHarness
 
     /// <summary>
     /// Dispatches one tool call to the matching <see cref="ScriniaMcpTools"/> method.
-    /// Malformed args (JSON parse failure, or a required field missing) never throw —
-    /// they produce a production-style error string as the tool result so the model
-    /// (or replay) can self-correct/continue.
+    /// No tool call ever throws out of here: malformed args (JSON parse failure, or a
+    /// required field missing) and exceptions from the tool method itself (e.g. the store
+    /// rejecting an invalid memory <c>path</c>) both produce a production-style error
+    /// string as the tool result so the model (or replay) can self-correct/continue.
+    ///
+    /// <para>Catching tool-execution exceptions mirrors production: the MCP SDK wraps a
+    /// throwing tool and returns the error to the model as a tool result — the agent moves
+    /// on. Letting the throw escape here would instead abort the whole benchmark run over
+    /// one bad call, which is both unfaithful to real usage and destroys the entire run.</para>
     /// </summary>
     private static async Task<(string ToolResult, bool IsError)> ExecuteCallAsync(
         ScriniaMcpTools tools, ToolCallRequest call, CancellationToken ct)
@@ -172,14 +178,25 @@ public sealed class AgenticIngestHarness
         using (doc)
         {
             var root = doc.RootElement;
-            switch (call.ToolName)
+            try
             {
-                case "memory_remember":
-                    return await DispatchRememberAsync(tools, root, ct);
-                case "memory_search":
-                    return await DispatchSearchAsync(tools, root, ct);
-                default:
-                    return ($"error: unknown tool '{call.ToolName}'", true);
+                switch (call.ToolName)
+                {
+                    case "memory_remember":
+                        return await DispatchRememberAsync(tools, root, ct);
+                    case "memory_search":
+                        return await DispatchSearchAsync(tools, root, ct);
+                    default:
+                        return ($"error: unknown tool '{call.ToolName}'", true);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A valid call whose *values* the store rejects (e.g. a colon in a v2
+                // path -> PathParser throws) surfaces here. Return it as a tool error so
+                // the episode continues, exactly as the production MCP surface would.
+                // Cancellation is deliberately not swallowed — a cancelled run must stop.
+                return ($"error: {call.ToolName} failed: {ex.Message}", true);
             }
         }
     }
