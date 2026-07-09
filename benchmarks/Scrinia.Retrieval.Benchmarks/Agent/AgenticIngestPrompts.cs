@@ -7,26 +7,17 @@ namespace Scrinia.Retrieval.Benchmarks.Agent;
 
 public static class AgenticIngestPrompts
 {
-    public const string PromptVersion = "v1";
+    public const string PromptVersion = "v2";
 
     private const string Addendum = """
 
         ---
-        BENCHMARK INGESTION TASK
-
-        The conversation below just happened in a session. Store what is worth
-        remembering for future questions about it, using the memory tools. Make as
-        many memory_remember calls as the material warrants; you may memory_search to
-        check what you already stored earlier in this conversation.
-
-        REQUIRED: every memory you store MUST include, inside its content, one line per
-        source turn it draws from, in the form:
-            ref: <doc-id>
-        Use the exact bracketed doc-id labels shown on the transcript turns. These
-        lines are how the benchmark maps your memories back to their sources — a memory
-        with no ref: line cannot be scored.
-
+        You are an impartial memory agent who stores session memories using memory_remember, adds to an existing memory using memory_append, reads one back using memory_recall, and finds earlier ones using memory_search. You are not a human, and you do not have opinions or preferences. You are a tool that helps the user store and retrieve factual information.
+        memory_remember OVERWRITES whatever is already at a path. Before writing, memory_search for a related memory you already stored this session; if one exists, memory_recall it and memory_append the new facts rather than calling memory_remember on the same path. Use a fresh, specific path only for a genuinely new topic.
+        When you store or append, you must include one or more ref: <doc-id> lines in the content, so the memory can be traced back to its source turns (the [doc-id] labels on the transcript). You must also include a path, description, tags, keywords, and anchors if applicable.
         When you are done storing, stop calling tools.
+
+        Store 1 or more memories from the session transcript below.
         """;
 
     public static string SystemPrompt()
@@ -54,9 +45,16 @@ public static class AgenticIngestPrompts
     public static IReadOnlyList<ToolSpec> Tools() =>
     [
         new ToolSpec("memory_remember",
-            "Persist a memory at a path. content is an array — each element becomes one " +
-            "independently retrievable chunk. Include ref: <doc-id> lines naming the source turns.",
+            "Persist a NEW memory at a path (OVERWRITES anything already there). content is an array — " +
+            "each element becomes one independently retrievable chunk. Include ref: <doc-id> lines naming the source turns.",
             RememberSchema),
+        new ToolSpec("memory_append",
+            "Append a chunk to an EXISTING memory without overwriting it. Use after memory_recall to add facts " +
+            "to a memory you already stored. Include ref: <doc-id> lines naming the source turns.",
+            AppendSchema),
+        new ToolSpec("memory_recall",
+            "Read back a memory you stored earlier this session, by its path, to decide whether to append to it.",
+            RecallSchema),
         new ToolSpec("memory_search",
             "Find earlier memories you stored in this session by keyword or phrase.",
             SearchSchema),
@@ -78,6 +76,33 @@ public static class AgenticIngestPrompts
             "anchors": { "type": "array", "items": { "type": "string" } }
           },
           "required": ["path", "content"]
+        }
+        """;
+
+    // Mirrors memory_append (path, content as a SINGLE string, description?, tags?, keywords?, anchors?).
+    private const string AppendSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "description": "Existing memory path to append to." },
+            "content": { "type": "string", "description": "New chunk text. Include ref: <doc-id> lines." },
+            "description": { "type": "string" },
+            "tags": { "type": "array", "items": { "type": "string" } },
+            "keywords": { "type": "array", "items": { "type": "string" } },
+            "anchors": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["path", "content"]
+        }
+        """;
+
+    private const string RecallSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "description": "Memory path to read back." },
+            "chunk": { "type": "integer", "description": "Optional 1-based chunk index." }
+          },
+          "required": ["path"]
         }
         """;
 
