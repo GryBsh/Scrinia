@@ -33,16 +33,12 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     }
 
     private (AgenticScriniaRetriever retriever, ScriptedToolClient client, EpisodeCache cache) MakeRetriever(
-        params ToolTurnResult?[] turns) => MakeRetriever(surfaceFullContent: false, turns);
-
-    private (AgenticScriniaRetriever retriever, ScriptedToolClient client, EpisodeCache cache) MakeRetriever(
-        bool surfaceFullContent, params ToolTurnResult?[] turns)
+        params ToolTurnResult?[] turns)
     {
         var client = new ScriptedToolClient(turns);
         var harness = new AgenticIngestHarness(client, maxTurns: 8);
         var cache = new EpisodeCache(_cacheFile);
-        var retriever = new AgenticScriniaRetriever(_rootDir, harness, cache, modelSlug: "test-model",
-            rankerOptions: null, surfaceFullContent: surfaceFullContent);
+        var retriever = new AgenticScriniaRetriever(_rootDir, harness, cache, modelSlug: "test-model");
         return (retriever, client, cache);
     }
 
@@ -229,24 +225,21 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     }
 
     [Fact]
-    public async Task SurfaceFullContent_JudgePath_UsesFullMemory_NotTruncatedPreview()
+    public async Task FullContent_UsesFullMemory_NotTruncatedPreview()
     {
-        string longContent = "Lisbon trip planning. " + new string('x', 520) + " TAILTOKEN-AFTER-500\\nref: d1";
-        // Bare path (no folder) — the scope whose name->artifact round-trip was lossy and
-        // made the old FormatQualifiedName-based resolve fail 100% at run time. Resolving
-        // via the entry Uri must handle it.
+        string longContent = "Lisbon trip planning. " + new string('x', 520) + " TAILTOKEN-AFTER-500\\nref: D1:1";
         var remember = new ToolCallRequest("c1", "memory_remember",
             "{\"path\":\"summer-plans-summary\",\"content\":[\"" + longContent + "\"]}");
-        var (retriever, _, _) = MakeRetriever(surfaceFullContent: true,
+        var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
 
-        await retriever.IngestAsync(new HaystackDoc("d1", "some doc text", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "some doc text", null, "s1"));
         var hits = await retriever.RetrieveAsync("Lisbon", topK: 5);
 
         hits.Should().NotBeEmpty();
-        hits[0].Id.Should().Be("d1");
+        hits[0].Id.Should().Be("D1:1");
         hits[0].Text.Should().Contain("TAILTOKEN-AFTER-500",
-            "surfaceFullContent must feed the judge the full memory, not the 500-char ContentPreview");
+            "full content (not the 500-char preview) must be surfaced");
     }
 }
