@@ -277,4 +277,22 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         hits[0].Text.Should().Contain("TAILTOKEN-AFTER-500",
             "full content (not the 500-char preview) must be surfaced");
     }
+
+    [Fact]
+    public async Task GetSurfacedContents_ReturnsMemoryContent_EvenWithNoResolvableRefs()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["JUDGE-VISIBLE consolidated Lisbon plan with no citation."]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+
+        // R@k drops it (no resolvable ref) ...
+        (await retriever.RetrieveAsync("Lisbon plan", topK: 5)).Should().BeEmpty();
+        // ... but the judge still sees the memory content.
+        var surfaced = await retriever.GetSurfacedContentsAsync("Lisbon plan", k: 10);
+        surfaced.Should().ContainSingle().Which.Should().Contain("JUDGE-VISIBLE");
+    }
 }

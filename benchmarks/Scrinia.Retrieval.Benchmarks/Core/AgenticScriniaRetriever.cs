@@ -39,9 +39,10 @@ public sealed record AgenticIngestStats(
 ///
 /// <para>Queries are then answered mechanically via <see cref="FileMemoryStore.SearchAll"/>
 /// — no agent involvement at query time. Each returned memory is mapped back to the
-/// haystack doc IDs it cited (<c>ref:</c> lines, extracted into <c>ArtifactEntry.Fields["ref"]</c>
-/// by <see cref="Scrinia.Core.Search.FieldExtractor"/> at write time) so the existing
-/// R@k scorer — which compares doc IDs — is unchanged.</para>
+/// haystack doc IDs it cited by parsing <c>D{n}:{i}</c>-style citations out of the
+/// memory's full decoded content via <see cref="DialogRefParser"/> and resolving each
+/// against the buffered doc ids, so the existing R@k scorer — which compares doc IDs —
+/// is unchanged.</para>
 ///
 /// <para>Episode results are cached by <see cref="EpisodeCache"/>, keyed on
 /// (model, prompt version, session transcript), so reruns of the same haystack
@@ -52,7 +53,7 @@ public sealed record AgenticIngestStats(
 /// agentic arm's recall up with non-agentic work and measure the wrong thing. Failed
 /// episodes are never cached.</para>
 /// </summary>
-public sealed class AgenticScriniaRetriever : IRetriever
+public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvider
 {
     private readonly string _rootDir;
     private readonly AgenticIngestHarness _harness;
@@ -205,6 +206,38 @@ public sealed class AgenticScriniaRetriever : IRetriever
             }
         }
         return hits;
+    }
+
+    /// <summary>
+    /// Top-<paramref name="k"/> matching memories' full content, deduped by entry, with
+    /// NO provenance gate — this is "what the store surfaces for the query" for the judge.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetSurfacedContentsAsync(
+        string query, int k, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        ct.ThrowIfCancellationRequested();
+        await EnsureEpisodesRunAsync(ct);
+
+        // Over-fetch so chunk-results collapsing to the same parent memory still yield k distinct memories.
+        int searchLimit = Math.Max(k * 4, k);
+        IReadOnlyList<SearchResult> results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var contents = new List<string>(k);
+        foreach (var r in results)
+        {
+            if (contents.Count >= k) break;
+            string? name = r switch
+            {
+                EntryResult er => er.Item.Entry.Name,
+                ChunkEntryResult cr => cr.ParentItem.Entry.Name,
+                _ => null,
+            };
+            if (name is null || !seen.Add(name)) continue;
+            contents.Add(_fullContentByEntryName.TryGetValue(name, out var full) ? full : string.Empty);
+        }
+        return contents;
     }
 
     // ── Lazy episode run ─────────────────────────────────────────────────────

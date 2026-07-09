@@ -84,9 +84,11 @@ public sealed class BenchmarkRunner
             var scored = scorer(q, hits);
             if (_judge is not null)
             {
+                var judgeContents = retriever is ISurfacedContentProvider scp
+                    ? await scp.GetSurfacedContentsAsync(queryText, _judge.JudgeK, ct)
+                    : hits.Select(h => h.Text).ToList();
                 var verdict = await _judge.JudgeAsync(
-                    q.Id, q.QueryText, q.GoldAnswer,
-                    hits.Select(h => h.Text).ToList(), ct);
+                    q.Id, q.QueryText, q.GoldAnswer, judgeContents, ct);
                 if (verdict is not null)
                     scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
             }
@@ -153,9 +155,11 @@ public sealed class BenchmarkRunner
                 var scored = scorer(q, hits);
                 if (_judge is not null)
                 {
+                    var judgeContents = retriever is ISurfacedContentProvider scp
+                        ? await scp.GetSurfacedContentsAsync(queryText, _judge.JudgeK, ct)
+                        : hits.Select(h => h.Text).ToList();
                     var verdict = await _judge.JudgeAsync(
-                        q.Id, q.QueryText, q.GoldAnswer,
-                        hits.Select(h => h.Text).ToList(), ct);
+                        q.Id, q.QueryText, q.GoldAnswer, judgeContents, ct);
                     if (verdict is not null)
                         scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
                 }
