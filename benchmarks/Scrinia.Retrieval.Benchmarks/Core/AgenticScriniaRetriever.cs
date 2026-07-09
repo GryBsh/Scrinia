@@ -340,9 +340,11 @@ public sealed class AgenticScriniaRetriever : IRetriever
 
     /// <summary>
     /// Builds entryName → ordered doc-ids provenance from every agent-authored memory
-    /// currently in the store, resolving each via <c>Fields["ref"]</c> (JSON round-trip
-    /// drops the dictionary's original comparer, so the "ref" key is matched with an
-    /// explicit OrdinalIgnoreCase comparison rather than a direct dictionary lookup).
+    /// currently in the store, parsing dialog ids directly out of the memory's full
+    /// decoded content (<see cref="_fullContentByEntryName"/>) via
+    /// <see cref="DialogRefParser.ExtractDialogIds"/> and resolving each against
+    /// <see cref="_docsById"/>. This does not depend on production's
+    /// <c>Fields["ref"]</c> field extraction.
     /// </summary>
     private void BuildProvenanceMap()
     {
@@ -351,34 +353,25 @@ public sealed class AgenticScriniaRetriever : IRetriever
         foreach (var sa in _store.ListScoped())
         {
             ArtifactEntry entry = sa.Entry;
-
-            string[]? refs = null;
-            if (entry.Fields is not null)
-            {
-                foreach (var kv in entry.Fields)
-                {
-                    if (StringComparer.OrdinalIgnoreCase.Equals(kv.Key, "ref"))
-                    {
-                        refs = kv.Value;
-                        break;
-                    }
-                }
-            }
-
             _memoriesWritten++;
 
-            if (refs is null || refs.Length == 0)
+            string content = _fullContentByEntryName.TryGetValue(entry.Name, out var full)
+                ? full
+                : string.Empty;
+            var citedIds = DialogRefParser.ExtractDialogIds(content);
+
+            if (citedIds.Count == 0)
             {
                 _memoriesWithoutRefs++;
                 provenance[entry.Name] = [];
                 continue;
             }
 
-            var resolved = new List<string>(refs.Length);
-            foreach (string r in refs)
+            var resolved = new List<string>(citedIds.Count);
+            foreach (string id in citedIds)
             {
-                if (_docsById.ContainsKey(r))
-                    resolved.Add(r);
+                if (_docsById.ContainsKey(id))
+                    resolved.Add(id);
                 else
                     _unresolvableRefs++;
             }

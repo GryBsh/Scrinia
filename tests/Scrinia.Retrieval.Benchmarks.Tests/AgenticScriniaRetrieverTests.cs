@@ -46,17 +46,17 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task ProvenanceExpansion_ReturnsCitedDocs_InOrder()
     {
         var remember = new ToolCallRequest("c1", "memory_remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: d1\nref: d2"]}""");
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
 
-        await retriever.IngestAsync(new HaystackDoc("d1", "Maria: Booked Lisbon.", null, "s1"));
-        await retriever.IngestAsync(new HaystackDoc("d2", "Maria: Flight is on Tuesday.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:2", "Maria: Flight is on Tuesday.", null, "s1"));
 
         var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
 
-        hits.Select(h => h.Id).Should().Equal("d1", "d2");
+        hits.Select(h => h.Id).Should().Equal("D1:1", "D1:2");
         hits.Should().OnlyContain(h => h.Score > 0);
     }
 
@@ -64,26 +64,26 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task DedupAcrossMemories_DocAppearsOnce()
     {
         var remember1 = new ToolCallRequest("c1", "memory_remember",
-            """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: d1"]}""");
+            """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var remember2 = new ToolCallRequest("c2", "memory_remember",
-            """{"path":"/findings/b","content":["Lisbon trip details confirmed.\nref: d1\nref: d2"]}""");
+            """{"path":"/findings/b","content":["Lisbon trip details confirmed.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember1, remember2], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
 
-        await retriever.IngestAsync(new HaystackDoc("d1", "Maria: Booked Lisbon.", null, "s1"));
-        await retriever.IngestAsync(new HaystackDoc("d2", "Maria: Flight is on Tuesday.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:2", "Maria: Flight is on Tuesday.", null, "s1"));
 
         var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
 
-        hits.Count(h => h.Id == "d1").Should().Be(1);
+        hits.Count(h => h.Id == "D1:1").Should().Be(1);
     }
 
     [Fact]
     public async Task CacheReplay_RoundTrips_WithoutSecondLlmCall()
     {
         var remember = new ToolCallRequest("c1", "memory_remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: d1"]}""");
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var client = new ScriptedToolClient(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -91,7 +91,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         var cache = new EpisodeCache(_cacheFile);
         var retriever = new AgenticScriniaRetriever(_rootDir, harness, cache, modelSlug: "test-model");
 
-        var doc = new HaystackDoc("d1", "Maria: Booked Lisbon.", null, "s1");
+        var doc = new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1");
         await retriever.IngestAsync(doc);
         var firstHits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
         int callCountAfterFirst = client.CallCount;
@@ -182,12 +182,12 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task FailedAttempt_PartialWrite_IsRolledBackBeforeRetry()
     {
-        // Attempt 1: writes a memory citing d1, then fails (null turn).
+        // Attempt 1: writes a memory citing D1:1, then fails (null turn).
         var rememberD1 = new ToolCallRequest("c1", "memory_remember",
-            """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: d1"]}""");
-        // Attempt 2 (retry): writes a memory citing d2, then stops cleanly.
+            """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        // Attempt 2 (retry): writes a memory citing D1:2, then stops cleanly.
         var rememberD2 = new ToolCallRequest("c2", "memory_remember",
-            """{"path":"/findings/b","content":["Lisbon trip confirmed.\nref: d2"]}""");
+            """{"path":"/findings/b","content":["Lisbon trip confirmed.\nref: D1:2"]}""");
 
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [rememberD1], "tool_calls"),
@@ -195,13 +195,13 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
             new ToolTurnResult(null, [rememberD2], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
 
-        await retriever.IngestAsync(new HaystackDoc("d1", "Maria: Booked Lisbon.", null, "s1"));
-        await retriever.IngestAsync(new HaystackDoc("d2", "Maria: Flight is on Tuesday.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:2", "Maria: Flight is on Tuesday.", null, "s1"));
 
         var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
 
-        hits.Select(h => h.Id).Should().Contain("d2");
-        hits.Select(h => h.Id).Should().NotContain("d1");
+        hits.Select(h => h.Id).Should().Contain("D1:2");
+        hits.Select(h => h.Id).Should().NotContain("D1:1");
         retriever.Stats.FailedEpisodes.Should().Be(0);
         retriever.Stats.AgenticEpisodes.Should().Be(1);
     }
@@ -210,18 +210,53 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task RetrievedHit_Text_IsMemoryContent_NotDocText()
     {
         var remember = new ToolCallRequest("c1", "memory_remember",
-            """{"path":"/f/x","content":["MEMORY-SUMMARY-TOKEN about Lisbon.\nref: d1"]}""");
+            """{"path":"/f/x","content":["MEMORY-SUMMARY-TOKEN about Lisbon.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
 
-        await retriever.IngestAsync(new HaystackDoc("d1", "RAW-DOC-TOKEN Maria booked Lisbon.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "RAW-DOC-TOKEN Maria booked Lisbon.", null, "s1"));
         var hits = await retriever.RetrieveAsync("Lisbon", topK: 5);
 
         hits.Should().NotBeEmpty();
-        hits[0].Id.Should().Be("d1", "R@k still maps to the source doc id");
+        hits[0].Id.Should().Be("D1:1", "R@k still maps to the source doc id");
         hits[0].Text.Should().Contain("MEMORY-SUMMARY-TOKEN", "the judge must see the stored memory content");
         hits[0].Text.Should().NotContain("RAW-DOC-TOKEN", "not the original doc text");
+    }
+
+    [Fact]
+    public async Task Provenance_ParsesCommaListRefs_MapsAllCitedDialogs()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Trip planning consolidated.\nref: D1:1, D1:2"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:2", "Maria: Flight Tuesday.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("trip planning", topK: 5);
+
+        hits.Select(h => h.Id).Should().BeEquivalentTo(new[] { "D1:1", "D1:2" });
+        retriever.Stats.UnresolvableRefs.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Provenance_UnknownCitedId_CountsUnresolvable()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Cites a missing dialog.\nref: D9:99"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("missing dialog", topK: 5);
+
+        hits.Should().BeEmpty("D9:99 is not a buffered doc");
+        retriever.Stats.UnresolvableRefs.Should().Be(1);
     }
 
     [Fact]
