@@ -50,8 +50,8 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
     [Fact]
     public async Task RunGroupedAsync_AgenticIngest_ScoresNonZeroRecall_ThroughRunnerAndScorer()
     {
-        // Session s1 episode stores a memory citing gold doc d1; session s2 episode stores
-        // a memory citing gold doc d3. Each episode is a tool_calls turn followed by a
+        // Session s1 episode stores a memory citing gold doc D1:1; session s2 episode stores
+        // a memory citing gold doc D2:1. Each episode is a tool_calls turn followed by a
         // no-tool-calls turn so the episode terminates (mirrors AgenticIngestHarnessTests).
         var rememberLisbon = new ToolCallRequest("c1", "memory_remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");

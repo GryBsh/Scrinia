@@ -14,7 +14,7 @@ public static partial class DialogRefParser
 {
     // D{n}:{a}, with an optional range tail "- D{m}:{b}" or "- {b}" (spaces allowed).
     // Group 1 = n, 2 = a, 3 = m (range-end session, optional), 4 = b (range end, optional).
-    [GeneratedRegex(@"D(\d+):(\d+)(?:\s*-\s*(?:D(\d+):)?(\d+))?")]
+    [GeneratedRegex(@"(?<![A-Za-z0-9])D(\d+):(\d+)(?:\s*-\s*(?:D(\d+):)?(\d+))?")]
     private static partial Regex DialogIdPattern();
 
     public static IReadOnlyList<string> ExtractDialogIds(string? content)

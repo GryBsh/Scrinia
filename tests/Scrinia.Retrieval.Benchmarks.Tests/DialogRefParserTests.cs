@@ -51,4 +51,13 @@ public sealed class DialogRefParserTests
         DialogRefParser.ExtractDialogIds(null).Should().BeEmpty();
         DialogRefParser.ExtractDialogIds("   ").Should().BeEmpty();
     }
+
+    [Fact]
+    public void RangeAndList_InOneString_ParsesBoth() =>
+        DialogRefParser.ExtractDialogIds("ref: D2:1, D9:1-D9:3")
+            .Should().Equal("D2:1", "D9:1", "D9:2", "D9:3");
+
+    [Fact]
+    public void IdEmbeddedInLargerToken_IsIgnored() =>
+        DialogRefParser.ExtractDialogIds("token ID2:1 xyzD3:4").Should().BeEmpty();
 }
