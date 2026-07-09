@@ -80,8 +80,7 @@ internal static class RetrieverFactory
                 $"episodes-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
             string agRoot = Path.Combine(Path.GetTempPath(), $"scrinia-retbench-{benchmarkSlug}-ag-{Guid.NewGuid().ToString("N")[..8]}");
             var agentic = new AgenticScriniaRetriever(agRoot, harness, new EpisodeCache(epCache), backend.ModelSlug,
-                RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 },
-                surfaceFullContent: HasFlag(args, "--judge"));
+                RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 });
             Console.Error.WriteLine($"[scrinia-bench] agentic-ingest enabled: provider={backend.ProviderId} model={backend.ModelSlug} maxTurns={maxTurns} maxTokens={maxTokens} cache={epCache}");
             return (agentic, Mode.Bm25);
         }

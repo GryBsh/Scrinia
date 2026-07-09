@@ -74,7 +74,7 @@ public sealed class AgenticIngestHarness
         };
 
         var executed = new List<EpisodeToolCall>();
-        int rememberCount = 0, searchCount = 0, malformedCount = 0;
+        int rememberCount = 0, searchCount = 0, appendCount = 0, malformedCount = 0;
         int turnsUsed = 0;
 
         for (int turn = 0; turn < _maxTurns; turn++)
@@ -84,7 +84,7 @@ public sealed class AgenticIngestHarness
 
             if (turnResult is null)
             {
-                LogSummary(turnsUsed, rememberCount, searchCount, malformedCount, succeeded: false);
+                LogSummary(turnsUsed, rememberCount, appendCount, searchCount, malformedCount, succeeded: false);
                 return new EpisodeResult(executed, Succeeded: false, LlmTurns: turnsUsed, ToolCallErrors: malformedCount);
             }
 
@@ -99,7 +99,7 @@ public sealed class AgenticIngestHarness
 
             if (turnResult.ToolCalls.Count == 0)
             {
-                LogSummary(turnsUsed, rememberCount, searchCount, malformedCount, succeeded: true);
+                LogSummary(turnsUsed, rememberCount, appendCount, searchCount, malformedCount, succeeded: true);
                 return new EpisodeResult(executed, Succeeded: true, LlmTurns: turnsUsed, ToolCallErrors: malformedCount);
             }
 
@@ -120,13 +120,14 @@ public sealed class AgenticIngestHarness
 
                 executed.Add(new EpisodeToolCall(call.ToolName, call.ArgumentsJson));
                 if (call.ToolName == "memory_remember") rememberCount++;
+                else if (call.ToolName == "memory_append") appendCount++;
                 else if (call.ToolName == "memory_search") searchCount++;
             }
         }
 
         // maxTurns reached: stop with success (mirrors "the model kept working right up
         // to the budget" rather than treating the turn cap itself as a failure).
-        LogSummary(turnsUsed, rememberCount, searchCount, malformedCount, succeeded: true);
+        LogSummary(turnsUsed, rememberCount, appendCount, searchCount, malformedCount, succeeded: true);
         return new EpisodeResult(executed, Succeeded: true, LlmTurns: turnsUsed, ToolCallErrors: malformedCount);
     }
 
@@ -184,6 +185,10 @@ public sealed class AgenticIngestHarness
                 {
                     case "memory_remember":
                         return await DispatchRememberAsync(tools, root, ct);
+                    case "memory_append":
+                        return await DispatchAppendAsync(tools, root, ct);
+                    case "memory_recall":
+                        return await DispatchRecallAsync(tools, root, ct);
                     case "memory_search":
                         return await DispatchSearchAsync(tools, root, ct);
                     default:
@@ -217,6 +222,38 @@ public sealed class AgenticIngestHarness
         string result = await tools.MemoryRemember(
             path, content, description, tags, keywords, anchors,
             reviewAfter: null, reviewWhen: null, codeRefs: null, ct);
+        return (result, false);
+    }
+
+    private static async Task<(string, bool)> DispatchAppendAsync(
+        ScriniaMcpTools tools, JsonElement root, CancellationToken ct)
+    {
+        if (!TryGetString(root, "path", out string? path) || string.IsNullOrWhiteSpace(path))
+            return ("error: memory_append requires 'path' and 'content'", true);
+        if (!TryGetString(root, "content", out string? content) || string.IsNullOrWhiteSpace(content))
+            return ("error: memory_append requires 'path' and 'content'", true);
+
+        TryGetString(root, "description", out string? description);
+        TryGetStringArray(root, "tags", out string[]? tags);
+        TryGetStringArray(root, "keywords", out string[]? keywords);
+        TryGetStringArray(root, "anchors", out string[]? anchors);
+
+        string result = await tools.MemoryAppend(path, content, description, tags, keywords, anchors, ct);
+        return (result, false);
+    }
+
+    private static async Task<(string, bool)> DispatchRecallAsync(
+        ScriniaMcpTools tools, JsonElement root, CancellationToken ct)
+    {
+        if (!TryGetString(root, "path", out string? path) || string.IsNullOrWhiteSpace(path))
+            return ("error: memory_recall requires 'path'", true);
+
+        int? chunk = null;
+        if (root.TryGetProperty("chunk", out var chunkEl) && chunkEl.ValueKind == JsonValueKind.Number
+            && chunkEl.TryGetInt32(out int parsedChunk))
+            chunk = parsedChunk;
+
+        string result = await tools.MemoryRecall(path, chunk, withBuiltin: false, ct);
         return (result, false);
     }
 
@@ -268,10 +305,10 @@ public sealed class AgenticIngestHarness
         return true;
     }
 
-    private static void LogSummary(int turns, int rememberCount, int searchCount, int malformedCount, bool succeeded)
+    private static void LogSummary(int turns, int rememberCount, int appendCount, int searchCount, int malformedCount, bool succeeded)
     {
         Console.Error.WriteLine(
             $"[scrinia-bench:agentic-ingest] episode done: turns={turns} remember={rememberCount} " +
-            $"search={searchCount} malformed={malformedCount} succeeded={succeeded}");
+            $"append={appendCount} search={searchCount} malformed={malformedCount} succeeded={succeeded}");
     }
 }

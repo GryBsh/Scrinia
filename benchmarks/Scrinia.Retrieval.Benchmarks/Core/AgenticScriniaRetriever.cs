@@ -39,9 +39,10 @@ public sealed record AgenticIngestStats(
 ///
 /// <para>Queries are then answered mechanically via <see cref="FileMemoryStore.SearchAll"/>
 /// — no agent involvement at query time. Each returned memory is mapped back to the
-/// haystack doc IDs it cited (<c>ref:</c> lines, extracted into <c>ArtifactEntry.Fields["ref"]</c>
-/// by <see cref="Scrinia.Core.Search.FieldExtractor"/> at write time) so the existing
-/// R@k scorer — which compares doc IDs — is unchanged.</para>
+/// haystack doc IDs it cited by parsing <c>D{n}:{i}</c>-style citations out of the
+/// memory's full decoded content via <see cref="DialogRefParser"/> and resolving each
+/// against the buffered doc ids, so the existing R@k scorer — which compares doc IDs —
+/// is unchanged.</para>
 ///
 /// <para>Episode results are cached by <see cref="EpisodeCache"/>, keyed on
 /// (model, prompt version, session transcript), so reruns of the same haystack
@@ -52,14 +53,13 @@ public sealed record AgenticIngestStats(
 /// agentic arm's recall up with non-agentic work and measure the wrong thing. Failed
 /// episodes are never cached.</para>
 /// </summary>
-public sealed class AgenticScriniaRetriever : IRetriever
+public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvider
 {
     private readonly string _rootDir;
     private readonly AgenticIngestHarness _harness;
     private readonly EpisodeCache _cache;
     private readonly string _modelSlug;
     private readonly RankerOptions _rankerOptions;
-    private readonly bool _surfaceFullContent;
 
     // Buffering — under _ingestLock. Sessions preserve first-seen order, both within
     // and across sessions, so episodes run in the order docs arrived.
@@ -78,6 +78,10 @@ public sealed class AgenticScriniaRetriever : IRetriever
     // Memory names whose full-content resolve already failed and was logged — dedupes
     // the warning so a systemic resolve failure logs once per memory, not once per hit.
     private readonly HashSet<string> _loggedResolveFailures = new(StringComparer.Ordinal);
+    // entryName -> full decoded plaintext, resolved ONCE after episodes (the store is
+    // immutable during the query phase). Read by RetrieveAsync, BuildProvenanceMap, and
+    // GetSurfacedContentsAsync so full content is resolved at most once per Reset.
+    private Dictionary<string, string> _fullContentByEntryName = new(StringComparer.Ordinal);
 
     // Cumulative run stats — NOT reset by ResetAsync; this is a whole-run summary
     // (Task 6 reads Stats after the full benchmark completes).
@@ -103,8 +107,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
         AgenticIngestHarness harness,
         EpisodeCache cache,
         string modelSlug,
-        RankerOptions? rankerOptions = null,
-        bool surfaceFullContent = false)
+        RankerOptions? rankerOptions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         ArgumentNullException.ThrowIfNull(harness);
@@ -115,7 +118,6 @@ public sealed class AgenticScriniaRetriever : IRetriever
         _cache = cache;
         _modelSlug = modelSlug;
         _rankerOptions = rankerOptions ?? RankerOptions.Default;
-        _surfaceFullContent = surfaceFullContent;
         _store = CreateStore();
     }
 
@@ -166,29 +168,22 @@ public sealed class AgenticScriniaRetriever : IRetriever
 
         var hits = new List<RetrievalHit>(topK);
         var seenDocIds = new HashSet<string>(StringComparer.Ordinal);
-        // Memoizes resolved+decoded full content per QUALIFIED memory name — provenance
-        // expansion can emit multiple doc-hits from one memory, so each memory is
-        // resolved and NMP/2-decoded at most once per RetrieveAsync call.
-        var resolvedFullContent = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var r in results)
         {
             if (hits.Count >= topK) break;
 
             string entryName;
-            string entryUri;
             string previewContent;
             double score;
             switch (r)
             {
                 case EntryResult er:
                     entryName = er.Item.Entry.Name;
-                    entryUri = er.Item.Entry.Uri;
                     previewContent = er.Item.Entry.ContentPreview ?? string.Empty;
                     score = er.Score;
                     break;
                 case ChunkEntryResult cr:
                     entryName = cr.ParentItem.Entry.Name;
-                    entryUri = cr.ParentItem.Entry.Uri;
                     previewContent = cr.ParentItem.Entry.ContentPreview ?? string.Empty;
                     score = cr.Score;
                     break;
@@ -196,35 +191,9 @@ public sealed class AgenticScriniaRetriever : IRetriever
                     continue;
             }
 
-            string entryContent = previewContent;
-            if (_surfaceFullContent)
-            {
-                // Resolve full plaintext via the entry's own Uri — for an agent-written
-                // memory that's the authoritative file://…nmp2 artifact path (set at write
-                // time by ArtifactUri). ResolveArtifactAsync reads the file directly, then
-                // we NMP/2-decode it (mirrors MemoryTools.Skills.ReadLegacySkillNmpAsync).
-                // The Uri is used rather than a reconstructed qualified name because the
-                // name→artifact mapping is lossy for some scopes.
-                if (!resolvedFullContent.TryGetValue(entryUri, out string? full))
-                {
-                    try
-                    {
-                        string artifact = await _store.ResolveArtifactAsync(entryUri, ct);
-                        full = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(artifact));
-                    }
-                    catch (Exception ex)
-                    {
-                        // Log each unresolvable memory at most once per run so a systemic
-                        // failure can't flood the console (it recurs on every question).
-                        if (_loggedResolveFailures.Add(entryName))
-                            Console.Error.WriteLine(
-                                $"[scrinia-bench:agentic-ingest] full-content resolve failed for {entryName}: {ex.Message}; using preview");
-                        full = previewContent;
-                    }
-                    resolvedFullContent[entryUri] = full;
-                }
-                entryContent = full;
-            }
+            string entryContent = _fullContentByEntryName.TryGetValue(entryName, out var full)
+                ? full
+                : previewContent;
 
             if (!_provenance.TryGetValue(entryName, out var docIds) || docIds.Count == 0)
                 continue;
@@ -237,6 +206,38 @@ public sealed class AgenticScriniaRetriever : IRetriever
             }
         }
         return hits;
+    }
+
+    /// <summary>
+    /// Top-<paramref name="k"/> matching memories' full content, deduped by entry, with
+    /// NO provenance gate — this is "what the store surfaces for the query" for the judge.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetSurfacedContentsAsync(
+        string query, int k, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        ct.ThrowIfCancellationRequested();
+        await EnsureEpisodesRunAsync(ct);
+
+        // Over-fetch so chunk-results collapsing to the same parent memory still yield k distinct memories.
+        int searchLimit = Math.Max(k * 4, k);
+        IReadOnlyList<SearchResult> results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var contents = new List<string>(k);
+        foreach (var r in results)
+        {
+            if (contents.Count >= k) break;
+            string? name = r switch
+            {
+                EntryResult er => er.Item.Entry.Name,
+                ChunkEntryResult cr => cr.ParentItem.Entry.Name,
+                _ => null,
+            };
+            if (name is null || !seen.Add(name)) continue;
+            contents.Add(_fullContentByEntryName.TryGetValue(name, out var full) ? full : string.Empty);
+        }
+        return contents;
     }
 
     // ── Lazy episode run ─────────────────────────────────────────────────────
@@ -271,6 +272,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
                 MemoryStoreContext.Current = null;
             }
 
+            await BuildFullContentCacheAsync(ct);
             BuildProvenanceMap();
             _ingested = true;
         }
@@ -341,10 +343,41 @@ public sealed class AgenticScriniaRetriever : IRetriever
     }
 
     /// <summary>
+    /// Resolves every stored memory's full plaintext once, via the entry's own Uri
+    /// (the authoritative file://…nmp2 path) + NMP/2 decode. On failure, falls back to
+    /// the entry's ContentPreview and logs once per entry.
+    /// </summary>
+    private async Task BuildFullContentCacheAsync(CancellationToken ct)
+    {
+        var cache = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var sa in _store.ListScoped())
+        {
+            ArtifactEntry entry = sa.Entry;
+            string content;
+            try
+            {
+                string artifact = await _store.ResolveArtifactAsync(entry.Uri, ct);
+                content = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(artifact));
+            }
+            catch (Exception ex)
+            {
+                if (_loggedResolveFailures.Add(entry.Name))
+                    Console.Error.WriteLine(
+                        $"[scrinia-bench:agentic-ingest] full-content resolve failed for {entry.Name}: {ex.Message}; using preview");
+                content = entry.ContentPreview ?? string.Empty;
+            }
+            cache[entry.Name] = content;
+        }
+        _fullContentByEntryName = cache;
+    }
+
+    /// <summary>
     /// Builds entryName → ordered doc-ids provenance from every agent-authored memory
-    /// currently in the store, resolving each via <c>Fields["ref"]</c> (JSON round-trip
-    /// drops the dictionary's original comparer, so the "ref" key is matched with an
-    /// explicit OrdinalIgnoreCase comparison rather than a direct dictionary lookup).
+    /// currently in the store, parsing dialog ids directly out of the memory's full
+    /// decoded content (<see cref="_fullContentByEntryName"/>) via
+    /// <see cref="DialogRefParser.ExtractDialogIds"/> and resolving each against
+    /// <see cref="_docsById"/>. This does not depend on production's
+    /// <c>Fields["ref"]</c> field extraction.
     /// </summary>
     private void BuildProvenanceMap()
     {
@@ -353,34 +386,25 @@ public sealed class AgenticScriniaRetriever : IRetriever
         foreach (var sa in _store.ListScoped())
         {
             ArtifactEntry entry = sa.Entry;
-
-            string[]? refs = null;
-            if (entry.Fields is not null)
-            {
-                foreach (var kv in entry.Fields)
-                {
-                    if (StringComparer.OrdinalIgnoreCase.Equals(kv.Key, "ref"))
-                    {
-                        refs = kv.Value;
-                        break;
-                    }
-                }
-            }
-
             _memoriesWritten++;
 
-            if (refs is null || refs.Length == 0)
+            string content = _fullContentByEntryName.TryGetValue(entry.Name, out var full)
+                ? full
+                : string.Empty;
+            var citedIds = DialogRefParser.ExtractDialogIds(content);
+
+            if (citedIds.Count == 0)
             {
                 _memoriesWithoutRefs++;
                 provenance[entry.Name] = [];
                 continue;
             }
 
-            var resolved = new List<string>(refs.Length);
-            foreach (string r in refs)
+            var resolved = new List<string>(citedIds.Count);
+            foreach (string id in citedIds)
             {
-                if (_docsById.ContainsKey(r))
-                    resolved.Add(r);
+                if (_docsById.ContainsKey(id))
+                    resolved.Add(id);
                 else
                     _unresolvableRefs++;
             }
@@ -417,6 +441,7 @@ public sealed class AgenticScriniaRetriever : IRetriever
         }
         _ingested = false;
         _provenance = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        _fullContentByEntryName = new Dictionary<string, string>(StringComparer.Ordinal);
 
         return Task.CompletedTask;
     }

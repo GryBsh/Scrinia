@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Mcp;
 using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
 using Scrinia.Retrieval.Benchmarks.Llm.Providers;
@@ -119,4 +120,41 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         }
         finally { MemoryStoreContext.Current = null; }
     }
+
+    [Fact]
+    public async Task Append_AccumulatesOntoRemember_DoesNotClobber()
+    {
+        Directory.CreateDirectory(_dir);
+        var store = new FileMemoryStore(_dir);
+        MemoryStoreContext.Current = store;
+        try
+        {
+            var remember = new ToolCallRequest("c1", "memory_remember",
+                """{"path":"/findings/x","content":["FIRST-FACT about Lisbon.\nref: D1:1"]}""");
+            var append = new ToolCallRequest("c2", "memory_append",
+                """{"path":"/findings/x","content":"SECOND-FACT about the flight.\nref: D1:2"}""");
+            var client = new ScriptedToolClient(
+                new ToolTurnResult(null, [remember], "tool_calls"),
+                new ToolTurnResult(null, [append], "tool_calls"),
+                new ToolTurnResult("done", [], "stop"));
+            var harness = new AgenticIngestHarness(client, maxTurns: 8);
+            var docs = new List<HaystackDoc> { new("D1:1", "Maria: Booked Lisbon.", null, "s1") };
+
+            var result = await harness.RunEpisodeAsync(docs, CancellationToken.None);
+
+            result.Succeeded.Should().BeTrue();
+            result.ToolCallErrors.Should().Be(0);
+
+            // Read the stored memory back: BOTH facts must be present (append accumulated,
+            // memory_remember did NOT clobber the first).
+            string recalled = await new ScriniaMcpTools().MemoryRecall("/findings/x", null, false, CancellationToken.None);
+            recalled.Should().Contain("FIRST-FACT");
+            recalled.Should().Contain("SECOND-FACT");
+        }
+        finally { MemoryStoreContext.Current = null; }
+    }
+
+    [Fact]
+    public async Task PromptVersion_IsV2_ForFourToolRegime() =>
+        AgenticIngestPrompts.PromptVersion.Should().Be("v2");
 }

@@ -47,6 +47,48 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
         await Task.CompletedTask;
     }
 
+    private sealed class CapturingLlmClient : IBenchLlmClient
+    {
+        public string? LastAnswererUser { get; private set; }
+        private int _n;
+        public Task<bool> IsAvailableAsync(CancellationToken ct) => Task.FromResult(true);
+        public Task<string?> CompleteAsync(string s, string u, int m, bool j, CancellationToken ct)
+        {
+            // First call is the answerer (captures the retrieved contents), second is the grader.
+            if (_n++ == 0) LastAnswererUser = u;
+            return Task.FromResult<string?>(_n == 1 ? "Lisbon" : "correct");
+        }
+    }
+
+    private sealed class SurfacingStubRetriever : IRetriever, ISurfacedContentProvider
+    {
+        public Task IngestAsync(HaystackDoc doc, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<IReadOnlyList<RetrievalHit>> RetrieveAsync(string query, int topK, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<RetrievalHit>>([new RetrievalHit("D1:1", "HITS-TEXT-TOKEN", 1.0)]);
+        public Task<IReadOnlyList<string>> GetSurfacedContentsAsync(string query, int k, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<string>>(["SURFACED-TOKEN memory content"]);
+        public Task ResetAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Judge_SourcesContent_FromSurfacedContentProvider_NotHits()
+    {
+        var retriever = new SurfacingStubRetriever();
+        var question = new BenchmarkQuestion(
+            "q1", "Where did Maria go?", [], ["D1:1"], [], "single-hop", GoldAnswer: "Lisbon");
+        var llm = new CapturingLlmClient();
+        var judge = new AnswerabilityJudge(llm, new LlmResponseCache(_cacheFile), "test", "test-model", judgeK: 10);
+
+        await new BenchmarkRunner(NoOpAgentHarness.Instance, judge).RunAsync(
+            "bench-test", "judge-test",
+            ToAsync(new[] { question }), retriever, topK: 10,
+            BenchmarkScorer.ScoreAnyHitById, ct: CancellationToken.None);
+
+        llm.LastAnswererUser.Should().Contain("SURFACED-TOKEN");
+        llm.LastAnswererUser.Should().NotContain("HITS-TEXT-TOKEN");
+    }
+
     [Fact]
     public async Task RunAsync_WithJudge_PopulatesAnswerable_AndKeepsRecallIntact()
     {
