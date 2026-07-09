@@ -54,9 +54,9 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         // a memory citing gold doc d3. Each episode is a tool_calls turn followed by a
         // no-tool-calls turn so the episode terminates (mirrors AgenticIngestHarnessTests).
         var rememberLisbon = new ToolCallRequest("c1", "memory_remember",
-            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: d1"]}""");
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var rememberBerlin = new ToolCallRequest("c2", "memory_remember",
-            """{"path":"/findings/job","content":["Started a new job in Berlin.\nref: d3"]}""");
+            """{"path":"/findings/job","content":["Started a new job in Berlin.\nref: D2:1"]}""");
 
         var client = new ScriptedToolClient(
             new ToolTurnResult(null, [rememberLisbon], "tool_calls"),
@@ -68,14 +68,14 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         await using var retriever = new AgenticScriniaRetriever(_rootDir, harness, cache, modelSlug: "test-model");
 
         // 4-doc haystack across 2 sessions.
-        var d1 = new HaystackDoc("d1", "Maria: Booked the Lisbon trip.", null, "s1");
-        var d2 = new HaystackDoc("d2", "Maria: The flight leaves Tuesday.", null, "s1");
-        var d3 = new HaystackDoc("d3", "Diego: Started a new job in Berlin.", null, "s2");
-        var d4 = new HaystackDoc("d4", "Diego: The office is downtown.", null, "s2");
+        var d1 = new HaystackDoc("D1:1", "Maria: Booked the Lisbon trip.", null, "s1");
+        var d2 = new HaystackDoc("D1:2", "Maria: The flight leaves Tuesday.", null, "s1");
+        var d3 = new HaystackDoc("D2:1", "Diego: Started a new job in Berlin.", null, "s2");
+        var d4 = new HaystackDoc("D2:2", "Diego: The office is downtown.", null, "s2");
         IReadOnlyList<HaystackDoc> haystack = [d1, d2, d3, d4];
 
-        var q1 = new BenchmarkQuestion("q1", "What trip did Maria book?", haystack, ["d1"], [], "single-hop");
-        var q2 = new BenchmarkQuestion("q2", "Where did Diego start a new job?", haystack, ["d3"], [], "single-hop");
+        var q1 = new BenchmarkQuestion("q1", "What trip did Maria book?", haystack, ["D1:1"], [], "single-hop");
+        var q2 = new BenchmarkQuestion("q2", "Where did Diego start a new job?", haystack, ["D2:1"], [], "single-hop");
         var group = new BenchmarkQuestionGroup("g1", haystack, [q1, q2]);
 
         var result = await new BenchmarkRunner().RunGroupedAsync(
