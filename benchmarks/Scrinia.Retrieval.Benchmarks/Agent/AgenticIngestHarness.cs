@@ -38,11 +38,15 @@ public sealed record EpisodeResult(
 /// touch any cache — it returns the executed tool-call sequence plus a success flag so
 /// the retriever can decide whether to cache the episode.</para>
 ///
-/// <para><paramref name="maxTokens"/> caps the WHOLE assistant turn — any reasoning,
-/// the assistant text, AND the tool-call <c>arguments</c> JSON all draw from it. Set it
-/// too low and a tool call carrying real memory content is truncated mid-arguments
-/// (<c>finish_reason=length</c>), yielding invalid JSON that reads as a bogus
-/// "malformed tool call". The default is generous for that reason; the CLI exposes
+/// <para><paramref name="maxTokens"/> is the <c>max_tokens</c> sent on every turn. On an
+/// OpenAI-compatible server (llama.cpp, vLLM, …) that value bounds the ENTIRE request —
+/// the prompt AND the generation — not just the completion. And the prompt is not fixed:
+/// it starts at the system guide + full session transcript + tool schemas (already ~5k
+/// tokens) and grows every turn as prior tool calls, recalled memories, and search hits
+/// are appended. So the cap must be sized to the server's context window, not to a single
+/// tool call's length. Set it too low and either the request has no room to generate or a
+/// tool call is truncated mid-arguments (<c>finish_reason=length</c>), yielding invalid
+/// JSON that reads as a bogus "malformed tool call". The CLI exposes
 /// <c>--episode-max-tokens</c> to tune it. A turn that hits the cap is logged loudly.</para>
 /// </summary>
 public sealed class AgenticIngestHarness
@@ -51,7 +55,7 @@ public sealed class AgenticIngestHarness
     private readonly int _maxTurns;
     private readonly int _maxTokens;
 
-    public AgenticIngestHarness(IToolCallingClient client, int maxTurns, int maxTokens = 4096)
+    public AgenticIngestHarness(IToolCallingClient client, int maxTurns, int maxTokens = 32768)
     {
         _client = client;
         _maxTurns = maxTurns;

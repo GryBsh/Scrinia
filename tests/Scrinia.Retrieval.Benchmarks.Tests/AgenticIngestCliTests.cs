@@ -30,11 +30,14 @@ public sealed class AgenticIngestCliTests
     }
 
     [Fact]
-    public void EpisodeMaxTokens_ParsesDefault4096()
+    public void EpisodeMaxTokens_ParsesDefault32768()
     {
-        // Guards the truncation fix: the per-turn budget must default well above the old
-        // 1024 so a tool call carrying real memory content isn't cut off mid-arguments.
-        RetrieverFactory.EpisodeMaxTokens(["--x", "y"]).Should().Be(4096);
+        // The default must clear a whole episode, not one tool call: on an OpenAI-compatible
+        // server max_tokens bounds prompt+generation together, and the ingest prompt (guide +
+        // full session transcript + tool schemas, then growing each turn with recalls/search
+        // hits) starts near 5k tokens. 4096 could not even fit turn one; the default is now
+        // sized to a server context window.
+        RetrieverFactory.EpisodeMaxTokens(["--x", "y"]).Should().Be(32768);
         RetrieverFactory.EpisodeMaxTokens(["--episode-max-tokens", "8192"]).Should().Be(8192);
     }
 }

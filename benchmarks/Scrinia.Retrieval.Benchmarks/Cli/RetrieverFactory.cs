@@ -242,11 +242,16 @@ internal static class RetrieverFactory
     /// <see cref="ParseAgentMode"/> public/internal helper style so it's unit-testable.</summary>
     internal static int EpisodeMaxTurns(string[] args) => ParseInt(Program.Flag(args, "--episode-max-turns"), 16);
 
-    /// <summary>Max completion tokens per agentic-ingest turn. Caps reasoning + assistant
-    /// text + tool-call arguments together, so it must be generous enough that a
-    /// memory_remember carrying real content isn't truncated (which would surface as a
-    /// bogus malformed-tool-call). Default 4096; raise for heavy-reasoning models.</summary>
-    internal static int EpisodeMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--episode-max-tokens"), 4096);
+    /// <summary>The <c>max_tokens</c> sent on every agentic-ingest turn. On an
+    /// OpenAI-compatible server (llama.cpp, vLLM, …) this bounds the ENTIRE request — the
+    /// accumulating prompt (system guide + full session transcript + every prior turn's
+    /// tool calls and tool results) plus the tokens generated this turn — not just the
+    /// completion. The transcript grows each turn as recalled memories and search hits are
+    /// appended, so an undersized cap starves generation after the first turn or two. The
+    /// base prompt alone (~2.3k-token guide + tool schemas + up to a ~1.4k-token session)
+    /// already approaches 5k tokens, so the old 4096 default could not even fit turn one.
+    /// Default 32768; set it to your server's context window (n_ctx) and no higher.</summary>
+    internal static int EpisodeMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--episode-max-tokens"), 32768);
 
     /// <summary>Prints the agentic-ingest run's whole-run stats block to stdout. Shared by
     /// <c>LoCoMoCommand</c> and <c>LongMemEvalCommand</c> so the format stays consistent.</summary>
@@ -265,14 +270,18 @@ internal static class RetrieverFactory
 
     internal static int JudgeK(string[] args) => ParseInt(Program.Flag(args, "--judge-k"), 10);
 
-    /// <summary>Answerer completion cap. Default 512 suits a short factual answer; raise for a
-    /// reasoning judge model that spends tokens thinking before answering.</summary>
-    internal static int JudgeAnswerMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--judge-answer-max-tokens"), 512);
+    /// <summary>The <c>max_tokens</c> for the answerer call. Like the ingest turns, this
+    /// bounds the whole request on an OpenAI-compatible server: the query plus the
+    /// top-<c>--judge-k</c> surfaced memory contents, plus the answer itself. Ten full
+    /// memories can run to several thousand tokens, so the old 512 default truncated the
+    /// prompt before the model could answer. Default 8192.</summary>
+    internal static int JudgeAnswerMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--judge-answer-max-tokens"), 8192);
 
-    /// <summary>Grader completion cap. Default 16 fits a one-word verdict from a non-reasoning
-    /// model; raise it well above the verdict length for a reasoning judge model, or the verdict
-    /// is consumed by reasoning and never emitted (every question then counts as failed).</summary>
-    internal static int JudgeGradeMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--judge-grade-max-tokens"), 16);
+    /// <summary>The <c>max_tokens</c> for the grader call. Bounds the whole request: the
+    /// query + gold answer + candidate answer prompt, plus the verdict token. The old 16
+    /// left no room for the prompt at all on a server that counts prompt+completion
+    /// together, so every grade failed. Default 2048.</summary>
+    internal static int JudgeGradeMaxTokens(string[] args) => ParseInt(Program.Flag(args, "--judge-grade-max-tokens"), 2048);
 
     /// <summary>Builds the answerability judge when --judge is set, else null. One model
     /// (via --judge-provider/--judge-model/--judge-base-url/--judge-api-key) drives both the

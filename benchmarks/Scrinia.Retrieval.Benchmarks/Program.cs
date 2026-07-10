@@ -85,7 +85,7 @@ internal static class Program
             No embedder, no reranker; compare against the BM25 mechanical arm (--mode bm25).
               --agentic-ingest         Enable the agentic-ingest arm. Requires --agent-provider (openai-compatible only). Mutually exclusive with --agent <ops>.
               --episode-max-turns <n> Max tool-call turns per session episode (default 16)
-              --episode-max-tokens <n> Max completion tokens per turn — caps reasoning + tool-call args together (default 4096; raise for reasoning models to avoid truncated tool calls)
+              --episode-max-tokens <n> max_tokens per turn. On an OpenAI-compatible server this bounds the WHOLE request (prompt + generation), and the prompt (guide + full session transcript + tool schemas, growing each turn with recalls/search hits) starts near 5k tokens. Default 32768; set it to your server's context window (n_ctx).
 
             Judge answerability flags (longmemeval, locomo):
               --judge                 Enable the LLM-judge answerability metric (needs --judge-provider). Works with or without --agentic-ingest.
@@ -94,8 +94,8 @@ internal static class Program
               --judge-base-url <u>    OpenAI-compatible endpoint for the judge.
               --judge-api-key <k>     API key for the judge provider.
               --judge-k <n>           Retrieved items the answerer sees (default 10).
-              --judge-answer-max-tokens <n>  Answerer completion cap (default 512; raise for a reasoning judge model).
-              --judge-grade-max-tokens <n>   Grader completion cap (default 16; raise well above the verdict for a reasoning judge model, else the verdict truncates to empty and every question counts as failed).
+              --judge-answer-max-tokens <n>  Answerer max_tokens — bounds the whole request (query + top-k surfaced memories + answer). Default 8192.
+              --judge-grade-max-tokens <n>   Grader max_tokens — bounds the whole request (query + gold + candidate answer + verdict). Default 2048.
 
             ConvoMem flags:
               --limit <N>        Cap questions per category file (default: 50)

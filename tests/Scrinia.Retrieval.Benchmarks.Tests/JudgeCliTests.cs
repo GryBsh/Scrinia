@@ -29,9 +29,9 @@ public sealed class JudgeCliTests
     [Fact]
     public void JudgeMaxTokens_ParseDefaultsAndOverrides()
     {
-        RetrieverFactory.JudgeAnswerMaxTokens(["--x", "y"]).Should().Be(512);
+        RetrieverFactory.JudgeAnswerMaxTokens(["--x", "y"]).Should().Be(8192);
         RetrieverFactory.JudgeAnswerMaxTokens(["--judge-answer-max-tokens", "2048"]).Should().Be(2048);
-        RetrieverFactory.JudgeGradeMaxTokens(["--x", "y"]).Should().Be(16);
+        RetrieverFactory.JudgeGradeMaxTokens(["--x", "y"]).Should().Be(2048);
         RetrieverFactory.JudgeGradeMaxTokens(["--judge-grade-max-tokens", "1024"]).Should().Be(1024);
     }
 }
