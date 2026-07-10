@@ -81,6 +81,46 @@ public sealed class AnswerabilityJudgeTests : IDisposable
     }
 
     [Fact]
+    public async Task Judge_AnswererBlank_ThenSucceeds_RetriesAndRecovers()
+    {
+        // The answerer returns blank on the first attempt, then a real answer — the retry
+        // recovers the question instead of dropping it from the aggregate. The grader then
+        // grades it correct.
+        var c = new ScriptedLlmClient(null, "Lisbon", "correct");
+        var j = Judge(c);
+        var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
+        v!.Answerable.Should().BeTrue();
+        j.FailedCount.Should().Be(0, "a blank that recovers on retry is not a failure");
+        c.CallCount.Should().Be(3, "answerer blank + answerer retry + grader");
+    }
+
+    [Fact]
+    public async Task Judge_GraderBlank_ThenSucceeds_RetriesAndRecovers()
+    {
+        // The grader returns blank once, then a verdict — the grader retry recovers it.
+        var c = new ScriptedLlmClient("Lisbon", null, "correct");
+        var j = Judge(c);
+        var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
+        v!.Answerable.Should().BeTrue();
+        j.FailedCount.Should().Be(0);
+        c.CallCount.Should().Be(3, "answerer + grader blank + grader retry");
+    }
+
+    [Fact]
+    public async Task Judge_AnswererBlank_EveryAttempt_CountsFailedAfterRetries()
+    {
+        // Every answerer attempt is blank. After exhausting retries the question is dropped
+        // (null verdict, failed++), and the LLM was actually re-called up to the cap — not
+        // skipped on the first blank as it was before retries were added.
+        var c = new ScriptedLlmClient(); // always returns null
+        var j = Judge(c);
+        var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default);
+        v.Should().BeNull();
+        j.FailedCount.Should().Be(1);
+        c.CallCount.Should().Be(3, "answerer retried up to the attempt cap before giving up");
+    }
+
+    [Fact]
     public async Task Judge_CachesVerdict_NoSecondLlmCall_OnIdenticalInputs()
     {
         _ = await Judge(new ScriptedLlmClient("Lisbon", "correct"))

@@ -23,6 +23,12 @@ public sealed class AnswerabilityJudge
     private const string AnswerOp = "answer";
     private const string GradeOp = "grade";
 
+    // A null/blank judge completion (a transport failure, or an HTTP-200 with empty content)
+    // is re-attempted up to this many times total before the question is dropped from the
+    // aggregate. The judge model runs at a non-zero temperature, so a re-attempt genuinely
+    // varies rather than reproducing the same blank.
+    private const int MaxCallAttempts = 3;
+
     private readonly IBenchLlmClient _llm;
     private readonly LlmResponseCache _cache;
     private readonly string _providerId;
@@ -34,15 +40,16 @@ public sealed class AnswerabilityJudge
     private int _noGoldCount;
     private int _failedCount;
 
-    /// <param name="answerMaxTokens">Completion cap for the answerer call. The default suits a
-    /// short factual answer; raise it for a reasoning judge model that spends tokens thinking
-    /// before it answers, or its output truncates to empty and the question is counted failed.</param>
-    /// <param name="graderMaxTokens">Completion cap for the grader call. The default fits a
-    /// one-word verdict from a non-reasoning model; a reasoning judge model needs it raised well
-    /// above the verdict length or the verdict is consumed by reasoning and never emitted.</param>
+    /// <param name="answerMaxTokens">The answerer call's <c>max_tokens</c>. On an
+    /// OpenAI-compatible server this bounds the WHOLE request — the question + the retrieved
+    /// content (up to judgeK memories) + the answer — not just the completion, so it must
+    /// clear the prompt with room left to answer or the output truncates to empty.</param>
+    /// <param name="graderMaxTokens">The grader call's <c>max_tokens</c>, likewise bounding
+    /// the whole request (question + candidate answer + gold + the verdict). Too small and the
+    /// verdict truncates to empty and the question is counted failed.</param>
     public AnswerabilityJudge(IBenchLlmClient llm, LlmResponseCache cache,
         string providerId, string modelSlug, int judgeK,
-        int answerMaxTokens = 512, int graderMaxTokens = 16)
+        int answerMaxTokens = 8192, int graderMaxTokens = 2048)
     {
         _llm = llm;
         _cache = cache;
@@ -97,9 +104,10 @@ public sealed class AnswerabilityJudge
 
     /// <summary>
     /// Cache-through call: on hit (and the cached value is non-blank) returns the cached
-    /// string; on miss (or a defensively-treated blank cache entry) invokes <paramref name="call"/>,
-    /// caching the result only if it's non-blank. A blank/null result is logged, tallied
-    /// as a failure, and never cached.
+    /// string; otherwise invokes <paramref name="call"/> up to <see cref="MaxCallAttempts"/>
+    /// times and returns the first non-blank result, caching it. A null/blank result (a
+    /// transport failure, or a 200 with empty content) is retried; if EVERY attempt is blank
+    /// it is logged, tallied as a failure, and never cached (so a resumed run re-attempts it).
     /// </summary>
     private async Task<string?> GetOrCallAsync(
         string op, string hash, Func<Task<string?>> call, string failureLabel, string questionId)
@@ -107,16 +115,24 @@ public sealed class AnswerabilityJudge
         if (_cache.TryGetString(op, hash, out string? cached) && !string.IsNullOrWhiteSpace(cached))
             return cached;
 
-        string? result = await call().ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(result))
+        for (int attempt = 1; attempt <= MaxCallAttempts; attempt++)
         {
-            Console.Error.WriteLine($"[scrinia-bench:judge] {failureLabel} failed for {questionId}: null/blank completion");
-            Interlocked.Increment(ref _failedCount);
-            return null;
+            string? result = await call().ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(result))
+            {
+                _cache.PutString(op, hash, result);
+                return result;
+            }
+
+            if (attempt < MaxCallAttempts)
+                Console.Error.WriteLine(
+                    $"[scrinia-bench:judge] {failureLabel} blank for {questionId}, retrying ({attempt}/{MaxCallAttempts - 1})");
         }
 
-        _cache.PutString(op, hash, result);
-        return result;
+        Console.Error.WriteLine(
+            $"[scrinia-bench:judge] {failureLabel} failed for {questionId}: null/blank completion after {MaxCallAttempts} attempts");
+        Interlocked.Increment(ref _failedCount);
+        return null;
     }
 
     /// <summary>
