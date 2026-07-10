@@ -79,3 +79,32 @@ public sealed class StubEmbeddingProvider : IEmbeddingProvider
         }
     }
 }
+
+/// <summary>
+/// Deterministic, network-free <see cref="IEmbeddingProvider"/> stub that models a single
+/// "travel" concept for Task 2's hybrid-vs-BM25 tests. Any text mentioning a travel-concept
+/// word embeds to the unit vector <c>[1,0]</c>; everything else embeds to <c>[0,1]</c> — so
+/// travel-topic texts are cosine-identical to each other regardless of shared lexical tokens,
+/// and orthogonal to off-topic text. This isolates the semantic signal from BM25 lexical
+/// overlap so tests can prove the contributor changes retrieval, not just that vectors exist.
+/// </summary>
+public sealed class ConceptEmbeddingProvider : IEmbeddingProvider
+{
+    private static readonly string[] TravelConcepts = ["lisbon", "vacation", "getaway", "holiday", "trip"];
+
+    public bool IsAvailable => true;
+
+    public int Dimensions => 2;
+
+    public string Signature => "concept:test";
+
+    public void Dispose() { }
+
+    public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)
+    {
+        string lower = text.ToLowerInvariant();
+        bool isTravel = TravelConcepts.Any(lower.Contains);
+        float[] vector = isTravel ? [1f, 0f] : [0f, 1f];
+        return Task.FromResult<float[]?>(vector);
+    }
+}

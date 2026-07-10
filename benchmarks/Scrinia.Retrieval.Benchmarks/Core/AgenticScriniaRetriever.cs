@@ -187,7 +187,17 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         // Expansion + dedup collapses memories to docs, so a wider first-stage
         // candidate set is needed to still surface topK unique docs.
         int searchLimit = Math.Max(topK * 10, topK);
-        IReadOnlyList<SearchResult> results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        IReadOnlyList<SearchResult> results;
+        if (_searchContributor is not null)
+        {
+            var candidates = _store.ListScoped(scopes: null);
+            var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: null);
+        }
+        else
+        {
+            results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        }
 
         var hits = new List<RetrievalHit>(topK);
         var seenDocIds = new HashSet<string>(StringComparer.Ordinal);
@@ -244,7 +254,17 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
 
         // Over-fetch so chunk-results collapsing to the same parent memory still yield k distinct memories.
         int searchLimit = Math.Max(k * 4, k);
-        IReadOnlyList<SearchResult> results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        IReadOnlyList<SearchResult> results;
+        if (_searchContributor is not null)
+        {
+            var candidates = _store.ListScoped(scopes: null);
+            var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: null);
+        }
+        else
+        {
+            results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        }
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var contents = new List<string>(k);
