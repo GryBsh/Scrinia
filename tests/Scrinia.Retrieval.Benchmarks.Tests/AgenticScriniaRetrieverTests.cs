@@ -124,6 +124,49 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     }
 
     [Fact]
+    public async Task NoToolCallEpisode_RetriesOnce_AndRecoversWhenRetryStores()
+    {
+        // Attempt 1: the model replies with pure text and makes no tool call at all — an
+        // empty episode. That triggers one fresh re-roll; the retry stores a memory, so the
+        // session recovers and is counted as an agentic episode (not failed).
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        var (retriever, client, _) = MakeRetriever(
+            new ToolTurnResult("I have nothing to store.", [], "stop"),          // attempt 1: no tool calls
+            new ToolTurnResult(null, [remember], "tool_calls"),                   // attempt 2 (retry): stores
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        hits.Select(h => h.Id).Should().Equal("D1:1");
+        retriever.Stats.AgenticEpisodes.Should().Be(1);
+        retriever.Stats.FailedEpisodes.Should().Be(0);
+        client.CallCount.Should().Be(3, "attempt 1 (1 empty turn) + retry (remember turn + done turn)");
+    }
+
+    [Fact]
+    public async Task NoToolCallEpisode_OnBothAttempts_CountsFailed_StoresNothing()
+    {
+        // The model makes no tool call on the first attempt OR the retry. An episode that
+        // stored nothing is a failed session — rolled back, counted, and NOT cached (so a
+        // future run re-rolls it rather than replaying an empty episode forever).
+        var (retriever, client, _) = MakeRetriever(
+            new ToolTurnResult("Nothing to store.", [], "stop"),
+            new ToolTurnResult("Still nothing.", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked a unique Lisbon getaway.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("unique Lisbon getaway", topK: 5);
+
+        hits.Should().BeEmpty("an episode that made no tool calls stores nothing");
+        retriever.Stats.FailedEpisodes.Should().Be(1);
+        retriever.Stats.AgenticEpisodes.Should().Be(0);
+        client.CallCount.Should().Be(2, "one turn per attempt, two attempts, then given up");
+    }
+
+    [Fact]
     public async Task NoRefMemory_IncrementsMemoriesWithoutRefs_AndMapsToNoDoc()
     {
         var remember = new ToolCallRequest("c1", "memory_remember",

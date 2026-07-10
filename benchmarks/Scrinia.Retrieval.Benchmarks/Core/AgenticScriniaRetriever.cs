@@ -299,36 +299,57 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
 
         EpisodeResult result = await _harness.RunEpisodeAsync(sessionDocs, ct);
         _toolCallErrors += result.ToolCallErrors;
-        if (!result.Succeeded)
+
+        // Retry once when the attempt is unusable: a transport failure (Succeeded==false),
+        // OR an episode where the model emitted no tool calls AT ALL — not even a malformed
+        // one — i.e. it replied with pure text and stored nothing. Both leave the session
+        // empty and both deserve a fresh re-roll (RunEpisodeAsync starts a new conversation
+        // each call). Roll back any partial writes first so the retry starts from clean
+        // pre-episode state (otherwise residue would survive alongside the retry's writes
+        // and diverge from cache-replay, which only replays the kept attempt).
+        if (!result.Succeeded || MadeNoToolCalls(result))
         {
-            // One retry to absorb a transient transport blip. Roll back the failed
-            // attempt's partial writes first so the retry starts from clean pre-episode
-            // state (otherwise residue would survive alongside the retry's writes and
-            // diverge from cache-replay, which only replays the successful attempt).
             RollbackTo(preEpisode);
             result = await _harness.RunEpisodeAsync(sessionDocs, ct);
             _toolCallErrors += result.ToolCallErrors;
         }
 
-        if (result.Succeeded)
+        if (result.Succeeded && !MadeNoToolCalls(result))
         {
-            // NEVER cache a failed episode — only a Succeeded run.
+            // Cache ONLY a run that succeeded AND actually did work — never a failed run,
+            // never an empty one (caching empty would freeze this session at "stores
+            // nothing" on every future cache-hit run).
             _cache.Put(key, result.ToolCalls);
             _agenticEpisodes++;
             return;
         }
 
-        // Both attempts failed. Discard partial writes and store NOTHING for this
-        // session — there is deliberately no mechanical-ingestion fallback. Substituting
-        // verbatim doc ingest would inflate the agentic arm's recall with non-agentic
-        // work; a failed episode must honestly degrade recall instead. Counted + logged
-        // loudly so the failure is visible, not silently absorbed.
+        // Both attempts were unusable (transport failure, or the model never made a tool
+        // call). Discard partial writes and store NOTHING for this session — there is
+        // deliberately no mechanical-ingestion fallback. Substituting verbatim doc ingest
+        // would inflate the agentic arm's recall with non-agentic work; an unusable episode
+        // must honestly degrade recall instead. Counted + logged loudly so it is visible,
+        // not silently absorbed.
         RollbackTo(preEpisode);
+        string reason = result.Succeeded
+            ? "made no tool calls on either attempt"
+            : "episode failed twice";
         Console.Error.WriteLine(
-            $"[scrinia-bench:agentic-ingest] session FAILED (episode failed twice, " +
+            $"[scrinia-bench:agentic-ingest] session FAILED ({reason}, " +
             $"session of {sessionDocs.Count} doc(s)); nothing stored for this session.");
         _failedEpisodes++;
     }
+
+    /// <summary>
+    /// True when the episode emitted no tool calls whatsoever — no successful call
+    /// (<see cref="EpisodeResult.ToolCalls"/> empty) and no malformed one
+    /// (<see cref="EpisodeResult.ToolCallErrors"/> zero). This is the "model just replied
+    /// with text and stored nothing" case, distinct from a run that tried and erred. Such
+    /// an episode is retried once; if it recurs, the session is counted as failed rather
+    /// than cached empty.
+    /// </summary>
+    private static bool MadeNoToolCalls(EpisodeResult result) =>
+        result.ToolCalls.Count == 0 && result.ToolCallErrors == 0;
 
     /// Removes every entry added to the store since <paramref name="preEpisode"/> was
     /// captured — used to discard a failed episode attempt's partial writes so retry and
