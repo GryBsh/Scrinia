@@ -7,19 +7,27 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 public sealed class AgenticIngestCliTests
 {
     [Fact]
-    public void AgenticIngest_RequiresAgentProvider()
+    public async Task AgenticIngest_RequiresAgentProvider()
     {
         string[] args = ["locomo", "--data", "x.json", "--agentic-ingest"];
         var act = async () => await RetrieverFactory.BuildAsync(args, "locomo", default);
-        act.Should().ThrowAsync<ArgumentException>().WithMessage("*agent-provider*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*agent-provider*");
     }
 
     [Fact]
-    public void AgenticIngest_RejectsExplicitRerank()
+    public async Task AgenticIngest_RejectsExplicitRerank()
     {
         string[] args = ["locomo", "--data", "x.json", "--agentic-ingest", "--agent-provider", "openai", "--rerank", "cross-encoder"];
         var act = async () => await RetrieverFactory.BuildAsync(args, "locomo", default);
-        act.Should().ThrowAsync<ArgumentException>().WithMessage("*rerank*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*bm25_embeddings*");
+    }
+
+    [Fact]
+    public async Task AgenticIngest_WithEntityGraph_Throws()
+    {
+        string[] args = ["locomo", "--data", "x.json", "--agentic-ingest", "--agent-provider", "openai", "--entity-graph", "true"];
+        var act = async () => await RetrieverFactory.BuildAsync(args, "locomo", default);
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*entity-graph*");
     }
 
     [Fact]
