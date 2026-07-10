@@ -40,7 +40,11 @@ public sealed record AgenticIngestStats(
 /// deciding what's worth remembering.
 ///
 /// <para>Queries are then answered mechanically via <see cref="FileMemoryStore.SearchAll"/>
-/// — no agent involvement at query time. Each returned memory is mapped back to the
+/// (BM25 + fields) when no embedder is configured. When an embedder IS configured (CLI
+/// <c>--mode bm25_embeddings</c>), queries additionally blend in the production semantic +
+/// path-segment score contributor (<see cref="HybridReranker"/> + <see cref="PathSegmentScoreContributor"/>,
+/// via a post-episode <see cref="EmbeddingReindexer"/> pass into a shared <see cref="VectorStore"/>) —
+/// the same hybrid retrieval path production uses. Each returned memory is mapped back to the
 /// haystack doc IDs it cited by parsing <c>D{n}:{i}</c>-style citations out of the
 /// memory's full decoded content via <see cref="DialogRefParser"/> and resolving each
 /// against the buffered doc ids, so the existing R@k scorer — which compares doc IDs —

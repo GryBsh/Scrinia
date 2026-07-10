@@ -90,4 +90,42 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         retriever.Stats.AgenticEpisodes.Should().Be(2);
         retriever.Stats.FailedEpisodes.Should().Be(0);
     }
+
+    [Fact]
+    public async Task RunGroupedAsync_AgenticIngest_HybridPath_SurfacesLexicallyMismatchedGoldDoc()
+    {
+        // The stored memory and the query share NO tokens; only cosine similarity via
+        // ConceptEmbeddingProvider (travel-concept words -> [1,0], else -> [0,1]) can
+        // connect them. BM25 alone would score this memory zero against the query, so a
+        // non-zero recall here can ONLY come from the semantic (hybrid) contributor.
+        var rememberLisbon = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
+
+        var client = new ScriptedToolClient(
+            new ToolTurnResult(null, [rememberLisbon], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+        var harness = new AgenticIngestHarness(client, maxTurns: 8);
+        var cache = new EpisodeCache(_cacheFile);
+        await using var retriever = new AgenticScriniaRetriever(
+            _rootDir, harness, cache, modelSlug: "test-model", embedder: new ConceptEmbeddingProvider());
+
+        // Single-session haystack: gold doc (matches the stored memory's citation) plus an
+        // off-topic distractor doc, neither sharing tokens with the query.
+        var gold = new HaystackDoc("D1:1", "Maria: Booked the Lisbon getaway.", null, "s1");
+        var distractor = new HaystackDoc("D1:2", "Diego: Started a new job in Berlin.", null, "s1");
+        IReadOnlyList<HaystackDoc> haystack = [gold, distractor];
+
+        var question = new BenchmarkQuestion("q1", "vacation holiday plans", haystack, ["D1:1"], [], "single-hop");
+        var group = new BenchmarkQuestionGroup("g1", haystack, [question]);
+
+        var result = await new BenchmarkRunner().RunGroupedAsync(
+            "locomo-test", "agentic-ingest-hybrid-test",
+            ToAsync(new[] { group }), retriever, topK: 10,
+            BenchmarkScorer.ScoreFractionalById, ct: CancellationToken.None);
+
+        result.Aggregate.RecallAt10.Should().BeGreaterThan(0);
+        result.Questions.Should().Contain(q => q.QuestionId == "q1" && q.RecallAt10 > 0);
+        retriever.Stats.AgenticEpisodes.Should().Be(1);
+        retriever.Stats.FailedEpisodes.Should().Be(0);
+    }
 }

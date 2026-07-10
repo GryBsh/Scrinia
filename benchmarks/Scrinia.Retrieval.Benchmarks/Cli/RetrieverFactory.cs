@@ -43,11 +43,13 @@ internal static class RetrieverFactory
             Program.Flag(args, "--embed-provider"));
 
         // Agentic-ingest arm: the LLM episode IS the ingestion, so this branch is
-        // checked EARLY — before the embedder loads — and returns immediately. No
-        // embedder, no ScriniaRetriever, no reranker; this arm scores BM25 + fields
-        // against the mechanical BM25 arm. --agentic-ingest is a bare boolean flag
-        // (no value token), so presence is checked positionally via HasFlag rather
-        // than the `--flag value` pair idiom Program.Flag uses.
+        // checked EARLY, before ScriniaRetriever's own embedder/reranker setup below.
+        // By default (--mode bm25) it scores BM25 + fields, same as the mechanical BM25
+        // arm. With --mode bm25_embeddings it also loads the real embedder (below) and
+        // retrieves through the production hybrid (VectorStore + HybridReranker +
+        // path-segment) — the same components production uses. --agentic-ingest is a
+        // bare boolean flag (no value token), so presence is checked positionally via
+        // HasFlag rather than the `--flag value` pair idiom Program.Flag uses.
         if (HasFlag(args, "--agentic-ingest"))
         {
             // Mutually exclusive with query/ingest agent decorations — this arm's
