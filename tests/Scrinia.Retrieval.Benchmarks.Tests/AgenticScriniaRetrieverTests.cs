@@ -42,6 +42,19 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         return (retriever, client, cache);
     }
 
+    /// <summary>Overload that also wires a real (or stub) embedder, exercising the
+    /// production embedding pipeline (VectorStore + HybridReranker) instead of BM25-only.</summary>
+    private (AgenticScriniaRetriever retriever, ScriptedToolClient client, EpisodeCache cache) MakeRetriever(
+        Scrinia.Core.Embeddings.IEmbeddingProvider? embedder, params ToolTurnResult?[] turns)
+    {
+        var client = new ScriptedToolClient(turns);
+        var harness = new AgenticIngestHarness(client, maxTurns: 8);
+        var cache = new EpisodeCache(_cacheFile);
+        var retriever = new AgenticScriniaRetriever(
+            _rootDir, harness, cache, modelSlug: "test-model", embedder: embedder);
+        return (retriever, client, cache);
+    }
+
     [Fact]
     public async Task ProvenanceExpansion_ReturnsCitedDocs_InOrder()
     {
@@ -337,5 +350,57 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // ... but the judge still sees the memory content.
         var surfaced = await retriever.GetSurfacedContentsAsync("Lisbon plan", k: 10);
         surfaced.Should().ContainSingle().Which.Should().Contain("JUDGE-VISIBLE");
+    }
+
+    [Fact]
+    public async Task Reindex_PopulatesVectorStore_AfterEpisode()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new StubEmbeddingProvider(),
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+
+        await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        retriever.EmbeddedVectorCount.Should().BeGreaterThan(0,
+            "an embedder was supplied, so the post-episode reindex must populate the shared VectorStore");
+    }
+
+    [Fact]
+    public async Task NoEmbedder_LeavesVectorPipelineNull_BehaviorUnchanged()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        retriever.EmbeddedVectorCount.Should().Be(0, "no embedder was supplied, so the pipeline stays null");
+        hits.Select(h => h.Id).Should().Equal("D1:1");
+    }
+
+    [Fact]
+    public async Task Dispose_ReleasesVectorStore_NoThrow()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new StubEmbeddingProvider(),
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        await retriever.DisposeAsync();
+        await retriever.DisposeAsync();
     }
 }
