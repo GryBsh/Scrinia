@@ -105,9 +105,17 @@ public sealed class EntityGraph
     /// <b>every</b> field key, uniformly — not just <c>KnownFields.EntityKeys</c> — so any
     /// attribute (e.g. co-<c>file:</c>/co-<c>status:</c> memories) can become a graph
     /// association, not only the five blessed entity keys. Type is the lowercased field key,
-    /// kept type-scoped so e.g. <c>tag:paris</c> and <c>place:paris</c> stay distinct nodes;
-    /// values are lowercased and kept whole. Together with <see cref="ParseTypedEntities"/>
-    /// they give Build its dual-read: legacy typed keywords ∪ unified fields.
+    /// values lowercased and kept whole. Together with <see cref="ParseTypedEntities"/> they
+    /// give Build its dual-read: legacy typed keywords ∪ unified fields.
+    ///
+    /// <para>These (type, value) tuples are distinct here, but graph <i>node</i> identity is
+    /// decided later by <see cref="ResolveNodeKey"/>, which currently type-scopes only among
+    /// <see cref="RealTypes"/> on genuine conflict — every other key collapses to its bare
+    /// value. So arbitrary keys can still cross-link on a shared value (<c>status:done</c> and
+    /// <c>outcome:done</c> → one node; <c>tag:paris</c> merges with <c>place:paris</c> unless
+    /// "paris" is disputed among 2+ real types). Making node identity uniformly <c>(key, value)</c>
+    /// — which would give true per-key type-scoping — is deferred to the entity-graph tuning
+    /// effort; this method only widens <i>what feeds</i> the graph.</para>
     /// </summary>
     public static IEnumerable<(string Type, string Value)> ParseEntityFields(
         IReadOnlyDictionary<string, string[]>? fields)
