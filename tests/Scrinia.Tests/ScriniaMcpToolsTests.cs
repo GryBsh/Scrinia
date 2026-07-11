@@ -330,6 +330,60 @@ public sealed class ScriniaMcpToolsTests
             because: "content preview must be stored in the index");
     }
 
+    // ── Attributes (3 tests) ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task Store_Attributes_LandInFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["Acme signed the renewal."], "acme-note",
+            attributes: new Dictionary<string, string[]>
+            {
+                ["person"] = ["maria"],
+                ["org"] = ["acme"],
+                ["status"] = ["done"],   // arbitrary key — must land too
+            });
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "acme-note");
+        entry.Fields.Should().ContainKey("person");
+        entry.Fields!["person"].Should().Contain("maria");
+        entry.Fields.Should().ContainKey("status");
+        entry.Fields!["status"].Should().Contain("done");
+    }
+
+    [Fact]
+    public async Task Store_ReviewAttribute_DateSetsReviewAfter_TextSetsReviewWhen()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["note"], "rev-note",
+            attributes: new Dictionary<string, string[]>
+            {
+                ["review"] = ["2026-08-01", "when the auth system changes"],
+            });
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "rev-note");
+        entry.ReviewAfter.Should().NotBeNull();
+        entry.ReviewAfter!.Value.Year.Should().Be(2026);
+        entry.ReviewWhen.Should().Be("when the auth system changes");
+    }
+
+    [Fact]
+    public async Task Store_FileAttribute_RecordsCodeRefHash()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string relPath = "src/Probe.cs";
+        string fullPath = Path.Combine(scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "class Probe {}");
+
+        await Tools().Store(["depends on probe"], "file-note",
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "file-note");
+        entry.CodeRefs.Should().NotBeNull();
+        entry.CodeRefs!.Keys.Should().Contain(relPath);
+    }
+
     // ── List (3 tests) ────────────────────────────────────────────────────
 
     [Fact]

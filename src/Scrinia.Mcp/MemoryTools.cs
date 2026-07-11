@@ -117,7 +117,7 @@ public sealed partial class ScriniaMcpTools
         }
 
         string result = await Store(content, path, description ?? "", tags, keywords, anchors, reviewAfter, reviewWhen, codeRefs,
-            actionLabel: "remembered", cancellationToken);
+            actionLabel: "remembered", cancellationToken: cancellationToken);
         string? typoHint = ReservedPrefixGuard.HintFor(path);
         if (typoHint is not null)
             result = McpResponseExtensions.InjectInfoHint(result, typoHint);

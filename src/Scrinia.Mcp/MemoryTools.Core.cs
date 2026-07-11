@@ -125,6 +125,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
         [Description("Optional free-text condition describing when this memory should be reviewed (e.g. 'when auth system changes').")] string? reviewWhen = null,
         [Description("Optional file paths this memory depends on. Hashes are recorded to detect drift.")] string[]? codeRefs = null,
+        IReadOnlyDictionary<string, string[]>? attributes = null,
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
@@ -183,8 +184,10 @@ public sealed partial class ScriniaMcpTools
         }
 
         // Assemble unified fields: routed keywords ∪ content extraction ∪ references,
-        // then seed key/value tokens into TF at +3 (between auto +2 and agent +5).
+        // then fold in explicit agent attributes (they win scalar collisions), then seed
+        // key/value tokens into TF.
         var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
+        fields = KnownFields.Merge(fields, NormalizeAttributes(attributes));
         FieldExtractor.SeedTermFrequencies(fields, tf);
 
         ChunkEntry[]? chunkEntries = content.Length > 1
@@ -301,6 +304,24 @@ public sealed partial class ScriniaMcpTools
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
         string contentPreview = store.GenerateContentPreview(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
+
+        // New model: the `review` attribute carries review dates and/or free-text conditions.
+        // Feed date-parseable values into the existing reviewAfter parse (first wins); join the
+        // rest into reviewWhen. Only when the legacy params weren't explicitly supplied.
+        if (reviewAfter is null && reviewWhen is null
+            && fields is not null && fields.TryGetValue(KnownFields.ReviewKey, out var reviewVals))
+        {
+            var whenParts = new List<string>();
+            foreach (string v in reviewVals)
+            {
+                if (reviewAfter is null && DateTimeOffset.TryParse(v, out _))
+                    reviewAfter = v;
+                else
+                    whenParts.Add(v);
+            }
+            if (whenParts.Count > 0)
+                reviewWhen = string.Join("; ", whenParts);
+        }
 
         // Parse reviewAfter
         DateTimeOffset? parsedReviewAfter = null;
@@ -1462,6 +1483,22 @@ public sealed partial class ScriniaMcpTools
     {
         try { return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath))); }
         catch { return null; }
+    }
+
+    /// <summary>Lowercases attribute keys and trims/drops empty values, matching the Fields
+    /// convention (FieldExtractor lowercases keys). Null when nothing survives.</summary>
+    private static Dictionary<string, string[]>? NormalizeAttributes(IReadOnlyDictionary<string, string[]>? attributes)
+    {
+        if (attributes is not { Count: > 0 }) return null;
+        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in attributes)
+        {
+            if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is null) continue;
+            var vals = kv.Value.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).ToArray();
+            if (vals.Length == 0) continue;
+            result[kv.Key.Trim().ToLowerInvariant()] = vals;
+        }
+        return result.Count > 0 ? result : null;
     }
 
     /// <summary>
