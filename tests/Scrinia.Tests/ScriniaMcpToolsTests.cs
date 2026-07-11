@@ -2220,18 +2220,41 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Search_TagsFilter_AndSemantics_RequiresAllTags()
+    public async Task Search_AttributeFilter_RequiresKeyAndValue()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["entry one"], "tag-both", "both tags", ["security", "refactor"]);
-        await Tools().Store(["entry two"], "tag-one", "one tag", ["security"]);
+        await Tools().MemoryRemember(path: "attr-hit", content: ["security refactor entry"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["security", "refactor"] });
+        await Tools().MemoryRemember(path: "attr-miss", content: ["security entry only"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["other"] });
+        await Tools().MemoryRemember(path: "attr-nokey", content: ["security entry no topic"]);
 
-        string result = await Tools().MemorySearch(query: "entry", tags: "security,refactor");
+        string result = await Tools().MemorySearch(query: "entry",
+            attributeFilter: new Dictionary<string, string[]> { ["topic"] = ["security"] });
         var parsed = ResponseParser.Parse(result);
-        parsed.Content.Should().Contain("tag-both",
-            because: "entry with both required tags must be retained");
-        parsed.Content.Should().NotContain("tag-one",
-            because: "entry missing 'refactor' must be filtered (AND semantics)");
+        parsed.Content.Should().Contain("attr-hit",
+            because: "entry carries the required key and a matching value");
+        parsed.Content.Should().NotContain("attr-miss",
+            because: "entry has key 'topic' but not value 'security'");
+        parsed.Content.Should().NotContain("attr-nokey",
+            because: "entry lacks key 'topic' entirely");
+    }
+
+    [Fact]
+    public async Task Search_AttributeFilter_KeyOnly_MatchesAnyValue()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "haskey", content: ["entry one"],
+            attributes: new Dictionary<string, string[]> { ["review"] = ["2026-08-01"] });
+        await Tools().MemoryRemember(path: "nokey", content: ["entry two"]);
+
+        string result = await Tools().MemorySearch(query: "entry",
+            attributeFilter: new Dictionary<string, string[]> { ["review"] = [] });
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("haskey",
+            because: "key-only filter matches any value as long as the key is present");
+        parsed.Content.Should().NotContain("nokey",
+            because: "entry lacks key 'review' entirely");
     }
 
     [Fact]

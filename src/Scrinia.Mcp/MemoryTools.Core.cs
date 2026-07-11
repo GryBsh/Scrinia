@@ -736,7 +736,7 @@ public sealed partial class ScriniaMcpTools
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge searches.")] string? excludeTopics = null,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when the agent knows synonyms or related concepts.")] string? context = null,
         [Description("Optional path prefix to scope results, e.g. '/findings/'.")] string? pathPrefix = null,
-        [Description("Optional comma-separated tags; AND semantics.")] string? tags = null,
+        [Description("Optional attribute filter (map key→values); AND across keys, OR within a key's values.")] IReadOnlyDictionary<string, string[]>? attributeFilter = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -769,11 +769,10 @@ public sealed partial class ScriniaMcpTools
                 .ToList()
             : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics, entityScores);
 
-        // Post-filter by path prefix and required tags. Both are AND filters — the candidate
+        // Post-filter by path prefix and attribute filter. Both are AND filters — the candidate
         // must satisfy every active constraint. Filters apply uniformly to entry, chunk, and
         // topic results so callers don't need to know which result type to expect.
-        string[]? requiredTags = ParseTagFilter(tags);
-        matches = ApplyPostFilters(store, matches, pathPrefix, requiredTags);
+        matches = ApplyPostFilters(store, matches, pathPrefix, attributeFilter);
 
         if (matches.Count == 0)
             return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
@@ -782,27 +781,20 @@ public sealed partial class ScriniaMcpTools
         return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
     }
 
-    private static string[]? ParseTagFilter(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return parts.Length == 0 ? null : parts;
-    }
-
     private static IReadOnlyList<SearchResult> ApplyPostFilters(
         IMemoryStore store,
         IReadOnlyList<SearchResult> matches,
         string? pathPrefix,
-        string[]? requiredTags)
+        IReadOnlyDictionary<string, string[]>? attributeFilter)
     {
-        if (string.IsNullOrWhiteSpace(pathPrefix) && (requiredTags is null || requiredTags.Length == 0))
+        if (string.IsNullOrWhiteSpace(pathPrefix) && (attributeFilter is null || attributeFilter.Count == 0))
             return matches;
 
         var kept = new List<SearchResult>(matches.Count);
         foreach (var match in matches)
         {
             if (!MatchesPathPrefix(store, match, pathPrefix)) continue;
-            if (!MatchesTags(match, requiredTags)) continue;
+            if (!MatchesAttributes(match, attributeFilter)) continue;
             kept.Add(match);
         }
         return kept;
@@ -825,25 +817,31 @@ public sealed partial class ScriniaMcpTools
         return label.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool MatchesTags(SearchResult match, string[]? requiredTags)
+    private static bool MatchesAttributes(SearchResult match, IReadOnlyDictionary<string, string[]>? filter)
     {
-        if (requiredTags is null || requiredTags.Length == 0) return true;
-        string[]? candidateTags = match switch
+        if (filter is null || filter.Count == 0) return true;
+        Dictionary<string, string[]>? fields = match switch
         {
-            EntryResult er => er.Item.Entry.Tags,
-            ChunkEntryResult cr => cr.ParentItem.Entry.Tags,
-            TopicResult tr => tr.Tags,
-            _ => null,
+            EntryResult er => er.Item.Entry.Fields,
+            ChunkEntryResult cr => cr.ParentItem.Entry.Fields,
+            _ => null,   // TopicResult carries no attributes — excluded when a filter is active
         };
-        if (candidateTags is null || candidateTags.Length == 0) return false;
-        foreach (var required in requiredTags)
+        if (fields is null || fields.Count == 0) return false;
+        foreach (var want in filter)
         {
-            bool found = false;
-            foreach (var have in candidateTags)
+            if (!fields.TryGetValue(want.Key, out var have) || have is null || have.Length == 0)
+                return false;
+            if (want.Value is { Length: > 0 })
             {
-                if (string.Equals(have, required, StringComparison.OrdinalIgnoreCase)) { found = true; break; }
+                bool any = false;
+                foreach (string wv in want.Value)
+                {
+                    foreach (string hv in have)
+                        if (string.Equals(hv, wv, StringComparison.OrdinalIgnoreCase)) { any = true; break; }
+                    if (any) break;
+                }
+                if (!any) return false;
             }
-            if (!found) return false;
         }
         return true;
     }
