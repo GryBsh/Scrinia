@@ -19,7 +19,8 @@ public sealed class ScriniaMcpPromptsResourcesTests
         string prompt = ScriniaMcpPrompts.Guide();
         prompt.Should().NotBeNullOrWhiteSpace();
         // Same content the guide() tool serves — sanity-check a couple of stable sections.
-        prompt.Should().Contain("memory_remember");
+        prompt.Should().Contain("remember");
+        prompt.Should().NotContain("memory_remember");
         prompt.Should().Contain("Reserved paths");
     }
 

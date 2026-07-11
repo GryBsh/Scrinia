@@ -11,24 +11,24 @@ is the single source of truth for project knowledge — decisions, conventions, 
 ## When to act
 
 - **Search first.** For a new task, joining the project, or any question about prior decisions, call
-  `memory_search({ query: "..." })` before doing the work. Skip it only for fully self-contained
+  `search({ query: "..." })` before doing the work. Skip it only for fully self-contained
   requests (rename a variable, answer from code already in front of you).
 - **Store proactively.** When you learn something non-obvious, fix a bug, get corrected, or discover
-  a convention, call `memory_remember({ path, content: [...] })` immediately. If you had to figure it
+  a convention, call `remember({ path, content: [...] })` immediately. If you had to figure it
   out, the next agent shouldn't have to.
-- **Restore after a reset.** `memory_restore()` resumes agent context (profile, patterns, today's
+- **Restore after a reset.** `restore()` resumes agent context (profile, patterns, today's
   session log, available skills, unresolved merge conflicts).
 
 ## Core tools
 
 ```
 guide()                                           — full primer; call at session start
-memory_search({ query })                          — find what you know
-memory_remember({ path, content: [...] })         — store (each array element = one chunk)
-memory_recall({ path })                           — read it back
-memory_append({ path, content })                  — add a chunk
-memory_list({ scopes?, mode? })                   — browse
-memory_restore()                                  — resume after context loss
+search({ query })                          — find what you know
+remember({ path, content: [...] })         — store (each array element = one chunk)
+recall({ path })                           — read it back
+append({ path, content })                  — add a chunk
+list({ scopes?, mode? })                   — browse
+restore()                                  — resume after context loss
 ```
 
 ## Conventions

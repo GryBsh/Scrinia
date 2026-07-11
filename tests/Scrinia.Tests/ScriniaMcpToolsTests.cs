@@ -1834,7 +1834,8 @@ public sealed class ScriniaMcpToolsTests
         guide.Should().Contain("reviewAfter");
         guide.Should().Contain("/checkpoint/");
         guide.Should().Contain("## Recovery");
-        guide.Should().Contain("memory_remember");
+        guide.Should().Contain("remember");
+        guide.Should().NotContain("memory_remember");
     }
 
     // ── Per-verb memory tools: remember / recall (4 tests) ───────────────────

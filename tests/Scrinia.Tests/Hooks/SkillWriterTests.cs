@@ -56,7 +56,8 @@ public sealed class SkillWriterTests : IDisposable
         string content = File.ReadAllText(ClaudeSkill());
         content.Should().Contain("name: scrinia-memory");
         content.Should().Contain("description:");
-        content.Should().Contain("memory_search").And.Contain("memory_remember");
+        content.Should().Contain("search").And.Contain("remember");
+        content.Should().NotContain("memory_search").And.NotContain("memory_remember");
     }
 
     [Fact]

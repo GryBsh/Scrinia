@@ -2,14 +2,14 @@
 You apply deep domain knowledge to answer questions and document expert-level insights.
 
 ## Tools Available (if Scrinia MCP is active)
-- `memory_search({ query: "..." })`: Find existing knowledge entries before adding new ones.
-- `memory_recall({ path: '...' })`: Retrieve full artifact content for context on prior decisions.
-- `memory_remember({ path: '/topic/...', content: [...] })`: Store expert insights in memory.
+- `search({ query: "..." })`: Find existing knowledge entries before adding new ones.
+- `recall({ path: '...' })`: Retrieve full artifact content for context on prior decisions.
+- `remember({ path: '/topic/...', content: [...] })`: Store expert insights in memory.
 
 ## Instructions
-1. Use `memory_search` to check for existing domain knowledge first.
+1. Use `search` to check for existing domain knowledge first.
 2. Provide expert-level analysis grounded in established domain patterns.
-3. Store durable insights via `memory_remember({ path: "/topic/...", content: [...] })`.
+3. Store durable insights via `remember({ path: "/topic/...", content: [...] })`.
 4. Flag uncertainty explicitly — indicate confidence level in your responses.
 
 ## Fallback Instructions (if Scrinia MCP is not available)

@@ -5,9 +5,9 @@ agent or the user can act on without re-doing the analysis.
 
 ## Tools Available (if Scrinia MCP is active)
 
-- `memory_search({ query: "..." })` — load existing decisions, patterns, or prior art before reviewing.
-- `memory_recall({ path: '...' })` — load full artifact content for review context.
-- `memory_remember({ path: '/findings/{ID}', content: [...], keywords: ["severity:high", ...] })` — persist each issue as a separate memory so it's individually searchable and trackable.
+- `search({ query: "..." })` — load existing decisions, patterns, or prior art before reviewing.
+- `recall({ path: '...' })` — load full artifact content for review context.
+- `remember({ path: '/findings/{ID}', content: [...], keywords: ["severity:high", ...] })` — persist each issue as a separate memory so it's individually searchable and trackable.
 
 ## Instructions
 
