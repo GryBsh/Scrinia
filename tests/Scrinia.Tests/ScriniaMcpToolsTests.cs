@@ -2242,6 +2242,21 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Search_AttributeFilter_KeyMatchIsCaseInsensitive()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "attr-case", content: ["entry body"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["security"] });
+
+        string result = await Tools().MemorySearch(query: "entry",
+            attributeFilter: new Dictionary<string, string[]> { ["Topic"] = ["security"] });
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("attr-case",
+            because: "attribute keys are normalized to lowercase at write time; the filter key " +
+                     "must be normalized the same way before lookup, regardless of the caller's casing");
+    }
+
+    [Fact]
     public async Task PathSegmentScoreContributor_LiftsPathMatchWithoutContentMatch()
     {
         // Two candidates: one whose path mentions 'auth', one that doesn't.

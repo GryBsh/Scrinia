@@ -850,7 +850,7 @@ public sealed partial class ScriniaMcpTools
         if (fields is null || fields.Count == 0) return false;
         foreach (var want in filter)
         {
-            if (!fields.TryGetValue(want.Key, out var have) || have is null || have.Length == 0)
+            if (!fields.TryGetValue(want.Key.Trim().ToLowerInvariant(), out var have) || have is null || have.Length == 0)
                 return false;
             if (want.Value is { Length: > 0 })
             {
