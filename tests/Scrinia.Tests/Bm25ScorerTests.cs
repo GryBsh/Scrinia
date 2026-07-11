@@ -223,4 +223,27 @@ public sealed class Bm25ScorerTests
         for (int i = 1; i < results.Count; i++)
             results[i].Score.Should().BeLessOrEqualTo(results[i - 1].Score);
     }
+
+    // ── Attribute (Fields) weight-scaling parity ──────────────────────────────
+
+    [Fact]
+    public void AttributeValueMatch_SurfacesEntry_AtParity()
+    {
+        // Entry whose ONLY match for "maria" is its person attribute value — no name,
+        // tag, keyword, anchor, or description match. AttributeWeight("person") is 1.0
+        // at parity, so this must surface exactly as it did before the weight-scaling
+        // change (a pure regression guard around WeightedFieldScorer.ScoreEntryTerm's
+        // Fields block).
+        var candidates = new[]
+        {
+            new ScopedArtifact("local", new ArtifactEntry("acme-note", "", 100, 1, DateTimeOffset.UtcNow, "a note",
+                Fields: new Dictionary<string, string[]> { ["person"] = ["maria"] })),
+        };
+
+        var scorer = new WeightedFieldScorer();
+        var results = scorer.SearchAll("maria", candidates, [], 10);
+
+        results.Should().ContainSingle();
+        (results[0] as EntryResult)!.Item.Entry.Name.Should().Be("acme-note");
+    }
 }

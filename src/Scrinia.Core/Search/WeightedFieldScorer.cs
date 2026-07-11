@@ -399,16 +399,17 @@ internal sealed class WeightedFieldScorer
         {
             foreach (var field in entry.Fields)
             {
+                double w = KnownFields.AttributeWeight(field.Key);   // curation knob; 1.0 at parity
                 foreach (string value in field.Value)
                 {
                     if (termKey is not null
                         && field.Key.Equals(termKey, StringComparison.OrdinalIgnoreCase)
                         && value.Equals(termValue, StringComparison.OrdinalIgnoreCase))
-                        score = Math.Max(score, 50);
+                        score = Math.Max(score, 50 * w);
                     else if (value.Equals(term, StringComparison.OrdinalIgnoreCase))
-                        score = Math.Max(score, 40);
+                        score = Math.Max(score, 40 * w);
                     else if (value.Contains(term, StringComparison.OrdinalIgnoreCase))
-                        score = Math.Max(score, 12);
+                        score = Math.Max(score, 12 * w);
                 }
             }
         }
