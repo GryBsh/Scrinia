@@ -14,7 +14,7 @@ namespace Scrinia.Mcp;
 /// the server <c>instructions</c> field instead.
 ///
 /// <para>Read-only: the resource resolves a memory name/path to its decoded text using the same
-/// store + NMP/2 decode path the <c>memory_recall</c>/<c>show</c> tool uses.</para>
+/// store + NMP/2 decode path the <c>recall</c>/<c>show</c> tool uses.</para>
 /// </summary>
 [McpServerResourceType]
 public sealed class ScriniaMcpResources
@@ -23,7 +23,7 @@ public sealed class ScriniaMcpResources
         UriTemplate = "scrinia://memory/{name}",
         Name = "scrinia-memory",
         MimeType = "text/markdown"),
-     Description("Read a stored Scrinia memory by its name/path (as shown by memory_list, " +
+     Description("Read a stored Scrinia memory by its name/path (as shown by list, " +
                  "e.g. 'session-notes' or 'api:auth-flow').")]
     public static async Task<string> ReadMemory(
         [Description("Memory name or qualified path to read.")] string name,

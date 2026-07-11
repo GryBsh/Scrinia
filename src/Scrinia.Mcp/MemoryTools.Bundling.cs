@@ -58,7 +58,7 @@ public sealed partial class ScriniaMcpTools
                 return Task.FromResult(ResponseBuilder.Error(
                     "No entries found in the specified topics.",
                     ErrorCodes.NotFound,
-                    "memory_list() to see available topics with entry counts").ToYaml());
+                    "list() to see available topics with entry counts").ToYaml());
             }
         }
 
