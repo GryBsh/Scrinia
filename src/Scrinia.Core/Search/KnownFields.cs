@@ -19,6 +19,28 @@ public static class KnownFields
     public static readonly IReadOnlySet<string> ReferenceKeys =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "file", "ref" };
 
+    public const string ReviewKey = "review";
+
+    /// <summary>The guided attribute keys — what the guide teaches and agents write most.
+    /// The engine treats any key uniformly; this set is guidance + the weight-table seed, not a gate.</summary>
+    public static readonly IReadOnlySet<string> RecommendedKeys =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "person", "place", "org", "thing", "topic", "file", "ref", "review" };
+
+    // Per-attribute-key scoring/influence multiplier. This is the curation mechanism that
+    // replaces the old "only EntityKeys graph" gate: a soft, tunable knob. Seeded at parity
+    // (every key 1.0) so it changes no existing score today; tune values later on
+    // real-workflow signal, never a benchmark fit. Consumed by WeightedFieldScorer now and
+    // by the entity graph in its separate tuning effort.
+    private static readonly Dictionary<string, double> AttributeWeights =
+        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            // (intentionally empty at parity — add entries here to tune, e.g. ["person"] = 1.5)
+        };
+
+    public static double AttributeWeight(string key) =>
+        AttributeWeights.TryGetValue(key, out double w) ? w : 1.0;
+
     /// <summary>Multi-valued keys accumulate across appends; everything else is scalar newer-wins.</summary>
     public static bool IsMultiValued(string key) =>
         EntityKeys.Contains(key) || ReferenceKeys.Contains(key);

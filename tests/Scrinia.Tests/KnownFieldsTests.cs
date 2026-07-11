@@ -85,4 +85,27 @@ public sealed class KnownFieldsTests
               (IReadOnlyDictionary<string, string[]>?)new Dictionary<string, string[]> { ["org"] = ["acme"] })]);
         graph.EntityCount.Should().Be(2, because: "keywords ∪ fields on the same doc");
     }
+
+    [Fact]
+    public void AttributeWeight_IsParityOneForKnownAndUnknownKeys()
+    {
+        // Parity: the table exists but starts neutral — known and arbitrary keys weigh the
+        // same (1.0) so this change alters no existing score. Curation values come later.
+        KnownFields.AttributeWeight("person").Should().Be(1.0);
+        KnownFields.AttributeWeight("status").Should().Be(1.0);   // arbitrary key
+        KnownFields.AttributeWeight("PERSON").Should().Be(1.0);   // case-insensitive
+    }
+
+    [Fact]
+    public void RecommendedKeys_AreTheGuidedSet()
+    {
+        KnownFields.RecommendedKeys.Should().BeEquivalentTo(
+            new[] { "person", "place", "org", "thing", "topic", "file", "ref", "review" });
+    }
+
+    [Fact]
+    public void ReviewKey_IsReview()
+    {
+        KnownFields.ReviewKey.Should().Be("review");
+    }
 }

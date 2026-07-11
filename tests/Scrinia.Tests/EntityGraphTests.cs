@@ -226,4 +226,19 @@ public sealed class EntityGraphTests
 
         scores.Should().ContainKey("docB");   // reached via alice→docA→home renovation→docB
     }
+
+    [Fact]
+    public void ParseEntityFields_YieldsEveryKey_NotJustEntityKeys()
+    {
+        var fields = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["person"] = new[] { "maria" },   // a known entity key
+            ["status"] = new[] { "done" },    // an arbitrary key — must ALSO become a node now
+        };
+
+        var pairs = EntityGraph.ParseEntityFields(fields).ToList();
+
+        pairs.Should().Contain(("person", "maria"));
+        pairs.Should().Contain(("status", "done"));
+    }
 }
