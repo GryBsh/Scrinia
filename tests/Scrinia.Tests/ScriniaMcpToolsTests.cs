@@ -384,6 +384,38 @@ public sealed class ScriniaMcpToolsTests
         entry.CodeRefs!.Keys.Should().Contain(relPath);
     }
 
+    [Fact]
+    public async Task MemoryRemember_Attributes_RoundTripToFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(
+            path: "/findings/acme",
+            content: ["Acme renewed."],
+            attributes: new Dictionary<string, string[]> { ["org"] = ["acme"], ["topic"] = ["renewal"] },
+            keywords: ["renewed", "annual contract"]);
+
+        // "/findings/acme" is a v2 path — it resolves to scope "local-topic:findings", not "local".
+        var entry = ScriniaArtifactStore.LoadIndex("local-topic:findings").First(e => e.Name.Contains("acme"));
+        entry.Fields.Should().ContainKey("org");
+        entry.Fields!["org"].Should().Contain("acme");
+        entry.Keywords.Should().Contain("annual contract");
+    }
+
+    [Fact]
+    public async Task MemoryAppend_Attributes_MergeIntoFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "/sessions/s1", content: ["first"],
+            attributes: new Dictionary<string, string[]> { ["person"] = ["alice"] });
+        await Tools().MemoryAppend(path: "/sessions/s1", content: "second",
+            attributes: new Dictionary<string, string[]> { ["person"] = ["bob"], ["topic"] = ["standup"] });
+
+        // "/sessions/s1" is a v2 path — it resolves to scope "local-topic:sessions", not "local".
+        var entry = ScriniaArtifactStore.LoadIndex("local-topic:sessions").First(e => e.Name == "s1");
+        entry.Fields!["person"].Should().Contain("alice").And.Contain("bob");   // multi-valued union
+        entry.Fields.Should().ContainKey("topic");
+    }
+
     // ── List (3 tests) ────────────────────────────────────────────────────
 
     [Fact]

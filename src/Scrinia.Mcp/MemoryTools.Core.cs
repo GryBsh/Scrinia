@@ -1088,6 +1088,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
         [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
         [Description("Optional retrieval anchors merged into the memory's existing anchors (deduplicated) — phrases/questions that bridge likely user queries to this content. Supply these when the appended content introduces concepts users may search for in different words.")] string[]? anchors = null,
+        IReadOnlyDictionary<string, string[]>? attributes = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -1111,6 +1112,7 @@ public sealed partial class ScriniaMcpTools
                 tags: tags,
                 keywords: keywords,
                 anchors: anchors,
+                attributes: attributes,
                 cancellationToken: cancellationToken);
         }
 
@@ -1152,7 +1154,7 @@ public sealed partial class ScriniaMcpTools
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEph?.Description, existingEph?.Tags, existingEph?.Keywords, existingEph?.RetrievalAnchors,
-                content, routedNewFields, existingEph?.Fields);
+                content, routedNewFields, existingEph?.Fields, attributes);
 
             ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1190,7 +1192,7 @@ public sealed partial class ScriniaMcpTools
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEntry?.Description, existingEntry?.Tags, existingEntry?.Keywords, existingEntry?.RetrievalAnchors,
-                content, routedNewFields, existingEntry?.Fields);
+                content, routedNewFields, existingEntry?.Fields, attributes);
 
             ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1249,7 +1251,8 @@ public sealed partial class ScriniaMcpTools
             string fullText,
             string? newDescription, string[]? newTags, string[]? newKeywords, string[]? newAnchors,
             string? existingDescription, string[]? existingTags, string[]? existingKeywords, string[]? existingAnchors,
-            string appendedContent, Dictionary<string, string[]>? routedNewFields, Dictionary<string, string[]>? existingFields)
+            string appendedContent, Dictionary<string, string[]>? routedNewFields, Dictionary<string, string[]>? existingFields,
+            IReadOnlyDictionary<string, string[]>? attributes)
     {
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
 
@@ -1305,6 +1308,7 @@ public sealed partial class ScriniaMcpTools
         var incoming = KnownFields.Merge(
             KnownFields.Merge(routedNewFields, FieldExtractor.Extract(appendedContent)),
             FieldExtractor.ExtractRefFields(appendedContent));
+        incoming = KnownFields.Merge(incoming, NormalizeAttributes(attributes));   // explicit agent attributes
         var mergedFields = KnownFields.Merge(existingFields, incoming);
         FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
