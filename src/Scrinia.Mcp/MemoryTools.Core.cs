@@ -125,6 +125,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
         [Description("Optional free-text condition describing when this memory should be reviewed (e.g. 'when auth system changes').")] string? reviewWhen = null,
         [Description("Optional file paths this memory depends on. Hashes are recorded to detect drift.")] string[]? codeRefs = null,
+        IReadOnlyDictionary<string, string[]>? attributes = null,
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
@@ -183,8 +184,10 @@ public sealed partial class ScriniaMcpTools
         }
 
         // Assemble unified fields: routed keywords ∪ content extraction ∪ references,
-        // then seed key/value tokens into TF at +3 (between auto +2 and agent +5).
+        // then fold in explicit agent attributes (they win scalar collisions), then seed
+        // key/value tokens into TF.
         var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
+        fields = KnownFields.Merge(fields, NormalizeAttributes(attributes));
         FieldExtractor.SeedTermFrequencies(fields, tf);
 
         ChunkEntry[]? chunkEntries = content.Length > 1
@@ -301,6 +304,24 @@ public sealed partial class ScriniaMcpTools
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
         string contentPreview = store.GenerateContentPreview(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
+
+        // New model: the `review` attribute carries review dates and/or free-text conditions.
+        // Feed date-parseable values into the existing reviewAfter parse (first wins); join the
+        // rest into reviewWhen. Only when the legacy params weren't explicitly supplied.
+        if (reviewAfter is null && reviewWhen is null
+            && fields is not null && fields.TryGetValue(KnownFields.ReviewKey, out var reviewVals))
+        {
+            var whenParts = new List<string>();
+            foreach (string v in reviewVals)
+            {
+                if (reviewAfter is null && DateTimeOffset.TryParse(v, out _))
+                    reviewAfter = v;
+                else
+                    whenParts.Add(v);
+            }
+            if (whenParts.Count > 0)
+                reviewWhen = string.Join("; ", whenParts);
+        }
 
         // Parse reviewAfter
         DateTimeOffset? parsedReviewAfter = null;
@@ -603,6 +624,27 @@ public sealed partial class ScriniaMcpTools
             sb.AppendLine();
         }
 
+        // Top attributes — aggregate attribute values across all entries (new model's facets).
+        var attrCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in entries)
+        {
+            if (item.Entry.Fields is { Count: > 0 })
+                foreach (var kv in item.Entry.Fields)
+                    foreach (var v in kv.Value)
+                        attrCounts[$"{kv.Key}:{v}"] = attrCounts.GetValueOrDefault($"{kv.Key}:{v}") + 1;
+        }
+        if (attrCounts.Count > 0)
+        {
+            var topAttrs = attrCounts
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .Select(kv => kv.Key);
+            sb.AppendLine("### Top attributes");
+            sb.AppendLine(string.Join(", ", topAttrs));
+            sb.AppendLine();
+        }
+
         sb.Append("Use `memory_list({ mode: 'full' })` to see all entries, or `memory_search({ query: '...' })` to find specific memories.");
         return sb.ToString();
     }
@@ -715,7 +757,7 @@ public sealed partial class ScriniaMcpTools
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge searches.")] string? excludeTopics = null,
         [Description("Optional context terms appended to the query for scoring only — bridges vocabulary mismatches when the agent knows synonyms or related concepts.")] string? context = null,
         [Description("Optional path prefix to scope results, e.g. '/findings/'.")] string? pathPrefix = null,
-        [Description("Optional comma-separated tags; AND semantics.")] string? tags = null,
+        [Description("Optional attribute filter (map key→values); AND across keys, OR within a key's values.")] IReadOnlyDictionary<string, string[]>? attributeFilter = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -748,11 +790,10 @@ public sealed partial class ScriniaMcpTools
                 .ToList()
             : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics, entityScores);
 
-        // Post-filter by path prefix and required tags. Both are AND filters — the candidate
+        // Post-filter by path prefix and attribute filter. Both are AND filters — the candidate
         // must satisfy every active constraint. Filters apply uniformly to entry, chunk, and
         // topic results so callers don't need to know which result type to expect.
-        string[]? requiredTags = ParseTagFilter(tags);
-        matches = ApplyPostFilters(store, matches, pathPrefix, requiredTags);
+        matches = ApplyPostFilters(store, matches, pathPrefix, attributeFilter);
 
         if (matches.Count == 0)
             return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
@@ -761,27 +802,20 @@ public sealed partial class ScriniaMcpTools
         return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
     }
 
-    private static string[]? ParseTagFilter(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return parts.Length == 0 ? null : parts;
-    }
-
     private static IReadOnlyList<SearchResult> ApplyPostFilters(
         IMemoryStore store,
         IReadOnlyList<SearchResult> matches,
         string? pathPrefix,
-        string[]? requiredTags)
+        IReadOnlyDictionary<string, string[]>? attributeFilter)
     {
-        if (string.IsNullOrWhiteSpace(pathPrefix) && (requiredTags is null || requiredTags.Length == 0))
+        if (string.IsNullOrWhiteSpace(pathPrefix) && (attributeFilter is null || attributeFilter.Count == 0))
             return matches;
 
         var kept = new List<SearchResult>(matches.Count);
         foreach (var match in matches)
         {
             if (!MatchesPathPrefix(store, match, pathPrefix)) continue;
-            if (!MatchesTags(match, requiredTags)) continue;
+            if (!MatchesAttributes(match, attributeFilter)) continue;
             kept.Add(match);
         }
         return kept;
@@ -804,25 +838,31 @@ public sealed partial class ScriniaMcpTools
         return label.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool MatchesTags(SearchResult match, string[]? requiredTags)
+    private static bool MatchesAttributes(SearchResult match, IReadOnlyDictionary<string, string[]>? filter)
     {
-        if (requiredTags is null || requiredTags.Length == 0) return true;
-        string[]? candidateTags = match switch
+        if (filter is null || filter.Count == 0) return true;
+        Dictionary<string, string[]>? fields = match switch
         {
-            EntryResult er => er.Item.Entry.Tags,
-            ChunkEntryResult cr => cr.ParentItem.Entry.Tags,
-            TopicResult tr => tr.Tags,
-            _ => null,
+            EntryResult er => er.Item.Entry.Fields,
+            ChunkEntryResult cr => cr.ParentItem.Entry.Fields,
+            _ => null,   // TopicResult carries no attributes — excluded when a filter is active
         };
-        if (candidateTags is null || candidateTags.Length == 0) return false;
-        foreach (var required in requiredTags)
+        if (fields is null || fields.Count == 0) return false;
+        foreach (var want in filter)
         {
-            bool found = false;
-            foreach (var have in candidateTags)
+            if (!fields.TryGetValue(want.Key.Trim().ToLowerInvariant(), out var have) || have is null || have.Length == 0)
+                return false;
+            if (want.Value is { Length: > 0 })
             {
-                if (string.Equals(have, required, StringComparison.OrdinalIgnoreCase)) { found = true; break; }
+                bool any = false;
+                foreach (string wv in want.Value)
+                {
+                    foreach (string hv in have)
+                        if (string.Equals(hv, wv, StringComparison.OrdinalIgnoreCase)) { any = true; break; }
+                    if (any) break;
+                }
+                if (!any) return false;
             }
-            if (!found) return false;
         }
         return true;
     }
@@ -877,7 +917,7 @@ public sealed partial class ScriniaMcpTools
                     sb.Append('[').Append(index).Append("] entry  ").Append(label)
                       .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendTagsLine(sb, er.Item.Entry.Tags);
+                    AppendAttributesLine(sb, er.Item.Entry.Fields);
                     AppendDescription(sb, er.Item.Entry.Description);
                     AppendAnchors(sb, er.Item.Entry.RetrievalAnchors);
                     break;
@@ -894,7 +934,7 @@ public sealed partial class ScriniaMcpTools
                       .Append(" [chunk ").Append(cr.Chunk.ChunkIndex).Append('/').Append(cr.TotalChunks).Append(']')
                       .Append("  score=").Append(cr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendTagsLine(sb, cr.ParentItem.Entry.Tags);
+                    AppendAttributesLine(sb, cr.ParentItem.Entry.Fields);
                     AppendDescription(sb, cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description);
                     AppendAnchors(sb, cr.ParentItem.Entry.RetrievalAnchors);
                     break;
@@ -922,6 +962,17 @@ public sealed partial class ScriniaMcpTools
             sb.Append(tags[i]);
         }
         sb.Append('\n');
+    }
+
+    private static void AppendAttributesLine(System.Text.StringBuilder sb, Dictionary<string, string[]>? fields)
+    {
+        if (fields is null || fields.Count == 0) return;
+        sb.Append("    attributes:\n");
+        foreach (var kv in fields)
+        {
+            sb.Append("      ").Append(kv.Key).Append(": ");
+            sb.Append(string.Join(", ", kv.Value)).Append('\n');
+        }
     }
 
     private static void AppendDescription(System.Text.StringBuilder sb, string? description)
@@ -1067,6 +1118,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
         [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
         [Description("Optional retrieval anchors merged into the memory's existing anchors (deduplicated) — phrases/questions that bridge likely user queries to this content. Supply these when the appended content introduces concepts users may search for in different words.")] string[]? anchors = null,
+        IReadOnlyDictionary<string, string[]>? attributes = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -1090,6 +1142,7 @@ public sealed partial class ScriniaMcpTools
                 tags: tags,
                 keywords: keywords,
                 anchors: anchors,
+                attributes: attributes,
                 cancellationToken: cancellationToken);
         }
 
@@ -1131,7 +1184,7 @@ public sealed partial class ScriniaMcpTools
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEph?.Description, existingEph?.Tags, existingEph?.Keywords, existingEph?.RetrievalAnchors,
-                content, routedNewFields, existingEph?.Fields);
+                content, routedNewFields, existingEph?.Fields, attributes);
 
             ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1169,7 +1222,7 @@ public sealed partial class ScriniaMcpTools
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEntry?.Description, existingEntry?.Tags, existingEntry?.Keywords, existingEntry?.RetrievalAnchors,
-                content, routedNewFields, existingEntry?.Fields);
+                content, routedNewFields, existingEntry?.Fields, attributes);
 
             ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1228,7 +1281,8 @@ public sealed partial class ScriniaMcpTools
             string fullText,
             string? newDescription, string[]? newTags, string[]? newKeywords, string[]? newAnchors,
             string? existingDescription, string[]? existingTags, string[]? existingKeywords, string[]? existingAnchors,
-            string appendedContent, Dictionary<string, string[]>? routedNewFields, Dictionary<string, string[]>? existingFields)
+            string appendedContent, Dictionary<string, string[]>? routedNewFields, Dictionary<string, string[]>? existingFields,
+            IReadOnlyDictionary<string, string[]>? attributes)
     {
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
 
@@ -1284,6 +1338,7 @@ public sealed partial class ScriniaMcpTools
         var incoming = KnownFields.Merge(
             KnownFields.Merge(routedNewFields, FieldExtractor.Extract(appendedContent)),
             FieldExtractor.ExtractRefFields(appendedContent));
+        incoming = KnownFields.Merge(incoming, NormalizeAttributes(attributes));   // explicit agent attributes
         var mergedFields = KnownFields.Merge(existingFields, incoming);
         FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
@@ -1462,6 +1517,22 @@ public sealed partial class ScriniaMcpTools
     {
         try { return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath))); }
         catch { return null; }
+    }
+
+    /// <summary>Lowercases attribute keys and trims/drops empty values, matching the Fields
+    /// convention (FieldExtractor lowercases keys). Null when nothing survives.</summary>
+    private static Dictionary<string, string[]>? NormalizeAttributes(IReadOnlyDictionary<string, string[]>? attributes)
+    {
+        if (attributes is not { Count: > 0 }) return null;
+        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in attributes)
+        {
+            if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is null) continue;
+            var vals = kv.Value.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).ToArray();
+            if (vals.Length == 0) continue;
+            result[kv.Key.Trim().ToLowerInvariant()] = vals;
+        }
+        return result.Count > 0 ? result : null;
     }
 
     /// <summary>

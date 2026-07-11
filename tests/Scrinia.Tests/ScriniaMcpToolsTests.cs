@@ -330,6 +330,92 @@ public sealed class ScriniaMcpToolsTests
             because: "content preview must be stored in the index");
     }
 
+    // ── Attributes (3 tests) ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task Store_Attributes_LandInFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["Acme signed the renewal."], "acme-note",
+            attributes: new Dictionary<string, string[]>
+            {
+                ["person"] = ["maria"],
+                ["org"] = ["acme"],
+                ["status"] = ["done"],   // arbitrary key — must land too
+            });
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "acme-note");
+        entry.Fields.Should().ContainKey("person");
+        entry.Fields!["person"].Should().Contain("maria");
+        entry.Fields.Should().ContainKey("status");
+        entry.Fields!["status"].Should().Contain("done");
+    }
+
+    [Fact]
+    public async Task Store_ReviewAttribute_DateSetsReviewAfter_TextSetsReviewWhen()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["note"], "rev-note",
+            attributes: new Dictionary<string, string[]>
+            {
+                ["review"] = ["2026-08-01", "when the auth system changes"],
+            });
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "rev-note");
+        entry.ReviewAfter.Should().NotBeNull();
+        entry.ReviewAfter!.Value.Year.Should().Be(2026);
+        entry.ReviewWhen.Should().Be("when the auth system changes");
+    }
+
+    [Fact]
+    public async Task Store_FileAttribute_RecordsCodeRefHash()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string relPath = "src/Probe.cs";
+        string fullPath = Path.Combine(scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "class Probe {}");
+
+        await Tools().Store(["depends on probe"], "file-note",
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "file-note");
+        entry.CodeRefs.Should().NotBeNull();
+        entry.CodeRefs!.Keys.Should().Contain(relPath);
+    }
+
+    [Fact]
+    public async Task MemoryRemember_Attributes_RoundTripToFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(
+            path: "/findings/acme",
+            content: ["Acme renewed."],
+            attributes: new Dictionary<string, string[]> { ["org"] = ["acme"], ["topic"] = ["renewal"] },
+            keywords: ["renewed", "annual contract"]);
+
+        // "/findings/acme" is a v2 path — it resolves to scope "local-topic:findings", not "local".
+        var entry = ScriniaArtifactStore.LoadIndex("local-topic:findings").First(e => e.Name.Contains("acme"));
+        entry.Fields.Should().ContainKey("org");
+        entry.Fields!["org"].Should().Contain("acme");
+        entry.Keywords.Should().Contain("annual contract");
+    }
+
+    [Fact]
+    public async Task MemoryAppend_Attributes_MergeIntoFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "/sessions/s1", content: ["first"],
+            attributes: new Dictionary<string, string[]> { ["person"] = ["alice"] });
+        await Tools().MemoryAppend(path: "/sessions/s1", content: "second",
+            attributes: new Dictionary<string, string[]> { ["person"] = ["bob"], ["topic"] = ["standup"] });
+
+        // "/sessions/s1" is a v2 path — it resolves to scope "local-topic:sessions", not "local".
+        var entry = ScriniaArtifactStore.LoadIndex("local-topic:sessions").First(e => e.Name == "s1");
+        entry.Fields!["person"].Should().Contain("alice").And.Contain("bob");   // multi-valued union
+        entry.Fields.Should().ContainKey("topic");
+    }
+
     // ── List (3 tests) ────────────────────────────────────────────────────
 
     [Fact]
@@ -1998,34 +2084,18 @@ public sealed class ScriniaMcpToolsTests
     // ── Rich search surface (facts/tags/path filters/path-segment score) ────────
 
     [Fact]
-    public async Task Search_SurfacesAnchorsAndTagsWhenPresent()
+    public async Task Search_SurfacesAttributesWhenPresent()
     {
         using var scope = new TestHelpers.StoreScope();
-        string[] tags = ["security", "refactor"];
-        await Tools().Store(["oauth callback details and rotation handling"],
-            "auth-rich-test", "oauth refactor", tags);
+        await Tools().MemoryRemember(path: "surfaced", content: ["auth token refresh flow"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["security"], ["org"] = ["acme"] });
 
-        // Backfill RetrievalAnchors directly via the store — the agent normally supplies
-        // these at Store() time, but the test pins the rendering layer in isolation.
-        var store = MemoryStoreContext.Current!;
-        var entries = ScriniaArtifactStore.LoadIndex();
-        var target = entries.Single(e => e.Name == "auth-rich-test");
-        store.Upsert(target with
-        {
-            RetrievalAnchors = [
-                "Session storage migrated from cookies to JWT",
-                "Rotation interval is 24h",
-            ],
-        });
-
-        string result = await Tools().Search("oauth");
+        string result = await Tools().MemorySearch(query: "auth token");
         var parsed = ResponseParser.Parse(result);
-        parsed.Content.Should().Contain("tags: security, refactor",
-            because: "rich search results must surface tags inline");
-        parsed.Content.Should().Contain("anchors:",
-            because: "rich search results must surface agent-supplied anchors when populated");
-        parsed.Content.Should().Contain("Session storage migrated from cookies to JWT");
-        parsed.Content.Should().Contain("Rotation interval is 24h");
+        parsed.Content.Should().Contain("attributes:",
+            because: "rich search results must surface attributes inline in place of tags");
+        parsed.Content.Should().Contain("topic: security");
+        parsed.Content.Should().Contain("org: acme");
     }
 
     [Fact]
@@ -2134,18 +2204,56 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Search_TagsFilter_AndSemantics_RequiresAllTags()
+    public async Task Search_AttributeFilter_RequiresKeyAndValue()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["entry one"], "tag-both", "both tags", ["security", "refactor"]);
-        await Tools().Store(["entry two"], "tag-one", "one tag", ["security"]);
+        await Tools().MemoryRemember(path: "attr-hit", content: ["security refactor entry"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["security", "refactor"] });
+        await Tools().MemoryRemember(path: "attr-miss", content: ["security entry only"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["other"] });
+        await Tools().MemoryRemember(path: "attr-nokey", content: ["security entry no topic"]);
 
-        string result = await Tools().MemorySearch(query: "entry", tags: "security,refactor");
+        string result = await Tools().MemorySearch(query: "entry",
+            attributeFilter: new Dictionary<string, string[]> { ["topic"] = ["security"] });
         var parsed = ResponseParser.Parse(result);
-        parsed.Content.Should().Contain("tag-both",
-            because: "entry with both required tags must be retained");
-        parsed.Content.Should().NotContain("tag-one",
-            because: "entry missing 'refactor' must be filtered (AND semantics)");
+        parsed.Content.Should().Contain("attr-hit",
+            because: "entry carries the required key and a matching value");
+        parsed.Content.Should().NotContain("attr-miss",
+            because: "entry has key 'topic' but not value 'security'");
+        parsed.Content.Should().NotContain("attr-nokey",
+            because: "entry lacks key 'topic' entirely");
+    }
+
+    [Fact]
+    public async Task Search_AttributeFilter_KeyOnly_MatchesAnyValue()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "haskey", content: ["entry one"],
+            attributes: new Dictionary<string, string[]> { ["review"] = ["2026-08-01"] });
+        await Tools().MemoryRemember(path: "nokey", content: ["entry two"]);
+
+        string result = await Tools().MemorySearch(query: "entry",
+            attributeFilter: new Dictionary<string, string[]> { ["review"] = [] });
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("haskey",
+            because: "key-only filter matches any value as long as the key is present");
+        parsed.Content.Should().NotContain("nokey",
+            because: "entry lacks key 'review' entirely");
+    }
+
+    [Fact]
+    public async Task Search_AttributeFilter_KeyMatchIsCaseInsensitive()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().MemoryRemember(path: "attr-case", content: ["entry body"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["security"] });
+
+        string result = await Tools().MemorySearch(query: "entry",
+            attributeFilter: new Dictionary<string, string[]> { ["Topic"] = ["security"] });
+        var parsed = ResponseParser.Parse(result);
+        parsed.Content.Should().Contain("attr-case",
+            because: "attribute keys are normalized to lowercase at write time; the filter key " +
+                     "must be normalized the same way before lookup, regardless of the caller's casing");
     }
 
     [Fact]
