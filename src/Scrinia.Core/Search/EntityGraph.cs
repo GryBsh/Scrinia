@@ -102,7 +102,11 @@ public sealed class EntityGraph
 
     /// <summary>
     /// Fields-side sibling of <see cref="ParseTypedEntities"/>: yields (key, value) pairs for
-    /// entity-class fields (KnownFields.EntityKeys), lowercased, values kept whole. Together
+    /// <b>every</b> field key, uniformly — not just <c>KnownFields.EntityKeys</c> — so any
+    /// attribute (e.g. co-<c>file:</c>/co-<c>status:</c> memories) can become a graph
+    /// association, not only the five blessed entity keys. Type is the lowercased field key,
+    /// kept type-scoped so e.g. <c>tag:paris</c> and <c>place:paris</c> stay distinct nodes;
+    /// values are lowercased and kept whole. Together with <see cref="ParseTypedEntities"/>
     /// they give Build its dual-read: legacy typed keywords ∪ unified fields.
     /// </summary>
     public static IEnumerable<(string Type, string Value)> ParseEntityFields(
@@ -111,7 +115,6 @@ public sealed class EntityGraph
         if (fields is null) yield break;
         foreach (var kv in fields)
         {
-            if (!KnownFields.EntityKeys.Contains(kv.Key)) continue;
             string type = kv.Key.ToLowerInvariant();
             foreach (string raw in kv.Value)
             {
