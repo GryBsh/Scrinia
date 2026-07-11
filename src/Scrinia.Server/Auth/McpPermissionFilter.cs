@@ -37,21 +37,21 @@ public static class McpPermissionFilter
     /// <summary>
     /// Maps an MCP request to the permission it requires, or <c>null</c> when the request needs no
     /// specific permission (handshake/discovery, and the bootstrap/recovery tools <c>guide</c> and
-    /// <c>memory_restore</c>, which parallel REST having no such gate). Pure — unit-tested directly.
+    /// <c>restore</c>, which parallel REST having no such gate). Pure — unit-tested directly.
     ///
-    /// <para>The mutating tools <c>memory_compact</c>/<c>memory_link</c>/<c>memory_reconcile</c> map
+    /// <para>The mutating tools <c>compact</c>/<c>link</c>/<c>reconcile</c> map
     /// to <c>store</c>: there is no finer REST permission for them, so they ride the write gate.</para>
     /// </summary>
     public static string? RequiredPermission(string method, string? toolName) => method switch
     {
         "tools/call" => toolName switch
         {
-            "memory_search" or "memory_list" => "search",
-            "memory_recall" => "read",
-            "memory_remember" or "memory_compact" or "memory_link" or "memory_reconcile" => "store",
-            "memory_append" => "append",
-            "memory_forget" => "forget",
-            _ => null, // guide, memory_restore, or unknown → no gate (dispatch/handshake handled by SDK)
+            "search" or "list" => "search",
+            "recall" => "read",
+            "remember" or "compact" or "link" or "reconcile" => "store",
+            "append" => "append",
+            "forget" => "forget",
+            _ => null, // guide, restore, or unknown → no gate (dispatch/handshake handled by SDK)
         },
         "resources/read" => "read",
         _ => null, // initialize, tools/list, prompts/*, resources/list, notifications, …

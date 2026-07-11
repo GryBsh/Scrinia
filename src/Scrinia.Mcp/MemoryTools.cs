@@ -73,7 +73,7 @@ public sealed partial class ScriniaMcpTools
     private const int MaxPathLength = 256;
     private const int MaxContentBytesPerElement = 5 * 1024 * 1024; // 5 MB
 
-    [McpServerTool(Name = "memory_remember"), Description(
+    [McpServerTool(Name = "remember"), Description(
         "Persist a memory at a path. content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
         "(e.g. person/org/topic/file/review); keywords are the distinctive terms and query phrasings " +
@@ -128,7 +128,7 @@ public sealed partial class ScriniaMcpTools
         return result;
     }
 
-    [McpServerTool(Name = "memory_recall"), Description(
+    [McpServerTool(Name = "recall"), Description(
         "Read a memory by path. Returns the full content unless a chunk index is provided. " +
         "Example: memory_recall({ path: '/findings/SEC-001' }), or memory_recall({ path: '/skill/qa' }) to load a skill.")]
     public async Task<string> MemoryRecall(
@@ -152,7 +152,7 @@ public sealed partial class ScriniaMcpTools
         return await Show(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken);
     }
 
-    [McpServerTool(Name = "memory_search"), Description(
+    [McpServerTool(Name = "search"), Description(
         "Find memories by keyword or phrase. Returns ranked matches with a content preview and the " +
         "entry's attributes per hit so you can decide what to recall without a follow-up call. " +
         "Example: memory_search({ query: 'oauth flow', pathPrefix: '/findings/', " +
@@ -179,7 +179,7 @@ public sealed partial class ScriniaMcpTools
         return await Search(query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken);
     }
 
-    [McpServerTool(Name = "memory_list"), Description(
+    [McpServerTool(Name = "list"), Description(
         "List stored memories. mode 'summary' (default) shows scopes + top keywords and attributes; " +
         "'full' paginates the table; 'drift' surfaces memories whose file attributes have changed.")]
     public Task<string> MemoryList(
@@ -193,7 +193,7 @@ public sealed partial class ScriniaMcpTools
         return List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken);
     }
 
-    [McpServerTool(Name = "memory_append"), Description(
+    [McpServerTool(Name = "append"), Description(
         "Append a new chunk to an existing memory (or create it if missing). Preserves the memory's " +
         "existing retrieval metadata and merges in any new attributes (multi-valued keys union) and " +
         "keywords (deduplicated). Example: memory_append({ path: '/sessions/2026-05-11', " +
@@ -229,7 +229,7 @@ public sealed partial class ScriniaMcpTools
         return result;
     }
 
-    [McpServerTool(Name = "memory_forget"), Description(
+    [McpServerTool(Name = "forget"), Description(
         "Delete a memory by path. " +
         "Example: memory_forget({ path: '/temp/scratch' }).")]
     public async Task<string> MemoryForget(
@@ -245,7 +245,7 @@ public sealed partial class ScriniaMcpTools
         return await Forget(path, cancellationToken);
     }
 
-    [McpServerTool(Name = "memory_compact"), Description(
+    [McpServerTool(Name = "compact"), Description(
         "Merge a multi-chunk memory. Archives the original version. " +
         "Example: memory_compact({ path: '/sessions/2026-05-11', keepRecent: 3 }).")]
     public Task<string> MemoryCompact(
@@ -262,7 +262,7 @@ public sealed partial class ScriniaMcpTools
         return Compact(path, keepRecent, cancellationToken);
     }
 
-    [McpServerTool(Name = "memory_link"), Description(
+    [McpServerTool(Name = "link"), Description(
         "Create a bidirectional link between two memories. " +
         "Example: memory_link({ path: '/findings/SEC-001', destination: '/patterns/auth' }).")]
     public Task<string> MemoryLink(
@@ -285,7 +285,7 @@ public sealed partial class ScriniaMcpTools
         return Link(path, destination, reason, cancellationToken);
     }
 
-    [McpServerTool(Name = "memory_restore"), Description(
+    [McpServerTool(Name = "restore"), Description(
         "Resume workspace context — agent profile, patterns, today's session log, available skills, " +
         "unresolved merge conflicts. Usually unnecessary because guide() folds this in at session start; " +
         "call this mid-session to refresh after a long gap.")]
@@ -294,7 +294,7 @@ public sealed partial class ScriniaMcpTools
         return Restore(cancellationToken);
     }
 
-    [McpServerTool(Name = "memory_reconcile"), Description(
+    [McpServerTool(Name = "reconcile"), Description(
         "Scan .scrinia/ for git merge conflicts, or resolve a specific one. " +
         "Without args: scan and report. With conflictId + choice: resolve. " +
         "Example: memory_reconcile({ conflictId: 'local/skills/qa.nmp2', choice: 'ours' }).")]

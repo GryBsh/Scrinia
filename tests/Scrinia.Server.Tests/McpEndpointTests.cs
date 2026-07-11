@@ -75,7 +75,7 @@ public sealed class McpEndpointTests : IClassFixture<ScriniaServerFactory>
     public async Task Mcp_toolsCall_rejected_when_key_lacks_operation_permission()
     {
         // A key with store access but NO permissions must be rejected by the per-op auth filter
-        // when it calls a gated tool (memory_remember requires "store"). This also proves the
+        // when it calls a gated tool (remember requires "store"). This also proves the
         // filter extracts the tool name from the call params — if it didn't, gating would silently
         // no-op and the call would proceed.
         var (restrictedKey, store) = _factory.CreateRestrictedStoreKey(_factory.PrimaryStore);
@@ -86,14 +86,14 @@ public sealed class McpEndpointTests : IClassFixture<ScriniaServerFactory>
         sessionId.Should().NotBeNullOrEmpty("initialize must succeed and return a session id (store access is granted)");
 
         string body = await CallToolAsync(client, store, sessionId!,
-            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_remember","arguments":{"path":"x","content":["y"]}}}""");
+            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"remember","arguments":{"path":"x","content":["y"]}}}""");
 
         // The per-op filter rejects the call: JSON-RPC error, no result (tool never executed).
         // (The SDK sanitizes the filter's exception message at this layer, so we assert on the
         // error/result shape rather than the message text — see the paired "allowed" test, which
         // runs the identical call with a permissioned key and gets a result instead.)
         body.Should().Contain("\"error\"",
-            "a permission-less key must be denied the memory_remember tool over MCP");
+            "a permission-less key must be denied the remember tool over MCP");
         body.Should().NotContain("\"result\"");
     }
 
@@ -108,12 +108,12 @@ public sealed class McpEndpointTests : IClassFixture<ScriniaServerFactory>
         sessionId.Should().NotBeNullOrEmpty();
 
         string body = await CallToolAsync(client, store, sessionId!,
-            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_remember","arguments":{"path":"perm-ok","content":["hello"]}}}""");
+            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"remember","arguments":{"path":"perm-ok","content":["hello"]}}}""");
 
         // Identical call to the rejected test, but with a fully-permissioned key: it passes the filter,
         // executes, and returns a result. The error-vs-result difference IS the auth gate.
         body.Should().Contain("\"result\"",
-            "a fully-permissioned key's memory_remember call must succeed over MCP");
+            "a fully-permissioned key's remember call must succeed over MCP");
         body.Should().NotContain("\"error\"");
     }
 
