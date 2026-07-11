@@ -135,12 +135,12 @@ public sealed class EntityGraphTests
         EntityGraph.ParseTypedEntities([keyword]).Should().BeEmpty();
     }
 
-    // --- Build: conflict-driven node identity ---
+    // --- Build: uniform type:value node identity ---
 
     [Fact]
-    public void Build_SingleTypeValue_DoesNotSplit_AndAssociationReaches()
+    public void Build_SingleTypeValue_UsesTypeScopedNode_AndAssociationReaches()
     {
-        // alice and acme are each claimed by exactly one type → bare nodes. Mass from "alice"
+        // person:alice and org:acme are each distinct type:value nodes. Mass from "alice"
         // must still reach docB via alice→docA→acme→docB, exactly like the untyped fixture.
         var g = EntityGraph.Build(new (string, IReadOnlyList<string>?)[]
         {
@@ -155,11 +155,12 @@ public sealed class EntityGraphTests
     }
 
     [Fact]
-    public void Build_ConflictingTypes_SplitNodes_BlockFalseCrossTypeBridge()
+    public void Build_DistinctTypesSharingValue_AreDistinctNodes_BlockFalseCrossTypeBridge()
     {
-        // "paris" is claimed as BOTH person and place → split into person:paris / place:paris.
-        // A query about the person "alice" must NOT bleed into the place doc through the shared
-        // name. Contrast with the untyped graph below, which DOES bridge.
+        // "paris" appears as BOTH person:paris and place:paris → two distinct type:value nodes
+        // by construction (no conflict-detection needed). A query about the person "alice" must
+        // NOT bleed into the place doc through the shared value. Contrast with the untyped graph
+        // below, which DOES bridge.
         var typed = EntityGraph.Build(new (string, IReadOnlyList<string>?)[]
         {
             ("personDoc", new[] { "person:alice", "person:paris" }),  // alice co-occurs with Paris-the-person
@@ -167,7 +168,7 @@ public sealed class EntityGraphTests
         });
         var typedScores = typed.Score("what did alice say", alpha: 0.15, iterations: 20);
         typedScores.Should().ContainKey("personDoc");
-        typedScores.Should().NotContainKey("placeDoc");   // split prevents the false bridge
+        typedScores.Should().NotContainKey("placeDoc");   // distinct nodes prevent the false bridge
 
         // Same topology with a single merged "paris" node (what the old untyped graph did):
         // the bridge fires and the place doc is wrongly reached.
@@ -179,9 +180,9 @@ public sealed class EntityGraphTests
     }
 
     [Fact]
-    public void Build_SplitNode_StillSeedsFromSurfaceForm()
+    public void Build_TypeScopedNode_StillSeedsFromSurfaceForm()
     {
-        // A split node (place:paris) must still seed off the bare query word "paris".
+        // A type:value node (place:paris) must still seed off the bare query word "paris".
         var g = EntityGraph.Build(new (string, IReadOnlyList<string>?)[]
         {
             ("personDoc", new[] { "person:paris" }),
@@ -190,25 +191,76 @@ public sealed class EntityGraphTests
 
         var scores = g.Score("tell me about paris", alpha: 0.15, iterations: 20);
 
-        // "paris" collides across types, so lexical seeding lights up both split variants.
+        // "paris" collides across types, so lexical seeding lights up both type:value variants.
         scores.Should().ContainKey("personDoc");
         scores.Should().ContainKey("placeDoc");
     }
 
     [Fact]
-    public void Build_LegacyEntity_FoldsToBareValue_AndNeverSplits()
+    public void Build_LegacyEntity_IsTypeScoped_NoLongerBridgesToTypedEntity()
     {
-        // entity:paris is untyped; even though place:paris exists, the legacy marker folds to a
-        // bare "paris" node and does not itself trigger or join the person/place split set.
+        // Under uniform (key,value) identity, the legacy entity: marker is a normal "entity:value"
+        // node -- it no longer folds to a bare value, so entity:paris and place:paris are DISTINCT
+        // nodes and do not link. (More conservative; migration converts legacy data anyway.)
         var g = EntityGraph.Build(new (string, IReadOnlyList<string>?)[]
         {
-            ("legacyDoc", new[] { "entity:paris", "entity:berlin" }),
+            ("legacyDoc", new[] { "entity:paris", "entity:zzsecret" }),
             ("placeDoc", new[] { "place:paris" }),
         });
 
-        // Only one real type (place) claims "paris", so there's no conflict and no split — the
-        // bare "paris" node from both docs links them, and "berlin" seeds the legacy doc.
-        g.Score("about berlin", alpha: 0.15, iterations: 20).Should().ContainKey("legacyDoc");
+        // Seed ONLY via the legacy-exclusive value "zzsecret". Old behavior bridged
+        // legacyDoc -> (shared bare "paris") -> placeDoc; uniform identity makes entity:paris and
+        // place:paris distinct, so placeDoc is unreachable.
+        var scores = g.Score("tell me about zzsecret", alpha: 0.15, iterations: 20);
+
+        scores.Should().ContainKey("legacyDoc");
+        scores.Should().NotContainKey("placeDoc");   // no false bridge
+    }
+
+    [Fact]
+    public void Build_NonRealTypeKeys_AreTypeScoped_DoNotCrossLinkOnSharedValue()
+    {
+        // status:done and outcome:done share the VALUE "done" but different keys -> distinct nodes.
+        // Seeded via statusDoc-exclusive "zztarget": if the two collapsed to one "done" node,
+        // outcomeDoc would be reached. Type-scoped, it must not be.
+        var g = EntityGraph.Build(new (string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)[]
+        {
+            ("statusDoc", null, new Dictionary<string, string[]> { ["status"] = new[] { "done" }, ["thing"] = new[] { "zztarget" } }),
+            ("outcomeDoc", null, new Dictionary<string, string[]> { ["outcome"] = new[] { "done" } }),
+        });
+
+        var scores = g.Score("what about zztarget", alpha: 0.15, iterations: 20);
+
+        scores.Should().ContainKey("statusDoc");
+        scores.Should().NotContainKey("outcomeDoc");   // no false bridge via a shared bare "done"
+    }
+
+    [Fact]
+    public void Build_SameKeyValue_StillLinks()
+    {
+        var g = EntityGraph.Build(new (string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)[]
+        {
+            ("docA", null, new Dictionary<string, string[]> { ["status"] = new[] { "done" }, ["thing"] = new[] { "zzseed" } }),
+            ("docB", null, new Dictionary<string, string[]> { ["status"] = new[] { "done" } }),
+        });
+
+        var scores = g.Score("about zzseed", alpha: 0.15, iterations: 20);
+
+        scores.Should().ContainKey("docB");   // reached via zzseed -> docA -> status:done -> docB
+    }
+
+    [Fact]
+    public void Build_NonRealTypeNode_SeedsFromBareValue()
+    {
+        // SurfaceOf now strips ANY type prefix, so a status:done node seeds from the query word "done".
+        var g = EntityGraph.Build(new (string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)[]
+        {
+            ("doc", null, new Dictionary<string, string[]> { ["status"] = new[] { "done" } }),
+        });
+
+        var scores = g.Score("is it done yet", alpha: 0.15, iterations: 20);
+
+        scores.Should().ContainKey("doc");   // seeded via SurfaceOf("status:done") == "done"
     }
 
     [Fact]

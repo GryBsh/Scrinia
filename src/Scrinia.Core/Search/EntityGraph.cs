@@ -3,8 +3,9 @@ namespace Scrinia.Core.Search;
 /// <summary>
 /// Bipartite entity graph + Personalized PageRank, used by the entity-graph retrieval
 /// signal (<see cref="EntityGraphScoreContributor"/>). Nodes are <b>memories</b> (by
-/// scoped key) and <b>entities</b> (agent-extracted typed-keyword values —
-/// person/place/org/thing/topic); an edge links a memory to each entity it was tagged with.
+/// scoped key) and <b>entities</b> — attribute <c>(key, value)</c> nodes, one per distinct
+/// tag: any field/keyword key, not just person/place/org/thing/topic; an edge links a memory
+/// to each entity it was tagged with.
 ///
 /// <para><b>What it's for:</b> the keyword+vector pool buries memories that share little
 /// lexical/semantic overlap with the query but are <i>associated</i> via a shared entity
@@ -29,10 +30,9 @@ public sealed class EntityGraph
     private readonly Dictionary<string, HashSet<string>> _docToEntities = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The fixed set of real entity types. A value claimed by two or more of these across a
-    /// candidate set is ambiguous and gets split into per-type nodes by <see cref="Build"/>
-    /// (e.g. a person and a place sharing a name stop being one node). The legacy untyped
-    /// <c>entity:</c> marker is NOT in this set — it never claims a type and never causes a split.
+    /// The typed-keyword markers <see cref="ParseTypedEntities"/> recognizes as entity types
+    /// (person/place/org/thing/topic). The legacy untyped <c>entity:</c> marker is NOT in this
+    /// set — <see cref="ParseTypedEntities"/> keeps it as its own type <c>"entity"</c> instead.
     /// </summary>
     public static readonly IReadOnlySet<string> RealTypes =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "person", "place", "org", "thing", "topic" };
@@ -108,14 +108,9 @@ public sealed class EntityGraph
     /// values lowercased and kept whole. Together with <see cref="ParseTypedEntities"/> they
     /// give Build its dual-read: legacy typed keywords ∪ unified fields.
     ///
-    /// <para>These (type, value) tuples are distinct here, but graph <i>node</i> identity is
-    /// decided later by <see cref="ResolveNodeKey"/>, which currently type-scopes only among
-    /// <see cref="RealTypes"/> on genuine conflict — every other key collapses to its bare
-    /// value. So arbitrary keys can still cross-link on a shared value (<c>status:done</c> and
-    /// <c>outcome:done</c> → one node; <c>tag:paris</c> merges with <c>place:paris</c> unless
-    /// "paris" is disputed among 2+ real types). Making node identity uniformly <c>(key, value)</c>
-    /// — which would give true per-key type-scoping — is deferred to the entity-graph tuning
-    /// effort; this method only widens <i>what feeds</i> the graph.</para>
+    /// <para><see cref="Build"/> gives each of these (type, value) tuples its own <c>type:value</c>
+    /// node, so arbitrary keys never cross-link on a shared value (<c>status:done</c> and
+    /// <c>outcome:done</c> are distinct nodes; so are <c>tag:paris</c> and <c>place:paris</c>).</para>
     /// </summary>
     public static IEnumerable<(string Type, string Value)> ParseEntityFields(
         IReadOnlyDictionary<string, string[]>? fields)
@@ -143,17 +138,14 @@ public sealed class EntityGraph
 
     /// <summary>
     /// Builds a graph from a set of <c>(memory, keywords, fields)</c> docs, applying
-    /// <b>conflict-driven node identity</b>: a tag's node is its bare <c>value</c> unless that
-    /// value is claimed by two or more <see cref="RealTypes"/> across the whole set — then it
-    /// splits to <c>type:value</c> so e.g. a person and a place sharing a name stop being one
-    /// node. Single-type values never split (no needless fragmentation); the legacy untyped
-    /// <c>entity:</c> marker always folds to bare <c>value</c> and never triggers or joins a
-    /// split (conservative — under-linking is the documented lower-bound stance, never a false
-    /// bridge). Two passes are required: the conflict set must be known before any node key is
-    /// assigned. Per-doc tags are the union of <see cref="ParseTypedEntities"/> (legacy typed
-    /// keywords) and <see cref="ParseEntityFields"/> (unified Fields), so a doc carrying either
-    /// or both sources graphs identically. Use this rather than per-doc <see cref="AddDoc"/>
-    /// whenever the input carries typed keywords or fields, so splitting is applied consistently.
+    /// <b>uniform <c>type:value</c> node identity</b>: every <c>(type, value)</c> pair is its own
+    /// node, distinct by construction — no conflict pass, no bare-value folding. A value shared
+    /// across unrelated keys (<c>status:done</c> vs <c>outcome:done</c>; <c>person:paris</c> vs
+    /// <c>place:paris</c>) is never one node, so unrelated keys never falsely cross-link on a
+    /// shared value. Per-doc tags are the union of <see cref="ParseTypedEntities"/> (legacy typed
+    /// keywords) and <see cref="ParseEntityFields"/> (unified Fields), so a doc carrying either or
+    /// both sources graphs identically. Use this rather than per-doc <see cref="AddDoc"/> whenever
+    /// the input carries typed keywords or fields, so node identity is applied consistently.
     /// </summary>
     public static EntityGraph Build(
         IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords, IReadOnlyDictionary<string, string[]>? Fields)> docs)
@@ -161,46 +153,20 @@ public sealed class EntityGraph
         var graph = new EntityGraph();
         if (docs is null) return graph;
 
-        // Pass 1: parse tags per doc; record which real types claim each value.
-        var parsed = new List<(string DocKey, List<(string Type, string Value)> Tags)>();
-        var realTypesByValue = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        // Uniform node identity: every (type, value) is the node "type:value". No conflict-split
+        // pass — a value under two different keys (person:paris vs place:paris; status:done vs
+        // outcome:done) is two distinct nodes by construction, so unrelated keys never cross-link.
         foreach (var (docKey, keywords, fields) in docs)
         {
             if (string.IsNullOrWhiteSpace(docKey)) continue;
-            var tags = new List<(string Type, string Value)>();
-            foreach (var pair in ParseTypedEntities(keywords)) tags.Add(pair);
-            foreach (var pair in ParseEntityFields(fields)) tags.Add(pair);
-            if (tags.Count == 0) continue;
-            parsed.Add((docKey, tags));
-            foreach (var (type, value) in tags)
-            {
-                if (!RealTypes.Contains(type)) continue;   // legacy "entity" doesn't claim a type
-                if (!realTypesByValue.TryGetValue(value, out var set))
-                    realTypesByValue[value] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                set.Add(type);
-            }
-        }
-
-        // Pass 2: resolve node keys (split only on genuine conflict) and populate.
-        foreach (var (docKey, tags) in parsed)
-        {
-            var nodeKeys = new List<string>(tags.Count);
-            foreach (var (type, value) in tags)
-                nodeKeys.Add(ResolveNodeKey(type, value, realTypesByValue));
+            var nodeKeys = new List<string>();
+            foreach (var (type, value) in ParseTypedEntities(keywords)) nodeKeys.Add($"{type}:{value}");
+            foreach (var (type, value) in ParseEntityFields(fields)) nodeKeys.Add($"{type}:{value}");
+            if (nodeKeys.Count == 0) continue;
             graph.AddDoc(docKey, nodeKeys);
         }
         return graph;
     }
-
-    /// <summary>Node key for a tag: <c>type:value</c> only when the value is genuinely ambiguous
-    /// (claimed by 2+ real types in the set); bare <c>value</c> otherwise.</summary>
-    private static string ResolveNodeKey(
-        string type, string value, Dictionary<string, HashSet<string>> realTypesByValue) =>
-        RealTypes.Contains(type)
-            && realTypesByValue.TryGetValue(value, out var types)
-            && types.Count >= 2
-            ? $"{type}:{value}"
-            : value;
 
     /// <summary>
     /// Personalized PageRank seeded from the query's entities, returning the stationary mass
@@ -299,10 +265,10 @@ public sealed class EntityGraph
     /// in the query as a case-insensitive substring, or when every token of the surface appears
     /// in the tokenized query. The substring check catches multi-word entities ("home
     /// renovation"); the token check catches order/punctuation differences. The surface strips a
-    /// split node's type prefix (so <c>place:paris</c> still seeds from the query word "paris");
-    /// a query word that collides across types lights up every split variant — disambiguation
-    /// lives in the graph structure (no false cross-type bridge), not in lexical seeding. No LLM
-    /// is involved.
+    /// node's type prefix (so <c>place:paris</c> still seeds from the query word "paris"); a query
+    /// word that collides across types lights up every same-value node — disambiguation lives in
+    /// the graph structure (no false cross-type bridge), not in lexical seeding. No LLM is
+    /// involved.
     /// </summary>
     private List<string> SeedEntities(string query)
     {
@@ -325,13 +291,13 @@ public sealed class EntityGraph
         return seeds;
     }
 
-    /// <summary>The surface form a node seeds on: the value after a real-type prefix (so a split
-    /// node <c>place:paris</c> seeds from "paris"), or the whole key when it carries no real-type
-    /// prefix (bare values, legacy keys, or values that merely happen to contain a colon).</summary>
+    /// <summary>The surface form a node seeds on: the value after the type prefix. Every node built
+    /// by <see cref="Build"/> is <c>type:value</c>, so <c>place:paris</c> and <c>status:done</c> both
+    /// seed from their bare value. A node with no <c>:</c> (defensive — direct <see cref="AddDoc"/>
+    /// callers may pass bare values) seeds on the whole key.</summary>
     private static string SurfaceOf(string nodeKey)
     {
         int colon = nodeKey.IndexOf(':');
-        if (colon <= 0 || colon >= nodeKey.Length - 1) return nodeKey;
-        return RealTypes.Contains(nodeKey[..colon]) ? nodeKey[(colon + 1)..] : nodeKey;
+        return colon > 0 && colon < nodeKey.Length - 1 ? nodeKey[(colon + 1)..] : nodeKey;
     }
 }
