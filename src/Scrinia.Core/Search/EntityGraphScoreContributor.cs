@@ -53,9 +53,9 @@ public sealed class EntityGraphScoreContributor : ISearchScoreContributor
             return None;
 
         // Build the bipartite graph from the candidates we were handed, keyed by the same
-        // "{scope}|{name}" the scorer looks up supplemental scores with. Build applies
-        // conflict-driven node identity over the whole candidate set (a value claimed by 2+
-        // real types splits into per-type nodes), so it needs the full set up front.
+        // "{scope}|{name}" the scorer looks up supplemental scores with. Build assigns every
+        // attribute (type, value) a uniform "type:value" node, so unrelated keys sharing a
+        // value stay distinct; the full candidate set is passed so all associations are seen.
         var docs = new List<(string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)>(candidates.Count);
         foreach (var c in candidates)
             docs.Add(($"{c.Scope}|{c.Entry.Name}", c.Entry.Keywords, c.Entry.Fields));
