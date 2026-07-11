@@ -82,7 +82,10 @@ internal static class Program
 
             Agentic-ingest arm (locomo, longmemeval): the LLM IS the ingestion — a real tool-calling
             episode per session decides what to remember, instead of Scrinia's mechanical per-doc ingest.
-            No embedder, no reranker; compare against the BM25 mechanical arm (--mode bm25).
+            Plain --agentic-ingest (or --mode bm25) scores BM25 + fields only. With
+            --mode bm25_embeddings it runs the full production ingestion+retrieval pipeline: the
+            agent-written memories are embedded and hybrid-reranked (VectorStore + HybridReranker +
+            path-segment), same as production.
               --agentic-ingest         Enable the agentic-ingest arm. Requires --agent-provider (openai-compatible only). Mutually exclusive with --agent <ops>.
               --episode-max-turns <n> Max tool-call turns per session episode (default 16)
               --episode-max-tokens <n> max_tokens per turn. On an OpenAI-compatible server this bounds the WHOLE request (prompt + generation), and the prompt (guide + full session transcript + tool schemas, growing each turn with recalls/search hits) starts near 5k tokens. Default 32768; set it to your server's context window (n_ctx).

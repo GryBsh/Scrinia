@@ -20,10 +20,10 @@ public sealed class JudgeCliTests
     }
 
     [Fact]
-    public void BuildJudge_RequiresProvider_WhenJudgeEnabled()
+    public async Task BuildJudge_RequiresProvider_WhenJudgeEnabled()
     {
         var act = async () => await RetrieverFactory.BuildJudgeAsync(["locomo", "--judge"], default);
-        act.Should().ThrowAsync<ArgumentException>().WithMessage("*judge-provider*");
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*judge-provider*");
     }
 
     [Fact]

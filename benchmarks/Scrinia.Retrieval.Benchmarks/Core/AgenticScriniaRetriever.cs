@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Scrinia.Core;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
@@ -38,7 +40,11 @@ public sealed record AgenticIngestStats(
 /// deciding what's worth remembering.
 ///
 /// <para>Queries are then answered mechanically via <see cref="FileMemoryStore.SearchAll"/>
-/// — no agent involvement at query time. Each returned memory is mapped back to the
+/// (BM25 + fields) when no embedder is configured. When an embedder IS configured (CLI
+/// <c>--mode bm25_embeddings</c>), queries additionally blend in the production semantic +
+/// path-segment score contributor (<see cref="HybridReranker"/> + <see cref="PathSegmentScoreContributor"/>,
+/// via a post-episode <see cref="EmbeddingReindexer"/> pass into a shared <see cref="VectorStore"/>) —
+/// the same hybrid retrieval path production uses. Each returned memory is mapped back to the
 /// haystack doc IDs it cited by parsing <c>D{n}:{i}</c>-style citations out of the
 /// memory's full decoded content via <see cref="DialogRefParser"/> and resolving each
 /// against the buffered doc ids, so the existing R@k scorer — which compares doc IDs —
@@ -60,6 +66,10 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
     private readonly EpisodeCache _cache;
     private readonly string _modelSlug;
     private readonly RankerOptions _rankerOptions;
+    // Owned by the caller (factory) and shared across ResetAsync — never disposed here.
+    // Kept only when usable, mirroring ScriniaRetriever's guard.
+    private readonly IEmbeddingProvider? _embedder;
+    private readonly EmbeddingOptions _embeddingOptions;
 
     // Buffering — under _ingestLock. Sessions preserve first-seen order, both within
     // and across sessions, so episodes run in the order docs arrived.
@@ -71,6 +81,14 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
     // Per-question state, rebuilt every ResetAsync.
     private FileMemoryStore _store;
     private int _resetCount;
+    // Shared VectorStore instance for the current question — the SAME instance the
+    // HybridReranker inside _searchContributor reads from, so a post-episode
+    // EmbeddingReindexer.ReindexAsync pass (into this instance) is immediately visible
+    // to the query path. Null when no embedder was supplied (BM25-only, unchanged).
+    private VectorStore? _vectorStore;
+    // Task 2's query path reads this to add the semantic + path-segment score
+    // contributions. Null on the no-embedder path.
+    private ISearchScoreContributor? _searchContributor;
     private bool _ingested;
     private readonly SemaphoreSlim _episodeGate = new(1, 1);
     // entryName -> ordered doc ids the memory resolves to (empty = no usable citation).
@@ -107,7 +125,9 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         AgenticIngestHarness harness,
         EpisodeCache cache,
         string modelSlug,
-        RankerOptions? rankerOptions = null)
+        RankerOptions? rankerOptions = null,
+        IEmbeddingProvider? embedder = null,
+        EmbeddingOptions? embeddingOptions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         ArgumentNullException.ThrowIfNull(harness);
@@ -118,8 +138,15 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         _cache = cache;
         _modelSlug = modelSlug;
         _rankerOptions = rankerOptions ?? RankerOptions.Default;
+        _embedder = embedder is { IsAvailable: true } ? embedder : null;
+        _embeddingOptions = embeddingOptions ?? new EmbeddingOptions();
         _store = CreateStore();
+        RebuildEmbeddingPipeline(PerQuestionDir());
     }
+
+    /// <summary>Test-only hook: number of vectors currently held by the shared
+    /// per-question <see cref="VectorStore"/> (0 when no embedder is configured).</summary>
+    internal int EmbeddedVectorCount => _vectorStore?.Count() ?? 0;
 
     // ── Ingest (buffer only — this arm's real ingestion is the episode) ─────────
 
@@ -164,7 +191,17 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         // Expansion + dedup collapses memories to docs, so a wider first-stage
         // candidate set is needed to still surface topK unique docs.
         int searchLimit = Math.Max(topK * 10, topK);
-        IReadOnlyList<SearchResult> results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        IReadOnlyList<SearchResult> results;
+        if (_searchContributor is not null)
+        {
+            var candidates = _store.ListScoped(scopes: null);
+            var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: null);
+        }
+        else
+        {
+            results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        }
 
         var hits = new List<RetrievalHit>(topK);
         var seenDocIds = new HashSet<string>(StringComparer.Ordinal);
@@ -221,7 +258,17 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
 
         // Over-fetch so chunk-results collapsing to the same parent memory still yield k distinct memories.
         int searchLimit = Math.Max(k * 4, k);
-        IReadOnlyList<SearchResult> results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        IReadOnlyList<SearchResult> results;
+        if (_searchContributor is not null)
+        {
+            var candidates = _store.ListScoped(scopes: null);
+            var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: null);
+        }
+        else
+        {
+            results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+        }
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var contents = new List<string>(k);
@@ -271,6 +318,15 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
             {
                 MemoryStoreContext.Current = null;
             }
+
+            // Reindex into the SAME VectorStore instance the query path's HybridReranker
+            // reads from (Task 2) — NOT EmbeddingReindexer.ForceReindexAsync, which would
+            // construct its own VectorStore the reranker would never see. Runs after every
+            // episode has populated _store and before the full-content cache / provenance
+            // build, so the reranker sees fresh vectors on the very first query.
+            if (_embedder is not null && _vectorStore is not null)
+                await EmbeddingReindexer.ReindexAsync(_store, _embedder, _vectorStore,
+                    NullLogger.Instance, progress: null, ct, _embeddingOptions);
 
             await BuildFullContentCacheAsync(ct);
             BuildProvenanceMap();
@@ -453,6 +509,7 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
 
         _resetCount++;
         _store = CreateStore();
+        RebuildEmbeddingPipeline(PerQuestionDir());
 
         lock (_ingestLock)
         {
@@ -469,6 +526,10 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
 
     public ValueTask DisposeAsync()
     {
+        // Owned by us (unlike _embedder, which the caller owns and shares across resets).
+        // Idempotent: a second call sees _vectorStore already null and no-ops.
+        _vectorStore?.Dispose();
+        _vectorStore = null;
         try
         {
             if (Directory.Exists(_rootDir))
@@ -479,10 +540,35 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         return ValueTask.CompletedTask;
     }
 
+    private string PerQuestionDir() => Path.Combine(_rootDir, $"q{_resetCount:D6}");
+
     private FileMemoryStore CreateStore()
     {
-        string per = Path.Combine(_rootDir, $"q{_resetCount:D6}");
+        string per = PerQuestionDir();
         Directory.CreateDirectory(per);
         return new FileMemoryStore(per) { RankerOptions = _rankerOptions };
+    }
+
+    /// <summary>
+    /// (Re)builds the per-question embedding pipeline sharing ONE <see cref="VectorStore"/>
+    /// instance between the post-episode reindex (<see cref="EmbeddingReindexer.ReindexAsync"/>)
+    /// and the query-time <see cref="HybridReranker"/> — the coherence this arm depends on.
+    /// No-op (both fields left null) when no usable embedder was supplied, so the BM25-only
+    /// path is unchanged.
+    /// </summary>
+    private void RebuildEmbeddingPipeline(string perQuestionDir)
+    {
+        _vectorStore?.Dispose();
+        _vectorStore = null;
+        _searchContributor = null;
+
+        if (_embedder is null) return;
+
+        string embeddingsDir = Path.Combine(perQuestionDir, "embeddings");
+        string signature = ChunkedSignature.Compose(
+            _embedder.Signature, _embeddingOptions.ChunkSize, _embeddingOptions.ChunkOverlap);
+        _vectorStore = new VectorStore(embeddingsDir, signature);
+        var reranker = new HybridReranker(_embedder, _vectorStore, _embeddingOptions.SemanticWeight);
+        _searchContributor = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
     }
 }

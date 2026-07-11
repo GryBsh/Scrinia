@@ -42,6 +42,19 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         return (retriever, client, cache);
     }
 
+    /// <summary>Overload that also wires a real (or stub) embedder, exercising the
+    /// production embedding pipeline (VectorStore + HybridReranker) instead of BM25-only.</summary>
+    private (AgenticScriniaRetriever retriever, ScriptedToolClient client, EpisodeCache cache) MakeRetriever(
+        Scrinia.Core.Embeddings.IEmbeddingProvider? embedder, params ToolTurnResult?[] turns)
+    {
+        var client = new ScriptedToolClient(turns);
+        var harness = new AgenticIngestHarness(client, maxTurns: 8);
+        var cache = new EpisodeCache(_cacheFile);
+        var retriever = new AgenticScriniaRetriever(
+            _rootDir, harness, cache, modelSlug: "test-model", embedder: embedder);
+        return (retriever, client, cache);
+    }
+
     [Fact]
     public async Task ProvenanceExpansion_ReturnsCitedDocs_InOrder()
     {
@@ -337,5 +350,123 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // ... but the judge still sees the memory content.
         var surfaced = await retriever.GetSurfacedContentsAsync("Lisbon plan", k: 10);
         surfaced.Should().ContainSingle().Which.Should().Contain("JUDGE-VISIBLE");
+    }
+
+    [Fact]
+    public async Task Reindex_PopulatesVectorStore_AfterEpisode()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new StubEmbeddingProvider(),
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+
+        await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        retriever.EmbeddedVectorCount.Should().BeGreaterThan(0,
+            "an embedder was supplied, so the post-episode reindex must populate the shared VectorStore");
+    }
+
+    [Fact]
+    public async Task NoEmbedder_LeavesVectorPipelineNull_BehaviorUnchanged()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        retriever.EmbeddedVectorCount.Should().Be(0, "no embedder was supplied, so the pipeline stays null");
+        hits.Select(h => h.Id).Should().Equal("D1:1");
+    }
+
+    [Fact]
+    public async Task Dispose_ReleasesVectorStore_NoThrow()
+    {
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new StubEmbeddingProvider(),
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        await retriever.DisposeAsync();
+        await retriever.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Hybrid_SurfacesSemanticMatch_ThatBm25Misses()
+    {
+        // Two memories, neither sharing a single query token: the travel memory's tokens are
+        // {booked, lisbon, getaway}, the distractor's are {fixed, kitchen, sink, plumbing}, and
+        // the query's are {vacation, holiday, plans} — zero lexical overlap with either. Under
+        // BM25-only, both score 0 and neither surfaces. ConceptEmbeddingProvider makes the query
+        // and the travel memory cosine-identical (both contain travel-concept words), so the
+        // hybrid contributor's supplemental score is the ONLY thing that can surface D1:1.
+        var rememberTravel = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
+        var rememberDistractor = new ToolCallRequest("c2", "memory_remember",
+            """{"path":"/findings/plumbing","content":["Fixed the kitchen sink plumbing.\nref: D2:1"]}""");
+
+        var (hybridRetriever, _, _) = MakeRetriever(
+            new ConceptEmbeddingProvider(),
+            new ToolTurnResult(null, [rememberTravel, rememberDistractor], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+        await hybridRetriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await hybridRetriever.IngestAsync(new HaystackDoc("D2:1", "Maria: Sink is fixed.", null, "s2"));
+
+        var hybridHits = await hybridRetriever.RetrieveAsync("vacation holiday plans", topK: 5);
+
+        // Empirically verified against the real WeightedFieldScorer (default Sum fusion):
+        // TryInsert's relevance gate is `fieldScore + normalizedBm25*5 + supplemental`, and it
+        // only requires relevance > 0 — a zero-BM25, zero-field candidate DOES surface on
+        // supplemental score alone. So this asserts hybrid CONTAINS D1:1 while BM25-only misses
+        // it entirely, rather than falling back to the reorder variant.
+        hybridHits.Select(h => h.Id).Should().Contain("D1:1",
+            "the semantic contributor surfaces the travel memory purely on cosine similarity");
+        hybridHits.Select(h => h.Id).Should().NotContain("D2:1",
+            "the distractor shares no query tokens and is orthogonal in concept-space");
+
+        var (bm25Retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [rememberTravel, rememberDistractor], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+        await bm25Retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await bm25Retriever.IngestAsync(new HaystackDoc("D2:1", "Maria: Sink is fixed.", null, "s2"));
+
+        var bm25Hits = await bm25Retriever.RetrieveAsync("vacation holiday plans", topK: 5);
+
+        bm25Hits.Should().BeEmpty(
+            "BM25-only has zero lexical overlap with either memory, so nothing surfaces");
+    }
+
+    [Fact]
+    public async Task NoContributor_QueryPath_UnchangedFromBm25()
+    {
+        // Built WITHOUT an embedder — _searchContributor is null, so the query path must stay
+        // byte-for-byte BM25-only. Reuses the lexically-matching-query assertion shape from
+        // ProvenanceExpansion_ReturnsCitedDocs_InOrder to pin the no-embedder path unchanged.
+        var remember = new ToolCallRequest("c1", "memory_remember",
+            """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Maria: Booked Lisbon.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:2", "Maria: Flight is on Tuesday.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("Lisbon trip", topK: 5);
+
+        hits.Select(h => h.Id).Should().Equal("D1:1", "D1:2");
+        hits.Should().OnlyContain(h => h.Score > 0);
     }
 }

@@ -43,11 +43,13 @@ internal static class RetrieverFactory
             Program.Flag(args, "--embed-provider"));
 
         // Agentic-ingest arm: the LLM episode IS the ingestion, so this branch is
-        // checked EARLY — before the embedder loads — and returns immediately. No
-        // embedder, no ScriniaRetriever, no reranker; this arm scores BM25 + fields
-        // against the mechanical BM25 arm. --agentic-ingest is a bare boolean flag
-        // (no value token), so presence is checked positionally via HasFlag rather
-        // than the `--flag value` pair idiom Program.Flag uses.
+        // checked EARLY, before ScriniaRetriever's own embedder/reranker setup below.
+        // By default (--mode bm25) it scores BM25 + fields, same as the mechanical BM25
+        // arm. With --mode bm25_embeddings it also loads the real embedder (below) and
+        // retrieves through the production hybrid (VectorStore + HybridReranker +
+        // path-segment) — the same components production uses. --agentic-ingest is a
+        // bare boolean flag (no value token), so presence is checked positionally via
+        // HasFlag rather than the `--flag value` pair idiom Program.Flag uses.
         if (HasFlag(args, "--agentic-ingest"))
         {
             // Mutually exclusive with query/ingest agent decorations — this arm's
@@ -55,12 +57,17 @@ internal static class RetrieverFactory
             if (ParseAgentMode(Program.Flag(args, "--agent")).AnyEnabled)
                 throw new ArgumentException("--agentic-ingest cannot be combined with --agent <ops>; the episode is the agent.");
 
-            // Mutually exclusive with an explicit --rerank other than none — the agentic
-            // arm never builds a reranker (it scores BM25 + fields only), so a rerank
-            // flag would silently be ignored rather than applied.
+            // The cross-encoder / sentence-maxsim rerankers operate on ScriniaRetriever's
+            // sentence index, which the agentic arm does not build. The agentic arm's
+            // semantic rerank is now the production hybrid, enabled via --mode bm25_embeddings.
             if (Program.Flag(args, "--rerank") is { } rerankFlag && ParseRerank(rerankFlag) != RerankMode.None)
                 throw new ArgumentException(
-                    "--agentic-ingest cannot be combined with --rerank; the agentic arm scores BM25+fields only. Pass --rerank none or drop the flag.");
+                    "--agentic-ingest does not use the --rerank rerankers (cross-encoder / sentence-maxsim); its semantic rerank is the production hybrid, enabled with --mode bm25_embeddings. Drop --rerank or pass --rerank none.");
+
+            // Entity-graph is not yet supported in the agentic arm (deliberately out of
+            // scope for this feature).
+            if (ParseBool(Program.Flag(args, "--entity-graph")))
+                throw new ArgumentException("--entity-graph is not yet supported with --agentic-ingest.");
 
             string provider = Program.Flag(args, "--agent-provider")
                 ?? throw new ArgumentException("--agentic-ingest requires --agent-provider (openai | anthropic | ...).");
@@ -79,10 +86,32 @@ internal static class RetrieverFactory
             string epCache = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache",
                 $"episodes-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
             string agRoot = Path.Combine(Path.GetTempPath(), $"scrinia-retbench-{benchmarkSlug}-ag-{Guid.NewGuid().ToString("N")[..8]}");
+
+            // Load the embedder for the agentic arm's query-time semantic rerank, mirroring
+            // the mechanical arm below. Falls back to BM25-only if the embedder can't load.
+            Mode agenticMode = mode;
+            Scrinia.Core.Embeddings.IEmbeddingProvider? agenticEmbedder = null;
+            if (agenticMode == Mode.Bm25Embeddings)
+            {
+                agenticEmbedder = await EmbeddingProviderLoader.LoadAsync(embedKind, modelDir, ct);
+                if (agenticEmbedder is null)
+                {
+                    Console.Error.WriteLine(
+                        "warning: --agentic-ingest --mode bm25_embeddings requested but the embedder could not be loaded " +
+                        "(missing model files or unavailable device); falling back to BM25-only for the agentic arm.");
+                    agenticMode = Mode.Bm25;
+                }
+            }
+
             var agentic = new AgenticScriniaRetriever(agRoot, harness, new EpisodeCache(epCache), backend.ModelSlug,
-                RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 });
-            Console.Error.WriteLine($"[scrinia-bench] agentic-ingest enabled: provider={backend.ProviderId} model={backend.ModelSlug} maxTurns={maxTurns} maxTokens={maxTokens} cache={epCache}");
-            return (agentic, Mode.Bm25);
+                RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 },
+                embedder: agenticEmbedder,
+                embeddingOptions: agenticEmbedder is null ? null : new EmbeddingOptions());
+            string embeddingsStatus = agenticEmbedder is null
+                ? "off"
+                : $"on(dims={agenticEmbedder.Dimensions},weight={new EmbeddingOptions().SemanticWeight})";
+            Console.Error.WriteLine($"[scrinia-bench] agentic-ingest enabled: provider={backend.ProviderId} model={backend.ModelSlug} maxTurns={maxTurns} maxTokens={maxTokens} cache={epCache} embeddings={embeddingsStatus}");
+            return (agentic, agenticMode);
         }
 
         // Ablation knobs default to "off" so the headline run stays apples-to-apples.
