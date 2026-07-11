@@ -2084,34 +2084,18 @@ public sealed class ScriniaMcpToolsTests
     // ── Rich search surface (facts/tags/path filters/path-segment score) ────────
 
     [Fact]
-    public async Task Search_SurfacesAnchorsAndTagsWhenPresent()
+    public async Task Search_SurfacesAttributesWhenPresent()
     {
         using var scope = new TestHelpers.StoreScope();
-        string[] tags = ["security", "refactor"];
-        await Tools().Store(["oauth callback details and rotation handling"],
-            "auth-rich-test", "oauth refactor", tags);
+        await Tools().MemoryRemember(path: "surfaced", content: ["auth token refresh flow"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["security"], ["org"] = ["acme"] });
 
-        // Backfill RetrievalAnchors directly via the store — the agent normally supplies
-        // these at Store() time, but the test pins the rendering layer in isolation.
-        var store = MemoryStoreContext.Current!;
-        var entries = ScriniaArtifactStore.LoadIndex();
-        var target = entries.Single(e => e.Name == "auth-rich-test");
-        store.Upsert(target with
-        {
-            RetrievalAnchors = [
-                "Session storage migrated from cookies to JWT",
-                "Rotation interval is 24h",
-            ],
-        });
-
-        string result = await Tools().Search("oauth");
+        string result = await Tools().MemorySearch(query: "auth token");
         var parsed = ResponseParser.Parse(result);
-        parsed.Content.Should().Contain("tags: security, refactor",
-            because: "rich search results must surface tags inline");
-        parsed.Content.Should().Contain("anchors:",
-            because: "rich search results must surface agent-supplied anchors when populated");
-        parsed.Content.Should().Contain("Session storage migrated from cookies to JWT");
-        parsed.Content.Should().Contain("Rotation interval is 24h");
+        parsed.Content.Should().Contain("attributes:",
+            because: "rich search results must surface attributes inline in place of tags");
+        parsed.Content.Should().Contain("topic: security");
+        parsed.Content.Should().Contain("org: acme");
     }
 
     [Fact]

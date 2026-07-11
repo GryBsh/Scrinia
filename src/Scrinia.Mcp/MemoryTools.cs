@@ -180,7 +180,8 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "memory_list"), Description(
-        "List stored memories. mode 'summary' (default) shows scopes + top keywords; 'full' paginates the table; 'drift' surfaces memories whose codeRefs files have changed.")]
+        "List stored memories. mode 'summary' (default) shows scopes + top keywords and attributes; " +
+        "'full' paginates the table; 'drift' surfaces memories whose file attributes have changed.")]
     public Task<string> MemoryList(
         [Description("Optional comma-separated scope order, e.g. 'local,api,ephemeral'. Topic names filter to local topics.")] string? scopes = null,
         [Description("'summary' (default), 'full' for a paginated table, 'drift' for a code-reference drift check.")] string mode = "summary",

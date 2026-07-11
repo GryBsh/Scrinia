@@ -624,6 +624,27 @@ public sealed partial class ScriniaMcpTools
             sb.AppendLine();
         }
 
+        // Top attributes — aggregate attribute values across all entries (new model's facets).
+        var attrCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in entries)
+        {
+            if (item.Entry.Fields is { Count: > 0 })
+                foreach (var kv in item.Entry.Fields)
+                    foreach (var v in kv.Value)
+                        attrCounts[$"{kv.Key}:{v}"] = attrCounts.GetValueOrDefault($"{kv.Key}:{v}") + 1;
+        }
+        if (attrCounts.Count > 0)
+        {
+            var topAttrs = attrCounts
+                .OrderByDescending(kv => kv.Value)
+                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .Select(kv => kv.Key);
+            sb.AppendLine("### Top attributes");
+            sb.AppendLine(string.Join(", ", topAttrs));
+            sb.AppendLine();
+        }
+
         sb.Append("Use `memory_list({ mode: 'full' })` to see all entries, or `memory_search({ query: '...' })` to find specific memories.");
         return sb.ToString();
     }
@@ -896,7 +917,7 @@ public sealed partial class ScriniaMcpTools
                     sb.Append('[').Append(index).Append("] entry  ").Append(label)
                       .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendTagsLine(sb, er.Item.Entry.Tags);
+                    AppendAttributesLine(sb, er.Item.Entry.Fields);
                     AppendDescription(sb, er.Item.Entry.Description);
                     AppendAnchors(sb, er.Item.Entry.RetrievalAnchors);
                     break;
@@ -913,7 +934,7 @@ public sealed partial class ScriniaMcpTools
                       .Append(" [chunk ").Append(cr.Chunk.ChunkIndex).Append('/').Append(cr.TotalChunks).Append(']')
                       .Append("  score=").Append(cr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendTagsLine(sb, cr.ParentItem.Entry.Tags);
+                    AppendAttributesLine(sb, cr.ParentItem.Entry.Fields);
                     AppendDescription(sb, cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description);
                     AppendAnchors(sb, cr.ParentItem.Entry.RetrievalAnchors);
                     break;
@@ -941,6 +962,17 @@ public sealed partial class ScriniaMcpTools
             sb.Append(tags[i]);
         }
         sb.Append('\n');
+    }
+
+    private static void AppendAttributesLine(System.Text.StringBuilder sb, Dictionary<string, string[]>? fields)
+    {
+        if (fields is null || fields.Count == 0) return;
+        sb.Append("    attributes:\n");
+        foreach (var kv in fields)
+        {
+            sb.Append("      ").Append(kv.Key).Append(": ");
+            sb.Append(string.Join(", ", kv.Value)).Append('\n');
+        }
     }
 
     private static void AppendDescription(System.Text.StringBuilder sb, string? description)
