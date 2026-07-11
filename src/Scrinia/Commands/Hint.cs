@@ -10,7 +10,7 @@ namespace Scrinia.Commands;
 /// Pre-send relevance hint: given the user's about-to-be-submitted prompt, emit a
 /// one-line marker telling the agent which stored memories look relevant. No retrieval,
 /// no LLM call — just a fast BM25 top-K lookup so the agent (or the user) knows
-/// <c>memory_search({ query: '...' })</c> would be useful.
+/// <c>search({ query: '...' })</c> would be useful.
 ///
 /// <para>Wired into agent CLIs via the <c>UserPromptSubmit</c> /
 /// <c>userPromptSubmitted</c> hook by the hook installers. The CLI invokes
@@ -141,10 +141,10 @@ public sealed class HintCommand
 
         string payload = profile.Terse
             ? $"<scrinia-hint>{names.Count} matching {countWord}: {list}. " +
-              $"Call memory_search({{ query: '{firstName}' }}) before answering.</scrinia-hint>"
+              $"Call search({{ query: '{firstName}' }}) before answering.</scrinia-hint>"
             : $"<scrinia-hint priority=\"high\">\n" +
               $"The user has {names.Count} stored {countWord} that match this prompt: {list}.\n" +
-              $"Before answering, call memory_search({{ query: '{firstName}' }}) to retrieve them — they " +
+              $"Before answering, call search({{ query: '{firstName}' }}) to retrieve them — they " +
               $"contain prior decisions and context the user expects you to remember.\n" +
               $"</scrinia-hint>";
 
@@ -163,9 +163,9 @@ public sealed class HintCommand
         var profile = ProfileFor(client);
         string framing = profile.Terse
             ? "Memories from prior sessions in this workspace. " +
-              "Call memory_search({ query: '<name>' }) to retrieve full content."
+              "Call search({ query: '<name>' }) to retrieve full content."
             : "The following memories were saved during prior sessions in this workspace. " +
-              "Reference them when relevant; call memory_search({ query: '<name>' }) to retrieve " +
+              "Reference them when relevant; call search({ query: '<name>' }) to retrieve " +
               "the full content of any entry below.";
 
         string payload =
@@ -240,7 +240,7 @@ public sealed class HintCommand
         var names = result.Matches.Select(m => m.Name).ToList();
         string countWord = names.Count == 1 ? "memory" : "memories";
         return $"[scrinia] {names.Count} {countWord} match: {string.Join(", ", names)}. " +
-            $"Run memory_search({{ query: '{names[0]}' }}) to retrieve.";
+            $"Run search({{ query: '{names[0]}' }}) to retrieve.";
     }
 }
 

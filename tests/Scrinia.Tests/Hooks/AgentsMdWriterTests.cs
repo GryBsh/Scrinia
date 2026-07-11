@@ -42,7 +42,8 @@ public sealed class AgentsMdWriterTests : IDisposable
         File.Exists(AgentsMdPath()).Should().BeTrue();
         string content = File.ReadAllText(AgentsMdPath());
         content.Should().Contain(ManagedMarkdownBlock.Begin).And.Contain(ManagedMarkdownBlock.End);
-        content.Should().Contain("Scrinia memory").And.Contain("guide()").And.Contain("memory_search");
+        content.Should().Contain("Scrinia memory").And.Contain("guide()").And.Contain("search(");
+        content.Should().NotContain("memory_search");
     }
 
     [Fact]
