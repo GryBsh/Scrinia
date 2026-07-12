@@ -136,4 +136,40 @@ public sealed class AttributeMigrationTests
         AttributeMigration.MigrateStore(store).Migrated.Should().Be(1);
         store.LoadIndex("local-topic:findings").First().Fields!["tag"].Should().BeEquivalentTo("t");
     }
+
+    [Fact]
+    public void Forward_RoutesRecognizedKeyValueKeywords_IntoFields_KeepingKeyword()
+    {
+        var e = MakeEntry(keywords: ["person:maria", "topic:auth", "loose-keyword"]);
+        var m = AttributeMigration.Forward(e);
+        m.Fields!["person"].Should().BeEquivalentTo("maria");
+        m.Fields!["topic"].Should().BeEquivalentTo("auth");
+        m.Keywords.Should().Contain(new[] { "person:maria", "topic:auth", "loose-keyword" });
+    }
+
+    [Fact]
+    public void Forward_UnionsKeywordEntities_IntoExistingMultiValuedFields()
+    {
+        var e = MakeEntry(keywords: ["person:bob"], fields: new() { ["person"] = ["alice"] });
+        var m = AttributeMigration.Forward(e);
+        m.Fields!["person"].Should().BeEquivalentTo("alice", "bob");
+    }
+
+    [Fact]
+    public void Forward_IgnoresUnrecognizedAndMalformedColonKeywords()
+    {
+        var e = MakeEntry(keywords: ["basedOn:skill-x", "http://example.com", "trailingcolon:", ":leading", "12:30"]);
+        var m = AttributeMigration.Forward(e);
+        (m.Fields is null || m.Fields.Count == 0).Should().BeTrue();
+        m.Keywords.Should().Contain("basedOn:skill-x");
+    }
+
+    [Fact]
+    public void Forward_KeyValueRouting_IsIdempotent()
+    {
+        var e = MakeEntry(keywords: ["ref:other-note"]);
+        AttributeMigration.MigratesTo(e, out var once).Should().BeTrue();
+        once.Fields!["ref"].Should().BeEquivalentTo("other-note");
+        AttributeMigration.MigratesTo(once, out _).Should().BeFalse();
+    }
 }
