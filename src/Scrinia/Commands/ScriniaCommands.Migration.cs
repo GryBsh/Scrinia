@@ -10,6 +10,7 @@ using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Commands.Hooks;
@@ -52,13 +53,7 @@ public partial class ScriniaCommands
 
         // ── Backup ──────────────────────────────────────────────────────
         if (backup && !dryRun)
-        {
-            string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
-            string backupDir = Path.Combine(root, $".scrinia-backup-{timestamp}");
-            AnsiConsole.MarkupLine($"[dim]Backing up .scrinia/ to {Markup.Escape(Path.GetFileName(backupDir))}...[/]");
-            CopyDirectoryRecursive(scriniaDir, backupDir);
-            AnsiConsole.MarkupLine("[green]Backup complete.[/]");
-        }
+            BackupScriniaDir(root);
 
         // ── Gather migration plan ───────────────────────────────────────
         var plan = BuildMigrationPlan(scriniaDir);
@@ -289,6 +284,24 @@ public partial class ScriniaCommands
         return Task.FromResult(0);
     }
 
+    /// <summary>
+    /// Copies .scrinia/ to a timestamped sibling backup directory before a migration writes to
+    /// it. Shared by <see cref="MigrateV1"/> (layout migration) and <see cref="Migrate"/>
+    /// (attributes migration) — no-op if .scrinia/ doesn't exist.
+    /// </summary>
+    private static void BackupScriniaDir(string root)
+    {
+        string scriniaDir = Path.Combine(root, ".scrinia");
+        if (!Directory.Exists(scriniaDir))
+            return;
+
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        string backupDir = Path.Combine(root, $".scrinia-backup-{timestamp}");
+        AnsiConsole.MarkupLine($"[dim]Backing up .scrinia/ to {Markup.Escape(Path.GetFileName(backupDir))}...[/]");
+        CopyDirectoryRecursive(scriniaDir, backupDir);
+        AnsiConsole.MarkupLine("[green]Backup complete.[/]");
+    }
+
     private static void CopyDirectoryRecursive(string sourceDir, string targetDir)
     {
         Directory.CreateDirectory(targetDir);
@@ -479,5 +492,46 @@ public partial class ScriniaCommands
             ChunkEntries = null,
         };
         ScriniaArtifactStore.Upsert(updated, item.Scope);
+    }
+
+    /// <summary>Migrate stored memories to the attributes model (forward-fill: tags, codeRefs,
+    /// review, and anchors become attributes/keywords). Additive and idempotent — safe to re-run.</summary>
+    /// <param name="workspaceRoot">Workspace root. Defaults to the nearest ancestor with a .scrinia/ dir.</param>
+    /// <param name="dryRun">Report what would change without writing.</param>
+    /// <param name="backup">Copy .scrinia/ to a timestamped backup first (default true).</param>
+    /// <param name="json">Emit a machine-readable summary.</param>
+    public Task<int> Migrate(
+        string? workspaceRoot = null, bool dryRun = false, bool backup = true, bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        var store = MemoryStoreContext.Current
+            ?? throw new InvalidOperationException("No workspace configured.");
+
+        if (backup && !dryRun)
+            BackupScriniaDir(ScriniaArtifactStore.WorkspaceRootPath);
+
+        int lastDone = -1;
+        var summary = AttributeMigration.MigrateStore(store, dryRun, (done, total) =>
+        {
+            if (done == lastDone) return;
+            lastDone = done;
+            Console.Error.Write($"\r[scrinia] migrating {done}/{total}…");
+            if (done == total) Console.Error.WriteLine();
+        });
+
+        if (json)
+        {
+            WriteJson(
+                new CliMigrateOutput(summary.Total, summary.Migrated, summary.Skipped, dryRun),
+                CliJsonContext.Default.CliMigrateOutput);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                $"[bold]migrate{(dryRun ? " (dry-run)" : "")}[/] — {summary.Migrated} of {summary.Total} memories forward-filled ({summary.Skipped} already current).");
+        }
+
+        return Task.FromResult(0);
     }
 }

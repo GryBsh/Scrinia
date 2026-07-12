@@ -2,6 +2,7 @@ using System.Reflection;
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Tests;
 
@@ -362,5 +363,38 @@ public sealed class MigrationTests : IDisposable
         FileExistsRelative("memories/patterns/resilience.meta.json").Should().BeTrue();
         FileExistsRelative("memories/backlog/scrinia.nmp2").Should().BeTrue();
         FileExistsRelative("memories/agent/profile.nmp2").Should().BeTrue();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  ATTRIBUTES MIGRATION COMMAND (`scri migrate` — Scrinia.Commands.ScriniaCommands.Migrate)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task Migrate_ForwardFillsLegacyEntry_TagsBecomeFieldsTag()
+    {
+        // Arrange: seed one legacy entry (Tags only, no Fields) directly via a FileMemoryStore
+        // against the temp workspace — mirrors AttributeMigrationTests' seeding pattern.
+        using (var seedStore = new FileMemoryStore(_tempDir))
+        {
+            seedStore.Upsert(
+                new ArtifactEntry(
+                    Name: "legacy-note", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
+                    CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
+                    Tags: ["security", "auth"]),
+                "local");
+        }
+
+        // Act
+        var cmd = new ScriniaCommands();
+        int exitCode = await cmd.Migrate(workspaceRoot: _tempDir, backup: false, json: false);
+
+        // Assert: exit 0, and a fresh store reload shows the entry gained Fields["tag"]
+        exitCode.Should().Be(0);
+        using var freshStore = new FileMemoryStore(_tempDir);
+        var entry = freshStore.LoadIndex("local").Single(e => e.Name == "legacy-note");
+        entry.Fields.Should().NotBeNull();
+        entry.Fields!["tag"].Should().BeEquivalentTo("security", "auth");
+        // additive: legacy Tags field untouched
+        entry.Tags.Should().BeEquivalentTo("security", "auth");
     }
 }
