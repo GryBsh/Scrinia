@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
 using Scrinia.Core.Search;
@@ -731,6 +732,37 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 WriteSidecars(entries, storeDir);
         }
 
+        // Read-time forward-fill: upgrade legacy carriers (tags/codeRefs/review/anchors/
+        // recognized-key keywords) into the attributes model (Fields/Keywords) so every
+        // reader sees Fields without a prior `scri migrate`. Primary-scope sidecars whose
+        // shape actually changes are written back once here — guarded by MigratesTo, so a
+        // later cold load of an already-upgraded sidecar performs no write — mirroring the
+        // index.json→sidecar upgrade above. This durably promotes the on-disk data into
+        // Fields before a later plan removes the legacy members, since STJ silently drops
+        // unmapped members on serialize and would otherwise lose it. Purely additive:
+        // legacy fields are never cleared, so scoring (Math.Max over legacy + attribute
+        // reads) is unchanged.
+        //
+        // The write-back runs under LoadIndex's SHARED lock, so concurrent same-process cold
+        // loads race to atomically replace the same sidecar. Unique per-call temp names (see
+        // WriteSidecar) keep the temp writes independent, but the final File.Move(overwrite)
+        // onto the shared destination can still collide — on Windows the loser surfaces as
+        // UnauthorizedAccessException (ERROR_ACCESS_DENIED), which FileRetry does not retry.
+        // That collision is benign: every writer serializes identical deterministic content,
+        // so whichever move lands leaves the sidecar correct, and the in-memory upgrade below
+        // already makes THIS read correct regardless. Persistence here is a best-effort
+        // optimization (idempotent via MigratesTo — retried on the next cold load if a whole
+        // round loses), so a failed write-back must never propagate out of a plain read path.
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if (AttributeMigration.MigratesTo(entries[i], out var upgraded))
+            {
+                entries[i] = upgraded;
+                try { WriteSidecar(upgraded, storeDir); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort; see above */ }
+            }
+        }
+
         // Merge entries from legacy flat directory (new-path entries take precedence)
         string? legacyDir = ResolveLegacyFallbackDir(scope);
         if (legacyDir is not null)
@@ -746,7 +778,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 foreach (var le in legacyEntries)
                 {
                     if (!existingNames.Contains(le.Name))
-                        entries.Add(le);
+                        // In-memory forward-fill only — do NOT write back to legacyDir, since
+                        // that would silently promote this entry's scope from the legacy flat
+                        // directory to the namespaced one.
+                        entries.Add(AttributeMigration.Forward(le));
                 }
             }
         }
@@ -766,7 +801,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             try
             {
-                string json = File.ReadAllText(metaFile);
+                // Retry the READ (only) on a transient lock: read-time forward-fill writes
+                // sidecars under LoadIndex's shared lock, so a concurrent reader can hit the
+                // File.Move replace window. Without the retry, that transient sharing violation
+                // would fall into the blanket "skip corrupt" catch below and silently drop the
+                // entry from this read. FileRetry retries transient IOExceptions and rethrows a
+                // permanently-stuck file (which then degrades to skip, as before). Deserialize
+                // stays OUTSIDE the retry so genuinely-corrupt JSON is still skipped, not retried.
+                string json = FileRetry.Run(() => File.ReadAllText(metaFile));
                 var entry = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
                 if (entry is not null)
                     entries.Add(entry);
@@ -823,21 +865,41 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         };
 
         string json = JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);
-        string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
-        FileRetry.Run(() => File.WriteAllText(tmp, json));
-        FileRetry.Run(() => File.Move(tmp, metaPath, overwrite: true));
+        // Unique-per-call temp name (ProcessId + Guid): read-time forward-fill writes sidecars
+        // from inside LoadIndex's shared lock, so concurrent cold loads of the same un-migrated
+        // sidecar must not race a shared temp name (first File.Move consumes it, second throws
+        // FileNotFound — permanent in FileRetry). Content is deterministic and File.Move atomic.
+        string tmp = $"{metaPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            FileRetry.Run(() => File.WriteAllText(tmp, json));
+            FileRetry.Run(() => File.Move(tmp, metaPath, overwrite: true));
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
     }
 
     private static void AtomicWriteAllText(string path, string content)
     {
-        string tmp = $"{path}.{Environment.ProcessId}.tmp";
-        FileRetry.Run(() => File.WriteAllText(tmp, content));
-        FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
+        string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            FileRetry.Run(() => File.WriteAllText(tmp, content));
+            FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
     }
 
     private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
     {
-        string tmp = $"{path}.{Environment.ProcessId}.tmp";
+        string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
             await FileRetry.RunAsync(() => File.WriteAllTextAsync(tmp, content, ct), ct: ct);
@@ -852,9 +914,17 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
     {
-        string tmp = $"{destPath}.{Environment.ProcessId}.tmp";
-        FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
-        FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
+        string tmp = $"{destPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
+            FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
     }
 
     private void DeleteSidecar(string name, string storeDir)

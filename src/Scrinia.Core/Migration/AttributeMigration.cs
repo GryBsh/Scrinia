@@ -9,7 +9,16 @@ namespace Scrinia.Core.Migration;
 /// codeRefs paths→`file`, reviewAfter/reviewWhen→`review` (ISO date + condition text),
 /// anchors→keywords. ADDITIVE — legacy fields are left populated so the legacy read/scoring
 /// paths keep working; clearing them and removing the model fields is the cleanup plan.
-/// Deterministic and idempotent: re-running produces no change once an entry is forward-filled.
+/// Also folds recognized-key <c>key:value</c>-shaped legacy keywords (e.g. <c>person:maria</c>,
+/// <c>ref:other-note</c>) into <c>Fields[key]</c> whenever <c>key</c> is one of
+/// <see cref="KnownFields.RecommendedKeys"/> — this mirrors the scorer's dual-read
+/// <c>key:value</c>-in-Keywords parse so that parse can eventually be retired without
+/// regressing pre-unification entries. The keyword itself is left in <c>Keywords</c>
+/// unchanged (additive, not a rewrite). Keywords whose key is NOT a recognized attribute
+/// key (e.g. provenance markers like <c>basedOn:skill-x</c>) are intentionally left as
+/// plain keywords — they are not searchable facets and must not pollute the attribute
+/// namespace. Deterministic and idempotent: re-running produces no change once an entry
+/// is forward-filled.
 /// </summary>
 public static class AttributeMigration
 {
@@ -30,6 +39,33 @@ public static class AttributeMigration
             review.Add(entry.ReviewWhen!);
         if (review.Count > 0)
             incoming[KnownFields.ReviewKey] = review.ToArray();
+
+        if (entry.Keywords is { Length: > 0 })
+        {
+            Dictionary<string, List<string>>? kwFields = null;
+            foreach (string kw in entry.Keywords)
+            {
+                int sep = kw.IndexOf(':');
+                if (sep <= 0 || sep >= kw.Length - 1) continue;
+                // Canonicalize the KEY to lowercase (mirrors FieldExtractor.RouteKeywords) so the
+                // persisted Fields key survives a JSON round-trip that drops the OrdinalIgnoreCase
+                // comparer; RecommendedKeys matching is case-insensitive so this is safe.
+                string key = kw[..sep].ToLowerInvariant();
+                if (!KnownFields.RecommendedKeys.Contains(key)) continue;
+                kwFields ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                if (!kwFields.TryGetValue(key, out var list))
+                    kwFields[key] = list = new List<string>();
+                // value kept verbatim (no length/URL guard) to preserve scorer key:value parity; canonicalize the KEY only
+                string value = kw[(sep + 1)..];
+                if (!list.Contains(value, StringComparer.OrdinalIgnoreCase))
+                    list.Add(value);
+            }
+            if (kwFields is not null)
+                foreach (var (k, v) in kwFields)
+                    incoming[k] = incoming.TryGetValue(k, out var existing)
+                        ? existing.Union(v, StringComparer.OrdinalIgnoreCase).ToArray()
+                        : v.ToArray();
+        }
 
         var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Fields, incoming) : entry.Fields;
 

@@ -691,4 +691,109 @@ public sealed class FileMemoryStoreTests : IDisposable
         entries.First(e => e.Name == "collision").Description.Should().Be("Namespaced version of collision",
             because: "namespaced entries take precedence over legacy entries");
     }
+
+    // ── Read-time auto forward-fill (attributes migration) ──────────────────
+
+    [Fact]
+    public void LoadIndex_ForwardFillsLegacySidecar_InMemory()
+    {
+        // Seed a legacy-shaped PRIMARY sidecar directly on disk (tags + a recognized-key
+        // keyword, NO fields) so the read-time forward-fill has something to do.
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.CreateDirectory(storeDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-security-note",
+          "uri": "file:///tmp/legacy-security-note.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry",
+          "tags": ["security"],
+          "keywords": ["person:maria"]
+        }
+        """;
+        File.WriteAllText(Path.Combine(storeDir, "legacy-security-note.meta.json"), legacyMeta);
+
+        var entries = _store.LoadIndex("local");
+        var entry = entries.Single(e => e.Name == "legacy-security-note");
+
+        entry.Fields.Should().NotBeNull(because: "read-time forward-fill should populate Fields without a prior scri migrate");
+        entry.Fields!["tag"].Should().Contain("security");
+        entry.Fields!["person"].Should().Contain("maria");
+        entry.Tags.Should().Contain("security",
+            because: "forward-fill is additive and must not remove the legacy Tags carrier");
+    }
+
+    [Fact]
+    public void LoadIndex_PersistsForwardFill_ToPrimarySidecar()
+    {
+        // Seed the same legacy-shaped sidecar in the primary "local" store dir.
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.CreateDirectory(storeDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-security-note",
+          "uri": "file:///tmp/legacy-security-note.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry",
+          "tags": ["security"],
+          "keywords": ["person:maria"]
+        }
+        """;
+        string sidecarPath = Path.Combine(storeDir, "legacy-security-note.meta.json");
+        File.WriteAllText(sidecarPath, legacyMeta);
+
+        // First load: upgrades in memory AND writes the upgraded shape back to disk.
+        _store.LoadIndex("local");
+
+        // Open a SECOND store instance over the SAME temp root — fresh instance means a
+        // cold cache, forcing a real disk read that proves the upgrade was persisted.
+        using var store2 = new FileMemoryStore(_tempDir);
+        var entries = store2.LoadIndex("local");
+        var entry = entries.Single(e => e.Name == "legacy-security-note");
+
+        entry.Fields.Should().NotBeNull(
+            because: "the first load's write-back should have persisted Fields to the sidecar on disk");
+        entry.Fields!["tag"].Should().Contain("security");
+    }
+
+    [Fact]
+    public void LoadIndex_ConcurrentColdLoads_ForwardFillWriteBackDoesNotRace()
+    {
+        // Seed a single legacy-shaped sidecar so all racing cold loads try to upgrade + write
+        // the SAME sidecar concurrently under LoadIndex's shared lock. Exercises both races:
+        // the writer-side temp/File.Move collision (unique per-call temp names + best-effort
+        // write-back) and the reader-side File.Move replace window (FileRetry around the
+        // sidecar ReadAllText, so a transient lock retries instead of being dropped as "corrupt").
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.CreateDirectory(storeDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-security-note",
+          "uri": "file:///tmp/legacy-security-note.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry",
+          "tags": ["security"],
+          "keywords": ["person:maria"]
+        }
+        """;
+        File.WriteAllText(Path.Combine(storeDir, "legacy-security-note.meta.json"), legacyMeta);
+
+        var act = () => Parallel.For(0, 64, _ =>
+        {
+            var entries = _store.LoadIndex("local");
+            var entry = entries.Single(e => e.Name == "legacy-security-note");
+            entry.Fields.Should().NotBeNull();
+            entry.Fields!["tag"].Should().Contain("security");
+        });
+
+        act.Should().NotThrow(
+            because: "concurrent cold-load write-backs of the same sidecar must neither throw " +
+                     "(writer-side temp/Move race) nor transiently drop the entry (reader-side replace window)");
+    }
 }
