@@ -75,4 +75,28 @@ public static class AttributeMigration
         }
         return true;
     }
+
+    /// <summary>Summary of a <see cref="MigrateStore"/> run: how many entries were seen, forward-filled, and left untouched.</summary>
+    public readonly record struct MigrateSummary(int Total, int Migrated, int Skipped);
+
+    /// <summary>Forward-fills every persistent entry across all scopes. Idempotent: only entries
+    /// whose Fields/Keywords actually change are written. <c>ListScoped("all")</c> reaches entity-classified
+    /// scopes that the default selector excludes; ephemeral entries are in-memory-only, so a fresh
+    /// migrate process sees none. Pass the <see cref="IMemoryStore"/> instance backing persistent storage
+    /// (e.g. the workspace's <c>FileMemoryStore</c>) — the static facade's topic discovery is v1-only.</summary>
+    public static MigrateSummary MigrateStore(IMemoryStore store, bool dryRun = false, Action<int, int>? onProgress = null)
+    {
+        var all = store.ListScoped("all");
+        int total = all.Count, migrated = 0, done = 0;
+        foreach (var item in all)
+        {
+            if (MigratesTo(item.Entry, out var next))
+            {
+                if (!dryRun) store.Upsert(next, item.Scope);
+                migrated++;
+            }
+            onProgress?.Invoke(++done, total);
+        }
+        return new MigrateSummary(total, migrated, total - migrated);
+    }
 }

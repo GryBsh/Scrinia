@@ -1,5 +1,6 @@
 using System.Globalization;
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Xunit;
@@ -8,6 +9,27 @@ namespace Scrinia.Tests;
 
 public sealed class AttributeMigrationTests
 {
+    // Mirrors FileMemoryStoreTests' temp-dir + FileMemoryStore(root) construction/disposal.
+    private sealed class TempWorkspace : IDisposable
+    {
+        private readonly string _tempDir;
+        private FileMemoryStore? _store;
+
+        public TempWorkspace()
+        {
+            _tempDir = Path.Combine(Path.GetTempPath(), "scrinia-attrmig-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(_tempDir);
+        }
+
+        public FileMemoryStore NewStore() => _store = new FileMemoryStore(_tempDir);
+
+        public void Dispose()
+        {
+            _store?.Dispose();
+            try { Directory.Delete(_tempDir, recursive: true); } catch { }
+        }
+    }
+
     private static ArtifactEntry MakeEntry(
         string[]? tags = null, string[]? anchors = null,
         Dictionary<string, string>? codeRefs = null,
@@ -67,5 +89,51 @@ public sealed class AttributeMigrationTests
     {
         var e = MakeEntry(fields: new() { ["topic"] = ["auth"] });
         AttributeMigration.MigratesTo(e, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void MigrateStore_ForwardFillsLegacyEntries_AndIsIdempotent()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.NewStore();
+        store.Upsert(MakeEntry(tags: ["security"], anchors: ["how to log in"]) with { Name = "a" }, "local");
+        store.Upsert(MakeEntry(fields: new() { ["topic"] = ["auth"] }) with { Name = "b" }, "local");
+
+        var first = AttributeMigration.MigrateStore(store);
+        first.Total.Should().Be(2);
+        first.Migrated.Should().Be(1);    // only "a" had legacy data
+        first.Skipped.Should().Be(1);     // "b" already attributes-only
+
+        var reread = store.LoadIndex("local").First(e => e.Name == "a");
+        reread.Fields!["tag"].Should().BeEquivalentTo("security");
+        reread.Keywords.Should().Contain("how to log in");
+
+        // idempotent: second run writes nothing
+        var second = AttributeMigration.MigrateStore(store);
+        second.Migrated.Should().Be(0);
+        second.Skipped.Should().Be(2);
+    }
+
+    [Fact]
+    public void MigrateStore_DryRun_ReportsButDoesNotWrite()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.NewStore();
+        store.Upsert(MakeEntry(tags: ["x"]) with { Name = "a" }, "local");
+
+        var summary = AttributeMigration.MigrateStore(store, dryRun: true);
+        summary.Migrated.Should().Be(1);
+        store.LoadIndex("local").First(e => e.Name == "a").Fields.Should().BeNull();   // unwritten
+    }
+
+    [Fact]
+    public void MigrateStore_CoversTopicScopes()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.NewStore();
+        store.Upsert(MakeEntry(tags: ["t"]) with { Name = "note" }, "local-topic:findings");
+
+        AttributeMigration.MigrateStore(store).Migrated.Should().Be(1);
+        store.LoadIndex("local-topic:findings").First().Fields!["tag"].Should().BeEquivalentTo("t");
     }
 }
