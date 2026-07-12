@@ -21,6 +21,9 @@ public static class KnownFields
 
     public const string ReviewKey = "review";
 
+    /// <summary>The attribute key legacy free-form tags migrate to (see AttributeMigration.TagKey).</summary>
+    public const string TagKey = "tag";
+
     /// <summary>The attribute key retrieval anchors migrate to (display + searchable facet).
     /// Anchors also remain folded into Keywords additively; the redundant fold is retired in P6.5.</summary>
     public const string AnchorKey = "anchor";

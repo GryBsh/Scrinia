@@ -268,10 +268,13 @@ public sealed class ScriniaMcpToolsTests
 
         content.Should().Contain("overwrite-test",
             because: "overwritten artifact must still appear in List");
-        content.Should().Contain("second desc",
-            because: "the description must reflect the most recent Store call");
-        content.Should().NotContain("first desc",
-            because: "the old description must be replaced, not duplicated");
+        // P6.2 reader cutover: the description column sources ContentPreview (always-populated)
+        // ahead of the legacy Description field — see AttributeReaders.PreviewText and the locked
+        // design decision in docs/superpowers/specs/2026-07-10-memory-model-keywords-attributes-design.md.
+        content.Should().Contain("second content",
+            because: "the content preview must reflect the most recent Store call");
+        content.Should().NotContain("first content",
+            because: "the old content preview must be replaced, not duplicated");
     }
 
     [Fact]
