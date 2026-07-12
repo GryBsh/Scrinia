@@ -448,7 +448,8 @@ public sealed class ScriniaMcpToolsTests
         content.Should().Contain("local");
         content.Should().Contain("Top keywords");
         content.Should().Contain("auth");
-        content.Should().Contain("memory_search");
+        content.Should().Contain("`search({ query: '...' })`");
+        content.Should().NotContain("memory_search");
     }
 
     [Fact]
@@ -1833,7 +1834,8 @@ public sealed class ScriniaMcpToolsTests
         guide.Should().Contain("reviewAfter");
         guide.Should().Contain("/checkpoint/");
         guide.Should().Contain("## Recovery");
-        guide.Should().Contain("memory_remember");
+        guide.Should().Contain("remember");
+        guide.Should().NotContain("memory_remember");
     }
 
     // ── Per-verb memory tools: remember / recall (4 tests) ───────────────────
@@ -1982,8 +1984,9 @@ public sealed class ScriniaMcpToolsTests
         parsed.Status.Should().Be("error");
         parsed.ErrorCode.Should().Be(ErrorCodes.InvalidParameter);
         parsed.ActionNeeded.Should().NotBeEmpty();
-        parsed.ActionNeeded[0].Should().Contain("memory_remember",
+        parsed.ActionNeeded[0].Should().Contain("remember({ path: '...', content: ['chunk 1', 'chunk 2'] })",
             because: "the recovery hint should be a concrete tool call template");
+        parsed.ActionNeeded[0].Should().NotContain("memory_remember");
     }
 
     [Fact]
@@ -1997,8 +2000,9 @@ public sealed class ScriniaMcpToolsTests
         parsed.Status.Should().Be("error");
         parsed.ErrorCode.Should().Be(ErrorCodes.NotFound);
         parsed.ActionNeeded.Should().NotBeEmpty();
-        parsed.ActionNeeded.Should().Contain(h => h.Contains("memory_list"),
-            because: "a not-found error should point to memory_list as one recovery path");
+        parsed.ActionNeeded.Should().Contain(
+            h => h.Contains("list() to see available memories") && !h.Contains("memory_list"),
+            because: "a not-found error should point to list as one recovery path");
     }
 
     [Fact]

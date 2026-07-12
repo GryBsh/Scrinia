@@ -59,7 +59,7 @@ What if the value is the wrong type? What if config changes at runtime?
 For each gap, persist a finding under `/findings/`:
 
 ```
-memory_remember({
+remember({
   path: "/findings/OPS-001",
   content: ["Scenario: ...\nCurrent behavior: ...\nDesired behavior: ...\nRecommended fix: ..."],
   keywords: ["operational", "resilience", "{component}"]
@@ -67,7 +67,7 @@ memory_remember({
 ```
 
 Use `OPS-NNN` for operational findings. Sequence IDs by counting existing entries:
-`memory_list({ scopes: "findings" })`.
+`list({ scopes: "findings" })`.
 
 ### 6. Prioritize by blast radius
 

@@ -19,9 +19,9 @@ public static class ScriniaPrimer
         This workspace uses **Scrinia** for persistent, project-scoped memory via MCP tools. The
         full agent guide is one call away — call `guide()` at the start of a session.
 
-        - `memory_search(...)` before non-trivial work (joining the project, recalling prior
+        - `search(...)` before non-trivial work (joining the project, recalling prior
           decisions or conventions); skip it for self-contained requests.
-        - `memory_remember(...)` as soon as you learn something non-obvious — a decision, a fix, a
+        - `remember(...)` as soon as you learn something non-obvious — a decision, a fix, a
           convention the next agent shouldn't have to rediscover.
         - Reserved paths: `/skill/`, `/agent/`, `/patterns/`, `/findings/`, `/learn/`,
           `/sessions/`, `/checkpoint/`, `/temp/`.
@@ -37,7 +37,7 @@ public static class ScriniaPrimer
     /// </summary>
     public const string McpInstructions =
         "This server provides Scrinia, persistent project-scoped memory. Call guide() at session " +
-        "start for the full primer. Use memory_search before non-trivial work to recall prior " +
-        "decisions and conventions; use memory_remember as soon as you learn something non-obvious. " +
+        "start for the full primer. Use search before non-trivial work to recall prior " +
+        "decisions and conventions; use remember as soon as you learn something non-obvious. " +
         "Reserved paths: /skill/ /agent/ /patterns/ /findings/ /learn/ /sessions/ /checkpoint/ /temp/.";
 }

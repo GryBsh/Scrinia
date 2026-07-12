@@ -61,7 +61,7 @@ internal static class ReservedPrefixGuard
             if (firstSegment.Equals(reserved, StringComparison.OrdinalIgnoreCase))
             {
                 return $"Path segment '/{firstSegment}/' should be lower-case '/{reserved}/' to use the reserved namespace. " +
-                       "Stored as-is; rename via memory_remember with the canonical path if intended.";
+                       "Stored as-is; rename via remember with the canonical path if intended.";
             }
         }
 

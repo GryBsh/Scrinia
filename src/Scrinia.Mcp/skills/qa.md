@@ -33,7 +33,7 @@ For each criterion the work was supposed to satisfy:
 ### 4. Check for regressions
 
 - Run the full test suite, not just new tests.
-- `memory_list({ mode: "drift" })` — surface any memories whose `codeRefs` point at files that have changed since the memory was written. Drifted memories may need updating.
+- `list({ mode: "drift" })` — surface any memories whose `codeRefs` point at files that have changed since the memory was written. Drifted memories may need updating.
 
 ### 5. Validate against the original ask
 
@@ -57,13 +57,13 @@ If the QA pass produced durable lessons (a regression caught, a flaky test ident
 a coverage gap), store them so the next agent benefits:
 
 ```
-memory_remember({ path: "/findings/QA-{slug}", content: ["..."], keywords: ["qa", "..."] })
+remember({ path: "/findings/QA-{slug}", content: ["..."], keywords: ["qa", "..."] })
 ```
 
 For full reports the user may want to revisit, store the report itself:
 
 ```
-memory_remember({ path: "/qa/{date-or-feature}", content: ["## QA Report\n{evidence}"] })
+remember({ path: "/qa/{date-or-feature}", content: ["## QA Report\n{evidence}"] })
 ```
 
 ## Key rules

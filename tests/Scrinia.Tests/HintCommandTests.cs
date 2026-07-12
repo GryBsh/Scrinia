@@ -102,7 +102,8 @@ public sealed class HintCommandTests : IDisposable
         formatted.Should().Contain("2 memories match");
         formatted.Should().Contain("oauth-flow");
         formatted.Should().Contain("jwt-validation");
-        formatted.Should().Contain("memory_search({ query: 'oauth-flow' })");
+        formatted.Should().Contain("search({ query: 'oauth-flow' })");
+        formatted.Should().NotContain("memory_search");
     }
 
     [Fact]
@@ -149,7 +150,8 @@ public sealed class HintCommandTests : IDisposable
         ctx.Should().Contain("The user has 2 stored memories");
         ctx.Should().Contain("oauth-flow");
         ctx.Should().Contain("jwt-validation");
-        ctx.Should().Contain("Before answering, call memory_search({ query: 'oauth-flow' })");
+        ctx.Should().Contain("Before answering, call search({ query: 'oauth-flow' })");
+        ctx.Should().NotContain("memory_search");
         ctx.Should().Contain("the user expects you to remember",
             "the justification clause gives the model a reason to act, not just a name to lookup");
     }
@@ -234,7 +236,8 @@ public sealed class HintCommandTests : IDisposable
             .GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString()!;
         ctx.Should().StartWith("<scrinia-hint>").And.Contain("</scrinia-hint>");
         ctx.Should().Contain("oauth-flow").And.Contain("jwt-validation");
-        ctx.Should().Contain("memory_search({ query: 'oauth-flow' })");
+        ctx.Should().Contain("search({ query: 'oauth-flow' })");
+        ctx.Should().NotContain("memory_search");
     }
 
     [Fact]
@@ -247,7 +250,8 @@ public sealed class HintCommandTests : IDisposable
         var parseAsJson = () => System.Text.Json.JsonDocument.Parse(bare);
         parseAsJson.Should().Throw<System.Text.Json.JsonException>(
             "the OpenCode plugin injects the bare payload directly — no hookSpecificOutput wrapper");
-        bare.Should().Contain("memory_search({ query: 'oauth-flow' })");
+        bare.Should().Contain("search({ query: 'oauth-flow' })");
+        bare.Should().NotContain("memory_search");
     }
 
     [Theory]
