@@ -2,11 +2,12 @@ using System.Reflection;
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Tests for the v1 → v2 filesystem migration command (<see cref="ScriniaCommands.Migrate"/>)
+/// Tests for the v1 → v2 filesystem migration command (<see cref="ScriniaCommands.MigrateV1"/>)
 /// and the v2 path structure (<see cref="PathRouter"/>).
 /// </summary>
 public sealed class MigrationTests : IDisposable
@@ -165,7 +166,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: files appear in v2 structure
         exitCode.Should().Be(0);
@@ -186,7 +187,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: existing v2 content is preserved (not overwritten)
         exitCode.Should().Be(0);
@@ -203,7 +204,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: entity/ prefix is stripped
         exitCode.Should().Be(0);
@@ -224,7 +225,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: completes cleanly with 0 files
         exitCode.Should().Be(0);
@@ -239,7 +240,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: regular file migrated, version file excluded
         exitCode.Should().Be(0);
@@ -255,12 +256,12 @@ public sealed class MigrationTests : IDisposable
         // Arrange: create agent markdown files in .scrinia/agent/
         CreateV1File("agent/profile.md", "# Agent Profile\nBe helpful.");
         CreateV1File("agent/tenets.md", "# Tenets\nQuality first.");
-        // Also create .scrinia/ directory so Migrate detects the workspace
+        // Also create .scrinia/ directory so MigrateV1 detects the workspace
         Directory.CreateDirectory(TopicsDir);
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: agent files appear under memories/agent/
         exitCode.Should().Be(0);
@@ -279,7 +280,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: skills/ migrated to memories/skill/
         exitCode.Should().Be(0);
@@ -295,7 +296,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: memory/ prefix is stripped
         exitCode.Should().Be(0);
@@ -328,7 +329,7 @@ public sealed class MigrationTests : IDisposable
 
             // Act: migrate on a fresh workspace with no v1 data
             var cmd = new ScriniaCommands();
-            int exitCode = await cmd.Migrate(workspace: freshDir, dryRun: false, backup: false);
+            int exitCode = await cmd.MigrateV1(workspace: freshDir, dryRun: false, backup: false);
 
             // Assert: returns success (nothing to migrate)
             exitCode.Should().Be(0);
@@ -352,7 +353,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: all topics migrated
         exitCode.Should().Be(0);
@@ -362,5 +363,38 @@ public sealed class MigrationTests : IDisposable
         FileExistsRelative("memories/patterns/resilience.meta.json").Should().BeTrue();
         FileExistsRelative("memories/backlog/scrinia.nmp2").Should().BeTrue();
         FileExistsRelative("memories/agent/profile.nmp2").Should().BeTrue();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  ATTRIBUTES MIGRATION COMMAND (`scri migrate` — Scrinia.Commands.ScriniaCommands.Migrate)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task Migrate_ForwardFillsLegacyEntry_TagsBecomeFieldsTag()
+    {
+        // Arrange: seed one legacy entry (Tags only, no Fields) directly via a FileMemoryStore
+        // against the temp workspace — mirrors AttributeMigrationTests' seeding pattern.
+        using (var seedStore = new FileMemoryStore(_tempDir))
+        {
+            seedStore.Upsert(
+                new ArtifactEntry(
+                    Name: "legacy-note", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
+                    CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
+                    Tags: ["security", "auth"]),
+                "local");
+        }
+
+        // Act
+        var cmd = new ScriniaCommands();
+        int exitCode = await cmd.Migrate(workspaceRoot: _tempDir, skipBackup: true, json: false);
+
+        // Assert: exit 0, and a fresh store reload shows the entry gained Fields["tag"]
+        exitCode.Should().Be(0);
+        using var freshStore = new FileMemoryStore(_tempDir);
+        var entry = freshStore.LoadIndex("local").Single(e => e.Name == "legacy-note");
+        entry.Fields.Should().NotBeNull();
+        entry.Fields!["tag"].Should().BeEquivalentTo("security", "auth");
+        // additive: legacy Tags field untouched
+        entry.Tags.Should().BeEquivalentTo("security", "auth");
     }
 }

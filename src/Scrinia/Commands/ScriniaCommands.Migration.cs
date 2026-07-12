@@ -10,6 +10,7 @@ using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Commands.Hooks;
@@ -20,13 +21,14 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Migrate .scrinia/ data from v1 (topic:name) to v2 (path) structure. One-shot — hidden from top-level help.</summary>
+    /// <summary>v1→v2 directory-layout migration (legacy). Migrates .scrinia/ data from v1 (topic:name) to v2 (path) structure. One-shot — hidden from top-level help.</summary>
     /// <param name="workspace">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="dryRun">Print what would be copied without actually doing it.</param>
     /// <param name="backup">Create a timestamped backup of .scrinia/ before migrating.</param>
     /// <param name="cleanup">Remove v1 originals after verifying migration.</param>
+    [Command("migrate_v1")]
     [Hidden]
-    public Task<int> Migrate(
+    public Task<int> MigrateV1(
         string? workspace = null,
         bool dryRun = false,
         bool backup = true,
@@ -51,13 +53,7 @@ public partial class ScriniaCommands
 
         // ── Backup ──────────────────────────────────────────────────────
         if (backup && !dryRun)
-        {
-            string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
-            string backupDir = Path.Combine(root, $".scrinia-backup-{timestamp}");
-            AnsiConsole.MarkupLine($"[dim]Backing up .scrinia/ to {Markup.Escape(Path.GetFileName(backupDir))}...[/]");
-            CopyDirectoryRecursive(scriniaDir, backupDir);
-            AnsiConsole.MarkupLine("[green]Backup complete.[/]");
-        }
+            BackupScriniaDir(root);
 
         // ── Gather migration plan ───────────────────────────────────────
         var plan = BuildMigrationPlan(scriniaDir);
@@ -121,7 +117,7 @@ public partial class ScriniaCommands
             if (errors > 0)
                 AnsiConsole.MarkupLine($"[red]{errors} errors during migration.[/]");
             AnsiConsole.MarkupLine("[dim]Original files preserved in topics/ for fallback.[/]");
-            AnsiConsole.MarkupLine("[dim]Run 'scri migrate --cleanup' to remove originals after verifying.[/]");
+            AnsiConsole.MarkupLine("[dim]Run 'scri migrate_v1 --cleanup' to remove originals after verifying.[/]");
         }
 
         return Task.FromResult(errors > 0 ? 1 : 0);
@@ -235,7 +231,7 @@ public partial class ScriniaCommands
 
         if (!Directory.Exists(memoriesDir))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No memories/ directory found. Run 'scri migrate' first.");
+            AnsiConsole.MarkupLine("[red]Error:[/] No memories/ directory found. Run 'scri migrate_v1' first.");
             return Task.FromResult(1);
         }
 
@@ -286,6 +282,24 @@ public partial class ScriniaCommands
         }
 
         return Task.FromResult(0);
+    }
+
+    /// <summary>
+    /// Copies .scrinia/ to a timestamped sibling backup directory before a migration writes to
+    /// it. Shared by <see cref="MigrateV1"/> (layout migration) and <see cref="Migrate"/>
+    /// (attributes migration) — no-op if .scrinia/ doesn't exist.
+    /// </summary>
+    private static void BackupScriniaDir(string root)
+    {
+        string scriniaDir = Path.Combine(root, ".scrinia");
+        if (!Directory.Exists(scriniaDir))
+            return;
+
+        string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+        string backupDir = Path.Combine(root, $".scrinia-backup-{timestamp}");
+        AnsiConsole.MarkupLine($"[dim]Backing up .scrinia/ to {Markup.Escape(Path.GetFileName(backupDir))}...[/]");
+        CopyDirectoryRecursive(scriniaDir, backupDir);
+        AnsiConsole.MarkupLine("[green]Backup complete.[/]");
     }
 
     private static void CopyDirectoryRecursive(string sourceDir, string targetDir)
@@ -478,5 +492,46 @@ public partial class ScriniaCommands
             ChunkEntries = null,
         };
         ScriniaArtifactStore.Upsert(updated, item.Scope);
+    }
+
+    /// <summary>Migrate stored memories to the attributes model (forward-fill: tags, codeRefs,
+    /// review, and anchors become attributes/keywords). Additive and idempotent — safe to re-run.</summary>
+    /// <param name="workspaceRoot">Workspace root. Defaults to the nearest ancestor with a .scrinia/ dir.</param>
+    /// <param name="dryRun">Report what would change without writing.</param>
+    /// <param name="skipBackup">Skip the timestamped .scrinia/ backup (backup runs by default).</param>
+    /// <param name="json">Emit a machine-readable summary.</param>
+    public Task<int> Migrate(
+        string? workspaceRoot = null, bool dryRun = false, bool skipBackup = false, bool json = false,
+        CancellationToken cancellationToken = default)
+    {
+        WorkspaceSetup.Configure(workspaceRoot);
+        var store = MemoryStoreContext.Current
+            ?? throw new InvalidOperationException("No workspace configured.");
+
+        if (!skipBackup && !dryRun)
+            BackupScriniaDir(ScriniaArtifactStore.WorkspaceRootPath);
+
+        int lastDone = -1;
+        var summary = AttributeMigration.MigrateStore(store, dryRun, (done, total) =>
+        {
+            if (done == lastDone) return;
+            lastDone = done;
+            Console.Error.Write($"\r[scrinia] migrating {done}/{total}…");
+            if (done == total) Console.Error.WriteLine();
+        });
+
+        if (json)
+        {
+            WriteJson(
+                new CliMigrateOutput(summary.Total, summary.Migrated, summary.Skipped, dryRun),
+                CliJsonContext.Default.CliMigrateOutput);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                $"[bold]migrate{(dryRun ? " (dry-run)" : "")}[/] — {summary.Migrated} of {summary.Total} memories forward-filled ({summary.Skipped} already current).");
+        }
+
+        return Task.FromResult(0);
     }
 }

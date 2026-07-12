@@ -13,7 +13,7 @@ The top-level surface is organized by purpose:
 | Memory operations | `memory list / search / show / store / forget / append / compact / link` |
 | Bundle files | `bundle export / import / pack` |
 
-`scri migrate` is still callable for one-shot v1→v2 store migration but is hidden from `--help` (see [scri migrate](#scri-migrate)).
+`scri migrate_v1` is still callable for one-shot v1→v2 store migration but is hidden from `--help` (see [scri migrate_v1](#scri-migrate_v1)).
 
 ## Commands
 
@@ -447,13 +447,13 @@ The `plugins:embeddings` key overrides the executable name used to launch the
 embeddings plugin process — only useful for custom builds. Scrinia ships no
 server-side LLM plugin; the historical `plugins:llm` key has been removed.
 
-### scri migrate
+### scri migrate_v1
 
-One-shot utility to migrate a `.scrinia/` store from the v1 (`topic:name`) layout to the v2 (path-based) layout.
+v1→v2 directory-layout migration (legacy). One-shot utility to migrate a `.scrinia/` store from the v1 (`topic:name`) layout to the v2 (path-based) layout.
 Use this only when upgrading a workspace created by an older Scrinia release; new workspaces are already v2. Hidden from `scri --help` because it's one-time-use, but the command is still callable.
 
 ```bash
-scri migrate [--workspace <path>] [--dry-run] [--backup=true|false] [--cleanup]
+scri migrate_v1 [--workspace <path>] [--dry-run] [--backup=true|false] [--cleanup]
 ```
 
 | Flag | Default | Description |
@@ -466,10 +466,10 @@ scri migrate [--workspace <path>] [--dry-run] [--backup=true|false] [--cleanup]
 Recommended workflow:
 
 ```bash
-scri migrate --dry-run            # preview what would be moved
-scri migrate                      # run the migration (backup created automatically)
+scri migrate_v1 --dry-run         # preview what would be moved
+scri migrate_v1                   # run the migration (backup created automatically)
 # verify your memories are accessible via scri memory list / scri memory show
-scri migrate --cleanup            # remove the v1 originals
+scri migrate_v1 --cleanup         # remove the v1 originals
 ```
 
 If the migration reports errors, the v1 originals are preserved under `topics/` and the backup directory contains
