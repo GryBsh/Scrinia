@@ -47,11 +47,15 @@ public static class AttributeMigration
             {
                 int sep = kw.IndexOf(':');
                 if (sep <= 0 || sep >= kw.Length - 1) continue;
-                string key = kw[..sep];
+                // Canonicalize the KEY to lowercase (mirrors FieldExtractor.RouteKeywords) so the
+                // persisted Fields key survives a JSON round-trip that drops the OrdinalIgnoreCase
+                // comparer; RecommendedKeys matching is case-insensitive so this is safe.
+                string key = kw[..sep].ToLowerInvariant();
                 if (!KnownFields.RecommendedKeys.Contains(key)) continue;
                 kwFields ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                 if (!kwFields.TryGetValue(key, out var list))
                     kwFields[key] = list = new List<string>();
+                // value kept verbatim (no length/URL guard) to preserve scorer key:value parity; canonicalize the KEY only
                 string value = kw[(sep + 1)..];
                 if (!list.Contains(value, StringComparer.OrdinalIgnoreCase))
                     list.Add(value);

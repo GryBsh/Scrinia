@@ -172,4 +172,17 @@ public sealed class AttributeMigrationTests
         once.Fields!["ref"].Should().BeEquivalentTo("other-note");
         AttributeMigration.MigratesTo(once, out _).Should().BeFalse();
     }
+
+    [Fact]
+    public void Forward_CanonicalizesKeyValueKeywordKey_ToLowercase()
+    {
+        var e = MakeEntry(keywords: ["Person:Maria"]);
+        var m = AttributeMigration.Forward(e);
+        // Assert on the materialized key TEXT (ordinal/case-sensitive). The Fields dict and its
+        // KeyCollection both use OrdinalIgnoreCase, so ContainKey/Keys.Contains("Person") would
+        // match "person"; ToList() forces the default ordinal comparer to prove the persisted
+        // key text is lowercase.
+        m.Fields!.Keys.ToList().Should().Contain("person").And.NotContain("Person");
+        m.Fields!["person"].Should().BeEquivalentTo("Maria"); // value casing preserved
+    }
 }
