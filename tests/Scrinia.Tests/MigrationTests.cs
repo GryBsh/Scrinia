@@ -386,7 +386,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspaceRoot: _tempDir, backup: false, json: false);
+        int exitCode = await cmd.Migrate(workspaceRoot: _tempDir, skipBackup: true, json: false);
 
         // Assert: exit 0, and a fresh store reload shows the entry gained Fields["tag"]
         exitCode.Should().Be(0);

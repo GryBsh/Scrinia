@@ -498,17 +498,17 @@ public partial class ScriniaCommands
     /// review, and anchors become attributes/keywords). Additive and idempotent — safe to re-run.</summary>
     /// <param name="workspaceRoot">Workspace root. Defaults to the nearest ancestor with a .scrinia/ dir.</param>
     /// <param name="dryRun">Report what would change without writing.</param>
-    /// <param name="backup">Copy .scrinia/ to a timestamped backup first (default true).</param>
+    /// <param name="skipBackup">Skip the timestamped .scrinia/ backup (backup runs by default).</param>
     /// <param name="json">Emit a machine-readable summary.</param>
     public Task<int> Migrate(
-        string? workspaceRoot = null, bool dryRun = false, bool backup = true, bool json = false,
+        string? workspaceRoot = null, bool dryRun = false, bool skipBackup = false, bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         var store = MemoryStoreContext.Current
             ?? throw new InvalidOperationException("No workspace configured.");
 
-        if (backup && !dryRun)
+        if (!skipBackup && !dryRun)
             BackupScriniaDir(ScriniaArtifactStore.WorkspaceRootPath);
 
         int lastDone = -1;
