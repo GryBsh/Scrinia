@@ -67,6 +67,19 @@ public static class AttributeMigration
                         : v.ToArray();
         }
 
+        // Anchors → Fields["anchor"]: a first-class searchable facet + the display carrier P6.2 reads.
+        // Additive — anchors also stay folded into Keywords below (keyword channel unchanged; the
+        // redundant fold is retired in P6.5). Cleaned identically to the fold (whitespace + dedupe).
+        if (entry.RetrievalAnchors is { Length: > 0 })
+        {
+            var cleanAnchors = entry.RetrievalAnchors
+                .Where(a => !string.IsNullOrWhiteSpace(a))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (cleanAnchors.Length > 0)
+                incoming[KnownFields.AnchorKey] = cleanAnchors;
+        }
+
         var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Fields, incoming) : entry.Fields;
 
         string[]? mergedKeywords = entry.Keywords;
