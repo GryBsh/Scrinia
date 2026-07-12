@@ -458,9 +458,21 @@ internal static partial class ScriniaArtifactStore
     {
         string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
         string json = JsonSerializer.Serialize(entry, StoreJsonContext.Default.ArtifactEntry);
-        string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
-        File.WriteAllText(tmp, json);
-        File.Move(tmp, metaPath, overwrite: true);
+        // Unique per-call temp name (ProcessId + Guid): LoadIndex writes sidecars under a
+        // shared file lock during the legacy index.json→sidecar bootstrap, so concurrent
+        // same-process cold loads must not race a shared temp name. Clean up the guid-named
+        // temp on failure so a failed write does not orphan it.
+        string tmp = $"{metaPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, metaPath, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
     }
 
     public static void SaveIndex(List<ArtifactEntry> entries, string scope = "local")

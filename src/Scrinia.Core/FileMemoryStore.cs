@@ -915,8 +915,16 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
     {
         string tmp = $"{destPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
-        FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
+        try
+        {
+            FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
+            FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
     }
 
     private void DeleteSidecar(string name, string storeDir)
