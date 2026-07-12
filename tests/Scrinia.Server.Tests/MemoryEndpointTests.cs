@@ -185,4 +185,26 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task List_description_reflects_content_preview_not_legacy_description()
+    {
+        // Content longer than the legacy 200-char Description truncation but within the
+        // 500-char ContentPreview cap, so the two carriers diverge when no explicit
+        // description is supplied. Tags come in via the legacy carrier; the read-time
+        // forward-fill (P6.1) promotes it into Fields["tag"] on load, which is what
+        // AttributeReaders.DisplayTags should surface.
+        string longContent = string.Concat(Enumerable.Repeat("segment ", 40)).TrimEnd();
+        var req = new StoreRequest([longContent], "preview-cutover-test", Description: "", Tags: ["alpha"]);
+        var storeResp = await _client.PostAsJsonAsync($"{_base}/memories", req);
+        storeResp.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var listBody = await _client.GetFromJsonAsync<ListResponse>($"{_base}/memories?limit=1000");
+        listBody.Should().NotBeNull();
+        var item = listBody!.Memories.Should().ContainSingle(m => m.QualifiedName == "preview-cutover-test").Subject;
+
+        item.Description.Should().Be(longContent,
+            because: "display Description now sources ContentPreview (spec: Description fully removed from display), not the legacy 200-char truncation");
+        item.Tags.Should().Contain("alpha");
+    }
+
 }

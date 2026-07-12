@@ -100,8 +100,8 @@ public static class MemoryEndpoints
                 item.Entry.OriginalBytes,
                 item.Entry.CreatedAt,
                 item.Entry.UpdatedAt,
-                item.Entry.Description,
-                item.Entry.Tags));
+                AttributeReaders.PreviewText(item.Entry.ContentPreview, item.Entry.Description),
+                AttributeReaders.DisplayTags(item.Entry.Fields, item.Entry.Tags).ToArray()));
         }
 
         return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));
@@ -259,14 +259,14 @@ public static class MemoryEndpoints
                     ? $"~{er.Item.Entry.Name}"
                     : ctx.Store!.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
                 er.Score,
-                er.Item.Entry.Description),
+                AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description)),
             ChunkEntryResult cr => new SearchResultItem(
                 "chunk",
                 cr.ParentItem.Scope == "ephemeral"
                     ? $"~{cr.ParentItem.Entry.Name}"
                     : ctx.Store!.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
                 cr.Score,
-                cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description,
+                cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description),
                 cr.Chunk.ChunkIndex,
                 cr.TotalChunks),
             TopicResult tr => new SearchResultItem(
