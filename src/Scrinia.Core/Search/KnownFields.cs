@@ -21,6 +21,10 @@ public static class KnownFields
 
     public const string ReviewKey = "review";
 
+    /// <summary>The attribute key retrieval anchors migrate to (display + searchable facet).
+    /// Anchors also remain folded into Keywords additively; the redundant fold is retired in P6.5.</summary>
+    public const string AnchorKey = "anchor";
+
     /// <summary>The guided attribute keys — what the guide teaches and agents write most.
     /// The engine treats any key uniformly; this set is guidance + the weight-table seed, not a gate.</summary>
     public static readonly IReadOnlySet<string> RecommendedKeys =

@@ -185,4 +185,50 @@ public sealed class AttributeMigrationTests
         m.Fields!.Keys.ToList().Should().Contain("person").And.NotContain("Person");
         m.Fields!["person"].Should().BeEquivalentTo("Maria"); // value casing preserved
     }
+
+    [Fact]
+    public void Forward_routes_anchors_into_Fields_anchor()
+    {
+        var entry = MakeEntry(anchors: ["how to reset", "  ", "reset flow", "how to reset"]);
+        var result = AttributeMigration.Forward(entry);
+
+        result.Fields.Should().ContainKey("anchor");
+        result.Fields!["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped, order kept
+    }
+
+    [Fact]
+    public void Forward_keeps_anchors_in_keywords_additive()
+    {
+        var entry = MakeEntry(keywords: ["kw1"], anchors: ["anchor phrase"]);
+        var result = AttributeMigration.Forward(entry);
+
+        result.Keywords.Should().Contain("kw1");
+        result.Keywords.Should().Contain("anchor phrase"); // fold preserved
+        result.Fields!["anchor"].Should().Equal("anchor phrase"); // also a field
+    }
+
+    [Fact]
+    public void Forward_no_anchors_adds_no_anchor_field()
+    {
+        var entry = MakeEntry(anchors: null);
+        var result = AttributeMigration.Forward(entry);
+        (result.Fields is null || !result.Fields.ContainsKey("anchor")).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Forward_anchor_routing_is_idempotent()
+    {
+        var entry = MakeEntry(anchors: ["a1", "a2"]);
+        var once = AttributeMigration.Forward(entry);
+        AttributeMigration.MigratesTo(once, out _).Should().BeFalse(); // second pass is a no-op
+    }
+
+    [Fact]
+    public void Forward_anchor_coexists_with_other_fields()
+    {
+        var entry = MakeEntry(tags: ["t1"], anchors: ["a1"]);
+        var result = AttributeMigration.Forward(entry);
+        result.Fields!["tag"].Should().Equal("t1");
+        result.Fields!["anchor"].Should().Equal("a1");
+    }
 }
