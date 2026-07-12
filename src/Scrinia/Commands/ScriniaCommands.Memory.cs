@@ -61,20 +61,8 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            var items = entries.Select(item =>
-            {
-                var e = item.Entry;
-                string name = item.Scope == "ephemeral"
-                    ? $"~{e.Name}"
-                    : ScriniaArtifactStore.FormatQualifiedName(item.Scope, e.Name);
-                bool isStale = e.ReviewAfter.HasValue && e.ReviewAfter.Value <= DateTimeOffset.UtcNow;
-                bool needsReview = !isStale && !string.IsNullOrEmpty(e.ReviewWhen);
-                return new CliMemoryEntry(
-                    name, e.ChunkCount, e.OriginalBytes, (int)(e.OriginalBytes / 4),
-                    e.CreatedAt.ToString("o"), e.UpdatedAt?.ToString("o"),
-                    e.Description, e.Tags, e.ReviewAfter?.ToString("o"), e.ReviewWhen,
-                    isStale, needsReview);
-            }).ToArray();
+            var now = DateTimeOffset.UtcNow;
+            var items = entries.Select(item => BuildCliMemoryEntry(item, now)).ToArray();
             WriteJson(new CliListOutput(items, total, null), CliJsonContext.Default.CliListOutput);
             return Task.FromResult(0);
         }
@@ -104,13 +92,10 @@ public partial class ScriniaCommands
             int estTokens = (int)(e.OriginalBytes / 4);
 
             // Review markers
-            string reviewPrefix = "";
-            if (e.ReviewAfter.HasValue && e.ReviewAfter.Value <= DateTimeOffset.UtcNow)
-                reviewPrefix = "[stale] ";
-            else if (!string.IsNullOrEmpty(e.ReviewWhen))
-                reviewPrefix = "[review?] ";
+            var st = AttributeReaders.GetReviewStatus(e.Fields, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
+            string reviewPrefix = st.IsStale ? "[stale] " : st.NeedsReview ? "[review?] " : "";
 
-            string desc = e.Description.Replace('\n', ' ').Replace('\r', ' ');
+            string desc = AttributeReaders.PreviewText(e.ContentPreview, e.Description).Replace('\n', ' ').Replace('\r', ' ');
             string fullDesc = reviewPrefix + desc;
             if (fullDesc.Length > 60) fullDesc = fullDesc[..57] + "...";
 
@@ -127,13 +112,33 @@ public partial class ScriniaCommands
         return Task.FromResult(0);
     }
 
-    private static CliListSummaryOutput BuildCliSummary(List<ScopedArtifact> entries, bool forJson)
+    /// <summary>Builds the JSON <c>list</c> entry for one artifact, sourcing review status,
+    /// tags, and description/preview from the attributes carriers (Fields/ContentPreview) via
+    /// <see cref="AttributeReaders"/>, falling back to the legacy per-memory fields for entries
+    /// not yet forward-filled.</summary>
+    internal static CliMemoryEntry BuildCliMemoryEntry(ScopedArtifact item, DateTimeOffset now)
+    {
+        var e = item.Entry;
+        string name = item.Scope == "ephemeral"
+            ? $"~{e.Name}"
+            : ScriniaArtifactStore.FormatQualifiedName(item.Scope, e.Name);
+        var st = AttributeReaders.GetReviewStatus(e.Fields, e.ReviewAfter, e.ReviewWhen, now);
+        return new CliMemoryEntry(
+            name, e.ChunkCount, e.OriginalBytes, (int)(e.OriginalBytes / 4),
+            e.CreatedAt.ToString("o"), e.UpdatedAt?.ToString("o"),
+            AttributeReaders.PreviewText(e.ContentPreview, e.Description),
+            AttributeReaders.DisplayTags(e.Fields, e.Tags).ToArray(),
+            e.ReviewAfter?.ToString("o"), e.ReviewWhen,
+            st.IsStale, st.NeedsReview);
+    }
+
+    internal static CliListSummaryOutput BuildCliSummary(List<ScopedArtifact> entries, bool forJson)
     {
         long totalBytes = entries.Sum(e => e.Entry.OriginalBytes);
         int totalTokens = (int)(totalBytes / 4);
-        int staleCount = entries.Count(e => e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow);
-        int reviewCount = entries.Count(e => !string.IsNullOrEmpty(e.Entry.ReviewWhen)
-            && !(e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow));
+        var now = DateTimeOffset.UtcNow;
+        int staleCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
+        int reviewCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
         int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
 
         var grouped = entries
@@ -165,9 +170,8 @@ public partial class ScriniaCommands
                     if (TypedKeywordShape().IsMatch(kw)) continue;
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
                 }
-            if (item.Entry.Tags is { Length: > 0 })
-                foreach (var tag in item.Entry.Tags)
-                    keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
+            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Fields, item.Entry.Tags))
+                keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
         }
         var topKeywords = keywordCounts
             .OrderByDescending(kv => kv.Value)
@@ -266,12 +270,12 @@ public partial class ScriniaCommands
                 ChunkEntryResult cr => new CliSearchResult("chunk",
                     cr.ParentItem.Scope == "ephemeral" ? $"~{cr.ParentItem.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
                     cr.Score, (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4),
-                    cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description,
+                    cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description),
                     cr.Chunk.ChunkIndex, cr.TotalChunks),
                 EntryResult er => new CliSearchResult("entry",
                     er.Item.Scope == "ephemeral" ? $"~{er.Item.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
                     er.Score, (int)(er.Item.Entry.OriginalBytes / 4),
-                    er.Item.Entry.Description, null, null),
+                    AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description), null, null),
                 TopicResult tr => new CliSearchResult("topic",
                     MemoryNaming.FormatScopeLabel(tr.Scope),
                     tr.Score, 0, tr.Description, null, null),
@@ -297,7 +301,7 @@ public partial class ScriniaCommands
                     ? $"~{cr.ParentItem.Entry.Name}"
                     : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
                 string chunkLabel = $"{name} [chunk {cr.Chunk.ChunkIndex}/{cr.TotalChunks}]";
-                string desc = cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description;
+                string desc = cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description);
                 desc = desc.Replace('\n', ' ').Replace('\r', ' ');
                 if (desc.Length > 60) desc = desc[..57] + "...";
                 int estTokens = (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4);
@@ -309,7 +313,7 @@ public partial class ScriniaCommands
                 string name = er.Item.Scope == "ephemeral"
                     ? $"~{er.Item.Entry.Name}"
                     : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name);
-                string desc = er.Item.Entry.Description.Replace('\n', ' ').Replace('\r', ' ');
+                string desc = AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description).Replace('\n', ' ').Replace('\r', ' ');
                 if (desc.Length > 60) desc = desc[..57] + "...";
                 int estTokens = (int)(er.Item.Entry.OriginalBytes / 4);
 
