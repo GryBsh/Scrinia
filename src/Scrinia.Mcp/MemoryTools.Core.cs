@@ -557,13 +557,15 @@ public sealed partial class ScriniaMcpTools
         return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed").ToYaml());
     }
 
-    private static string BuildSummary(List<ScopedArtifact> entries, IMemoryStore store)
+    internal static string BuildSummary(List<ScopedArtifact> entries, IMemoryStore store)
     {
         long totalBytes = entries.Sum(e => e.Entry.OriginalBytes);
         int totalTokens = (int)(totalBytes / 4);
-        int staleCount = entries.Count(e => e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow);
-        int reviewCount = entries.Count(e => !string.IsNullOrEmpty(e.Entry.ReviewWhen)
-            && !(e.Entry.ReviewAfter.HasValue && e.Entry.ReviewAfter.Value <= DateTimeOffset.UtcNow));
+        var now = DateTimeOffset.UtcNow;
+        int staleCount = entries.Count(e =>
+            AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
+        int reviewCount = entries.Count(e =>
+            AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
         int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
 
         // Group by scope
@@ -608,9 +610,8 @@ public sealed partial class ScriniaMcpTools
             if (item.Entry.Keywords is { Length: > 0 })
                 foreach (var kw in item.Entry.Keywords)
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
-            if (item.Entry.Tags is { Length: > 0 })
-                foreach (var tag in item.Entry.Tags)
-                    keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
+            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Fields, item.Entry.Tags))
+                keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
         }
         if (keywordCounts.Count > 0)
         {
@@ -649,7 +650,7 @@ public sealed partial class ScriniaMcpTools
         return sb.ToString();
     }
 
-    private static string BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)
+    internal static string BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)
     {
         int total = entries.Count;
         if (offset < 0) offset = 0;
@@ -703,11 +704,8 @@ public sealed partial class ScriniaMcpTools
             string dateStr = e.CreatedAt.ToString("yyyy-MM-dd HH:mm");
 
             // Review markers
-            string reviewPrefix = "";
-            if (e.ReviewAfter.HasValue && e.ReviewAfter.Value <= DateTimeOffset.UtcNow)
-                reviewPrefix = "[stale] ";
-            else if (!string.IsNullOrEmpty(e.ReviewWhen))
-                reviewPrefix = "[review?] ";
+            var status = AttributeReaders.GetReviewStatus(e.Fields, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
+            string reviewPrefix = status.IsStale ? "[stale] " : status.NeedsReview ? "[review?] " : "";
 
             // Drift marker — only check entries that have CodeRefs
             string driftPrefix = "";
@@ -732,7 +730,7 @@ public sealed partial class ScriniaMcpTools
                 if (hasDrift) driftPrefix = "[drift] ";
             }
 
-            string desc = e.Description;
+            string desc = AttributeReaders.PreviewText(e.ContentPreview, e.Description);
             desc = desc.Replace('\n', ' ').Replace('\r', ' ');
             string fullDesc = reviewPrefix + driftPrefix + desc;
             if (fullDesc.Length > 60) fullDesc = fullDesc[..57] + "...";
@@ -904,7 +902,7 @@ public sealed partial class ScriniaMcpTools
     private const int MaxDescriptionChars = 1500;
     private const int MaxAnchorsPerResult = 7;
 
-    private static void AppendResultBlock(System.Text.StringBuilder sb, IMemoryStore store, SearchResult match, int index)
+    internal static void AppendResultBlock(System.Text.StringBuilder sb, IMemoryStore store, SearchResult match, int index)
     {
         switch (match)
         {
@@ -918,8 +916,8 @@ public sealed partial class ScriniaMcpTools
                       .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendAttributesLine(sb, er.Item.Entry.Fields);
-                    AppendDescription(sb, er.Item.Entry.Description);
-                    AppendAnchors(sb, er.Item.Entry.RetrievalAnchors);
+                    AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description));
+                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Fields, er.Item.Entry.RetrievalAnchors));
                     break;
                 }
             case ChunkEntryResult cr:
@@ -935,8 +933,9 @@ public sealed partial class ScriniaMcpTools
                       .Append("  score=").Append(cr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendAttributesLine(sb, cr.ParentItem.Entry.Fields);
-                    AppendDescription(sb, cr.Chunk.ContentPreview ?? cr.ParentItem.Entry.Description);
-                    AppendAnchors(sb, cr.ParentItem.Entry.RetrievalAnchors);
+                    AppendDescription(sb, cr.Chunk.ContentPreview
+                        ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description));
+                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Fields, cr.ParentItem.Entry.RetrievalAnchors));
                     break;
                 }
             case TopicResult tr:
@@ -1007,18 +1006,18 @@ public sealed partial class ScriniaMcpTools
         if (truncated) sb.Append("      (truncated)\n");
     }
 
-    private static void AppendAnchors(System.Text.StringBuilder sb, string[]? anchors)
+    internal static void AppendAnchors(System.Text.StringBuilder sb, IReadOnlyList<string> anchors)
     {
-        if (anchors is null || anchors.Length == 0) return;
+        if (anchors.Count == 0) return;
         sb.Append("    anchors:\n");
-        int emit = Math.Min(anchors.Length, MaxAnchorsPerResult);
+        int emit = Math.Min(anchors.Count, MaxAnchorsPerResult);
         for (int i = 0; i < emit; i++)
         {
             sb.Append("      - ").Append(anchors[i].Replace('\n', ' ').Replace('\r', ' ')).Append('\n');
         }
-        if (anchors.Length > emit)
+        if (anchors.Count > emit)
         {
-            sb.Append("      - (+").Append(anchors.Length - emit).Append(" more)\n");
+            sb.Append("      - (+").Append(anchors.Count - emit).Append(" more)\n");
         }
     }
 
