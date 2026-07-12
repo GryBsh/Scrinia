@@ -759,4 +759,41 @@ public sealed class FileMemoryStoreTests : IDisposable
             because: "the first load's write-back should have persisted Fields to the sidecar on disk");
         entry.Fields!["tag"].Should().Contain("security");
     }
+
+    [Fact]
+    public void LoadIndex_ConcurrentColdLoads_ForwardFillWriteBackDoesNotRace()
+    {
+        // Seed a single legacy-shaped sidecar so all racing cold loads try to upgrade + write
+        // the SAME sidecar concurrently under LoadIndex's shared lock. Exercises both races:
+        // the writer-side temp/File.Move collision (unique per-call temp names + best-effort
+        // write-back) and the reader-side File.Move replace window (FileRetry around the
+        // sidecar ReadAllText, so a transient lock retries instead of being dropped as "corrupt").
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.CreateDirectory(storeDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-security-note",
+          "uri": "file:///tmp/legacy-security-note.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry",
+          "tags": ["security"],
+          "keywords": ["person:maria"]
+        }
+        """;
+        File.WriteAllText(Path.Combine(storeDir, "legacy-security-note.meta.json"), legacyMeta);
+
+        var act = () => Parallel.For(0, 64, _ =>
+        {
+            var entries = _store.LoadIndex("local");
+            var entry = entries.Single(e => e.Name == "legacy-security-note");
+            entry.Fields.Should().NotBeNull();
+            entry.Fields!["tag"].Should().Contain("security");
+        });
+
+        act.Should().NotThrow(
+            because: "concurrent cold-load write-backs of the same sidecar must neither throw " +
+                     "(writer-side temp/Move race) nor transiently drop the entry (reader-side replace window)");
+    }
 }

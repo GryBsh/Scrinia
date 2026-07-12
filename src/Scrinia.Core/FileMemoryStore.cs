@@ -801,7 +801,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             try
             {
-                string json = File.ReadAllText(metaFile);
+                // Retry the READ (only) on a transient lock: read-time forward-fill writes
+                // sidecars under LoadIndex's shared lock, so a concurrent reader can hit the
+                // File.Move replace window. Without the retry, that transient sharing violation
+                // would fall into the blanket "skip corrupt" catch below and silently drop the
+                // entry from this read. FileRetry retries transient IOExceptions and rethrows a
+                // permanently-stuck file (which then degrades to skip, as before). Deserialize
+                // stays OUTSIDE the retry so genuinely-corrupt JSON is still skipped, not retried.
+                string json = FileRetry.Run(() => File.ReadAllText(metaFile));
                 var entry = JsonSerializer.Deserialize(json, FileStoreJsonContext.Default.ArtifactEntry);
                 if (entry is not null)
                     entries.Add(entry);

@@ -52,6 +52,29 @@ public static class FileRetry
         }
     }
 
+    /// <summary>Runs a synchronous file operation that returns a value, retrying on transient
+    /// <see cref="IOException"/>. Returns the operation's result once it succeeds, or rethrows
+    /// the last <see cref="IOException"/> after all retries are exhausted. Same retry policy
+    /// and exception classification as <see cref="Run(Action, ILogger?)"/>.</summary>
+    public static T Run<T>(Func<T> func, ILogger? logger = null)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return func();
+            }
+            catch (IOException ex) when (attempt < DefaultDelays.Length && !IsPermanentIoFailure(ex))
+            {
+                logger?.LogDebug(
+                    ex,
+                    "File op retry {Attempt}/{Max} after {Delay}ms ({Message})",
+                    attempt + 1, DefaultDelays.Length, DefaultDelays[attempt].TotalMilliseconds, ex.Message);
+                Thread.Sleep(DefaultDelays[attempt]);
+            }
+        }
+    }
+
     /// <summary>Runs an asynchronous file operation, retrying on transient
     /// <see cref="IOException"/>. Returns after the operation succeeds, or rethrows the
     /// last <see cref="IOException"/> after all retries are exhausted.</summary>
