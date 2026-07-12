@@ -742,12 +742,24 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // unmapped members on serialize and would otherwise lose it. Purely additive:
         // legacy fields are never cleared, so scoring (Math.Max over legacy + attribute
         // reads) is unchanged.
+        //
+        // The write-back runs under LoadIndex's SHARED lock, so concurrent same-process cold
+        // loads race to atomically replace the same sidecar. Unique per-call temp names (see
+        // WriteSidecar) keep the temp writes independent, but the final File.Move(overwrite)
+        // onto the shared destination can still collide — on Windows the loser surfaces as
+        // UnauthorizedAccessException (ERROR_ACCESS_DENIED), which FileRetry does not retry.
+        // That collision is benign: every writer serializes identical deterministic content,
+        // so whichever move lands leaves the sidecar correct, and the in-memory upgrade below
+        // already makes THIS read correct regardless. Persistence here is a best-effort
+        // optimization (idempotent via MigratesTo — retried on the next cold load if a whole
+        // round loses), so a failed write-back must never propagate out of a plain read path.
         for (int i = 0; i < entries.Count; i++)
         {
             if (AttributeMigration.MigratesTo(entries[i], out var upgraded))
             {
                 entries[i] = upgraded;
-                WriteSidecar(upgraded, storeDir);
+                try { WriteSidecar(upgraded, storeDir); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort; see above */ }
             }
         }
 
@@ -846,21 +858,41 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         };
 
         string json = JsonSerializer.Serialize(sorted, FileStoreJsonContext.Default.ArtifactEntry);
-        string tmp = $"{metaPath}.{Environment.ProcessId}.tmp";
-        FileRetry.Run(() => File.WriteAllText(tmp, json));
-        FileRetry.Run(() => File.Move(tmp, metaPath, overwrite: true));
+        // Unique-per-call temp name (ProcessId + Guid): read-time forward-fill writes sidecars
+        // from inside LoadIndex's shared lock, so concurrent cold loads of the same un-migrated
+        // sidecar must not race a shared temp name (first File.Move consumes it, second throws
+        // FileNotFound — permanent in FileRetry). Content is deterministic and File.Move atomic.
+        string tmp = $"{metaPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            FileRetry.Run(() => File.WriteAllText(tmp, json));
+            FileRetry.Run(() => File.Move(tmp, metaPath, overwrite: true));
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
     }
 
     private static void AtomicWriteAllText(string path, string content)
     {
-        string tmp = $"{path}.{Environment.ProcessId}.tmp";
-        FileRetry.Run(() => File.WriteAllText(tmp, content));
-        FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
+        string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            FileRetry.Run(() => File.WriteAllText(tmp, content));
+            FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
     }
 
     private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
     {
-        string tmp = $"{path}.{Environment.ProcessId}.tmp";
+        string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
             await FileRetry.RunAsync(() => File.WriteAllTextAsync(tmp, content, ct), ct: ct);
@@ -875,7 +907,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private static void AtomicFileCopy(string sourcePath, string destPath, bool overwrite = true)
     {
-        string tmp = $"{destPath}.{Environment.ProcessId}.tmp";
+        string tmp = $"{destPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         FileRetry.Run(() => File.Copy(sourcePath, tmp, overwrite: true));
         FileRetry.Run(() => File.Move(tmp, destPath, overwrite: overwrite));
     }
