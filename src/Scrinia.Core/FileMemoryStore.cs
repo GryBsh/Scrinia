@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
 using Scrinia.Core.Search;
@@ -731,6 +732,25 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 WriteSidecars(entries, storeDir);
         }
 
+        // Read-time forward-fill: upgrade legacy carriers (tags/codeRefs/review/anchors/
+        // recognized-key keywords) into the attributes model (Fields/Keywords) so every
+        // reader sees Fields without a prior `scri migrate`. Primary-scope sidecars whose
+        // shape actually changes are written back once here — guarded by MigratesTo, so a
+        // later cold load of an already-upgraded sidecar performs no write — mirroring the
+        // index.json→sidecar upgrade above. This durably promotes the on-disk data into
+        // Fields before a later plan removes the legacy members, since STJ silently drops
+        // unmapped members on serialize and would otherwise lose it. Purely additive:
+        // legacy fields are never cleared, so scoring (Math.Max over legacy + attribute
+        // reads) is unchanged.
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if (AttributeMigration.MigratesTo(entries[i], out var upgraded))
+            {
+                entries[i] = upgraded;
+                WriteSidecar(upgraded, storeDir);
+            }
+        }
+
         // Merge entries from legacy flat directory (new-path entries take precedence)
         string? legacyDir = ResolveLegacyFallbackDir(scope);
         if (legacyDir is not null)
@@ -746,7 +766,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 foreach (var le in legacyEntries)
                 {
                     if (!existingNames.Contains(le.Name))
-                        entries.Add(le);
+                        // In-memory forward-fill only — do NOT write back to legacyDir, since
+                        // that would silently promote this entry's scope from the legacy flat
+                        // directory to the namespaced one.
+                        entries.Add(AttributeMigration.Forward(le));
                 }
             }
         }
