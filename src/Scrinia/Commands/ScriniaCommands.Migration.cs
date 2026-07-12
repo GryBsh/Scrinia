@@ -20,13 +20,14 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Migrate .scrinia/ data from v1 (topic:name) to v2 (path) structure. One-shot — hidden from top-level help.</summary>
+    /// <summary>v1→v2 directory-layout migration (legacy). Migrates .scrinia/ data from v1 (topic:name) to v2 (path) structure. One-shot — hidden from top-level help.</summary>
     /// <param name="workspace">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="dryRun">Print what would be copied without actually doing it.</param>
     /// <param name="backup">Create a timestamped backup of .scrinia/ before migrating.</param>
     /// <param name="cleanup">Remove v1 originals after verifying migration.</param>
+    [Command("migrate_v1")]
     [Hidden]
-    public Task<int> Migrate(
+    public Task<int> MigrateV1(
         string? workspace = null,
         bool dryRun = false,
         bool backup = true,
@@ -121,7 +122,7 @@ public partial class ScriniaCommands
             if (errors > 0)
                 AnsiConsole.MarkupLine($"[red]{errors} errors during migration.[/]");
             AnsiConsole.MarkupLine("[dim]Original files preserved in topics/ for fallback.[/]");
-            AnsiConsole.MarkupLine("[dim]Run 'scri migrate --cleanup' to remove originals after verifying.[/]");
+            AnsiConsole.MarkupLine("[dim]Run 'scri migrate_v1 --cleanup' to remove originals after verifying.[/]");
         }
 
         return Task.FromResult(errors > 0 ? 1 : 0);
@@ -235,7 +236,7 @@ public partial class ScriniaCommands
 
         if (!Directory.Exists(memoriesDir))
         {
-            AnsiConsole.MarkupLine("[red]Error:[/] No memories/ directory found. Run 'scri migrate' first.");
+            AnsiConsole.MarkupLine("[red]Error:[/] No memories/ directory found. Run 'scri migrate_v1' first.");
             return Task.FromResult(1);
         }
 

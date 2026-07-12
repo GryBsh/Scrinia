@@ -6,7 +6,7 @@ using Scrinia.Core;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Tests for the v1 → v2 filesystem migration command (<see cref="ScriniaCommands.Migrate"/>)
+/// Tests for the v1 → v2 filesystem migration command (<see cref="ScriniaCommands.MigrateV1"/>)
 /// and the v2 path structure (<see cref="PathRouter"/>).
 /// </summary>
 public sealed class MigrationTests : IDisposable
@@ -165,7 +165,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: files appear in v2 structure
         exitCode.Should().Be(0);
@@ -186,7 +186,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: existing v2 content is preserved (not overwritten)
         exitCode.Should().Be(0);
@@ -203,7 +203,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: entity/ prefix is stripped
         exitCode.Should().Be(0);
@@ -224,7 +224,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: completes cleanly with 0 files
         exitCode.Should().Be(0);
@@ -239,7 +239,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: regular file migrated, version file excluded
         exitCode.Should().Be(0);
@@ -255,12 +255,12 @@ public sealed class MigrationTests : IDisposable
         // Arrange: create agent markdown files in .scrinia/agent/
         CreateV1File("agent/profile.md", "# Agent Profile\nBe helpful.");
         CreateV1File("agent/tenets.md", "# Tenets\nQuality first.");
-        // Also create .scrinia/ directory so Migrate detects the workspace
+        // Also create .scrinia/ directory so MigrateV1 detects the workspace
         Directory.CreateDirectory(TopicsDir);
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: agent files appear under memories/agent/
         exitCode.Should().Be(0);
@@ -279,7 +279,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: skills/ migrated to memories/skill/
         exitCode.Should().Be(0);
@@ -295,7 +295,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: memory/ prefix is stripped
         exitCode.Should().Be(0);
@@ -328,7 +328,7 @@ public sealed class MigrationTests : IDisposable
 
             // Act: migrate on a fresh workspace with no v1 data
             var cmd = new ScriniaCommands();
-            int exitCode = await cmd.Migrate(workspace: freshDir, dryRun: false, backup: false);
+            int exitCode = await cmd.MigrateV1(workspace: freshDir, dryRun: false, backup: false);
 
             // Assert: returns success (nothing to migrate)
             exitCode.Should().Be(0);
@@ -352,7 +352,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspace: _tempDir, dryRun: false, backup: false);
+        int exitCode = await cmd.MigrateV1(workspace: _tempDir, dryRun: false, backup: false);
 
         // Assert: all topics migrated
         exitCode.Should().Be(0);
