@@ -834,6 +834,10 @@ public sealed class ScriniaMcpToolsTests
         string indexPath = Path.Combine(scope.TempDir, "index.json");
         File.WriteAllText(indexPath, json);
 
+        // NOTE: this asserts null ContentPreview because ScriniaArtifactStore.LoadIndex is the v1-only
+        // static CLI facade, which does NOT run the read-time forward-fill. The real FileMemoryStore cold
+        // load (and `scri migrate`) WOULD backfill ContentPreview from Description via AttributeMigration.
+        // If this read is ever rerouted through FileMemoryStore, this assertion must flip to "desc".
         var entries = ScriniaArtifactStore.LoadIndex();
 
         entries.Should().ContainSingle(e => e.Name == "old-entry");

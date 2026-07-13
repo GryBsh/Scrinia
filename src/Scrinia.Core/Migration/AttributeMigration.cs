@@ -111,6 +111,9 @@ public static class AttributeMigration
         migrated = Forward(entry);
         return !FieldsSetEqual(entry.Fields, migrated.Fields)
             || !SetEqual(entry.Keywords, migrated.Keywords)
+            // Ordinal (case-sensitive) is intentional here: ContentPreview is verbatim display text, so a
+            // case-only change is a real change — unlike the OrdinalIgnoreCase set comparisons above, which
+            // treat Fields/Keywords as case-insensitive facet tokens.
             || !string.Equals(entry.ContentPreview, migrated.ContentPreview, StringComparison.Ordinal);
     }
 
