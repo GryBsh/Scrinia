@@ -182,6 +182,8 @@ public sealed class FieldExtractorTests
         var results = store.SearchAll("person:maria", scopes: null, limit: 10);
         results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
             .Should().Be("legacy",
-            because: "dual-read parses key:value legacy keywords into the field slots");
+            because: "read-time forward-fill (AttributeMigration) promotes key:value-shaped legacy " +
+                "keywords into Fields before scoring runs, so the Fields block scores it identically " +
+                "without the scorer parsing Keywords itself (P6.5: that direct dual-read was retired)");
     }
 }

@@ -16,21 +16,20 @@ namespace Scrinia.Core.Search;
 /// Match type                  Score
 /// ─────────────────────       ─────
 /// Exact name match             100
-/// Tag exact match               50
 /// Field key:value pair exact    50
 /// Keyword exact match           40
 /// Field value exact match       40
 /// Name starts with              30
 /// Name contains                 20
-/// Tag contains                  15
-/// Retrieval anchor contains     15
 /// Keyword contains              12
 /// Field value contains          12
-/// Description contains          10
 /// Content preview contains       5
 ///
-/// Field rows score over Fields ∪ legacy key:value keywords (dual-read: pre-migration
-/// entries with key:value-shaped Keywords score identically without re-indexing).
+/// Tags, retrieval anchors, and description are no longer scored directly — read-time
+/// forward-fill (<see cref="Scrinia.Core.Migration.AttributeMigration"/>) promotes tags into
+/// Fields["tag"] and anchors into Fields["anchor"] before scoring ever runs, so they score as
+/// ordinary Field rows above (P6.5 cleanup: Fields is populated everywhere, so the legacy
+/// direct-carrier rows and the key:value-in-Keywords dual-read were retired).
 ///
 /// Topic scoring (per term):
 ///
@@ -337,22 +336,6 @@ internal sealed class WeightedFieldScorer
         else if (entry.Name.Contains(term, StringComparison.OrdinalIgnoreCase))
             score = Math.Max(score, 20);
 
-        // Tag matching
-        if (entry.Tags is { Length: > 0 })
-        {
-            foreach (string tag in entry.Tags)
-            {
-                if (tag.Equals(term, StringComparison.OrdinalIgnoreCase))
-                {
-                    score = Math.Max(score, 50);
-                    break;
-                }
-
-                if (tag.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 15);
-            }
-        }
-
         // Keyword matching
         if (entry.Keywords is { Length: > 0 })
         {
@@ -369,28 +352,13 @@ internal sealed class WeightedFieldScorer
             }
         }
 
-        // Anchor contains — agent-curated retrieval anchor. Sized 15: above
-        // description-contains (10), below curated keyword-contains (12 contains /
-        // 40 exact). Anchors are first-class semantic signal when the agent supplies them.
-        if (entry.RetrievalAnchors is { Length: > 0 })
-        {
-            foreach (string anchor in entry.RetrievalAnchors)
-            {
-                if (!string.IsNullOrEmpty(anchor)
-                    && anchor.Contains(term, StringComparison.OrdinalIgnoreCase))
-                {
-                    score = Math.Max(score, 15);
-                    break;
-                }
-            }
-        }
-
         // Unified-field matching. Compound "key:value" query terms hitting a (key, value)
         // pair score 50 (tag-exact parity); a term equal to a value scores 40 (keyword-exact
-        // parity); contained in a value, 12. Dual-read: key:value-shaped LEGACY keywords
-        // (person:maria written before unification) are parsed on the fly so pre-migration
-        // entries rank identically — the cutover needs no re-index. Explicit OrdinalIgnoreCase
-        // everywhere: dictionary comparers don't survive JSON round-trips.
+        // parity); contained in a value, 12. Explicit OrdinalIgnoreCase everywhere: dictionary
+        // comparers don't survive JSON round-trips. Fields is now populated everywhere (read-time
+        // forward-fill promotes legacy Tags/RetrievalAnchors/key:value-shaped Keywords into Fields
+        // before this ever runs — see AttributeMigration.Forward), so this is the sole tag/keyword
+        // -pair scorer; the old direct key:value-in-Keywords parse here was retired in P6.5.
         int sep = term.IndexOf(':');
         string? termKey = sep > 0 && sep < term.Length - 1 ? term[..sep] : null;
         string? termValue = termKey is not null ? term[(sep + 1)..] : null;
@@ -413,31 +381,6 @@ internal sealed class WeightedFieldScorer
                 }
             }
         }
-
-        if (entry.Keywords is { Length: > 0 })
-        {
-            foreach (string kw in entry.Keywords)
-            {
-                int kwSep = kw.IndexOf(':');
-                if (kwSep <= 0 || kwSep >= kw.Length - 1) continue;
-                string kwKey = kw[..kwSep];
-                string kwValue = kw[(kwSep + 1)..];
-
-                if (termKey is not null
-                    && kwKey.Equals(termKey, StringComparison.OrdinalIgnoreCase)
-                    && kwValue.Equals(termValue, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 50);
-                else if (kwValue.Equals(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 40);
-                else if (kwValue.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 12);
-            }
-        }
-
-        // Description contains
-        if (!string.IsNullOrEmpty(entry.Description)
-            && entry.Description.Contains(term, StringComparison.OrdinalIgnoreCase))
-            score = Math.Max(score, 10);
 
         // Content preview contains
         if (!string.IsNullOrEmpty(entry.ContentPreview)
@@ -585,19 +528,19 @@ internal sealed class WeightedFieldScorer
             }
         }
 
-        // Parent tags at half weight (25 exact, 8 contains)
-        if (parentEntry.Tags is { Length: > 0 })
+        // Parent tags at half weight (20 exact, 6 contains) — sourced from Fields["tag"] (Tags->Fields cutover)
+        if (parentEntry.Fields is { } pf && pf.TryGetValue(KnownFields.TagKey, out var parentTags) && parentTags is not null)
         {
-            foreach (string tag in parentEntry.Tags)
+            foreach (string tag in parentTags)
             {
                 if (tag.Equals(term, StringComparison.OrdinalIgnoreCase))
                 {
-                    score = Math.Max(score, 25);
+                    score = Math.Max(score, 20);
                     break;
                 }
 
                 if (tag.Contains(term, StringComparison.OrdinalIgnoreCase))
-                    score = Math.Max(score, 8);
+                    score = Math.Max(score, 6);
             }
         }
 
