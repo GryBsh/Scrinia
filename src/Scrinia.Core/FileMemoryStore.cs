@@ -340,7 +340,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
-                RetrievalAnchors: e.RetrievalAnchors);
+                RetrievalAnchors: e.RetrievalAnchors,
+                Fields: e.Fields);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
         return result;
@@ -1383,7 +1384,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 Description: entry.Description,
                 Tags: entry.Tags,
                 ContentPreview: entry.ContentPreview,
-                ChunkEntries: entry.ChunkEntries);
+                ChunkEntries: entry.ChunkEntries,
+                Fields: entry.Fields);
             Upsert(destEntry, dstScope);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
@@ -1430,7 +1432,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 Description: srcEntry?.Description ?? $"Loaded from {sourceName}",
                 Tags: srcEntry?.Tags,
                 ContentPreview: srcEntry?.ContentPreview,
-                ChunkEntries: srcEntry?.ChunkEntries);
+                ChunkEntries: srcEntry?.ChunkEntries,
+                Fields: srcEntry?.Fields);
             RememberEphemeral(dstKey, ephEntry);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;

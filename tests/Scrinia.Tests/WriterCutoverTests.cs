@@ -170,4 +170,60 @@ public sealed class WriterCutoverTests
         entry.RetrievalAnchors.Should().Contain("how does login work")
             .And.Contain("what triggers a token refresh");
     }
+
+    /// <summary>
+    /// Task 4 (P6.3 follow-up): <c>EphemeralEntry</c> never passes through the read-time
+    /// forward-fill (it's in-memory only), so the <c>Fields</c> populated at write time by
+    /// Task 2 are only observable through search/display if the <c>ListEphemeral</c>
+    /// projection (<c>EphemeralEntry</c> → <c>ArtifactEntry</c>) actually carries them.
+    /// Pre-Task-4 this projection drops <c>Fields</c> entirely — this test exercises the real
+    /// production projection (<see cref="FileMemoryStore.ListEphemeral"/>, reached here via
+    /// <see cref="FileMemoryStore.ListScoped(string?)"/>, the same path the MCP list/search/
+    /// summary tools use) and fails until the projection carries <c>Fields</c> through.
+    /// </summary>
+    [Fact]
+    public async Task ListEphemeral_Projection_CarriesFieldsFromEphemeralEntry()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(
+            ["Ephemeral scratch note about the widget subsystem."],
+            "~writer-cutover-eph-list",
+            tags: ["widgets"],
+            anchors: ["how does the widget subsystem work"]);
+
+        var projected = MemoryStoreContext.Current!.ListScoped(null)
+            .Single(sa => sa.Scope == "ephemeral" && sa.Entry.Name == "writer-cutover-eph-list")
+            .Entry;
+
+        projected.Fields.Should().NotBeNull();
+        projected.Fields!["tag"].Should().Contain("widgets");
+        projected.Fields!["anchor"].Should().Contain("how does the widget subsystem work");
+    }
+
+    /// <summary>
+    /// Task 4: <c>CopyMemory</c>'s explicit-ctor ephemeral→persistent promotion path
+    /// (<see cref="FileMemoryStore.CopyMemory"/>) must also carry <c>Fields</c> from the
+    /// source <c>EphemeralEntry</c> onto the newly-constructed persistent <c>ArtifactEntry</c>
+    /// — otherwise attributes written at Task 2 would be silently lost on promotion.
+    /// </summary>
+    [Fact]
+    public async Task CopyMemory_EphemeralToPersistent_CarriesFields()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(
+            ["Ephemeral scratch note about the widget subsystem."],
+            "~writer-cutover-eph-copy",
+            tags: ["widgets"],
+            anchors: ["how does the widget subsystem work"]);
+
+        await Tools().Copy("~writer-cutover-eph-copy", "writer-cutover-copy-dest");
+
+        var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-copy-dest");
+
+        persisted.Fields.Should().NotBeNull();
+        persisted.Fields!["tag"].Should().Contain("widgets");
+        persisted.Fields!["anchor"].Should().Contain("how does the widget subsystem work");
+    }
 }
