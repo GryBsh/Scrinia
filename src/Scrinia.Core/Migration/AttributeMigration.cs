@@ -7,7 +7,7 @@ namespace Scrinia.Core.Migration;
 /// <summary>
 /// Forward-fills the legacy memory carriers into the attributes model: tags→`tag`,
 /// FileHashes paths→`file`, reviewAfter/reviewWhen→`review` (ISO date + condition text),
-/// anchors→keywords. ADDITIVE — legacy fields are left populated so the legacy read/scoring
+/// anchors→`anchor`. ADDITIVE — legacy fields are left populated so the legacy read/scoring
 /// paths keep working; clearing them and removing the model fields is the cleanup plan.
 /// Also folds recognized-key <c>key:value</c>-shaped legacy keywords (e.g. <c>person:maria</c>,
 /// <c>ref:other-note</c>) into <c>Fields[key]</c> whenever <c>key</c> is one of
@@ -68,8 +68,9 @@ public static class AttributeMigration
         }
 
         // Anchors → Fields["anchor"]: a first-class searchable facet + the display carrier P6.2 reads.
-        // Additive — anchors also stay folded into Keywords below (keyword channel unchanged; the
-        // redundant fold is retired in P6.5). Cleaned identically to the fold (whitespace + dedupe).
+        // BM25 is TF-seeded from RetrievalAnchors at write time, so anchors are searchable without
+        // also folding into Keywords (that redundant fold was retired in P6.5). Cleaned with
+        // whitespace-drop + dedupe.
         if (entry.RetrievalAnchors is { Length: > 0 })
         {
             var cleanAnchors = entry.RetrievalAnchors
@@ -83,13 +84,6 @@ public static class AttributeMigration
         var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Fields, incoming) : entry.Fields;
 
         string[]? mergedKeywords = entry.Keywords;
-        if (entry.RetrievalAnchors is { Length: > 0 })
-            mergedKeywords = (entry.Keywords ?? [])
-                .Concat(entry.RetrievalAnchors)
-                .Where(k => !string.IsNullOrWhiteSpace(k))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-
         return entry with { Fields = mergedFields, Keywords = mergedKeywords };
     }
 
