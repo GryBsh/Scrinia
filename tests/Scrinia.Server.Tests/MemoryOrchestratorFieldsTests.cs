@@ -1,5 +1,7 @@
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Server.Models;
 using Scrinia.Server.Services;
 using Xunit;
@@ -45,5 +47,64 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
         entry = _store.LoadIndex("local").Single(e => e.Name == "server-fields");
         entry.Fields!["status"].Should().BeEquivalentTo(["done"]);
         entry.Fields["person"].Should().BeEquivalentTo(["Nick", "Maria"]);
+    }
+
+    /// <summary>
+    /// P6.3 writer cutover: proves <see cref="Scrinia.Core.Migration.AttributeMigration.Forward"/> runs inside
+    /// <see cref="MemoryOrchestrator.StoreAsync"/>'s persistent path AT WRITE TIME, not merely
+    /// picked up later by <see cref="FileMemoryStore.LoadIndex"/>'s read-time forward-fill.
+    ///
+    /// Write/read-time isolation: <see cref="FileMemoryStore.LoadIndex"/> always forward-fills
+    /// Fields in-memory on every cold load (see its "Read-time forward-fill" comment) regardless
+    /// of whether Fields was already populated at write — so reading back through LoadIndex
+    /// cannot distinguish "populated at write" from "upgraded on this read". This test instead
+    /// reads the raw `*.meta.json` sidecar directly (via the `internal MetaPath` helper, which
+    /// Scrinia.Core exposes to Scrinia.Server.Tests via InternalsVisibleTo) with a plain
+    /// deserialize that never calls AttributeMigration. Before Task 3's change, this assertion
+    /// fails because the freshly-written sidecar's Fields lacks "tag"/"review" (only
+    /// keyword/ref/attribute-derived keys are present at write time).
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    {
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Body about widgets."], "orch-writer-cutover-store",
+                Tags: ["widgets"], ReviewAfter: "2026-08-01"));
+
+        string metaPath = _store.MetaPath("orch-writer-cutover-store", "local");
+        string json = File.ReadAllText(metaPath);
+        var persisted = JsonSerializer.Deserialize<ArtifactEntry>(
+            json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        persisted.Should().NotBeNull();
+        persisted!.Fields.Should().NotBeNull();
+        persisted.Fields!["tag"].Should().Contain("widgets");
+        persisted.Fields!["review"].Should().NotBeEmpty();
+
+        // Legacy fields STILL written (dual-write) — Forward is additive, not a replacement.
+        persisted.Tags.Should().Contain("widgets");
+        persisted.ReviewAfter.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// Ephemeral counterpart: EphemeralEntry is in-memory-only and never forward-filled at read
+    /// time, so asserting directly against the store (no sidecar/LoadIndex involved at all)
+    /// proves <see cref="MemoryOrchestrator.StoreAsync"/>'s tag->Fields routing runs at write.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    {
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Ephemeral scratch note about widgets."], "~orch-writer-cutover-eph",
+                Tags: ["widgets"]));
+
+        var entry = _store.GetEphemeral("orch-writer-cutover-eph");
+        entry.Should().NotBeNull();
+
+        entry!.Fields.Should().NotBeNull();
+        entry.Fields!["tag"].Should().Contain("widgets");
+
+        // Legacy field STILL written (dual-write).
+        entry.Tags.Should().Contain("widgets");
     }
 }
