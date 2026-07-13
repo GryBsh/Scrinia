@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -376,6 +377,7 @@ public sealed partial class ScriniaMcpTools
             CodeRefs: codeRefDict,
             RetrievalAnchors: cleanedAnchors,
             Fields: fields);
+        entry = AttributeMigration.Forward(entry);
 
         store.Upsert(entry, scope);
 
@@ -520,6 +522,7 @@ public sealed partial class ScriniaMcpTools
             Fields = mergedFields,
             UpdatedAt = DateTimeOffset.UtcNow
         };
+        updated = AttributeMigration.Forward(updated);
 
         store.Upsert(updated, scope);
 
@@ -1255,6 +1258,7 @@ public sealed partial class ScriniaMcpTools
                 CodeRefs: existingEntry?.CodeRefs,
                 RetrievalAnchors: meta.Anchors,
                 Fields: meta.Fields);
+            entry = AttributeMigration.Forward(entry);
 
             store.Upsert(entry, scope);
         }
