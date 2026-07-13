@@ -24,8 +24,9 @@ public static class KnownFields
     /// <summary>The attribute key legacy free-form tags migrate to (see AttributeMigration.TagKey).</summary>
     public const string TagKey = "tag";
 
-    /// <summary>The attribute key retrieval anchors migrate to (display + searchable facet).
-    /// Anchors also remain folded into Keywords additively; the redundant fold is retired in P6.5.</summary>
+    /// <summary>The attribute key retrieval anchors migrate to — a searchable facet + display carrier.
+    /// Anchors are TF-seeded into BM25 at write time; they are NOT folded into Keywords (that redundant
+    /// fold was retired in P6.5).</summary>
     public const string AnchorKey = "anchor";
 
     /// <summary>The guided attribute keys — what the guide teaches and agents write most.

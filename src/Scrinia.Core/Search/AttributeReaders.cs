@@ -32,7 +32,7 @@ public static class AttributeReaders
 
         if (fields is not null
             && fields.TryGetValue(KnownFields.ReviewKey, out var review)
-            && review is { Length: > 0 })
+            && review is not null)
         {
             date = null;
             condition = null;
