@@ -269,4 +269,27 @@ public sealed class AttributeMigrationTests
         once.ContentPreview.Should().Be("desc");
         AttributeMigration.MigratesTo(once, out _).Should().BeFalse();   // second pass writes nothing
     }
+
+    [Fact]
+    public void MigrateStore_BackfillsContentPreviewFromDescription_ForPreviewOnlyEntry()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.NewStore();
+        // A pre-ContentPreview sidecar: Description present, ContentPreview null, no other legacy data.
+        store.Upsert(MakeEntry(contentPreview: null) with { Name = "old" }, "local");
+        // A control that already has ContentPreview and no legacy fields -> must be skipped.
+        store.Upsert(MakeEntry(contentPreview: "already", fields: new() { ["topic"] = ["auth"] }) with { Name = "ok" }, "local");
+
+        var first = AttributeMigration.MigrateStore(store);
+        first.Total.Should().Be(2);
+        first.Migrated.Should().Be(1);   // only "old" (preview backfill) migrates
+        first.Skipped.Should().Be(1);    // "ok" already has ContentPreview and attributes
+
+        store.LoadIndex("local").First(e => e.Name == "old").ContentPreview.Should().Be("desc");
+
+        // idempotent: re-running writes nothing
+        var second = AttributeMigration.MigrateStore(store);
+        second.Migrated.Should().Be(0);
+        second.Skipped.Should().Be(2);
+    }
 }
