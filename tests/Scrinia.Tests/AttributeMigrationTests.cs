@@ -41,12 +41,13 @@ public sealed class AttributeMigrationTests
             ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, FileHashes: codeRefs, Fields: fields);
 
     [Fact]
-    public void Forward_MapsTagsToTagAttribute_AnchorsToKeywords()
+    public void Forward_MapsTagsToTagAttribute_AnchorsToAnchorField()
     {
         var e = MakeEntry(tags: ["security", "auth"], anchors: ["how do I log in"]);
         var m = AttributeMigration.Forward(e);
         m.Fields!["tag"].Should().BeEquivalentTo("security", "auth");
-        m.Keywords.Should().Contain("how do I log in");
+        m.Fields!["anchor"].Should().Contain("how do I log in");
+        m.Keywords.Should().BeNull(); // no keywords in, none folded in -> fold retired in P6.5
         // additive: legacy fields preserved
         m.Tags.Should().BeEquivalentTo("security", "auth");
         m.RetrievalAnchors.Should().BeEquivalentTo("how do I log in");
@@ -106,7 +107,8 @@ public sealed class AttributeMigrationTests
 
         var reread = store.LoadIndex("local").First(e => e.Name == "a");
         reread.Fields!["tag"].Should().BeEquivalentTo("security");
-        reread.Keywords.Should().Contain("how to log in");
+        reread.Fields!["anchor"].Should().Contain("how to log in");
+        (reread.Keywords is null || !reread.Keywords.Contains("how to log in")).Should().BeTrue();
 
         // idempotent: second run writes nothing
         var second = AttributeMigration.MigrateStore(store);
@@ -197,14 +199,14 @@ public sealed class AttributeMigrationTests
     }
 
     [Fact]
-    public void Forward_keeps_anchors_in_keywords_additive()
+    public void Forward_routes_anchors_to_field_not_keywords()
     {
         var entry = MakeEntry(keywords: ["kw1"], anchors: ["anchor phrase"]);
         var result = AttributeMigration.Forward(entry);
 
-        result.Keywords.Should().Contain("kw1");
-        result.Keywords.Should().Contain("anchor phrase"); // fold preserved
-        result.Fields!["anchor"].Should().Equal("anchor phrase"); // also a field
+        result.Keywords.Should().Contain("kw1");                    // unrelated keyword untouched
+        result.Keywords.Should().NotContain("anchor phrase");       // fold retired in P6.5
+        result.Fields!["anchor"].Should().Equal("anchor phrase");   // anchor lives in Fields only
     }
 
     [Fact]

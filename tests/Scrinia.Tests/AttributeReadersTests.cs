@@ -69,6 +69,19 @@ public sealed class AttributeReadersTests
     public void ReviewStatus_none_when_no_data()
         => AttributeReaders.GetReviewStatus(null, null, null, Now).Should().Be(new AttributeReaders.ReviewStatus(false, false));
 
+    [Fact]
+    public void GetReviewStatus_EmptyReviewArray_UsesFields_NotLegacyFallback()
+    {
+        // Empty-but-present "review" key must take the Fields branch (no date/condition -> not
+        // stale, not needs-review) rather than falling through to a legacy arg that would be
+        // stale. Locks the key-existence gate (vs. the old length gate) in GetReviewStatus.
+        var fields = new Dictionary<string, string[]> { ["review"] = Array.Empty<string>() };
+        var pastLegacy = Now.AddDays(-1);
+        var s = AttributeReaders.GetReviewStatus(fields, pastLegacy, "some condition", Now);
+        s.IsStale.Should().BeFalse();
+        s.NeedsReview.Should().BeFalse();
+    }
+
     // ---- PreviewText ----
     [Fact]
     public void PreviewText_prefers_contentPreview()
