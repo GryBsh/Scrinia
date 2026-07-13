@@ -5,7 +5,7 @@ namespace Scrinia.Core.Search;
 /// are multi-valued and what merge semantics apply. Replaces the three divergent typed-prefix
 /// lists (EntityGraph.RealTypes stays as an alias view for graph node identity; the benchmark
 /// and guide copies are retired). Entity keys feed the entity graph; reference keys feed
-/// References/Link/orphan tracking and CodeRefs hashing; everything else is scalar state.
+/// References/Link/orphan tracking and FileHashes hashing; everything else is scalar state.
 /// </summary>
 public static class KnownFields
 {
@@ -15,7 +15,7 @@ public static class KnownFields
     public static readonly IReadOnlySet<string> EntityKeys =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "person", "place", "org", "thing", "topic" };
 
-    /// <summary>Reference field keys — union-merge, feed References/Link/orphan + CodeRefs.</summary>
+    /// <summary>Reference field keys — union-merge, feed References/Link/orphan + FileHashes.</summary>
     public static readonly IReadOnlySet<string> ReferenceKeys =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "file", "ref" };
 

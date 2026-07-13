@@ -16,7 +16,15 @@ public sealed record ArtifactEntry(
     DateTimeOffset? ReviewAfter = null,
     string? ReviewWhen = null,
     ChunkEntry[]? ChunkEntries = null,
-    Dictionary<string, string>? CodeRefs = null,
+    /// <summary>
+    /// The <c>file</c> attribute's private drift baseline: dependency file path → content SHA hash,
+    /// captured at write time. Drift detection re-hashes each path and compares. The path KEYS are
+    /// also surfaced as the searchable <c>file</c> attribute (<see cref="Fields"/>); the hashes are
+    /// private behavior state, never displayed or scored. Persisted under the legacy JSON key
+    /// <c>"codeRefs"</c> (kept stable — no migration; renamed from the old <c>CodeRefs</c> member).
+    /// </summary>
+    [property: System.Text.Json.Serialization.JsonPropertyName("codeRefs")]
+    Dictionary<string, string>? FileHashes = null,
     /// <summary>
     /// Agent-supplied phrases, questions, or category-level paraphrases that bridge
     /// likely user queries to this entry's content. Indexed via field-score + TF seeding.

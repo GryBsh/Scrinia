@@ -853,7 +853,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             TermFrequencies = entry.TermFrequencies?
                 .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(kv => kv.Key, kv => kv.Value),
-            CodeRefs = entry.CodeRefs?
+            FileHashes = entry.FileHashes?
                 .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(kv => kv.Key, kv => kv.Value),
             ChunkEntries = entry.ChunkEntries?.Select(ce => ce with

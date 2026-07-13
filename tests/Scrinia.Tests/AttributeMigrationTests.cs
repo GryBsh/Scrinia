@@ -38,7 +38,7 @@ public sealed class AttributeMigrationTests
         new(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
             CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
             Tags: tags, Keywords: keywords, RetrievalAnchors: anchors,
-            ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, CodeRefs: codeRefs, Fields: fields);
+            ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, FileHashes: codeRefs, Fields: fields);
 
     [Fact]
     public void Forward_MapsTagsToTagAttribute_AnchorsToKeywords()
