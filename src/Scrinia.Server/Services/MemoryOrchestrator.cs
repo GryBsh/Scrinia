@@ -64,7 +64,7 @@ public static class MemoryOrchestrator
             DateTimeOffset? ephUpdatedAt = existingEph is not null ? DateTimeOffset.UtcNow : null;
 
             // Forward-fill: route req.Tags -> Fields["tag"] at write time (dual-write — Tags
-            // below is unchanged). EphemeralEntry has no CodeRefs/ReviewAfter/ReviewWhen/
+            // below is unchanged). EphemeralEntry has no FileHashes/ReviewAfter/ReviewWhen/
             // RetrievalAnchors param on this path, so tag is the only legacy carrier to route.
             var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
             if (req.Tags is { Length: > 0 }) ephIncoming[KnownFields.TagKey] = req.Tags;
@@ -139,7 +139,7 @@ public static class MemoryOrchestrator
             ChunkEntries: chunkEntries,
             Fields: fields);
 
-        // Forward-fill: populate Fields from Tags/ReviewAfter/ReviewWhen/CodeRefs at write time
+        // Forward-fill: populate Fields from Tags/ReviewAfter/ReviewWhen/FileHashes at write time
         // (dual-write — legacy members above are unchanged).
         entry = AttributeMigration.Forward(entry);
 
@@ -276,7 +276,7 @@ public static class MemoryOrchestrator
                 ChunkEntries: updatedChunks,
                 Fields: mergedFields);
 
-            // Forward-fill: populate Fields from Tags/ReviewAfter/ReviewWhen/CodeRefs at write
+            // Forward-fill: populate Fields from Tags/ReviewAfter/ReviewWhen/FileHashes at write
             // time (dual-write — legacy members above are unchanged). Tags is null on this path
             // (no tags param), but ReviewAfter/ReviewWhen carried over from existingEntry still
             // route here, covering pre-Fields entries appended for the first time.

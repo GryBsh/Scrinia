@@ -383,8 +383,8 @@ public sealed class ScriniaMcpToolsTests
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "file-note");
-        entry.CodeRefs.Should().NotBeNull();
-        entry.CodeRefs!.Keys.Should().Contain(relPath);
+        entry.FileHashes.Should().NotBeNull();
+        entry.FileHashes!.Keys.Should().Contain(relPath);
     }
 
     [Fact]
@@ -2185,7 +2185,7 @@ public sealed class ScriniaMcpToolsTests
         // Content extraction.
         entry.Fields["status"].Should().BeEquivalentTo(["active"]);
 
-        // Reference extraction → file field (not file: keyword) → CodeRefs unaffected shape.
+        // Reference extraction → file field (not file: keyword) → FileHashes unaffected shape.
         entry.Fields["file"].Should().Contain("src/Widget.cs");
         entry.Keywords.Should().NotContain(k => k.StartsWith("file:"));
 

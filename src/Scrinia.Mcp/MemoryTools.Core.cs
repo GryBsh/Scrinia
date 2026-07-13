@@ -219,7 +219,7 @@ public sealed partial class ScriniaMcpTools
             // Dual-write: fold tag/anchor into Fields at write time, mirroring how
             // AttributeMigration.Forward populates the persistent path's Fields (Task 1).
             // EphemeralEntry carries only Tags/RetrievalAnchors as legacy attribute-fields
-            // (no ReviewAfter/ReviewWhen/CodeRefs), so only tag/anchor route here.
+            // (no ReviewAfter/ReviewWhen/FileHashes), so only tag/anchor route here.
             var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
             if (tags is { Length: > 0 }) ephIncoming[KnownFields.TagKey] = tags;
             if (cleanedAnchors is { Length: > 0 }) ephIncoming[KnownFields.AnchorKey] = cleanedAnchors;
@@ -383,7 +383,7 @@ public sealed partial class ScriniaMcpTools
             ReviewAfter: parsedReviewAfter,
             ReviewWhen: string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen,
             ChunkEntries: chunkEntries,
-            CodeRefs: codeRefDict,
+            FileHashes: codeRefDict,
             RetrievalAnchors: cleanedAnchors,
             Fields: fields);
         entry = AttributeMigration.Forward(entry);
@@ -669,9 +669,9 @@ public sealed partial class ScriniaMcpTools
         if (limit < 1) limit = 50;
         var page = entries.Skip(offset).Take(limit).ToList();
 
-        // Derive workspace root for drift checking (only used if any entry has CodeRefs)
+        // Derive workspace root for drift checking (only used if any entry has FileHashes)
         string? workspaceRoot = null;
-        bool anyCodeRefs = page.Any(p => p.Entry.CodeRefs is { Count: > 0 });
+        bool anyCodeRefs = page.Any(p => p.Entry.FileHashes is { Count: > 0 });
         if (anyCodeRefs)
         {
             string sd = store.GetStoreDirForScope("local");
@@ -719,12 +719,12 @@ public sealed partial class ScriniaMcpTools
             var status = AttributeReaders.GetReviewStatus(e.Fields, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
             string reviewPrefix = status.IsStale ? "[stale] " : status.NeedsReview ? "[review?] " : "";
 
-            // Drift marker — only check entries that have CodeRefs
+            // Drift marker — only check entries that have FileHashes
             string driftPrefix = "";
-            if (workspaceRoot is not null && e.CodeRefs is { Count: > 0 })
+            if (workspaceRoot is not null && e.FileHashes is { Count: > 0 })
             {
                 bool hasDrift = false;
-                foreach (var (path, storedHash) in e.CodeRefs)
+                foreach (var (path, storedHash) in e.FileHashes)
                 {
                     var fullPath = ResolveWorkspacePath(workspaceRoot, path);
                     if (fullPath is null || !File.Exists(fullPath))
@@ -1264,7 +1264,7 @@ public sealed partial class ScriniaMcpTools
                 ReviewAfter: existingEntry?.ReviewAfter,
                 ReviewWhen: existingEntry?.ReviewWhen,
                 ChunkEntries: updatedChunks,
-                CodeRefs: existingEntry?.CodeRefs,
+                FileHashes: existingEntry?.FileHashes,
                 RetrievalAnchors: meta.Anchors,
                 Fields: meta.Fields);
             entry = AttributeMigration.Forward(entry);
@@ -1483,7 +1483,7 @@ public sealed partial class ScriniaMcpTools
 
         foreach (var sa in allEntries)
         {
-            if (sa.Entry.CodeRefs is null or { Count: 0 }) continue;
+            if (sa.Entry.FileHashes is null or { Count: 0 }) continue;
 
             string qualName = store.FormatQualifiedName(
                 sa.Scope switch {
@@ -1492,7 +1492,7 @@ public sealed partial class ScriniaMcpTools
                     _ => sa.Scope
                 }, sa.Entry.Name);
 
-            foreach (var (path, storedHash) in sa.Entry.CodeRefs)
+            foreach (var (path, storedHash) in sa.Entry.FileHashes)
             {
                 var fullPath = ResolveWorkspacePath(workspaceRoot, path);
                 if (fullPath is null || !File.Exists(fullPath))

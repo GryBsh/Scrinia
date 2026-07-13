@@ -61,7 +61,7 @@ public sealed class WriterCutoverTests
         persisted.Tags.Should().Contain("widgets");
         persisted.ReviewAfter.Should().NotBeNull();
         persisted.RetrievalAnchors.Should().Contain("how does the widget subsystem work");
-        persisted.CodeRefs.Should().ContainKey(relPath);
+        persisted.FileHashes.Should().ContainKey(relPath);
     }
 
     [Fact]

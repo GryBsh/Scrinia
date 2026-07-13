@@ -6,7 +6,7 @@ namespace Scrinia.Core.Migration;
 
 /// <summary>
 /// Forward-fills the legacy memory carriers into the attributes model: tags→`tag`,
-/// codeRefs paths→`file`, reviewAfter/reviewWhen→`review` (ISO date + condition text),
+/// FileHashes paths→`file`, reviewAfter/reviewWhen→`review` (ISO date + condition text),
 /// anchors→keywords. ADDITIVE — legacy fields are left populated so the legacy read/scoring
 /// paths keep working; clearing them and removing the model fields is the cleanup plan.
 /// Also folds recognized-key <c>key:value</c>-shaped legacy keywords (e.g. <c>person:maria</c>,
@@ -30,8 +30,8 @@ public static class AttributeMigration
         var incoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         if (entry.Tags is { Length: > 0 })
             incoming[TagKey] = entry.Tags;
-        if (entry.CodeRefs is { Count: > 0 })
-            incoming["file"] = entry.CodeRefs.Keys.ToArray();
+        if (entry.FileHashes is { Count: > 0 })
+            incoming["file"] = entry.FileHashes.Keys.ToArray();
         var review = new List<string>(2);
         if (entry.ReviewAfter is { } ra)
             review.Add(ra.ToString("o", CultureInfo.InvariantCulture));

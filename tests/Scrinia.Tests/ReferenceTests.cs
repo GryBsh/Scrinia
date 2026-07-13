@@ -178,7 +178,7 @@ public sealed class ReferenceTests : IDisposable
             "references() should find memories linked to the target via ref: keywords");
     }
 
-    // ── CodeRefs & drift detection tests ────────────────────────────────────
+    // ── FileHashes & drift detection tests ────────────────────────────────────
 
     [Fact]
     public async Task Store_WithCodeRefs_RecordsHashes()
@@ -195,15 +195,15 @@ public sealed class ReferenceTests : IDisposable
             "coderef-hash-test",
             codeRefs: [relPath]);
 
-        // Assert — verify the entry's CodeRefs contains the file with a non-empty hash
+        // Assert — verify the entry's FileHashes contains the file with a non-empty hash
         var store = MemoryStoreContext.Current!;
         var (scope, subject) = store.ParseQualifiedName("coderef-hash-test");
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        entry.CodeRefs.Should().NotBeNull("store with codeRefs should populate CodeRefs dictionary");
-        entry.CodeRefs.Should().ContainKey(relPath, "CodeRefs should include the referenced file path");
-        entry.CodeRefs![relPath].Should().NotBeNullOrEmpty("hash value should be a non-empty SHA-256 hex string");
+        entry.FileHashes.Should().NotBeNull("store with codeRefs should populate FileHashes dictionary");
+        entry.FileHashes.Should().ContainKey(relPath, "FileHashes should include the referenced file path");
+        entry.FileHashes![relPath].Should().NotBeNullOrEmpty("hash value should be a non-empty SHA-256 hex string");
     }
 
     [Fact]
@@ -218,16 +218,16 @@ public sealed class ReferenceTests : IDisposable
             "coderef-missing-test",
             codeRefs: [relPath]);
 
-        // Assert — CodeRefs should be empty or not contain the missing file
+        // Assert — FileHashes should be empty or not contain the missing file
         var store = MemoryStoreContext.Current!;
         var (scope, subject) = store.ParseQualifiedName("coderef-missing-test");
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        if (entry.CodeRefs is not null)
+        if (entry.FileHashes is not null)
         {
-            entry.CodeRefs.Should().NotContainKey(relPath,
-                "missing files should be skipped, not recorded in CodeRefs");
+            entry.FileHashes.Should().NotContainKey(relPath,
+                "missing files should be skipped, not recorded in FileHashes");
         }
     }
 
