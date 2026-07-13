@@ -194,7 +194,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 Keywords: e.Keywords,
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
-                ChunkEntries: e.ChunkEntries);
+                ChunkEntries: e.ChunkEntries,
+                RetrievalAnchors: e.RetrievalAnchors,
+                Fields: e.Fields);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
         return result;

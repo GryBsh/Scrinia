@@ -91,7 +91,9 @@ internal static partial class ScriniaArtifactStore
                 Keywords: e.Keywords,
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
-                ChunkEntries: e.ChunkEntries);
+                ChunkEntries: e.ChunkEntries,
+                RetrievalAnchors: e.RetrievalAnchors,
+                Fields: e.Fields);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
         return result;
@@ -612,7 +614,8 @@ internal static partial class ScriniaArtifactStore
                 Description: entry.Description,
                 Tags: entry.Tags,
                 ContentPreview: entry.ContentPreview,
-                ChunkEntries: entry.ChunkEntries);
+                ChunkEntries: entry.ChunkEntries,
+                Fields: entry.Fields);
             Upsert(destEntry, dstScope);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
@@ -660,7 +663,8 @@ internal static partial class ScriniaArtifactStore
                 Description: srcEntry?.Description ?? $"Loaded from {sourceName}",
                 Tags: srcEntry?.Tags,
                 ContentPreview: srcEntry?.ContentPreview,
-                ChunkEntries: srcEntry?.ChunkEntries);
+                ChunkEntries: srcEntry?.ChunkEntries,
+                Fields: srcEntry?.Fields);
             RememberEphemeral(dstKey, ephEntry);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
