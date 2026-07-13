@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -111,6 +112,62 @@ public sealed class WriterCutoverTests
 
         persisted.Tags.Should().Contain("auth").And.Contain("tokens");
         persisted.RetrievalAnchors.Should().Contain("how does login work")
+            .And.Contain("what triggers a token refresh");
+    }
+
+    [Fact]
+    public async Task Store_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(
+            ["Ephemeral scratch note about the widget subsystem."],
+            "~writer-cutover-eph-store",
+            tags: ["widgets"],
+            anchors: ["how does the widget subsystem work"]);
+
+        // EphemeralEntry is in-memory-only and never forward-filled at read time — assert
+        // directly against the store, not through a ListEphemeral projection (that projection
+        // still drops Fields and is fixed in Task 4).
+        var entry = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-store");
+        entry.Should().NotBeNull();
+
+        entry!.Fields.Should().NotBeNull();
+        entry.Fields!["tag"].Should().Contain("widgets");
+        entry.Fields!["anchor"].Should().Contain("how does the widget subsystem work");
+
+        // Legacy fields STILL written (dual-write).
+        entry.Tags.Should().Contain("widgets");
+        entry.RetrievalAnchors.Should().Contain("how does the widget subsystem work");
+    }
+
+    [Fact]
+    public async Task Append_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Store(
+            ["Initial ephemeral note about the auth flow."],
+            "~writer-cutover-eph-append",
+            tags: ["auth"],
+            anchors: ["how does login work"]);
+
+        await Tools().Append(
+            "Additional detail about token refresh.",
+            "~writer-cutover-eph-append",
+            tags: ["auth", "tokens"],
+            anchors: ["how does login work", "what triggers a token refresh"]);
+
+        var entry = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-append");
+        entry.Should().NotBeNull();
+
+        entry!.Fields.Should().NotBeNull();
+        entry.Fields!["tag"].Should().Contain("auth").And.Contain("tokens");
+        entry.Fields!["anchor"].Should().Contain("how does login work")
+            .And.Contain("what triggers a token refresh");
+
+        entry.Tags.Should().Contain("auth").And.Contain("tokens");
+        entry.RetrievalAnchors.Should().Contain("how does login work")
             .And.Contain("what triggers a token refresh");
     }
 }

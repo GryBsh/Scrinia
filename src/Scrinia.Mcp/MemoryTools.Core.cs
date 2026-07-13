@@ -216,6 +216,15 @@ public sealed partial class ScriniaMcpTools
             DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
             DateTimeOffset? ephUpdatedAt = existingEph is not null ? DateTimeOffset.UtcNow : null;
 
+            // Dual-write: fold tag/anchor into Fields at write time, mirroring how
+            // AttributeMigration.Forward populates the persistent path's Fields (Task 1).
+            // EphemeralEntry carries only Tags/RetrievalAnchors as legacy attribute-fields
+            // (no ReviewAfter/ReviewWhen/CodeRefs), so only tag/anchor route here.
+            var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            if (tags is { Length: > 0 }) ephIncoming[KnownFields.TagKey] = tags;
+            if (cleanedAnchors is { Length: > 0 }) ephIncoming[KnownFields.AnchorKey] = cleanedAnchors;
+            var ephFields = ephIncoming.Count > 0 ? KnownFields.Merge(fields, ephIncoming) : fields;
+
             var ephEntry = new EphemeralEntry(
                 Name: key,
                 Artifact: ephArtifact,
@@ -230,7 +239,7 @@ public sealed partial class ScriniaMcpTools
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
                 RetrievalAnchors: cleanedAnchors,
-                Fields: fields);
+                Fields: ephFields);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -1343,6 +1352,17 @@ public sealed partial class ScriniaMcpTools
             FieldExtractor.ExtractRefFields(appendedContent));
         incoming = KnownFields.Merge(incoming, NormalizeAttributes(attributes));   // explicit agent attributes
         var mergedFields = KnownFields.Merge(existingFields, incoming);
+
+        // Dual-write: fold the fully-merged tag/anchor set into Fields at write time —
+        // same mechanism as Store, mirroring AttributeMigration.Forward for the persistent
+        // path (Task 1). Uses the already-merged mergedTags/mergedAnchors (existing ∪ new)
+        // so Fields carries the same values that land in Tags/RetrievalAnchors below.
+        var tagAnchorIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (mergedTags.Length > 0) tagAnchorIncoming[KnownFields.TagKey] = mergedTags;
+        if (mergedAnchors is { Length: > 0 }) tagAnchorIncoming[KnownFields.AnchorKey] = mergedAnchors;
+        if (tagAnchorIncoming.Count > 0)
+            mergedFields = KnownFields.Merge(mergedFields, tagAnchorIncoming);
+
         FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
         return (
