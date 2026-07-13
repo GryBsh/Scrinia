@@ -17,7 +17,9 @@ namespace Scrinia.Core.Migration;
 /// unchanged (additive, not a rewrite). Keywords whose key is NOT a recognized attribute
 /// key (e.g. provenance markers like <c>basedOn:skill-x</c>) are intentionally left as
 /// plain keywords — they are not searchable facets and must not pollute the attribute
-/// namespace. Deterministic and idempotent: re-running produces no change once an entry
+/// namespace. Also backfills <c>ContentPreview</c> from <c>Description</c> when <c>ContentPreview</c> is null,
+/// so pre-<c>ContentPreview</c> sidecars keep their preview text once <c>Description</c> is removed.
+/// Deterministic and idempotent: re-running produces no change once an entry
 /// is forward-filled.
 /// </summary>
 public static class AttributeMigration
@@ -84,16 +86,32 @@ public static class AttributeMigration
         var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Fields, incoming) : entry.Fields;
 
         string[]? mergedKeywords = entry.Keywords;
-        return entry with { Fields = mergedFields, Keywords = mergedKeywords };
+
+        // Description → ContentPreview: ContentPreview is the successor preview/display carrier
+        // (Description is removed in P6.6b). New writes populate ContentPreview directly, but
+        // sidecars created before ContentPreview existed carry only Description — backfill it here,
+        // and ONLY when ContentPreview is null, so both the read-time forward-fill and `scri migrate`
+        // rescue their preview text before Description is deleted. Idempotent: once set, `??`
+        // short-circuits on re-run. A blank Description is not preview-worthy and stays null.
+        string? mergedContentPreview = entry.ContentPreview
+            ?? (string.IsNullOrWhiteSpace(entry.Description) ? null : entry.Description);
+
+        return entry with
+        {
+            Fields = mergedFields,
+            Keywords = mergedKeywords,
+            ContentPreview = mergedContentPreview,
+        };
     }
 
-    /// <summary>True iff Forward(entry) changes the entry's Fields or Keywords (the write-or-skip
+    /// <summary>True iff Forward(entry) changes the entry's Fields, Keywords, or ContentPreview (the write-or-skip
     /// decision). Set-equal comparison (order-insensitive) keeps re-runs write-free.</summary>
     public static bool MigratesTo(ArtifactEntry entry, out ArtifactEntry migrated)
     {
         migrated = Forward(entry);
         return !FieldsSetEqual(entry.Fields, migrated.Fields)
-            || !SetEqual(entry.Keywords, migrated.Keywords);
+            || !SetEqual(entry.Keywords, migrated.Keywords)
+            || !string.Equals(entry.ContentPreview, migrated.ContentPreview, StringComparison.Ordinal);
     }
 
     private static bool SetEqual(string[]? a, string[]? b)

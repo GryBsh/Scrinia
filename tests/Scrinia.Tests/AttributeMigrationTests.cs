@@ -34,10 +34,11 @@ public sealed class AttributeMigrationTests
         string[]? tags = null, string[]? anchors = null,
         Dictionary<string, string>? codeRefs = null,
         DateTimeOffset? reviewAfter = null, string? reviewWhen = null,
-        string[]? keywords = null, Dictionary<string, string[]>? fields = null) =>
+        string[]? keywords = null, Dictionary<string, string[]>? fields = null,
+        string? contentPreview = "preview") =>
         new(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
             CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
-            Tags: tags, Keywords: keywords, RetrievalAnchors: anchors,
+            Tags: tags, ContentPreview: contentPreview, Keywords: keywords, RetrievalAnchors: anchors,
             ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, FileHashes: codeRefs, Fields: fields);
 
     [Fact]
@@ -232,5 +233,40 @@ public sealed class AttributeMigrationTests
         var result = AttributeMigration.Forward(entry);
         result.Fields!["tag"].Should().Equal("t1");
         result.Fields!["anchor"].Should().Equal("a1");
+    }
+
+    [Fact]
+    public void Forward_BackfillsContentPreviewFromDescription_WhenPreviewNull()
+    {
+        var e = MakeEntry(contentPreview: null);   // Description "desc", ContentPreview null
+        var m = AttributeMigration.Forward(e);
+        m.ContentPreview.Should().Be("desc");       // rescued from Description
+        m.Description.Should().Be("desc");          // additive: legacy field untouched
+    }
+
+    [Fact]
+    public void Forward_LeavesExistingContentPreview_WhenAlreadySet()
+    {
+        var e = MakeEntry(contentPreview: "explicit preview");
+        var m = AttributeMigration.Forward(e);
+        m.ContentPreview.Should().Be("explicit preview");   // ?? short-circuits, no overwrite
+    }
+
+    [Fact]
+    public void Forward_LeavesContentPreviewNull_WhenDescriptionBlank()
+    {
+        var e = new ArtifactEntry(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UnixEpoch, Description: "   ", ContentPreview: null);
+        var m = AttributeMigration.Forward(e);
+        m.ContentPreview.Should().BeNull();   // blank Description is not preview-worthy
+    }
+
+    [Fact]
+    public void MigratesTo_DetectsContentPreviewBackfill_AndIsIdempotent()
+    {
+        var e = MakeEntry(contentPreview: null);           // only the preview backfill is pending
+        AttributeMigration.MigratesTo(e, out var once).Should().BeTrue();
+        once.ContentPreview.Should().Be("desc");
+        AttributeMigration.MigratesTo(once, out _).Should().BeFalse();   // second pass writes nothing
     }
 }
