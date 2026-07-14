@@ -71,7 +71,10 @@ public partial class ScriniaCommands
         builder.Services
             .AddMcpServer(options => options.ServerInstructions = ScriniaPrimer.McpInstructions)
             .WithStdioServerTransport()
-            .WithTools<ScriniaMcpTools>()
+            // Pass tool serializer options that source-gen the Dictionary<string,string[]> attribute params;
+            // the trimmed single-file publish has no reflection fallback, so WithTools<>() would otherwise
+            // throw NotSupportedException building the memory_* tools at startup.
+            .WithTools<ScriniaMcpTools>(ScriniaMcpTools.CreateToolSerializerOptions())
             .WithPrompts<ScriniaMcpPrompts>()
             .WithResources<ScriniaMcpResources>();
 
