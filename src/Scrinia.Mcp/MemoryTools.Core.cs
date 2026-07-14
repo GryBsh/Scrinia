@@ -606,9 +606,9 @@ public sealed partial class ScriniaMcpTools
         int totalTokens = (int)(totalBytes / 4);
         var now = DateTimeOffset.UtcNow;
         int staleCount = entries.Count(e =>
-            AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
+            AttributeReaders.GetReviewStatus(e.Entry.Attributes, now).IsStale);
         int reviewCount = entries.Count(e =>
-            AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
+            AttributeReaders.GetReviewStatus(e.Entry.Attributes, now).NeedsReview);
         int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
 
         // Group by scope
@@ -653,7 +653,7 @@ public sealed partial class ScriniaMcpTools
             if (item.Entry.Keywords is { Length: > 0 })
                 foreach (var kw in item.Entry.Keywords)
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
-            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes, item.Entry.Tags))
+            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes))
                 keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
         }
         if (keywordCounts.Count > 0)
@@ -747,7 +747,7 @@ public sealed partial class ScriniaMcpTools
             string dateStr = e.CreatedAt.ToString("yyyy-MM-dd HH:mm");
 
             // Review markers
-            var status = AttributeReaders.GetReviewStatus(e.Attributes, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
+            var status = AttributeReaders.GetReviewStatus(e.Attributes, DateTimeOffset.UtcNow);
             string reviewPrefix = status.IsStale ? "[stale] " : status.NeedsReview ? "[review?] " : "";
 
             // Drift marker — only check entries that have FileHashes
@@ -773,7 +773,7 @@ public sealed partial class ScriniaMcpTools
                 if (hasDrift) driftPrefix = "[drift] ";
             }
 
-            string desc = AttributeReaders.PreviewText(e.ContentPreview, e.Description);
+            string desc = AttributeReaders.PreviewText(e.ContentPreview);
             desc = desc.Replace('\n', ' ').Replace('\r', ' ');
             string fullDesc = reviewPrefix + driftPrefix + desc;
             if (fullDesc.Length > 60) fullDesc = fullDesc[..57] + "...";
@@ -959,8 +959,8 @@ public sealed partial class ScriniaMcpTools
                       .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendAttributesLine(sb, er.Item.Entry.Attributes);
-                    AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description));
-                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Attributes, er.Item.Entry.RetrievalAnchors));
+                    AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview));
+                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Attributes));
                     break;
                 }
             case ChunkEntryResult cr:
@@ -977,8 +977,8 @@ public sealed partial class ScriniaMcpTools
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
                     AppendAttributesLine(sb, cr.ParentItem.Entry.Attributes);
                     AppendDescription(sb, cr.Chunk.ContentPreview
-                        ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description));
-                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Attributes, cr.ParentItem.Entry.RetrievalAnchors));
+                        ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview));
+                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Attributes));
                     break;
                 }
             case TopicResult tr:

@@ -384,7 +384,7 @@ public partial class ScriniaCommands
         long totalBytes = allEntries.Sum(e => e.Entry.OriginalBytes);
         var now = DateTimeOffset.UtcNow;
         int staleCount = allEntries.Count(e =>
-            AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
+            AttributeReaders.GetReviewStatus(e.Entry.Attributes, now).IsStale);
 
         // Compact old multi-chunk session entries. Sessions are append-only logs that accumulate
         // chunks across a day's work; once a session is past its useful window, chunk-level

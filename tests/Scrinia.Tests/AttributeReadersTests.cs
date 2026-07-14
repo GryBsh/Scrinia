@@ -10,12 +10,38 @@ public sealed class AttributeReadersTests
     private static Dictionary<string, string[]> F(params (string k, string[] v)[] kv)
         => kv.ToDictionary(x => x.k, x => x.v, StringComparer.OrdinalIgnoreCase);
 
-    // ---- GetReviewStatus: sources Fields["review"] ----
+    // ---- TryReadReview ----
+    [Fact]
+    public void TryReadReview_extracts_date_and_condition()
+    {
+        var date = Now.AddDays(-1).ToString("o", CultureInfo.InvariantCulture);
+        var found = AttributeReaders.TryReadReview(
+            F(("review", new[] { date, "some condition" })), out var parsedDate, out var condition);
+        found.Should().BeTrue();
+        parsedDate.Should().Be(DateTimeOffset.Parse(date, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
+        condition.Should().Be("some condition");
+    }
+
+    [Fact]
+    public void TryReadReview_returns_false_when_missing()
+    {
+        var found = AttributeReaders.TryReadReview(null, out var date, out var condition);
+        found.Should().BeFalse();
+        date.Should().BeNull();
+        condition.Should().BeNull();
+
+        var found2 = AttributeReaders.TryReadReview(F(("tag", new[] { "x" })), out var date2, out var condition2);
+        found2.Should().BeFalse();
+        date2.Should().BeNull();
+        condition2.Should().BeNull();
+    }
+
+    // ---- GetReviewStatus: sources Attributes["review"] ----
     [Fact]
     public void ReviewStatus_stale_from_fields_past_date()
     {
         var past = Now.AddDays(-1).ToString("o", CultureInfo.InvariantCulture);
-        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { past })), null, null, Now);
+        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { past })), Now);
         s.IsStale.Should().BeTrue();
         s.NeedsReview.Should().BeFalse();
     }
@@ -23,7 +49,7 @@ public sealed class AttributeReadersTests
     [Fact]
     public void ReviewStatus_needsReview_from_fields_condition_only()
     {
-        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { "after refactor X" })), null, null, Now);
+        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { "after refactor X" })), Now);
         s.IsStale.Should().BeFalse();
         s.NeedsReview.Should().BeTrue();
     }
@@ -32,7 +58,7 @@ public sealed class AttributeReadersTests
     public void ReviewStatus_future_date_with_condition_is_needsReview_not_stale()
     {
         var future = Now.AddDays(30).ToString("o", CultureInfo.InvariantCulture);
-        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { future, "when ready" })), null, null, Now);
+        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { future, "when ready" })), Now);
         s.IsStale.Should().BeFalse();
         s.NeedsReview.Should().BeTrue();
     }
@@ -42,42 +68,29 @@ public sealed class AttributeReadersTests
     {
         // Mirrors legacy: future ReviewAfter with no ReviewWhen renders no marker.
         var future = Now.AddDays(30).ToString("o", CultureInfo.InvariantCulture);
-        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { future })), null, null, Now);
+        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { future })), Now);
         s.IsStale.Should().BeFalse();
         s.NeedsReview.Should().BeFalse();
     }
 
     [Fact]
-    public void ReviewStatus_falls_back_to_legacy_when_no_review_key()
-    {
-        // Ephemeral entry never forward-filled: Fields absent → legacy fields drive.
-        var s = AttributeReaders.GetReviewStatus(null, Now.AddDays(-1), null, Now);
-        s.IsStale.Should().BeTrue();
-        var s2 = AttributeReaders.GetReviewStatus(F(("tag", new[] { "x" })), null, "later", Now);
-        s2.NeedsReview.Should().BeTrue(); // fields present but no "review" key → legacy fallback
-    }
-
-    [Fact]
     public void ReviewStatus_condition_that_looks_numeric_is_not_a_date()
     {
-        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { "2026" })), null, null, Now);
+        var s = AttributeReaders.GetReviewStatus(F(("review", new[] { "2026" })), Now);
         s.IsStale.Should().BeFalse();
         s.NeedsReview.Should().BeTrue(); // "2026" is not round-trip("o") format → treated as condition
     }
 
     [Fact]
     public void ReviewStatus_none_when_no_data()
-        => AttributeReaders.GetReviewStatus(null, null, null, Now).Should().Be(new AttributeReaders.ReviewStatus(false, false));
+        => AttributeReaders.GetReviewStatus(null, Now).Should().Be(new AttributeReaders.ReviewStatus(false, false));
 
     [Fact]
-    public void GetReviewStatus_EmptyReviewArray_UsesFields_NotLegacyFallback()
+    public void GetReviewStatus_EmptyReviewArray_NotStale_NotNeedsReview()
     {
-        // Empty-but-present "review" key must take the Fields branch (no date/condition -> not
-        // stale, not needs-review) rather than falling through to a legacy arg that would be
-        // stale. Locks the key-existence gate (vs. the old length gate) in GetReviewStatus.
+        // Empty-but-present "review" key yields no date/condition -> not stale, not needs-review.
         var fields = new Dictionary<string, string[]> { ["review"] = Array.Empty<string>() };
-        var pastLegacy = Now.AddDays(-1);
-        var s = AttributeReaders.GetReviewStatus(fields, pastLegacy, "some condition", Now);
+        var s = AttributeReaders.GetReviewStatus(fields, Now);
         s.IsStale.Should().BeFalse();
         s.NeedsReview.Should().BeFalse();
     }
@@ -85,39 +98,39 @@ public sealed class AttributeReadersTests
     // ---- PreviewText ----
     [Fact]
     public void PreviewText_prefers_contentPreview()
-        => AttributeReaders.PreviewText("preview", "desc").Should().Be("preview");
+        => AttributeReaders.PreviewText("preview").Should().Be("preview");
 
     [Fact]
-    public void PreviewText_falls_back_to_description_when_null()
-        => AttributeReaders.PreviewText(null, "desc").Should().Be("desc");
+    public void PreviewText_falls_back_to_empty_when_null()
+        => AttributeReaders.PreviewText(null).Should().Be(string.Empty);
 
     // ---- DisplayTags ----
     [Fact]
-    public void DisplayTags_prefers_fields_tag()
-        => AttributeReaders.DisplayTags(F(("tag", new[] { "a", "b" })), new[] { "legacy" })
+    public void DisplayTags_reads_fields_tag()
+        => AttributeReaders.DisplayTags(F(("tag", new[] { "a", "b" })))
             .Should().Equal("a", "b");
 
     [Fact]
-    public void DisplayTags_falls_back_to_legacy_when_no_tag_key()
-        => AttributeReaders.DisplayTags(F(("review", new[] { "x" })), new[] { "legacy" })
-            .Should().Equal("legacy");
+    public void DisplayTags_empty_when_no_tag_key()
+        => AttributeReaders.DisplayTags(F(("review", new[] { "x" })))
+            .Should().BeEmpty();
 
     [Fact]
     public void DisplayTags_never_null()
-        => AttributeReaders.DisplayTags(null, null).Should().BeEmpty();
+        => AttributeReaders.DisplayTags(null).Should().BeEmpty();
 
     // ---- DisplayAnchors (mirrors DisplayTags with KnownFields.AnchorKey / "anchor") ----
     [Fact]
-    public void DisplayAnchors_prefers_fields_anchor()
-        => AttributeReaders.DisplayAnchors(F((KnownFields.AnchorKey, new[] { "a", "b" })), new[] { "legacy" })
+    public void DisplayAnchors_reads_fields_anchor()
+        => AttributeReaders.DisplayAnchors(F((KnownFields.AnchorKey, new[] { "a", "b" })))
             .Should().Equal("a", "b");
 
     [Fact]
-    public void DisplayAnchors_falls_back_to_legacy_when_no_anchor_key()
-        => AttributeReaders.DisplayAnchors(F(("review", new[] { "x" })), new[] { "legacy" })
-            .Should().Equal("legacy");
+    public void DisplayAnchors_empty_when_no_anchor_key()
+        => AttributeReaders.DisplayAnchors(F(("review", new[] { "x" })))
+            .Should().BeEmpty();
 
     [Fact]
     public void DisplayAnchors_never_null()
-        => AttributeReaders.DisplayAnchors(null, null).Should().BeEmpty();
+        => AttributeReaders.DisplayAnchors(null).Should().BeEmpty();
 }

@@ -92,10 +92,10 @@ public partial class ScriniaCommands
             int estTokens = (int)(e.OriginalBytes / 4);
 
             // Review markers
-            var st = AttributeReaders.GetReviewStatus(e.Attributes, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
+            var st = AttributeReaders.GetReviewStatus(e.Attributes, DateTimeOffset.UtcNow);
             string reviewPrefix = st.IsStale ? "[stale] " : st.NeedsReview ? "[review?] " : "";
 
-            string desc = AttributeReaders.PreviewText(e.ContentPreview, e.Description).Replace('\n', ' ').Replace('\r', ' ');
+            string desc = AttributeReaders.PreviewText(e.ContentPreview).Replace('\n', ' ').Replace('\r', ' ');
             string fullDesc = reviewPrefix + desc;
             if (fullDesc.Length > 60) fullDesc = fullDesc[..57] + "...";
 
@@ -122,12 +122,12 @@ public partial class ScriniaCommands
         string name = item.Scope == "ephemeral"
             ? $"~{e.Name}"
             : ScriniaArtifactStore.FormatQualifiedName(item.Scope, e.Name);
-        var st = AttributeReaders.GetReviewStatus(e.Attributes, e.ReviewAfter, e.ReviewWhen, now);
+        var st = AttributeReaders.GetReviewStatus(e.Attributes, now);
         return new CliMemoryEntry(
             name, e.ChunkCount, e.OriginalBytes, (int)(e.OriginalBytes / 4),
             e.CreatedAt.ToString("o"), e.UpdatedAt?.ToString("o"),
-            AttributeReaders.PreviewText(e.ContentPreview, e.Description),
-            AttributeReaders.DisplayTags(e.Attributes, e.Tags).ToArray(),
+            AttributeReaders.PreviewText(e.ContentPreview),
+            AttributeReaders.DisplayTags(e.Attributes).ToArray(),
             e.ReviewAfter?.ToString("o"), e.ReviewWhen,
             st.IsStale, st.NeedsReview);
     }
@@ -137,8 +137,8 @@ public partial class ScriniaCommands
         long totalBytes = entries.Sum(e => e.Entry.OriginalBytes);
         int totalTokens = (int)(totalBytes / 4);
         var now = DateTimeOffset.UtcNow;
-        int staleCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
-        int reviewCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
+        int staleCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Attributes, now).IsStale);
+        int reviewCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Attributes, now).NeedsReview);
         int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
 
         var grouped = entries
@@ -170,7 +170,7 @@ public partial class ScriniaCommands
                     if (TypedKeywordShape().IsMatch(kw)) continue;
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
                 }
-            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes, item.Entry.Tags))
+            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes))
                 keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
         }
         var topKeywords = keywordCounts
@@ -270,12 +270,12 @@ public partial class ScriniaCommands
                 ChunkEntryResult cr => new CliSearchResult("chunk",
                     cr.ParentItem.Scope == "ephemeral" ? $"~{cr.ParentItem.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
                     cr.Score, (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4),
-                    cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description),
+                    cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
                     cr.Chunk.ChunkIndex, cr.TotalChunks),
                 EntryResult er => new CliSearchResult("entry",
                     er.Item.Scope == "ephemeral" ? $"~{er.Item.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
                     er.Score, (int)(er.Item.Entry.OriginalBytes / 4),
-                    AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description), null, null),
+                    AttributeReaders.PreviewText(er.Item.Entry.ContentPreview), null, null),
                 TopicResult tr => new CliSearchResult("topic",
                     MemoryNaming.FormatScopeLabel(tr.Scope),
                     tr.Score, 0, tr.Description, null, null),
@@ -301,7 +301,7 @@ public partial class ScriniaCommands
                     ? $"~{cr.ParentItem.Entry.Name}"
                     : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
                 string chunkLabel = $"{name} [chunk {cr.Chunk.ChunkIndex}/{cr.TotalChunks}]";
-                string desc = cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description);
+                string desc = cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview);
                 desc = desc.Replace('\n', ' ').Replace('\r', ' ');
                 if (desc.Length > 60) desc = desc[..57] + "...";
                 int estTokens = (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4);
@@ -313,7 +313,7 @@ public partial class ScriniaCommands
                 string name = er.Item.Scope == "ephemeral"
                     ? $"~{er.Item.Entry.Name}"
                     : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name);
-                string desc = AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description).Replace('\n', ' ').Replace('\r', ' ');
+                string desc = AttributeReaders.PreviewText(er.Item.Entry.ContentPreview).Replace('\n', ' ').Replace('\r', ' ');
                 if (desc.Length > 60) desc = desc[..57] + "...";
                 int estTokens = (int)(er.Item.Entry.OriginalBytes / 4);
 
