@@ -31,22 +31,46 @@ public static class AttributeMigration
     /// <summary>The attribute key legacy free-form tags migrate to.</summary>
     public const string TagKey = "tag";
 
+    /// <summary>The single source of truth for folding legacy carriers (tags/file-hashes/review/anchors)
+    /// into attribute keys. Both <see cref="Forward"/> and the attributes-native write paths call this so
+    /// the write-time fold is byte-identical to the read-time fold. Returns only keys with non-empty input.
+    /// Excludes the key:value-Keywords fold and the Description→ContentPreview backfill (Forward-only).</summary>
+    internal static Dictionary<string, string[]> BuildLegacyCarrierFields(
+        string[]? tags, IEnumerable<string>? fileKeys,
+        DateTimeOffset? reviewAfter, string? reviewWhen, string[]? anchors)
+    {
+        var incoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (tags is { Length: > 0 })
+            incoming[TagKey] = tags;
+        if (fileKeys is not null)
+        {
+            var keys = fileKeys.ToArray();
+            if (keys.Length > 0) incoming["file"] = keys;
+        }
+        var review = new List<string>(2);
+        if (reviewAfter is { } ra)
+            review.Add(ra.ToString("o", CultureInfo.InvariantCulture));
+        if (!string.IsNullOrWhiteSpace(reviewWhen))
+            review.Add(reviewWhen!);
+        if (review.Count > 0)
+            incoming[KnownFields.ReviewKey] = review.ToArray();
+        if (anchors is { Length: > 0 })
+        {
+            var cleanAnchors = anchors
+                .Where(a => !string.IsNullOrWhiteSpace(a))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (cleanAnchors.Length > 0) incoming[KnownFields.AnchorKey] = cleanAnchors;
+        }
+        return incoming;
+    }
+
     public static ArtifactEntry Forward(ArtifactEntry entry)
     {
         entry = entry.NormalizeAttributesKey();
 
-        var incoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-        if (entry.Tags is { Length: > 0 })
-            incoming[TagKey] = entry.Tags;
-        if (entry.FileHashes is { Count: > 0 })
-            incoming["file"] = entry.FileHashes.Keys.ToArray();
-        var review = new List<string>(2);
-        if (entry.ReviewAfter is { } ra)
-            review.Add(ra.ToString("o", CultureInfo.InvariantCulture));
-        if (!string.IsNullOrWhiteSpace(entry.ReviewWhen))
-            review.Add(entry.ReviewWhen!);
-        if (review.Count > 0)
-            incoming[KnownFields.ReviewKey] = review.ToArray();
+        var incoming = BuildLegacyCarrierFields(
+            entry.Tags, entry.FileHashes?.Keys, entry.ReviewAfter, entry.ReviewWhen, entry.RetrievalAnchors);
 
         if (entry.Keywords is { Length: > 0 })
         {
@@ -73,20 +97,6 @@ public static class AttributeMigration
                     incoming[k] = incoming.TryGetValue(k, out var existing)
                         ? existing.Union(v, StringComparer.OrdinalIgnoreCase).ToArray()
                         : v.ToArray();
-        }
-
-        // Anchors → Fields["anchor"]: a first-class searchable facet + the display carrier P6.2 reads.
-        // BM25 is TF-seeded from RetrievalAnchors at write time, so anchors are searchable without
-        // also folding into Keywords (that redundant fold was retired in P6.5). Cleaned with
-        // whitespace-drop + dedupe.
-        if (entry.RetrievalAnchors is { Length: > 0 })
-        {
-            var cleanAnchors = entry.RetrievalAnchors
-                .Where(a => !string.IsNullOrWhiteSpace(a))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            if (cleanAnchors.Length > 0)
-                incoming[KnownFields.AnchorKey] = cleanAnchors;
         }
 
         var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Attributes, incoming) : entry.Attributes;

@@ -388,6 +388,34 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Store_LegacyCarriers_FoldIntoAttributesAtWriteTime()
+    {
+        // Locks the write-time pre-fold (AttributeMigration.BuildLegacyCarrierFields) against
+        // the RAW persisted entry — tag/anchor/review/file all supplied via legacy params
+        // (not the `attributes` dict) so this test only passes if the fold actually runs.
+        using var scope = new TestHelpers.StoreScope();
+        string relPath = "src/Carrier.cs";
+        string fullPath = Path.Combine(scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "class Carrier {}");
+
+        await Tools().Store(["content"], "carrier-note",
+            tags: ["alpha", "beta"],
+            anchors: ["how do carriers work"],
+            reviewAfter: "2026-08-01",
+            reviewWhen: "when the carrier system changes",
+            codeRefs: [relPath]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "carrier-note");
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["tag"].Should().BeEquivalentTo(["alpha", "beta"]);
+        entry.Attributes!["anchor"].Should().Contain("how do carriers work");
+        entry.Attributes!["review"].Should().Contain(v => v.StartsWith("2026-08-01", StringComparison.Ordinal));
+        entry.Attributes!["review"].Should().Contain("when the carrier system changes");
+        entry.Attributes!["file"].Should().Contain(relPath);
+    }
+
+    [Fact]
     public async Task MemoryRemember_Attributes_RoundTripToFields()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -1744,6 +1772,34 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Append_CarriesForwardReviewAndFileIntoAttributes()
+    {
+        // Append has no reviewAfter/reviewWhen/codeRefs params of its own — those carry
+        // forward from the existing entry. BuildAppendMetadata already folds tag/anchor into
+        // Fields, but review/file are folded separately at the construction site (the gap this
+        // locks): the RAW appended entry's Attributes must still carry review/file even though
+        // the append call itself supplies neither.
+        using var scope = new TestHelpers.StoreScope();
+        string relPath = "src/AppendCarrier.cs";
+        string fullPath = Path.Combine(scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "class AppendCarrier {}");
+
+        await Tools().Store(["initial content"], "append-carrier-note",
+            reviewAfter: "2026-08-01",
+            reviewWhen: "when the carrier system changes",
+            codeRefs: [relPath]);
+
+        await Tools().Append("a later addition", "append-carrier-note");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-carrier-note");
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["review"].Should().Contain(v => v.StartsWith("2026-08-01", StringComparison.Ordinal));
+        entry.Attributes!["review"].Should().Contain("when the carrier system changes");
+        entry.Attributes!["file"].Should().Contain(relPath);
+    }
+
+    [Fact]
     public async Task Append_NewAnchor_BridgesQueryViaSearch()
     {
         // The high-value case: appended content introduces a concept users query for in
@@ -2376,6 +2432,80 @@ public sealed class ScriniaMcpToolsTests
         var entries = ScriniaArtifactStore.LoadIndex();
         entries.Single(e => e.Name == "um-alpha").Attributes!["ref"].Should().Contain(v => v.Contains("um-beta"));
         entries.Single(e => e.Name == "um-beta").Attributes!["ref"].Should().Contain(v => v.Contains("um-alpha"));
+    }
+
+    // ── UpdateMeta review-state / ContentPreview direct write (P6.6b Task 4) ────
+    // These are VALUE regression-locks on the RAW persisted entry. Because AttributeMigration.Forward
+    // still runs after UpdateMeta's own write in this merge step, they cannot by themselves prove the
+    // direct write executed (Forward would produce the same values) — that's expected here; a later
+    // step that removes the Forward fold is what makes these discriminating.
+
+    [Fact]
+    public async Task UpdateMeta_ReviewAfterAndWhen_SetsAttributesReview_DateFirst()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-review-both");
+
+        await Tools().UpdateMeta("hint-review-both",
+            reviewAfter: "2026-08-01", reviewWhen: "when the auth system changes");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-both");
+        entry.Attributes.Should().NotBeNull();
+        var review = entry.Attributes!["review"];
+        review.Should().HaveCount(2);
+        DateTimeOffset.Parse(review[0]).Should().Be(entry.ReviewAfter!.Value);
+        review[1].Should().Be("when the auth system changes");
+    }
+
+    [Fact]
+    public async Task UpdateMeta_ClearingReviewWhen_DropsConditionButPreservesDate()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-review-clear",
+            reviewAfter: "2026-08-01", reviewWhen: "when the auth system changes");
+
+        await Tools().UpdateMeta("hint-review-clear", reviewWhen: "");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-clear");
+        entry.Attributes.Should().NotBeNull();
+        var review = entry.Attributes!["review"];
+        review.Should().HaveCount(1);
+        DateTimeOffset.Parse(review[0]).Should().Be(entry.ReviewAfter!.Value);
+    }
+
+    [Fact]
+    public async Task UpdateMeta_DescriptionOnNullContentPreview_BackfillsContentPreview()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-preview-null");
+
+        // Pin ContentPreview to null directly — Store always populates it, so force the
+        // pre-ContentPreview shape this backfill is meant to rescue (mirrors Forward's own
+        // null-only backfill semantics under test).
+        var store = MemoryStoreContext.Current!;
+        var baseline = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-null");
+        store.Upsert(baseline with { ContentPreview = null });
+
+        await Tools().UpdateMeta("hint-preview-null", description: "new");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-null");
+        entry.ContentPreview.Should().Be("new");
+    }
+
+    [Fact]
+    public async Task UpdateMeta_DescriptionOnExistingContentPreview_LeavesContentPreviewUnchanged()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-preview-set");
+        string originalPreview = ScriniaArtifactStore.LoadIndex()
+            .Single(e => e.Name == "hint-preview-set").ContentPreview!;
+        originalPreview.Should().NotBeNullOrEmpty();
+
+        await Tools().UpdateMeta("hint-preview-set", description: "new");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-set");
+        entry.Description.Should().Be("new");
+        entry.ContentPreview.Should().Be(originalPreview);
     }
 
 }

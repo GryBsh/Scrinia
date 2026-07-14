@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -368,6 +369,16 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
+        // Dual-write: fold tag/anchor/review/file into Fields at write time — the attributes-native
+        // write path (byte-identical to AttributeMigration.Forward's fold, Task 1). Inserted here,
+        // immediately before construction, so it captures the auto-derived reviewWhen (above) and
+        // the completed codeRefDict (above) — inserting any earlier would fold stale/empty values.
+        var carrier = AttributeMigration.BuildLegacyCarrierFields(
+            tags, codeRefDict?.Keys, parsedReviewAfter,
+            string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen, cleanedAnchors);
+        if (carrier.Count > 0)
+            fields = KnownFields.Merge(fields, carrier);
+
         var entry = new ArtifactEntry(
             Name: subject,
             Uri: uri,
@@ -487,6 +498,25 @@ public sealed partial class ScriniaMcpTools
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen.").ToYaml());
 
+        // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
+        // members below + the Forward call at the end of this method). ADD/REPLACE ONLY — no
+        // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
+        // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
+        // key, so KnownFields.Merge PRESERVES any existing Attributes["review"] rather than
+        // clearing it. KnownFields.Merge always returns a NEW dictionary, so this never mutates
+        // entry.Attributes (== mergedFields when routedFields is null) in place.
+        var reviewParts = new List<string>(2);
+        if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
+        if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
+        if (reviewParts.Count > 0)
+            mergedFields = KnownFields.Merge(mergedFields,
+                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownFields.ReviewKey] = reviewParts.ToArray() });
+
+        // ContentPreview direct write — byte-parity with Forward's backfill
+        // (entry.ContentPreview ?? (blank Description ? null : Description)).
+        string? updatedContentPreview = entry.ContentPreview
+            ?? (string.IsNullOrWhiteSpace(updatedDescription) ? null : updatedDescription);
+
         // Build the updated entry via term frequencies merge
         var updatedTf = entry.TermFrequencies;
         if (plainAdds is { Length: > 0 } && addedCount > 0)
@@ -529,6 +559,7 @@ public sealed partial class ScriniaMcpTools
             ReviewAfter = parsedReviewAfter,
             ReviewWhen = updatedReviewWhen,
             Attributes = mergedFields,
+            ContentPreview = updatedContentPreview,
             UpdatedAt = DateTimeOffset.UtcNow
         };
         updated = AttributeMigration.Forward(updated);
@@ -1249,6 +1280,16 @@ public sealed partial class ScriniaMcpTools
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
+            // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Fields, but
+            // review/file aren't available there — they come from existingEntry, which is only a
+            // local at this construction site. Fold them here so Attributes carries the full
+            // legacy carrier set even though tags/anchors are already in meta.Fields (passed null
+            // below to avoid double-folding them).
+            var carrier = AttributeMigration.BuildLegacyCarrierFields(
+                tags: null, existingEntry?.FileHashes?.Keys, existingEntry?.ReviewAfter,
+                existingEntry?.ReviewWhen, anchors: null);
+            var appendAttrs = carrier.Count > 0 ? KnownFields.Merge(meta.Fields, carrier) : meta.Fields;
+
             var entry = new ArtifactEntry(
                 Name: subject,
                 Uri: uri,
@@ -1266,7 +1307,7 @@ public sealed partial class ScriniaMcpTools
                 ChunkEntries: updatedChunks,
                 FileHashes: existingEntry?.FileHashes,
                 RetrievalAnchors: meta.Anchors,
-                Attributes: meta.Fields);
+                Attributes: appendAttrs);
             entry = AttributeMigration.Forward(entry);
 
             store.Upsert(entry, scope);
