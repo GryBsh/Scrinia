@@ -836,6 +836,63 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
+    /// <summary>
+    /// Yields every persistent entry across all scopes as RAW deserialized sidecars — WITHOUT the
+    /// read-time forward-fill write-back that <see cref="LoadIndex"/>/<see cref="ListScoped(string?)"/>
+    /// perform as a side effect of loading. Each item carries the entry, its scope, and the exact
+    /// directory the sidecar lives in: the primary scope dir, or — for a shadowed legacy-flat-dir
+    /// entry reached via <see cref="ResolveLegacyFallbackDir"/> — that flat dir, so a migration write
+    /// targets the correct dir and never promotes the entry's scope. Read-only; used by
+    /// <see cref="Migration.AttributeMigration.MigrateStore"/> to measure and persist accurately.
+    /// </summary>
+    internal IEnumerable<(ArtifactEntry Entry, string Scope, string StoreDir)> EnumerateRawForMigration()
+    {
+        foreach (string scope in ResolveReadScopes("all"))
+        {
+            string primaryDir = GetStoreDirForScope(scope);
+            var primary = LoadEntriesFromSidecars(primaryDir);
+            if (primary.Count == 0)
+                primary = LoadEntriesFromLegacyIndex(primaryDir); // raw index.json fallback
+            var seen = new HashSet<string>(primary.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in primary)
+                yield return (entry, scope, primaryDir);
+
+            string? legacyDir = ResolveLegacyFallbackDir(scope);
+            if (legacyDir is not null && Directory.Exists(legacyDir))
+            {
+                foreach (var le in LoadEntriesFromSidecars(legacyDir))
+                    if (!seen.Contains(le.Name))
+                        yield return (le, scope, legacyDir); // write target = the FLAT dir (no promotion)
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes an already-upgraded entry's sidecar to a SPECIFIC directory under <paramref name="scope"/>'s
+    /// exclusive lock, then invalidates that scope's cached index. Unlike <see cref="Upsert"/> (which always
+    /// targets <see cref="GetStoreDirForScope"/>), the explicit <paramref name="storeDir"/> lets a shadowed
+    /// legacy-flat-dir entry be rewritten in place (its flat dir) rather than promoted into the namespaced
+    /// scope dir. Used only by the migrate path.
+    /// </summary>
+    internal void PersistMigratedEntry(ArtifactEntry entry, string storeDir, string scope)
+    {
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            Directory.CreateDirectory(storeDir);
+            WriteSidecar(entry, storeDir);
+            _indexCache.TryRemove(scope, out _); // next read rebuilds from the now-upgraded sidecars
+            if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+                _cachedTopics = null;
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
     private void WriteSidecars(List<ArtifactEntry> entries, string storeDir)
     {
         foreach (var entry in entries)

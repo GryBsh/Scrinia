@@ -21,6 +21,8 @@ public sealed class AttributeMigrationTests
             Directory.CreateDirectory(_tempDir);
         }
 
+        public string Root => _tempDir;
+
         public FileMemoryStore NewStore() => _store = new FileMemoryStore(_tempDir);
 
         public void Dispose()
@@ -291,5 +293,50 @@ public sealed class AttributeMigrationTests
         var second = AttributeMigration.MigrateStore(store);
         second.Migrated.Should().Be(0);
         second.Skipped.Should().Be(2);
+    }
+
+    [Fact]
+    public void EnumerateRawForMigration_YieldsRawEntries_AndWritesNothing()
+    {
+        using var tmp = new TempWorkspace();
+        // Write a legacy sidecar to disk via one store, then read it cold via a fresh store.
+        var seed = tmp.NewStore();
+        seed.Upsert(MakeEntry(tags: ["security"], anchors: ["how do I log in"], contentPreview: null) with { Name = "a", Description = "" }, "local");
+        seed.Dispose();
+
+        var cold = new FileMemoryStore(tmp.Root);
+        var items = cold.EnumerateRawForMigration().ToList();
+
+        var a = items.Single(i => i.Entry.Name == "a");
+        a.Entry.Fields.Should().BeNull("enumeration must return the raw, un-forward-filled entry");
+        a.Scope.Should().Be("local");
+        a.StoreDir.Should().Be(cold.GetStoreDirForScope("local")); // existing public accessor; no new test hook
+        // Enumerating must not mutate disk: re-read raw, still no fields.
+        new FileMemoryStore(tmp.Root).EnumerateRawForMigration()
+            .Single(i => i.Entry.Name == "a").Entry.Fields.Should().BeNull();
+        cold.Dispose();
+    }
+
+    [Fact]
+    public void PersistMigratedEntry_WritesToGivenDir_InvalidatesCache_NoPromotion()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.NewStore();
+        // Target an explicit dir that is NOT the entry's scope dir (simulates a flat-dir write target).
+        string flatDir = Path.Combine(tmp.Root, ".scrinia", "topics", "api");
+        var upgraded = AttributeMigration.Forward(
+            MakeEntry(tags: ["t"], contentPreview: null) with { Name = "flatnote", Description = "" });
+
+        store.PersistMigratedEntry(upgraded, flatDir, "local-topic:memory/api");
+
+        File.Exists(Path.Combine(flatDir, "flatnote.meta.json")).Should().BeTrue("written to the given dir");
+        // NOT promoted into the namespaced scope dir: no sidecar for "flatnote" was written there.
+        // (We check for the FILE, not Directory.Exists: acquiring the scope's exclusive FileLock via
+        // GetLockPath(scope) -> GetStoreDirForScope(scope) creates that directory as a side effect
+        // for the ".lock" file, same as any Upsert/LoadIndex call for this scope would — that is
+        // pre-existing FileLock behavior, not entry promotion.)
+        File.Exists(Path.Combine(tmp.Root, ".scrinia", "memories", "memory", "api", "flatnote.meta.json")).Should().BeFalse();
+        File.Exists(Path.Combine(tmp.Root, ".scrinia", "topics", "memory", "api", "flatnote.meta.json")).Should().BeFalse();
+        store.Dispose();
     }
 }
