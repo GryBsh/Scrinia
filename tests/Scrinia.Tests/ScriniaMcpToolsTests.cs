@@ -2434,4 +2434,78 @@ public sealed class ScriniaMcpToolsTests
         entries.Single(e => e.Name == "um-beta").Attributes!["ref"].Should().Contain(v => v.Contains("um-alpha"));
     }
 
+    // ── UpdateMeta review-state / ContentPreview direct write (P6.6b Task 4) ────
+    // These are VALUE regression-locks on the RAW persisted entry. Because AttributeMigration.Forward
+    // still runs after UpdateMeta's own write in this merge step, they cannot by themselves prove the
+    // direct write executed (Forward would produce the same values) — that's expected here; a later
+    // step that removes the Forward fold is what makes these discriminating.
+
+    [Fact]
+    public async Task UpdateMeta_ReviewAfterAndWhen_SetsAttributesReview_DateFirst()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-review-both");
+
+        await Tools().UpdateMeta("hint-review-both",
+            reviewAfter: "2026-08-01", reviewWhen: "when the auth system changes");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-both");
+        entry.Attributes.Should().NotBeNull();
+        var review = entry.Attributes!["review"];
+        review.Should().HaveCount(2);
+        DateTimeOffset.Parse(review[0]).Should().Be(entry.ReviewAfter!.Value);
+        review[1].Should().Be("when the auth system changes");
+    }
+
+    [Fact]
+    public async Task UpdateMeta_ClearingReviewWhen_DropsConditionButPreservesDate()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-review-clear",
+            reviewAfter: "2026-08-01", reviewWhen: "when the auth system changes");
+
+        await Tools().UpdateMeta("hint-review-clear", reviewWhen: "");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-clear");
+        entry.Attributes.Should().NotBeNull();
+        var review = entry.Attributes!["review"];
+        review.Should().HaveCount(1);
+        DateTimeOffset.Parse(review[0]).Should().Be(entry.ReviewAfter!.Value);
+    }
+
+    [Fact]
+    public async Task UpdateMeta_DescriptionOnNullContentPreview_BackfillsContentPreview()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-preview-null");
+
+        // Pin ContentPreview to null directly — Store always populates it, so force the
+        // pre-ContentPreview shape this backfill is meant to rescue (mirrors Forward's own
+        // null-only backfill semantics under test).
+        var store = MemoryStoreContext.Current!;
+        var baseline = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-null");
+        store.Upsert(baseline with { ContentPreview = null });
+
+        await Tools().UpdateMeta("hint-preview-null", description: "new");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-null");
+        entry.ContentPreview.Should().Be("new");
+    }
+
+    [Fact]
+    public async Task UpdateMeta_DescriptionOnExistingContentPreview_LeavesContentPreviewUnchanged()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-preview-set");
+        string originalPreview = ScriniaArtifactStore.LoadIndex()
+            .Single(e => e.Name == "hint-preview-set").ContentPreview!;
+        originalPreview.Should().NotBeNullOrEmpty();
+
+        await Tools().UpdateMeta("hint-preview-set", description: "new");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-set");
+        entry.Description.Should().Be("new");
+        entry.ContentPreview.Should().Be(originalPreview);
+    }
+
 }

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -497,6 +498,25 @@ public sealed partial class ScriniaMcpTools
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen.").ToYaml());
 
+        // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
+        // members below + the Forward call at the end of this method). ADD/REPLACE ONLY — no
+        // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
+        // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
+        // key, so KnownFields.Merge PRESERVES any existing Attributes["review"] rather than
+        // clearing it. KnownFields.Merge always returns a NEW dictionary, so this never mutates
+        // entry.Attributes (== mergedFields when routedFields is null) in place.
+        var reviewParts = new List<string>(2);
+        if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
+        if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
+        if (reviewParts.Count > 0)
+            mergedFields = KnownFields.Merge(mergedFields,
+                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownFields.ReviewKey] = reviewParts.ToArray() });
+
+        // ContentPreview direct write — byte-parity with Forward's backfill
+        // (entry.ContentPreview ?? (blank Description ? null : Description)).
+        string? updatedContentPreview = entry.ContentPreview
+            ?? (string.IsNullOrWhiteSpace(updatedDescription) ? null : updatedDescription);
+
         // Build the updated entry via term frequencies merge
         var updatedTf = entry.TermFrequencies;
         if (plainAdds is { Length: > 0 } && addedCount > 0)
@@ -539,6 +559,7 @@ public sealed partial class ScriniaMcpTools
             ReviewAfter = parsedReviewAfter,
             ReviewWhen = updatedReviewWhen,
             Attributes = mergedFields,
+            ContentPreview = updatedContentPreview,
             UpdatedAt = DateTimeOffset.UtcNow
         };
         updated = AttributeMigration.Forward(updated);
