@@ -19,6 +19,10 @@ namespace Scrinia.Core.Migration;
 /// plain keywords — they are not searchable facets and must not pollute the attribute
 /// namespace. Also backfills <c>ContentPreview</c> from <c>Description</c> when <c>ContentPreview</c> is null,
 /// so pre-<c>ContentPreview</c> sidecars keep their preview text once <c>Description</c> is removed.
+/// <see cref="Forward"/> also coalesces a legacy JSON <c>"fields"</c>-key value into
+/// <c>Attributes</c> (via <see cref="ArtifactEntry.NormalizeAttributesKey"/>) as its first step,
+/// so a not-yet-rewritten legacy sidecar is forward-filled from its coalesced Attributes and its
+/// returned entry re-serializes under <c>"attributes"</c> only.
 /// Deterministic and idempotent: re-running produces no change once an entry
 /// is forward-filled.
 /// </summary>
@@ -29,6 +33,8 @@ public static class AttributeMigration
 
     public static ArtifactEntry Forward(ArtifactEntry entry)
     {
+        entry = entry.NormalizeAttributesKey();
+
         var incoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         if (entry.Tags is { Length: > 0 })
             incoming[TagKey] = entry.Tags;

@@ -911,6 +911,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private void WriteSidecar(ArtifactEntry entry, string storeDir)
     {
+        // Write chokepoint: guarantees the on-disk sidecar is always keyed "attributes", never
+        // the pre-rename "fields", regardless of which caller reached here (read-time forward-fill,
+        // PersistMigratedEntry, the legacy-index bootstrap, or a plain Upsert of an entry that still
+        // carries a legacy value). No-op for an already-normalized or freshly-constructed entry.
+        entry = entry.NormalizeAttributesKey();
+
         string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
 
         // Sort metadata for stable git diffs (G-29: multi-user merge safety)

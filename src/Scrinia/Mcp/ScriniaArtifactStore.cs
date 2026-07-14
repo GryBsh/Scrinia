@@ -426,7 +426,9 @@ internal static partial class ScriniaArtifactStore
                 string json = File.ReadAllText(metaFile);
                 var entry = JsonSerializer.Deserialize(json, StoreJsonContext.Default.ArtifactEntry);
                 if (entry is not null)
-                    entries.Add(entry);
+                    // This store has no read-time forward-fill hook, so coalesce a legacy
+                    // "fields"-key value into Attributes here, at the point of deserialization.
+                    entries.Add(entry.NormalizeAttributesKey());
             }
             catch { /* skip corrupt sidecar */ }
         }
@@ -442,7 +444,9 @@ internal static partial class ScriniaArtifactStore
         {
             string json = File.ReadAllText(indexPath);
             var idx = JsonSerializer.Deserialize(json, StoreJsonContext.Default.IndexFile);
-            return idx?.Entries ?? [];
+            // Same coalesce as LoadEntriesFromSidecars: this store has no read-time forward-fill
+            // hook, so an entry loaded from the legacy index.json must be normalized here too.
+            return idx?.Entries.Select(e => e.NormalizeAttributesKey()).ToList() ?? [];
         }
         catch
         {
@@ -458,6 +462,11 @@ internal static partial class ScriniaArtifactStore
 
     private static void WriteSidecar(ArtifactEntry entry, string storeDir)
     {
+        // Write chokepoint: this store must never itself persist a legacy "fields" key. On-disk
+        // rewrite of sidecars shared with FileMemoryStore is `scri migrate`'s job; this just
+        // guarantees THIS store's own writes are always keyed "attributes".
+        entry = entry.NormalizeAttributesKey();
+
         string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
         string json = JsonSerializer.Serialize(entry, StoreJsonContext.Default.ArtifactEntry);
         // Unique per-call temp name (ProcessId + Guid): LoadIndex writes sidecars under a
