@@ -420,4 +420,31 @@ public sealed class AttributeMigrationTests
         File.Exists(Path.Combine(tmp.Root, ".scrinia", "topics", "memory", "api", "flatnote.meta.json")).Should().BeFalse();
         store.Dispose();
     }
+
+    [Fact]
+    public void BuildLegacyCarrierFields_MatchesForward_ForTagFileReviewAnchor()
+    {
+        var entry = MakeEntry(
+            tags: ["security", "auth"],
+            anchors: ["how to reset", "  ", "reset flow", "how to reset"],
+            codeRefs: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" },
+            reviewAfter: DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture),
+            reviewWhen: "when auth changes");
+
+        var built = AttributeMigration.BuildLegacyCarrierFields(
+            entry.Tags, entry.FileHashes?.Keys, entry.ReviewAfter, entry.ReviewWhen, entry.RetrievalAnchors);
+
+        built["tag"].Should().BeEquivalentTo(entry.Tags);
+        built["file"].Should().BeEquivalentTo(entry.FileHashes!.Keys);
+        built["review"].Should().Equal(
+            entry.ReviewAfter!.Value.ToString("o", CultureInfo.InvariantCulture), entry.ReviewWhen);
+        built["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped
+
+        // Forward must delegate to the same fold: same four keys, same values.
+        var forwarded = AttributeMigration.Forward(entry);
+        forwarded.Attributes!["tag"].Should().BeEquivalentTo(built["tag"]);
+        forwarded.Attributes!["file"].Should().BeEquivalentTo(built["file"]);
+        forwarded.Attributes!["review"].Should().Equal(built["review"]);
+        forwarded.Attributes!["anchor"].Should().Equal(built["anchor"]);
+    }
 }
