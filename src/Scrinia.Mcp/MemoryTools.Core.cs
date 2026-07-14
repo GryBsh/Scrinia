@@ -368,6 +368,16 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
+        // Dual-write: fold tag/anchor/review/file into Fields at write time — the attributes-native
+        // write path (byte-identical to AttributeMigration.Forward's fold, Task 1). Inserted here,
+        // immediately before construction, so it captures the auto-derived reviewWhen (above) and
+        // the completed codeRefDict (above) — inserting any earlier would fold stale/empty values.
+        var carrier = AttributeMigration.BuildLegacyCarrierFields(
+            tags, codeRefDict?.Keys, parsedReviewAfter,
+            string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen, cleanedAnchors);
+        if (carrier.Count > 0)
+            fields = KnownFields.Merge(fields, carrier);
+
         var entry = new ArtifactEntry(
             Name: subject,
             Uri: uri,
@@ -1249,6 +1259,16 @@ public sealed partial class ScriniaMcpTools
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
+            // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Fields, but
+            // review/file aren't available there — they come from existingEntry, which is only a
+            // local at this construction site. Fold them here so Attributes carries the full
+            // legacy carrier set even though tags/anchors are already in meta.Fields (passed null
+            // below to avoid double-folding them).
+            var carrier = AttributeMigration.BuildLegacyCarrierFields(
+                tags: null, existingEntry?.FileHashes?.Keys, existingEntry?.ReviewAfter,
+                existingEntry?.ReviewWhen, anchors: null);
+            var appendAttrs = carrier.Count > 0 ? KnownFields.Merge(meta.Fields, carrier) : meta.Fields;
+
             var entry = new ArtifactEntry(
                 Name: subject,
                 Uri: uri,
@@ -1266,7 +1286,7 @@ public sealed partial class ScriniaMcpTools
                 ChunkEntries: updatedChunks,
                 FileHashes: existingEntry?.FileHashes,
                 RetrievalAnchors: meta.Anchors,
-                Attributes: meta.Fields);
+                Attributes: appendAttrs);
             entry = AttributeMigration.Forward(entry);
 
             store.Upsert(entry, scope);

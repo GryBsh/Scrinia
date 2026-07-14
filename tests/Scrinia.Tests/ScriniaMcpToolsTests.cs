@@ -388,6 +388,34 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Store_LegacyCarriers_FoldIntoAttributesAtWriteTime()
+    {
+        // Locks the write-time pre-fold (AttributeMigration.BuildLegacyCarrierFields) against
+        // the RAW persisted entry — tag/anchor/review/file all supplied via legacy params
+        // (not the `attributes` dict) so this test only passes if the fold actually runs.
+        using var scope = new TestHelpers.StoreScope();
+        string relPath = "src/Carrier.cs";
+        string fullPath = Path.Combine(scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "class Carrier {}");
+
+        await Tools().Store(["content"], "carrier-note",
+            tags: ["alpha", "beta"],
+            anchors: ["how do carriers work"],
+            reviewAfter: "2026-08-01",
+            reviewWhen: "when the carrier system changes",
+            codeRefs: [relPath]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "carrier-note");
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["tag"].Should().BeEquivalentTo(["alpha", "beta"]);
+        entry.Attributes!["anchor"].Should().Contain("how do carriers work");
+        entry.Attributes!["review"].Should().Contain(v => v.StartsWith("2026-08-01", StringComparison.Ordinal));
+        entry.Attributes!["review"].Should().Contain("when the carrier system changes");
+        entry.Attributes!["file"].Should().Contain(relPath);
+    }
+
+    [Fact]
     public async Task MemoryRemember_Attributes_RoundTripToFields()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -1741,6 +1769,34 @@ public sealed class ScriniaMcpToolsTests
         entry.RetrievalAnchors.Should().BeEquivalentTo(["how does login work", "what triggers a token refresh"],
             because: "new anchors merge with existing and dedupe");
         entry.Keywords.Should().Contain("refresh");
+    }
+
+    [Fact]
+    public async Task Append_CarriesForwardReviewAndFileIntoAttributes()
+    {
+        // Append has no reviewAfter/reviewWhen/codeRefs params of its own — those carry
+        // forward from the existing entry. BuildAppendMetadata already folds tag/anchor into
+        // Fields, but review/file are folded separately at the construction site (the gap this
+        // locks): the RAW appended entry's Attributes must still carry review/file even though
+        // the append call itself supplies neither.
+        using var scope = new TestHelpers.StoreScope();
+        string relPath = "src/AppendCarrier.cs";
+        string fullPath = Path.Combine(scope.WorkspaceDir, relPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        await File.WriteAllTextAsync(fullPath, "class AppendCarrier {}");
+
+        await Tools().Store(["initial content"], "append-carrier-note",
+            reviewAfter: "2026-08-01",
+            reviewWhen: "when the carrier system changes",
+            codeRefs: [relPath]);
+
+        await Tools().Append("a later addition", "append-carrier-note");
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-carrier-note");
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["review"].Should().Contain(v => v.StartsWith("2026-08-01", StringComparison.Ordinal));
+        entry.Attributes!["review"].Should().Contain("when the carrier system changes");
+        entry.Attributes!["file"].Should().Contain(relPath);
     }
 
     [Fact]
