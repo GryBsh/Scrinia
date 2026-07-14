@@ -465,6 +465,17 @@ public sealed partial class ScriniaMcpTools
         }
 
         // Replace description if provided
+        // NOTE (Merge 3 Task 2): NOT re-sourced to ContentPreview. Unlike Tags/ReviewAfter/
+        // ReviewWhen/RetrievalAnchors, the curated Description is never dual-written into
+        // ContentPreview at write time — Store/Append always set ContentPreview from
+        // GenerateContentPreview(content), independent of the description param.
+        // AttributeMigration.Forward only backfills ContentPreview from Description when
+        // ContentPreview is null (rescue for pre-ContentPreview sidecars), so once
+        // ContentPreview is set (the normal case), it silently diverges from a curated
+        // description. Re-sourcing this default would drop curated descriptions on the next
+        // no-op `update` (see Append_PreservesCuratedAnchorsTagsAndDescription in
+        // ScriniaMcpToolsTests.cs, which locks the equivalent append-side behavior). Left on
+        // the legacy member pending a design decision — see p66b3-task-2-report.md.
         string updatedDescription = entry.Description;
         if (!string.IsNullOrWhiteSpace(description))
         {
@@ -472,8 +483,12 @@ public sealed partial class ScriniaMcpTools
             changes.Add("description updated");
         }
 
+        // Carry-forward defaults for review sourced from Attributes["review"] (the successor
+        // carrier) rather than the legacy ReviewAfter/ReviewWhen members.
+        AttributeReaders.TryReadReview(entry.Attributes, out var existingReviewDate, out var existingReviewWhen);
+
         // Parse reviewAfter if provided
-        DateTimeOffset? parsedReviewAfter = entry.ReviewAfter;
+        DateTimeOffset? parsedReviewAfter = existingReviewDate;
         if (!string.IsNullOrWhiteSpace(reviewAfter))
         {
             if (DateTimeOffset.TryParse(reviewAfter, out var ra))
@@ -488,7 +503,7 @@ public sealed partial class ScriniaMcpTools
         }
 
         // Replace reviewWhen if provided
-        string? updatedReviewWhen = entry.ReviewWhen;
+        string? updatedReviewWhen = existingReviewWhen;
         if (reviewWhen is not null)
         {
             updatedReviewWhen = string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen;
@@ -1223,9 +1238,12 @@ public sealed partial class ScriniaMcpTools
             var existingEph = store.GetEphemeral(key);
             DateTimeOffset createdAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
 
+            // Description NOT re-sourced to ContentPreview here — see the UpdateMeta note above
+            // (~L468); ContentPreview is content-derived, not a curated-description carrier.
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
-                existingEph?.Description, existingEph?.Tags, existingEph?.Keywords, existingEph?.RetrievalAnchors,
+                existingEph?.Description, AttributeReaders.DisplayTags(existingEph?.Attributes).ToArray(),
+                existingEph?.Keywords, AttributeReaders.DisplayAnchors(existingEph?.Attributes).ToArray(),
                 content, routedNewFields, existingEph?.Attributes, attributes);
 
             ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
@@ -1261,9 +1279,12 @@ public sealed partial class ScriniaMcpTools
             var existingEntry = existingEntries.FirstOrDefault(e => e.Name == subject);
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
 
+            // Description NOT re-sourced to ContentPreview here — see the UpdateMeta note above
+            // (~L468); ContentPreview is content-derived, not a curated-description carrier.
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
-                existingEntry?.Description, existingEntry?.Tags, existingEntry?.Keywords, existingEntry?.RetrievalAnchors,
+                existingEntry?.Description, AttributeReaders.DisplayTags(existingEntry?.Attributes).ToArray(),
+                existingEntry?.Keywords, AttributeReaders.DisplayAnchors(existingEntry?.Attributes).ToArray(),
                 content, routedNewFields, existingEntry?.Attributes, attributes);
 
             ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
@@ -1285,9 +1306,10 @@ public sealed partial class ScriniaMcpTools
             // local at this construction site. Fold them here so Attributes carries the full
             // legacy carrier set even though tags/anchors are already in meta.Fields (passed null
             // below to avoid double-folding them).
+            AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
             var carrier = AttributeMigration.BuildLegacyCarrierFields(
-                tags: null, existingEntry?.FileHashes?.Keys, existingEntry?.ReviewAfter,
-                existingEntry?.ReviewWhen, anchors: null);
+                tags: null, existingEntry?.FileHashes?.Keys, existingReviewDate,
+                existingReviewWhen, anchors: null);
             var appendAttrs = carrier.Count > 0 ? KnownFields.Merge(meta.Fields, carrier) : meta.Fields;
 
             var entry = new ArtifactEntry(

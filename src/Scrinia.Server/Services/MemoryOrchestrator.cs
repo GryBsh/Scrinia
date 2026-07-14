@@ -265,8 +265,9 @@ public static class MemoryOrchestrator
             var mergedFields = KnownFields.Merge(existingEntry?.Attributes, incoming);
             FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
+            AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
             var carrier = AttributeMigration.BuildLegacyCarrierFields(
-                tags: null, fileKeys: null, existingEntry?.ReviewAfter, existingEntry?.ReviewWhen, anchors: null);
+                tags: null, fileKeys: null, existingReviewDate, existingReviewWhen, anchors: null);
             if (carrier.Count > 0)
                 mergedFields = KnownFields.Merge(mergedFields, carrier);
 

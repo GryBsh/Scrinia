@@ -2474,6 +2474,28 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task UpdateMeta_WithoutReviewParams_PreservesExistingReviewAttribute()
+    {
+        // Merge 3 Task 2: UpdateMeta's review-carry-forward defaults must be re-sourced from
+        // Attributes["review"] (via AttributeReaders.TryReadReview), not the legacy
+        // ReviewAfter/ReviewWhen members — this locks the RAW persisted Attributes so a
+        // regression that drops the carry-forward (e.g. defaulting to null) fails loudly.
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Store(["base content"], "hint-review-preserve",
+            reviewAfter: "2026-08-01", reviewWhen: "when the auth system changes");
+
+        var seeded = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-preserve");
+        var seededReview = seeded.Attributes!["review"];
+
+        await Tools().UpdateMeta("hint-review-preserve", keywords: ["extra-keyword"]);
+
+        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-preserve");
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["review"].Should().BeEquivalentTo(seededReview,
+            because: "update without reviewAfter/reviewWhen params must carry the existing review forward, not drop it");
+    }
+
+    [Fact]
     public async Task UpdateMeta_DescriptionOnNullContentPreview_BackfillsContentPreview()
     {
         using var scope = new TestHelpers.StoreScope();
