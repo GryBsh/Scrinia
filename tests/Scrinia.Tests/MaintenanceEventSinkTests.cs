@@ -44,8 +44,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var targetEntry = targetEntries.First(e =>
             e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
 
-        targetEntry.Fields.Should().NotBeNull();
-        targetEntry.Fields!["ref"].Should().Contain("test:source",
+        targetEntry.Attributes.Should().NotBeNull();
+        targetEntry.Attributes!["ref"].Should().Contain("test:source",
             "auto-linking should add the source to the ref FIELD on the referenced target entry");
     }
 
@@ -121,8 +121,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var betaEntry = betaEntries.First(e =>
             e.Name.Equals(betaSubject, StringComparison.OrdinalIgnoreCase));
 
-        betaEntry.Fields.Should().NotBeNull();
-        betaEntry.Fields!["ref"].Should().Contain("test:alpha",
+        betaEntry.Attributes.Should().NotBeNull();
+        betaEntry.Attributes!["ref"].Should().Contain("test:alpha",
             "OnAppendedAsync should create ref FIELD links for newly referenced memories");
     }
 
@@ -153,7 +153,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         refKeywords.Should().BeEmpty(
             "self-references should be skipped — an entry should not link to itself");
 
-        var selfRefFieldValues = entry.Fields is not null && entry.Fields.TryGetValue("ref", out var refs)
+        var selfRefFieldValues = entry.Attributes is not null && entry.Attributes.TryGetValue("ref", out var refs)
             ? refs.Where(v => v.Equals("test:selfref", StringComparison.OrdinalIgnoreCase)).ToArray()
             : [];
 
@@ -181,7 +181,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var dstEntry = dstEntries.First(e =>
             e.Name.Equals(dstSubject, StringComparison.OrdinalIgnoreCase));
 
-        var refCount = dstEntry.Fields is not null && dstEntry.Fields.TryGetValue("ref", out var refs)
+        var refCount = dstEntry.Attributes is not null && dstEntry.Attributes.TryGetValue("ref", out var refs)
             ? refs.Count(v => v.Equals("test:src", StringComparison.OrdinalIgnoreCase))
             : 0;
 
@@ -261,8 +261,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var targetEntry = targetEntries.First(e =>
             e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
 
-        targetEntry.Fields.Should().NotBeNull();
-        targetEntry.Fields!["ref"].Should().Contain(v => v.Contains("test:fieldsource"),
+        targetEntry.Attributes.Should().NotBeNull();
+        targetEntry.Attributes!["ref"].Should().Contain(v => v.Contains("test:fieldsource"),
             "auto-linking should write the ref FIELD now");
         (targetEntry.Keywords ?? []).Should().NotContain(k => k.StartsWith("ref:"),
             "prefixed ref: keywords are no longer written");
@@ -286,8 +286,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var (linkedScope, linkedSubject) = store.ParseQualifiedName("test:fieldlinked");
         string linkedQualified = store.FormatQualifiedName(linkedScope, linkedSubject);
 
-        var referrerFields = KnownFields.Merge(referrerEntry.Fields, new() { ["ref"] = [linkedQualified] });
-        store.Upsert(referrerEntry with { Fields = referrerFields }, referrerScope);
+        var referrerFields = KnownFields.Merge(referrerEntry.Attributes, new() { ["ref"] = [linkedQualified] });
+        store.Upsert(referrerEntry with { Attributes = referrerFields }, referrerScope);
 
         // Act — fire OnStoredAsync for the linked entry
         await _sink.OnStoredAsync(

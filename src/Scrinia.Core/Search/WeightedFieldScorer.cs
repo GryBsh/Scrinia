@@ -363,9 +363,9 @@ internal sealed class WeightedFieldScorer
         string? termKey = sep > 0 && sep < term.Length - 1 ? term[..sep] : null;
         string? termValue = termKey is not null ? term[(sep + 1)..] : null;
 
-        if (entry.Fields is { Count: > 0 })
+        if (entry.Attributes is { Count: > 0 })
         {
-            foreach (var field in entry.Fields)
+            foreach (var field in entry.Attributes)
             {
                 double w = KnownFields.AttributeWeight(field.Key);   // curation knob; 1.0 at parity
                 foreach (string value in field.Value)
@@ -528,8 +528,8 @@ internal sealed class WeightedFieldScorer
             }
         }
 
-        // Parent tags at half weight (20 exact, 6 contains) — sourced from Fields["tag"] (Tags->Fields cutover)
-        if (parentEntry.Fields is { } pf && pf.TryGetValue(KnownFields.TagKey, out var parentTags) && parentTags is not null)
+        // Parent tags at half weight (20 exact, 6 contains) — sourced from Attributes["tag"] (Tags->Attributes cutover)
+        if (parentEntry.Attributes is { } pf && pf.TryGetValue(KnownFields.TagKey, out var parentTags) && parentTags is not null)
         {
             foreach (string tag in parentTags)
             {

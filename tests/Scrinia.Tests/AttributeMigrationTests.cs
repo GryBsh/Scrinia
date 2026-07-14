@@ -41,15 +41,15 @@ public sealed class AttributeMigrationTests
         new(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
             CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
             Tags: tags, ContentPreview: contentPreview, Keywords: keywords, RetrievalAnchors: anchors,
-            ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, FileHashes: codeRefs, Fields: fields);
+            ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, FileHashes: codeRefs, Attributes: fields);
 
     [Fact]
     public void Forward_MapsTagsToTagAttribute_AnchorsToAnchorField()
     {
         var e = MakeEntry(tags: ["security", "auth"], anchors: ["how do I log in"]);
         var m = AttributeMigration.Forward(e);
-        m.Fields!["tag"].Should().BeEquivalentTo("security", "auth");
-        m.Fields!["anchor"].Should().Contain("how do I log in");
+        m.Attributes!["tag"].Should().BeEquivalentTo("security", "auth");
+        m.Attributes!["anchor"].Should().Contain("how do I log in");
         m.Keywords.Should().BeNull(); // no keywords in, none folded in -> fold retired in P6.5
         // additive: legacy fields preserved
         m.Tags.Should().BeEquivalentTo("security", "auth");
@@ -65,8 +65,8 @@ public sealed class AttributeMigrationTests
             reviewAfter: DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture),
             reviewWhen: "when auth changes");
         var m = AttributeMigration.Forward(e);
-        m.Fields!["file"].Should().BeEquivalentTo("src/A.cs", "src/B.cs");   // paths, not hashes
-        m.Fields!["review"].Should().Contain(v => v.StartsWith("2026-08-01"))
+        m.Attributes!["file"].Should().BeEquivalentTo("src/A.cs", "src/B.cs");   // paths, not hashes
+        m.Attributes!["review"].Should().Contain(v => v.StartsWith("2026-08-01"))
             .And.Contain("when auth changes");
     }
 
@@ -76,8 +76,8 @@ public sealed class AttributeMigrationTests
         var e = MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" },
             fields: new() { ["file"] = ["src/A.cs"], ["person"] = ["maria"] });
         var m = AttributeMigration.Forward(e);
-        m.Fields!["file"].Should().BeEquivalentTo("src/A.cs");   // union dedupes
-        m.Fields!["person"].Should().BeEquivalentTo("maria");    // untouched
+        m.Attributes!["file"].Should().BeEquivalentTo("src/A.cs");   // union dedupes
+        m.Attributes!["person"].Should().BeEquivalentTo("maria");    // untouched
     }
 
     [Fact]
@@ -109,8 +109,8 @@ public sealed class AttributeMigrationTests
         first.Skipped.Should().Be(1);     // "b" already attributes-only
 
         var reread = store.LoadIndex("local").First(e => e.Name == "a");
-        reread.Fields!["tag"].Should().BeEquivalentTo("security");
-        reread.Fields!["anchor"].Should().Contain("how to log in");
+        reread.Attributes!["tag"].Should().BeEquivalentTo("security");
+        reread.Attributes!["anchor"].Should().Contain("how to log in");
         (reread.Keywords is null || !reread.Keywords.Contains("how to log in")).Should().BeTrue();
 
         // idempotent: second run writes nothing
@@ -128,7 +128,7 @@ public sealed class AttributeMigrationTests
 
         var summary = AttributeMigration.MigrateStore(store, dryRun: true);
         summary.Migrated.Should().Be(1);
-        store.LoadIndex("local").First(e => e.Name == "a").Fields.Should().BeNull();   // unwritten
+        store.LoadIndex("local").First(e => e.Name == "a").Attributes.Should().BeNull();   // unwritten
     }
 
     [Fact]
@@ -139,7 +139,7 @@ public sealed class AttributeMigrationTests
         store.Upsert(MakeEntry(tags: ["t"]) with { Name = "note" }, "local-topic:findings");
 
         AttributeMigration.MigrateStore(store).Migrated.Should().Be(1);
-        store.LoadIndex("local-topic:findings").First().Fields!["tag"].Should().BeEquivalentTo("t");
+        store.LoadIndex("local-topic:findings").First().Attributes!["tag"].Should().BeEquivalentTo("t");
     }
 
     [Fact]
@@ -147,8 +147,8 @@ public sealed class AttributeMigrationTests
     {
         var e = MakeEntry(keywords: ["person:maria", "topic:auth", "loose-keyword"]);
         var m = AttributeMigration.Forward(e);
-        m.Fields!["person"].Should().BeEquivalentTo("maria");
-        m.Fields!["topic"].Should().BeEquivalentTo("auth");
+        m.Attributes!["person"].Should().BeEquivalentTo("maria");
+        m.Attributes!["topic"].Should().BeEquivalentTo("auth");
         m.Keywords.Should().Contain(new[] { "person:maria", "topic:auth", "loose-keyword" });
     }
 
@@ -157,7 +157,7 @@ public sealed class AttributeMigrationTests
     {
         var e = MakeEntry(keywords: ["person:bob"], fields: new() { ["person"] = ["alice"] });
         var m = AttributeMigration.Forward(e);
-        m.Fields!["person"].Should().BeEquivalentTo("alice", "bob");
+        m.Attributes!["person"].Should().BeEquivalentTo("alice", "bob");
     }
 
     [Fact]
@@ -165,7 +165,7 @@ public sealed class AttributeMigrationTests
     {
         var e = MakeEntry(keywords: ["basedOn:skill-x", "http://example.com", "trailingcolon:", ":leading", "12:30"]);
         var m = AttributeMigration.Forward(e);
-        (m.Fields is null || m.Fields.Count == 0).Should().BeTrue();
+        (m.Attributes is null || m.Attributes.Count == 0).Should().BeTrue();
         m.Keywords.Should().Contain("basedOn:skill-x");
     }
 
@@ -174,7 +174,7 @@ public sealed class AttributeMigrationTests
     {
         var e = MakeEntry(keywords: ["ref:other-note"]);
         AttributeMigration.MigratesTo(e, out var once).Should().BeTrue();
-        once.Fields!["ref"].Should().BeEquivalentTo("other-note");
+        once.Attributes!["ref"].Should().BeEquivalentTo("other-note");
         AttributeMigration.MigratesTo(once, out _).Should().BeFalse();
     }
 
@@ -187,8 +187,8 @@ public sealed class AttributeMigrationTests
         // KeyCollection both use OrdinalIgnoreCase, so ContainKey/Keys.Contains("Person") would
         // match "person"; ToList() forces the default ordinal comparer to prove the persisted
         // key text is lowercase.
-        m.Fields!.Keys.ToList().Should().Contain("person").And.NotContain("Person");
-        m.Fields!["person"].Should().BeEquivalentTo("Maria"); // value casing preserved
+        m.Attributes!.Keys.ToList().Should().Contain("person").And.NotContain("Person");
+        m.Attributes!["person"].Should().BeEquivalentTo("Maria"); // value casing preserved
     }
 
     [Fact]
@@ -197,8 +197,8 @@ public sealed class AttributeMigrationTests
         var entry = MakeEntry(anchors: ["how to reset", "  ", "reset flow", "how to reset"]);
         var result = AttributeMigration.Forward(entry);
 
-        result.Fields.Should().ContainKey("anchor");
-        result.Fields!["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped, order kept
+        result.Attributes.Should().ContainKey("anchor");
+        result.Attributes!["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped, order kept
     }
 
     [Fact]
@@ -209,7 +209,7 @@ public sealed class AttributeMigrationTests
 
         result.Keywords.Should().Contain("kw1");                    // unrelated keyword untouched
         result.Keywords.Should().NotContain("anchor phrase");       // fold retired in P6.5
-        result.Fields!["anchor"].Should().Equal("anchor phrase");   // anchor lives in Fields only
+        result.Attributes!["anchor"].Should().Equal("anchor phrase");   // anchor lives in Fields only
     }
 
     [Fact]
@@ -217,7 +217,7 @@ public sealed class AttributeMigrationTests
     {
         var entry = MakeEntry(anchors: null);
         var result = AttributeMigration.Forward(entry);
-        (result.Fields is null || !result.Fields.ContainsKey("anchor")).Should().BeTrue();
+        (result.Attributes is null || !result.Attributes.ContainsKey("anchor")).Should().BeTrue();
     }
 
     [Fact]
@@ -233,8 +233,8 @@ public sealed class AttributeMigrationTests
     {
         var entry = MakeEntry(tags: ["t1"], anchors: ["a1"]);
         var result = AttributeMigration.Forward(entry);
-        result.Fields!["tag"].Should().Equal("t1");
-        result.Fields!["anchor"].Should().Equal("a1");
+        result.Attributes!["tag"].Should().Equal("t1");
+        result.Attributes!["anchor"].Should().Equal("a1");
     }
 
     [Fact]
@@ -308,12 +308,12 @@ public sealed class AttributeMigrationTests
         var items = cold.EnumerateRawForMigration().ToList();
 
         var a = items.Single(i => i.Entry.Name == "a");
-        a.Entry.Fields.Should().BeNull("enumeration must return the raw, un-forward-filled entry");
+        a.Entry.Attributes.Should().BeNull("enumeration must return the raw, un-forward-filled entry");
         a.Scope.Should().Be("local");
         a.StoreDir.Should().Be(cold.GetStoreDirForScope("local")); // existing public accessor; no new test hook
         // Enumerating must not mutate disk: re-read raw, still no fields.
         new FileMemoryStore(tmp.Root).EnumerateRawForMigration()
-            .Single(i => i.Entry.Name == "a").Entry.Fields.Should().BeNull();
+            .Single(i => i.Entry.Name == "a").Entry.Attributes.Should().BeNull();
         cold.Dispose();
     }
 
@@ -333,7 +333,7 @@ public sealed class AttributeMigrationTests
         s.Migrated.Should().Be(1, "only the legacy entry needed migrating");
         s.Skipped.Should().Be(1);
         new FileMemoryStore(tmp.Root).LoadIndex("local").First(e => e.Name == "legacy")
-            .Fields!.Should().ContainKeys("tag", "anchor");
+            .Attributes!.Should().ContainKeys("tag", "anchor");
         cold.Dispose();
     }
 
@@ -364,7 +364,7 @@ public sealed class AttributeMigrationTests
 
         s.Migrated.Should().Be(1, "dry-run still reports the true count");
         new FileMemoryStore(tmp.Root).EnumerateRawForMigration()
-            .Single(i => i.Entry.Name == "a").Entry.Fields
+            .Single(i => i.Entry.Name == "a").Entry.Attributes
             .Should().BeNull("dry-run must not write");
         cold.Dispose();
     }
@@ -391,7 +391,7 @@ public sealed class AttributeMigrationTests
         s.Migrated.Should().Be(1, "the shadowed flat entry needed migrating, counted exactly once");
         // The FLAT sidecar is upgraded in place:
         string flatMeta = Path.Combine(tmp.Root, ".scrinia", "topics", "api", "flatnote.meta.json");
-        File.ReadAllText(flatMeta).Should().Contain("\"fields\"").And.Contain("\"tag\"");
+        File.ReadAllText(flatMeta).Should().Contain("\"attributes\"").And.Contain("\"tag\"");
         // ...and NOT promoted into the namespaced scope dir:
         File.Exists(Path.Combine(tmp.Root, ".scrinia", "topics", "memory", "api", "flatnote.meta.json"))
             .Should().BeFalse("the flat entry must stay in its flat dir, not be promoted");

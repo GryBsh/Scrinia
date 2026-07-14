@@ -44,7 +44,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         ContentPreview: "the preview",
         ReviewAfter: null,
         ReviewWhen: null,
-        Fields: new Dictionary<string, string[]>
+        Attributes: new Dictionary<string, string[]>
         {
             [KnownFields.ReviewKey] = [reviewDate.ToString("o")],
             [KnownFields.TagKey] = ["alpha"],
@@ -61,7 +61,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         ContentPreview: null,
         ReviewAfter: reviewAfter,
         ReviewWhen: null,
-        Fields: null);
+        Attributes: null);
 
     // ── New-carrier source (Fields/ContentPreview only; legacy fields null) ─────────────────
 
@@ -130,7 +130,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
             Tags: null,
             ContentPreview: "search preview text",
             RetrievalAnchors: null,
-            Fields: new Dictionary<string, string[]>
+            Attributes: new Dictionary<string, string[]>
             {
                 [KnownFields.AnchorKey] = ["anchor-one", "anchor-two"],
             });

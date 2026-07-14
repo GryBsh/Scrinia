@@ -237,7 +237,7 @@ public sealed class Bm25ScorerTests
         var candidates = new[]
         {
             new ScopedArtifact("local", new ArtifactEntry("acme-note", "", 100, 1, DateTimeOffset.UtcNow, "a note",
-                Fields: new Dictionary<string, string[]> { ["person"] = ["maria"] })),
+                Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] })),
         };
 
         var scorer = new WeightedFieldScorer();

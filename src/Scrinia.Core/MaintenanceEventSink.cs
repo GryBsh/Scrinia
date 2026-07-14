@@ -59,16 +59,16 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
                 if (targetEntry is null) continue; // referenced memory doesn't exist
 
-                // Write the ref FIELD (unified fields) — no more ref: keyword emission.
-                string[] existingRefs = targetEntry.Fields is not null
-                    && targetEntry.Fields.TryGetValue("ref", out var r) ? r : [];
+                // Write the ref FIELD (unified attributes) — no more ref: keyword emission.
+                string[] existingRefs = targetEntry.Attributes is not null
+                    && targetEntry.Attributes.TryGetValue("ref", out var r) ? r : [];
                 if (existingRefs.Contains(qualifiedName, StringComparer.OrdinalIgnoreCase)
                     || targetEntry.Keywords?.Contains($"ref:{qualifiedName}", StringComparer.OrdinalIgnoreCase) == true)
                     continue; // already linked (either shape)
 
                 var updatedFields = KnownFields.Merge(
-                    targetEntry.Fields, new() { ["ref"] = [qualifiedName] });
-                store.Upsert(targetEntry with { Fields = updatedFields }, targetScope);
+                    targetEntry.Attributes, new() { ["ref"] = [qualifiedName] });
+                store.Upsert(targetEntry with { Attributes = updatedFields }, targetScope);
             }
             catch
             {
@@ -92,8 +92,8 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             var allEntries = store.ListScoped(null);
             bool hasInboundRefs = allEntries.Any(sa =>
                 (sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true)
-                || (sa.Entry.Fields is not null
-                    && sa.Entry.Fields.TryGetValue("ref", out var refs)
+                || (sa.Entry.Attributes is not null
+                    && sa.Entry.Attributes.TryGetValue("ref", out var refs)
                     && refs.Any(v => v.Equals(sourceQualified, StringComparison.OrdinalIgnoreCase))));
 
             var currentKw = sourceEntry.Keywords?.ToList() ?? [];

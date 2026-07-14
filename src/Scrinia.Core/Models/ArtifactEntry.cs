@@ -19,7 +19,7 @@ public sealed record ArtifactEntry(
     /// <summary>
     /// The <c>file</c> attribute's private drift baseline: dependency file path → content SHA hash,
     /// captured at write time. Drift detection re-hashes each path and compares. The path KEYS are
-    /// also surfaced as the searchable <c>file</c> attribute (<see cref="Fields"/>); the hashes are
+    /// also surfaced as the searchable <c>file</c> attribute (<see cref="Attributes"/>); the hashes are
     /// private behavior state, never displayed or scored. Persisted under the legacy JSON key
     /// <c>"codeRefs"</c> (kept stable — no migration; renamed from the old <c>CodeRefs</c> member).
     /// </summary>
@@ -31,9 +31,36 @@ public sealed record ArtifactEntry(
     /// </summary>
     string[]? RetrievalAnchors = null,
     /// <summary>
-    /// Unified multi-valued fields — key:value facts from agent-supplied keywords
+    /// Unified multi-valued **attributes** — key:value facts from agent-supplied keywords
     /// (person:x routed at write time), mechanical content extraction, and reference
     /// extraction (file/ref). Keys lowercase, values verbatim. See Search.FieldExtractor
-    /// and Search.KnownFields. Null for pre-fields entries (graceful degradation).
+    /// and Search.KnownFields. Null for pre-attributes entries (graceful degradation).
     /// </summary>
-    Dictionary<string, string[]>? Fields = null);
+    [property: System.Text.Json.Serialization.JsonPropertyName("attributes")]
+    Dictionary<string, string[]>? Attributes = null)
+{
+    // Back-compat ingest: sidecars written before the Fields→Attributes rename stored the
+    // dict under JSON key "fields". Deserialization routes that key here so old sidecars load
+    // losslessly. The getter stays observable (so AttributeMigration.MigratesTo can detect a
+    // not-yet-rewritten legacy entry); NormalizeAttributesKey() folds it into Attributes AND
+    // nulls it, so a normalized entry re-serializes WITHOUT a "fields" key (WhenWritingNull).
+    // Freshly-constructed entries never set it → never emit "fields". Remove once all
+    // workspaces have migrated (Merge 3 cleanup candidate).
+    private readonly Dictionary<string, string[]>? _legacyFields;
+
+    [System.Text.Json.Serialization.JsonInclude]
+    [System.Text.Json.Serialization.JsonPropertyName("fields")]
+    public Dictionary<string, string[]>? LegacyFields
+    {
+        get => _legacyFields;
+        init => _legacyFields = value;
+    }
+
+    /// <summary>Coalesces a legacy "fields"-key value into <see cref="Attributes"/> (new key
+    /// wins) and clears the legacy holder so re-serialization emits only "attributes". Call
+    /// once immediately after deserializing a persisted entry. No-op when no legacy value.</summary>
+    public ArtifactEntry NormalizeAttributesKey()
+        => _legacyFields is not null
+            ? this with { Attributes = Attributes ?? _legacyFields, LegacyFields = null }
+            : this;
+}

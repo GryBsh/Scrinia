@@ -20,9 +20,10 @@ public sealed record EphemeralEntry(
     /// </summary>
     string[]? RetrievalAnchors = null,
     /// <summary>
-    /// Unified multi-valued fields — key:value facts from agent-supplied keywords
+    /// Unified multi-valued **attributes** — key:value facts from agent-supplied keywords
     /// (person:x routed at write time), mechanical content extraction, and reference
     /// extraction (file/ref). Keys lowercase, values verbatim. See Search.FieldExtractor
-    /// and Search.KnownFields. Null for pre-fields entries (graceful degradation).
+    /// and Search.KnownFields. Null for pre-attributes entries (graceful degradation).
     /// </summary>
-    Dictionary<string, string[]>? Fields = null);
+    [property: System.Text.Json.Serialization.JsonPropertyName("attributes")]
+    Dictionary<string, string[]>? Attributes = null);

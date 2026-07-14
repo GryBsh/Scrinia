@@ -239,7 +239,7 @@ public sealed partial class ScriniaMcpTools
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
                 RetrievalAnchors: cleanedAnchors,
-                Fields: ephFields);
+                Attributes: ephFields);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -385,7 +385,7 @@ public sealed partial class ScriniaMcpTools
             ChunkEntries: chunkEntries,
             FileHashes: codeRefDict,
             RetrievalAnchors: cleanedAnchors,
-            Fields: fields);
+            Attributes: fields);
         entry = AttributeMigration.Forward(entry);
 
         store.Upsert(entry, scope);
@@ -446,10 +446,10 @@ public sealed partial class ScriniaMcpTools
             if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
         }
 
-        Dictionary<string, string[]>? mergedFields = entry.Fields;
+        Dictionary<string, string[]>? mergedFields = entry.Attributes;
         if (routedFields is not null)
         {
-            mergedFields = KnownFields.Merge(entry.Fields, routedFields);
+            mergedFields = KnownFields.Merge(entry.Attributes, routedFields);
             changes.Add($"{routedFields.Count} field(s) merged");
         }
 
@@ -528,7 +528,7 @@ public sealed partial class ScriniaMcpTools
             Description = updatedDescription,
             ReviewAfter = parsedReviewAfter,
             ReviewWhen = updatedReviewWhen,
-            Fields = mergedFields,
+            Attributes = mergedFields,
             UpdatedAt = DateTimeOffset.UtcNow
         };
         updated = AttributeMigration.Forward(updated);
@@ -575,9 +575,9 @@ public sealed partial class ScriniaMcpTools
         int totalTokens = (int)(totalBytes / 4);
         var now = DateTimeOffset.UtcNow;
         int staleCount = entries.Count(e =>
-            AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
+            AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
         int reviewCount = entries.Count(e =>
-            AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
+            AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
         int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
 
         // Group by scope
@@ -622,7 +622,7 @@ public sealed partial class ScriniaMcpTools
             if (item.Entry.Keywords is { Length: > 0 })
                 foreach (var kw in item.Entry.Keywords)
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
-            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Fields, item.Entry.Tags))
+            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes, item.Entry.Tags))
                 keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
         }
         if (keywordCounts.Count > 0)
@@ -641,8 +641,8 @@ public sealed partial class ScriniaMcpTools
         var attrCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in entries)
         {
-            if (item.Entry.Fields is { Count: > 0 })
-                foreach (var kv in item.Entry.Fields)
+            if (item.Entry.Attributes is { Count: > 0 })
+                foreach (var kv in item.Entry.Attributes)
                     foreach (var v in kv.Value)
                         attrCounts[$"{kv.Key}:{v}"] = attrCounts.GetValueOrDefault($"{kv.Key}:{v}") + 1;
         }
@@ -716,7 +716,7 @@ public sealed partial class ScriniaMcpTools
             string dateStr = e.CreatedAt.ToString("yyyy-MM-dd HH:mm");
 
             // Review markers
-            var status = AttributeReaders.GetReviewStatus(e.Fields, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
+            var status = AttributeReaders.GetReviewStatus(e.Attributes, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
             string reviewPrefix = status.IsStale ? "[stale] " : status.NeedsReview ? "[review?] " : "";
 
             // Drift marker — only check entries that have FileHashes
@@ -853,8 +853,8 @@ public sealed partial class ScriniaMcpTools
         if (filter is null || filter.Count == 0) return true;
         Dictionary<string, string[]>? fields = match switch
         {
-            EntryResult er => er.Item.Entry.Fields,
-            ChunkEntryResult cr => cr.ParentItem.Entry.Fields,
+            EntryResult er => er.Item.Entry.Attributes,
+            ChunkEntryResult cr => cr.ParentItem.Entry.Attributes,
             _ => null,   // TopicResult carries no attributes — excluded when a filter is active
         };
         if (fields is null || fields.Count == 0) return false;
@@ -927,9 +927,9 @@ public sealed partial class ScriniaMcpTools
                     sb.Append('[').Append(index).Append("] entry  ").Append(label)
                       .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendAttributesLine(sb, er.Item.Entry.Fields);
+                    AppendAttributesLine(sb, er.Item.Entry.Attributes);
                     AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description));
-                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Fields, er.Item.Entry.RetrievalAnchors));
+                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Attributes, er.Item.Entry.RetrievalAnchors));
                     break;
                 }
             case ChunkEntryResult cr:
@@ -944,10 +944,10 @@ public sealed partial class ScriniaMcpTools
                       .Append(" [chunk ").Append(cr.Chunk.ChunkIndex).Append('/').Append(cr.TotalChunks).Append(']')
                       .Append("  score=").Append(cr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendAttributesLine(sb, cr.ParentItem.Entry.Fields);
+                    AppendAttributesLine(sb, cr.ParentItem.Entry.Attributes);
                     AppendDescription(sb, cr.Chunk.ContentPreview
                         ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description));
-                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Fields, cr.ParentItem.Entry.RetrievalAnchors));
+                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Attributes, cr.ParentItem.Entry.RetrievalAnchors));
                     break;
                 }
             case TopicResult tr:
@@ -1195,7 +1195,7 @@ public sealed partial class ScriniaMcpTools
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEph?.Description, existingEph?.Tags, existingEph?.Keywords, existingEph?.RetrievalAnchors,
-                content, routedNewFields, existingEph?.Fields, attributes);
+                content, routedNewFields, existingEph?.Attributes, attributes);
 
             ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1216,7 +1216,7 @@ public sealed partial class ScriniaMcpTools
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ChunkEntries: updatedChunks,
                 RetrievalAnchors: meta.Anchors,
-                Fields: meta.Fields);
+                Attributes: meta.Fields);
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
@@ -1233,7 +1233,7 @@ public sealed partial class ScriniaMcpTools
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEntry?.Description, existingEntry?.Tags, existingEntry?.Keywords, existingEntry?.RetrievalAnchors,
-                content, routedNewFields, existingEntry?.Fields, attributes);
+                content, routedNewFields, existingEntry?.Attributes, attributes);
 
             ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1266,7 +1266,7 @@ public sealed partial class ScriniaMcpTools
                 ChunkEntries: updatedChunks,
                 FileHashes: existingEntry?.FileHashes,
                 RetrievalAnchors: meta.Anchors,
-                Fields: meta.Fields);
+                Attributes: meta.Fields);
             entry = AttributeMigration.Forward(entry);
 
             store.Upsert(entry, scope);
@@ -1411,9 +1411,9 @@ public sealed partial class ScriniaMcpTools
                      k.Equals(refKey, StringComparison.OrdinalIgnoreCase) ||
                      k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
                 ||
-                (sa.Entry.Fields is not null &&
-                 (MatchesFieldRef(sa.Entry.Fields, "file", target) ||
-                  MatchesFieldRef(sa.Entry.Fields, "ref", target))))
+                (sa.Entry.Attributes is not null &&
+                 (MatchesFieldRef(sa.Entry.Attributes, "file", target) ||
+                  MatchesFieldRef(sa.Entry.Attributes, "ref", target))))
             .Select(sa => store.FormatQualifiedName(sa.Scope, sa.Entry.Name))
             .Distinct()
             .ToList();

@@ -83,7 +83,7 @@ public static class AttributeMigration
                 incoming[KnownFields.AnchorKey] = cleanAnchors;
         }
 
-        var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Fields, incoming) : entry.Fields;
+        var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Attributes, incoming) : entry.Attributes;
 
         string[]? mergedKeywords = entry.Keywords;
 
@@ -98,18 +98,18 @@ public static class AttributeMigration
 
         return entry with
         {
-            Fields = mergedFields,
+            Attributes = mergedFields,
             Keywords = mergedKeywords,
             ContentPreview = mergedContentPreview,
         };
     }
 
-    /// <summary>True iff Forward(entry) changes the entry's Fields, Keywords, or ContentPreview (the write-or-skip
+    /// <summary>True iff Forward(entry) changes the entry's Attributes, Keywords, or ContentPreview (the write-or-skip
     /// decision). Set-equal comparison (order-insensitive) keeps re-runs write-free.</summary>
     public static bool MigratesTo(ArtifactEntry entry, out ArtifactEntry migrated)
     {
         migrated = Forward(entry);
-        return !FieldsSetEqual(entry.Fields, migrated.Fields)
+        return !FieldsSetEqual(entry.Attributes, migrated.Attributes)
             || !SetEqual(entry.Keywords, migrated.Keywords)
             // Ordinal (case-sensitive) is intentional here: ContentPreview is verbatim display text, so a
             // case-only change is a real change — unlike the OrdinalIgnoreCase set comparisons above, which

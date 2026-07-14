@@ -51,11 +51,11 @@ public sealed class WriterCutoverTests
         var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-store");
 
         // Fields populated AT WRITE.
-        persisted.Fields.Should().NotBeNull();
-        persisted.Fields!["tag"].Should().Contain("widgets");
-        persisted.Fields!["review"].Should().NotBeEmpty();
-        persisted.Fields!["anchor"].Should().Contain("how does the widget subsystem work");
-        persisted.Fields!["file"].Should().Contain(relPath);
+        persisted.Attributes.Should().NotBeNull();
+        persisted.Attributes!["tag"].Should().Contain("widgets");
+        persisted.Attributes!["review"].Should().NotBeEmpty();
+        persisted.Attributes!["anchor"].Should().Contain("how does the widget subsystem work");
+        persisted.Attributes!["file"].Should().Contain(relPath);
 
         // Legacy fields STILL written (dual-write) — Forward is additive, not a replacement.
         persisted.Tags.Should().Contain("widgets");
@@ -80,8 +80,8 @@ public sealed class WriterCutoverTests
 
         var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-update");
 
-        persisted.Fields.Should().NotBeNull();
-        persisted.Fields!["review"].Should().NotBeEmpty();
+        persisted.Attributes.Should().NotBeNull();
+        persisted.Attributes!["review"].Should().NotBeEmpty();
 
         persisted.ReviewAfter.Should().NotBeNull();
         persisted.ReviewWhen.Should().Be("when the widget API changes");
@@ -105,9 +105,9 @@ public sealed class WriterCutoverTests
 
         var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-append");
 
-        persisted.Fields.Should().NotBeNull();
-        persisted.Fields!["tag"].Should().Contain("auth").And.Contain("tokens");
-        persisted.Fields!["anchor"].Should().Contain("how does login work")
+        persisted.Attributes.Should().NotBeNull();
+        persisted.Attributes!["tag"].Should().Contain("auth").And.Contain("tokens");
+        persisted.Attributes!["anchor"].Should().Contain("how does login work")
             .And.Contain("what triggers a token refresh");
 
         persisted.Tags.Should().Contain("auth").And.Contain("tokens");
@@ -132,9 +132,9 @@ public sealed class WriterCutoverTests
         var entry = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-store");
         entry.Should().NotBeNull();
 
-        entry!.Fields.Should().NotBeNull();
-        entry.Fields!["tag"].Should().Contain("widgets");
-        entry.Fields!["anchor"].Should().Contain("how does the widget subsystem work");
+        entry!.Attributes.Should().NotBeNull();
+        entry.Attributes!["tag"].Should().Contain("widgets");
+        entry.Attributes!["anchor"].Should().Contain("how does the widget subsystem work");
 
         // Legacy fields STILL written (dual-write).
         entry.Tags.Should().Contain("widgets");
@@ -161,9 +161,9 @@ public sealed class WriterCutoverTests
         var entry = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-append");
         entry.Should().NotBeNull();
 
-        entry!.Fields.Should().NotBeNull();
-        entry.Fields!["tag"].Should().Contain("auth").And.Contain("tokens");
-        entry.Fields!["anchor"].Should().Contain("how does login work")
+        entry!.Attributes.Should().NotBeNull();
+        entry.Attributes!["tag"].Should().Contain("auth").And.Contain("tokens");
+        entry.Attributes!["anchor"].Should().Contain("how does login work")
             .And.Contain("what triggers a token refresh");
 
         entry.Tags.Should().Contain("auth").And.Contain("tokens");
@@ -196,9 +196,9 @@ public sealed class WriterCutoverTests
             .Single(sa => sa.Scope == "ephemeral" && sa.Entry.Name == "writer-cutover-eph-list")
             .Entry;
 
-        projected.Fields.Should().NotBeNull();
-        projected.Fields!["tag"].Should().Contain("widgets");
-        projected.Fields!["anchor"].Should().Contain("how does the widget subsystem work");
+        projected.Attributes.Should().NotBeNull();
+        projected.Attributes!["tag"].Should().Contain("widgets");
+        projected.Attributes!["anchor"].Should().Contain("how does the widget subsystem work");
     }
 
     /// <summary>
@@ -222,8 +222,8 @@ public sealed class WriterCutoverTests
 
         var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-copy-dest");
 
-        persisted.Fields.Should().NotBeNull();
-        persisted.Fields!["tag"].Should().Contain("widgets");
-        persisted.Fields!["anchor"].Should().Contain("how does the widget subsystem work");
+        persisted.Attributes.Should().NotBeNull();
+        persisted.Attributes!["tag"].Should().Contain("widgets");
+        persisted.Attributes!["anchor"].Should().Contain("how does the widget subsystem work");
     }
 }
