@@ -292,7 +292,10 @@ builder.Services
             return Task.CompletedTask;
         };
     })
-    .WithTools<ScriniaMcpTools>()
+    // Same tool serializer options as the CLI `serve` path: source-gen the Dictionary<string,string[]>
+    // attribute params so the tool surface builds without reflection (trim-safe if the server is ever
+    // published trimmed; today it runs un-trimmed, so this is defense-in-depth / parity).
+    .WithTools<ScriniaMcpTools>(ScriniaMcpTools.CreateToolSerializerOptions())
     .WithPrompts<ScriniaMcpPrompts>()
     .WithResources<ScriniaMcpResources>();
 

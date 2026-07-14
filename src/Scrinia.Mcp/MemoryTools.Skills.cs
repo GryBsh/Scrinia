@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using ModelContextProtocol;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
@@ -30,10 +31,29 @@ public record AgentFileMeta(
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(SkillFileMeta))]
 [JsonSerializable(typeof(AgentFileMeta))]
+// MCP tool params attributes/attributeFilter are Dictionary<string,string[]>; registered here so the
+// trimmed `scri serve` publish can marshal them source-gen (no reflection fallback). See CreateToolSerializerOptions.
+[JsonSerializable(typeof(Dictionary<string, string[]>))]
 public partial class ScriniaMcpJsonContext : JsonSerializerContext;
 
 public sealed partial class ScriniaMcpTools
 {
+    /// <summary>
+    /// JSON options for MCP tool parameter marshalling. The tool surface exposes
+    /// <c>Dictionary&lt;string, string[]&gt;</c> parameters (<c>attributes</c> / <c>attributeFilter</c> on
+    /// remember/search/append). The trimmed single-file <c>scri serve</c> publish has no reflection
+    /// metadata, so the server must marshal them via source generation — compose the SDK defaults
+    /// (primitives, arrays, MCP protocol types) with <see cref="ScriniaMcpJsonContext"/>, which supplies
+    /// the attribute-dictionary metadata. Pass to <c>WithTools&lt;ScriniaMcpTools&gt;(...)</c>; without it,
+    /// tool construction throws <see cref="System.NotSupportedException"/> at server startup under trimming.
+    /// </summary>
+    public static JsonSerializerOptions CreateToolSerializerOptions()
+    {
+        var options = new JsonSerializerOptions(McpJsonUtilities.DefaultOptions);
+        options.TypeInfoResolverChain.Insert(0, ScriniaMcpJsonContext.Default);
+        return options;
+    }
+
     private const int SkillResponseLimit = 8 * 1024;
 
     private static readonly Lazy<string> _researcherScaffold = new(() =>
