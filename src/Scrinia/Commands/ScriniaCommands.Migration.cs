@@ -505,8 +505,8 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        var store = MemoryStoreContext.Current
-            ?? throw new InvalidOperationException("No workspace configured.");
+        if (MemoryStoreContext.Current is not FileMemoryStore store)
+            throw new InvalidOperationException("Migrate requires a file-backed workspace store.");
 
         if (!skipBackup && !dryRun)
             BackupScriniaDir(ScriniaArtifactStore.WorkspaceRootPath);

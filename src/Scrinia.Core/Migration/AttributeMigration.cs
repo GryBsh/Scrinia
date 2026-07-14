@@ -143,20 +143,24 @@ public static class AttributeMigration
     /// <summary>Summary of a <see cref="MigrateStore"/> run: how many entries were seen, forward-filled, and left untouched.</summary>
     public readonly record struct MigrateSummary(int Total, int Migrated, int Skipped);
 
-    /// <summary>Forward-fills every persistent entry across all scopes. Idempotent: only entries
-    /// whose Fields/Keywords actually change are written. <c>ListScoped("all")</c> reaches entity-classified
-    /// scopes that the default selector excludes; ephemeral entries are in-memory-only, so a fresh
-    /// migrate process sees none. Pass the <see cref="IMemoryStore"/> instance backing persistent storage
-    /// (e.g. the workspace's <c>FileMemoryStore</c>) — the static facade's topic discovery is v1-only.</summary>
-    public static MigrateSummary MigrateStore(IMemoryStore store, bool dryRun = false, Action<int, int>? onProgress = null)
+    /// <summary>Forward-fills every persistent entry across all scopes, reporting an accurate count.
+    /// Reads each sidecar RAW (via <see cref="FileMemoryStore.EnumerateRawForMigration"/>) — bypassing the
+    /// read-time forward-fill write-back — so the count reflects entries that actually needed migrating and
+    /// <paramref name="dryRun"/> writes nothing. Legacy-flat-dir entries are persisted back to their own dir
+    /// (no scope promotion). Idempotent: a re-run over upgraded sidecars reports 0.</summary>
+    public static MigrateSummary MigrateStore(FileMemoryStore store, bool dryRun = false, Action<int, int>? onProgress = null)
     {
-        var all = store.ListScoped("all");
-        int total = all.Count, migrated = 0, done = 0;
-        foreach (var item in all)
+        var items = store.EnumerateRawForMigration().ToList();
+        int total = items.Count, migrated = 0, done = 0;
+        foreach (var (entry, scope, storeDir) in items)
         {
-            if (MigratesTo(item.Entry, out var next))
+            if (MigratesTo(entry, out var next))
             {
-                if (!dryRun) store.Upsert(next, item.Scope);
+                // PersistMigratedEntry locks on GetLockPath(scope), and FileLock.Acquire creates that
+                // lock's parent dir (GetStoreDirForScope(scope)) as a side effect — so an empty namespaced
+                // dir may be materialized here even for a flat-dir write. Harmless: EnumerateRawForMigration
+                // only ever emits a scope whose namespaced dir already exists.
+                if (!dryRun) store.PersistMigratedEntry(next, storeDir, scope);
                 migrated++;
             }
             onProgress?.Invoke(++done, total);
