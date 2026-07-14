@@ -62,4 +62,12 @@ public sealed partial class ArtifactEntrySerializationTests
         round.Should().Contain("\"attributes\":");
         round.Should().NotContain("\"fields\":");
     }
+
+    [Fact]
+    public void SourceGen_resolves_ArtifactEntry_and_attributes_dictionary()
+    {
+        TestCtx.Default.GetTypeInfo(typeof(ArtifactEntry)).Should().NotBeNull();
+        TestCtx.Default.GetTypeInfo(typeof(Dictionary<string, string[]>)).Should().NotBeNull(
+            "attributes/legacy dict needs source-gen metadata for trimmed publishes");
+    }
 }
