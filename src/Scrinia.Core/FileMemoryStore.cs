@@ -836,6 +836,73 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
+    /// <summary>
+    /// Yields every persistent entry across all scopes as RAW deserialized sidecars — WITHOUT the
+    /// read-time forward-fill write-back that <see cref="LoadIndex"/>/<see cref="ListScoped(string?)"/>
+    /// perform as a side effect of loading. Each item carries the entry, its scope, and the exact
+    /// directory the sidecar lives in: the primary scope dir, or — for a shadowed legacy-flat-dir
+    /// entry reached via <see cref="ResolveLegacyFallbackDir"/> — that flat dir, so a migration write
+    /// targets the correct dir and never promotes the entry's scope. Read-only; used by
+    /// <see cref="Migration.AttributeMigration.MigrateStore"/> to measure and persist accurately.
+    /// </summary>
+    internal IEnumerable<(ArtifactEntry Entry, string Scope, string StoreDir)> EnumerateRawForMigration()
+    {
+        // Guard against yielding the same on-disk sidecar twice. A legacy flat dir can be the
+        // ResolveLegacyFallbackDir target of more than one namespaced scope (e.g. both
+        // local-topic:entity/api and local-topic:memory/api resolve to .scrinia/topics/api), which
+        // would otherwise double-count the flat entry and write it twice. Keyed on a (dir, name)
+        // tuple — not a concatenated string — so a space in a path or name can never make two
+        // distinct pairs collide and silently drop an entry. Distinct primary sidecars living in
+        // different scope dirs are never conflated.
+        var yielded = new HashSet<(string Dir, string Name)>();
+        foreach (string scope in ResolveReadScopes("all"))
+        {
+            string primaryDir = GetStoreDirForScope(scope);
+            var primary = LoadEntriesFromSidecars(primaryDir);
+            if (primary.Count == 0)
+                primary = LoadEntriesFromLegacyIndex(primaryDir); // raw index.json fallback
+            var seen = new HashSet<string>(primary.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in primary)
+                if (yielded.Add((primaryDir, entry.Name.ToLowerInvariant())))
+                    yield return (entry, scope, primaryDir);
+
+            string? legacyDir = ResolveLegacyFallbackDir(scope);
+            if (legacyDir is not null && Directory.Exists(legacyDir))
+            {
+                foreach (var le in LoadEntriesFromSidecars(legacyDir))
+                    if (!seen.Contains(le.Name)
+                        && yielded.Add((legacyDir, le.Name.ToLowerInvariant())))
+                        yield return (le, scope, legacyDir); // write target = the FLAT dir (no promotion)
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes an already-upgraded entry's sidecar to a SPECIFIC directory under <paramref name="scope"/>'s
+    /// exclusive lock, then invalidates that scope's cached index. Unlike <see cref="Upsert"/> (which always
+    /// targets <see cref="GetStoreDirForScope"/>), the explicit <paramref name="storeDir"/> lets a shadowed
+    /// legacy-flat-dir entry be rewritten in place (its flat dir) rather than promoted into the namespaced
+    /// scope dir. Used only by the migrate path.
+    /// </summary>
+    internal void PersistMigratedEntry(ArtifactEntry entry, string storeDir, string scope)
+    {
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            Directory.CreateDirectory(storeDir);
+            WriteSidecar(entry, storeDir);
+            _indexCache.TryRemove(scope, out _); // next read rebuilds from the now-upgraded sidecars
+            if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
+                _cachedTopics = null;
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
     private void WriteSidecars(List<ArtifactEntry> entries, string storeDir)
     {
         foreach (var entry in entries)
