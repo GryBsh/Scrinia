@@ -847,6 +847,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     internal IEnumerable<(ArtifactEntry Entry, string Scope, string StoreDir)> EnumerateRawForMigration()
     {
+        // Guard against yielding the same on-disk sidecar twice. A legacy flat dir can be the
+        // ResolveLegacyFallbackDir target of more than one namespaced scope (e.g. both
+        // local-topic:entity/api and local-topic:memory/api resolve to .scrinia/topics/api), which
+        // would otherwise double-count the flat entry and write it twice. Keyed on a (dir, name)
+        // tuple — not a concatenated string — so a space in a path or name can never make two
+        // distinct pairs collide and silently drop an entry. Distinct primary sidecars living in
+        // different scope dirs are never conflated.
+        var yielded = new HashSet<(string Dir, string Name)>();
         foreach (string scope in ResolveReadScopes("all"))
         {
             string primaryDir = GetStoreDirForScope(scope);
@@ -855,13 +863,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 primary = LoadEntriesFromLegacyIndex(primaryDir); // raw index.json fallback
             var seen = new HashSet<string>(primary.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
             foreach (var entry in primary)
-                yield return (entry, scope, primaryDir);
+                if (yielded.Add((primaryDir, entry.Name.ToLowerInvariant())))
+                    yield return (entry, scope, primaryDir);
 
             string? legacyDir = ResolveLegacyFallbackDir(scope);
             if (legacyDir is not null && Directory.Exists(legacyDir))
             {
                 foreach (var le in LoadEntriesFromSidecars(legacyDir))
-                    if (!seen.Contains(le.Name))
+                    if (!seen.Contains(le.Name)
+                        && yielded.Add((legacyDir, le.Name.ToLowerInvariant())))
                         yield return (le, scope, legacyDir); // write target = the FLAT dir (no promotion)
             }
         }

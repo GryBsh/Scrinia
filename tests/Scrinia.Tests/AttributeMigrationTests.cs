@@ -386,10 +386,15 @@ public sealed class AttributeMigrationTests
         var cold = new FileMemoryStore(tmp.Root);
         var s = AttributeMigration.MigrateStore(cold);
 
-        s.Migrated.Should().BeGreaterThanOrEqualTo(1, "the shadowed flat entry needed migrating");
+        // Exactly 1 (not >= 1): the shadowed flat entry is counted once — the (dir,name) dedup in
+        // EnumerateRawForMigration prevents a double-count if the flat dir is a fallback of >1 scope.
+        s.Migrated.Should().Be(1, "the shadowed flat entry needed migrating, counted exactly once");
         // The FLAT sidecar is upgraded in place:
         string flatMeta = Path.Combine(tmp.Root, ".scrinia", "topics", "api", "flatnote.meta.json");
         File.ReadAllText(flatMeta).Should().Contain("\"fields\"").And.Contain("\"tag\"");
+        // ...and NOT promoted into the namespaced scope dir:
+        File.Exists(Path.Combine(tmp.Root, ".scrinia", "topics", "memory", "api", "flatnote.meta.json"))
+            .Should().BeFalse("the flat entry must stay in its flat dir, not be promoted");
         cold.Dispose();
     }
 
