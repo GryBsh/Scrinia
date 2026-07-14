@@ -122,6 +122,12 @@ public static class MemoryOrchestrator
         if (!string.IsNullOrWhiteSpace(req.ReviewAfter) && DateTimeOffset.TryParse(req.ReviewAfter, out var ra))
             parsedReviewAfter = ra;
 
+        var carrier = AttributeMigration.BuildLegacyCarrierFields(
+            req.Tags, fileKeys: null, parsedReviewAfter,
+            string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen, anchors: null);
+        if (carrier.Count > 0)
+            fields = KnownFields.Merge(fields, carrier);
+
         var entry = new ArtifactEntry(
             Name: subject,
             Uri: uri,
@@ -258,6 +264,11 @@ public static class MemoryOrchestrator
                 FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
             var mergedFields = KnownFields.Merge(existingEntry?.Attributes, incoming);
             FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+
+            var carrier = AttributeMigration.BuildLegacyCarrierFields(
+                tags: null, fileKeys: null, existingEntry?.ReviewAfter, existingEntry?.ReviewWhen, anchors: null);
+            if (carrier.Count > 0)
+                mergedFields = KnownFields.Merge(mergedFields, carrier);
 
             var entry = new ArtifactEntry(
                 Name: subject,
