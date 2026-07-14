@@ -341,7 +341,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
                 RetrievalAnchors: e.RetrievalAnchors,
-                Fields: e.Fields);
+                Attributes: e.Attributes);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
         return result;
@@ -911,6 +911,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     private void WriteSidecar(ArtifactEntry entry, string storeDir)
     {
+        // Write chokepoint: guarantees the on-disk sidecar is always keyed "attributes", never
+        // the pre-rename "fields", regardless of which caller reached here (read-time forward-fill,
+        // PersistMigratedEntry, the legacy-index bootstrap, or a plain Upsert of an entry that still
+        // carries a legacy value). No-op for an already-normalized or freshly-constructed entry.
+        entry = entry.NormalizeAttributesKey();
+
         string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
 
         // Sort metadata for stable git diffs (G-29: multi-user merge safety)
@@ -1046,9 +1052,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // Write the sidecar for this single entry
             WriteSidecar(entry, storeDir);
 
-            // Invalidate cache and rebuild from sidecars (including legacy entries)
+            // Invalidate cache and rebuild from sidecars (including legacy entries). Coalesce
+            // each entry's legacy "fields" key here (in-memory only, no write-back) so a
+            // write-first session — an Upsert before any cold LoadIndex on this scope — never
+            // caches an entry with Attributes == null while its data sits in LegacyFields; that
+            // would silently hide the entry's facets from search/filter/display for the rest of
+            // the process lifetime. Mirrors LoadIndexUnsafe's cold-path forward-fill.
             _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir);
+            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
             string? legacyDir = ResolveLegacyFallbackDir(scope);
             if (legacyDir is not null && Directory.Exists(legacyDir))
             {
@@ -1057,7 +1068,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 foreach (var le in legacyEntries)
                 {
                     if (!namespacedNames.Contains(le.Name))
-                        entries.Add(le);
+                        entries.Add(le.NormalizeAttributesKey());
                 }
             }
             _indexCache[scope] = new CachedIndex(entries);
@@ -1088,9 +1099,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // Delete the sidecar file
             File.Delete(metaPath);
 
-            // Invalidate cache and rebuild from remaining sidecars (including legacy entries)
+            // Invalidate cache and rebuild from remaining sidecars (including legacy entries).
+            // Coalesce legacy "fields" here too, in-memory only — see the matching comment in
+            // Upsert for why a write-first Remove must not cache an un-coalesced entry.
             _indexCache.TryRemove(scope, out _);
-            var entries = LoadEntriesFromSidecars(storeDir);
+            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
             string? legacyDirR = ResolveLegacyFallbackDir(scope);
             if (legacyDirR is not null && Directory.Exists(legacyDirR))
             {
@@ -1099,7 +1112,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 foreach (var le in legacyEntries)
                 {
                     if (!namespacedNames.Contains(le.Name))
-                        entries.Add(le);
+                        entries.Add(le.NormalizeAttributesKey());
                 }
             }
             _indexCache[scope] = new CachedIndex(entries);
@@ -1129,7 +1142,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return cached.Entries.ToList();
 
         string storeDir = GetStoreDirForScope(scope);
-        var entries = LoadEntriesFromSidecars(storeDir);
+        // Coalesce legacy "fields" in-memory (no write-back — this method has no callers today,
+        // but keeping it invariant-consistent with the other cache-rebuild seams above prevents
+        // it from inheriting the write-first visibility gap if it's ever wired up).
+        var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
 
         // Fallback: migrate from legacy index.json
         if (entries.Count == 0)
@@ -1154,7 +1170,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 foreach (var le in legacyEntries)
                 {
                     if (!existingNames.Contains(le.Name))
-                        entries.Add(le);
+                        entries.Add(le.NormalizeAttributesKey());
                 }
             }
         }
@@ -1452,7 +1468,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 Tags: entry.Tags,
                 ContentPreview: entry.ContentPreview,
                 ChunkEntries: entry.ChunkEntries,
-                Fields: entry.Fields);
+                Attributes: entry.Attributes);
             Upsert(destEntry, dstScope);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
@@ -1500,7 +1516,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 Tags: srcEntry?.Tags,
                 ContentPreview: srcEntry?.ContentPreview,
                 ChunkEntries: srcEntry?.ChunkEntries,
-                Fields: srcEntry?.Fields);
+                Attributes: srcEntry?.Attributes);
             RememberEphemeral(dstKey, ephEntry);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;

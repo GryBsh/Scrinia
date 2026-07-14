@@ -348,10 +348,10 @@ public sealed class ScriniaMcpToolsTests
             });
 
         var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "acme-note");
-        entry.Fields.Should().ContainKey("person");
-        entry.Fields!["person"].Should().Contain("maria");
-        entry.Fields.Should().ContainKey("status");
-        entry.Fields!["status"].Should().Contain("done");
+        entry.Attributes.Should().ContainKey("person");
+        entry.Attributes!["person"].Should().Contain("maria");
+        entry.Attributes.Should().ContainKey("status");
+        entry.Attributes!["status"].Should().Contain("done");
     }
 
     [Fact]
@@ -399,8 +399,8 @@ public sealed class ScriniaMcpToolsTests
 
         // "/findings/acme" is a v2 path — it resolves to scope "local-topic:findings", not "local".
         var entry = ScriniaArtifactStore.LoadIndex("local-topic:findings").First(e => e.Name.Contains("acme"));
-        entry.Fields.Should().ContainKey("org");
-        entry.Fields!["org"].Should().Contain("acme");
+        entry.Attributes.Should().ContainKey("org");
+        entry.Attributes!["org"].Should().Contain("acme");
         entry.Keywords.Should().Contain("annual contract");
     }
 
@@ -415,8 +415,8 @@ public sealed class ScriniaMcpToolsTests
 
         // "/sessions/s1" is a v2 path — it resolves to scope "local-topic:sessions", not "local".
         var entry = ScriniaArtifactStore.LoadIndex("local-topic:sessions").First(e => e.Name == "s1");
-        entry.Fields!["person"].Should().Contain("alice").And.Contain("bob");   // multi-valued union
-        entry.Fields.Should().ContainKey("topic");
+        entry.Attributes!["person"].Should().Contain("alice").And.Contain("bob");   // multi-valued union
+        entry.Attributes.Should().ContainKey("topic");
     }
 
     // ── List (3 tests) ────────────────────────────────────────────────────
@@ -1672,8 +1672,8 @@ public sealed class ScriniaMcpToolsTests
             keywords: ["person:Mary"]);
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "typed-kw-test");
-        entry.Fields.Should().NotBeNull();
-        entry.Fields!["person"].Should().BeEquivalentTo(["Mary"],
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["person"].Should().BeEquivalentTo(["Mary"],
             because: "the structured typed token routes to the unified Fields store for field-score/facet/cross-link use");
         entry.Keywords.Should().NotContain(k => k.StartsWith("person:"),
             because: "prefixed keywords are no longer written");
@@ -1780,8 +1780,8 @@ public sealed class ScriniaMcpToolsTests
             keywords: ["person:Bob"]);
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-append-test");
-        entry.Fields!["status"].Should().BeEquivalentTo(["done"], because: "scalar newer-wins");
-        entry.Fields["person"].Should().BeEquivalentTo(["Alice", "Bob"], because: "entities accumulate");
+        entry.Attributes!["status"].Should().BeEquivalentTo(["done"], because: "scalar newer-wins");
+        entry.Attributes["person"].Should().BeEquivalentTo(["Alice", "Bob"], because: "entities accumulate");
     }
 
     // ── Show budget recording (1 test) ───────────────────────────────────────
@@ -2181,16 +2181,16 @@ public sealed class ScriniaMcpToolsTests
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-store-test");
 
         // Routed keyword → field; plain keyword stays.
-        entry.Fields!["person"].Should().BeEquivalentTo(["Nick"]);
+        entry.Attributes!["person"].Should().BeEquivalentTo(["Nick"]);
         entry.Keywords.Should().Contain("plainword");
         entry.Keywords.Should().NotContain(k => k.StartsWith("person:"),
             because: "prefixed keywords are no longer written");
 
         // Content extraction.
-        entry.Fields["status"].Should().BeEquivalentTo(["active"]);
+        entry.Attributes["status"].Should().BeEquivalentTo(["active"]);
 
         // Reference extraction → file field (not file: keyword) → FileHashes unaffected shape.
-        entry.Fields["file"].Should().Contain("src/Widget.cs");
+        entry.Attributes["file"].Should().Contain("src/Widget.cs");
         entry.Keywords.Should().NotContain(k => k.StartsWith("file:"));
 
         // TF seeding at +3 for routed field value.
@@ -2343,14 +2343,14 @@ public sealed class ScriniaMcpToolsTests
         var legacy = entries.Single(e => e.Name == "legacy-ref");
 
         // Pin the LEGACY shape explicitly (Fields null, Keywords carries the typed marker).
-        store.Upsert(legacy with { Fields = null, Keywords = ["file:src/Foo.cs"] });
+        store.Upsert(legacy with { Attributes = null, Keywords = ["file:src/Foo.cs"] });
 
         // A sibling entry that only carries the unified Fields form of the same reference.
         store.Upsert(legacy with
         {
             Name = "fields-ref",
             Keywords = null,
-            Fields = new Dictionary<string, string[]> { ["file"] = ["src/Foo.cs"] },
+            Attributes = new Dictionary<string, string[]> { ["file"] = ["src/Foo.cs"] },
         });
 
         string result = await Tools().References("src/Foo.cs");
@@ -2368,14 +2368,14 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().UpdateMeta("um-alpha", keywords: ["person:Carol", "plain-extra"]);
         var alpha = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "um-alpha");
-        alpha.Fields!["person"].Should().BeEquivalentTo(["Carol"]);
+        alpha.Attributes!["person"].Should().BeEquivalentTo(["Carol"]);
         alpha.Keywords.Should().Contain("plain-extra");
         alpha.Keywords.Should().NotContain(k => k.StartsWith("person:"));
 
         await Tools().Link("um-alpha", "um-beta");
         var entries = ScriniaArtifactStore.LoadIndex();
-        entries.Single(e => e.Name == "um-alpha").Fields!["ref"].Should().Contain(v => v.Contains("um-beta"));
-        entries.Single(e => e.Name == "um-beta").Fields!["ref"].Should().Contain(v => v.Contains("um-alpha"));
+        entries.Single(e => e.Name == "um-alpha").Attributes!["ref"].Should().Contain(v => v.Contains("um-beta"));
+        entries.Single(e => e.Name == "um-beta").Attributes!["ref"].Should().Contain(v => v.Contains("um-alpha"));
     }
 
 }

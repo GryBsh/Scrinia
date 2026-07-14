@@ -103,8 +103,8 @@ public sealed class ReferenceTests : IDisposable
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        entry.Fields.Should().NotBeNull();
-        entry.Fields!["file"].Should().Contain("src/Foo.cs",
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["file"].Should().Contain("src/Foo.cs",
             "store should auto-extract file references into the unified 'file' FIELD");
         entry.Keywords.Should().NotContain(k => k.StartsWith("file:"),
             "prefixed 'file:' keywords are no longer written");
@@ -146,8 +146,8 @@ public sealed class ReferenceTests : IDisposable
         var (scopeA, subjectA) = store.ParseQualifiedName("link-test-a");
         var entriesA = store.LoadIndex(scopeA);
         var entryA = entriesA.First(e => e.Name.Equals(subjectA, StringComparison.OrdinalIgnoreCase));
-        entryA.Fields.Should().NotBeNull();
-        entryA.Fields!["ref"].Should().Contain(v => v.Contains("link-test-b"),
+        entryA.Attributes.Should().NotBeNull();
+        entryA.Attributes!["ref"].Should().Contain(v => v.Contains("link-test-b"),
             "linking should add the target to the ref FIELD on the source entry");
         entryA.Keywords.Should().NotContain(k => k.StartsWith("ref:"),
             "prefixed ref: keywords are no longer written");
@@ -155,8 +155,8 @@ public sealed class ReferenceTests : IDisposable
         var (scopeB, subjectB) = store.ParseQualifiedName("link-test-b");
         var entriesB = store.LoadIndex(scopeB);
         var entryB = entriesB.First(e => e.Name.Equals(subjectB, StringComparison.OrdinalIgnoreCase));
-        entryB.Fields.Should().NotBeNull();
-        entryB.Fields!["ref"].Should().Contain(v => v.Contains("link-test-a"),
+        entryB.Attributes.Should().NotBeNull();
+        entryB.Attributes!["ref"].Should().Contain(v => v.Contains("link-test-a"),
             "linking should add the source to the ref FIELD on the target entry");
         entryB.Keywords.Should().NotContain(k => k.StartsWith("ref:"),
             "prefixed ref: keywords are no longer written");

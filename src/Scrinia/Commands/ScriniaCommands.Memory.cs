@@ -92,7 +92,7 @@ public partial class ScriniaCommands
             int estTokens = (int)(e.OriginalBytes / 4);
 
             // Review markers
-            var st = AttributeReaders.GetReviewStatus(e.Fields, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
+            var st = AttributeReaders.GetReviewStatus(e.Attributes, e.ReviewAfter, e.ReviewWhen, DateTimeOffset.UtcNow);
             string reviewPrefix = st.IsStale ? "[stale] " : st.NeedsReview ? "[review?] " : "";
 
             string desc = AttributeReaders.PreviewText(e.ContentPreview, e.Description).Replace('\n', ' ').Replace('\r', ' ');
@@ -122,12 +122,12 @@ public partial class ScriniaCommands
         string name = item.Scope == "ephemeral"
             ? $"~{e.Name}"
             : ScriniaArtifactStore.FormatQualifiedName(item.Scope, e.Name);
-        var st = AttributeReaders.GetReviewStatus(e.Fields, e.ReviewAfter, e.ReviewWhen, now);
+        var st = AttributeReaders.GetReviewStatus(e.Attributes, e.ReviewAfter, e.ReviewWhen, now);
         return new CliMemoryEntry(
             name, e.ChunkCount, e.OriginalBytes, (int)(e.OriginalBytes / 4),
             e.CreatedAt.ToString("o"), e.UpdatedAt?.ToString("o"),
             AttributeReaders.PreviewText(e.ContentPreview, e.Description),
-            AttributeReaders.DisplayTags(e.Fields, e.Tags).ToArray(),
+            AttributeReaders.DisplayTags(e.Attributes, e.Tags).ToArray(),
             e.ReviewAfter?.ToString("o"), e.ReviewWhen,
             st.IsStale, st.NeedsReview);
     }
@@ -137,8 +137,8 @@ public partial class ScriniaCommands
         long totalBytes = entries.Sum(e => e.Entry.OriginalBytes);
         int totalTokens = (int)(totalBytes / 4);
         var now = DateTimeOffset.UtcNow;
-        int staleCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
-        int reviewCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Fields, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
+        int staleCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).IsStale);
+        int reviewCount = entries.Count(e => AttributeReaders.GetReviewStatus(e.Entry.Attributes, e.Entry.ReviewAfter, e.Entry.ReviewWhen, now).NeedsReview);
         int ephemeralCount = entries.Count(e => e.Scope == "ephemeral");
 
         var grouped = entries
@@ -170,7 +170,7 @@ public partial class ScriniaCommands
                     if (TypedKeywordShape().IsMatch(kw)) continue;
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
                 }
-            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Fields, item.Entry.Tags))
+            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes, item.Entry.Tags))
                 keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
         }
         var topKeywords = keywordCounts
@@ -180,12 +180,12 @@ public partial class ScriniaCommands
             .Select(kv => kv.Key)
             .ToArray();
 
-        // Top fields — aggregates entry.Fields keys (KnownFields entity/reference keys
-        // plus any scalar fields) across entries that carry structured Fields.
+        // Top fields — aggregates entry.Attributes keys (KnownFields entity/reference keys
+        // plus any scalar fields) across entries that carry structured attributes.
         var fieldCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in entries)
         {
-            if (item.Entry.Fields is not { Count: > 0 } fields) continue;
+            if (item.Entry.Attributes is not { Count: > 0 } fields) continue;
             foreach (var key in fields.Keys)
                 fieldCounts[key] = fieldCounts.GetValueOrDefault(key) + 1;
         }

@@ -39,14 +39,14 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
             new StoreRequest(["status: active\nBody."], "server-fields", Keywords: ["person:Nick"]));
 
         var entry = _store.LoadIndex("local").Single(e => e.Name == "server-fields");
-        entry.Fields!["status"].Should().BeEquivalentTo(["active"]);
-        entry.Fields["person"].Should().BeEquivalentTo(["Nick"]);
+        entry.Attributes!["status"].Should().BeEquivalentTo(["active"]);
+        entry.Attributes["person"].Should().BeEquivalentTo(["Nick"]);
         entry.Keywords.Should().NotContain(k => k.StartsWith("person:"));
 
         await MemoryOrchestrator.AppendAsync(_store, "server-fields", "status: done\nperson: Maria\nMore.");
         entry = _store.LoadIndex("local").Single(e => e.Name == "server-fields");
-        entry.Fields!["status"].Should().BeEquivalentTo(["done"]);
-        entry.Fields["person"].Should().BeEquivalentTo(["Nick", "Maria"]);
+        entry.Attributes!["status"].Should().BeEquivalentTo(["done"]);
+        entry.Attributes["person"].Should().BeEquivalentTo(["Nick", "Maria"]);
     }
 
     /// <summary>
@@ -77,9 +77,9 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
             json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
         persisted.Should().NotBeNull();
-        persisted!.Fields.Should().NotBeNull();
-        persisted.Fields!["tag"].Should().Contain("widgets");
-        persisted.Fields!["review"].Should().NotBeEmpty();
+        persisted!.Attributes.Should().NotBeNull();
+        persisted.Attributes!["tag"].Should().Contain("widgets");
+        persisted.Attributes!["review"].Should().NotBeEmpty();
 
         // Legacy fields STILL written (dual-write) — Forward is additive, not a replacement.
         persisted.Tags.Should().Contain("widgets");
@@ -101,8 +101,8 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
         var entry = _store.GetEphemeral("orch-writer-cutover-eph");
         entry.Should().NotBeNull();
 
-        entry!.Fields.Should().NotBeNull();
-        entry.Fields!["tag"].Should().Contain("widgets");
+        entry!.Attributes.Should().NotBeNull();
+        entry.Attributes!["tag"].Should().Contain("widgets");
 
         // Legacy field STILL written (dual-write).
         entry.Tags.Should().Contain("widgets");

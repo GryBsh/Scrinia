@@ -27,7 +27,7 @@ public sealed class CliDisplayCutoverTests
         ContentPreview: "cli preview",
         ReviewAfter: null,
         ReviewWhen: null,
-        Fields: new Dictionary<string, string[]>
+        Attributes: new Dictionary<string, string[]>
         {
             [KnownFields.ReviewKey] = [reviewDate.ToString("o")],
             [KnownFields.TagKey] = ["alpha"],
@@ -44,7 +44,7 @@ public sealed class CliDisplayCutoverTests
         ContentPreview: null,
         ReviewAfter: reviewAfter,
         ReviewWhen: null,
-        Fields: null);
+        Attributes: null);
 
     // ── BuildCliSummary: new-carrier source (Fields/ContentPreview only) ────────────────────
 

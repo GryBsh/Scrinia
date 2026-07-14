@@ -125,13 +125,13 @@ public sealed class FieldExtractorTests
         var entry = new Scrinia.Core.Models.ArtifactEntry(
             Name: "fields-roundtrip", Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow, Description: "test",
-            Fields: new Dictionary<string, string[]> { ["person"] = ["Alice", "Bob"], ["status"] = ["no-go"] });
+            Attributes: new Dictionary<string, string[]> { ["person"] = ["Alice", "Bob"], ["status"] = ["no-go"] });
 
         store.Upsert(entry, "local");
         var reloaded = store.LoadIndex("local").Single(e => e.Name == "fields-roundtrip");
 
-        reloaded.Fields!["person"].Should().BeEquivalentTo(["Alice", "Bob"]);
-        reloaded.Fields["status"].Should().BeEquivalentTo(["no-go"], because: "values verbatim through JSON");
+        reloaded.Attributes!["person"].Should().BeEquivalentTo(["Alice", "Bob"]);
+        reloaded.Attributes["status"].Should().BeEquivalentTo(["no-go"], because: "values verbatim through JSON");
     }
 
     private static Scrinia.Core.Models.ArtifactEntry MakeEntry(
@@ -139,7 +139,7 @@ public sealed class FieldExtractorTests
         new(
             Name: name, Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow, Description: "unrelated description",
-            Keywords: keywords, Fields: fields);
+            Keywords: keywords, Attributes: fields);
 
     [Fact]
     public void SearchAll_FieldValueExact_OutranksFieldlessEntry()

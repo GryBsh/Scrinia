@@ -83,7 +83,7 @@ public static class MemoryOrchestrator
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
-                Fields: ephFields);
+                Attributes: ephFields);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -137,9 +137,9 @@ public static class MemoryOrchestrator
             ReviewAfter: parsedReviewAfter,
             ReviewWhen: string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen,
             ChunkEntries: chunkEntries,
-            Fields: fields);
+            Attributes: fields);
 
-        // Forward-fill: populate Fields from Tags/ReviewAfter/ReviewWhen/FileHashes at write time
+        // Forward-fill: populate Attributes from Tags/ReviewAfter/ReviewWhen/FileHashes at write time
         // (dual-write — legacy members above are unchanged).
         entry = AttributeMigration.Forward(entry);
 
@@ -215,7 +215,7 @@ public static class MemoryOrchestrator
 
             var incoming = KnownFields.Merge(
                 FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
-            var mergedFields = KnownFields.Merge(existingEph?.Fields, incoming);
+            var mergedFields = KnownFields.Merge(existingEph?.Attributes, incoming);
             FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
             var ephEntry = new EphemeralEntry(
@@ -231,7 +231,7 @@ public static class MemoryOrchestrator
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ChunkEntries: updatedChunks,
-                Fields: mergedFields);
+                Attributes: mergedFields);
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
@@ -256,7 +256,7 @@ public static class MemoryOrchestrator
 
             var incoming = KnownFields.Merge(
                 FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
-            var mergedFields = KnownFields.Merge(existingEntry?.Fields, incoming);
+            var mergedFields = KnownFields.Merge(existingEntry?.Attributes, incoming);
             FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
             var entry = new ArtifactEntry(
@@ -274,12 +274,12 @@ public static class MemoryOrchestrator
                 ReviewAfter: existingEntry?.ReviewAfter,
                 ReviewWhen: existingEntry?.ReviewWhen,
                 ChunkEntries: updatedChunks,
-                Fields: mergedFields);
+                Attributes: mergedFields);
 
-            // Forward-fill: populate Fields from Tags/ReviewAfter/ReviewWhen/FileHashes at write
+            // Forward-fill: populate Attributes from Tags/ReviewAfter/ReviewWhen/FileHashes at write
             // time (dual-write — legacy members above are unchanged). Tags is null on this path
             // (no tags param), but ReviewAfter/ReviewWhen carried over from existingEntry still
-            // route here, covering pre-Fields entries appended for the first time.
+            // route here, covering pre-Attributes entries appended for the first time.
             entry = AttributeMigration.Forward(entry);
 
             try

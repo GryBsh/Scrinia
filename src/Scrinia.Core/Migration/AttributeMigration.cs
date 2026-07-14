@@ -19,6 +19,10 @@ namespace Scrinia.Core.Migration;
 /// plain keywords — they are not searchable facets and must not pollute the attribute
 /// namespace. Also backfills <c>ContentPreview</c> from <c>Description</c> when <c>ContentPreview</c> is null,
 /// so pre-<c>ContentPreview</c> sidecars keep their preview text once <c>Description</c> is removed.
+/// <see cref="Forward"/> also coalesces a legacy JSON <c>"fields"</c>-key value into
+/// <c>Attributes</c> (via <see cref="ArtifactEntry.NormalizeAttributesKey"/>) as its first step,
+/// so a not-yet-rewritten legacy sidecar is forward-filled from its coalesced Attributes and its
+/// returned entry re-serializes under <c>"attributes"</c> only.
 /// Deterministic and idempotent: re-running produces no change once an entry
 /// is forward-filled.
 /// </summary>
@@ -29,6 +33,8 @@ public static class AttributeMigration
 
     public static ArtifactEntry Forward(ArtifactEntry entry)
     {
+        entry = entry.NormalizeAttributesKey();
+
         var incoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         if (entry.Tags is { Length: > 0 })
             incoming[TagKey] = entry.Tags;
@@ -83,7 +89,7 @@ public static class AttributeMigration
                 incoming[KnownFields.AnchorKey] = cleanAnchors;
         }
 
-        var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Fields, incoming) : entry.Fields;
+        var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Attributes, incoming) : entry.Attributes;
 
         string[]? mergedKeywords = entry.Keywords;
 
@@ -98,18 +104,18 @@ public static class AttributeMigration
 
         return entry with
         {
-            Fields = mergedFields,
+            Attributes = mergedFields,
             Keywords = mergedKeywords,
             ContentPreview = mergedContentPreview,
         };
     }
 
-    /// <summary>True iff Forward(entry) changes the entry's Fields, Keywords, or ContentPreview (the write-or-skip
+    /// <summary>True iff Forward(entry) changes the entry's Attributes, Keywords, or ContentPreview (the write-or-skip
     /// decision). Set-equal comparison (order-insensitive) keeps re-runs write-free.</summary>
     public static bool MigratesTo(ArtifactEntry entry, out ArtifactEntry migrated)
     {
         migrated = Forward(entry);
-        return !FieldsSetEqual(entry.Fields, migrated.Fields)
+        return !FieldsSetEqual(entry.Attributes, migrated.Attributes)
             || !SetEqual(entry.Keywords, migrated.Keywords)
             // Ordinal (case-sensitive) is intentional here: ContentPreview is verbatim display text, so a
             // case-only change is a real change — unlike the OrdinalIgnoreCase set comparisons above, which

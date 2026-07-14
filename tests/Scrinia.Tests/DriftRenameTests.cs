@@ -61,8 +61,8 @@ public sealed class DriftRenameTests : IDisposable
         entry.FileHashes!["src/b.cs"].Should().Be("HASH_B");
 
         // Read-time forward-fill still routes FileHashes.Keys -> Fields["file"] (paths only).
-        entry.Fields.Should().NotBeNull();
-        entry.Fields!["file"].Should().Contain(["src/a.cs", "src/b.cs"]);
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["file"].Should().Contain(["src/a.cs", "src/b.cs"]);
     }
 
     [Fact]

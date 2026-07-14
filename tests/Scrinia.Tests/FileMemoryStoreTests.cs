@@ -718,9 +718,9 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entries = _store.LoadIndex("local");
         var entry = entries.Single(e => e.Name == "legacy-security-note");
 
-        entry.Fields.Should().NotBeNull(because: "read-time forward-fill should populate Fields without a prior scri migrate");
-        entry.Fields!["tag"].Should().Contain("security");
-        entry.Fields!["person"].Should().Contain("maria");
+        entry.Attributes.Should().NotBeNull(because: "read-time forward-fill should populate Fields without a prior scri migrate");
+        entry.Attributes!["tag"].Should().Contain("security");
+        entry.Attributes!["person"].Should().Contain("maria");
         entry.Tags.Should().Contain("security",
             because: "forward-fill is additive and must not remove the legacy Tags carrier");
     }
@@ -755,9 +755,9 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entries = store2.LoadIndex("local");
         var entry = entries.Single(e => e.Name == "legacy-security-note");
 
-        entry.Fields.Should().NotBeNull(
+        entry.Attributes.Should().NotBeNull(
             because: "the first load's write-back should have persisted Fields to the sidecar on disk");
-        entry.Fields!["tag"].Should().Contain("security");
+        entry.Attributes!["tag"].Should().Contain("security");
     }
 
     [Fact]
@@ -788,8 +788,8 @@ public sealed class FileMemoryStoreTests : IDisposable
         {
             var entries = _store.LoadIndex("local");
             var entry = entries.Single(e => e.Name == "legacy-security-note");
-            entry.Fields.Should().NotBeNull();
-            entry.Fields!["tag"].Should().Contain("security");
+            entry.Attributes.Should().NotBeNull();
+            entry.Attributes!["tag"].Should().Contain("security");
         });
 
         act.Should().NotThrow(

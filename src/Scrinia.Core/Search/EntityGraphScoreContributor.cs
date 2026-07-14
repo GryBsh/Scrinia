@@ -58,7 +58,7 @@ public sealed class EntityGraphScoreContributor : ISearchScoreContributor
         // value stay distinct; the full candidate set is passed so all associations are seen.
         var docs = new List<(string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)>(candidates.Count);
         foreach (var c in candidates)
-            docs.Add(($"{c.Scope}|{c.Entry.Name}", c.Entry.Keywords, c.Entry.Fields));
+            docs.Add(($"{c.Scope}|{c.Entry.Name}", c.Entry.Keywords, c.Entry.Attributes));
         var graph = EntityGraph.Build(docs);
         if (graph.DocCount == 0) return None;
 
