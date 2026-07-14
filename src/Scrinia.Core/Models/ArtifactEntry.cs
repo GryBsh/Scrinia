@@ -46,8 +46,18 @@ public sealed record ArtifactEntry(
     // nulls it, so a normalized entry re-serializes WITHOUT a "fields" key (WhenWritingNull).
     // Freshly-constructed entries never set it → never emit "fields". Remove once all
     // workspaces have migrated (Merge 3 cleanup candidate).
+    //
+    // FOOTGUN: as a private instance field, _legacyFields participates in the record's synthesized
+    // Equals/GetHashCode, so an un-normalized legacy entry is NOT record-equal to its normalized
+    // form. This is inert in practice — ArtifactEntry equality is already non-value-semantic (its
+    // Dictionary/array members compare by reference), so nothing uses it — but the invariant that
+    // defuses it entirely is: EVERY load seam calls NormalizeAttributesKey() before an entry
+    // escapes, so no LegacyFields-bearing entry is ever compared. Wired in the load-seam task.
     private readonly Dictionary<string, string[]>? _legacyFields;
 
+    // [JsonInclude] kept intentionally: forces source-gen to emit the ingest metadata even under
+    // PublishTrimmed (the trimmed `scri serve` publish has no reflection fallback — cf. the
+    // Dictionary<string,string[]> tool-param crash). Defensive, not redundant.
     [System.Text.Json.Serialization.JsonInclude]
     [System.Text.Json.Serialization.JsonPropertyName("fields")]
     public Dictionary<string, string[]>? LegacyFields

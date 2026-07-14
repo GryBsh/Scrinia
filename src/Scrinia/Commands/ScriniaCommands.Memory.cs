@@ -180,8 +180,8 @@ public partial class ScriniaCommands
             .Select(kv => kv.Key)
             .ToArray();
 
-        // Top fields — aggregates entry.Fields keys (KnownFields entity/reference keys
-        // plus any scalar fields) across entries that carry structured Fields.
+        // Top fields — aggregates entry.Attributes keys (KnownFields entity/reference keys
+        // plus any scalar fields) across entries that carry structured attributes.
         var fieldCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in entries)
         {
