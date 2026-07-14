@@ -160,6 +160,62 @@ public sealed class AttributesKeyMigrationTests
         entry.Attributes!["tag"].Should().BeEquivalentTo("security");
     }
 
+    /// <summary>
+    /// Write-first cache-rebuild contract: <see cref="FileMemoryStore.Upsert"/> rebuilds
+    /// <c>_indexCache[scope]</c> from the raw sidecars on disk (to pick up the just-written
+    /// entry plus any siblings). Before the fix, that rebuild called
+    /// <c>LoadEntriesFromSidecars</c> raw — bypassing the cold-path forward-fill loop in
+    /// <c>LoadIndexUnsafe</c> — so a pre-existing legacy "fields" sidecar landed in the warm
+    /// cache with <c>Attributes == null</c> whenever an Upsert (not a cold LoadIndex) was the
+    /// first touch of that scope in the process. Seeds entry A as a legacy sidecar, then upserts
+    /// an unrelated entry B first so the cache is built via the write path, then asserts A's
+    /// Attributes survived the rebuild.
+    /// </summary>
+    [Fact]
+    public void WriteFirst_Upsert_DoesNotHideLegacyAttributes()
+    {
+        using var tmp = new TempWorkspace();
+        string storeDir = Path.Combine(tmp.Root, ".scrinia", "store");
+        Directory.CreateDirectory(storeDir);
+        File.WriteAllText(Path.Combine(storeDir, "a.meta.json"), LegacyFieldsSidecarJson("a", "tag", "security"));
+
+        var store = tmp.NewStore();
+
+        // Write-first: an Upsert of a different entry must be the FIRST touch of this scope,
+        // so the cache is rebuilt via Upsert's raw sidecar reload rather than a cold LoadIndex.
+        store.Upsert(MakeEntry("b"), "local");
+
+        var entries = store.LoadIndex("local");
+        var entryA = entries.Single(e => e.Name == "a");
+        entryA.Attributes.Should().NotBeNull(
+            "Upsert's cache rebuild must coalesce legacy 'fields' entries too, not just the entry being written");
+        entryA.Attributes!["tag"].Should().BeEquivalentTo("security");
+    }
+
+    /// <summary>Mirrors <see cref="WriteFirst_Upsert_DoesNotHideLegacyAttributes"/> for
+    /// <see cref="FileMemoryStore.Remove"/>, which rebuilds the cache the same way.</summary>
+    [Fact]
+    public void WriteFirst_Remove_DoesNotHideLegacyAttributes()
+    {
+        using var tmp = new TempWorkspace();
+        string storeDir = Path.Combine(tmp.Root, ".scrinia", "store");
+        Directory.CreateDirectory(storeDir);
+        File.WriteAllText(Path.Combine(storeDir, "a.meta.json"), LegacyFieldsSidecarJson("a", "tag", "security"));
+        File.WriteAllText(Path.Combine(storeDir, "b.meta.json"), LegacyFieldsSidecarJson("b", "tag", "other"));
+
+        var store = tmp.NewStore();
+
+        // Write-first: removing "b" is the FIRST touch of this scope, so the cache is rebuilt
+        // via Remove's raw sidecar reload rather than a cold LoadIndex.
+        store.Remove("b", "local").Should().BeTrue();
+
+        var entries = store.LoadIndex("local");
+        var entryA = entries.Single(e => e.Name == "a");
+        entryA.Attributes.Should().NotBeNull(
+            "Remove's cache rebuild must coalesce legacy 'fields' entries too, not just the entry being removed");
+        entryA.Attributes!["tag"].Should().BeEquivalentTo("security");
+    }
+
     [Fact]
     public void WriteSidecar_NeverEmitsFieldsKey()
     {
