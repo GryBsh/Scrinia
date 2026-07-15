@@ -524,7 +524,8 @@ public sealed class FileMemoryStoreTests : IDisposable
           "originalBytes": 200,
           "chunkCount": 2,
           "createdAt": "2026-02-01T00:00:00+00:00",
-          "description": "Namespaced version"
+          "description": "Namespaced version",
+          "contentPreview": "Namespaced version"
         }
         """;
         File.WriteAllText(Path.Combine(namespacedDir, "shared-entry.meta.json"), namespacedMeta);
@@ -673,7 +674,8 @@ public sealed class FileMemoryStoreTests : IDisposable
           "originalBytes": 300,
           "chunkCount": 2,
           "createdAt": "2026-03-01T00:00:00+00:00",
-          "description": "Namespaced version of collision"
+          "description": "Namespaced version of collision",
+          "contentPreview": "Namespaced version of collision"
         }
         """;
         File.WriteAllText(Path.Combine(namespacedDir, "collision.meta.json"), namespacedCollisionMeta);
@@ -719,8 +721,9 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entry = entries.Single(e => e.Name == "legacy-security-note");
 
         entry.Attributes.Should().NotBeNull(because: "read-time forward-fill should populate Fields without a prior scri migrate");
-        entry.Attributes!["tag"].Should().Contain("security");
         entry.Attributes!["person"].Should().Contain("maria");
+        // "tags" lost its member source in P6.6b Task 4 — Forward no longer promotes it into Attributes.
+        entry.Attributes.Should().NotContainKey("tag");
     }
 
     [Fact]
@@ -755,7 +758,7 @@ public sealed class FileMemoryStoreTests : IDisposable
 
         entry.Attributes.Should().NotBeNull(
             because: "the first load's write-back should have persisted Fields to the sidecar on disk");
-        entry.Attributes!["tag"].Should().Contain("security");
+        entry.Attributes!["person"].Should().Contain("maria");
     }
 
     [Fact]
@@ -787,7 +790,7 @@ public sealed class FileMemoryStoreTests : IDisposable
             var entries = _store.LoadIndex("local");
             var entry = entries.Single(e => e.Name == "legacy-security-note");
             entry.Attributes.Should().NotBeNull();
-            entry.Attributes!["tag"].Should().Contain("security");
+            entry.Attributes!["person"].Should().Contain("maria");
         });
 
         act.Should().NotThrow(

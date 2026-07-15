@@ -5,9 +5,8 @@ using Scrinia.Core.Search;
 namespace Scrinia.Core.Migration;
 
 /// <summary>
-/// Forward-fills the legacy memory carriers into the attributes model: tags→`tag`,
-/// FileHashes paths→`file`, reviewAfter/reviewWhen→`review` (ISO date + condition text),
-/// anchors→`anchor`. ADDITIVE — legacy fields are left populated so the legacy read/scoring
+/// Forward-fills the surviving member-sourced legacy carrier — FileHashes paths→`file` — into the
+/// attributes model. ADDITIVE — legacy fields are left populated so the legacy read/scoring
 /// paths keep working; clearing them and removing the model fields is the cleanup plan.
 /// Also folds recognized-key <c>key:value</c>-shaped legacy keywords (e.g. <c>person:maria</c>,
 /// <c>ref:other-note</c>) into <c>Fields[key]</c> whenever <c>key</c> is one of
@@ -17,8 +16,7 @@ namespace Scrinia.Core.Migration;
 /// unchanged (additive, not a rewrite). Keywords whose key is NOT a recognized attribute
 /// key (e.g. provenance markers like <c>basedOn:skill-x</c>) are intentionally left as
 /// plain keywords — they are not searchable facets and must not pollute the attribute
-/// namespace. Also backfills <c>ContentPreview</c> from <c>Description</c> when <c>ContentPreview</c> is null,
-/// so pre-<c>ContentPreview</c> sidecars keep their preview text once <c>Description</c> is removed.
+/// namespace.
 /// <see cref="Forward"/> also coalesces a legacy JSON <c>"fields"</c>-key value into
 /// <c>Attributes</c> (via <see cref="ArtifactEntry.NormalizeAttributesKey"/>) as its first step,
 /// so a not-yet-rewritten legacy sidecar is forward-filled from its coalesced Attributes and its
@@ -70,7 +68,7 @@ public static class AttributeMigration
         entry = entry.NormalizeAttributesKey();
 
         var incoming = BuildLegacyCarrierFields(
-            entry.Tags, entry.FileHashes?.Keys, entry.ReviewAfter, entry.ReviewWhen, entry.RetrievalAnchors);
+            tags: null, entry.FileHashes?.Keys, reviewAfter: null, reviewWhen: null, anchors: null);
 
         if (entry.Keywords is { Length: > 0 })
         {
@@ -103,20 +101,10 @@ public static class AttributeMigration
 
         string[]? mergedKeywords = entry.Keywords;
 
-        // Description → ContentPreview: ContentPreview is the successor preview/display carrier
-        // (Description is removed in P6.6b). New writes populate ContentPreview directly, but
-        // sidecars created before ContentPreview existed carry only Description — backfill it here,
-        // and ONLY when ContentPreview is null, so both the read-time forward-fill and `scri migrate`
-        // rescue their preview text before Description is deleted. Idempotent: once set, `??`
-        // short-circuits on re-run. A blank Description is not preview-worthy and stays null.
-        string? mergedContentPreview = entry.ContentPreview
-            ?? (string.IsNullOrWhiteSpace(entry.Description) ? null : entry.Description);
-
         return entry with
         {
             Attributes = mergedFields,
             Keywords = mergedKeywords,
-            ContentPreview = mergedContentPreview,
         };
     }
 

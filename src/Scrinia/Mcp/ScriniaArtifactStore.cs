@@ -86,13 +86,11 @@ internal static partial class ScriniaArtifactStore
                 ChunkCount: e.ChunkCount,
                 CreatedAt: e.CreatedAt,
                 Description: e.Description,
-                Tags: e.Tags,
                 ContentPreview: e.ContentPreview,
                 Keywords: e.Keywords,
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
-                RetrievalAnchors: e.RetrievalAnchors,
                 Attributes: e.Attributes);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
@@ -621,7 +619,6 @@ internal static partial class ScriniaArtifactStore
                 ChunkCount: entry.ChunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
                 Description: entry.Description,
-                Tags: entry.Tags,
                 ContentPreview: entry.ContentPreview,
                 ChunkEntries: entry.ChunkEntries,
                 Attributes: entry.Attributes);

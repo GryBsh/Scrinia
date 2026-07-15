@@ -82,7 +82,6 @@ public static class MemoryOrchestrator
                 ChunkCount: ephChunkCount,
                 CreatedAt: ephCreatedAt,
                 Description: ephDesc,
-                Tags: req.Tags,
                 ContentPreview: ephPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
@@ -144,13 +143,10 @@ public static class MemoryOrchestrator
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
             Description: desc,
-            Tags: req.Tags,
             ContentPreview: contentPreview,
             Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
             TermFrequencies: tf.Count > 0 ? tf : null,
             UpdatedAt: updatedAt,
-            ReviewAfter: parsedReviewAfter,
-            ReviewWhen: string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen,
             ChunkEntries: chunkEntries,
             Attributes: fields);
 
@@ -246,7 +242,6 @@ public static class MemoryOrchestrator
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
                 Description: fullText[..Math.Min(200, fullText.Length)],
-                Tags: null,
                 ContentPreview: contentPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
@@ -295,13 +290,10 @@ public static class MemoryOrchestrator
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
                 Description: fullText[..Math.Min(200, fullText.Length)],
-                Tags: null,
                 ContentPreview: contentPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                ReviewAfter: existingEntry?.ReviewAfter,
-                ReviewWhen: existingEntry?.ReviewWhen,
                 ChunkEntries: updatedChunks,
                 Attributes: mergedFields);
 

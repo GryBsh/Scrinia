@@ -237,13 +237,11 @@ public sealed partial class ScriniaMcpTools
                 ChunkCount: ephChunkCount,
                 CreatedAt: ephCreatedAt,
                 Description: ephDesc,
-                Tags: tags,
                 ContentPreview: ephPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
-                RetrievalAnchors: cleanedAnchors,
                 Attributes: ephFields);
 
             store.RememberEphemeral(key, ephEntry);
@@ -394,16 +392,12 @@ public sealed partial class ScriniaMcpTools
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
             Description: desc,
-            Tags: tags,
             ContentPreview: contentPreview,
             Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
             TermFrequencies: tf.Count > 0 ? tf : null,
             UpdatedAt: updatedAt,
-            ReviewAfter: parsedReviewAfter,
-            ReviewWhen: string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen,
             ChunkEntries: chunkEntries,
             FileHashes: codeRefDict,
-            RetrievalAnchors: cleanedAnchors,
             Attributes: fields);
         entry = AttributeMigration.Forward(entry);
 
@@ -1273,13 +1267,11 @@ public sealed partial class ScriniaMcpTools
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
                 Description: meta.Description,
-                Tags: meta.Tags,
                 ContentPreview: contentPreview,
                 Keywords: meta.Keywords,
                 TermFrequencies: meta.Tf,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ChunkEntries: updatedChunks,
-                RetrievalAnchors: meta.Anchors,
                 Attributes: meta.Fields);
 
             store.RememberEphemeral(key, ephEntry);
@@ -1342,16 +1334,12 @@ public sealed partial class ScriniaMcpTools
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
                 Description: meta.Description,
-                Tags: meta.Tags,
                 ContentPreview: contentPreview,
                 Keywords: meta.Keywords,
                 TermFrequencies: meta.Tf,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                ReviewAfter: existingEntry?.ReviewAfter,
-                ReviewWhen: existingEntry?.ReviewWhen,
                 ChunkEntries: updatedChunks,
                 FileHashes: existingEntry?.FileHashes,
-                RetrievalAnchors: meta.Anchors,
                 Attributes: appendAttrs);
             entry = AttributeMigration.Forward(entry);
 
