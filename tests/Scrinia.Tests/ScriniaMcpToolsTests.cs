@@ -2472,7 +2472,8 @@ public sealed class ScriniaMcpToolsTests
         var review = entry.Attributes!["review"];
         review.Should().HaveCount(2);
         AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out _).Should().BeTrue();
-        DateTimeOffset.Parse(review[0]).Should().Be(reviewDate!.Value);
+        reviewDate.Should().NotBeNull();
+        DateTimeOffset.Parse(review[0]).Should().Be(DateTimeOffset.Parse("2026-08-01"));
         review[1].Should().Be("when the auth system changes");
     }
 
@@ -2490,7 +2491,8 @@ public sealed class ScriniaMcpToolsTests
         var review = entry.Attributes!["review"];
         review.Should().HaveCount(1);
         AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out _).Should().BeTrue();
-        DateTimeOffset.Parse(review[0]).Should().Be(reviewDate!.Value);
+        reviewDate.Should().NotBeNull();
+        DateTimeOffset.Parse(review[0]).Should().Be(DateTimeOffset.Parse("2026-08-01"));
     }
 
     [Fact]
