@@ -26,8 +26,6 @@ public sealed class RankerCompositionTests
             OriginalBytes: 100,
             ChunkCount: 1,
             CreatedAt: createdAt ?? DateTimeOffset.UtcNow,
-            Description: $"desc for {name}",
-            Tags: null,
             ContentPreview: null,
             Keywords: keywords ?? [name],
             TermFrequencies: tf ?? new Dictionary<string, int> { [name] = 5 },

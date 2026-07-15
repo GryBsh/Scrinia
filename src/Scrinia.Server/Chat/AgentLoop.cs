@@ -176,8 +176,8 @@ public static class AgentLoop
             };
             string desc = r switch
             {
-                EntryResult er => AttributeReaders.PreviewText(er.Item.Entry.ContentPreview, er.Item.Entry.Description),
-                ChunkEntryResult cr => AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview, cr.ParentItem.Entry.Description),
+                EntryResult er => AttributeReaders.PreviewText(er.Item.Entry.ContentPreview),
+                ChunkEntryResult cr => AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
                 TopicResult tr => tr.Description ?? "",
                 _ => "",
             };

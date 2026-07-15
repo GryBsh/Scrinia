@@ -29,7 +29,7 @@ public class HybridScorerTests : IDisposable
 
     private void AddEntry(string name, string description)
     {
-        var entry = new ArtifactEntry(name, "", 100, 1, DateTimeOffset.UtcNow, description);
+        var entry = new ArtifactEntry(name, "", 100, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, "local");
         string artifactPath = _store.ArtifactPath(name, "local");
         Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
@@ -121,8 +121,8 @@ public class HybridRerankerTests : IDisposable
 
         var candidates = new ScopedArtifact[]
         {
-            new("local", new ArtifactEntry("entry-a", "", 100, 1, DateTimeOffset.UtcNow, "desc a")),
-            new("local", new ArtifactEntry("entry-b", "", 100, 1, DateTimeOffset.UtcNow, "desc b")),
+            new("local", new ArtifactEntry("entry-a", "", 100, 1, DateTimeOffset.UtcNow)),
+            new("local", new ArtifactEntry("entry-b", "", 100, 1, DateTimeOffset.UtcNow)),
         };
 
         var store = new FakeMemoryStore();
@@ -154,7 +154,7 @@ public class HybridRerankerTests : IDisposable
 
         var candidates = new ScopedArtifact[]
         {
-            new("local", new ArtifactEntry("entry-a", "", 100, 1, DateTimeOffset.UtcNow, "desc a")),
+            new("local", new ArtifactEntry("entry-a", "", 100, 1, DateTimeOffset.UtcNow)),
         };
 
         var store = new FakeMemoryStore();
@@ -177,7 +177,7 @@ public class HybridRerankerTests : IDisposable
 
         var candidates = new ScopedArtifact[]
         {
-            new("local", new ArtifactEntry("memo", "", 100, 1, DateTimeOffset.UtcNow, "desc")),
+            new("local", new ArtifactEntry("memo", "", 100, 1, DateTimeOffset.UtcNow)),
         };
 
         var store = new FakeMemoryStore();
@@ -205,7 +205,7 @@ public class HybridRerankerTests : IDisposable
 
         var candidates = new ScopedArtifact[]
         {
-            new("local", new ArtifactEntry("candidate", "", 100, 1, DateTimeOffset.UtcNow, "desc")),
+            new("local", new ArtifactEntry("candidate", "", 100, 1, DateTimeOffset.UtcNow)),
         };
 
         var store = new FakeMemoryStore();

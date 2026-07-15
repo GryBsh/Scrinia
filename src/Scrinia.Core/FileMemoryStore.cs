@@ -333,14 +333,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: e.OriginalBytes,
                 ChunkCount: e.ChunkCount,
                 CreatedAt: e.CreatedAt,
-                Description: e.Description,
-                Tags: e.Tags,
                 ContentPreview: e.ContentPreview,
                 Keywords: e.Keywords,
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
-                RetrievalAnchors: e.RetrievalAnchors,
                 Attributes: e.Attributes);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
@@ -1464,8 +1461,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: entry.OriginalBytes,
                 ChunkCount: entry.ChunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: entry.Description,
-                Tags: entry.Tags,
                 ContentPreview: entry.ContentPreview,
                 ChunkEntries: entry.ChunkEntries,
                 Attributes: entry.Attributes);
@@ -1512,9 +1507,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: srcEntry?.OriginalBytes ?? 0,
                 ChunkCount: srcEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: srcEntry?.Description ?? $"Loaded from {sourceName}",
-                Tags: srcEntry?.Tags,
-                ContentPreview: srcEntry?.ContentPreview,
+                ContentPreview: srcEntry?.ContentPreview ?? $"Loaded from {sourceName}",
                 ChunkEntries: srcEntry?.ChunkEntries,
                 Attributes: srcEntry?.Attributes);
             RememberEphemeral(dstKey, ephEntry);
@@ -1558,7 +1551,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: $"Copied from {sourceName}");
+                ContentPreview: $"Copied from {sourceName}");
         }
 
         Upsert(destinationEntry, persistDstScope);

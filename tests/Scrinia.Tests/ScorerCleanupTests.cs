@@ -17,30 +17,26 @@ public sealed class ScorerCleanupTests
     [Fact]
     public void ForwardFilledTag_ScoresValueExact40_NotLegacyTagExact50()
     {
-        // A real write only sets the legacy Tags carrier; read-time forward-fill (additive)
-        // promotes it into Fields["tag"] without clearing Tags. Before P6.5, the (now-deleted)
-        // Tags-exact block would still fire on the untouched Tags carrier and win the
-        // Math.Max race at 50. After P6.5, only the Fields block scores it, at the
-        // Field-value-exact tier (40).
+        // A real write populates Attributes["tag"] directly (Merge 2's attributes-native write
+        // path). The legacy Tags member is gone entirely (Merge 3 Task 7), so Attributes is the
+        // only way "widgets" can be found, at the Field-value-exact tier (40).
         using var scope = new TestHelpers.StoreScope();
-        // Upsert's in-memory cache holds the RAW (non-forward-filled) entry it just wrote, so
-        // reading it back through the SAME store instance would short-circuit past the
-        // forward-fill entirely. A fresh store instance over the same directory forces a cold
-        // LoadIndex, which is where read-time forward-fill actually runs.
+        // Upsert's in-memory cache holds the RAW entry it just wrote, so reading it back through
+        // the SAME store instance would short-circuit past the cold-load path entirely. A fresh
+        // store instance over the same directory forces a cold LoadIndex.
         using (var writer = new FileMemoryStore(scope.WorkspaceDir))
         {
             writer.Upsert(new ArtifactEntry(
                 Name: "tag-only", Uri: "u", OriginalBytes: 10, ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow, Description: "",
-                Tags: ["widgets"]),
+                CreatedAt: DateTimeOffset.UtcNow,
+                Attributes: new() { ["tag"] = ["widgets"] }),
                 "local");
         }
 
         using var store = new FileMemoryStore(scope.WorkspaceDir);
         var entry = store.LoadIndex("local").Single(e => e.Name == "tag-only");
-        entry.Attributes.Should().NotBeNull(because: "read-time forward-fill promotes Tags into Fields");
+        entry.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().Contain("widgets");
-        entry.Tags.Should().Contain("widgets", because: "forward-fill is additive — legacy Tags is untouched");
 
         var scored = new WeightedFieldScorer().Search("widgets", [new ScopedArtifact("local", entry)], 10);
 
@@ -48,7 +44,7 @@ public sealed class ScorerCleanupTests
         scored[0].Score.Should().Be(40,
             because: "Fields[\"tag\"] value-exact match scores the Field-value tier (40) now that " +
                 "the legacy tag-exact block (50) has been deleted — the Fields block is the sole " +
-                "tag scorer post-P6.5, even though the legacy Tags carrier is still present on disk");
+                "tag scorer post-P6.5");
     }
 
     [Fact]
@@ -59,12 +55,12 @@ public sealed class ScorerCleanupTests
         {
             writer.Upsert(new ArtifactEntry(
                 Name: "tag-only", Uri: "u", OriginalBytes: 10, ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow, Description: "",
-                Tags: ["widgets"]),
+                CreatedAt: DateTimeOffset.UtcNow,
+                Attributes: new() { ["tag"] = ["widgets"] }),
                 "local");
             writer.Upsert(new ArtifactEntry(
                 Name: "preview-only", Uri: "u", OriginalBytes: 10, ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow, Description: "",
+                CreatedAt: DateTimeOffset.UtcNow,
                 ContentPreview: "notes that mention widgets in passing"),
                 "local");
         }

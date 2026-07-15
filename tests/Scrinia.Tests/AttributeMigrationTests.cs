@@ -32,42 +32,25 @@ public sealed class AttributeMigrationTests
         }
     }
 
+    // Merge 3 Task 7: Tags/RetrievalAnchors/ReviewAfter/ReviewWhen/Description are removed from
+    // ArtifactEntry, so MakeEntry no longer accepts or wires them — the only surviving legacy-carrier
+    // inputs are codeRefs (FileHashes) and fields (Attributes). BuildLegacyCarrierFields_MatchesForward_ForFile
+    // below exercises tags/anchors/review via its own locals (BuildLegacyCarrierFields's request-param
+    // signature is unchanged) rather than round-tripping them through the entry.
     private static ArtifactEntry MakeEntry(
-        string[]? tags = null, string[]? anchors = null,
         Dictionary<string, string>? codeRefs = null,
-        DateTimeOffset? reviewAfter = null, string? reviewWhen = null,
         string[]? keywords = null, Dictionary<string, string[]>? fields = null,
         string? contentPreview = "preview") =>
         new(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
-            Tags: tags, ContentPreview: contentPreview, Keywords: keywords, RetrievalAnchors: anchors,
-            ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, FileHashes: codeRefs, Attributes: fields);
+            CreatedAt: DateTimeOffset.UnixEpoch,
+            ContentPreview: contentPreview, Keywords: keywords, FileHashes: codeRefs, Attributes: fields);
 
     [Fact]
-    public void Forward_MapsTagsToTagAttribute_AnchorsToAnchorField()
+    public void Forward_MapsCodeRefPathsToFile()
     {
-        var e = MakeEntry(tags: ["security", "auth"], anchors: ["how do I log in"]);
-        var m = AttributeMigration.Forward(e);
-        m.Attributes!["tag"].Should().BeEquivalentTo("security", "auth");
-        m.Attributes!["anchor"].Should().Contain("how do I log in");
-        m.Keywords.Should().BeNull(); // no keywords in, none folded in -> fold retired in P6.5
-        // additive: legacy fields preserved
-        m.Tags.Should().BeEquivalentTo("security", "auth");
-        m.RetrievalAnchors.Should().BeEquivalentTo("how do I log in");
-        m.Description.Should().Be("desc");
-    }
-
-    [Fact]
-    public void Forward_MapsCodeRefPathsToFile_AndReviewToReview()
-    {
-        var e = MakeEntry(
-            codeRefs: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" },
-            reviewAfter: DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture),
-            reviewWhen: "when auth changes");
+        var e = MakeEntry(codeRefs: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" });
         var m = AttributeMigration.Forward(e);
         m.Attributes!["file"].Should().BeEquivalentTo("src/A.cs", "src/B.cs");   // paths, not hashes
-        m.Attributes!["review"].Should().Contain(v => v.StartsWith("2026-08-01"))
-            .And.Contain("when auth changes");
     }
 
     [Fact]
@@ -83,7 +66,7 @@ public sealed class AttributeMigrationTests
     [Fact]
     public void MigratesTo_IsIdempotent_SecondPassReportsNoChange()
     {
-        var e = MakeEntry(tags: ["x"], anchors: ["y"]);
+        var e = MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" });
         AttributeMigration.MigratesTo(e, out var once).Should().BeTrue();
         AttributeMigration.MigratesTo(once, out _).Should().BeFalse();   // already forward-filled
     }
@@ -100,18 +83,16 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var store = tmp.NewStore();
-        store.Upsert(MakeEntry(tags: ["security"], anchors: ["how to log in"]) with { Name = "a" }, "local");
+        store.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "a" }, "local");
         store.Upsert(MakeEntry(fields: new() { ["topic"] = ["auth"] }) with { Name = "b" }, "local");
 
         var first = AttributeMigration.MigrateStore(store);
         first.Total.Should().Be(2);
-        first.Migrated.Should().Be(1);    // only "a" had legacy data
+        first.Migrated.Should().Be(1);    // only "a" had legacy data (FileHashes)
         first.Skipped.Should().Be(1);     // "b" already attributes-only
 
         var reread = store.LoadIndex("local").First(e => e.Name == "a");
-        reread.Attributes!["tag"].Should().BeEquivalentTo("security");
-        reread.Attributes!["anchor"].Should().Contain("how to log in");
-        (reread.Keywords is null || !reread.Keywords.Contains("how to log in")).Should().BeTrue();
+        reread.Attributes!["file"].Should().BeEquivalentTo("src/A.cs");
 
         // idempotent: second run writes nothing
         var second = AttributeMigration.MigrateStore(store);
@@ -124,7 +105,7 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var store = tmp.NewStore();
-        store.Upsert(MakeEntry(tags: ["x"]) with { Name = "a" }, "local");
+        store.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "a" }, "local");
 
         var summary = AttributeMigration.MigrateStore(store, dryRun: true);
         summary.Migrated.Should().Be(1);
@@ -136,10 +117,10 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var store = tmp.NewStore();
-        store.Upsert(MakeEntry(tags: ["t"]) with { Name = "note" }, "local-topic:findings");
+        store.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "note" }, "local-topic:findings");
 
         AttributeMigration.MigrateStore(store).Migrated.Should().Be(1);
-        store.LoadIndex("local-topic:findings").First().Attributes!["tag"].Should().BeEquivalentTo("t");
+        store.LoadIndex("local-topic:findings").First().Attributes!["file"].Should().BeEquivalentTo("src/A.cs");
     }
 
     [Fact]
@@ -192,107 +173,20 @@ public sealed class AttributeMigrationTests
     }
 
     [Fact]
-    public void Forward_routes_anchors_into_Fields_anchor()
-    {
-        var entry = MakeEntry(anchors: ["how to reset", "  ", "reset flow", "how to reset"]);
-        var result = AttributeMigration.Forward(entry);
-
-        result.Attributes.Should().ContainKey("anchor");
-        result.Attributes!["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped, order kept
-    }
-
-    [Fact]
-    public void Forward_routes_anchors_to_field_not_keywords()
-    {
-        var entry = MakeEntry(keywords: ["kw1"], anchors: ["anchor phrase"]);
-        var result = AttributeMigration.Forward(entry);
-
-        result.Keywords.Should().Contain("kw1");                    // unrelated keyword untouched
-        result.Keywords.Should().NotContain("anchor phrase");       // fold retired in P6.5
-        result.Attributes!["anchor"].Should().Equal("anchor phrase");   // anchor lives in Fields only
-    }
-
-    [Fact]
-    public void Forward_no_anchors_adds_no_anchor_field()
-    {
-        var entry = MakeEntry(anchors: null);
-        var result = AttributeMigration.Forward(entry);
-        (result.Attributes is null || !result.Attributes.ContainsKey("anchor")).Should().BeTrue();
-    }
-
-    [Fact]
-    public void Forward_anchor_routing_is_idempotent()
-    {
-        var entry = MakeEntry(anchors: ["a1", "a2"]);
-        var once = AttributeMigration.Forward(entry);
-        AttributeMigration.MigratesTo(once, out _).Should().BeFalse(); // second pass is a no-op
-    }
-
-    [Fact]
-    public void Forward_anchor_coexists_with_other_fields()
-    {
-        var entry = MakeEntry(tags: ["t1"], anchors: ["a1"]);
-        var result = AttributeMigration.Forward(entry);
-        result.Attributes!["tag"].Should().Equal("t1");
-        result.Attributes!["anchor"].Should().Equal("a1");
-    }
-
-    [Fact]
-    public void Forward_BackfillsContentPreviewFromDescription_WhenPreviewNull()
-    {
-        var e = MakeEntry(contentPreview: null);   // Description "desc", ContentPreview null
-        var m = AttributeMigration.Forward(e);
-        m.ContentPreview.Should().Be("desc");       // rescued from Description
-        m.Description.Should().Be("desc");          // additive: legacy field untouched
-    }
-
-    [Fact]
     public void Forward_LeavesExistingContentPreview_WhenAlreadySet()
     {
         var e = MakeEntry(contentPreview: "explicit preview");
         var m = AttributeMigration.Forward(e);
-        m.ContentPreview.Should().Be("explicit preview");   // ?? short-circuits, no overwrite
+        m.ContentPreview.Should().Be("explicit preview");   // Forward no longer touches ContentPreview
     }
 
     [Fact]
-    public void Forward_LeavesContentPreviewNull_WhenDescriptionBlank()
+    public void Forward_LeavesContentPreviewNull_WhenNotSet()
     {
         var e = new ArtifactEntry(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UnixEpoch, Description: "   ", ContentPreview: null);
+            CreatedAt: DateTimeOffset.UnixEpoch, ContentPreview: null);
         var m = AttributeMigration.Forward(e);
-        m.ContentPreview.Should().BeNull();   // blank Description is not preview-worthy
-    }
-
-    [Fact]
-    public void MigratesTo_DetectsContentPreviewBackfill_AndIsIdempotent()
-    {
-        var e = MakeEntry(contentPreview: null);           // only the preview backfill is pending
-        AttributeMigration.MigratesTo(e, out var once).Should().BeTrue();
-        once.ContentPreview.Should().Be("desc");
-        AttributeMigration.MigratesTo(once, out _).Should().BeFalse();   // second pass writes nothing
-    }
-
-    [Fact]
-    public void MigrateStore_BackfillsContentPreviewFromDescription_ForPreviewOnlyEntry()
-    {
-        using var tmp = new TempWorkspace();
-        var store = tmp.NewStore();
-        // A pre-ContentPreview sidecar: Description present, ContentPreview null, no other legacy data.
-        store.Upsert(MakeEntry(contentPreview: null) with { Name = "old" }, "local");
-        // A control that already has ContentPreview and no legacy fields -> must be skipped.
-        store.Upsert(MakeEntry(contentPreview: "already", fields: new() { ["topic"] = ["auth"] }) with { Name = "ok" }, "local");
-
-        var first = AttributeMigration.MigrateStore(store);
-        first.Total.Should().Be(2);
-        first.Migrated.Should().Be(1);   // only "old" (preview backfill) migrates
-        first.Skipped.Should().Be(1);    // "ok" already has ContentPreview and attributes
-
-        store.LoadIndex("local").First(e => e.Name == "old").ContentPreview.Should().Be("desc");
-
-        // idempotent: re-running writes nothing
-        var second = AttributeMigration.MigrateStore(store);
-        second.Migrated.Should().Be(0);
-        second.Skipped.Should().Be(2);
+        m.ContentPreview.Should().BeNull();   // Forward no longer backfills ContentPreview from anything
     }
 
     [Fact]
@@ -301,7 +195,7 @@ public sealed class AttributeMigrationTests
         using var tmp = new TempWorkspace();
         // Write a legacy sidecar to disk via one store, then read it cold via a fresh store.
         var seed = tmp.NewStore();
-        seed.Upsert(MakeEntry(tags: ["security"], anchors: ["how do I log in"], contentPreview: null) with { Name = "a", Description = "" }, "local");
+        seed.Upsert(MakeEntry(contentPreview: null) with { Name = "a" }, "local");
         seed.Dispose();
 
         var cold = new FileMemoryStore(tmp.Root);
@@ -322,7 +216,7 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var seed = tmp.NewStore();
-        seed.Upsert(MakeEntry(tags: ["security"], anchors: ["how to log in"], contentPreview: null) with { Name = "legacy", Description = "" }, "local");
+        seed.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "legacy" }, "local");
         seed.Upsert(MakeEntry(fields: new() { ["topic"] = ["auth"] }) with { Name = "clean" }, "local"); // already current
         seed.Dispose();
 
@@ -333,7 +227,7 @@ public sealed class AttributeMigrationTests
         s.Migrated.Should().Be(1, "only the legacy entry needed migrating");
         s.Skipped.Should().Be(1);
         new FileMemoryStore(tmp.Root).LoadIndex("local").First(e => e.Name == "legacy")
-            .Attributes!.Should().ContainKeys("tag", "anchor");
+            .Attributes!.Should().ContainKey("file");
         cold.Dispose();
     }
 
@@ -342,7 +236,7 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var seed = tmp.NewStore();
-        seed.Upsert(MakeEntry(tags: ["x"], contentPreview: null) with { Name = "a", Description = "" }, "local");
+        seed.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "a" }, "local");
         seed.Dispose();
 
         AttributeMigration.MigrateStore(new FileMemoryStore(tmp.Root)).Migrated.Should().Be(1);
@@ -356,7 +250,7 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var seed = tmp.NewStore();
-        seed.Upsert(MakeEntry(tags: ["x"], contentPreview: null) with { Name = "a", Description = "" }, "local");
+        seed.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "a" }, "local");
         seed.Dispose();
 
         var cold = new FileMemoryStore(tmp.Root);
@@ -380,7 +274,7 @@ public sealed class AttributeMigrationTests
         // so the namespaced dir is .scrinia/topics/memory/api and its legacy flat fallback is .scrinia/topics/api.
         seed.Upsert(MakeEntry(fields: new() { ["topic"] = ["api"] }) with { Name = "nsnote" }, MemoryNaming.BuildScopedTopicScope("api"));
         // Legacy entry in the bare flat dir .scrinia/topics/api
-        seed.Upsert(MakeEntry(tags: ["legacy"], contentPreview: null) with { Name = "flatnote", Description = "" }, "local-topic:api");
+        seed.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "flatnote" }, "local-topic:api");
         seed.Dispose();
 
         var cold = new FileMemoryStore(tmp.Root);
@@ -391,7 +285,7 @@ public sealed class AttributeMigrationTests
         s.Migrated.Should().Be(1, "the shadowed flat entry needed migrating, counted exactly once");
         // The FLAT sidecar is upgraded in place:
         string flatMeta = Path.Combine(tmp.Root, ".scrinia", "topics", "api", "flatnote.meta.json");
-        File.ReadAllText(flatMeta).Should().Contain("\"attributes\"").And.Contain("\"tag\"");
+        File.ReadAllText(flatMeta).Should().Contain("\"attributes\"").And.Contain("\"file\"");
         // ...and NOT promoted into the namespaced scope dir:
         File.Exists(Path.Combine(tmp.Root, ".scrinia", "topics", "memory", "api", "flatnote.meta.json"))
             .Should().BeFalse("the flat entry must stay in its flat dir, not be promoted");
@@ -406,7 +300,7 @@ public sealed class AttributeMigrationTests
         // Target an explicit dir that is NOT the entry's scope dir (simulates a flat-dir write target).
         string flatDir = Path.Combine(tmp.Root, ".scrinia", "topics", "api");
         var upgraded = AttributeMigration.Forward(
-            MakeEntry(tags: ["t"], contentPreview: null) with { Name = "flatnote", Description = "" });
+            MakeEntry(contentPreview: null) with { Name = "flatnote" });
 
         store.PersistMigratedEntry(upgraded, flatDir, "local-topic:memory/api");
 
@@ -422,29 +316,35 @@ public sealed class AttributeMigrationTests
     }
 
     [Fact]
-    public void BuildLegacyCarrierFields_MatchesForward_ForTagFileReviewAnchor()
+    public void BuildLegacyCarrierFields_MatchesForward_ForFile()
     {
-        var entry = MakeEntry(
-            tags: ["security", "auth"],
-            anchors: ["how to reset", "  ", "reset flow", "how to reset"],
-            codeRefs: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" },
-            reviewAfter: DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture),
-            reviewWhen: "when auth changes");
+        // tags/anchors/reviewAfter/reviewWhen have no member home anymore (Task 7 removed them from
+        // ArtifactEntry) — BuildLegacyCarrierFields's signature is unchanged (request-supplied params
+        // still flow through it at write time), so this test feeds it locals directly instead of
+        // round-tripping the values through the entry.
+        string[] tags = ["security", "auth"];
+        string[] anchors = ["how to reset", "  ", "reset flow", "how to reset"];
+        var codeRefs = new Dictionary<string, string> { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" };
+        var reviewAfter = DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture);
+        const string reviewWhen = "when auth changes";
+        var entry = MakeEntry(codeRefs: codeRefs);
 
         var built = AttributeMigration.BuildLegacyCarrierFields(
-            entry.Tags, entry.FileHashes?.Keys, entry.ReviewAfter, entry.ReviewWhen, entry.RetrievalAnchors);
+            tags, codeRefs.Keys, reviewAfter, reviewWhen, anchors);
 
-        built["tag"].Should().BeEquivalentTo(entry.Tags);
+        built["tag"].Should().BeEquivalentTo(tags);
         built["file"].Should().BeEquivalentTo(entry.FileHashes!.Keys);
         built["review"].Should().Equal(
-            entry.ReviewAfter!.Value.ToString("o", CultureInfo.InvariantCulture), entry.ReviewWhen);
+            reviewAfter.ToString("o", CultureInfo.InvariantCulture), reviewWhen);
         built["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped
 
-        // Forward must delegate to the same fold: same four keys, same values.
+        // Forward only member-sources "file" (the only surviving legacy-carrier member);
+        // BuildLegacyCarrierFields itself is unchanged and still folds all four when called directly
+        // with request-supplied params (the write-time call shape).
         var forwarded = AttributeMigration.Forward(entry);
-        forwarded.Attributes!["tag"].Should().BeEquivalentTo(built["tag"]);
         forwarded.Attributes!["file"].Should().BeEquivalentTo(built["file"]);
-        forwarded.Attributes!["review"].Should().Equal(built["review"]);
-        forwarded.Attributes!["anchor"].Should().Equal(built["anchor"]);
+        forwarded.Attributes.Should().NotContainKey("tag");
+        forwarded.Attributes.Should().NotContainKey("review");
+        forwarded.Attributes.Should().NotContainKey("anchor");
     }
 }

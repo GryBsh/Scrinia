@@ -22,7 +22,6 @@ public sealed class MmrRerankerTests
             OriginalBytes: 0,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: $"desc for {name}",
             TermFrequencies: tf);
         return new EntryResult(new ScopedArtifact("local", entry), score);
     }

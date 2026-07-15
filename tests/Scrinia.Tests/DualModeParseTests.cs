@@ -179,7 +179,7 @@ public sealed class DualModeParseTests : IDisposable
         // Write a sidecar .meta.json and an artifact .nmp2 in the v1 location
         var entry = new ArtifactEntry(
             "auth-flow", "file://auth-flow", 100, 1,
-            DateTimeOffset.UtcNow, "Auth flow docs");
+            DateTimeOffset.UtcNow);
         File.WriteAllText(
             Path.Combine(legacyDir, "auth-flow.nmp2"),
             "legacy artifact content");

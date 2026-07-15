@@ -18,7 +18,7 @@ public sealed partial class ArtifactEntrySerializationTests
 
     private static ArtifactEntry Sample(Dictionary<string, string[]>? attrs) => new(
         Name: "n", Uri: "mem://n", OriginalBytes: 10, ChunkCount: 1,
-        CreatedAt: DateTimeOffset.UnixEpoch, Description: "d", Attributes: attrs);
+        CreatedAt: DateTimeOffset.UnixEpoch, Attributes: attrs);
 
     [Fact]
     public void Serializes_attributes_under_new_key_and_never_writes_fields()
@@ -69,5 +69,36 @@ public sealed partial class ArtifactEntrySerializationTests
         TestCtx.Default.GetTypeInfo(typeof(ArtifactEntry)).Should().NotBeNull();
         TestCtx.Default.GetTypeInfo(typeof(Dictionary<string, string[]>)).Should().NotBeNull(
             "attributes/legacy dict needs source-gen metadata for trimmed publishes");
+    }
+
+    /// <summary>
+    /// Merge 3 Task 7 back-compat round-trip: a pre-removal sidecar on disk can still carry the
+    /// now-deleted "description"/"tags"/"reviewAfter"/"reviewWhen"/"retrievalAnchors" JSON keys
+    /// (their values already live in "attributes"/"contentPreview" post-migration) alongside the
+    /// legacy "fields" key. STJ silently drops unmapped keys on read, so this must deserialize
+    /// without throwing, and NormalizeAttributesKey() must still fold "fields" into Attributes —
+    /// the removed keys are simply ignored, with no data corruption.
+    /// </summary>
+    [Fact]
+    public void Reads_legacy_sidecar_with_all_removed_keys_and_fields_key_WithoutThrowing()
+    {
+        const string json = """
+            {"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,
+            "createdAt":"1970-01-01T00:00:00+00:00","description":"old desc",
+            "tags":["old-tag"],"reviewAfter":"2026-01-01T00:00:00+00:00",
+            "reviewWhen":"when old","retrievalAnchors":["old anchor"],
+            "contentPreview":"kept preview","fields":{"tag":["from-fields"]}}
+            """;
+
+        var act = () => JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry);
+        act.Should().NotThrow("STJ must silently drop the unmapped removed-member keys");
+
+        var raw = JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!;
+        raw.ContentPreview.Should().Be("kept preview", "the surviving ContentPreview key must still deserialize");
+        raw.LegacyFields.Should().NotBeNull("the legacy \"fields\" key must still populate LegacyFields pre-normalize");
+
+        var normalized = raw.NormalizeAttributesKey();
+        normalized.Attributes.Should().ContainKey("tag").WhoseValue.Should().Equal("from-fields");
+        normalized.LegacyFields.Should().BeNull("normalization must clear the legacy holder");
     }
 }

@@ -1,6 +1,8 @@
+using System.Globalization;
 using FluentAssertions;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -101,15 +103,15 @@ public sealed class ScriniaArtifactStoreTests
     public void Upsert_ExistingName_Overwrites()
     {
         using var scope = new TestHelpers.StoreScope();
-        ScriniaArtifactStore.Upsert(MakeEntry("notes", desc: "original"));
-        ScriniaArtifactStore.Upsert(MakeEntry("notes", desc: "updated"));
+        ScriniaArtifactStore.Upsert(MakeEntry("notes", desc: "original", contentPreview: "original"));
+        ScriniaArtifactStore.Upsert(MakeEntry("notes", desc: "updated", contentPreview: "updated"));
 
         var loaded = ScriniaArtifactStore.LoadIndex();
 
         loaded.Should().ContainSingle(e => e.Name == "notes",
             because: "upserting the same name must not duplicate — it must replace");
-        loaded[0].Description.Should().Be("updated",
-            because: "the description must reflect the most recent upsert");
+        loaded[0].ContentPreview.Should().Be("updated",
+            because: "the content preview must reflect the most recent upsert");
     }
 
     [Fact]
@@ -238,7 +240,7 @@ public sealed class ScriniaArtifactStoreTests
         var loaded = ScriniaArtifactStore.LoadIndex();
 
         loaded.Should().ContainSingle(e =>
-            e.Name == "roundtrip" && e.Description == "Hello, world!",
+            e.Name == "roundtrip" && e.ContentPreview == "Hello, world!",
             because: "SaveIndex → LoadIndex must preserve all entry fields");
     }
 
@@ -279,7 +281,7 @@ public sealed class ScriniaArtifactStoreTests
         using var scope = new TestHelpers.StoreScope();
         var entry = new EphemeralEntry(
             Name: "test", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("test", entry);
         var retrieved = ScriniaArtifactStore.GetEphemeral("test");
@@ -294,7 +296,7 @@ public sealed class ScriniaArtifactStoreTests
         using var scope = new TestHelpers.StoreScope();
         var entry = new EphemeralEntry(
             Name: "forget", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("forget", entry);
         ScriniaArtifactStore.ForgetEphemeral("forget").Should().BeTrue();
@@ -307,7 +309,7 @@ public sealed class ScriniaArtifactStoreTests
         using var scope = new TestHelpers.StoreScope();
         var entry = new EphemeralEntry(
             Name: "listed", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("listed", entry);
         var list = ScriniaArtifactStore.ListEphemeral();
@@ -325,7 +327,7 @@ public sealed class ScriniaArtifactStoreTests
         string artifact = Nmp2ChunkedEncoder.Encode("hello ephemeral");
         var entry = new EphemeralEntry(
             Name: "resolve-eph", Artifact: artifact, OriginalBytes: 15,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("resolve-eph", entry);
         string resolved = await ScriniaArtifactStore.ResolveArtifactAsync("~resolve-eph");
@@ -406,8 +408,7 @@ public sealed class ScriniaArtifactStoreTests
         entry.Keywords.Should().BeNull();
         entry.TermFrequencies.Should().BeNull();
         entry.UpdatedAt.Should().BeNull();
-        entry.ReviewAfter.Should().BeNull();
-        entry.ReviewWhen.Should().BeNull();
+        AttributeReaders.TryReadReview(entry.Attributes, out _, out _).Should().BeFalse();
     }
 
     [Fact]
@@ -415,18 +416,20 @@ public sealed class ScriniaArtifactStoreTests
     {
         using var scope = new TestHelpers.StoreScope();
         var tf = new Dictionary<string, int> { ["auth"] = 5, ["token"] = 3 };
+        var reviewDate = DateTimeOffset.UtcNow.AddMonths(3);
         var entry = new ArtifactEntry(
             Name: "v3-test",
             Uri: "file:///tmp/v3-test.nmp2",
             OriginalBytes: 1024,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: "v3 fields test",
             Keywords: ["auth", "jwt"],
             TermFrequencies: tf,
             UpdatedAt: DateTimeOffset.UtcNow,
-            ReviewAfter: DateTimeOffset.UtcNow.AddMonths(3),
-            ReviewWhen: "when auth system changes");
+            Attributes: new Dictionary<string, string[]>
+            {
+                ["review"] = [reviewDate.ToString("o", CultureInfo.InvariantCulture), "when auth system changes"],
+            });
 
         ScriniaArtifactStore.Upsert(entry);
         var loaded = ScriniaArtifactStore.LoadIndex();
@@ -437,8 +440,9 @@ public sealed class ScriniaArtifactStoreTests
         e.TermFrequencies.Should().ContainKey("auth").WhoseValue.Should().Be(5);
         e.TermFrequencies.Should().ContainKey("token").WhoseValue.Should().Be(3);
         e.UpdatedAt.Should().NotBeNull();
-        e.ReviewAfter.Should().NotBeNull();
-        e.ReviewWhen.Should().Be("when auth system changes");
+        AttributeReaders.TryReadReview(e.Attributes, out var loadedReviewDate, out var loadedReviewWhen).Should().BeTrue();
+        loadedReviewDate.Should().NotBeNull();
+        loadedReviewWhen.Should().Be("when auth system changes");
     }
 
     [Fact]
@@ -471,8 +475,7 @@ public sealed class ScriniaArtifactStoreTests
         e.Keywords.Should().BeNull();
         e.TermFrequencies.Should().BeNull();
         e.UpdatedAt.Should().BeNull();
-        e.ReviewAfter.Should().BeNull();
-        e.ReviewWhen.Should().BeNull();
+        e.Attributes.Should().BeNull();
     }
 
     // ── ArchiveVersion ──────────────────────────────────────────────────────
@@ -513,7 +516,7 @@ public sealed class ScriniaArtifactStoreTests
         var tf = new Dictionary<string, int> { ["auth"] = 3 };
         var entry = new EphemeralEntry(
             Name: "eph-v3", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test",
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow,
             Keywords: ["auth"], TermFrequencies: tf, UpdatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("eph-v3", entry);
@@ -570,7 +573,8 @@ public sealed class ScriniaArtifactStoreTests
           "originalBytes": 100,
           "chunkCount": 1,
           "createdAt": "2026-01-01T00:00:00+00:00",
-          "description": "Legacy version"
+          "description": "Legacy version",
+          "contentPreview": "Legacy version"
         }
         """;
         File.WriteAllText(Path.Combine(legacyDir, "shared-concern.meta.json"), legacyCollision);
@@ -582,7 +586,8 @@ public sealed class ScriniaArtifactStoreTests
           "originalBytes": 300,
           "chunkCount": 2,
           "createdAt": "2026-03-01T00:00:00+00:00",
-          "description": "Namespaced version"
+          "description": "Namespaced version",
+          "contentPreview": "Namespaced version"
         }
         """;
         File.WriteAllText(Path.Combine(namespacedDir, "shared-concern.meta.json"), namespacedCollision);
@@ -595,7 +600,7 @@ public sealed class ScriniaArtifactStoreTests
             because: "namespaced-only entries must be present");
         entries.Should().ContainSingle(e => e.Name == "shared-concern",
             because: "same-name entries should not be duplicated");
-        entries.First(e => e.Name == "shared-concern").Description.Should().Be("Namespaced version",
+        entries.First(e => e.Name == "shared-concern").ContentPreview.Should().Be("Namespaced version",
             because: "namespaced entries take precedence over legacy entries");
     }
 
@@ -604,7 +609,6 @@ public sealed class ScriniaArtifactStoreTests
     private static ArtifactEntry MakeEntry(
         string name,
         string desc = "test description",
-        string[]? tags = null,
         string? contentPreview = null) =>
         new(
             Name: name,
@@ -612,7 +616,5 @@ public sealed class ScriniaArtifactStoreTests
             OriginalBytes: 1024,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: desc,
-            Tags: tags,
-            ContentPreview: contentPreview);
+            ContentPreview: contentPreview ?? desc);
 }

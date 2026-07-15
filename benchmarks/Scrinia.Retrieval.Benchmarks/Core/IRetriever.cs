@@ -17,8 +17,8 @@ public interface IRetriever : IAsyncDisposable
     /// default implementation forwards to <see cref="IngestAsync(HaystackDoc, CancellationToken)"/>
     /// without using the anchors — implementations that participate in the agent
     /// harness (currently <c>ScriniaRetriever</c>) override this to wire anchors
-    /// into <c>ArtifactEntry.RetrievalAnchors</c>. Null/empty anchors are
-    /// equivalent to the non-anchor overload.
+    /// into the <c>anchor</c> attribute of <c>ArtifactEntry.Attributes</c>. Null/empty
+    /// anchors are equivalent to the non-anchor overload.
     /// </summary>
     Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? anchors, CancellationToken ct = default) =>
         IngestAsync(doc, ct);

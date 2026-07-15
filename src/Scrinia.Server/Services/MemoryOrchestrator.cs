@@ -54,18 +54,19 @@ public static class MemoryOrchestrator
                 : Nmp2ChunkedEncoder.EncodeChunks(req.Content);
             int ephChunkCount = Nmp2ChunkedEncoder.GetChunkCount(ephArtifact);
             long ephBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-            string ephPreview = store.GenerateContentPreview(joined);
-            string ephDesc = string.IsNullOrWhiteSpace(req.Description)
-                ? joined[..Math.Min(200, joined.Length)]
-                : req.Description;
+            // Merge 3 Task 2b: an explicit curated description becomes the displayed
+            // ContentPreview (option A) — it wins over the auto content snippet.
+            string ephPreview = !string.IsNullOrWhiteSpace(req.Description)
+                ? req.Description
+                : store.GenerateContentPreview(joined);
 
             var existingEph = store.GetEphemeral(key);
             DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
             DateTimeOffset? ephUpdatedAt = existingEph is not null ? DateTimeOffset.UtcNow : null;
 
-            // Forward-fill: route req.Tags -> Fields["tag"] at write time (dual-write — Tags
-            // below is unchanged). EphemeralEntry has no FileHashes/ReviewAfter/ReviewWhen/
-            // RetrievalAnchors param on this path, so tag is the only legacy carrier to route.
+            // Route req.Tags -> Attributes["tag"] at write time (req.Tags is the StoreRequest
+            // DTO field, not an entry member). EphemeralEntry carries no other request-supplied
+            // attribute source on this path, so tag is the only carrier to route here.
             var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
             if (req.Tags is { Length: > 0 }) ephIncoming[KnownFields.TagKey] = req.Tags;
             var ephFields = ephIncoming.Count > 0 ? KnownFields.Merge(fields, ephIncoming) : fields;
@@ -76,8 +77,6 @@ public static class MemoryOrchestrator
                 OriginalBytes: ephBytes,
                 ChunkCount: ephChunkCount,
                 CreatedAt: ephCreatedAt,
-                Description: ephDesc,
-                Tags: req.Tags,
                 ContentPreview: ephPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
@@ -109,13 +108,14 @@ public static class MemoryOrchestrator
         await store.WriteArtifactAsync(subject, scope, artifact, ct);
 
         string uri = store.ArtifactUri(subject, scope);
-        string desc = string.IsNullOrWhiteSpace(req.Description)
-            ? joined[..Math.Min(200, joined.Length)]
-            : req.Description;
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-        string contentPreview = store.GenerateContentPreview(joined);
+        // Merge 3 Task 2b: an explicit curated description becomes the displayed
+        // ContentPreview (option A) — it wins over the auto content snippet.
+        string contentPreview = !string.IsNullOrWhiteSpace(req.Description)
+            ? req.Description
+            : store.GenerateContentPreview(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         DateTimeOffset? parsedReviewAfter = null;
@@ -134,19 +134,16 @@ public static class MemoryOrchestrator
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
-            Description: desc,
-            Tags: req.Tags,
             ContentPreview: contentPreview,
             Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
             TermFrequencies: tf.Count > 0 ? tf : null,
             UpdatedAt: updatedAt,
-            ReviewAfter: parsedReviewAfter,
-            ReviewWhen: string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen,
             ChunkEntries: chunkEntries,
             Attributes: fields);
 
-        // Forward-fill: populate Attributes from Tags/ReviewAfter/ReviewWhen/FileHashes at write time
-        // (dual-write — legacy members above are unchanged).
+        // Keyword/file safety-net: Forward folds recognized key:value keywords and FileHashes->file
+        // into Attributes. (tag/review were already folded into Attributes from the request params
+        // above; the former legacy entry members no longer exist.)
         entry = AttributeMigration.Forward(entry);
 
         try
@@ -198,7 +195,11 @@ public static class MemoryOrchestrator
             tf[kw] = count + 2;
         }
 
-        string contentPreview = store.GenerateContentPreview(fullText);
+        // Merge 3 Task 2b: AppendAsync has no description param, so option A's "new description
+        // wins" clause doesn't apply here — only "preserve the existing ContentPreview rather
+        // than regenerating from content" does (regenerating would drop a curated description
+        // folded in by a prior Store/UpdateMeta call). Computed per-branch below since
+        // existingEph/existingEntry are branch-local.
 
         var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
@@ -219,6 +220,8 @@ public static class MemoryOrchestrator
                 ? [.. existingEph.ChunkEntries, newChunkEntry]
                 : [newChunkEntry];
 
+            string contentPreview = existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText);
+
             var incoming = KnownFields.Merge(
                 FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
             var mergedFields = KnownFields.Merge(existingEph?.Attributes, incoming);
@@ -230,8 +233,6 @@ public static class MemoryOrchestrator
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: fullText[..Math.Min(200, fullText.Length)],
-                Tags: null,
                 ContentPreview: contentPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
@@ -252,6 +253,8 @@ public static class MemoryOrchestrator
                 ? [.. existingEntry.ChunkEntries, newChunkEntry]
                 : [newChunkEntry];
 
+            string contentPreview = existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText);
+
             if (existingEntry is not null)
                 store.ArchiveVersion(subject, scope);
 
@@ -265,8 +268,9 @@ public static class MemoryOrchestrator
             var mergedFields = KnownFields.Merge(existingEntry?.Attributes, incoming);
             FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
+            AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
             var carrier = AttributeMigration.BuildLegacyCarrierFields(
-                tags: null, fileKeys: null, existingEntry?.ReviewAfter, existingEntry?.ReviewWhen, anchors: null);
+                tags: null, fileKeys: null, existingReviewDate, existingReviewWhen, anchors: null);
             if (carrier.Count > 0)
                 mergedFields = KnownFields.Merge(mergedFields, carrier);
 
@@ -276,21 +280,16 @@ public static class MemoryOrchestrator
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: fullText[..Math.Min(200, fullText.Length)],
-                Tags: null,
                 ContentPreview: contentPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: DateTimeOffset.UtcNow,
-                ReviewAfter: existingEntry?.ReviewAfter,
-                ReviewWhen: existingEntry?.ReviewWhen,
                 ChunkEntries: updatedChunks,
                 Attributes: mergedFields);
 
-            // Forward-fill: populate Attributes from Tags/ReviewAfter/ReviewWhen/FileHashes at write
-            // time (dual-write — legacy members above are unchanged). Tags is null on this path
-            // (no tags param), but ReviewAfter/ReviewWhen carried over from existingEntry still
-            // route here, covering pre-Attributes entries appended for the first time.
+            // Keyword/file safety-net: Forward folds recognized key:value keywords and FileHashes->file
+            // into Attributes. Review carried over from existingEntry is already folded into Attributes
+            // above; this also covers pre-Attributes entries appended for the first time.
             entry = AttributeMigration.Forward(entry);
 
             try

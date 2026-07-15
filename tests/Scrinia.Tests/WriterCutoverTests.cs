@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Search;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -31,7 +32,7 @@ public sealed class WriterCutoverTests
     private static ScriniaMcpTools Tools() => new();
 
     [Fact]
-    public async Task Store_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Store_Persistent_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
         string relPath = "src/Probe.cs";
@@ -57,15 +58,13 @@ public sealed class WriterCutoverTests
         persisted.Attributes!["anchor"].Should().Contain("how does the widget subsystem work");
         persisted.Attributes!["file"].Should().Contain(relPath);
 
-        // Legacy fields STILL written (dual-write) — Forward is additive, not a replacement.
-        persisted.Tags.Should().Contain("widgets");
-        persisted.ReviewAfter.Should().NotBeNull();
-        persisted.RetrievalAnchors.Should().Contain("how does the widget subsystem work");
+        AttributeReaders.TryReadReview(persisted.Attributes, out var reviewDate, out _).Should().BeTrue();
+        reviewDate.Should().NotBeNull();
         persisted.FileHashes.Should().ContainKey(relPath);
     }
 
     [Fact]
-    public async Task UpdateMeta_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task UpdateMeta_Persistent_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
         // Base entry deliberately carries no review data — anything under "review" below
@@ -83,12 +82,13 @@ public sealed class WriterCutoverTests
         persisted.Attributes.Should().NotBeNull();
         persisted.Attributes!["review"].Should().NotBeEmpty();
 
-        persisted.ReviewAfter.Should().NotBeNull();
-        persisted.ReviewWhen.Should().Be("when the widget API changes");
+        AttributeReaders.TryReadReview(persisted.Attributes, out var reviewDate, out var condition).Should().BeTrue();
+        reviewDate.Should().NotBeNull();
+        condition.Should().Be("when the widget API changes");
     }
 
     [Fact]
-    public async Task Append_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Append_Persistent_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(
@@ -109,14 +109,10 @@ public sealed class WriterCutoverTests
         persisted.Attributes!["tag"].Should().Contain("auth").And.Contain("tokens");
         persisted.Attributes!["anchor"].Should().Contain("how does login work")
             .And.Contain("what triggers a token refresh");
-
-        persisted.Tags.Should().Contain("auth").And.Contain("tokens");
-        persisted.RetrievalAnchors.Should().Contain("how does login work")
-            .And.Contain("what triggers a token refresh");
     }
 
     [Fact]
-    public async Task Store_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Store_Ephemeral_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
 
@@ -135,14 +131,10 @@ public sealed class WriterCutoverTests
         entry!.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().Contain("widgets");
         entry.Attributes!["anchor"].Should().Contain("how does the widget subsystem work");
-
-        // Legacy fields STILL written (dual-write).
-        entry.Tags.Should().Contain("widgets");
-        entry.RetrievalAnchors.Should().Contain("how does the widget subsystem work");
     }
 
     [Fact]
-    public async Task Append_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Append_Ephemeral_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
 
@@ -164,10 +156,6 @@ public sealed class WriterCutoverTests
         entry!.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().Contain("auth").And.Contain("tokens");
         entry.Attributes!["anchor"].Should().Contain("how does login work")
-            .And.Contain("what triggers a token refresh");
-
-        entry.Tags.Should().Contain("auth").And.Contain("tokens");
-        entry.RetrievalAnchors.Should().Contain("how does login work")
             .And.Contain("what triggers a token refresh");
     }
 

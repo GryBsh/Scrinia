@@ -166,7 +166,7 @@ public class FileLockTests : IDisposable
                 barrier.SignalAndWait();
                 store.Upsert(new ArtifactEntry(
                     $"entry-a-{i}", $"file://a-{i}", 100, 1,
-                    DateTimeOffset.UtcNow, $"desc-a-{i}"), "local");
+                    DateTimeOffset.UtcNow), "local");
             }
         });
 
@@ -177,7 +177,7 @@ public class FileLockTests : IDisposable
                 barrier.SignalAndWait();
                 store.Upsert(new ArtifactEntry(
                     $"entry-b-{i}", $"file://b-{i}", 100, 1,
-                    DateTimeOffset.UtcNow, $"desc-b-{i}"), "local");
+                    DateTimeOffset.UtcNow), "local");
             }
         });
 

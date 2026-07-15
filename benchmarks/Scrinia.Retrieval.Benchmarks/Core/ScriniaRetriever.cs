@@ -148,8 +148,9 @@ public sealed class ScriniaRetriever : IRetriever
         IngestAsync(doc, agentAnchors, agentKeywords: null, ct);
 
     /// <summary>
-    /// Full ingest overload. Agent anchors flow into <see cref="ArtifactEntry.RetrievalAnchors"/>
-    /// and seed BM25 at +2; agent typed keywords are appended to <see cref="ArtifactEntry.Keywords"/>
+    /// Full ingest overload. Agent anchors flow into the <c>anchor</c> attribute of
+    /// <see cref="ArtifactEntry.Attributes"/> and seed BM25 at +2; agent typed keywords are
+    /// appended to <see cref="ArtifactEntry.Keywords"/>
     /// (for the field scorer) and their tokenized values seed BM25 at +5 — prod-faithful weights
     /// (Store: agent keywords +5, anchors +2). Both null preserves baseline behavior.
     /// </summary>
@@ -186,10 +187,10 @@ public sealed class ScriniaRetriever : IRetriever
 
         // Materialise agent signals as plain arrays.
         string[]? anchorSource = agentAnchors is { Count: > 0 }
-            ? (agentAnchors as string[] ?? agentAnchors.ToArray())
+            ? (agentAnchors as string[] ?? [.. agentAnchors])
             : null;
         string[]? keywordSource = agentKeywords is { Count: > 0 }
-            ? (agentKeywords as string[] ?? agentKeywords.ToArray())
+            ? (agentKeywords as string[] ?? [.. agentKeywords])
             : null;
 
         // Seed agent-derived tokens into the TF dict. Prod-faithful weights: anchor
@@ -235,11 +236,12 @@ public sealed class ScriniaRetriever : IRetriever
             OriginalBytes: text.Length,
             ChunkCount: 0,
             CreatedAt: timestamp ?? DateTimeOffset.UtcNow,
-            Description: string.Empty,
             Keywords: entryKeywords,
             TermFrequencies: mergedTf,
             ContentPreview: text,
-            RetrievalAnchors: anchorSource);
+            Attributes: anchorSource is { Length: > 0 }
+                ? new Dictionary<string, string[]> { ["anchor"] = anchorSource }
+                : null);
 
         // FileMemoryStore.Upsert isn't thread-safe — serialize it across concurrent doc
         // ingests (parallel mode). The embedding call below is awaited OUTSIDE this lock so
@@ -397,7 +399,7 @@ public sealed class ScriniaRetriever : IRetriever
         _store = CreateStore();
         _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
         _sentenceVectorCache = new ConcurrentDictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase);
-        _entityTags = new List<(string, IReadOnlyList<string>?)>();
+        _entityTags = [];
         _entityGraph = null;
         return Task.CompletedTask;
     }
@@ -445,7 +447,7 @@ public sealed class ScriniaRetriever : IRetriever
     /// Returns null when no memory is reached (no query-entity seeds). Mirrors production
     /// <see cref="EntityGraphScoreContributor"/>; consumed as its own SearchAll source.
     /// </summary>
-    private IReadOnlyDictionary<string, double>? BuildEntityGraphScores(string query)
+    private Dictionary<string, double>? BuildEntityGraphScores(string query)
     {
         // Lazy one-time build: all ingests for the question have completed (per-question
         // barrier in BenchmarkRunner), so the buffer is final and conflict-splitting sees

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -23,7 +24,8 @@ public sealed class AutoReviewWhenTests
 
         var entries = ScriniaArtifactStore.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-counts").Which;
-        entry.ReviewWhen.Should().Be("when counts in this memory change");
+        AttributeReaders.TryReadReview(entry.Attributes, out _, out var reviewCondition).Should().BeTrue();
+        reviewCondition.Should().Be("when counts in this memory change");
     }
 
     [Fact]
@@ -36,7 +38,8 @@ public sealed class AutoReviewWhenTests
 
         var entries = ScriniaArtifactStore.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-counts-explicit").Which;
-        entry.ReviewWhen.Should().Be("custom condition");
+        AttributeReaders.TryReadReview(entry.Attributes, out _, out var reviewCondition).Should().BeTrue();
+        reviewCondition.Should().Be("custom condition");
     }
 
     [Fact]
@@ -48,7 +51,8 @@ public sealed class AutoReviewWhenTests
 
         var entries = ScriniaArtifactStore.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-normal").Which;
-        entry.ReviewWhen.Should().BeNull();
+        AttributeReaders.TryReadReview(entry.Attributes, out _, out var reviewCondition).Should().BeFalse();
+        reviewCondition.Should().BeNull();
     }
 
     [Fact]

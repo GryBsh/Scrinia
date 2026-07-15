@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 using Scrinia.Server.Models;
 using Scrinia.Server.Services;
 using Xunit;
@@ -65,7 +66,7 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
     /// keyword/ref/attribute-derived keys are present at write time).
     /// </summary>
     [Fact]
-    public async Task StoreAsync_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task StoreAsync_Persistent_FoldsToAttributesAtWriteTime()
     {
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Body about widgets."], "orch-writer-cutover-store",
@@ -81,9 +82,8 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
         persisted.Attributes!["tag"].Should().Contain("widgets");
         persisted.Attributes!["review"].Should().NotBeEmpty();
 
-        // Legacy fields STILL written (dual-write) — Forward is additive, not a replacement.
-        persisted.Tags.Should().Contain("widgets");
-        persisted.ReviewAfter.Should().NotBeNull();
+        AttributeReaders.TryReadReview(persisted.Attributes, out var reviewDate, out _).Should().BeTrue();
+        reviewDate.Should().NotBeNull();
     }
 
     /// <summary>
@@ -92,7 +92,7 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
     /// proves <see cref="MemoryOrchestrator.StoreAsync"/>'s tag->Fields routing runs at write.
     /// </summary>
     [Fact]
-    public async Task StoreAsync_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task StoreAsync_Ephemeral_FoldsToAttributesAtWriteTime()
     {
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Ephemeral scratch note about widgets."], "~orch-writer-cutover-eph",
@@ -103,8 +103,60 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
 
         entry!.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().Contain("widgets");
+    }
 
-        // Legacy field STILL written (dual-write).
-        entry.Tags.Should().Contain("widgets");
+    /// <summary>
+    /// Merge 3 Task 2b: an explicit curated Description folds into ContentPreview at write
+    /// time (option A) — it wins over the auto content snippet, on both the persistent and
+    /// ephemeral <see cref="MemoryOrchestrator.StoreAsync"/> paths.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_ExplicitDescription_FoldsIntoContentPreview_PersistentAndEphemeral()
+    {
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Body about widgets."], "orch-preview-fold-persistent",
+                Description: "curated widget notes"));
+
+        var entry = _store.LoadIndex("local").Single(e => e.Name == "orch-preview-fold-persistent");
+        entry.ContentPreview.Should().Be("curated widget notes",
+            because: "an explicit non-blank description must fold into ContentPreview at write time");
+
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Ephemeral body about widgets."], "~orch-preview-fold-eph",
+                Description: "curated eph notes"));
+
+        var ephEntry = _store.GetEphemeral("orch-preview-fold-eph");
+        ephEntry.Should().NotBeNull();
+        ephEntry!.ContentPreview.Should().Be("curated eph notes",
+            because: "an explicit non-blank description must fold into ContentPreview at write time (ephemeral path)");
+    }
+
+    /// <summary>
+    /// Merge 3 Task 2b: <see cref="MemoryOrchestrator.AppendAsync"/> has no description param,
+    /// so append must PRESERVE the existing entry's ContentPreview rather than regenerating it
+    /// from content — regenerating would silently drop a curated description folded in by a
+    /// prior Store call.
+    /// </summary>
+    [Fact]
+    public async Task AppendAsync_PreservesExistingContentPreview_PersistentAndEphemeral()
+    {
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Body about widgets."], "orch-preview-preserve-persistent",
+                Description: "curated widget notes"));
+        await MemoryOrchestrator.AppendAsync(_store, "orch-preview-preserve-persistent", "More about widgets.");
+
+        var entry = _store.LoadIndex("local").Single(e => e.Name == "orch-preview-preserve-persistent");
+        entry.ContentPreview.Should().Be("curated widget notes",
+            because: "append with no description param must preserve the curated ContentPreview, not regenerate from content");
+
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Ephemeral body about widgets."], "~orch-preview-preserve-eph",
+                Description: "curated eph notes"));
+        await MemoryOrchestrator.AppendAsync(_store, "~orch-preview-preserve-eph", "More ephemeral notes.");
+
+        var ephEntry = _store.GetEphemeral("orch-preview-preserve-eph");
+        ephEntry.Should().NotBeNull();
+        ephEntry!.ContentPreview.Should().Be("curated eph notes",
+            because: "append with no description param must preserve the curated ContentPreview (ephemeral path)");
     }
 }

@@ -49,7 +49,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Upsert_and_LoadIndex()
     {
-        var entry = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow, "desc");
+        var entry = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry);
 
         var loaded = _store.LoadIndex();
@@ -60,21 +60,21 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Upsert_updates_existing_entry()
     {
-        var entry1 = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow, "v1");
+        var entry1 = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow, ContentPreview: "v1");
         _store.Upsert(entry1);
 
-        var entry2 = entry1 with { Description = "v2" };
+        var entry2 = entry1 with { ContentPreview = "v2" };
         _store.Upsert(entry2);
 
         var loaded = _store.LoadIndex();
         loaded.Should().HaveCount(1);
-        loaded[0].Description.Should().Be("v2");
+        loaded[0].ContentPreview.Should().Be("v2");
     }
 
     [Fact]
     public void Remove_deletes_entry()
     {
-        _store.Upsert(new ArtifactEntry("del-me", "", 50, 1, DateTimeOffset.UtcNow, "temp"));
+        _store.Upsert(new ArtifactEntry("del-me", "", 50, 1, DateTimeOffset.UtcNow));
         _store.Remove("del-me").Should().BeTrue();
         _store.LoadIndex().Should().BeEmpty();
     }
@@ -101,7 +101,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Ephemeral_store_and_retrieve()
     {
-        var entry = new EphemeralEntry("scratch", "NMP...", 10, 1, DateTimeOffset.UtcNow, "temp");
+        var entry = new EphemeralEntry("scratch", "NMP...", 10, 1, DateTimeOffset.UtcNow);
         _store.RememberEphemeral("scratch", entry);
 
         _store.GetEphemeral("scratch").Should().NotBeNull();
@@ -111,7 +111,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Ephemeral_forget()
     {
-        _store.RememberEphemeral("bye", new EphemeralEntry("bye", "", 0, 1, DateTimeOffset.UtcNow, ""));
+        _store.RememberEphemeral("bye", new EphemeralEntry("bye", "", 0, 1, DateTimeOffset.UtcNow));
         _store.ForgetEphemeral("bye").Should().BeTrue();
         _store.GetEphemeral("bye").Should().BeNull();
     }
@@ -121,7 +121,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     {
         string artifact = Nmp2ChunkedEncoder.Encode("Resolve me");
         await _store.WriteArtifactAsync("resolve-test", "local", artifact);
-        _store.Upsert(new ArtifactEntry("resolve-test", "", 100, 1, DateTimeOffset.UtcNow, "test"));
+        _store.Upsert(new ArtifactEntry("resolve-test", "", 100, 1, DateTimeOffset.UtcNow));
 
         string resolved = await _store.ResolveArtifactAsync("resolve-test");
         resolved.Should().Be(artifact);
@@ -131,7 +131,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     public async Task ResolveArtifact_finds_ephemeral()
     {
         string artifact = Nmp2ChunkedEncoder.Encode("Ephemeral data");
-        _store.RememberEphemeral("eph", new EphemeralEntry("eph", artifact, 100, 1, DateTimeOffset.UtcNow, ""));
+        _store.RememberEphemeral("eph", new EphemeralEntry("eph", artifact, 100, 1, DateTimeOffset.UtcNow));
 
         string resolved = await _store.ResolveArtifactAsync("~eph");
         resolved.Should().Be(artifact);
@@ -140,7 +140,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void ListScoped_includes_local_entries()
     {
-        _store.Upsert(new ArtifactEntry("listed", "", 50, 1, DateTimeOffset.UtcNow, "test"));
+        _store.Upsert(new ArtifactEntry("listed", "", 50, 1, DateTimeOffset.UtcNow));
         var list = _store.ListScoped();
         list.Should().Contain(s => s.Entry.Name == "listed");
     }
@@ -150,7 +150,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     {
         string artifact = Nmp2ChunkedEncoder.Encode("Copy content");
         await _store.WriteArtifactAsync("src", "local", artifact);
-        _store.Upsert(new ArtifactEntry("src", "", 100, 1, DateTimeOffset.UtcNow, "original"));
+        _store.Upsert(new ArtifactEntry("src", "", 100, 1, DateTimeOffset.UtcNow));
 
         bool ok = _store.CopyMemory("src", "dst", false, out string msg);
         ok.Should().BeTrue();
@@ -172,7 +172,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void SearchAll_returns_results()
     {
-        var entry = new ArtifactEntry("search-me", "", 100, 1, DateTimeOffset.UtcNow, "kubernetes deployment",
+        var entry = new ArtifactEntry("search-me", "", 100, 1, DateTimeOffset.UtcNow,
             Keywords: ["kubernetes", "deploy"]);
         _store.Upsert(entry);
 
@@ -185,7 +185,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     {
         var entries = new List<ArtifactEntry>
         {
-            new("imported", "", 50, 1, DateTimeOffset.UtcNow, "imported entry")
+            new("imported", "", 50, 1, DateTimeOffset.UtcNow)
         };
         var contents = new Dictionary<string, string>
         {
@@ -212,7 +212,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Upsert_CachePopulated_SubsequentLoadSkipsDisk()
     {
-        var entry = new ArtifactEntry("cached", "file://cached", 100, 1, DateTimeOffset.UtcNow, "cached entry");
+        var entry = new ArtifactEntry("cached", "file://cached", 100, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry);
 
         // Delete the index.json from disk — cache should still serve the data
@@ -226,11 +226,11 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void SaveIndex_InvalidatesAndUpdatesCache()
     {
-        var entry1 = new ArtifactEntry("v1", "", 50, 1, DateTimeOffset.UtcNow, "first");
+        var entry1 = new ArtifactEntry("v1", "", 50, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry1);
 
         // Overwrite index via SaveIndex
-        var entry2 = new ArtifactEntry("v2", "", 75, 1, DateTimeOffset.UtcNow, "second");
+        var entry2 = new ArtifactEntry("v2", "", 75, 1, DateTimeOffset.UtcNow);
         _store.SaveIndex([entry2]);
 
         var loaded = _store.LoadIndex();
@@ -243,7 +243,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     {
         // Seed some data
         for (int i = 0; i < 10; i++)
-            _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
+            _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow));
 
         // 10 concurrent reads should all complete without blocking each other
         var tasks = Enumerable.Range(0, 10)
@@ -277,21 +277,21 @@ public sealed class FileMemoryStoreTests : IDisposable
     {
         // Insert 100 entries, then update the last one — should be O(1) via name dictionary
         for (int i = 0; i < 100; i++)
-            _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
+            _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow));
 
-        var updated = new ArtifactEntry("entry-99", "", 10, 1, DateTimeOffset.UtcNow, "updated");
+        var updated = new ArtifactEntry("entry-99", "", 10, 1, DateTimeOffset.UtcNow, ContentPreview: "updated");
         _store.Upsert(updated);
 
         var loaded = _store.LoadIndex();
         loaded.Should().HaveCount(100);
-        loaded.Should().ContainSingle(e => e.Name == "entry-99" && e.Description == "updated");
+        loaded.Should().ContainSingle(e => e.Name == "entry-99" && e.ContentPreview == "updated");
     }
 
     [Fact]
     public void Remove_UsesNameDictionary()
     {
         for (int i = 0; i < 50; i++)
-            _store.Upsert(new ArtifactEntry($"rm-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
+            _store.Upsert(new ArtifactEntry($"rm-{i}", "", 10, 1, DateTimeOffset.UtcNow));
 
         _store.Remove("rm-25").Should().BeTrue();
 
@@ -524,7 +524,8 @@ public sealed class FileMemoryStoreTests : IDisposable
           "originalBytes": 200,
           "chunkCount": 2,
           "createdAt": "2026-02-01T00:00:00+00:00",
-          "description": "Namespaced version"
+          "description": "Namespaced version",
+          "contentPreview": "Namespaced version"
         }
         """;
         File.WriteAllText(Path.Combine(namespacedDir, "shared-entry.meta.json"), namespacedMeta);
@@ -532,7 +533,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entries = _store.LoadIndex("local-topic:entity/task");
         entries.Should().ContainSingle(e => e.Name == "shared-entry",
             because: "same-name entries should not be duplicated");
-        entries.First(e => e.Name == "shared-entry").Description.Should().Be("Namespaced version",
+        entries.First(e => e.Name == "shared-entry").ContentPreview.Should().Be("Namespaced version",
             because: "namespaced entries take precedence over legacy entries");
     }
 
@@ -567,7 +568,7 @@ public sealed class FileMemoryStoreTests : IDisposable
 
         // Now upsert a NEW entry into the namespaced scope
         _store.Upsert(
-            new ArtifactEntry("new-namespaced", "", 200, 1, DateTimeOffset.UtcNow, "New entry"),
+            new ArtifactEntry("new-namespaced", "", 200, 1, DateTimeOffset.UtcNow),
             "local-topic:entity/concern");
 
         // Verify LoadIndex STILL returns the legacy entry alongside the new one
@@ -600,7 +601,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "concern");
         Directory.CreateDirectory(namespacedDir);
         _store.Upsert(
-            new ArtifactEntry("removable-entry", "", 200, 1, DateTimeOffset.UtcNow, "Will be removed"),
+            new ArtifactEntry("removable-entry", "", 200, 1, DateTimeOffset.UtcNow),
             "local-topic:entity/concern");
 
         // Verify LoadIndex returns both
@@ -673,7 +674,8 @@ public sealed class FileMemoryStoreTests : IDisposable
           "originalBytes": 300,
           "chunkCount": 2,
           "createdAt": "2026-03-01T00:00:00+00:00",
-          "description": "Namespaced version of collision"
+          "description": "Namespaced version of collision",
+          "contentPreview": "Namespaced version of collision"
         }
         """;
         File.WriteAllText(Path.Combine(namespacedDir, "collision.meta.json"), namespacedCollisionMeta);
@@ -688,7 +690,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         // Verify namespaced entry takes precedence when names collide
         entries.Should().ContainSingle(e => e.Name == "collision",
             because: "same-name entries should not be duplicated");
-        entries.First(e => e.Name == "collision").Description.Should().Be("Namespaced version of collision",
+        entries.First(e => e.Name == "collision").ContentPreview.Should().Be("Namespaced version of collision",
             because: "namespaced entries take precedence over legacy entries");
     }
 
@@ -719,10 +721,9 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entry = entries.Single(e => e.Name == "legacy-security-note");
 
         entry.Attributes.Should().NotBeNull(because: "read-time forward-fill should populate Fields without a prior scri migrate");
-        entry.Attributes!["tag"].Should().Contain("security");
         entry.Attributes!["person"].Should().Contain("maria");
-        entry.Tags.Should().Contain("security",
-            because: "forward-fill is additive and must not remove the legacy Tags carrier");
+        // "tags" lost its member source in P6.6b Task 4 — Forward no longer promotes it into Attributes.
+        entry.Attributes.Should().NotContainKey("tag");
     }
 
     [Fact]
@@ -757,7 +758,7 @@ public sealed class FileMemoryStoreTests : IDisposable
 
         entry.Attributes.Should().NotBeNull(
             because: "the first load's write-back should have persisted Fields to the sidecar on disk");
-        entry.Attributes!["tag"].Should().Contain("security");
+        entry.Attributes!["person"].Should().Contain("maria");
     }
 
     [Fact]
@@ -789,7 +790,7 @@ public sealed class FileMemoryStoreTests : IDisposable
             var entries = _store.LoadIndex("local");
             var entry = entries.Single(e => e.Name == "legacy-security-note");
             entry.Attributes.Should().NotBeNull();
-            entry.Attributes!["tag"].Should().Contain("security");
+            entry.Attributes!["person"].Should().Contain("maria");
         });
 
         act.Should().NotThrow(

@@ -8,12 +8,10 @@ using Scrinia.Mcp;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// P6.2 reader cutover: BuildSummary/BuildFullList/AppendResultBlock must source review status,
-/// tags, description/preview, and anchors from the attributes carriers (Fields/ContentPreview)
-/// when present, falling back to the legacy per-memory fields for entries not yet forward-filled.
-/// These tests build entries whose display data lives ONLY in the new carriers (legacy fields
-/// null/empty) and assert the rendered output honours them, plus a companion test proving the
-/// legacy-only fallback path still works unchanged.
+/// Reader cutover: BuildSummary/BuildFullList/AppendResultBlock source review status, tags,
+/// description/preview, and anchors from the attributes carriers (Attributes/ContentPreview).
+/// These tests build entries whose display data lives in the new carriers and assert the rendered
+/// output honours them.
 /// </summary>
 public sealed class McpDisplayCutoverTests : IDisposable
 {
@@ -39,31 +37,14 @@ public sealed class McpDisplayCutoverTests : IDisposable
         OriginalBytes: 100,
         ChunkCount: 1,
         CreatedAt: DateTimeOffset.UtcNow,
-        Description: "",
-        Tags: null,
         ContentPreview: "the preview",
-        ReviewAfter: null,
-        ReviewWhen: null,
         Attributes: new Dictionary<string, string[]>
         {
             [KnownFields.ReviewKey] = [reviewDate.ToString("o")],
             [KnownFields.TagKey] = ["alpha"],
         });
 
-    private static ArtifactEntry LegacyOnlyEntry(string name, DateTimeOffset reviewAfter) => new(
-        Name: name,
-        Uri: $"file://{name}",
-        OriginalBytes: 100,
-        ChunkCount: 1,
-        CreatedAt: DateTimeOffset.UtcNow,
-        Description: "legacy description",
-        Tags: ["beta"],
-        ContentPreview: null,
-        ReviewAfter: reviewAfter,
-        ReviewWhen: null,
-        Attributes: null);
-
-    // ── New-carrier source (Fields/ContentPreview only; legacy fields null) ─────────────────
+    // ── New-carrier source (Attributes/ContentPreview) ─────────────────────────────────────
 
     [Fact]
     public void BuildFullList_FieldsOnlyEntry_ShowsStaleAndPreview()
@@ -74,7 +55,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         string output = ScriniaMcpTools.BuildFullList(entries, _store, 0, 50);
 
         output.Should().Contain("[stale]", because: "Fields[\"review\"] holds a past date");
-        output.Should().Contain("the preview", because: "ContentPreview should be used when Description is empty");
+        output.Should().Contain("the preview", because: "ContentPreview is the surviving display carrier");
     }
 
     [Fact]
@@ -89,32 +70,6 @@ public sealed class McpDisplayCutoverTests : IDisposable
         output.Should().Contain("alpha", because: "Top keywords must fold in Fields[\"tag\"] when Tags is null");
     }
 
-    // ── Legacy-only fallback (ephemeral entries not yet forward-filled) ─────────────────────
-
-    [Fact]
-    public void BuildFullList_LegacyOnlyEntry_StillShowsStaleAndDescription()
-    {
-        var entry = LegacyOnlyEntry("legacy-only", DateTimeOffset.UtcNow.AddDays(-1));
-        var entries = new List<ScopedArtifact> { new("local", entry) };
-
-        string output = ScriniaMcpTools.BuildFullList(entries, _store, 0, 50);
-
-        output.Should().Contain("[stale]", because: "legacy ReviewAfter in the past must still mark the entry stale");
-        output.Should().Contain("legacy description");
-    }
-
-    [Fact]
-    public void BuildSummary_LegacyOnlyEntry_StillShowsStaleCountAndTag()
-    {
-        var entry = LegacyOnlyEntry("legacy-only", DateTimeOffset.UtcNow.AddDays(-1));
-        var entries = new List<ScopedArtifact> { new("local", entry) };
-
-        string output = ScriniaMcpTools.BuildSummary(entries, _store);
-
-        output.Should().Contain("1 stale");
-        output.Should().Contain("beta", because: "legacy Tags must still fold into Top keywords when Fields is null");
-    }
-
     // ── Search-path (AppendResultBlock/AppendAnchors) ───────────────────────────────────────
 
     [Fact]
@@ -126,10 +81,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
             OriginalBytes: 100,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: "",
-            Tags: null,
             ContentPreview: "search preview text",
-            RetrievalAnchors: null,
             Attributes: new Dictionary<string, string[]>
             {
                 [KnownFields.AnchorKey] = ["anchor-one", "anchor-two"],
@@ -141,7 +93,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         ScriniaMcpTools.AppendResultBlock(sb, _store, result, 1);
         string output = sb.ToString();
 
-        output.Should().Contain("search preview text", because: "ContentPreview should be used when Description is empty");
+        output.Should().Contain("search preview text", because: "ContentPreview is the surviving display carrier");
         output.Should().Contain("anchor-one");
         output.Should().Contain("anchor-two");
     }

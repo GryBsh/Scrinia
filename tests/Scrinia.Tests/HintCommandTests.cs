@@ -31,7 +31,7 @@ public sealed class HintCommandTests : IDisposable
 
     private void AddMemory(string name, string content)
     {
-        var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow, "desc");
+        var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, "local");
         string path = _store.ArtifactPath(name, "local");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

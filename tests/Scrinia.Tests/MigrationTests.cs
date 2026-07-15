@@ -370,17 +370,18 @@ public sealed class MigrationTests : IDisposable
     // ═══════════════════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task Migrate_ForwardFillsLegacyEntry_TagsBecomeFieldsTag()
+    public async Task Migrate_ForwardFillsLegacyEntry_FileHashesBecomeFieldsFile()
     {
-        // Arrange: seed one legacy entry (Tags only, no Fields) directly via a FileMemoryStore
-        // against the temp workspace — mirrors AttributeMigrationTests' seeding pattern.
+        // Arrange: seed one legacy entry (FileHashes only, no Fields) directly via a FileMemoryStore
+        // against the temp workspace — mirrors AttributeMigrationTests' seeding pattern. FileHashes
+        // is the one member-sourced carrier Forward still folds (Task 4 trimmed tags/review/anchor).
         using (var seedStore = new FileMemoryStore(_tempDir))
         {
             seedStore.Upsert(
                 new ArtifactEntry(
                     Name: "legacy-note", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-                    CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
-                    Tags: ["security", "auth"]),
+                    CreatedAt: DateTimeOffset.UnixEpoch,
+                    FileHashes: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" }),
                 "local");
         }
 
@@ -388,13 +389,11 @@ public sealed class MigrationTests : IDisposable
         var cmd = new ScriniaCommands();
         int exitCode = await cmd.Migrate(workspaceRoot: _tempDir, skipBackup: true, json: false);
 
-        // Assert: exit 0, and a fresh store reload shows the entry gained Fields["tag"]
+        // Assert: exit 0, and a fresh store reload shows the entry gained Fields["file"]
         exitCode.Should().Be(0);
         using var freshStore = new FileMemoryStore(_tempDir);
         var entry = freshStore.LoadIndex("local").Single(e => e.Name == "legacy-note");
         entry.Attributes.Should().NotBeNull();
-        entry.Attributes!["tag"].Should().BeEquivalentTo("security", "auth");
-        // additive: legacy Tags field untouched
-        entry.Tags.Should().BeEquivalentTo("security", "auth");
+        entry.Attributes!["file"].Should().BeEquivalentTo("src/A.cs", "src/B.cs");
     }
 }

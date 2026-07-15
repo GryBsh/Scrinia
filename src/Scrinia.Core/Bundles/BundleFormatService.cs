@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 
 namespace Scrinia.Core.Bundles;
 
@@ -169,12 +170,40 @@ public static class BundleFormatService
 
                 long originalBytes = entryEl.TryGetProperty("originalBytes", out var ob) ? ob.GetInt64() : 0;
                 int chunkCount = entryEl.TryGetProperty("chunkCount", out var cc) ? cc.GetInt32() : 1;
+                // "description" is a back-compat read: pre-Merge-3 bundles carry it as the
+                // display carrier. Modern bundles carry "contentPreview" instead — prefer that
+                // when present, falling back to "description" for old bundles.
                 string description = entryEl.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
                 string? contentPreview = entryEl.TryGetProperty("contentPreview", out var cp) ? cp.GetString() : null;
+                contentPreview ??= description.Length > 0 ? description : null;
 
-                string[]? tags = null;
+                // "tags" is a back-compat read: pre-Merge-3 bundles carry free-form tags as a
+                // top-level array. Modern bundles carry "attributes" (a key → string[] dict,
+                // including the "tag" key) instead. Read both; the modern "attributes" reading
+                // wins if it already has a "tag" key, otherwise the legacy top-level "tags"
+                // fills Attributes[KnownFields.TagKey] so neither source is lost.
+                string[]? legacyTags = null;
                 if (entryEl.TryGetProperty("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Array)
-                    tags = tagsEl.EnumerateArray().Select(t2 => t2.GetString() ?? "").Where(t2 => t2.Length > 0).ToArray();
+                    legacyTags = tagsEl.EnumerateArray().Select(t2 => t2.GetString() ?? "").Where(t2 => t2.Length > 0).ToArray();
+
+                Dictionary<string, string[]>? attributes = null;
+                if (entryEl.TryGetProperty("attributes", out var attrEl) && attrEl.ValueKind == JsonValueKind.Object)
+                {
+                    attributes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var prop in attrEl.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind != JsonValueKind.Array) continue;
+                        string[] vals = prop.Value.EnumerateArray().Select(v => v.GetString() ?? "")
+                            .Where(v => v.Length > 0).ToArray();
+                        if (vals.Length > 0) attributes[prop.Name] = vals;
+                    }
+                }
+
+                if (legacyTags is { Length: > 0 } && (attributes is null || !attributes.ContainsKey(KnownFields.TagKey)))
+                {
+                    attributes ??= new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+                    attributes[KnownFields.TagKey] = legacyTags;
+                }
 
                 DateTimeOffset createdAt = entryEl.TryGetProperty("createdAt", out var ca)
                     && DateTimeOffset.TryParse(ca.GetString(), out var parsedDate)
@@ -210,10 +239,9 @@ public static class BundleFormatService
                     OriginalBytes: originalBytes,
                     ChunkCount: chunkCount,
                     CreatedAt: createdAt,
-                    Description: description,
-                    Tags: tags,
                     ContentPreview: contentPreview,
-                    ChunkEntries: chunkEntries));
+                    ChunkEntries: chunkEntries,
+                    Attributes: attributes));
 
                 string artifactEntryName = $"topics/{sanitizedTopic}/{store.SanitizeName(name)}.nmp2";
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);

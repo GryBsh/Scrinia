@@ -181,15 +181,22 @@ public partial class ScriniaCommands
                 ? description
                 : content[..Math.Min(200, content.Length)];
 
+            // An explicit -d description is the more intentional value — prefer it as the
+            // display carrier; otherwise fall back to the auto-generated content preview.
+            string entryContentPreview = !string.IsNullOrWhiteSpace(description) ? desc : preview;
+
+            Dictionary<string, string[]>? attributes = tagArray is { Length: > 0 }
+                ? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownFields.TagKey] = tagArray }
+                : null;
+
             entries.Add(new ArtifactEntry(
                 Name: entryName,
                 Uri: "",
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: desc,
-                Tags: tagArray,
-                ContentPreview: preview));
+                ContentPreview: entryContentPreview,
+                Attributes: attributes));
 
             artifactContents[entryName] = artifact;
         }
