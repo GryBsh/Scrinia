@@ -35,7 +35,7 @@ public class FileMemoryStoreCacheTests : IDisposable
     private void Add(string topic, string name, string content)
     {
         string scope = string.IsNullOrEmpty(topic) ? "local" : $"local-topic:{topic}";
-        var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow, "desc");
+        var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, scope);
         string path = _store.ArtifactPath(name, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

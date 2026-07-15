@@ -13,7 +13,7 @@ namespace Scrinia.Tests;
 public sealed class EntityGraphScoreContributorTests
 {
     private static ScopedArtifact Doc(string name, params string[] entities) =>
-        new("local", new ArtifactEntry(name, $"test://{name}", 0, 0, DateTimeOffset.UtcNow, "", Keywords: entities));
+        new("local", new ArtifactEntry(name, $"test://{name}", 0, 0, DateTimeOffset.UtcNow, Keywords: entities));
 
     [Fact]
     public async Task ComputeScores_LiftsAssociatedMemory_KeyedByScopeAndName()

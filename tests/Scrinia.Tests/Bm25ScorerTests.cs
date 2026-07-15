@@ -150,10 +150,10 @@ public sealed class Bm25ScorerTests
         // Verify through WeightedFieldScorer.SearchAll that normalized scores work correctly
         var candidates = new[]
         {
-            new ScopedArtifact("local", new ArtifactEntry("auth-doc", "", 100, 1, DateTimeOffset.UtcNow, "auth system",
+            new ScopedArtifact("local", new ArtifactEntry("auth-doc", "", 100, 1, DateTimeOffset.UtcNow,
                 Keywords: ["auth", "token"],
                 TermFrequencies: new Dictionary<string, int> { ["auth"] = 10, ["token"] = 5 })),
-            new ScopedArtifact("local", new ArtifactEntry("other-doc", "", 100, 1, DateTimeOffset.UtcNow, "other stuff",
+            new ScopedArtifact("local", new ArtifactEntry("other-doc", "", 100, 1, DateTimeOffset.UtcNow,
                 Keywords: ["other"],
                 TermFrequencies: new Dictionary<string, int> { ["other"] = 8 })),
         };
@@ -176,14 +176,14 @@ public sealed class Bm25ScorerTests
         for (int i = 0; i < 20; i++)
         {
             candidates.Add(new ScopedArtifact("local", new ArtifactEntry(
-                $"entry-{i}", "", 100, 1, now.AddMinutes(-i), $"doc about entry {i}",
+                $"entry-{i}", "", 100, 1, now.AddMinutes(-i),
                 Keywords: [$"entry{i}"],
                 TermFrequencies: new Dictionary<string, int> { [$"entry{i}"] = i + 1 })));
         }
 
         // Add one entry that matches the query strongly
         candidates.Add(new ScopedArtifact("local", new ArtifactEntry(
-            "target", "", 100, 1, now, "the target entry",
+            "target", "", 100, 1, now,
             Keywords: ["target"],
             TermFrequencies: new Dictionary<string, int> { ["target"] = 20 })));
 
@@ -201,13 +201,13 @@ public sealed class Bm25ScorerTests
         var now = DateTimeOffset.UtcNow;
         var candidates = new[]
         {
-            new ScopedArtifact("local", new ArtifactEntry("best-match", "", 100, 1, now, "best match test query",
+            new ScopedArtifact("local", new ArtifactEntry("best-match", "", 100, 1, now,
                 Keywords: ["best", "match", "test", "query"],
                 TermFrequencies: new Dictionary<string, int> { ["best"] = 10, ["match"] = 8, ["test"] = 5, ["query"] = 5 })),
-            new ScopedArtifact("local", new ArtifactEntry("partial-match", "", 100, 1, now, "partial match only",
+            new ScopedArtifact("local", new ArtifactEntry("partial-match", "", 100, 1, now,
                 Keywords: ["partial", "match"],
                 TermFrequencies: new Dictionary<string, int> { ["partial"] = 3, ["match"] = 2 })),
-            new ScopedArtifact("local", new ArtifactEntry("no-match", "", 100, 1, now, "irrelevant content xyz",
+            new ScopedArtifact("local", new ArtifactEntry("no-match", "", 100, 1, now,
                 Keywords: ["irrelevant"],
                 TermFrequencies: new Dictionary<string, int> { ["irrelevant"] = 5 })),
         };
@@ -236,7 +236,7 @@ public sealed class Bm25ScorerTests
         // Fields block).
         var candidates = new[]
         {
-            new ScopedArtifact("local", new ArtifactEntry("acme-note", "", 100, 1, DateTimeOffset.UtcNow, "a note",
+            new ScopedArtifact("local", new ArtifactEntry("acme-note", "", 100, 1, DateTimeOffset.UtcNow,
                 Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] })),
         };
 
