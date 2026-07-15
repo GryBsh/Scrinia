@@ -260,8 +260,11 @@ public sealed class ScriniaMcpToolsTests
     public async Task Store_OverwriteSameName_UpdatesIndex()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["first content"], "overwrite-test", "first desc");
-        await Tools().Store(["second content"], "overwrite-test", "second desc");
+        // No explicit description on either Store call: Merge 3 Task 2b folds an explicit
+        // description into ContentPreview at write time (option A), which would otherwise mask
+        // this test's real intent — that the AUTO content preview tracks the latest Store call.
+        await Tools().Store(["first content"], "overwrite-test");
+        await Tools().Store(["second content"], "overwrite-test");
 
         string memories = await Tools().List(mode: "full");
         var content = ResponseParser.Parse(memories).Content!;
@@ -303,6 +306,23 @@ public sealed class ScriniaMcpToolsTests
         entries.Should().ContainSingle(e => e.Name == "explicit-desc-test");
         entries[0].Description.Should().Be(explicitDesc,
             because: "when an explicit description is supplied it must be used verbatim");
+    }
+
+    [Fact]
+    public async Task Store_ExplicitDescription_FoldsIntoContentPreview()
+    {
+        // Merge 3 Task 2b: an explicit curated description becomes the displayed ContentPreview
+        // at write time (option A) — it wins over the auto content snippet, giving the curated
+        // description a home now that ContentPreview (not Description) is what list/search show.
+        using var scope = new TestHelpers.StoreScope();
+        string explicitDesc = "My custom description here.";
+
+        await Tools().Store([TestHelpers.Facts.Fact1], "explicit-desc-preview-test", explicitDesc);
+
+        var entries = ScriniaArtifactStore.LoadIndex();
+        entries.Should().ContainSingle(e => e.Name == "explicit-desc-preview-test");
+        entries[0].ContentPreview.Should().Be(explicitDesc,
+            because: "an explicit non-blank description must fold into ContentPreview at write time");
     }
 
     [Fact]
@@ -1721,8 +1741,14 @@ public sealed class ScriniaMcpToolsTests
     public async Task Append_PreservesCuratedAnchorsTagsAndDescription()
     {
         // Regression: append used to rebuild the entry with Tags=null, RetrievalAnchors=null,
-        // and Description overwritten with a content slice — silently destroying everything
+        // and ContentPreview overwritten with a content slice — silently destroying everything
         // remember() curated. Appending must preserve that metadata.
+        //
+        // Merge 3 Task 2b: an explicit curated description is folded into ContentPreview at
+        // write time (option A) — it is now the displayed carrier, not the legacy Description
+        // member. An append that supplies no new description must PRESERVE the existing
+        // ContentPreview rather than regenerating it from content, which would silently drop
+        // the curated description.
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(
             ["The widget subsystem orchestrates lifecycle hooks."],
@@ -1740,8 +1766,8 @@ public sealed class ScriniaMcpToolsTests
             .And.Contain("how do lifecycle hooks work");
         entry.Tags.Should().NotBeNull();
         entry.Tags.Should().Contain("architecture").And.Contain("widgets");
-        entry.Description.Should().Be("widget lifecycle notes",
-            because: "an append with no new description must preserve the curated one, not overwrite it with a content slice");
+        entry.ContentPreview.Should().Be("widget lifecycle notes",
+            because: "an append with no new description must preserve the curated description that was folded into ContentPreview at Store time, not overwrite it with a content slice");
         entry.Keywords.Should().Contain("widget",
             because: "agent-supplied keywords must survive append, not be dropped");
     }
@@ -2434,11 +2460,15 @@ public sealed class ScriniaMcpToolsTests
         entries.Single(e => e.Name == "um-beta").Attributes!["ref"].Should().Contain(v => v.Contains("um-alpha"));
     }
 
-    // ── UpdateMeta review-state / ContentPreview direct write (P6.6b Task 4) ────
+    // ── UpdateMeta review-state / ContentPreview direct write (P6.6b Task 4 / Task 2b) ────
     // These are VALUE regression-locks on the RAW persisted entry. Because AttributeMigration.Forward
     // still runs after UpdateMeta's own write in this merge step, they cannot by themselves prove the
     // direct write executed (Forward would produce the same values) — that's expected here; a later
     // step that removes the Forward fold is what makes these discriminating.
+    //
+    // Merge 3 Task 2b (option A): an explicit new description always wins and overwrites
+    // ContentPreview — the old Merge-2 null-only backfill (only set ContentPreview when it was
+    // previously null) has been superseded.
 
     [Fact]
     public async Task UpdateMeta_ReviewAfterAndWhen_SetsAttributesReview_DateFirst()
@@ -2496,14 +2526,13 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task UpdateMeta_DescriptionOnNullContentPreview_BackfillsContentPreview()
+    public async Task UpdateMeta_DescriptionOnNullContentPreview_SetsContentPreview()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["base content"], "hint-preview-null");
 
-        // Pin ContentPreview to null directly — Store always populates it, so force the
-        // pre-ContentPreview shape this backfill is meant to rescue (mirrors Forward's own
-        // null-only backfill semantics under test).
+        // Pin ContentPreview to null directly — Store always populates it, so force the shape
+        // where the entry starts with no ContentPreview at all.
         var store = MemoryStoreContext.Current!;
         var baseline = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-null");
         store.Upsert(baseline with { ContentPreview = null });
@@ -2515,8 +2544,11 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task UpdateMeta_DescriptionOnExistingContentPreview_LeavesContentPreviewUnchanged()
+    public async Task UpdateMeta_DescriptionOnExistingContentPreview_OverwritesContentPreview()
     {
+        // Merge 3 Task 2b (option A): a new curated description always wins and becomes the
+        // displayed ContentPreview, even when one was already set (superseding the old Merge-2
+        // null-only backfill, which left an existing ContentPreview untouched).
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(["base content"], "hint-preview-set");
         string originalPreview = ScriniaArtifactStore.LoadIndex()
@@ -2527,7 +2559,8 @@ public sealed class ScriniaMcpToolsTests
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-set");
         entry.Description.Should().Be("new");
-        entry.ContentPreview.Should().Be(originalPreview);
+        entry.ContentPreview.Should().Be("new",
+            because: "an explicit new description must overwrite ContentPreview, not preserve the prior one");
     }
 
 }

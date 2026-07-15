@@ -54,7 +54,12 @@ public static class MemoryOrchestrator
                 : Nmp2ChunkedEncoder.EncodeChunks(req.Content);
             int ephChunkCount = Nmp2ChunkedEncoder.GetChunkCount(ephArtifact);
             long ephBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-            string ephPreview = store.GenerateContentPreview(joined);
+            // Merge 3 Task 2b: an explicit curated description becomes the displayed
+            // ContentPreview (option A) — it wins over the auto content snippet.
+            string ephPreview = !string.IsNullOrWhiteSpace(req.Description)
+                ? req.Description
+                : store.GenerateContentPreview(joined);
+            // ephDesc still feeds the (soon-to-be-removed) Description member until Task 7.
             string ephDesc = string.IsNullOrWhiteSpace(req.Description)
                 ? joined[..Math.Min(200, joined.Length)]
                 : req.Description;
@@ -115,7 +120,11 @@ public static class MemoryOrchestrator
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-        string contentPreview = store.GenerateContentPreview(joined);
+        // Merge 3 Task 2b: an explicit curated description becomes the displayed
+        // ContentPreview (option A) — it wins over the auto content snippet.
+        string contentPreview = !string.IsNullOrWhiteSpace(req.Description)
+            ? req.Description
+            : store.GenerateContentPreview(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         DateTimeOffset? parsedReviewAfter = null;
@@ -198,7 +207,11 @@ public static class MemoryOrchestrator
             tf[kw] = count + 2;
         }
 
-        string contentPreview = store.GenerateContentPreview(fullText);
+        // Merge 3 Task 2b: AppendAsync has no description param, so option A's "new description
+        // wins" clause doesn't apply here — only "preserve the existing ContentPreview rather
+        // than regenerating from content" does (regenerating would drop a curated description
+        // folded in by a prior Store/UpdateMeta call). Computed per-branch below since
+        // existingEph/existingEntry are branch-local.
 
         var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
@@ -218,6 +231,8 @@ public static class MemoryOrchestrator
             ChunkEntry[] updatedChunks = existingEph?.ChunkEntries is not null
                 ? [.. existingEph.ChunkEntries, newChunkEntry]
                 : [newChunkEntry];
+
+            string contentPreview = existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText);
 
             var incoming = KnownFields.Merge(
                 FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
@@ -251,6 +266,8 @@ public static class MemoryOrchestrator
             ChunkEntry[] updatedChunks = existingEntry?.ChunkEntries is not null
                 ? [.. existingEntry.ChunkEntries, newChunkEntry]
                 : [newChunkEntry];
+
+            string contentPreview = existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText);
 
             if (existingEntry is not null)
                 store.ArchiveVersion(subject, scope);

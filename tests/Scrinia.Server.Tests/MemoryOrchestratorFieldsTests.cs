@@ -107,4 +107,59 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
         // Legacy field STILL written (dual-write).
         entry.Tags.Should().Contain("widgets");
     }
+
+    /// <summary>
+    /// Merge 3 Task 2b: an explicit curated Description folds into ContentPreview at write
+    /// time (option A) — it wins over the auto content snippet, on both the persistent and
+    /// ephemeral <see cref="MemoryOrchestrator.StoreAsync"/> paths.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_ExplicitDescription_FoldsIntoContentPreview_PersistentAndEphemeral()
+    {
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Body about widgets."], "orch-preview-fold-persistent",
+                Description: "curated widget notes"));
+
+        var entry = _store.LoadIndex("local").Single(e => e.Name == "orch-preview-fold-persistent");
+        entry.ContentPreview.Should().Be("curated widget notes",
+            because: "an explicit non-blank description must fold into ContentPreview at write time");
+
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Ephemeral body about widgets."], "~orch-preview-fold-eph",
+                Description: "curated eph notes"));
+
+        var ephEntry = _store.GetEphemeral("orch-preview-fold-eph");
+        ephEntry.Should().NotBeNull();
+        ephEntry!.ContentPreview.Should().Be("curated eph notes",
+            because: "an explicit non-blank description must fold into ContentPreview at write time (ephemeral path)");
+    }
+
+    /// <summary>
+    /// Merge 3 Task 2b: <see cref="MemoryOrchestrator.AppendAsync"/> has no description param,
+    /// so append must PRESERVE the existing entry's ContentPreview rather than regenerating it
+    /// from content — regenerating would silently drop a curated description folded in by a
+    /// prior Store call.
+    /// </summary>
+    [Fact]
+    public async Task AppendAsync_PreservesExistingContentPreview_PersistentAndEphemeral()
+    {
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Body about widgets."], "orch-preview-preserve-persistent",
+                Description: "curated widget notes"));
+        await MemoryOrchestrator.AppendAsync(_store, "orch-preview-preserve-persistent", "More about widgets.");
+
+        var entry = _store.LoadIndex("local").Single(e => e.Name == "orch-preview-preserve-persistent");
+        entry.ContentPreview.Should().Be("curated widget notes",
+            because: "append with no description param must preserve the curated ContentPreview, not regenerate from content");
+
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["Ephemeral body about widgets."], "~orch-preview-preserve-eph",
+                Description: "curated eph notes"));
+        await MemoryOrchestrator.AppendAsync(_store, "~orch-preview-preserve-eph", "More ephemeral notes.");
+
+        var ephEntry = _store.GetEphemeral("orch-preview-preserve-eph");
+        ephEntry.Should().NotBeNull();
+        ephEntry!.ContentPreview.Should().Be("curated eph notes",
+            because: "append with no description param must preserve the curated ContentPreview (ephemeral path)");
+    }
 }

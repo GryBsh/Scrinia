@@ -207,7 +207,11 @@ public sealed partial class ScriniaMcpTools
                 : Nmp2ChunkedEncoder.EncodeChunks(content);
             int ephChunkCount = Nmp2ChunkedEncoder.GetChunkCount(ephArtifact);
             long ephBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-            string ephPreview = store.GenerateContentPreview(joined);
+            // Merge 3 Task 2b: an explicit curated description becomes the displayed
+            // ContentPreview (option A) — it wins over the auto content snippet.
+            string ephPreview = !string.IsNullOrWhiteSpace(description)
+                ? description
+                : store.GenerateContentPreview(joined);
             string ephDesc = string.IsNullOrWhiteSpace(description)
                 ? joined[..Math.Min(200, joined.Length)]
                 : description;
@@ -313,7 +317,11 @@ public sealed partial class ScriniaMcpTools
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-        string contentPreview = store.GenerateContentPreview(joined);
+        // Merge 3 Task 2b: an explicit curated description becomes the displayed
+        // ContentPreview (option A) — it wins over the auto content snippet.
+        string contentPreview = !string.IsNullOrWhiteSpace(description)
+            ? description
+            : store.GenerateContentPreview(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         // New model: the `review` attribute carries review dates and/or free-text conditions.
@@ -465,18 +473,13 @@ public sealed partial class ScriniaMcpTools
         }
 
         // Replace description if provided
-        // NOTE (Merge 3 Task 2): NOT re-sourced to ContentPreview. Unlike Tags/ReviewAfter/
-        // ReviewWhen/RetrievalAnchors, the curated Description is never dual-written into
-        // ContentPreview at write time — Store/Append always set ContentPreview from
-        // GenerateContentPreview(content), independent of the description param.
-        // AttributeMigration.Forward only backfills ContentPreview from Description when
-        // ContentPreview is null (rescue for pre-ContentPreview sidecars), so once
-        // ContentPreview is set (the normal case), it silently diverges from a curated
-        // description. Re-sourcing this default would drop curated descriptions on the next
-        // no-op `update` (see Append_PreservesCuratedAnchorsTagsAndDescription in
-        // ScriniaMcpToolsTests.cs, which locks the equivalent append-side behavior). Left on
-        // the legacy member pending a design decision — see p66b3-task-2-report.md.
-        string updatedDescription = entry.Description;
+        // Merge 3 Task 2b: re-sourced to ContentPreview, the successor curated-description
+        // carrier — Store/Append now fold an explicit description into ContentPreview at write
+        // time (option A), so the legacy Description member's carry-forward default should track
+        // ContentPreview too, not the (no-longer-updated) legacy member. This only feeds the
+        // soon-to-be-removed Description member; the ContentPreview write itself is computed
+        // separately below.
+        string updatedDescription = entry.ContentPreview ?? string.Empty;
         if (!string.IsNullOrWhiteSpace(description))
         {
             updatedDescription = description;
@@ -527,10 +530,12 @@ public sealed partial class ScriniaMcpTools
             mergedFields = KnownFields.Merge(mergedFields,
                 new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownFields.ReviewKey] = reviewParts.ToArray() });
 
-        // ContentPreview direct write — byte-parity with Forward's backfill
-        // (entry.ContentPreview ?? (blank Description ? null : Description)).
-        string? updatedContentPreview = entry.ContentPreview
-            ?? (string.IsNullOrWhiteSpace(updatedDescription) ? null : updatedDescription);
+        // ContentPreview direct write — Merge 3 Task 2b option A: an explicit new description
+        // wins and becomes the displayed ContentPreview; otherwise the existing ContentPreview
+        // is preserved (superseding the old Merge-2 null-only backfill).
+        string? updatedContentPreview = !string.IsNullOrWhiteSpace(description)
+            ? description
+            : entry.ContentPreview;
 
         // Build the updated entry via term frequencies merge
         var updatedTf = entry.TermFrequencies;
@@ -1212,7 +1217,9 @@ public sealed partial class ScriniaMcpTools
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
         long originalBytes = fullBytes.LongLength;
 
-        string contentPreview = store.GenerateContentPreview(fullText);
+        // Merge 3 Task 2b: entry-level ContentPreview is computed per-branch below (option A —
+        // new description wins; otherwise PRESERVE the existing entry's ContentPreview rather
+        // than regenerating from content, which would silently drop a curated description).
 
         // Build chunk entry for the newly appended content (single-pass)
         var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
@@ -1238,11 +1245,19 @@ public sealed partial class ScriniaMcpTools
             var existingEph = store.GetEphemeral(key);
             DateTimeOffset createdAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
 
-            // Description NOT re-sourced to ContentPreview here — see the UpdateMeta note above
-            // (~L468); ContentPreview is content-derived, not a curated-description carrier.
+            // Merge 3 Task 2b: new description wins; otherwise preserve the existing entry's
+            // ContentPreview (which now carries either a prior curated description or the prior
+            // auto preview) rather than regenerating from content — that would drop a curated
+            // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
+            string contentPreview = !string.IsNullOrWhiteSpace(description)
+                ? description
+                : (existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText));
+
+            // BuildAppendMetadata's description param feeds the entry's (legacy) Description
+            // member only — re-sourced from ContentPreview, the successor carrier (Task 2b #4).
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
-                existingEph?.Description, AttributeReaders.DisplayTags(existingEph?.Attributes).ToArray(),
+                existingEph?.ContentPreview, AttributeReaders.DisplayTags(existingEph?.Attributes).ToArray(),
                 existingEph?.Keywords, AttributeReaders.DisplayAnchors(existingEph?.Attributes).ToArray(),
                 content, routedNewFields, existingEph?.Attributes, attributes);
 
@@ -1279,11 +1294,19 @@ public sealed partial class ScriniaMcpTools
             var existingEntry = existingEntries.FirstOrDefault(e => e.Name == subject);
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
 
-            // Description NOT re-sourced to ContentPreview here — see the UpdateMeta note above
-            // (~L468); ContentPreview is content-derived, not a curated-description carrier.
+            // Merge 3 Task 2b: new description wins; otherwise preserve the existing entry's
+            // ContentPreview (which now carries either a prior curated description or the prior
+            // auto preview) rather than regenerating from content — that would drop a curated
+            // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
+            string contentPreview = !string.IsNullOrWhiteSpace(description)
+                ? description
+                : (existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText));
+
+            // BuildAppendMetadata's description param feeds the entry's (legacy) Description
+            // member only — re-sourced from ContentPreview, the successor carrier (Task 2b #4).
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
-                existingEntry?.Description, AttributeReaders.DisplayTags(existingEntry?.Attributes).ToArray(),
+                existingEntry?.ContentPreview, AttributeReaders.DisplayTags(existingEntry?.Attributes).ToArray(),
                 existingEntry?.Keywords, AttributeReaders.DisplayAnchors(existingEntry?.Attributes).ToArray(),
                 content, routedNewFields, existingEntry?.Attributes, attributes);
 
@@ -1350,6 +1373,9 @@ public sealed partial class ScriniaMcpTools
     /// metadata with any caller-supplied additions. This is the carry-forward that keeps
     /// <c>append</c> from discarding what <c>remember</c> set — the appended content is
     /// re-indexed, but anchors, tags, description, and curated keywords survive and grow.
+    /// The returned <c>Description</c> only feeds the (soon-to-be-removed) legacy Description
+    /// member; <paramref name="existingDescription"/> is sourced from the caller's
+    /// <c>ContentPreview</c> (Merge 3 Task 2b #4), the successor curated-description carrier.
     /// </summary>
     private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors, Dictionary<string, string[]>? Fields)
         BuildAppendMetadata(
