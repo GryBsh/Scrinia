@@ -1510,8 +1510,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 ChunkCount: srcEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
                 CreatedAt: DateTimeOffset.UtcNow,
                 Description: srcEntry?.Description ?? $"Loaded from {sourceName}",
-                Tags: srcEntry?.Tags,
-                ContentPreview: srcEntry?.ContentPreview,
+                ContentPreview: srcEntry?.ContentPreview ?? $"Loaded from {sourceName}",
                 ChunkEntries: srcEntry?.ChunkEntries,
                 Attributes: srcEntry?.Attributes);
             RememberEphemeral(dstKey, ephEntry);
@@ -1555,7 +1554,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: $"Copied from {sourceName}");
+                Description: $"Copied from {sourceName}",
+                ContentPreview: $"Copied from {sourceName}");
         }
 
         Upsert(destinationEntry, persistDstScope);

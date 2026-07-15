@@ -667,8 +667,7 @@ internal static partial class ScriniaArtifactStore
                 ChunkCount: srcEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
                 CreatedAt: DateTimeOffset.UtcNow,
                 Description: srcEntry?.Description ?? $"Loaded from {sourceName}",
-                Tags: srcEntry?.Tags,
-                ContentPreview: srcEntry?.ContentPreview,
+                ContentPreview: srcEntry?.ContentPreview ?? $"Loaded from {sourceName}",
                 ChunkEntries: srcEntry?.ChunkEntries,
                 Attributes: srcEntry?.Attributes);
             RememberEphemeral(dstKey, ephEntry);
@@ -712,7 +711,8 @@ internal static partial class ScriniaArtifactStore
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: $"Copied from {sourceName}");
+                Description: $"Copied from {sourceName}",
+                ContentPreview: $"Copied from {sourceName}");
         }
 
         Upsert(destinationEntry, persistDstScope);

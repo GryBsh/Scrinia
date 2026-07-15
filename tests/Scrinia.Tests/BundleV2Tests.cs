@@ -4,6 +4,7 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 
 namespace Scrinia.Tests;
 
@@ -46,6 +47,30 @@ public sealed class BundleV2Tests : IDisposable
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
             Description: $"Test entry for {topic}:{subject}");
+        _store.Upsert(entry, scope);
+        _store.WriteArtifactAsync(subject, scope, content).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Seeds the store with an entry carrying modern <see cref="ArtifactEntry.ContentPreview"/> +
+    /// <see cref="ArtifactEntry.Attributes"/> data (post-migration shape), for round-trip fidelity tests.
+    /// </summary>
+    private void SeedTopicWithAttributes(
+        string topic, string subject, string content, string contentPreview, string[] tags)
+    {
+        string scope = MemoryNaming.BuildScopedTopicScope(_store.SanitizeName(topic));
+        var entry = new ArtifactEntry(
+            Name: subject,
+            Uri: "",
+            OriginalBytes: content.Length,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow,
+            Description: contentPreview,
+            ContentPreview: contentPreview,
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                [KnownFields.TagKey] = tags
+            });
         _store.Upsert(entry, scope);
         _store.WriteArtifactAsync(subject, scope, content).GetAwaiter().GetResult();
     }
@@ -289,6 +314,89 @@ public sealed class BundleV2Tests : IDisposable
 
         var cbContent = await importStore.ReadArtifactAsync("circuit-breaker", importScope);
         cbContent.Should().Be("## Circuit breaker\nFail fast.");
+    }
+
+    [Fact]
+    public void BundleRoundTrip_ContentPreviewAndTags_Survive()
+    {
+        // Arrange — seed an entry with modern ContentPreview + Attributes["tag"] data.
+        SeedTopicWithAttributes(
+            "recipes", "soup", "## Soup\nSimmer for an hour.",
+            contentPreview: "A hearty soup recipe.",
+            tags: ["cooking", "winter"]);
+
+        // Act — export → import into a fresh workspace.
+        byte[] zipBytes = ExportToBytes(["recipes"]);
+
+        string importRoot = Path.Combine(_tempDir, "roundtrip-attrs-target");
+        Directory.CreateDirectory(importRoot);
+        using var importStore = new FileMemoryStore(importRoot);
+
+        ImportFromBytes(zipBytes, importStore);
+
+        // Assert — ContentPreview and Attributes["tag"] survived the round trip.
+        string importScope = MemoryNaming.BuildScopedTopicScope(importStore.SanitizeName("recipes"));
+        var imported = importStore.LoadIndex(importScope).Single(e => e.Name == "soup");
+
+        imported.ContentPreview.Should().Be("A hearty soup recipe.");
+        imported.Attributes.Should().NotBeNull();
+        imported.Attributes!.Should().ContainKey(KnownFields.TagKey)
+            .WhoseValue.Should().BeEquivalentTo(["cooking", "winter"]);
+    }
+
+    [Fact]
+    public void BundleImport_OldBundleFormat_RoutesDescriptionAndTagsToContentPreviewAndAttributes()
+    {
+        // Arrange — build a bundle whose index.json mimics a pre-Merge-3 export: only
+        // "description"/"tags" keys, no "contentPreview"/"attributes" keys at all.
+        byte[] zipBytes;
+        using (var ms = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                string indexJson = """
+                {
+                  "entries": [
+                    {
+                      "name": "legacy-note",
+                      "originalBytes": 5,
+                      "chunkCount": 1,
+                      "createdAt": "2020-01-01T00:00:00+00:00",
+                      "description": "An old-format description",
+                      "tags": ["archived", "legacy"]
+                    }
+                  ]
+                }
+                """;
+                WriteZipText(zip, "topics/old/index.json", indexJson);
+                WriteZipText(zip, "topics/old/legacy-note.nmp2", "hello");
+
+                var manifest = new BundleManifest(
+                    Version: 1,
+                    Exported: DateTimeOffset.UtcNow.ToString("o"),
+                    Topics: ["old"],
+                    TotalEntries: 1);
+                string manifestJson = JsonSerializer.Serialize(manifest, BundleFormatService.DefaultJsonOptions);
+                WriteZipText(zip, "manifest.json", manifestJson);
+            }
+            zipBytes = ms.ToArray();
+        }
+
+        // Act — import into a fresh workspace.
+        string importRoot = Path.Combine(_tempDir, "old-bundle-import-target");
+        Directory.CreateDirectory(importRoot);
+        using var importStore = new FileMemoryStore(importRoot);
+
+        ImportFromBytes(zipBytes, importStore);
+
+        // Assert — old "description"/"tags" keys routed into ContentPreview/Attributes["tag"].
+        string importScope = MemoryNaming.BuildScopedTopicScope(importStore.SanitizeName("old"));
+        var imported = importStore.LoadIndex(importScope).Single(e => e.Name == "legacy-note");
+
+        imported.ContentPreview.Should().Be("An old-format description");
+        imported.Attributes.Should().NotBeNull();
+        imported.Attributes!.Should().ContainKey(KnownFields.TagKey)
+            .WhoseValue.Should().BeEquivalentTo(["archived", "legacy"]);
     }
 
     // ── Zip helper ───────────────────────────────────────────────────────────
