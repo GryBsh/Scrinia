@@ -394,7 +394,5 @@ public sealed class MigrationTests : IDisposable
         var entry = freshStore.LoadIndex("local").Single(e => e.Name == "legacy-note");
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().BeEquivalentTo("security", "auth");
-        // additive: legacy Tags field untouched
-        entry.Tags.Should().BeEquivalentTo("security", "auth");
     }
 }

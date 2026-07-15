@@ -281,31 +281,20 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Store_AutoDescription_UsesFirst200Chars()
+    public async Task Store_AutoDescription_UsesFirst500Chars()
     {
+        // P6.2 reader cutover: with no explicit description, ContentPreview is auto-generated
+        // via GenerateContentPreview (maxLength 500) — the legacy Description auto-truncation
+        // (first 200 chars) no longer drives what is displayed/searched.
         using var scope = new TestHelpers.StoreScope();
-        string content = new string('x', 300);
+        string content = new string('x', 600);
 
         await Tools().Store([content], "auto-desc-test"); // no description
 
         var entries = ScriniaArtifactStore.LoadIndex();
         entries.Should().ContainSingle(e => e.Name == "auto-desc-test");
-        entries[0].Description.Length.Should().Be(200,
-            because: "auto-description must use exactly the first 200 chars when no description is given");
-    }
-
-    [Fact]
-    public async Task Store_ExplicitDescription_UsedAsIs()
-    {
-        using var scope = new TestHelpers.StoreScope();
-        string explicitDesc = "My custom description here.";
-
-        await Tools().Store([TestHelpers.Facts.Fact1], "explicit-desc-test", explicitDesc);
-
-        var entries = ScriniaArtifactStore.LoadIndex();
-        entries.Should().ContainSingle(e => e.Name == "explicit-desc-test");
-        entries[0].Description.Should().Be(explicitDesc,
-            because: "when an explicit description is supplied it must be used verbatim");
+        entries[0].ContentPreview!.Length.Should().Be(500,
+            because: "the auto content preview must use exactly the first 500 chars when no description is given");
     }
 
     [Fact]
@@ -335,7 +324,7 @@ public sealed class ScriniaMcpToolsTests
 
         var entries = ScriniaArtifactStore.LoadIndex();
         entries.Should().ContainSingle(e => e.Name == "tagged-memory");
-        entries[0].Tags.Should().BeEquivalentTo(tags,
+        entries[0].Attributes!["tag"].Should().BeEquivalentTo(tags,
             because: "tags must be persisted in the index");
     }
 
@@ -385,9 +374,10 @@ public sealed class ScriniaMcpToolsTests
             });
 
         var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "rev-note");
-        entry.ReviewAfter.Should().NotBeNull();
-        entry.ReviewAfter!.Value.Year.Should().Be(2026);
-        entry.ReviewWhen.Should().Be("when the auth system changes");
+        AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out var reviewCondition).Should().BeTrue();
+        reviewDate.Should().NotBeNull();
+        reviewDate!.Value.Year.Should().Be(2026);
+        reviewCondition.Should().Be("when the auth system changes");
     }
 
     [Fact]
@@ -889,7 +879,7 @@ public sealed class ScriniaMcpToolsTests
         var entries = ScriniaArtifactStore.LoadIndex();
 
         entries.Should().ContainSingle(e => e.Name == "old-entry");
-        entries[0].Tags.Should().BeNull(because: "v1 entries have no tags");
+        entries[0].Attributes.Should().BeNull(because: "v1 entries have no attributes");
         entries[0].ContentPreview.Should().BeNull(because: "v1 entries have no content preview");
     }
 
@@ -1356,9 +1346,10 @@ public sealed class ScriniaMcpToolsTests
             reviewAfter: "2026-06-01");
 
         var entries = ScriniaArtifactStore.LoadIndex();
-        entries[0].ReviewAfter.Should().NotBeNull();
-        entries[0].ReviewAfter!.Value.Year.Should().Be(2026);
-        entries[0].ReviewAfter!.Value.Month.Should().Be(6);
+        AttributeReaders.TryReadReview(entries[0].Attributes, out var reviewDate, out _).Should().BeTrue();
+        reviewDate.Should().NotBeNull();
+        reviewDate!.Value.Year.Should().Be(2026);
+        reviewDate.Value.Month.Should().Be(6);
     }
 
     [Fact]
@@ -1369,7 +1360,8 @@ public sealed class ScriniaMcpToolsTests
             reviewWhen: "when auth system changes");
 
         var entries = ScriniaArtifactStore.LoadIndex();
-        entries[0].ReviewWhen.Should().Be("when auth system changes");
+        AttributeReaders.TryReadReview(entries[0].Attributes, out _, out var reviewCondition).Should().BeTrue();
+        reviewCondition.Should().Be("when auth system changes");
     }
 
     [Fact]
@@ -1761,11 +1753,10 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("A later addition about plugin startup ordering.", "append-meta-preserve");
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-meta-preserve");
-        entry.RetrievalAnchors.Should().NotBeNull();
-        entry.RetrievalAnchors.Should().Contain("what is the widget subsystem")
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["anchor"].Should().Contain("what is the widget subsystem")
             .And.Contain("how do lifecycle hooks work");
-        entry.Tags.Should().NotBeNull();
-        entry.Tags.Should().Contain("architecture").And.Contain("widgets");
+        entry.Attributes!["tag"].Should().Contain("architecture").And.Contain("widgets");
         entry.ContentPreview.Should().Be("widget lifecycle notes",
             because: "an append with no new description must preserve the curated description that was folded into ContentPreview at Store time, not overwrite it with a content slice");
         entry.Keywords.Should().Contain("widget",
@@ -1790,9 +1781,9 @@ public sealed class ScriniaMcpToolsTests
             anchors: ["how does login work", "what triggers a token refresh"]); // first duplicates existing
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-meta-merge");
-        entry.Tags.Should().BeEquivalentTo(["auth", "tokens"],
+        entry.Attributes!["tag"].Should().BeEquivalentTo(["auth", "tokens"],
             because: "new tags merge with existing and dedupe case-insensitively");
-        entry.RetrievalAnchors.Should().BeEquivalentTo(["how does login work", "what triggers a token refresh"],
+        entry.Attributes!["anchor"].Should().BeEquivalentTo(["how does login work", "what triggers a token refresh"],
             because: "new anchors merge with existing and dedupe");
         entry.Keywords.Should().Contain("refresh");
     }
@@ -1840,7 +1831,7 @@ public sealed class ScriniaMcpToolsTests
             anchors: ["how do I configure zorptree"]);
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-anchor-bridge");
-        entry.RetrievalAnchors.Should().Contain("how do I configure zorptree");
+        entry.Attributes!["anchor"].Should().Contain("how do I configure zorptree");
         entry.TermFrequencies.Should().NotBeNull();
         entry.TermFrequencies!.Should().ContainKey("zorptree",
             because: "anchor tokens supplied on append must be TF-seeded so BM25 can match them");
@@ -2208,7 +2199,7 @@ public sealed class ScriniaMcpToolsTests
     {
         // End-to-end check of the agent-supplied anchor flow:
         //   1. Store() accepts anchors[]
-        //   2. ArtifactEntry.RetrievalAnchors carries them through
+        //   2. Attributes["anchor"] carries them through
         //   3. Anchor tokens get TF-seeded at +2 so BM25 picks up anchor vocabulary
         //   4. A query phrased in the anchor's vocabulary (not the content's) surfaces
         //      the entry near the top — proving the anchor → retrieval bridge works.
@@ -2226,12 +2217,12 @@ public sealed class ScriniaMcpToolsTests
             keywords: null,
             anchors: anchors);
 
-        // (1) + (2): RetrievalAnchors persisted on the entry.
+        // (1) + (2): Attributes["anchor"] persisted on the entry.
         var entries = ScriniaArtifactStore.LoadIndex();
         var entry = entries.Single(e => e.Name == "anchor-flow-test");
-        entry.RetrievalAnchors.Should().NotBeNull();
-        entry.RetrievalAnchors.Should().Contain("what is foo");
-        entry.RetrievalAnchors.Should().Contain("how does foo work");
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["anchor"].Should().Contain("what is foo");
+        entry.Attributes!["anchor"].Should().Contain("how does foo work");
 
         // (3): "foo" is not in the content, only in the anchors. After TF seeding, it
         // must appear with weight ≥ 2 (the anchor-tokenization boost).
@@ -2363,7 +2354,6 @@ public sealed class ScriniaMcpToolsTests
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
                 Description: "unrelated body text",
-                Tags: null,
                 ContentPreview: "unrelated body text")),
             new("local-topic:archive", new ArtifactEntry(
                 Name: "shopping",
@@ -2372,7 +2362,6 @@ public sealed class ScriniaMcpToolsTests
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
                 Description: "unrelated body text",
-                Tags: null,
                 ContentPreview: "unrelated body text")),
         };
 
@@ -2400,7 +2389,6 @@ public sealed class ScriniaMcpToolsTests
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
                 Description: "x",
-                Tags: null,
                 ContentPreview: "x")),
         };
 
@@ -2483,7 +2471,8 @@ public sealed class ScriniaMcpToolsTests
         entry.Attributes.Should().NotBeNull();
         var review = entry.Attributes!["review"];
         review.Should().HaveCount(2);
-        DateTimeOffset.Parse(review[0]).Should().Be(entry.ReviewAfter!.Value);
+        AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out _).Should().BeTrue();
+        DateTimeOffset.Parse(review[0]).Should().Be(reviewDate!.Value);
         review[1].Should().Be("when the auth system changes");
     }
 
@@ -2500,7 +2489,8 @@ public sealed class ScriniaMcpToolsTests
         entry.Attributes.Should().NotBeNull();
         var review = entry.Attributes!["review"];
         review.Should().HaveCount(1);
-        DateTimeOffset.Parse(review[0]).Should().Be(entry.ReviewAfter!.Value);
+        AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out _).Should().BeTrue();
+        DateTimeOffset.Parse(review[0]).Should().Be(reviewDate!.Value);
     }
 
     [Fact]
@@ -2558,7 +2548,6 @@ public sealed class ScriniaMcpToolsTests
         await Tools().UpdateMeta("hint-preview-set", description: "new");
 
         var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-set");
-        entry.Description.Should().Be("new");
         entry.ContentPreview.Should().Be("new",
             because: "an explicit new description must overwrite ContentPreview, not preserve the prior one");
     }

@@ -60,15 +60,15 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Upsert_updates_existing_entry()
     {
-        var entry1 = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow, "v1");
+        var entry1 = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow, "v1", ContentPreview: "v1");
         _store.Upsert(entry1);
 
-        var entry2 = entry1 with { Description = "v2" };
+        var entry2 = entry1 with { Description = "v2", ContentPreview = "v2" };
         _store.Upsert(entry2);
 
         var loaded = _store.LoadIndex();
         loaded.Should().HaveCount(1);
-        loaded[0].Description.Should().Be("v2");
+        loaded[0].ContentPreview.Should().Be("v2");
     }
 
     [Fact]
@@ -279,12 +279,12 @@ public sealed class FileMemoryStoreTests : IDisposable
         for (int i = 0; i < 100; i++)
             _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
 
-        var updated = new ArtifactEntry("entry-99", "", 10, 1, DateTimeOffset.UtcNow, "updated");
+        var updated = new ArtifactEntry("entry-99", "", 10, 1, DateTimeOffset.UtcNow, "updated", ContentPreview: "updated");
         _store.Upsert(updated);
 
         var loaded = _store.LoadIndex();
         loaded.Should().HaveCount(100);
-        loaded.Should().ContainSingle(e => e.Name == "entry-99" && e.Description == "updated");
+        loaded.Should().ContainSingle(e => e.Name == "entry-99" && e.ContentPreview == "updated");
     }
 
     [Fact]
@@ -532,7 +532,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entries = _store.LoadIndex("local-topic:entity/task");
         entries.Should().ContainSingle(e => e.Name == "shared-entry",
             because: "same-name entries should not be duplicated");
-        entries.First(e => e.Name == "shared-entry").Description.Should().Be("Namespaced version",
+        entries.First(e => e.Name == "shared-entry").ContentPreview.Should().Be("Namespaced version",
             because: "namespaced entries take precedence over legacy entries");
     }
 
@@ -688,7 +688,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         // Verify namespaced entry takes precedence when names collide
         entries.Should().ContainSingle(e => e.Name == "collision",
             because: "same-name entries should not be duplicated");
-        entries.First(e => e.Name == "collision").Description.Should().Be("Namespaced version of collision",
+        entries.First(e => e.Name == "collision").ContentPreview.Should().Be("Namespaced version of collision",
             because: "namespaced entries take precedence over legacy entries");
     }
 
@@ -721,8 +721,6 @@ public sealed class FileMemoryStoreTests : IDisposable
         entry.Attributes.Should().NotBeNull(because: "read-time forward-fill should populate Fields without a prior scri migrate");
         entry.Attributes!["tag"].Should().Contain("security");
         entry.Attributes!["person"].Should().Contain("maria");
-        entry.Tags.Should().Contain("security",
-            because: "forward-fill is additive and must not remove the legacy Tags carrier");
     }
 
     [Fact]

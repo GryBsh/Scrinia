@@ -40,7 +40,6 @@ public sealed class ScorerCleanupTests
         var entry = store.LoadIndex("local").Single(e => e.Name == "tag-only");
         entry.Attributes.Should().NotBeNull(because: "read-time forward-fill promotes Tags into Fields");
         entry.Attributes!["tag"].Should().Contain("widgets");
-        entry.Tags.Should().Contain("widgets", because: "forward-fill is additive — legacy Tags is untouched");
 
         var scored = new WeightedFieldScorer().Search("widgets", [new ScopedArtifact("local", entry)], 10);
 

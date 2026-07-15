@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 using Scrinia.Server.Models;
 using Scrinia.Server.Services;
 using Xunit;
@@ -81,9 +82,8 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
         persisted.Attributes!["tag"].Should().Contain("widgets");
         persisted.Attributes!["review"].Should().NotBeEmpty();
 
-        // Legacy fields STILL written (dual-write) — Forward is additive, not a replacement.
-        persisted.Tags.Should().Contain("widgets");
-        persisted.ReviewAfter.Should().NotBeNull();
+        AttributeReaders.TryReadReview(persisted.Attributes, out var reviewDate, out _).Should().BeTrue();
+        reviewDate.Should().NotBeNull();
     }
 
     /// <summary>
@@ -103,9 +103,6 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
 
         entry!.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().Contain("widgets");
-
-        // Legacy field STILL written (dual-write).
-        entry.Tags.Should().Contain("widgets");
     }
 
     /// <summary>

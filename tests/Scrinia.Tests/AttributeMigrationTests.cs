@@ -51,10 +51,6 @@ public sealed class AttributeMigrationTests
         m.Attributes!["tag"].Should().BeEquivalentTo("security", "auth");
         m.Attributes!["anchor"].Should().Contain("how do I log in");
         m.Keywords.Should().BeNull(); // no keywords in, none folded in -> fold retired in P6.5
-        // additive: legacy fields preserved
-        m.Tags.Should().BeEquivalentTo("security", "auth");
-        m.RetrievalAnchors.Should().BeEquivalentTo("how do I log in");
-        m.Description.Should().Be("desc");
     }
 
     [Fact]
@@ -243,7 +239,6 @@ public sealed class AttributeMigrationTests
         var e = MakeEntry(contentPreview: null);   // Description "desc", ContentPreview null
         var m = AttributeMigration.Forward(e);
         m.ContentPreview.Should().Be("desc");       // rescued from Description
-        m.Description.Should().Be("desc");          // additive: legacy field untouched
     }
 
     [Fact]
