@@ -55,8 +55,27 @@ public sealed class CliDisplayCutoverTests
         var cli = ScriniaCommands.BuildCliMemoryEntry(scoped, DateTimeOffset.UtcNow);
 
         cli.IsStale.Should().BeTrue();
-        cli.Tags.Should().BeEquivalentTo(["alpha"]);
+        cli.Attributes.Should().ContainKey(KnownFields.TagKey)
+            .WhoseValue.Should().BeEquivalentTo(["alpha"]);
         cli.Description.Should().Be("cli preview");
+    }
+
+    // ── list --json wire shape: attributes surfaced, tags/reviewAfter/reviewWhen dropped ────
+
+    [Fact]
+    public void BuildCliMemoryEntry_Json_SurfacesAttributes_DropsTagsAndReviewFields()
+    {
+        var entry = FieldsOnlyEntry("fields-only", DateTimeOffset.UtcNow.AddDays(-1));
+        var scoped = new ScopedArtifact("local", entry);
+
+        var cli = ScriniaCommands.BuildCliMemoryEntry(scoped, DateTimeOffset.UtcNow);
+        var output = new CliListOutput([cli], 1, null);
+        string json = System.Text.Json.JsonSerializer.Serialize(output, CliJsonContext.Default.CliListOutput);
+
+        json.Should().Contain("\"attributes\"");
+        json.Should().NotContain("\"tags\"");
+        json.Should().NotContain("\"reviewAfter\"");
+        json.Should().NotContain("\"reviewWhen\"");
     }
 
 }

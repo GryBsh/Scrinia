@@ -315,8 +315,11 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                         ChunkCount: item.ChunkCount,
                         CreatedAt: item.CreatedAt,
                         Description: item.Description,
-                        Tags: item.Tags,
-                        UpdatedAt: item.UpdatedAt);
+                        ContentPreview: item.Description,
+                        UpdatedAt: item.UpdatedAt,
+                        Attributes: item.Tags is { Length: > 0 } tags
+                            ? new Dictionary<string, string[]> { [KnownFields.TagKey] = tags }
+                            : null);
                     result.Add(new ScopedArtifact(scope, entry));
                 }
             }
@@ -364,7 +367,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: 0,
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: item.Description ?? "");
+                Description: item.Description ?? "",
+                ContentPreview: item.Description ?? "");
 
             if (item.Type == "chunk" && item.ChunkIndex.HasValue)
             {

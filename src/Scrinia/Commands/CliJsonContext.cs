@@ -38,9 +38,7 @@ internal sealed record CliMemoryEntry(
     string CreatedAt,
     string? UpdatedAt,
     string Description,
-    string[]? Tags,
-    string? ReviewAfter,
-    string? ReviewWhen,
+    Dictionary<string, string[]>? Attributes,
     bool IsStale,
     bool NeedsReview);
 

@@ -112,10 +112,10 @@ public partial class ScriniaCommands
         return Task.FromResult(0);
     }
 
-    /// <summary>Builds the JSON <c>list</c> entry for one artifact, sourcing review status,
-    /// tags, and description/preview from the attributes carriers (Fields/ContentPreview) via
-    /// <see cref="AttributeReaders"/>, falling back to the legacy per-memory fields for entries
-    /// not yet forward-filled.</summary>
+    /// <summary>Builds the JSON <c>list</c> entry for one artifact, sourcing review status and
+    /// description/preview from the attributes carriers (<c>Attributes</c>/<c>ContentPreview</c>)
+    /// via <see cref="AttributeReaders"/>, and surfacing the raw <c>Attributes</c> dict
+    /// verbatim.</summary>
     internal static CliMemoryEntry BuildCliMemoryEntry(ScopedArtifact item, DateTimeOffset now)
     {
         var e = item.Entry;
@@ -127,8 +127,7 @@ public partial class ScriniaCommands
             name, e.ChunkCount, e.OriginalBytes, (int)(e.OriginalBytes / 4),
             e.CreatedAt.ToString("o"), e.UpdatedAt?.ToString("o"),
             AttributeReaders.PreviewText(e.ContentPreview),
-            AttributeReaders.DisplayTags(e.Attributes).ToArray(),
-            e.ReviewAfter?.ToString("o"), e.ReviewWhen,
+            e.Attributes,
             st.IsStale, st.NeedsReview);
     }
 
