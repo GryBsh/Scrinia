@@ -2191,7 +2191,7 @@ public sealed class ScriniaMcpToolsTests
         string result = await Tools().Search("plain");
         var parsed = ResponseParser.Parse(result);
         parsed.Content.Should().NotContain("anchors:",
-            because: "anchors section must be omitted entirely when RetrievalAnchors is null/empty");
+            because: "anchors section must be omitted entirely when the anchor attribute is null/empty");
     }
 
     [Fact]

@@ -64,9 +64,9 @@ public static class MemoryOrchestrator
             DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
             DateTimeOffset? ephUpdatedAt = existingEph is not null ? DateTimeOffset.UtcNow : null;
 
-            // Forward-fill: route req.Tags -> Fields["tag"] at write time (dual-write — Tags
-            // below is unchanged). EphemeralEntry has no FileHashes/ReviewAfter/ReviewWhen/
-            // RetrievalAnchors param on this path, so tag is the only legacy carrier to route.
+            // Route req.Tags -> Attributes["tag"] at write time (req.Tags is the StoreRequest
+            // DTO field, not an entry member). EphemeralEntry carries no other request-supplied
+            // attribute source on this path, so tag is the only carrier to route here.
             var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
             if (req.Tags is { Length: > 0 }) ephIncoming[KnownFields.TagKey] = req.Tags;
             var ephFields = ephIncoming.Count > 0 ? KnownFields.Merge(fields, ephIncoming) : fields;
@@ -141,8 +141,9 @@ public static class MemoryOrchestrator
             ChunkEntries: chunkEntries,
             Attributes: fields);
 
-        // Forward-fill: populate Attributes from Tags/ReviewAfter/ReviewWhen/FileHashes at write time
-        // (dual-write — legacy members above are unchanged).
+        // Keyword/file safety-net: Forward folds recognized key:value keywords and FileHashes->file
+        // into Attributes. (tag/review were already folded into Attributes from the request params
+        // above; the former legacy entry members no longer exist.)
         entry = AttributeMigration.Forward(entry);
 
         try
@@ -286,10 +287,9 @@ public static class MemoryOrchestrator
                 ChunkEntries: updatedChunks,
                 Attributes: mergedFields);
 
-            // Forward-fill: populate Attributes from Tags/ReviewAfter/ReviewWhen/FileHashes at write
-            // time (dual-write — legacy members above are unchanged). Tags is null on this path
-            // (no tags param), but ReviewAfter/ReviewWhen carried over from existingEntry still
-            // route here, covering pre-Attributes entries appended for the first time.
+            // Keyword/file safety-net: Forward folds recognized key:value keywords and FileHashes->file
+            // into Attributes. Review carried over from existingEntry is already folded into Attributes
+            // above; this also covers pre-Attributes entries appended for the first time.
             entry = AttributeMigration.Forward(entry);
 
             try

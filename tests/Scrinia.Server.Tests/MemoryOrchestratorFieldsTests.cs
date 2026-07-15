@@ -66,7 +66,7 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
     /// keyword/ref/attribute-derived keys are present at write time).
     /// </summary>
     [Fact]
-    public async Task StoreAsync_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task StoreAsync_Persistent_FoldsToAttributesAtWriteTime()
     {
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Body about widgets."], "orch-writer-cutover-store",
@@ -92,7 +92,7 @@ public sealed class MemoryOrchestratorFieldsTests : IDisposable
     /// proves <see cref="MemoryOrchestrator.StoreAsync"/>'s tag->Fields routing runs at write.
     /// </summary>
     [Fact]
-    public async Task StoreAsync_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task StoreAsync_Ephemeral_FoldsToAttributesAtWriteTime()
     {
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Ephemeral scratch note about widgets."], "~orch-writer-cutover-eph",

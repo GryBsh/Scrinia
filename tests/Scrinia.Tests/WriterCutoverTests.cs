@@ -32,7 +32,7 @@ public sealed class WriterCutoverTests
     private static ScriniaMcpTools Tools() => new();
 
     [Fact]
-    public async Task Store_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Store_Persistent_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
         string relPath = "src/Probe.cs";
@@ -64,7 +64,7 @@ public sealed class WriterCutoverTests
     }
 
     [Fact]
-    public async Task UpdateMeta_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task UpdateMeta_Persistent_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
         // Base entry deliberately carries no review data — anything under "review" below
@@ -88,7 +88,7 @@ public sealed class WriterCutoverTests
     }
 
     [Fact]
-    public async Task Append_Persistent_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Append_Persistent_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Store(
@@ -112,7 +112,7 @@ public sealed class WriterCutoverTests
     }
 
     [Fact]
-    public async Task Store_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Store_Ephemeral_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
 
@@ -134,7 +134,7 @@ public sealed class WriterCutoverTests
     }
 
     [Fact]
-    public async Task Append_Ephemeral_PopulatesFieldsAtWriteTime_DualWriteWithLegacy()
+    public async Task Append_Ephemeral_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
 
