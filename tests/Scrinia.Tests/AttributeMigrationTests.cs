@@ -32,33 +32,18 @@ public sealed class AttributeMigrationTests
         }
     }
 
-    // tags/anchors/reviewAfter/reviewWhen remain as MakeEntry params: Forward no longer folds
-    // them (they lost their member source in P6.6b Task 4), but BuildLegacyCarrierFields is still
-    // exercised directly with these values (its signature is unchanged — request-supplied params
-    // still flow through it at write time), so MakeEntry keeps producing them for that coverage.
+    // Merge 3 Task 7: Tags/RetrievalAnchors/ReviewAfter/ReviewWhen/Description are removed from
+    // ArtifactEntry, so MakeEntry no longer accepts or wires them — the only surviving legacy-carrier
+    // inputs are codeRefs (FileHashes) and fields (Attributes). BuildLegacyCarrierFields_MatchesForward_ForFile
+    // below exercises tags/anchors/review via its own locals (BuildLegacyCarrierFields's request-param
+    // signature is unchanged) rather than round-tripping them through the entry.
     private static ArtifactEntry MakeEntry(
-        string[]? tags = null, string[]? anchors = null,
         Dictionary<string, string>? codeRefs = null,
-        DateTimeOffset? reviewAfter = null, string? reviewWhen = null,
         string[]? keywords = null, Dictionary<string, string[]>? fields = null,
         string? contentPreview = "preview") =>
         new(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
-            Tags: tags, ContentPreview: contentPreview, Keywords: keywords, RetrievalAnchors: anchors,
-            ReviewAfter: reviewAfter, ReviewWhen: reviewWhen, FileHashes: codeRefs, Attributes: fields);
-
-    [Fact]
-    public void Forward_NoLongerMemberSourcesTagsOrAnchors()
-    {
-        // Task 4: Forward's BuildLegacyCarrierFields call no longer reads entry.Tags/RetrievalAnchors
-        // (only entry.FileHashes?.Keys survives as a member source) — tags/anchors set directly on the
-        // entry no longer get promoted into Attributes by Forward.
-        var e = MakeEntry(tags: ["security", "auth"], anchors: ["how do I log in"]);
-        var m = AttributeMigration.Forward(e);
-        (m.Attributes is null || !m.Attributes.ContainsKey("tag")).Should().BeTrue();
-        (m.Attributes is null || !m.Attributes.ContainsKey("anchor")).Should().BeTrue();
-        m.Keywords.Should().BeNull(); // no keywords in, none folded in -> fold retired in P6.5
-    }
+            CreatedAt: DateTimeOffset.UnixEpoch,
+            ContentPreview: contentPreview, Keywords: keywords, FileHashes: codeRefs, Attributes: fields);
 
     [Fact]
     public void Forward_MapsCodeRefPathsToFile()
@@ -66,17 +51,6 @@ public sealed class AttributeMigrationTests
         var e = MakeEntry(codeRefs: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" });
         var m = AttributeMigration.Forward(e);
         m.Attributes!["file"].Should().BeEquivalentTo("src/A.cs", "src/B.cs");   // paths, not hashes
-    }
-
-    [Fact]
-    public void Forward_NoLongerMemberSourcesReview()
-    {
-        // reviewAfter/reviewWhen also lost their member source — Forward no longer folds them.
-        var e = MakeEntry(
-            reviewAfter: DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture),
-            reviewWhen: "when auth changes");
-        var m = AttributeMigration.Forward(e);
-        (m.Attributes is null || !m.Attributes.ContainsKey("review")).Should().BeTrue();
     }
 
     [Fact]
@@ -199,22 +173,6 @@ public sealed class AttributeMigrationTests
     }
 
     [Fact]
-    public void Forward_no_anchors_adds_no_anchor_field()
-    {
-        var entry = MakeEntry(anchors: null);
-        var result = AttributeMigration.Forward(entry);
-        (result.Attributes is null || !result.Attributes.ContainsKey("anchor")).Should().BeTrue();
-    }
-
-    [Fact]
-    public void Forward_anchor_routing_is_idempotent()
-    {
-        var entry = MakeEntry(anchors: ["a1", "a2"]);
-        var once = AttributeMigration.Forward(entry);
-        AttributeMigration.MigratesTo(once, out _).Should().BeFalse(); // second pass is a no-op
-    }
-
-    [Fact]
     public void Forward_LeavesExistingContentPreview_WhenAlreadySet()
     {
         var e = MakeEntry(contentPreview: "explicit preview");
@@ -223,12 +181,12 @@ public sealed class AttributeMigrationTests
     }
 
     [Fact]
-    public void Forward_LeavesContentPreviewNull_WhenDescriptionBlank()
+    public void Forward_LeavesContentPreviewNull_WhenNotSet()
     {
         var e = new ArtifactEntry(Name: "n", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UnixEpoch, Description: "   ", ContentPreview: null);
+            CreatedAt: DateTimeOffset.UnixEpoch, ContentPreview: null);
         var m = AttributeMigration.Forward(e);
-        m.ContentPreview.Should().BeNull();   // Forward no longer backfills ContentPreview from Description
+        m.ContentPreview.Should().BeNull();   // Forward no longer backfills ContentPreview from anything
     }
 
     [Fact]
@@ -237,7 +195,7 @@ public sealed class AttributeMigrationTests
         using var tmp = new TempWorkspace();
         // Write a legacy sidecar to disk via one store, then read it cold via a fresh store.
         var seed = tmp.NewStore();
-        seed.Upsert(MakeEntry(tags: ["security"], anchors: ["how do I log in"], contentPreview: null) with { Name = "a", Description = "" }, "local");
+        seed.Upsert(MakeEntry(contentPreview: null) with { Name = "a" }, "local");
         seed.Dispose();
 
         var cold = new FileMemoryStore(tmp.Root);
@@ -342,7 +300,7 @@ public sealed class AttributeMigrationTests
         // Target an explicit dir that is NOT the entry's scope dir (simulates a flat-dir write target).
         string flatDir = Path.Combine(tmp.Root, ".scrinia", "topics", "api");
         var upgraded = AttributeMigration.Forward(
-            MakeEntry(tags: ["t"], contentPreview: null) with { Name = "flatnote", Description = "" });
+            MakeEntry(contentPreview: null) with { Name = "flatnote" });
 
         store.PersistMigratedEntry(upgraded, flatDir, "local-topic:memory/api");
 
@@ -360,23 +318,27 @@ public sealed class AttributeMigrationTests
     [Fact]
     public void BuildLegacyCarrierFields_MatchesForward_ForFile()
     {
-        var entry = MakeEntry(
-            tags: ["security", "auth"],
-            anchors: ["how to reset", "  ", "reset flow", "how to reset"],
-            codeRefs: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" },
-            reviewAfter: DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture),
-            reviewWhen: "when auth changes");
+        // tags/anchors/reviewAfter/reviewWhen have no member home anymore (Task 7 removed them from
+        // ArtifactEntry) — BuildLegacyCarrierFields's signature is unchanged (request-supplied params
+        // still flow through it at write time), so this test feeds it locals directly instead of
+        // round-tripping the values through the entry.
+        string[] tags = ["security", "auth"];
+        string[] anchors = ["how to reset", "  ", "reset flow", "how to reset"];
+        var codeRefs = new Dictionary<string, string> { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" };
+        var reviewAfter = DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture);
+        const string reviewWhen = "when auth changes";
+        var entry = MakeEntry(codeRefs: codeRefs);
 
         var built = AttributeMigration.BuildLegacyCarrierFields(
-            entry.Tags, entry.FileHashes?.Keys, entry.ReviewAfter, entry.ReviewWhen, entry.RetrievalAnchors);
+            tags, codeRefs.Keys, reviewAfter, reviewWhen, anchors);
 
-        built["tag"].Should().BeEquivalentTo(entry.Tags);
+        built["tag"].Should().BeEquivalentTo(tags);
         built["file"].Should().BeEquivalentTo(entry.FileHashes!.Keys);
         built["review"].Should().Equal(
-            entry.ReviewAfter!.Value.ToString("o", CultureInfo.InvariantCulture), entry.ReviewWhen);
+            reviewAfter.ToString("o", CultureInfo.InvariantCulture), reviewWhen);
         built["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped
 
-        // Forward now only member-sources "file" (Task 4 trimmed the tag/review/anchor member reads);
+        // Forward only member-sources "file" (the only surviving legacy-carrier member);
         // BuildLegacyCarrierFields itself is unchanged and still folds all four when called directly
         // with request-supplied params (the write-time call shape).
         var forwarded = AttributeMigration.Forward(entry);

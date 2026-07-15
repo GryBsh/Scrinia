@@ -439,7 +439,6 @@ public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, Embeddi
             var entry = new ArtifactEntry(
                 Name: fact.Key, Uri: "", OriginalBytes: originalBytes, ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: fact.Content.Length > 200 ? fact.Content[..200] : fact.Content,
                 ContentPreview: _store.GenerateContentPreview(fact.Content));
 
             _store.Upsert(entry, scope);

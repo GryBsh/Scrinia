@@ -46,7 +46,7 @@ public sealed class BundleV2Tests : IDisposable
             OriginalBytes: content.Length,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: $"Test entry for {topic}:{subject}");
+            ContentPreview: $"Test entry for {topic}:{subject}");
         _store.Upsert(entry, scope);
         _store.WriteArtifactAsync(subject, scope, content).GetAwaiter().GetResult();
     }
@@ -65,7 +65,6 @@ public sealed class BundleV2Tests : IDisposable
             OriginalBytes: content.Length,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: contentPreview,
             ContentPreview: contentPreview,
             Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
             {

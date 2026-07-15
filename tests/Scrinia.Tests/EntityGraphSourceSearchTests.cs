@@ -31,9 +31,9 @@ public sealed class EntityGraphSourceSearchTests : IDisposable
 
     private void SeedUnrelated()
     {
-        _store.Upsert(new ArtifactEntry("lonely", "test://lonely", 0, 0, DateTimeOffset.UtcNow, "",
+        _store.Upsert(new ArtifactEntry("lonely", "test://lonely", 0, 0, DateTimeOffset.UtcNow,
             ContentPreview: "completely unrelated content"));
-        _store.Upsert(new ArtifactEntry("decoy", "test://decoy", 0, 0, DateTimeOffset.UtcNow, "",
+        _store.Upsert(new ArtifactEntry("decoy", "test://decoy", 0, 0, DateTimeOffset.UtcNow,
             ContentPreview: "also unrelated content"));
     }
 
@@ -64,9 +64,9 @@ public sealed class EntityGraphSourceSearchTests : IDisposable
         };
         try
         {
-            store.Upsert(new ArtifactEntry("lonely", "test://lonely", 0, 0, DateTimeOffset.UtcNow, "",
+            store.Upsert(new ArtifactEntry("lonely", "test://lonely", 0, 0, DateTimeOffset.UtcNow,
                 ContentPreview: "completely unrelated content"));
-            store.Upsert(new ArtifactEntry("decoy", "test://decoy", 0, 0, DateTimeOffset.UtcNow, "",
+            store.Upsert(new ArtifactEntry("decoy", "test://decoy", 0, 0, DateTimeOffset.UtcNow,
                 ContentPreview: "also unrelated content"));
             var entity = new Dictionary<string, double> { ["local|lonely"] = 50.0 };
 
@@ -84,9 +84,9 @@ public sealed class EntityGraphSourceSearchTests : IDisposable
     [Fact]
     public void EmptyOrNullEntityDict_IsInert()
     {
-        _store.Upsert(new ArtifactEntry("alpha", "test://alpha", 0, 0, DateTimeOffset.UtcNow, "alpha",
+        _store.Upsert(new ArtifactEntry("alpha", "test://alpha", 0, 0, DateTimeOffset.UtcNow,
             ContentPreview: "alpha content about widgets"));
-        _store.Upsert(new ArtifactEntry("beta", "test://beta", 0, 0, DateTimeOffset.UtcNow, "beta",
+        _store.Upsert(new ArtifactEntry("beta", "test://beta", 0, 0, DateTimeOffset.UtcNow,
             ContentPreview: "beta content about widgets"));
 
         var withNull = _store.SearchAll("widgets", null, 10, supplementalScores: null, entityGraphScores: null)

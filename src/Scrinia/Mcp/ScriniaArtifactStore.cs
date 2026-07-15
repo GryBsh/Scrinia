@@ -85,7 +85,6 @@ internal static partial class ScriniaArtifactStore
                 OriginalBytes: e.OriginalBytes,
                 ChunkCount: e.ChunkCount,
                 CreatedAt: e.CreatedAt,
-                Description: e.Description,
                 ContentPreview: e.ContentPreview,
                 Keywords: e.Keywords,
                 TermFrequencies: e.TermFrequencies,
@@ -618,7 +617,6 @@ internal static partial class ScriniaArtifactStore
                 OriginalBytes: entry.OriginalBytes,
                 ChunkCount: entry.ChunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: entry.Description,
                 ContentPreview: entry.ContentPreview,
                 ChunkEntries: entry.ChunkEntries,
                 Attributes: entry.Attributes);
@@ -666,7 +664,6 @@ internal static partial class ScriniaArtifactStore
                 OriginalBytes: srcEntry?.OriginalBytes ?? 0,
                 ChunkCount: srcEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: srcEntry?.Description ?? $"Loaded from {sourceName}",
                 ContentPreview: srcEntry?.ContentPreview ?? $"Loaded from {sourceName}",
                 ChunkEntries: srcEntry?.ChunkEntries,
                 Attributes: srcEntry?.Attributes);
@@ -711,7 +708,6 @@ internal static partial class ScriniaArtifactStore
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: $"Copied from {sourceName}",
                 ContentPreview: $"Copied from {sourceName}");
         }
 

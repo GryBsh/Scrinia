@@ -60,10 +60,10 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Upsert_updates_existing_entry()
     {
-        var entry1 = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow, "v1", ContentPreview: "v1");
+        var entry1 = new ArtifactEntry("test", "file://test", 100, 1, DateTimeOffset.UtcNow, ContentPreview: "v1");
         _store.Upsert(entry1);
 
-        var entry2 = entry1 with { Description = "v2", ContentPreview = "v2" };
+        var entry2 = entry1 with { ContentPreview = "v2" };
         _store.Upsert(entry2);
 
         var loaded = _store.LoadIndex();
@@ -279,7 +279,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         for (int i = 0; i < 100; i++)
             _store.Upsert(new ArtifactEntry($"entry-{i}", "", 10, 1, DateTimeOffset.UtcNow, $"desc {i}"));
 
-        var updated = new ArtifactEntry("entry-99", "", 10, 1, DateTimeOffset.UtcNow, "updated", ContentPreview: "updated");
+        var updated = new ArtifactEntry("entry-99", "", 10, 1, DateTimeOffset.UtcNow, ContentPreview: "updated");
         _store.Upsert(updated);
 
         var loaded = _store.LoadIndex();

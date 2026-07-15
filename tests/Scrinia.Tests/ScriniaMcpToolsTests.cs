@@ -2353,7 +2353,6 @@ public sealed class ScriniaMcpToolsTests
                 OriginalBytes: 100,
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: "unrelated body text",
                 ContentPreview: "unrelated body text")),
             new("local-topic:archive", new ArtifactEntry(
                 Name: "shopping",
@@ -2361,7 +2360,6 @@ public sealed class ScriniaMcpToolsTests
                 OriginalBytes: 50,
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: "unrelated body text",
                 ContentPreview: "unrelated body text")),
         };
 
@@ -2388,7 +2386,6 @@ public sealed class ScriniaMcpToolsTests
                 OriginalBytes: 100,
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: "x",
                 ContentPreview: "x")),
         };
 

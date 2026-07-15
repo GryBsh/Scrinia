@@ -59,10 +59,6 @@ public static class MemoryOrchestrator
             string ephPreview = !string.IsNullOrWhiteSpace(req.Description)
                 ? req.Description
                 : store.GenerateContentPreview(joined);
-            // ephDesc still feeds the (soon-to-be-removed) Description member until Task 7.
-            string ephDesc = string.IsNullOrWhiteSpace(req.Description)
-                ? joined[..Math.Min(200, joined.Length)]
-                : req.Description;
 
             var existingEph = store.GetEphemeral(key);
             DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
@@ -81,7 +77,6 @@ public static class MemoryOrchestrator
                 OriginalBytes: ephBytes,
                 ChunkCount: ephChunkCount,
                 CreatedAt: ephCreatedAt,
-                Description: ephDesc,
                 ContentPreview: ephPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
@@ -113,9 +108,6 @@ public static class MemoryOrchestrator
         await store.WriteArtifactAsync(subject, scope, artifact, ct);
 
         string uri = store.ArtifactUri(subject, scope);
-        string desc = string.IsNullOrWhiteSpace(req.Description)
-            ? joined[..Math.Min(200, joined.Length)]
-            : req.Description;
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
@@ -142,7 +134,6 @@ public static class MemoryOrchestrator
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
-            Description: desc,
             ContentPreview: contentPreview,
             Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
             TermFrequencies: tf.Count > 0 ? tf : null,
@@ -241,7 +232,6 @@ public static class MemoryOrchestrator
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: fullText[..Math.Min(200, fullText.Length)],
                 ContentPreview: contentPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
@@ -289,7 +279,6 @@ public static class MemoryOrchestrator
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: fullText[..Math.Min(200, fullText.Length)],
                 ContentPreview: contentPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,

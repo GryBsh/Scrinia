@@ -6,15 +6,11 @@ public sealed record ArtifactEntry(
     long OriginalBytes,
     int ChunkCount,
     DateTimeOffset CreatedAt,
-    string Description,
-    string[]? Tags = null,
     string? ContentPreview = null,
     // v3 fields:
     string[]? Keywords = null,
     Dictionary<string, int>? TermFrequencies = null,
     DateTimeOffset? UpdatedAt = null,
-    DateTimeOffset? ReviewAfter = null,
-    string? ReviewWhen = null,
     ChunkEntry[]? ChunkEntries = null,
     /// <summary>
     /// The <c>file</c> attribute's private drift baseline: dependency file path → content SHA hash,
@@ -25,11 +21,6 @@ public sealed record ArtifactEntry(
     /// </summary>
     [property: System.Text.Json.Serialization.JsonPropertyName("codeRefs")]
     Dictionary<string, string>? FileHashes = null,
-    /// <summary>
-    /// Agent-supplied phrases, questions, or category-level paraphrases that bridge
-    /// likely user queries to this entry's content. Indexed via field-score + TF seeding.
-    /// </summary>
-    string[]? RetrievalAnchors = null,
     /// <summary>
     /// Unified multi-valued **attributes** — key:value facts from agent-supplied keywords
     /// (person:x routed at write time), mechanical content extraction, and reference

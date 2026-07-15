@@ -18,10 +18,8 @@ public sealed class ScorerCleanupTests
     public void ForwardFilledTag_ScoresValueExact40_NotLegacyTagExact50()
     {
         // A real write populates Attributes["tag"] directly (Merge 2's attributes-native write
-        // path) rather than relying on read-time forward-fill; Tags is left set too, mirroring an
-        // entry written before the model members were fully retired, but it is now fully inert —
-        // Forward no longer forward-fills Tags at all (P6.6b Task 4 dropped it as a member source),
-        // so Attributes is the only way "widgets" can be found, at the Field-value-exact tier (40).
+        // path). The legacy Tags member is gone entirely (Merge 3 Task 7), so Attributes is the
+        // only way "widgets" can be found, at the Field-value-exact tier (40).
         using var scope = new TestHelpers.StoreScope();
         // Upsert's in-memory cache holds the RAW entry it just wrote, so reading it back through
         // the SAME store instance would short-circuit past the cold-load path entirely. A fresh
@@ -30,8 +28,8 @@ public sealed class ScorerCleanupTests
         {
             writer.Upsert(new ArtifactEntry(
                 Name: "tag-only", Uri: "u", OriginalBytes: 10, ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow, Description: "",
-                Tags: ["widgets"], Attributes: new() { ["tag"] = ["widgets"] }),
+                CreatedAt: DateTimeOffset.UtcNow,
+                Attributes: new() { ["tag"] = ["widgets"] }),
                 "local");
         }
 
@@ -46,7 +44,7 @@ public sealed class ScorerCleanupTests
         scored[0].Score.Should().Be(40,
             because: "Fields[\"tag\"] value-exact match scores the Field-value tier (40) now that " +
                 "the legacy tag-exact block (50) has been deleted — the Fields block is the sole " +
-                "tag scorer post-P6.5, even though the legacy Tags carrier is still present on disk");
+                "tag scorer post-P6.5");
     }
 
     [Fact]
@@ -57,12 +55,12 @@ public sealed class ScorerCleanupTests
         {
             writer.Upsert(new ArtifactEntry(
                 Name: "tag-only", Uri: "u", OriginalBytes: 10, ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow, Description: "",
+                CreatedAt: DateTimeOffset.UtcNow,
                 Attributes: new() { ["tag"] = ["widgets"] }),
                 "local");
             writer.Upsert(new ArtifactEntry(
                 Name: "preview-only", Uri: "u", OriginalBytes: 10, ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow, Description: "",
+                CreatedAt: DateTimeOffset.UtcNow,
                 ContentPreview: "notes that mention widgets in passing"),
                 "local");
         }

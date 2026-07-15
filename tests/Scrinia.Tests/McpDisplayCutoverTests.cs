@@ -37,11 +37,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         OriginalBytes: 100,
         ChunkCount: 1,
         CreatedAt: DateTimeOffset.UtcNow,
-        Description: "",
-        Tags: null,
         ContentPreview: "the preview",
-        ReviewAfter: null,
-        ReviewWhen: null,
         Attributes: new Dictionary<string, string[]>
         {
             [KnownFields.ReviewKey] = [reviewDate.ToString("o")],
@@ -59,7 +55,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         string output = ScriniaMcpTools.BuildFullList(entries, _store, 0, 50);
 
         output.Should().Contain("[stale]", because: "Fields[\"review\"] holds a past date");
-        output.Should().Contain("the preview", because: "ContentPreview should be used when Description is empty");
+        output.Should().Contain("the preview", because: "ContentPreview is the surviving display carrier");
     }
 
     [Fact]
@@ -85,10 +81,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
             OriginalBytes: 100,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: "",
-            Tags: null,
             ContentPreview: "search preview text",
-            RetrievalAnchors: null,
             Attributes: new Dictionary<string, string[]>
             {
                 [KnownFields.AnchorKey] = ["anchor-one", "anchor-two"],
@@ -100,7 +93,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         ScriniaMcpTools.AppendResultBlock(sb, _store, result, 1);
         string output = sb.ToString();
 
-        output.Should().Contain("search preview text", because: "ContentPreview should be used when Description is empty");
+        output.Should().Contain("search preview text", because: "ContentPreview is the surviving display carrier");
         output.Should().Contain("anchor-one");
         output.Should().Contain("anchor-two");
     }

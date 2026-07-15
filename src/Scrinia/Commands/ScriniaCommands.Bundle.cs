@@ -195,7 +195,6 @@ public partial class ScriniaCommands
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: desc,
                 ContentPreview: entryContentPreview,
                 Attributes: attributes));
 

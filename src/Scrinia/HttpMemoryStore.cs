@@ -188,7 +188,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: e.OriginalBytes,
                 ChunkCount: e.ChunkCount,
                 CreatedAt: e.CreatedAt,
-                Description: e.Description,
                 ContentPreview: e.ContentPreview,
                 Keywords: e.Keywords,
                 TermFrequencies: e.TermFrequencies,
@@ -314,7 +313,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                         OriginalBytes: item.OriginalBytes,
                         ChunkCount: item.ChunkCount,
                         CreatedAt: item.CreatedAt,
-                        Description: item.Description,
                         ContentPreview: item.Description,
                         UpdatedAt: item.UpdatedAt,
                         Attributes: item.Tags is { Length: > 0 } tags
@@ -367,7 +365,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 OriginalBytes: 0,
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: item.Description ?? "",
                 ContentPreview: item.Description ?? "");
 
             if (item.Type == "chunk" && item.ChunkIndex.HasValue)

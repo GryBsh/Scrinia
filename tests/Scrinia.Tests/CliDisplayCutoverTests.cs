@@ -19,11 +19,7 @@ public sealed class CliDisplayCutoverTests
         OriginalBytes: 100,
         ChunkCount: 1,
         CreatedAt: DateTimeOffset.UtcNow,
-        Description: "",
-        Tags: null,
         ContentPreview: "cli preview",
-        ReviewAfter: null,
-        ReviewWhen: null,
         Attributes: new Dictionary<string, string[]>
         {
             [KnownFields.ReviewKey] = [reviewDate.ToString("o")],

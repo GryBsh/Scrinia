@@ -124,7 +124,7 @@ public sealed class FieldExtractorTests
 
         var entry = new Scrinia.Core.Models.ArtifactEntry(
             Name: "fields-roundtrip", Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow, Description: "test",
+            CreatedAt: DateTimeOffset.UtcNow,
             Attributes: new Dictionary<string, string[]> { ["person"] = ["Alice", "Bob"], ["status"] = ["no-go"] });
 
         store.Upsert(entry, "local");
@@ -138,7 +138,7 @@ public sealed class FieldExtractorTests
         string name, Dictionary<string, string[]>? fields = null, string[]? keywords = null) =>
         new(
             Name: name, Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow, Description: "unrelated description",
+            CreatedAt: DateTimeOffset.UtcNow,
             Keywords: keywords, Attributes: fields);
 
     [Fact]

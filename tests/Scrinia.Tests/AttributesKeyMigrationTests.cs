@@ -61,7 +61,7 @@ public sealed class AttributesKeyMigrationTests
     {
         var entry = new ArtifactEntry(
             Name: name, Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc", ContentPreview: "preview",
+            CreatedAt: DateTimeOffset.UnixEpoch, ContentPreview: "preview",
             Attributes: new Dictionary<string, string[]> { [key] = [value] });
         string json = JsonSerializer.Serialize(entry, SeedOptions);
         json.Should().Contain("\"attributes\"", "the seed helper must serialize under the current key first");
@@ -72,7 +72,7 @@ public sealed class AttributesKeyMigrationTests
     private static ArtifactEntry MakeEntry(
         string name = "n", Dictionary<string, string[]>? attributes = null) =>
         new(Name: name, Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc", ContentPreview: "preview",
+            CreatedAt: DateTimeOffset.UnixEpoch, ContentPreview: "preview",
             Attributes: attributes);
 
     [Fact]

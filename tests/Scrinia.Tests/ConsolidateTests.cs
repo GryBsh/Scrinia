@@ -10,7 +10,7 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Tests for <see cref="ScriniaCommands.Consolidate"/>'s staleness-count logic — specifically
 /// that it reads review status via <c>AttributeReaders.GetReviewStatus</c> (attributes-first)
-/// rather than the legacy <see cref="ArtifactEntry.ReviewAfter"/> member directly.
+/// rather than the (now-removed) legacy ReviewAfter member directly.
 /// </summary>
 public sealed class ConsolidateTests : IDisposable
 {
@@ -52,17 +52,16 @@ public sealed class ConsolidateTests : IDisposable
     public async Task Consolidate_ReviewOnlyInAttributes_CountsAsStale()
     {
         // Arrange: seed an entry whose review lives ONLY in Attributes["review"] — the legacy
-        // ReviewAfter/ReviewWhen members are both null. Before the AttributeReaders cutover,
-        // Consolidate's stale count read e.Entry.ReviewAfter directly and would see null,
-        // undercounting this entry as not-stale.
+        // ReviewAfter/ReviewWhen members no longer exist on the model at all. Before the
+        // AttributeReaders cutover, Consolidate's stale count read the legacy member directly
+        // and would see null, undercounting this entry as not-stale.
         string pastReview = DateTimeOffset.UtcNow.AddDays(-1).ToString("o", CultureInfo.InvariantCulture);
         using (var seedStore = new FileMemoryStore(_tempDir))
         {
             seedStore.Upsert(
                 new ArtifactEntry(
                     Name: "attrs-only-review", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-                    CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
-                    ReviewAfter: null, ReviewWhen: null,
+                    CreatedAt: DateTimeOffset.UnixEpoch,
                     Attributes: new Dictionary<string, string[]> { ["review"] = [pastReview] }),
                 "local");
         }

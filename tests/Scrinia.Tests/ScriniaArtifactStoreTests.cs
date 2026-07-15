@@ -240,7 +240,7 @@ public sealed class ScriniaArtifactStoreTests
         var loaded = ScriniaArtifactStore.LoadIndex();
 
         loaded.Should().ContainSingle(e =>
-            e.Name == "roundtrip" && e.Description == "Hello, world!",
+            e.Name == "roundtrip" && e.ContentPreview == "Hello, world!",
             because: "SaveIndex → LoadIndex must preserve all entry fields");
     }
 
@@ -281,7 +281,7 @@ public sealed class ScriniaArtifactStoreTests
         using var scope = new TestHelpers.StoreScope();
         var entry = new EphemeralEntry(
             Name: "test", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("test", entry);
         var retrieved = ScriniaArtifactStore.GetEphemeral("test");
@@ -296,7 +296,7 @@ public sealed class ScriniaArtifactStoreTests
         using var scope = new TestHelpers.StoreScope();
         var entry = new EphemeralEntry(
             Name: "forget", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("forget", entry);
         ScriniaArtifactStore.ForgetEphemeral("forget").Should().BeTrue();
@@ -309,7 +309,7 @@ public sealed class ScriniaArtifactStoreTests
         using var scope = new TestHelpers.StoreScope();
         var entry = new EphemeralEntry(
             Name: "listed", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("listed", entry);
         var list = ScriniaArtifactStore.ListEphemeral();
@@ -327,7 +327,7 @@ public sealed class ScriniaArtifactStoreTests
         string artifact = Nmp2ChunkedEncoder.Encode("hello ephemeral");
         var entry = new EphemeralEntry(
             Name: "resolve-eph", Artifact: artifact, OriginalBytes: 15,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test");
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("resolve-eph", entry);
         string resolved = await ScriniaArtifactStore.ResolveArtifactAsync("~resolve-eph");
@@ -423,7 +423,6 @@ public sealed class ScriniaArtifactStoreTests
             OriginalBytes: 1024,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: "v3 fields test",
             Keywords: ["auth", "jwt"],
             TermFrequencies: tf,
             UpdatedAt: DateTimeOffset.UtcNow,
@@ -517,7 +516,7 @@ public sealed class ScriniaArtifactStoreTests
         var tf = new Dictionary<string, int> { ["auth"] = 3 };
         var entry = new EphemeralEntry(
             Name: "eph-v3", Artifact: "NMP/2 fake", OriginalBytes: 10,
-            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow, Description: "test",
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow,
             Keywords: ["auth"], TermFrequencies: tf, UpdatedAt: DateTimeOffset.UtcNow);
 
         ScriniaArtifactStore.RememberEphemeral("eph-v3", entry);
@@ -617,6 +616,5 @@ public sealed class ScriniaArtifactStoreTests
             OriginalBytes: 1024,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: desc,
-            ContentPreview: contentPreview);
+            ContentPreview: contentPreview ?? desc);
 }

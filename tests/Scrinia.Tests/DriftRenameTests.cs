@@ -74,7 +74,6 @@ public sealed class DriftRenameTests : IDisposable
             OriginalBytes: 10,
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UnixEpoch,
-            Description: "fresh",
             FileHashes: new() { ["src/a.cs"] = "HASH_A" });
 
         _store.Upsert(entry, "local");

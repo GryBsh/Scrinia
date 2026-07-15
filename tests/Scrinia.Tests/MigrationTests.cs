@@ -380,7 +380,7 @@ public sealed class MigrationTests : IDisposable
             seedStore.Upsert(
                 new ArtifactEntry(
                     Name: "legacy-note", Uri: "u", OriginalBytes: 1, ChunkCount: 1,
-                    CreatedAt: DateTimeOffset.UnixEpoch, Description: "desc",
+                    CreatedAt: DateTimeOffset.UnixEpoch,
                     FileHashes: new() { ["src/A.cs"] = "hashA", ["src/B.cs"] = "hashB" }),
                 "local");
         }

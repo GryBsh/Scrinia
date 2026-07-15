@@ -239,7 +239,6 @@ public static class BundleFormatService
                     OriginalBytes: originalBytes,
                     ChunkCount: chunkCount,
                     CreatedAt: createdAt,
-                    Description: description,
                     ContentPreview: contentPreview,
                     ChunkEntries: chunkEntries,
                     Attributes: attributes));

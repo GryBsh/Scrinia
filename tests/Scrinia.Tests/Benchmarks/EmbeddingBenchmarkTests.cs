@@ -467,7 +467,6 @@ public sealed class EmbeddingBenchmarkTests(ITestOutputHelper output) : IAsyncLi
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                Description: content.Length > 200 ? content[..200] : content,
                 ContentPreview: preview);
 
             _store.Upsert(entry, scope);

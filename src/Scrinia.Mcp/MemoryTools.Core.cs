@@ -212,9 +212,6 @@ public sealed partial class ScriniaMcpTools
             string ephPreview = !string.IsNullOrWhiteSpace(description)
                 ? description
                 : store.GenerateContentPreview(joined);
-            string ephDesc = string.IsNullOrWhiteSpace(description)
-                ? joined[..Math.Min(200, joined.Length)]
-                : description;
 
             // Check if updating existing ephemeral entry
             var existingEph = store.GetEphemeral(key);
@@ -236,7 +233,6 @@ public sealed partial class ScriniaMcpTools
                 OriginalBytes: ephBytes,
                 ChunkCount: ephChunkCount,
                 CreatedAt: ephCreatedAt,
-                Description: ephDesc,
                 ContentPreview: ephPreview,
                 Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
                 TermFrequencies: tf.Count > 0 ? tf : null,
@@ -309,9 +305,6 @@ public sealed partial class ScriniaMcpTools
         await store.WriteArtifactAsync(subject, scope, artifact, cancellationToken);
 
         string uri = store.ArtifactUri(subject, scope);
-        string desc = string.IsNullOrWhiteSpace(description)
-            ? joined[..Math.Min(200, joined.Length)]
-            : description;
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
         long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
@@ -391,7 +384,6 @@ public sealed partial class ScriniaMcpTools
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
-            Description: desc,
             ContentPreview: contentPreview,
             Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
             TermFrequencies: tf.Count > 0 ? tf : null,
@@ -466,17 +458,10 @@ public sealed partial class ScriniaMcpTools
             changes.Add($"{routedFields.Count} field(s) merged");
         }
 
-        // Replace description if provided
-        // Merge 3 Task 2b: re-sourced to ContentPreview, the successor curated-description
-        // carrier — Store/Append now fold an explicit description into ContentPreview at write
-        // time (option A), so the legacy Description member's carry-forward default should track
-        // ContentPreview too, not the (no-longer-updated) legacy member. This only feeds the
-        // soon-to-be-removed Description member; the ContentPreview write itself is computed
-        // separately below.
-        string updatedDescription = entry.ContentPreview ?? string.Empty;
+        // Replace description if provided — displayed via ContentPreview (updatedContentPreview
+        // below); this block only tracks the "changes" message.
         if (!string.IsNullOrWhiteSpace(description))
         {
-            updatedDescription = description;
             changes.Add("description updated");
         }
 
@@ -569,9 +554,6 @@ public sealed partial class ScriniaMcpTools
         {
             Keywords = mergedKeywords,
             TermFrequencies = updatedTf,
-            Description = updatedDescription,
-            ReviewAfter = parsedReviewAfter,
-            ReviewWhen = updatedReviewWhen,
             Attributes = mergedFields,
             ContentPreview = updatedContentPreview,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -1247,8 +1229,8 @@ public sealed partial class ScriniaMcpTools
                 ? description
                 : (existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText));
 
-            // BuildAppendMetadata's description param feeds the entry's (legacy) Description
-            // member only — re-sourced from ContentPreview, the successor carrier (Task 2b #4).
+            // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
+            // removed); ContentPreview (computed above) is the surviving display carrier.
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEph?.ContentPreview, AttributeReaders.DisplayTags(existingEph?.Attributes).ToArray(),
@@ -1266,7 +1248,6 @@ public sealed partial class ScriniaMcpTools
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: meta.Description,
                 ContentPreview: contentPreview,
                 Keywords: meta.Keywords,
                 TermFrequencies: meta.Tf,
@@ -1294,8 +1275,8 @@ public sealed partial class ScriniaMcpTools
                 ? description
                 : (existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText));
 
-            // BuildAppendMetadata's description param feeds the entry's (legacy) Description
-            // member only — re-sourced from ContentPreview, the successor carrier (Task 2b #4).
+            // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
+            // removed); ContentPreview (computed above) is the surviving display carrier.
             var meta = BuildAppendMetadata(
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEntry?.ContentPreview, AttributeReaders.DisplayTags(existingEntry?.Attributes).ToArray(),
@@ -1333,7 +1314,6 @@ public sealed partial class ScriniaMcpTools
                 OriginalBytes: originalBytes,
                 ChunkCount: chunkCount,
                 CreatedAt: createdAt,
-                Description: meta.Description,
                 ContentPreview: contentPreview,
                 Keywords: meta.Keywords,
                 TermFrequencies: meta.Tf,
@@ -1361,9 +1341,9 @@ public sealed partial class ScriniaMcpTools
     /// metadata with any caller-supplied additions. This is the carry-forward that keeps
     /// <c>append</c> from discarding what <c>remember</c> set — the appended content is
     /// re-indexed, but anchors, tags, description, and curated keywords survive and grow.
-    /// The returned <c>Description</c> only feeds the (soon-to-be-removed) legacy Description
-    /// member; <paramref name="existingDescription"/> is sourced from the caller's
-    /// <c>ContentPreview</c> (Merge 3 Task 2b #4), the successor curated-description carrier.
+    /// The returned <c>Description</c> is unused post-Merge-3 (it fed the now-removed legacy
+    /// Description member); <paramref name="existingDescription"/> is sourced from the caller's
+    /// <c>ContentPreview</c>, the surviving curated-description carrier.
     /// </summary>
     private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors, Dictionary<string, string[]>? Fields)
         BuildAppendMetadata(
