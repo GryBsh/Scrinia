@@ -80,26 +80,28 @@ scri memory store api:auth ./auth.md -k oauth,jwt --review-when "when auth syste
 cat notes.md | scri memory store session-notes -
 ```
 
-**Retrieval anchors.** The `RetrievalAnchors` field on the persisted entry is
-populated through the MCP `memory_remember` tool's `anchors` parameter — the
-CLI `memory store` surface does not yet expose it as a flag. Anchors are
+**Retrieval anchors.** Anchors are supplied as the **`anchor` attribute** via
+the MCP `remember` tool's `attributes` parameter (`attributes: { anchor: [...] }`)
+— the CLI `memory store` surface does not expose it as a flag. Anchors are
 agent-supplied **retrieval bridges**: short phrases, questions, or category-level
 paraphrases that bridge likely user queries to the entry's content. Use the
 vocabulary you expect users to query with, not the vocabulary already in the
-content (the indexer already covers exact-match). Each anchor enters the entry's
-term-frequency dict at weight +2 (so BM25 picks anchor-derived tokens up
-naturally) and contributes +15 to the per-anchor contains-match field score.
+content (the indexer already covers exact-match). Anchor values are seeded
+into the entry's term-frequency dict at write time (so BM25 picks them up
+naturally) and are scored like any attribute value (see the attributes model).
 
 ```jsonc
-// MCP call shape — what an agent passes to memory_remember
+// MCP call shape — what an agent passes to remember
 {
   "path": "/findings/auth-refactor",
   "content": ["… memory body …"],
-  "anchors": [
-    "how do I rotate session tokens",
-    "what's the OAuth grant flow used by this service",
-    "when did the auth refactor land"
-  ]
+  "attributes": {
+    "anchor": [
+      "how do I rotate session tokens",
+      "what's the OAuth grant flow used by this service",
+      "when did the auth refactor land"
+    ]
+  }
 }
 ```
 
@@ -180,9 +182,9 @@ in the agent that writes them.
 - Compacts multi-chunk session entries (paths under `/sessions/` or `sessions:`)
   older than `--session-age-days` (default 7) into single-chunk form. Originals
   are archived under `versions/`.
-- Reports stats: total memories, total bytes, count of entries past `reviewAfter`.
+- Reports stats: total memories, total bytes, count of entries past their `review` date.
 
-Stale entries (past their `reviewAfter` date) are reported but NOT deleted —
+Stale entries (past their `review` date) are reported but NOT deleted —
 review them with `scri memory list` and decide manually.
 
 ```bash
@@ -219,7 +221,7 @@ scri memory link api:auth-flow patterns:retry -r "auth retries use the documente
 
 Resume agent context after a fresh session — emits the agent profile, recurring
 patterns, today's session log, and the list of available skills. The same call
-the MCP `memory_restore` call makes.
+the MCP `restore` call makes.
 
 ```bash
 scri restore [--workspace-root <path>] [--json]
@@ -298,8 +300,8 @@ Interactive workspace setup. Two things in order:
 Setup does **not** prompt for any LLM configuration. Scrinia ships zero
 LLM-at-rest enrichment — there is no background LLM the server consults at
 write or read time, so there is nothing for setup to wire up. Agents that
-want to enrich memories do so client-side and pass anchors / descriptions /
-keywords through the MCP `memory_remember` tool.
+want to enrich memories do so client-side and pass `attributes` (including
+`anchor`) and `keywords` through the MCP `remember` tool.
 
 ```bash
 scri setup [--workspace-root <path>] [--no-ollama] \
@@ -366,7 +368,7 @@ Empty stdout when:
 - No matches clear `Scrinia:Hint:MinScore` (default 10.0).
 - `Scrinia:Hint:Enabled` is set to `false`.
 
-Plain output format: `[scrinia] N memories match: name1, name2, name3. Run memory_search({ query: 'name1' }) to retrieve.`
+Plain output format: `[scrinia] N memories match: name1, name2, name3. Run search({ query: 'name1' }) to retrieve.`
 
 `--json` returns `{"count": N, "matches": [{"scope", "name", "score"}, ...]}`.
 

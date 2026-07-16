@@ -33,7 +33,7 @@ For each criterion the work was supposed to satisfy:
 ### 4. Check for regressions
 
 - Run the full test suite, not just new tests.
-- `list({ mode: "drift" })` — surface any memories whose `codeRefs` point at files that have changed since the memory was written. Drifted memories may need updating.
+- `list({ mode: "drift" })` — surface any memories whose `file` attribute points at files that have changed since the memory was written. Drifted memories may need updating.
 
 ### 5. Validate against the original ask
 

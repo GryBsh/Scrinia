@@ -300,7 +300,7 @@ public static class TextChunker
 
 Both write paths use the same chunker:
 
-- **Hot path** (`memory_remember`): `CoreEmbeddingEventHandler.EmbedAndIndexAsync`
+- **Hot path** (`remember`): `CoreEmbeddingEventHandler.EmbedAndIndexAsync`
   slices the joined content, batch-embeds via `EmbedBatchAsync`, then runs an
   atomic per-memory replace — `RemoveAsync(scope, name)` first, then `UpsertAsync`
   per chunk. The pre-emptive Remove guards against shrink-replace orphans (a

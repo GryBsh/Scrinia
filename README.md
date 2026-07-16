@@ -4,7 +4,7 @@
 
 Persistent, portable memory for AI agents. Scrinia is a local-first MCP server that stores what agents save and serves it back — **agents bring the intelligence; scrinia provides the substrate**.
 
-Memories are compressed into NMP/2 artifacts on disk and indexed deterministically: BM25 over content + agent-supplied keywords + optional `RetrievalAnchors` (query-vocabulary phrases the agent provides at write time), weighted field scoring, semantic vectors via Model2Vec (384-dim MiniLM-L6-v2 distillation, ~22MB, zero native deps), and a sentence-MaxSim reranker on top. **There is no LLM consultation at write or read time on the server side** — write goes to disk, read runs the ranker, and that's the loop. The calling agent is the source of any LLM-driven enrichment (anchors, query refinement, summarization); scrinia just stores and surfaces.
+Memories are compressed into NMP/2 artifacts on disk and indexed deterministically: BM25 over content + agent-supplied keywords + the `anchor` attribute (query-vocabulary phrases the agent supplies at write time), weighted field scoring over attributes, semantic vectors via Model2Vec (384-dim MiniLM-L6-v2 distillation, ~22MB, zero native deps), and a sentence-MaxSim reranker on top. **There is no LLM consultation at write or read time on the server side** — write goes to disk, read runs the ranker, and that's the loop. The calling agent is the source of any LLM-driven enrichment (supplying the `anchor` attribute, query refinement, summarization); scrinia just stores and surfaces.
 
 Cross-process safe via OS-enforced file locks. Zero infrastructure required.
 
@@ -188,20 +188,20 @@ All commands accept `--workspace-root` to override the workspace directory and `
 | Tool | Description |
 |---|---|
 | `guide` | Returns the embedded agent guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session. |
-| `memory_remember` | Persist a memory at a path. `content` is a string array — each element is one chunk. |
-| `memory_recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
-| `memory_search` | Find memories by keyword or phrase. |
-| `memory_list` | List stored memories (`summary` / `full` / `drift` modes). |
-| `memory_append` | Append a chunk to an existing memory (or create it). |
-| `memory_forget` | Delete a memory by path. |
-| `memory_compact` | Merge a multi-chunk memory; archives the original. |
-| `memory_link` | Bidirectional link between two memories. |
-| `memory_restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
-| `memory_reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
+| `remember` | Persist a memory at a path. `content` is a string array — each element is one chunk. |
+| `recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
+| `search` | Find memories by keyword or phrase. |
+| `list` | List stored memories (`summary` / `full` / `drift` modes). |
+| `append` | Append a chunk to an existing memory (or create it). |
+| `forget` | Delete a memory by path. |
+| `compact` | Merge a multi-chunk memory; archives the original. |
+| `link` | Bidirectional link between two memories. |
+| `restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
+| `reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
 
 ### Built-in skills
 
-Eight skills ship with scrinia and load via `memory_recall({ path: '/skill/{name}' })`:
+Eight skills ship with scrinia and load via `recall({ path: '/skill/{name}' })`:
 
 | Skill | Purpose |
 |-------|---------|
@@ -216,7 +216,7 @@ Eight skills ship with scrinia and load via `memory_recall({ path: '/skill/{name
 
 Projects can override any built-in by writing to `/skill/{name}` — the on-disk version takes precedence and is reusable across sessions.
 
-Plans, retrospectives, agent norms, and findings are all just memories — searchable via `memory_search`, organized via reserved paths (`/findings/`, `/learn/`, `/agent/`, `/patterns/`, `/sessions/`). No separate database, no separate tools.
+Plans, retrospectives, agent norms, and findings are all just memories — searchable via `search`, organized via reserved paths (`/findings/`, `/learn/`, `/agent/`, `/patterns/`, `/sessions/`). No separate database, no separate tools.
 
 ## Documentation
 
