@@ -1909,13 +1909,14 @@ public sealed class ScriniaMcpToolsTests
         var guide = ResponseParser.Parse(result).Content!;
 
         guide.Should().Contain("## Chunks");
+        guide.Should().Contain("## Attributes");
         guide.Should().Contain("append");
-        guide.Should().Contain("Review markers");
-        guide.Should().Contain("reviewAfter");
+        guide.Should().Contain("review");                 // review is an attribute key now, not a param
         guide.Should().Contain("/checkpoint/");
         guide.Should().Contain("## Recovery");
         guide.Should().Contain("remember");
         guide.Should().NotContain("memory_remember");
+        guide.Should().NotContain("reviewAfter");         // removed param must not reappear
     }
 
     // ── Per-verb memory tools: remember / recall (4 tests) ───────────────────

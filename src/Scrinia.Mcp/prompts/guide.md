@@ -1,165 +1,170 @@
-# Scrinia — Memory Toolkit for Agents
+# Scrinia — Agent Memory Guide
 
-Scrinia is your single source of truth for project knowledge. All durable findings, decisions, and skills go through scrinia.
+Scrinia is persistent, project-scoped memory and reusable skill prompts, exposed as MCP tools. Memories live in `.scrinia/`, so they travel with the code and are shared with every agent that works on the repo. This guide covers the model Scrinia stores and the tools that operate on it.
 
-## Quick Start
+## The model
 
-```
-search({ query: "..." })                          — find what you know
-remember({ path: "...", content: [...] })         — store something
-recall({ path: "..." })                           — read it back
-append({ path: "...", content: "..." })           — add to it
-forget({ path: "..." })                           — delete it
-restore()                                         — resume after context loss
-```
+### Memories and paths
 
-## Tool reference
+A memory is content stored at a **path** like `/findings/SEC-001`. Paths are hierarchical and auto-tagged for search — `/api/auth-flow` is findable by `api`, `auth`, `flow`. Scope a search to a prefix: `search({ query: 'auth', pathPrefix: '/api/' })`.
 
-Scrinia exposes one `guide()` tool plus ten per-verb memory tools. Each tool's parameter schema is enforced at the validator level — you can't accidentally pass the wrong shape.
+### Chunks
 
-| Tool | Required | Optional |
-|---|---|---|
-| `remember` | `path`, `content` (string array) | `description`, `tags`, `keywords`, `codeRefs`, `reviewAfter`, `reviewWhen` |
-| `recall` | `path` | `chunk`, `withBuiltin` (only for `/skill/` paths) |
-| `append` | `path`, `content` (string) | — |
-| `forget` | `path` | — |
-| `search` | `query` | `context`, `scopes`, `limit`, `excludeTopics` |
-| `list` | — | `scopes`, `mode` (`summary`/`full`/`drift`), `offset`, `limit`, `excludeTopics` |
-| `compact` | `path` | `keepRecent` |
-| `link` | `path`, `destination` | `reason` |
-| `restore` | — | — |
-| `reconcile` | — | `conflictId`, `choice` (`ours`/`theirs`/`merged`), `mergedContent` |
-
-The `content` parameter is shaped to its tool:
-
-- `remember` takes `content: string[]` — each element becomes one chunk.
-- `append` takes `content: string` — a single new chunk appended to the existing memory.
-
-## Search before non-trivial work
-
-For new tasks, joining a project, or questions about prior decisions, `search` first. It prevents redundant investigation and keeps your work consistent with what's already been decided.
-
-Skip the search when the request is fully self-contained (rename a variable, reformat a function, answer a question with the code already in front of you) or when you're storing a trivial fact you just learned. A round trip you don't need is friction.
-
-## Store proactively
-
-When you learn something, fix a bug, get corrected, or discover a convention — store it immediately. If you had to figure it out, the next agent shouldn't have to.
-
-Don't store: transient working state (use `/temp/`), things derivable from code or git history (the commit message is the record), or content already covered by an existing memory (append or update instead).
-
-## Typed keywords help retrieval link across memories
-
-When you `remember`, prefer **typed keywords** over bare terms. Use one of five types: `person:<name>`, `place:<name>`, `org:<name>`, `thing:<name>`, `topic:<theme>`. Example: `keywords: ["org:acme", "person:maria", "topic:contract renewal"]`.
-
-Typed entries (`person:`/`place:`/`org:`/`thing:`/`topic:`) and any other `key:value` keyword become structured fields — exact-match retrieval signal and entity-graph input. Plain keywords remain search keywords.
-
-All five types feed an entity graph: a later search that mentions one entity can surface memories about *related* entities even when they share no words with the query (e.g. asking about "Acme" can pull up a memory about Maria, who works there). Bare keywords only help exact lexical matching.
-
-Two habits make the links work:
-
-- **Name an entity the same way every time.** The graph links memories through shared entity *values*, so `person:maria` in one memory and `person:maria` in another connect; `person:maria` and `person:maria rodriguez` do not.
-- **Type honestly.** The type distinguishes a person and a place that share a name (`person:paris` vs `place:paris`), so they don't get falsely linked. Topics participate too, so `topic:`-tagged memories link by theme.
-
-## Paths
-
-Paths organize memories hierarchically and are auto-tagged for search:
-
-- `/api/auth-flow` → searchable by `[api, auth, flow]`
-- `/patterns/retry` → searchable by `[patterns, retry]`
-
-Scope a search to a path prefix: `search({ query: "auth", scopes: "api" })`.
-
-### Reserved paths
-
-| Path | Purpose |
-|------|---------|
-| `/skill/...` | reusable specialist prompts (load via `/skill/{name}`, override by storing) |
-| `/agent/...` | agent profile and behavioral norms |
-| `/patterns/...` | recurring patterns and conventions |
-| `/findings/...` | audit, review, and QA findings |
-| `/learn/...` | retrospectives and durable lessons |
-| `/sessions/...` | session logs by date |
-| `/checkpoint/...` | state snapshots |
-| `/temp/...` | ephemeral (dies on process exit) |
-
-Any other path you use is treated as plain memory and grouped by its first segment.
-
-## Chunks
-
-Each element in the `content` array becomes one independently searchable chunk. Design chunks around concepts, not size.
+A memory's `content` is an **array of chunks**, each stored and retrieved independently. Split a memory along its semantically distinct parts — like the sections of a document — not by size:
 
 ```
-remember({ path: "/api/auth", content: [
-  "OAuth flow: redirect → callback → token exchange",
-  "Token refresh: background job every 55 minutes"
+remember({ path: '/api/auth', content: [
+  'OAuth flow: redirect → callback → token exchange',
+  'Token refresh: background job every 55 minutes'
 ]})
 ```
 
-Retrieve a specific chunk: `recall({ path: "/api/auth", chunk: 2 })`.
+Retrieve one chunk with `recall({ path: '/api/auth', chunk: 2 })`.
 
-## Skills
+### Attributes
 
-Skills are reusable specialist prompts — load one mid-conversation when you hit a domain you weren't optimized for.
-
-```
-recall({ path: "/skill/qa" })                           — load a skill prompt
-recall({ path: "/skill/" })                             — list available skills
-remember({ path: "/skill/my-helper", content: [...] })  — create or override
-```
-
-Built-in skills that ship with scrinia:
-
-- `auditor` — security/quality/doc review with sequenced finding IDs
-- `qa` — test-and-build verification with command-output evidence
-- `debugger` — observe → hypothesize → isolate → verify
-- `chaos-engineer` — failure domains, blast radius, recovery gaps
-- `onboarder` — build a codebase mental model
-- `merge-safety` — multi-user `.scrinia/` merge conflict handling
-- `evolutionary` — prune stale memories, surface drift, keep skills aligned with practice
-- `self-reflector` — compare plan vs reality after a unit of work, persist lessons
-
-Skills are persisted as `.scrinia/skills/{name}.md`. Built-ins are reused from the binary unless you override them. To merge a project override against an updated built-in: `recall({ path: '/skill/{name}', withBuiltin: true })`. (`withBuiltin` is the skill-merge flag; it is unrelated to `reconcile` which handles git merge conflicts.)
-
-## Reading responses
-
-Every response includes structured fields the next call should respect:
-
-- `instruction` — what you should do next (e.g. "Call recall for each item in followUp"). Follow it.
-- `followUp` — paths or memories worth loading; the response only returned a short summary to save tokens.
-- `actionNeeded` — warnings that block normal operation (unresolved merge conflicts, drifted memories). Address these before doing other work.
-- `status` and `action` — what happened.
-
-## Review markers
-
-Flag memories for staleness review:
+**Attributes** are typed facets — a map of key to values — that both **filter** searches and **link** related memories:
 
 ```
-remember({ ..., reviewAfter: "2026-06-01" })
-remember({ ..., reviewWhen: "when auth changes" })
+attributes: { person: ['maria'], org: ['acme'], review: ['2026-08-01'] }
 ```
 
-Memories with these markers surface as `[stale]` or `[review?]` in `list` so you know to re-check them. The store also auto-flags memories that mention specific counts (e.g. "759 tests") with a `reviewWhen: "when counts in this memory change"` marker.
+Keys Scrinia understands specially:
 
-## Session logs
+- **Entities** — `person`, `place`, `org`, `thing`, `topic`. The recommended vocabulary for the people, places, orgs, things, and themes memories most often link on.
+- **Dependencies** — `file`, `ref`. Recorded (and, for `file`, hashed) so Scrinia flags drift when a referenced file changes.
+- **Review** — `review`. An ISO date (`2026-08-01`), a condition (`when auth changes`), or both; flagged memories surface as `[stale]` / `[review?]` in `list`. (Scrinia auto-adds one to memories that cite specific counts, e.g. "759 tests.")
 
-Maintain a session log: `append({ path: "/sessions/2026-04-08", content: "..." })`.
+Any key is allowed — these are just the ones with built-in behavior.
 
-## Recovery
+### Keywords
 
-`restore` resumes agent context — agent profile, patterns, today's session log, available skills, and any unresolved merge conflicts. Read its `actionNeeded` warnings first, then follow the `followUp` list to load detailed context.
+**Keywords** are the distinctive terms and likely search phrasings for a memory. They merge with the terms Scrinia extracts from the content and seed the search index: `keywords: ['oauth flow', 'token refresh']`.
 
-## Workspace
+### Attributes vs. keywords
 
-Scrinia writes to `.scrinia/`. Include those changes in your commits.
+**Keywords** are free-text search signal for a lexical query. **Attributes** are structured facets that filter (`attributeFilter: { topic: ['auth'] }`) and link memories in the graph. Keywords answer "what words find this"; attributes answer "what facts this is about." Good memories have both.
 
-## Scrinia vs platform auto-memory
+### The entity graph
 
-If your platform also has its own auto-memory (Claude Code's per-user agent memory, for example), don't duplicate. Scrinia is workspace-scoped: it lives in `.scrinia/` and travels with the code, so it's the right home for project context — architecture, decisions, sessions, findings, skills. Platform auto-memory is user-scoped and travels with the user, so it's the right home for cross-project preferences and how-to-collaborate notes. When in doubt, project context belongs in Scrinia.
+Attributes build a graph linking memories that share an attribute **key and value** — and it is not limited to entity keys: the engine treats every key uniformly, so `project:apollo` links two memories just as `person:maria` does. A search naming one linked value can then surface related memories that share no query words — a note tagging both `org:acme` and `person:maria` lets a query about Acme reach Maria. Two habits keep links clean:
 
-## Every task, ask yourself
+- **Name a value the same way every time** — `person:maria`, never also `person:maria rodriguez`.
+- **Type honestly** — the entity type separates a same-named person and place (`person:paris` vs `place:paris`).
 
-- What do I know about this already? (search first if non-trivial)
-- What should I remember for next time? (store immediately if non-obvious)
-- What patterns am I following? (capture as `/patterns/...` once they recur)
-- What can I make easier next time? (store conventions, override skills)
-- What can I share with others? (skills and patterns are the durable artifacts)
+## The tools
+
+### remember — store a memory
+
+`remember({ path, content, attributes?, keywords? })` — `content` is a string array, one chunk per element.
+
+```
+remember({ path: '/findings/SEC-001',
+  content: ['Login form accepts an unescaped `next` param', 'Fix: allowlist redirect targets'],
+  attributes: { topic: ['auth'], file: ['src/Login.tsx'], review: ['when auth changes'] },
+  keywords: ['open redirect', 'login next param'] })
+```
+
+Use it when you learn something durable — a decision, fix, or convention the next agent should not have to rediscover.
+
+### recall — read a memory
+
+`recall({ path, chunk? })` — the whole memory, or one chunk if you pass `chunk`. `recall({ path: '/skill/qa' })` loads a skill; `recall({ path: '/skill/' })` lists skills.
+
+### search — find memories
+
+`search({ query, pathPrefix?, attributeFilter?, scopes?, context?, limit?, excludeTopics? })` — ranked matches, each with a preview and its attributes, so you can decide what to recall without another call.
+
+```
+search({ query: 'oauth flow', pathPrefix: '/findings/', attributeFilter: { topic: ['auth'] } })
+```
+
+Use it before non-trivial work; skip it when the request is self-contained.
+
+### list — browse memories
+
+`list({ mode?, scopes?, offset?, limit?, excludeTopics? })` — `mode` is `summary` (default), `full` (a paginated table), or `drift` (a code-reference drift check). Stale and review-flagged memories are marked here.
+
+### append — add to a memory
+
+`append({ path, content, attributes?, keywords? })` — `content` is a single string added as one new chunk (creating the memory if needed). Supplied attributes merge into the existing ones.
+
+### forget — delete a memory
+
+`forget({ path })`.
+
+### compact — merge a memory's chunks
+
+`compact({ path, keepRecent? })` — merges a multi-chunk memory into one and archives the original; `keepRecent: N` keeps the N most recent chunks.
+
+### link — connect two memories
+
+`link({ path, destination, reason? })` — a bidirectional link between two memories.
+
+### restore — resume your context
+
+`restore()` — reloads your agent profile, patterns, today's session log, skills, and unresolved conflicts. Rarely called directly; `guide()` folds it in at session start.
+
+### reconcile — resolve merge conflicts
+
+`reconcile({ conflictId?, choice?, mergedContent? })` — no arguments scans `.scrinia/` for git merge conflicts; a `conflictId` plus a `choice` (`ours` / `theirs` / `merged`) resolves one.
+
+### guide — this guide
+
+`guide()` returns this guide and restores your workspace context in one call. Call it once at session start.
+
+## Reference
+
+### Reserved paths
+
+Any path works; a few prefixes carry first-class behavior:
+
+| Path | Purpose |
+|------|---------|
+| `/skill/...` | Reusable specialist prompts (load via `recall`, override by storing) |
+| `/agent/...` | Agent profile and behavioral norms |
+| `/patterns/...` | Recurring patterns and conventions |
+| `/findings/...` | Audit, review, and QA findings |
+| `/learn/...` | Retrospectives and durable lessons |
+| `/sessions/...` | Session logs by date (`YYYY-MM-DD`) |
+| `/checkpoint/...` | State snapshots |
+| `/temp/...` | Ephemeral — dies on process exit |
+
+Any other path is plain memory, grouped by its first segment.
+
+### Reading responses
+
+Every response carries structured fields:
+
+- `instruction` — what to do next; follow it.
+- `followUp` — paths worth loading (the response returned a short summary to save tokens).
+- `actionNeeded` — blocking warnings (merge conflicts, drift); address these first.
+- `status` / `action` — what happened.
+
+### Skills
+
+Skills are specialist prompts you load when you hit a domain you were not optimized for:
+
+```
+recall({ path: '/skill/qa' })                          — load a skill
+recall({ path: '/skill/' })                            — list skills
+remember({ path: '/skill/my-helper', content: [...] }) — create or override
+```
+
+Built-ins: `auditor`, `qa`, `debugger`, `chaos-engineer`, `onboarder`, `merge-safety`, `evolutionary`, `self-reflector`. They live at `.scrinia/skills/{name}.md`; a project override takes precedence. Merge an override against an updated built-in with `recall({ path: '/skill/{name}', withBuiltin: true })`.
+
+### Sessions
+
+Keep a running log: `append({ path: '/sessions/2026-07-16', content: '...' })`.
+
+### Recovery
+
+After a context reset, `restore()` brings back your profile, patterns, session log, skills, and unresolved conflicts. Read its `actionNeeded` warnings first, then follow `followUp`.
+
+### Workspace
+
+Scrinia writes to `.scrinia/`. Commit those changes — that is how memory travels with the code.
+
+### Scrinia vs. platform auto-memory
+
+Don't duplicate your platform's own auto-memory (e.g. Claude Code's per-user memory). Scrinia is workspace-scoped — it travels with the repo, so it holds project context: architecture, decisions, sessions, findings, skills. Platform auto-memory is user-scoped — it holds cross-project preferences and collaboration notes.
