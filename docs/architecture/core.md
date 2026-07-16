@@ -136,13 +136,12 @@ public sealed record EphemeralEntry(
     long OriginalBytes,
     int ChunkCount,
     DateTimeOffset CreatedAt,
-    string Description,
-    string[]? Tags = null,
     string? ContentPreview = null,
     string[]? Keywords = null,
     Dictionary<string, int>? TermFrequencies = null,
     DateTimeOffset? UpdatedAt = null,
-    ChunkEntry[]? ChunkEntries = null);
+    ChunkEntry[]? ChunkEntries = null,
+    Dictionary<string, string[]>? Attributes = null);  // JSON "attributes"
 ```
 
 ### Index File (v3)
@@ -191,19 +190,18 @@ Each query term is matched against entry fields with different weights:
 | Match Type | Score |
 |------------|-------|
 | Exact name match | 100 |
-| Tag exact match | 50 |
-| Field pair match (`key:value` query term matches an `Attributes[key]` value) | 50 |
+| Attribute pair match (`key:value` query term matches an `Attributes[key]` value) | 50 |
 | Keyword exact match | 40 |
-| Field value exact match (bare query term equals a field value, any key) | 40 |
+| Attribute value exact match (bare query term equals an attribute value, any key) | 40 |
 | Name starts with | 30 |
 | Name contains | 20 |
-| Tag contains | 15 |
 | Keyword contains | 12 |
-| Field value contains (query term is a substring of a field value) | 12 |
-| Description contains | 10 |
+| Attribute value contains (query term is a substring of an attribute value) | 12 |
 | Content preview contains | 5 |
 
-Field scoring mirrors tag/keyword scoring by design: pair = tag-exact parity (50), value-exact = keyword-exact parity (40), contains = keyword-contains parity (12). **Dual-read:** the scorer also re-parses `key:value`-shaped legacy `Keywords` (e.g. `person:maria` written before unification) on the fly with the same three tiers, so pre-migration entries rank identically to `Attributes`-bearing entries — the cutover needs no re-index. See `WeightedFieldScorer.ScoreEntryTerm` in `Scrinia.Core.Search`.
+(There is no separate tag or description scoring: `tag` is an ordinary attribute key scored via the attribute rows, and a curated description lives in `ContentPreview`.)
+
+Attribute scores are multiplied by a per-key weight (`KnownFields.AttributeWeight(key)`, seeded at 1.0 so it changes no score today; the curation knob that replaced the old EntityKeys-only graph gate). **Legacy entries:** the scorer reads only `entry.Attributes`; `key:value`-shaped legacy `Keywords` (e.g. `person:maria` written before unification) are promoted into `Attributes` by the load-time forward-fill (`AttributeMigration.Forward`), so pre-migration entries score identically without a re-index — the on-the-fly key:value re-parse that once lived in the scorer was retired in P6.5. See `WeightedFieldScorer.ScoreEntryTerm` in `Scrinia.Core.Search`.
 
 **Chunk scoring** uses parent metadata at half weight plus chunk-specific fields.
 
@@ -293,7 +291,7 @@ public static class KnownFields
 
 Every consumer of typed/prefixed data reads **both** shapes so old entries (which only ever had prefixed `Keywords`, since `Attributes` didn't exist yet) and new entries (which have `Attributes`) retrieve identically:
 
-- **Scorer** (`WeightedFieldScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), then re-parses `key:value`-shaped `entry.Keywords` on the fly with the same three tiers.
+- **Scorer** (`WeightedFieldScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), each × the per-key `AttributeWeight`. It does not re-parse `key:value` `Keywords` — that on-the-fly parse was retired in P6.5; the load-time forward-fill promotes such keywords into `Attributes` first.
 - **Entity graph** (`EntityGraph.Build`): unions `ParseTypedEntities(keywords)` (legacy `type:value` keywords) with `ParseEntityFields(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownFields.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
 - **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Attributes["ref"]` for inbound references; new links are written forward-only into the `ref` attribute (no more `ref:` keyword emission) via `KnownFields.Merge`.
 - **FileHashes**: the MCP `Store` write path unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `ArtifactEntry.FileHashes`.
