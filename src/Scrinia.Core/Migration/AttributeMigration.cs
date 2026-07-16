@@ -29,11 +29,11 @@ public static class AttributeMigration
     /// <summary>The attribute key legacy free-form tags migrate to.</summary>
     public const string TagKey = "tag";
 
-    /// <summary>The single source of truth for folding legacy carriers (tags/file-hashes/review/anchors)
-    /// into attribute keys. Both <see cref="Forward"/> and the attributes-native write paths call this so
-    /// the write-time fold is byte-identical to the read-time fold. Returns only keys with non-empty input.
-    /// Excludes the key:value-Keywords fold and the Description→ContentPreview backfill (Forward-only).</summary>
-    internal static Dictionary<string, string[]> BuildLegacyCarrierFields(
+    /// <summary>The single source of truth for folding the write-time carrier inputs
+    /// (tags/file-hashes/review/anchors) into attribute keys. Both <see cref="Forward"/> and the
+    /// attributes-native write paths call this so the write-time fold is byte-identical to the read-time
+    /// fold. Returns only keys with non-empty input. Excludes the key:value-Keywords fold (Forward-only).</summary>
+    internal static Dictionary<string, string[]> BuildCarrierAttributes(
         string[]? tags, IEnumerable<string>? fileKeys,
         DateTimeOffset? reviewAfter, string? reviewWhen, string[]? anchors)
     {
@@ -67,7 +67,7 @@ public static class AttributeMigration
     {
         entry = entry.NormalizeAttributesKey();
 
-        var incoming = BuildLegacyCarrierFields(
+        var incoming = BuildCarrierAttributes(
             tags: null, entry.FileHashes?.Keys, reviewAfter: null, reviewWhen: null, anchors: null);
 
         if (entry.Keywords is { Length: > 0 })

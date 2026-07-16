@@ -372,7 +372,7 @@ public sealed partial class ScriniaMcpTools
         // write path (byte-identical to AttributeMigration.Forward's fold, Task 1). Inserted here,
         // immediately before construction, so it captures the auto-derived reviewWhen (above) and
         // the completed codeRefDict (above) — inserting any earlier would fold stale/empty values.
-        var carrier = AttributeMigration.BuildLegacyCarrierFields(
+        var carrier = AttributeMigration.BuildCarrierAttributes(
             tags, codeRefDict?.Keys, parsedReviewAfter,
             string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen, cleanedAnchors);
         if (carrier.Count > 0)
@@ -1303,7 +1303,7 @@ public sealed partial class ScriniaMcpTools
             // legacy carrier set even though tags/anchors are already in meta.Fields (passed null
             // below to avoid double-folding them).
             AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
-            var carrier = AttributeMigration.BuildLegacyCarrierFields(
+            var carrier = AttributeMigration.BuildCarrierAttributes(
                 tags: null, existingEntry?.FileHashes?.Keys, existingReviewDate,
                 existingReviewWhen, anchors: null);
             var appendAttrs = carrier.Count > 0 ? KnownFields.Merge(meta.Fields, carrier) : meta.Fields;
