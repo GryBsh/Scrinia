@@ -1932,12 +1932,12 @@ public sealed class ScriniaMcpToolsTests
 
         var parsed = ResponseParser.Parse(storeResult);
         parsed.Status.Should().Be("success",
-            because: "memory_remember must succeed");
+            because: "remember must succeed");
 
         // Verify content is retrievable
         string showResult = await Tools().Show("remember-test");
         ResponseParser.Parse(showResult).Content.Should().Be(original,
-            because: "content stored via memory_remember must be retrievable via Show");
+            because: "content stored via remember must be retrievable via Show");
     }
 
     [Fact]
@@ -1951,7 +1951,7 @@ public sealed class ScriniaMcpToolsTests
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
         parsed.Action.Should().Be("remembered",
-            because: "memory_remember must use action 'remembered', not the lower-level 'stored'");
+            because: "remember must use action 'remembered', not the lower-level 'stored'");
     }
 
     [Fact]
@@ -1966,9 +1966,9 @@ public sealed class ScriniaMcpToolsTests
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success",
-            because: "memory_recall must succeed");
+            because: "recall must succeed");
         parsed.Content.Should().Be(original,
-            because: "memory_recall must return the exact stored content");
+            because: "recall must return the exact stored content");
     }
 
     [Fact]
@@ -1983,10 +1983,10 @@ public sealed class ScriniaMcpToolsTests
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
         parsed.Action.Should().Be("recalled",
-            because: "memory_recall must use action 'recalled', not the lower-level 'shown'");
+            because: "recall must use action 'recalled', not the lower-level 'shown'");
     }
 
-    // ── withBuiltin parameter (skill recall) — disambiguated from memory_reconcile ──
+    // ── withBuiltin parameter (skill recall) — disambiguated from reconcile ──
 
     [Fact]
     public async Task MemoryRecall_Skill_WithBuiltin_ReturnsBothBuiltInAndOverride()
@@ -2021,7 +2021,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Store(["plain content"], "plain-memory");
 
         // Setting withBuiltin: true on a non-/skill/ path must not change behavior —
-        // the parameter is skill-recall-only and is unrelated to memory_reconcile.
+        // the parameter is skill-recall-only and is unrelated to reconcile.
         string result = await Tools().MemoryRecall(
             path: "plain-memory",
             withBuiltin: true);
@@ -2037,13 +2037,13 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        // memory_reconcile scans for git merge conflicts; in a fresh store it reports zero.
-        // It is unrelated to the withBuiltin skill-merge flag on memory_recall.
+        // reconcile scans for git merge conflicts; in a fresh store it reports zero.
+        // It is unrelated to the withBuiltin skill-merge flag on recall.
         string result = await Tools().MemoryReconcile();
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success",
-            because: "memory_reconcile on a clean store must succeed");
+            because: "reconcile on a clean store must succeed");
     }
 
     // ── Structured error responses: errorCode + actionNeeded recovery hints ──

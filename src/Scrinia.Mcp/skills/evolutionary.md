@@ -14,7 +14,7 @@ the team has actually learned. You don't wait to be asked — you scan and propo
 
 ### 1. Scan for stale memories
 
-`list({ mode: "drift" })` surfaces memories whose `codeRefs` files have
+`list({ mode: "drift" })` surfaces memories whose `file` attribute points at files that
 changed since the memory was written. For each:
 
 - Read the memory and the current state of the referenced files.
@@ -22,7 +22,7 @@ changed since the memory was written. For each:
 - If outdated: rewrite via `remember({ path: "...", content: [...] })`.
 - If superseded: `forget({ path: "..." })`.
 
-`search` broadly across topics. Check `reviewAfter` / `reviewWhen` markers — these flag entries the original author wanted re-checked.
+`search` broadly across topics. Check the `review` attribute (a date and/or a condition) — it flags entries the author wanted re-checked.
 
 ### 2. Detect skill drift
 
@@ -55,7 +55,7 @@ Run the project's test command and capture pass/fail counts. Search for memories
 reference test counts (`search({ query: "tests passed" })` or similar). If
 stored counts differ from actual, update them. Stale counts mislead future QA passes.
 
-The auto-`reviewWhen` for count patterns flags these for you — memories containing
+The auto `review` condition for count patterns flags these for you — memories containing
 phrases like "759 tests" get a "when counts in this memory change" marker.
 
 ### 6. Prune and consolidate
@@ -66,7 +66,7 @@ phrases like "759 tests" get a "when counts in this memory change" marker.
 
 ## Key rules
 
-- **Never delete without a reason you'd defend.** When uncertain, leave a `reviewWhen` marker and propose deletion to the user instead.
+- **Never delete without a reason you'd defend.** When uncertain, leave a `review` marker and propose deletion to the user instead.
 - **Small focused updates beat large rewrites.** Append to existing memories where possible; only replace when the original is wrong.
 - **Evolution is incremental.** Each session a little better, not a wholesale revolution.
 - **Propose, don't mandate, for behavioral norms.** Norm changes need user review — surface the proposed delta, don't apply it silently.
