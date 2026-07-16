@@ -8,7 +8,7 @@ This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It descr
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes two MCP tools (`guide`, `memory`) so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
+scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes eleven MCP tools — `guide()` plus one per memory operation — so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
 
 ## Project Layout
 
@@ -18,9 +18,10 @@ scrinia/
     Scrinia.Core/                 <- shared class library (net10.0)
       Encoding/                   <- NMP/2 strategy, chunked encoder
       Models/                     <- ArtifactEntry, ChunkEntry, EphemeralEntry, ScopedArtifact
-      Search/                     <- BM25 + WeightedFieldScorer + TextAnalysis + ReferenceExtractor
+      Search/                     <- BM25 + WeightedFieldScorer + KnownFields/FieldExtractor/AttributeReaders + TextAnalysis
       Embeddings/                 <- IEmbeddingProvider, VectorStore, HnswIndex, HybridReranker, providers
       Resilience/                 <- RetryPolicy, CircuitBreaker, TransientDetector
+      Migration/                  <- AttributeMigration (forward-fill + "fields"→"attributes" key migration)
       IMemoryStore.cs             <- store interface (CRUD, search, list, scope routing)
       FileMemoryStore.cs          <- filesystem-backed implementation
       MemoryNaming.cs             <- topic classification + scope formatting
@@ -28,7 +29,7 @@ scrinia/
       PathParser.cs / PathRouter.cs <- v2 path parsing + legacy fallback resolution
       SessionBudget.cs            <- per-session token consumption tracking (AsyncLocal)
     Scrinia.Mcp/                  <- MCP tools library
-      MemoryTools.cs              <- guide() + memory() entry points (sealed partial)
+      MemoryTools.cs              <- guide() + the per-verb memory tools (sealed partial)
       MemoryTools.Core.cs         <- store/show + agent-config write
       MemoryTools.Lifecycle.cs    <- bundle, reconcile, compact, restore
       MemoryTools.Bundling.cs     <- export/import bundle helpers
@@ -73,23 +74,23 @@ Eleven tools are exposed — `guide()` plus one per memory operation:
 | Tool | Description |
 |------|-------------|
 | `guide()` | Returns the embedded usage guide and auto-restores workspace context (skills, recent sessions, patterns). Call once per session and commit its content to your project's agent file. |
-| `memory_remember` | Persist a memory at a path. `content` is a string array — each element is one chunk. |
-| `memory_recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
-| `memory_search` | Find memories by keyword or phrase. |
-| `memory_list` | List stored memories (`summary` / `full` / `drift` modes). |
-| `memory_append` | Append a chunk to an existing memory (or create it). |
-| `memory_forget` | Delete a memory by path. |
-| `memory_compact` | Merge a multi-chunk memory; archives the original. |
-| `memory_link` | Bidirectional link between two memories. |
-| `memory_restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
-| `memory_reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
+| `remember` | Persist a memory at a path. `content` is a string array (one chunk per element); `attributes` are typed facets that link/filter; `keywords` are search terms. |
+| `recall` | Read a memory by path. Routes `/skill/...` paths to skill loading. |
+| `search` | Find memories by keyword or phrase; supports `pathPrefix` and `attributeFilter`. |
+| `list` | List stored memories (`summary` / `full` / `drift` modes). |
+| `append` | Append a chunk to an existing memory (or create it). |
+| `forget` | Delete a memory by path. |
+| `compact` | Merge a multi-chunk memory; archives the original. |
+| `link` | Bidirectional link between two memories. |
+| `restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
+| `reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
 
-Skill paths are routed transparently through `memory_recall` and `memory_remember`:
-- `memory_recall({ path: '/skill/qa' })` — load a skill prompt (built-in or override).
-- `memory_recall({ path: '/skill/' })` — list available skills.
-- `memory_remember({ path: '/skill/{name}', content: [...] })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
+Skill paths are routed transparently through `recall` and `remember`:
+- `recall({ path: '/skill/qa' })` — load a skill prompt (built-in or override).
+- `recall({ path: '/skill/' })` — list available skills.
+- `remember({ path: '/skill/{name}', content: [...] })` — create or override a skill on disk under `.scrinia/skills/{name}.md`.
 
-`memory_restore` resumes context — agent profile, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
+`restore` resumes context — agent profile, patterns, today's session log, and the list of available skills. Follow the `followUp` list to load detailed context.
 
 ## Core Abstractions
 
@@ -128,6 +129,8 @@ Memory paths are free-form. A small set has first-class behavior:
 | `/skill/...` | Reusable specialist prompts. Stored at `.scrinia/skills/{name}.md` with sidecar metadata. Built-in skills are embedded in the binary; user overrides on disk take precedence. |
 | `/agent/...` | Agent profile and behavioral norms. Stored at `.scrinia/agent/{name}.md` with sidecar metadata. |
 | `/patterns/...` | Recurring patterns and conventions. |
+| `/findings/...` | Audit, review, and QA findings. |
+| `/learn/...` | Retrospectives and durable lessons. |
 | `/sessions/...` | Session logs by date (`YYYY-MM-DD`). |
 | `/checkpoint/...` | State snapshots. |
 | `/temp/...` | Ephemeral (dies on process exit). |
