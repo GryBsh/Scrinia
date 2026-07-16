@@ -400,7 +400,7 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public async Task Store_LegacyCarriers_FoldIntoAttributesAtWriteTime()
     {
-        // Locks the write-time pre-fold (AttributeMigration.BuildLegacyCarrierFields) against
+        // Locks the write-time pre-fold (AttributeMigration.BuildCarrierAttributes) against
         // the RAW persisted entry — tag/anchor/review/file all supplied via legacy params
         // (not the `attributes` dict) so this test only passes if the fold actually runs.
         using var scope = new TestHelpers.StoreScope();

@@ -122,7 +122,7 @@ public static class MemoryOrchestrator
         if (!string.IsNullOrWhiteSpace(req.ReviewAfter) && DateTimeOffset.TryParse(req.ReviewAfter, out var ra))
             parsedReviewAfter = ra;
 
-        var carrier = AttributeMigration.BuildLegacyCarrierFields(
+        var carrier = AttributeMigration.BuildCarrierAttributes(
             req.Tags, fileKeys: null, parsedReviewAfter,
             string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen, anchors: null);
         if (carrier.Count > 0)
@@ -269,7 +269,7 @@ public static class MemoryOrchestrator
             FieldExtractor.SeedTermFrequencies(mergedFields, tf);
 
             AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
-            var carrier = AttributeMigration.BuildLegacyCarrierFields(
+            var carrier = AttributeMigration.BuildCarrierAttributes(
                 tags: null, fileKeys: null, existingReviewDate, existingReviewWhen, anchors: null);
             if (carrier.Count > 0)
                 mergedFields = KnownFields.Merge(mergedFields, carrier);

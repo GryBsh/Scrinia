@@ -34,8 +34,8 @@ public sealed class AttributeMigrationTests
 
     // Merge 3 Task 7: Tags/RetrievalAnchors/ReviewAfter/ReviewWhen/Description are removed from
     // ArtifactEntry, so MakeEntry no longer accepts or wires them — the only surviving legacy-carrier
-    // inputs are codeRefs (FileHashes) and fields (Attributes). BuildLegacyCarrierFields_MatchesForward_ForFile
-    // below exercises tags/anchors/review via its own locals (BuildLegacyCarrierFields's request-param
+    // inputs are codeRefs (FileHashes) and fields (Attributes). BuildCarrierAttributes_MatchesForward_ForFile
+    // below exercises tags/anchors/review via its own locals (BuildCarrierAttributes's request-param
     // signature is unchanged) rather than round-tripping them through the entry.
     private static ArtifactEntry MakeEntry(
         Dictionary<string, string>? codeRefs = null,
@@ -316,10 +316,10 @@ public sealed class AttributeMigrationTests
     }
 
     [Fact]
-    public void BuildLegacyCarrierFields_MatchesForward_ForFile()
+    public void BuildCarrierAttributes_MatchesForward_ForFile()
     {
         // tags/anchors/reviewAfter/reviewWhen have no member home anymore (Task 7 removed them from
-        // ArtifactEntry) — BuildLegacyCarrierFields's signature is unchanged (request-supplied params
+        // ArtifactEntry) — BuildCarrierAttributes's signature is unchanged (request-supplied params
         // still flow through it at write time), so this test feeds it locals directly instead of
         // round-tripping the values through the entry.
         string[] tags = ["security", "auth"];
@@ -329,7 +329,7 @@ public sealed class AttributeMigrationTests
         const string reviewWhen = "when auth changes";
         var entry = MakeEntry(codeRefs: codeRefs);
 
-        var built = AttributeMigration.BuildLegacyCarrierFields(
+        var built = AttributeMigration.BuildCarrierAttributes(
             tags, codeRefs.Keys, reviewAfter, reviewWhen, anchors);
 
         built["tag"].Should().BeEquivalentTo(tags);
@@ -339,7 +339,7 @@ public sealed class AttributeMigrationTests
         built["anchor"].Should().Equal("how to reset", "reset flow"); // whitespace dropped, dupe deduped
 
         // Forward only member-sources "file" (the only surviving legacy-carrier member);
-        // BuildLegacyCarrierFields itself is unchanged and still folds all four when called directly
+        // BuildCarrierAttributes itself is unchanged and still folds all four when called directly
         // with request-supplied params (the write-time call shape).
         var forwarded = AttributeMigration.Forward(entry);
         forwarded.Attributes!["file"].Should().BeEquivalentTo(built["file"]);
