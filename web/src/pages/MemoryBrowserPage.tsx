@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import {
@@ -46,10 +46,30 @@ export default function MemoryBrowserPage() {
     enabled: !!searchQuery,
   })
 
-  // Extract unique scopes for filter tabs — only reflects scopes within loaded pages.
+  // Accumulate every scope ever seen across loads, so the tab bar (and the
+  // "All" tab in particular) doesn't collapse once the active filter narrows
+  // the loaded page down to a single scope. Scopes are added, never removed.
+  const [knownScopes, setKnownScopes] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    // Switching stores invalidates any scopes accumulated for the previous one.
+    setKnownScopes(new Set())
+  }, [store])
+  useEffect(() => {
+    setKnownScopes((prev) => {
+      let changed = false
+      const next = new Set(prev)
+      for (const m of memories) {
+        if (!next.has(m.scope)) {
+          next.add(m.scope)
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [memories])
   const scopes = useMemo(
-    () => [...new Set(memories.map((m) => m.scope))],
-    [memories],
+    () => [...knownScopes].sort(),
+    [knownScopes],
   )
 
   return (
@@ -72,22 +92,25 @@ export default function MemoryBrowserPage() {
         <SearchBar onSearch={setSearchQuery} />
       </div>
 
-      {/* Scope filter tabs */}
-      {scopes.length > 1 && (
+      {/* Scope filter tabs. "All" is always shown once any scope has been seen,
+          so a selected filter can always be cleared. Per-scope tabs only
+          appear once we know of more than one scope to choose between. */}
+      {scopes.length > 0 && (
         <div className="flex gap-1 mb-4">
           <ScopeTab
             label="All"
             active={scopeFilter === ''}
             onClick={() => setScopeFilter('')}
           />
-          {scopes.map((s) => (
-            <ScopeTab
-              key={s}
-              label={s}
-              active={scopeFilter === s}
-              onClick={() => setScopeFilter(s)}
-            />
-          ))}
+          {scopes.length > 1 &&
+            scopes.map((s) => (
+              <ScopeTab
+                key={s}
+                label={s}
+                active={scopeFilter === s}
+                onClick={() => setScopeFilter(s)}
+              />
+            ))}
         </div>
       )}
 
