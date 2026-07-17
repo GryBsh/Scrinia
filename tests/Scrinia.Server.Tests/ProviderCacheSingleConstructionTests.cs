@@ -45,6 +45,24 @@ public class ProviderCacheSingleConstructionTests : IDisposable
         stores.Should().OnlyContain(s => ReferenceEquals(s, stores[0]), "all callers must observe the same cached instance");
     }
 
+    [Fact]
+    public void StoreManager_TransientConstructionFailure_DoesNotPoisonStoreKey()
+    {
+        var paths = new Dictionary<string, string>
+        {
+            ["default"] = Path.Combine(_tempDir, "stores", "default")
+        };
+        var backend = new FirstCallThrowsBackend();
+        var manager = new StoreManager(paths, backend);
+
+        Action firstCall = () => manager.GetStore("default");
+        firstCall.Should().Throw<InvalidOperationException>("the first construction attempt is a transient failure");
+
+        var store = manager.GetStore("default");
+        store.Should().NotBeNull("a retried call for the same key must succeed instead of being permanently poisoned");
+        backend.CreateCount.Should().Be(2, "the factory must be retried on the next call after a faulted first attempt");
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
@@ -60,6 +78,25 @@ public class ProviderCacheSingleConstructionTests : IDisposable
         public IMemoryStore CreateStore(string storeName, string storePath)
         {
             Interlocked.Increment(ref _createCount);
+            Directory.CreateDirectory(storePath);
+            return new FileMemoryStore(storePath);
+        }
+    }
+
+    /// <summary>Test backend whose first CreateStore call throws (simulating a transient
+    /// filesystem failure) and whose second call succeeds.</summary>
+    private sealed class FirstCallThrowsBackend : IStorageBackend
+    {
+        private int _createCount;
+        public string BackendId => "first-call-throws-backend";
+        public int CreateCount => _createCount;
+
+        public IMemoryStore CreateStore(string storeName, string storePath)
+        {
+            var count = Interlocked.Increment(ref _createCount);
+            if (count == 1)
+                throw new InvalidOperationException("Simulated transient filesystem failure.");
+
             Directory.CreateDirectory(storePath);
             return new FileMemoryStore(storePath);
         }

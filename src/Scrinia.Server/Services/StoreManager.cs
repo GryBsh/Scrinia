@@ -32,7 +32,18 @@ public sealed class StoreManager : IDisposable
         var lazy = _stores.GetOrAdd(storeName, name =>
             new Lazy<IMemoryStore>(() => _backend.CreateStore(name, _storePaths[name]),
                 LazyThreadSafetyMode.ExecutionAndPublication));
-        return lazy.Value;
+        try
+        {
+            return lazy.Value;
+        }
+        catch
+        {
+            // A transient construction failure must not permanently poison this key.
+            // Remove ONLY if this exact faulted Lazy is still cached (don't evict a
+            // successful replacement created by another thread).
+            _stores.TryRemove(new KeyValuePair<string, Lazy<IMemoryStore>>(storeName, lazy));
+            throw;
+        }
     }
 
     /// <summary>All configured store names.</summary>
