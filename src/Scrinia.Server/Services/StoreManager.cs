@@ -12,7 +12,7 @@ public sealed class StoreManager : IDisposable
 {
     private readonly Dictionary<string, string> _storePaths;
     private readonly IStorageBackend _backend;
-    private readonly ConcurrentDictionary<string, IMemoryStore> _stores = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<IMemoryStore>> _stores = new(StringComparer.OrdinalIgnoreCase);
 
     public StoreManager(Dictionary<string, string> storePaths, IStorageBackend backend)
     {
@@ -29,8 +29,10 @@ public sealed class StoreManager : IDisposable
         if (!_storePaths.ContainsKey(storeName))
             throw new KeyNotFoundException($"Store '{storeName}' is not configured.");
 
-        return _stores.GetOrAdd(storeName, name =>
-            _backend.CreateStore(name, _storePaths[name]));
+        var lazy = _stores.GetOrAdd(storeName, name =>
+            new Lazy<IMemoryStore>(() => _backend.CreateStore(name, _storePaths[name]),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        return lazy.Value;
     }
 
     /// <summary>All configured store names.</summary>
@@ -46,9 +48,10 @@ public sealed class StoreManager : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        foreach (var store in _stores.Values)
+        foreach (var lazy in _stores.Values)
         {
-            if (store is IDisposable disposable)
+            if (!lazy.IsValueCreated) continue;
+            if (lazy.Value is IDisposable disposable)
                 disposable.Dispose();
         }
 

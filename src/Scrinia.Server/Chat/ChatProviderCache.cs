@@ -10,7 +10,7 @@ namespace Scrinia.Server.Chat;
 /// </summary>
 public sealed class ChatProviderCache : IDisposable
 {
-    private readonly ConcurrentDictionary<string, IChatProvider?> _providers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<IChatProvider?>> _providers = new(StringComparer.OrdinalIgnoreCase);
     private readonly ChatOptions _options;
     private readonly ILogger<ChatProviderCache> _logger;
     private bool _disposed;
@@ -29,17 +29,20 @@ public sealed class ChatProviderCache : IDisposable
     public IChatProvider? GetOrCreate(string providerName)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return _providers.GetOrAdd(providerName, name =>
-            ChatProviderFactory.Create(name, _options, _logger));
+        var lazy = _providers.GetOrAdd(providerName, name =>
+            new Lazy<IChatProvider?>(() => ChatProviderFactory.Create(name, _options, _logger),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        return lazy.Value;
     }
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
-        foreach (var provider in _providers.Values)
+        foreach (var lazy in _providers.Values)
         {
-            if (provider is IDisposable d) d.Dispose();
+            if (!lazy.IsValueCreated) continue;
+            if (lazy.Value is IDisposable d) d.Dispose();
         }
         _providers.Clear();
     }
