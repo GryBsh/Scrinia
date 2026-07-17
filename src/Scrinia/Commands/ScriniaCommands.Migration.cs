@@ -339,7 +339,7 @@ public partial class ScriniaCommands
     /// <param name="debounceMinutes">Minimum minutes between auto runs. Prevents wasted work when invoked repeatedly.</param>
     /// <param name="sessionAgeDays">Compact multi-chunk session entries older than N days (preserves content, drops chunk granularity).</param>
     /// <param name="json">Output as JSON instead of a styled table.</param>
-    public Task<int> Consolidate(
+    public async Task<int> Consolidate(
         string? workspaceRoot = null,
         bool auto = false,
         bool dryRun = false,
@@ -373,7 +373,7 @@ public partial class ScriniaCommands
                                 CliJsonContext.Default.CliConsolidateOutput);
                         else
                             AnsiConsole.MarkupLine($"[dim]consolidate: skipped — {reason}[/]");
-                        return Task.FromResult(0);
+                        return 0;
                     }
                 }
             }
@@ -400,11 +400,21 @@ public partial class ScriniaCommands
         var compacted = new List<string>();
         if (!dryRun)
         {
+            // Wire the embedding pipeline before compacting so the merged single-chunk entry
+            // can be re-embedded through the same event-sink path a normal store/append uses —
+            // otherwise vectors stay keyed to the pre-compaction chunk layout (stale/orphaned).
+            IMemoryStore? store = null;
+            if (compactionCandidates.Count > 0)
+            {
+                await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+                store = MemoryStoreContext.Current;
+            }
+
             foreach (var item in compactionCandidates)
             {
                 try
                 {
-                    CompactEntryToSingleChunk(item);
+                    await CompactEntryToSingleChunk(item, store, cancellationToken);
                     compacted.Add(ScriniaArtifactStore.FormatQualifiedName(item.Scope, item.Entry.Name));
                 }
                 catch (Exception ex)
@@ -430,7 +440,7 @@ public partial class ScriniaCommands
                     CompactionCandidates: compactionCandidates.Count,
                     Compacted: compacted.ToArray()),
                 CliJsonContext.Default.CliConsolidateOutput);
-            return Task.FromResult(0);
+            return 0;
         }
 
         var sb = new System.Text.StringBuilder();
@@ -453,7 +463,7 @@ public partial class ScriniaCommands
             sb.AppendLine("[dim]Nothing to consolidate.[/]");
         }
         AnsiConsole.Write(new Markup(sb.ToString()));
-        return Task.FromResult(0);
+        return 0;
     }
 
     /// <summary>True when the scope is the session-log scope under any namespacing variant.</summary>
@@ -471,7 +481,14 @@ public partial class ScriniaCommands
     /// so the prior chunked form remains recoverable. Updates the sidecar to reflect the new
     /// chunk count and clears per-chunk metadata (which is no longer accurate after merge).
     /// </summary>
-    private static void CompactEntryToSingleChunk(ScopedArtifact item)
+    /// <param name="item">The multi-chunk entry to compact.</param>
+    /// <param name="store">Active memory store (wired by the caller via <c>WorkspaceSetup.LoadPluginsAsync</c>),
+    /// used to re-embed the merged entry. Null skips re-embedding (e.g. workspace not configured).</param>
+    /// <param name="ct">Cancellation token for the re-embed call.</param>
+    /// <remarks>Internal (rather than private) so tests can exercise the re-embed wiring directly
+    /// without going through <c>WorkspaceSetup.LoadPluginsAsync</c>'s real provider discovery,
+    /// which is environment-dependent (model files may or may not be present on disk).</remarks>
+    internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore? store, CancellationToken ct)
     {
         string path = ScriniaArtifactStore.FindArtifactPath(item.Entry.Name, item.Scope);
         if (!File.Exists(path)) return;
@@ -494,6 +511,28 @@ public partial class ScriniaCommands
             ChunkEntries = null,
         };
         ScriniaArtifactStore.Upsert(updated, item.Scope);
+
+        // Merging chunks collapses the chunk layout (e.g. indices 0-7 -> just 0), so any
+        // vectors keyed to the old per-chunk indices are now orphaned/stale. Re-embed through
+        // the same event-sink path a normal store/append uses (CoreEmbeddingEventHandler.
+        // EmbedAndIndexAsync does an atomic Remove-then-Upsert per entry) so stale higher-index
+        // vectors are cleared and the merged single chunk gets a fresh vector. If no sink is
+        // wired (embeddings unavailable in this process), there's nothing to clear or rebuild —
+        // a subsequent `scri reindex` will repopulate.
+        var sink = MemoryEventSinkContext.Current;
+        if (sink is not null && store is not null)
+        {
+            try
+            {
+                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
+                await sink.OnStoredAsync(qualifiedName, [fullText], store, ct);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] Re-embed after compaction failed for '{item.Entry.Name}': {ex.GetType().Name}: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>Migrate stored memories to the attributes model (forward-fill: tags, codeRefs,
