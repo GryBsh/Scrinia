@@ -84,6 +84,20 @@ public sealed class TransientDetectorTests
     {
         TransientDetector.IsTransient((Exception?)null).Should().BeFalse();
     }
+
+    [Fact]
+    public void HttpClientTimeout_TaskCanceledWithTimeoutInner_IsTransient()
+    {
+        var ex = new TaskCanceledException("timed out", new TimeoutException());
+        TransientDetector.IsTransient(ex).Should().BeTrue(); // BUG: currently false
+    }
+
+    [Fact]
+    public void CallerCancellation_TaskCanceledWithoutTimeoutInner_IsNotTransient()
+    {
+        var ex = new TaskCanceledException("cancelled");
+        TransientDetector.IsTransient(ex).Should().BeFalse();
+    }
 }
 
 public sealed class RetryPolicyTests
