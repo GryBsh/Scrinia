@@ -1248,7 +1248,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         {
             string filePath = Path.GetFullPath(nameOrArtifact[7..]);
             string scriniDir = Path.GetFullPath(Path.Combine(_workspaceRoot, ".scrinia"));
-            if (!filePath.StartsWith(scriniDir, StringComparison.OrdinalIgnoreCase))
+            if (!PathContainment.IsWithin(scriniDir, filePath))
                 throw new UnauthorizedAccessException(
                     $"file:// URIs are restricted to the workspace .scrinia/ directory.");
             return await File.ReadAllTextAsync(filePath, ct);

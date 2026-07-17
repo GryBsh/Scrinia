@@ -1590,7 +1590,7 @@ public sealed partial class ScriniaMcpTools
     private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)
     {
         var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, relativePath.Trim()));
-        return fullPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase) ? fullPath : null;
+        return PathContainment.IsWithin(workspaceRoot, fullPath) ? fullPath : null;
     }
 
     private static string? ComputeFileHash(string fullPath)
