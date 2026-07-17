@@ -341,23 +341,34 @@ public sealed class VectorStore : IDisposable, IVectorStore
 
         while (reader.BaseStream.Position < reader.BaseStream.Length)
         {
-            byte op = reader.ReadByte();
-            ushort nameLen = reader.ReadUInt16();
-            string name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLen));
-            int chunkIdx = reader.ReadInt32();
-            int? chunkIndex = chunkIdx == -1 ? null : chunkIdx;
-            string key = $"{name}|{chunkIdx}";
+            try
+            {
+                byte op = reader.ReadByte();
+                ushort nameLen = reader.ReadUInt16();
+                string name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLen));
+                int chunkIdx = reader.ReadInt32();
+                int? chunkIndex = chunkIdx == -1 ? null : chunkIdx;
+                string key = $"{name}|{chunkIdx}";
 
-            if (op == 0) // Add
-            {
-                float[] vector = new float[dims];
-                for (int d = 0; d < dims; d++)
-                    vector[d] = reader.ReadSingle();
-                entries[key] = new VectorEntry(name, chunkIndex, vector);
+                if (op == 0) // Add
+                {
+                    float[] vector = new float[dims];
+                    for (int d = 0; d < dims; d++)
+                        vector[d] = reader.ReadSingle();
+                    entries[key] = new VectorEntry(name, chunkIndex, vector);
+                }
+                else // Delete
+                {
+                    entries.Remove(key);
+                }
             }
-            else // Delete
+            catch (EndOfStreamException)
             {
-                entries.Remove(key);
+                // Torn trailing record — e.g. a crash/power-loss mid-append left a partial
+                // record at the end of the file. Stop here and keep everything parsed so
+                // far rather than letting the whole-file catch in LoadFromDisk discard the
+                // entire scope over a single truncated tail.
+                break;
             }
         }
 
