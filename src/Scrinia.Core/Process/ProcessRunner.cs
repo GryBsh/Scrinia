@@ -38,8 +38,8 @@ public sealed class ProcessRunner : IProcessRunner
         }
 
         // Read both streams concurrently to avoid deadlock when a child fills one buffer.
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
 
         bool timedOut = false;
         try
