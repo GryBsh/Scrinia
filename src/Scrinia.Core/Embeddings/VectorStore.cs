@@ -75,7 +75,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
     public IReadOnlyList<VectorEntry> GetVectors(string scope)
     {
         if (_scopeVectors.TryGetValue(scope, out var cached))
-            return cached;
+            return cached.ToArray(); // snapshot: callers must not observe concurrent mutation
 
         var lk = GetLock(scope);
         if (!lk.Wait(TimeSpan.FromSeconds(30)))
@@ -84,11 +84,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             // Double-check after lock
             if (_scopeVectors.TryGetValue(scope, out cached))
-                return cached;
+                return cached.ToArray();
 
             var loaded = LoadFromDisk(scope);
             _scopeVectors[scope] = loaded;
-            return loaded;
+            return loaded.ToArray();
         }
         finally
         {
