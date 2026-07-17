@@ -1,4 +1,5 @@
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Http.Features;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
@@ -315,6 +316,15 @@ public static class MemoryEndpoints
     {
         if (!ctx.HasPermission("import"))
             return Results.Json(new ErrorResponse("Permission 'import' required."), statusCode: 403);
+
+        // Kestrel's global MaxRequestBodySize (10 MB, set in Program.cs) is below the
+        // intended 50 MB bundle-import ceiling (FormOptions.MultipartBodyLengthLimit).
+        // Raise the per-request limit before the body is read so imports up to 50 MB
+        // aren't rejected with 413 before the multipart limit ever applies. Must run
+        // before the first access to request.Form, which triggers body reading.
+        var maxBodySizeFeature = request.HttpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (maxBodySizeFeature is not null && !maxBodySizeFeature.IsReadOnly)
+            maxBodySizeFeature.MaxRequestBodySize = 50 * 1024 * 1024;
 
         if (!request.HasFormContentType || request.Form.Files.Count == 0)
             return Results.BadRequest(new ErrorResponse("Multipart file upload required."));
