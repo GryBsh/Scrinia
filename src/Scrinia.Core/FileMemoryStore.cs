@@ -1395,6 +1395,31 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
+    /// Efficient override of the default interface method: filters candidates at scope-resolution
+    /// level (via <see cref="ListScoped(string?, string?)"/>) BEFORE scoring/limit, so excluded
+    /// topics never occupy result slots even when a supplemental score source (e.g. embeddings) is
+    /// active. Mirrors the excludeTopics-only overload above.
+    /// </summary>
+    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
+    {
+        if (string.IsNullOrWhiteSpace(excludeTopics))
+            return SearchAll(query, scopes, limit, supplementalScores, entityGraphScores);
+
+        if (string.IsNullOrWhiteSpace(query))
+            return [];
+
+        var searcher = new WeightedFieldScorer(RankerOptions);
+        var candidates = ListScoped(scopes, excludeTopics);
+        // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
+        // candidates, so building topic infos from this filtered set automatically gives us
+        // the same shape as GatherTopicInfos+filter without re-LoadIndex-ing.
+        var topics = BuildTopicInfosFromCandidates(candidates);
+        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores, entityGraphScores);
+    }
+
+    /// <summary>
     /// Efficient override of the default interface method: resolves scopes then excludes
     /// the specified topic scopes.
     /// </summary>
