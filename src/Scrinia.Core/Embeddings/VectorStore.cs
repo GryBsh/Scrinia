@@ -105,8 +105,12 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             var vectors = _scopeVectors.GetOrAdd(scope, _ => LoadFromDisk(scope));
 
-            // Check if we're replacing an existing entry
-            bool hadExisting = vectors.RemoveAll(v => v.Name == name && v.ChunkIndex == chunkIndex) > 0;
+            // Check if we're replacing an existing entry. Case-insensitive to match
+            // RemoveAsync and the on-disk op-log replay (ReadEntryOps), both of which key
+            // names with OrdinalIgnoreCase — keeping this ordinal would let two entries
+            // differing only in case coexist in memory while a reload collapses them to one.
+            bool hadExisting = vectors.RemoveAll(v =>
+                string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase) && v.ChunkIndex == chunkIndex) > 0;
             vectors.Add(new VectorEntry(name, chunkIndex, vector));
 
             // Persist if not ephemeral
