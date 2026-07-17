@@ -118,7 +118,9 @@ internal sealed class WeightedFieldScorer
     /// Searches both entries and topics with optional supplemental scores (e.g. from embeddings).
     /// Supplemental score keys: "{scope}|{name}" for entries, "{scope}|{name}|{chunkIndex}" for chunks.
     ///
-    /// BM25 scores are normalized to 0–100 (min-max) before combining with field scores.
+    /// BM25 scores are normalized to 0–100 (max-norm: raw / corpus-max) before combining with
+    /// field scores. Max-norm (not min-max) so a single/weakest positive match still surfaces —
+    /// min-max would zero out a candidate that is simultaneously the min and the max.
     /// Multi-term intersection bonus of (matchedTerms - 1) * 15 rewards queries matching multiple terms.
     /// Uses a min-heap (size K) for top-K selection instead of full sort for efficiency.
     /// </summary>
@@ -146,13 +148,13 @@ internal sealed class WeightedFieldScorer
         // ── Pass 1: Compute raw BM25 scores for normalization ────────────
         var entryBm25 = new double[candidateList.Count];
         var chunkBm25List = new List<(int candidateIdx, int chunkIdx, double rawBm25)>();
-        double minBm25 = double.MaxValue, maxBm25 = double.MinValue;
+        double maxBm25 = 0;
 
         for (int i = 0; i < candidateList.Count; i++)
         {
             double raw = ComputeBm25(queryTerms, candidateList[i].Entry, avgDocLen, corpusSize, docFreqs);
             entryBm25[i] = raw;
-            if (raw > 0) { minBm25 = Math.Min(minBm25, raw); maxBm25 = Math.Max(maxBm25, raw); }
+            if (raw > maxBm25) maxBm25 = raw;
 
             if (candidateList[i].Entry.ChunkEntries is { Length: > 0 } chunks)
             {
@@ -160,13 +162,10 @@ internal sealed class WeightedFieldScorer
                 {
                     double chunkRaw = ComputeChunkBm25(queryTerms, chunk, avgDocLen, corpusSize, docFreqs);
                     chunkBm25List.Add((i, chunk.ChunkIndex, chunkRaw));
-                    if (chunkRaw > 0) { minBm25 = Math.Min(minBm25, chunkRaw); maxBm25 = Math.Max(maxBm25, chunkRaw); }
+                    if (chunkRaw > maxBm25) maxBm25 = chunkRaw;
                 }
             }
         }
-
-        double bm25Range = maxBm25 - minBm25;
-        if (bm25Range <= 0) bm25Range = 1; // Avoid division by zero
 
         // ── Pass 2: Combine normalized BM25 with field scores, deduplicate inline ──
         // Track best score per memory for deduplication during scoring. Relevance gates
@@ -194,7 +193,7 @@ internal sealed class WeightedFieldScorer
             {
                 var candidate = candidateList[i];
                 double fieldScore = ScoreEntry(query, candidate.Entry);
-                double normalizedBm25 = entryBm25[i] > 0 ? (entryBm25[i] - minBm25) / bm25Range * 100.0 : 0;
+                double normalizedBm25 = maxBm25 > 0 ? entryBm25[i] / maxBm25 * 100.0 : 0;
                 double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
                 // Entity-graph PPR is its own additive source (keyed at entry level), not folded
                 // into supplemental — so it stays a distinct signal under any fusion mode.
@@ -208,7 +207,7 @@ internal sealed class WeightedFieldScorer
                 var candidate = candidateList[candidateIdx];
                 var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
                 double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
-                double normalizedChunkBm25 = rawBm25 > 0 ? (rawBm25 - minBm25) / bm25Range * 100.0 : 0;
+                double normalizedChunkBm25 = maxBm25 > 0 ? rawBm25 / maxBm25 * 100.0 : 0;
                 double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
                 // Entity scores are entry-level; reuse the parent's value for chunk cells.
                 double chunkEntityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
