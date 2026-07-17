@@ -348,6 +348,10 @@ public static class BundleFormatService
                 continue;
 
             string categoryDir = Path.Combine(baseDir, category);
+            string fullBase = Path.GetFullPath(baseDir);
+            string fullCategoryDir = Path.GetFullPath(categoryDir);
+            if (!IsWithin(fullBase, fullCategoryDir))
+                continue; // reject traversal in the manifest category key
             Directory.CreateDirectory(categoryDir);
 
             foreach (var fileEl in categoryProp.Value.EnumerateArray())
@@ -367,8 +371,7 @@ public static class BundleFormatService
 
                 string destPath = Path.Combine(categoryDir, fileName);
                 string fullDest = Path.GetFullPath(destPath);
-                string fullCategory = Path.GetFullPath(categoryDir);
-                if (!fullDest.StartsWith(fullCategory, StringComparison.OrdinalIgnoreCase))
+                if (!IsWithin(fullBase, fullDest))
                     continue;
 
                 using var inStream = zipEntry.Open();
@@ -376,5 +379,17 @@ public static class BundleFormatService
                 inStream.CopyTo(outStream);
             }
         }
+    }
+
+    /// <summary>
+    /// True when <paramref name="candidateFull"/> is <paramref name="baseFull"/> itself or
+    /// nested inside it. Both paths must already be fully resolved (<see cref="Path.GetFullPath(string)"/>).
+    /// </summary>
+    private static bool IsWithin(string baseFull, string candidateFull)
+    {
+        string withSep = baseFull.EndsWith(Path.DirectorySeparatorChar)
+            ? baseFull : baseFull + Path.DirectorySeparatorChar;
+        return candidateFull.StartsWith(withSep, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(candidateFull, baseFull, StringComparison.OrdinalIgnoreCase);
     }
 }
