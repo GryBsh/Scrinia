@@ -12,17 +12,21 @@ export default function LoginPage() {
     e.preventDefault()
     if (!key.trim()) return
 
-    // Validate by trying the health endpoint with auth
+    // Validate against a route any authenticated key can call (not the
+    // ManageKeys-gated /api/v1/keys endpoint) — a valid key without
+    // key-management permission must still be able to log in.
     setToken(key.trim())
     try {
-      const resp = await fetch('/api/v1/keys', {
+      const resp = await fetch('/api/v1/stores/default/memories?limit=1', {
         headers: { Authorization: `Bearer ${key.trim()}` },
       })
-      if (resp.status === 401 || resp.status === 403) {
+      if (resp.status === 401) {
         setError('Invalid API key.')
         localStorage.removeItem('scrinia-api-key')
         return
       }
+      // 403 no longer means "invalid key" — a valid non-admin key may lack
+      // some scopes but can still log in.
     } catch {
       // Network error — proceed anyway, key might still be valid
     }
