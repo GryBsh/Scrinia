@@ -74,12 +74,6 @@ public sealed partial class ScriniaMcpTools
 
     private static string ResolveConflictByPath(string scriniaDir, string conflictId, string? choice, string? mergedContent)
     {
-        if (string.IsNullOrWhiteSpace(choice))
-            return ResponseBuilder.Error(
-                "'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.",
-                ErrorCodes.InvalidParameter,
-                $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
-
         if (!TryResolveScriniaRelativePath(scriniaDir, conflictId, out string absolutePath, out string? pathError))
             return ResponseBuilder.Error(
                 pathError!,
@@ -109,6 +103,34 @@ public sealed partial class ScriniaMcpTools
                 "reconcile() to list current conflicts").ToYaml();
 
         string type = ClassifyConflictType(absolutePath);
+
+        if (string.IsNullOrWhiteSpace(choice))
+        {
+            // No explicit choice: the only unattended resolution we support is the .meta.json
+            // auto-merge (keyword union, latest timestamp). This is the ONLY place that write
+            // is allowed to happen — scanning (ScanForConflicts) only reports it as possible.
+            if (type == "meta.json" && TryComputeAutoResolvedMetaJson(fileContent, out string? autoResolvedJson))
+            {
+                try { File.WriteAllText(absolutePath, autoResolvedJson!); }
+                catch (Exception ex)
+                {
+                    return ResponseBuilder.Error(
+                        $"Writing resolved content to {absolutePath}: {ex.Message}",
+                        ErrorCodes.Internal,
+                        "Verify filesystem permissions and disk space, then retry the reconcile.").ToYaml();
+                }
+
+                return ResponseBuilder.Success(
+                        $"Resolved {conflictId} (meta.json) via automatic merge (keyword union, latest timestamp wins).")
+                    .WithAction("reconciled").ToYaml();
+            }
+
+            return ResponseBuilder.Error(
+                "'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.",
+                ErrorCodes.InvalidParameter,
+                $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
+        }
+
         string normalisedChoice = choice.ToLowerInvariant();
         string resolvedContent;
 
@@ -193,7 +215,10 @@ public sealed partial class ScriniaMcpTools
 
             if (type == "meta.json")
             {
-                if (TryAutoResolveMetaJson(filePath, fileContent))
+                // Read-only: compute whether this conflict WOULD auto-resolve, but never write —
+                // scanning must not mutate .scrinia/. The actual merge is written only when the
+                // caller explicitly reconciles this conflictId (see ResolveConflictByPath).
+                if (TryComputeAutoResolvedMetaJson(fileContent, out _))
                     autoResolved.Add(relativePath);
                 else
                     needsManual.Add($"{relativePath} (.meta.json — auto-resolve failed)");
@@ -226,12 +251,15 @@ public sealed partial class ScriniaMcpTools
         if (autoResolved.Count == 0 && needsManual.Count == 0)
             return ResponseBuilder.Success("No merge conflicts found in .scrinia/.").WithAction("reconciled").ToYaml();
 
+        // Nothing on disk was changed by this scan — autoResolved lists conflicts that CAN be
+        // auto-merged, not ones that already were. Every entry here still needs an explicit
+        // reconcile({ conflictId }) call to actually apply and persist the merge.
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Merge conflict scan: {autoResolved.Count} auto-resolved, {needsManual.Count} need manual resolution.");
+        sb.AppendLine($"Merge conflict scan: {autoResolved.Count} auto-resolvable, {needsManual.Count} need manual resolution.");
 
         if (autoResolved.Count > 0)
         {
-            sb.AppendLine("\nAuto-resolved:");
+            sb.AppendLine("\nAuto-resolvable (call reconcile({ conflictId: '<path>' }) to apply):");
             foreach (var f in autoResolved) sb.AppendLine($"  OK {f}");
         }
         if (needsManual.Count > 0)
@@ -240,14 +268,19 @@ public sealed partial class ScriniaMcpTools
             foreach (var f in needsManual) sb.AppendLine($"  FAIL {f}");
         }
 
-        sb.Append($"\n{needsManual.Count} conflict(s) remaining.");
+        int pendingCount = autoResolved.Count + needsManual.Count;
+        sb.Append($"\n{pendingCount} conflict(s) remaining.");
 
-        var reconcileWarnings = needsManual.Count > 0
-            ? new[] { $"{needsManual.Count} conflict(s) need manual resolution." }
-            : Array.Empty<string>();
+        var reconcileWarnings = new List<string>();
+        if (needsManual.Count > 0)
+            reconcileWarnings.Add($"{needsManual.Count} conflict(s) need manual resolution.");
+        if (autoResolved.Count > 0)
+            reconcileWarnings.Add(
+                $"{autoResolved.Count} conflict(s) can be auto-resolved — call reconcile({{ conflictId: '<path>' }}) for each to apply and persist the merge.");
+
         return ResponseBuilder.Success(sb.ToString())
             .WithAction("reconciled")
-            .WithActionNeeded(reconcileWarnings)
+            .WithActionNeeded(reconcileWarnings.ToArray())
             .ToYaml();
     }
 
@@ -331,8 +364,14 @@ public sealed partial class ScriniaMcpTools
         return truncated.Replace("\n", "\n" + prefix);
     }
 
-    private static bool TryAutoResolveMetaJson(string filePath, string conflictedContent)
+    /// <summary>
+    /// Computes the auto-merged JSON for a conflicted .meta.json file (keyword union, latest
+    /// timestamp wins, max term-frequency counts) WITHOUT writing anything to disk. Callers
+    /// decide whether/when to persist <paramref name="resolvedJson"/>.
+    /// </summary>
+    private static bool TryComputeAutoResolvedMetaJson(string conflictedContent, out string? resolvedJson)
     {
+        resolvedJson = null;
         try
         {
             // Extract "ours" and "theirs" sections
@@ -404,15 +443,14 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            // Write resolved JSON
             var writeOptions = new JsonSerializerOptions { WriteIndented = true };
-            string resolvedJson = baseNode.ToJsonString(writeOptions);
-            File.WriteAllText(filePath, resolvedJson);
+            resolvedJson = baseNode.ToJsonString(writeOptions);
 
             return true;
         }
         catch
         {
+            resolvedJson = null;
             return false; // If anything fails, report as needing manual resolution
         }
     }
