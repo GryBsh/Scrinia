@@ -74,6 +74,10 @@ public sealed class GeminiChatProvider : IChatProvider, IDisposable
             circuitError = ex.Message;
             response = null!;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // client disconnect / caller cancel — not a provider health signal
+        }
         catch (Exception)
         {
             _circuitBreaker.RecordFailure();
