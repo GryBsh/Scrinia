@@ -61,8 +61,13 @@ public static class EmbeddingReindexer
 
             try
             {
-                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
-                string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
+                // Resolve directly by (scope, subject) rather than round-tripping through
+                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
+                // namespaced topic scope (e.g. "local-topic:memory/api"), FormatQualifiedName
+                // intentionally strips the "memory/" prefix for display, so re-parsing that
+                // string reconstructs the WRONG scope ("local-topic:api") and the artifact can
+                // never be found. item.Scope is already the correct scope.
+                string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
                 if (string.IsNullOrWhiteSpace(artifact))
                 {
                     skipped++;
@@ -191,8 +196,9 @@ public static class EmbeddingReindexer
 
             try
             {
-                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
-                string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
+                // See the matching comment in ReindexAsync above: resolve by (scope, subject)
+                // directly rather than through the lossy FormatQualifiedName round trip.
+                string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
                 if (string.IsNullOrWhiteSpace(artifact))
                 {
                     skipped++;
@@ -206,6 +212,12 @@ public static class EmbeddingReindexer
                     continue;
                 }
 
+                // The sink re-parses this string (possibly out-of-process, over MCP, for external
+                // plugins) to decide which scope to store vectors under — it must be the
+                // round-trip-safe form, not the display-formatted one, or vectors land under the
+                // wrong scope and search (which looks up vectors by the entry's REAL scope) never
+                // finds them.
+                string qualifiedName = store.FormatRoundTripQualifiedName(item.Scope, item.Entry.Name);
                 await sink.OnStoredAsync(qualifiedName, [decoded], store, ct);
                 embedded++;
             }

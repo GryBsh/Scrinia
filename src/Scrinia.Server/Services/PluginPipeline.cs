@@ -49,7 +49,7 @@ public sealed class PluginPipeline
             {
                 Store = store,
                 Name = result.Name,
-                QualifiedName = result.QualifiedName,
+                QualifiedName = BuildRoutingQualifiedName(store, req.Name, result.QualifiedName),
                 ChunkCount = result.ChunkCount,
                 OriginalBytes = result.OriginalBytes,
                 Content = req.Content,
@@ -60,6 +60,27 @@ public sealed class PluginPipeline
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Hooks (e.g. the built-in/Vulkan embedding services) re-parse the after-store/append
+    /// qualified name via <see cref="IMemoryStore.ParseQualifiedName"/> to decide which scope to
+    /// route vectors under. <c>MemoryOrchestrator</c>'s <c>result.QualifiedName</c>/<c>result.Name</c>
+    /// is built with <see cref="IMemoryStore.FormatQualifiedName"/>, which intentionally strips the
+    /// "memory/"/"entity/" namespace prefix for human-friendly REST responses — re-parsing that
+    /// stripped string reconstructs the WRONG scope for any v1-namespaced topic, so vectors get
+    /// misfiled and search (which looks up vectors by the entry's real scope) never finds them.
+    /// Rebuild a round-trip-safe name here (same fix as MemoryTools.Core.cs's Store/Append sink
+    /// dispatch) without touching the display value returned to REST callers. Ephemeral names
+    /// ("~key") already round-trip safely as-is.
+    /// </summary>
+    private static string BuildRoutingQualifiedName(IMemoryStore store, string requestedName, string displayQualifiedName)
+    {
+        if (store.IsEphemeral(requestedName))
+            return displayQualifiedName;
+
+        var (scope, subject) = store.ParseQualifiedName(requestedName);
+        return store.FormatRoundTripQualifiedName(scope, subject);
     }
 
     public async Task<AppendResponse> AppendAsync(
@@ -89,7 +110,7 @@ public sealed class PluginPipeline
             var afterCtx = new AfterAppendContext
             {
                 Store = store,
-                Name = result.Name,
+                Name = BuildRoutingQualifiedName(store, name, result.Name),
                 ChunkCount = result.ChunkCount,
                 OriginalBytes = result.OriginalBytes,
                 Content = content,

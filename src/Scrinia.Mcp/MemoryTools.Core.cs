@@ -398,7 +398,12 @@ public sealed partial class ScriniaMcpTools
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
         // CancellationToken.None — see the ephemeral path above for rationale.
-        FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, CancellationToken.None));
+        // Sink gets the round-trip-safe name (not the display-formatted `qualifiedName`): the
+        // sink re-parses this to decide which scope to embed under, and FormatQualifiedName's
+        // display form strips the "memory/"/"entity/" namespace prefix that would reparse to
+        // the wrong scope for any v1-namespaced topic.
+        string sinkQualifiedName = store.FormatRoundTripQualifiedName(scope, subject);
+        FireEventSinkAsync(sink => sink.OnStoredAsync(sinkQualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
             .WithFileChanges().WithAction(actionLabel).ToYaml();
@@ -1123,6 +1128,9 @@ public sealed partial class ScriniaMcpTools
 
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
+        // The sink re-parses this to find which scope's vectors to remove — must be the
+        // round-trip-safe form, not the display form (see the matching comment in Remember).
+        string sinkQualifiedName = store.FormatRoundTripQualifiedName(scope, subject);
 
         // Delete the artifact file
         bool deleted = store.DeleteArtifact(subject, scope);
@@ -1135,7 +1143,7 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.NotFound,
                 "list() to see available memories").ToYaml();
 
-        try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(qualifiedName, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
+        try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(sinkQualifiedName, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block forget */ }
 
         return ResponseBuilder.Success($"Forgot: {qualifiedName}.").WithFileChanges().WithAction("forgotten").ToYaml();
@@ -1215,6 +1223,11 @@ public sealed partial class ScriniaMcpTools
             TermFrequencies: newTf.Count > 0 ? newTf : null);
 
         string qualifiedName;
+        // Round-trip-safe form handed to the event sink — see the matching comment on the
+        // Remember/Store sink dispatch. Kept distinct from `qualifiedName` (display) because
+        // FormatQualifiedName's display form strips the "memory/"/"entity/" namespace prefix,
+        // which would reparse to the wrong scope for any v1-namespaced topic.
+        string sinkQualifiedName;
 
         if (store.IsEphemeral(name))
         {
@@ -1258,6 +1271,7 @@ public sealed partial class ScriniaMcpTools
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
+            sinkQualifiedName = qualifiedName;
         }
         else
         {
@@ -1297,6 +1311,7 @@ public sealed partial class ScriniaMcpTools
 
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
+            sinkQualifiedName = store.FormatRoundTripQualifiedName(scope, subject);
 
             // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Fields, but
             // review/file aren't available there — they come from existingEntry, which is only a
@@ -1330,7 +1345,7 @@ public sealed partial class ScriniaMcpTools
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
         // CancellationToken.None — see the ephemeral path above for rationale.
-        FireEventSinkAsync(sink => sink.OnAppendedAsync(qualifiedName, content, store, CancellationToken.None));
+        FireEventSinkAsync(sink => sink.OnAppendedAsync(sinkQualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
             .WithFileChanges().WithAction("appended").ToYaml();

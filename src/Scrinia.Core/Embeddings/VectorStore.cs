@@ -38,7 +38,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
     private static readonly byte[] MagicSvf3 = "SVF3"u8.ToArray();
     private readonly string _baseDir;
     private readonly string? _expectedSignature;
-    private readonly ConcurrentDictionary<string, List<VectorEntry>> _scopeVectors = new(StringComparer.OrdinalIgnoreCase);
+    // Copy-on-write: the published list for a scope is never mutated after it is stored here.
+    // Mutating operations (Upsert/Remove) build a new list and swap it in under the scope
+    // lock; GetVectors can therefore hand out the cached reference directly with no lock and
+    // no copy — readers can never observe a torn/in-progress mutation.
+    private readonly ConcurrentDictionary<string, IReadOnlyList<VectorEntry>> _scopeVectors = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _scopeLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _scopeDeleteCount = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _scopeOpCount = new(StringComparer.OrdinalIgnoreCase);
@@ -74,8 +78,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// <summary>Loads vectors for a scope (from disk if persistent, from cache if already loaded).</summary>
     public IReadOnlyList<VectorEntry> GetVectors(string scope)
     {
+        // No lock needed: published lists are immutable snapshots (copy-on-write), so handing
+        // out the cached reference directly is safe even while a concurrent Upsert/Remove is
+        // building its replacement list under the scope lock.
         if (_scopeVectors.TryGetValue(scope, out var cached))
-            return cached.ToArray(); // snapshot: callers must not observe concurrent mutation
+            return cached;
 
         var lk = GetLock(scope);
         if (!lk.Wait(TimeSpan.FromSeconds(30)))
@@ -84,11 +91,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             // Double-check after lock
             if (_scopeVectors.TryGetValue(scope, out cached))
-                return cached.ToArray();
+                return cached;
 
             var loaded = LoadFromDisk(scope);
             _scopeVectors[scope] = loaded;
-            return loaded.ToArray();
+            return loaded;
         }
         finally
         {
@@ -103,15 +110,29 @@ public sealed class VectorStore : IDisposable, IVectorStore
         await lk.WaitAsync(ct);
         try
         {
-            var vectors = _scopeVectors.GetOrAdd(scope, _ => LoadFromDisk(scope));
+            var current = _scopeVectors.GetOrAdd(scope, _ => LoadFromDisk(scope));
 
+            // Copy-on-write: build a new list rather than mutating `current` in place, so any
+            // GetVectors caller holding a reference to the old list keeps seeing a consistent
+            // (old) snapshot, and never a torn one.
+            //
             // Check if we're replacing an existing entry. Case-insensitive to match
             // RemoveAsync and the on-disk op-log replay (ReadEntryOps), both of which key
             // names with OrdinalIgnoreCase — keeping this ordinal would let two entries
             // differing only in case coexist in memory while a reload collapses them to one.
-            bool hadExisting = vectors.RemoveAll(v =>
-                string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase) && v.ChunkIndex == chunkIndex) > 0;
+            bool hadExisting = false;
+            var vectors = new List<VectorEntry>(current.Count + 1);
+            foreach (var v in current)
+            {
+                if (string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase) && v.ChunkIndex == chunkIndex)
+                {
+                    hadExisting = true;
+                    continue;
+                }
+                vectors.Add(v);
+            }
             vectors.Add(new VectorEntry(name, chunkIndex, vector));
+            _scopeVectors[scope] = vectors;
 
             // Persist if not ephemeral
             if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
@@ -154,13 +175,19 @@ public sealed class VectorStore : IDisposable, IVectorStore
         await lk.WaitAsync(ct);
         try
         {
-            if (!_scopeVectors.TryGetValue(scope, out var vectors))
+            if (!_scopeVectors.TryGetValue(scope, out var current))
                 return;
 
-            var removed = vectors.Where(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
-            int removedCount = vectors.RemoveAll(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            // Copy-on-write: same rationale as UpsertAsync — never mutate `current` in place.
+            var removed = current.Where(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
+            int removedCount = removed.Count;
+            if (removedCount == 0)
+                return;
 
-            if (removedCount > 0 && !scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
+            var vectors = current.Where(v => !v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToList();
+            _scopeVectors[scope] = vectors;
+
+            if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
             {
                 string path = GetFilePath(scope);
                 if (File.Exists(path) && IsAppendableSvf3(path))

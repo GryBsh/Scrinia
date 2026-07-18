@@ -30,7 +30,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     public override string Version => "2.0.0";
 
     private IEmbeddingProvider _provider = new NullEmbeddingProvider();
-    private VectorStore? _vectorStore;
+    private volatile VectorStore? _vectorStore;
     private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
     private bool _disposed;
@@ -286,7 +286,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         }
     }
 
-    private async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
+    internal async Task<int> ReindexStoreAsync(IMemoryStore store, CancellationToken ct)
     {
         var allItems = store.ListScoped();
         int count = 0;
@@ -295,11 +295,17 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
         {
             try
             {
-                string qualifiedName = item.Scope == "ephemeral"
-                    ? $"~{item.Entry.Name}"
-                    : store.FormatQualifiedName(item.Scope, item.Entry.Name);
-
-                string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
+                // Resolve directly by (scope, subject) rather than round-tripping through
+                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
+                // namespaced topic scope (e.g. "local-topic:memory/api"), FormatQualifiedName
+                // intentionally strips the "memory/" prefix for display, so re-parsing that
+                // string reconstructs the WRONG scope and the artifact can never be found.
+                // Mirrors EmbeddingReindexer.ReindexAsync's fix for the identical bug. Ephemeral
+                // memories aren't backed by an on-disk artifact keyed by (scope, subject), so
+                // they still resolve via the "~name" qualified-name path.
+                string artifact = item.Scope == "ephemeral"
+                    ? await store.ResolveArtifactAsync($"~{item.Entry.Name}", ct)
+                    : await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
                 string decoded = System.Text.Encoding.UTF8.GetString(
                     new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
 

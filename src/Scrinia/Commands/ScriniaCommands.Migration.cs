@@ -524,7 +524,11 @@ public partial class ScriniaCommands
         {
             try
             {
-                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
+                // FormatRoundTripQualifiedName (not FormatQualifiedName) — the sink re-parses
+                // this string to decide which scope to re-embed under, and FormatQualifiedName's
+                // display form strips the "memory/"/"entity/" namespace prefix, which would
+                // reparse to the WRONG scope for any v1-namespaced topic.
+                string qualifiedName = store.FormatRoundTripQualifiedName(item.Scope, item.Entry.Name);
                 await sink.OnStoredAsync(qualifiedName, [fullText], store, ct);
             }
             catch (Exception ex)

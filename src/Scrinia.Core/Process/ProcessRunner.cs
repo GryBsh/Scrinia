@@ -78,10 +78,25 @@ public sealed class ProcessRunner : IProcessRunner
         string? pathEnv = Environment.GetEnvironmentVariable("PATH");
         if (pathEnv is null) return null;
 
-        string[] extensions = OperatingSystem.IsWindows()
-            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
-                .Split(';', StringSplitOptions.RemoveEmptyEntries)
-            : [""];
+        string[] extensions;
+        if (OperatingSystem.IsWindows())
+        {
+            string[] pathExt = (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries);
+
+            // Names that already carry an extension (e.g. "cmd.exe", "git.exe") must be
+            // tried verbatim first — otherwise we'd only ever probe "cmd.exe.EXE" etc.
+            // and never find the file. Bare names (e.g. "git") must NOT get this
+            // verbatim probe, or a non-executable file with that exact bare name could
+            // shadow the real PATHEXT-qualified executable.
+            extensions = Path.HasExtension(executable)
+                ? [.. new[] { "" }, .. pathExt]
+                : pathExt;
+        }
+        else
+        {
+            extensions = [""];
+        }
 
         foreach (string dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {

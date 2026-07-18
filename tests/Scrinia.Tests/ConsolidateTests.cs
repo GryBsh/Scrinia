@@ -12,6 +12,7 @@ namespace Scrinia.Tests;
 /// that it reads review status via <c>AttributeReaders.GetReviewStatus</c> (attributes-first)
 /// rather than the (now-removed) legacy ReviewAfter member directly.
 /// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class ConsolidateTests : IDisposable
 {
     private readonly string _tempDir;

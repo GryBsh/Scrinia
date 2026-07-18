@@ -132,11 +132,17 @@ public sealed class BuiltInEmbeddingsService :
         {
             try
             {
-                string qualifiedName = item.Scope == "ephemeral"
-                    ? $"~{item.Entry.Name}"
-                    : store.FormatQualifiedName(item.Scope, item.Entry.Name);
-
-                string artifact = await store.ResolveArtifactAsync(qualifiedName, ct);
+                // Resolve directly by (scope, subject) rather than round-tripping through
+                // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
+                // namespaced topic scope (e.g. "local-topic:memory/api"), FormatQualifiedName
+                // intentionally strips the "memory/" prefix for display, so re-parsing that
+                // string reconstructs the WRONG scope and the artifact can never be found.
+                // Mirrors EmbeddingReindexer.ReindexAsync's fix for the identical bug. Ephemeral
+                // memories aren't backed by an on-disk artifact keyed by (scope, subject), so
+                // they still resolve via the "~name" qualified-name path.
+                string artifact = item.Scope == "ephemeral"
+                    ? await store.ResolveArtifactAsync($"~{item.Entry.Name}", ct)
+                    : await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
                 string decoded = System.Text.Encoding.UTF8.GetString(
                     new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
 
