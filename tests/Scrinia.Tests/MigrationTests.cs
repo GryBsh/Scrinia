@@ -10,6 +10,7 @@ namespace Scrinia.Tests;
 /// Tests for the v1 → v2 filesystem migration command (<see cref="ScriniaCommands.MigrateV1"/>)
 /// and the v2 path structure (<see cref="PathRouter"/>).
 /// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class MigrationTests : IDisposable
 {
     private static readonly HashSet<string> EntityTypes = new(

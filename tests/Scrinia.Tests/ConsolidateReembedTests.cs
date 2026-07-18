@@ -23,6 +23,7 @@ namespace Scrinia.Tests;
 /// routine directly with a real <see cref="CoreEmbeddingEventHandler"/> wired to a fake, always-available
 /// <see cref="IEmbeddingProvider"/> gives the same Remove-then-Upsert coverage deterministically.
 /// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
 public sealed class ConsolidateReembedTests : IDisposable
 {
     private readonly string _root;
@@ -108,4 +109,20 @@ public sealed class ConsolidateReembedTests : IDisposable
 
         public void Dispose() { }
     }
+}
+
+/// <summary>
+/// Serializes tests that mutate <c>WorkspaceSetup</c>/<c>ScriniaArtifactStore</c>'s truly-global
+/// (non-<see cref="AsyncLocal{T}"/>) static config — specifically <c>ScriniaArtifactStore</c>'s
+/// configured workspace root, set via <c>WorkspaceSetup.Configure</c> (directly, or transitively
+/// through <see cref="ScriniaCommands"/> entry points like <c>Consolidate</c>/<c>MigrateV1</c>/
+/// <c>Migrate</c>). Unlike <c>TestHelpers.StoreScope</c> (which uses AsyncLocal overrides and is
+/// therefore already safe under parallel execution), this state is a plain static field guarded
+/// only by a lock for writes — concurrent tests on different threads can clobber each other's
+/// configured root. See Task G code-review followups.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class GlobalWorkspaceConfigCollection
+{
+    public const string Name = "GlobalWorkspaceConfig";
 }
