@@ -57,7 +57,7 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
         {
             _circuitBreaker.EnsureClosed();
 
-            var response = await RetryPolicy.ExecuteAsync(
+            using var response = await RetryPolicy.ExecuteAsync(
                 async () => await SendEmbedRequestAsync(text, ct),
                 resp => TransientDetector.IsTransient(resp),
                 _retryOptions,
@@ -87,6 +87,10 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
                 _circuitBreaker.RecordSuccess();
             }
             return vec;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // caller cancellation must propagate, not masquerade as an embed failure
         }
         catch (CircuitBreakerOpenException)
         {

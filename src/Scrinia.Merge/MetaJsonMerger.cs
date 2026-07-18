@@ -25,39 +25,60 @@ public static class MetaJsonMerger
     {
         var ours = JsonSerializer.Deserialize(File.ReadAllText(oursPath), MetaEntryJsonContext.Default.MetaEntry);
         var theirs = JsonSerializer.Deserialize(File.ReadAllText(theirsPath), MetaEntryJsonContext.Default.MetaEntry);
+        var ancestor = File.Exists(ancestorPath)
+            ? JsonSerializer.Deserialize(File.ReadAllText(ancestorPath), MetaEntryJsonContext.Default.MetaEntry)
+            : null;
 
-        double jaccard = KeywordJaccard.Compute(ours?.Keywords, theirs?.Keywords);
+        // A missing/invalid side can't be auto-merged safely — let git surface the conflict.
+        if (ours is null || theirs is null)
+            return MergeResult.Conflict;
 
-        if (jaccard >= config.JaccardThreshold)
+        double jaccard = KeywordJaccard.Compute(ours.Keywords, theirs.Keywords);
+        if (jaccard < config.JaccardThreshold)
+            return MergeResult.Conflict;
+
+        // Per-field 3-way merge of scalar metadata: if only one side changed a field, take that
+        // side; if both changed it differently, it's a genuine conflict.
+        if (!TryMergeField(ancestor?.Name, ours.Name, theirs.Name, out var name)) return MergeResult.Conflict;
+        if (!TryMergeField(ancestor?.Uri, ours.Uri, theirs.Uri, out var uri)) return MergeResult.Conflict;
+        if (!TryMergeField(ancestor?.Description, ours.Description, theirs.Description, out var description)) return MergeResult.Conflict;
+        if (!TryMergeField(ancestor?.OriginalBytes, (int?)ours.OriginalBytes, theirs.OriginalBytes, out var originalBytesN)) return MergeResult.Conflict;
+        if (!TryMergeField(ancestor?.ChunkCount, (int?)ours.ChunkCount, theirs.ChunkCount, out var chunkCountN)) return MergeResult.Conflict;
+        int originalBytes = originalBytesN ?? ours.OriginalBytes;
+        int chunkCount = chunkCountN ?? ours.ChunkCount;
+
+        // Union keywords (already known similar by Jaccard).
+        var keywords = new HashSet<string>(ours.Keywords ?? [], StringComparer.OrdinalIgnoreCase);
+        foreach (var kw in theirs.Keywords ?? [])
+            keywords.Add(kw);
+
+        string? updatedAt = CompareTimestamps(ours.UpdatedAt, theirs.UpdatedAt) > 0 ? ours.UpdatedAt : theirs.UpdatedAt;
+        string? createdAt = CompareTimestamps(ours.CreatedAt, theirs.CreatedAt) < 0 ? ours.CreatedAt : theirs.CreatedAt;
+
+        var merged = ours with
         {
-            // Union keywords
-            var keywords = new HashSet<string>(ours?.Keywords ?? [], StringComparer.OrdinalIgnoreCase);
-            foreach (var kw in theirs?.Keywords ?? [])
-                keywords.Add(kw);
+            Name = name,
+            Uri = uri,
+            Description = description,
+            OriginalBytes = originalBytes,
+            ChunkCount = chunkCount,
+            Keywords = keywords.Order().ToArray(),
+            UpdatedAt = updatedAt,
+            CreatedAt = createdAt,
+        };
 
-            // Take latest UpdatedAt
-            string? updatedAt = CompareTimestamps(ours?.UpdatedAt, theirs?.UpdatedAt) > 0
-                ? ours?.UpdatedAt : theirs?.UpdatedAt;
+        File.WriteAllText(oursPath, JsonSerializer.Serialize(merged, MetaEntryJsonContext.Default.MetaEntry));
+        return MergeResult.Resolved;
+    }
 
-            // Keep earliest CreatedAt
-            string? createdAt = CompareTimestamps(ours?.CreatedAt, theirs?.CreatedAt) < 0
-                ? ours?.CreatedAt : theirs?.CreatedAt;
-
-            // Merge: take ours as base, apply union keywords + latest timestamp
-            var merged = ours! with
-            {
-                Keywords = keywords.Order().ToArray(),
-                UpdatedAt = updatedAt,
-                CreatedAt = createdAt
-            };
-
-            // Write merged result back to ours path (git convention: %A is the output)
-            string json = JsonSerializer.Serialize(merged, MetaEntryJsonContext.Default.MetaEntry);
-            File.WriteAllText(oursPath, json);
-            return MergeResult.Resolved;
-        }
-
-        return MergeResult.Conflict;
+    // Returns false when both sides changed the field to different values (real conflict).
+    private static bool TryMergeField<T>(T ancestor, T ours, T theirs, out T result)
+    {
+        var cmp = EqualityComparer<T>.Default;
+        if (cmp.Equals(ours, theirs)) { result = ours; return true; }        // same on both sides
+        if (cmp.Equals(ours, ancestor)) { result = theirs; return true; }    // only theirs changed
+        if (cmp.Equals(theirs, ancestor)) { result = ours; return true; }    // only ours changed
+        result = ours; return false;                                          // both changed differently
     }
 
     private static int CompareTimestamps(string? a, string? b)

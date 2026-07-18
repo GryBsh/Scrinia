@@ -296,7 +296,9 @@ public sealed partial class ScriniaMcpTools
 
     [McpServerTool(Name = "reconcile"), Description(
         "Scan .scrinia/ for git merge conflicts, or resolve a specific one. " +
-        "Without args: scan and report. With conflictId + choice: resolve. " +
+        "Without args: scan and report — read-only, never writes to disk. " +
+        "With conflictId + choice: resolve manually ('ours', 'theirs', or 'merged'). " +
+        "With conflictId only (no choice) on an auto-resolvable .meta.json conflict: apply the automatic merge. " +
         "Example: reconcile({ conflictId: 'local/skills/qa.nmp2', choice: 'ours' }).")]
     public Task<string> MemoryReconcile(
         [Description("Workspace-relative path under .scrinia/ to the conflicted file. Omit to scan.")] string? conflictId = null,

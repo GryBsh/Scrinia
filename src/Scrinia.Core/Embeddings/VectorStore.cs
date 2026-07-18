@@ -75,7 +75,7 @@ public sealed class VectorStore : IDisposable, IVectorStore
     public IReadOnlyList<VectorEntry> GetVectors(string scope)
     {
         if (_scopeVectors.TryGetValue(scope, out var cached))
-            return cached;
+            return cached.ToArray(); // snapshot: callers must not observe concurrent mutation
 
         var lk = GetLock(scope);
         if (!lk.Wait(TimeSpan.FromSeconds(30)))
@@ -84,11 +84,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             // Double-check after lock
             if (_scopeVectors.TryGetValue(scope, out cached))
-                return cached;
+                return cached.ToArray();
 
             var loaded = LoadFromDisk(scope);
             _scopeVectors[scope] = loaded;
-            return loaded;
+            return loaded.ToArray();
         }
         finally
         {
@@ -105,8 +105,12 @@ public sealed class VectorStore : IDisposable, IVectorStore
         {
             var vectors = _scopeVectors.GetOrAdd(scope, _ => LoadFromDisk(scope));
 
-            // Check if we're replacing an existing entry
-            bool hadExisting = vectors.RemoveAll(v => v.Name == name && v.ChunkIndex == chunkIndex) > 0;
+            // Check if we're replacing an existing entry. Case-insensitive to match
+            // RemoveAsync and the on-disk op-log replay (ReadEntryOps), both of which key
+            // names with OrdinalIgnoreCase — keeping this ordinal would let two entries
+            // differing only in case coexist in memory while a reload collapses them to one.
+            bool hadExisting = vectors.RemoveAll(v =>
+                string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase) && v.ChunkIndex == chunkIndex) > 0;
             vectors.Add(new VectorEntry(name, chunkIndex, vector));
 
             // Persist if not ephemeral
@@ -341,23 +345,34 @@ public sealed class VectorStore : IDisposable, IVectorStore
 
         while (reader.BaseStream.Position < reader.BaseStream.Length)
         {
-            byte op = reader.ReadByte();
-            ushort nameLen = reader.ReadUInt16();
-            string name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLen));
-            int chunkIdx = reader.ReadInt32();
-            int? chunkIndex = chunkIdx == -1 ? null : chunkIdx;
-            string key = $"{name}|{chunkIdx}";
+            try
+            {
+                byte op = reader.ReadByte();
+                ushort nameLen = reader.ReadUInt16();
+                string name = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(nameLen));
+                int chunkIdx = reader.ReadInt32();
+                int? chunkIndex = chunkIdx == -1 ? null : chunkIdx;
+                string key = $"{name}|{chunkIdx}";
 
-            if (op == 0) // Add
-            {
-                float[] vector = new float[dims];
-                for (int d = 0; d < dims; d++)
-                    vector[d] = reader.ReadSingle();
-                entries[key] = new VectorEntry(name, chunkIndex, vector);
+                if (op == 0) // Add
+                {
+                    float[] vector = new float[dims];
+                    for (int d = 0; d < dims; d++)
+                        vector[d] = reader.ReadSingle();
+                    entries[key] = new VectorEntry(name, chunkIndex, vector);
+                }
+                else // Delete
+                {
+                    entries.Remove(key);
+                }
             }
-            else // Delete
+            catch (EndOfStreamException)
             {
-                entries.Remove(key);
+                // Torn trailing record — e.g. a crash/power-loss mid-append left a partial
+                // record at the end of the file. Stop here and keep everything parsed so
+                // far rather than letting the whole-file catch in LoadFromDisk discard the
+                // entire scope over a single truncated tail.
+                break;
             }
         }
 

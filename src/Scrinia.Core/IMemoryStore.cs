@@ -71,6 +71,24 @@ public interface IMemoryStore
                 .ToList();
 
     /// <summary>
+    /// Searches with both topic exclusion and optional supplemental/entity-graph scores.
+    /// Excluded topics must be removed from the candidate pool BEFORE the top-K <paramref
+    /// name="limit"/> cut, not after — otherwise excluded hits can consume every result slot
+    /// and the caller silently gets fewer than <paramref name="limit"/> results.
+    /// Default implementation post-filters after calling the supplemental overload (fallback
+    /// for stores without an efficient scope-level filter). FileMemoryStore overrides with
+    /// pre-filtering via <see cref="ListScoped(string?, string?)"/>.
+    /// </summary>
+    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
+        => string.IsNullOrWhiteSpace(excludeTopics)
+            ? SearchAll(query, scopes, limit, supplementalScores, entityGraphScores)
+            : SearchAll(query, scopes, limit, supplementalScores, entityGraphScores)
+                .Where(r => !ShouldExcludeScope(GetResultScope(r), excludeTopics))
+                .ToList();
+
+    /// <summary>
     /// Resolves read scopes, excluding the specified topic scopes.
     /// Default implementation post-filters after calling <see cref="ResolveReadScopes(string?)"/>.
     /// FileMemoryStore overrides with efficient scope-level filtering.

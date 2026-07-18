@@ -87,7 +87,7 @@ public sealed partial class ScriniaMcpTools
         resolvedPath = Path.GetFullPath(resolvedPath);
 
         // SEC-041: prevent path traversal outside workspace
-        if (!resolvedPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase))
+        if (!PathContainment.IsWithin(workspaceRoot, resolvedPath))
             return Task.FromResult(ResponseBuilder.Error(
                 "Bundle path must be within the workspace.",
                 ErrorCodes.InvalidPath,

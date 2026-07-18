@@ -17,6 +17,7 @@ public sealed class CircuitBreaker
     private int _consecutiveFailures;
     private long _openedAtTicks; // 0 = not open
     private int _state; // CircuitState as int for Interlocked
+    private int _trialInFlight; // 0 = free, 1 = a trial is probing
 
     public CircuitBreaker(CircuitBreakerOptions? options = null)
     {
@@ -48,12 +49,24 @@ public sealed class CircuitBreaker
     /// <summary>Returns true if the circuit allows a request (closed or half-open).</summary>
     public bool AllowRequest() => State != CircuitState.Open;
 
+    /// <summary>
+    /// Attempts to claim the single half-open trial slot. Returns true for exactly one caller
+    /// after cooldown expiry; others get false until <see cref="RecordSuccess"/> or
+    /// <see cref="RecordFailure"/> resolves the trial.
+    /// </summary>
+    public bool TryEnterHalfOpen()
+    {
+        if (State != CircuitState.HalfOpen) return false;
+        return Interlocked.CompareExchange(ref _trialInFlight, 1, 0) == 0;
+    }
+
     /// <summary>Record a successful operation. Resets failure count, closes circuit.</summary>
     public void RecordSuccess()
     {
         Interlocked.Exchange(ref _consecutiveFailures, 0);
         Interlocked.Exchange(ref _state, (int)CircuitState.Closed);
         Interlocked.Exchange(ref _openedAtTicks, 0);
+        Interlocked.Exchange(ref _trialInFlight, 0);
     }
 
     /// <summary>Record a failed operation. Opens circuit if threshold reached.</summary>
@@ -65,6 +78,7 @@ public sealed class CircuitBreaker
             Interlocked.Exchange(ref _state, (int)CircuitState.Open);
             Interlocked.Exchange(ref _openedAtTicks, DateTime.UtcNow.Ticks);
         }
+        Interlocked.Exchange(ref _trialInFlight, 0);
     }
 
     /// <summary>Manually reset the circuit to closed state.</summary>
@@ -73,6 +87,7 @@ public sealed class CircuitBreaker
         Interlocked.Exchange(ref _consecutiveFailures, 0);
         Interlocked.Exchange(ref _state, (int)CircuitState.Closed);
         Interlocked.Exchange(ref _openedAtTicks, 0);
+        Interlocked.Exchange(ref _trialInFlight, 0);
     }
 
     private bool CooldownExpired()

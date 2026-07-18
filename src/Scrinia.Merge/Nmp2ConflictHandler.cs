@@ -80,8 +80,17 @@ public static class Nmp2ConflictHandler
             return;
 
         string meta = File.ReadAllText(metaPath);
-        // Add "conflicted": true before the closing brace
-        meta = meta.TrimEnd().TrimEnd('}') + ",\n  \"conflicted\": true\n}";
-        File.WriteAllText(metaPath, meta);
+        File.WriteAllText(metaPath, InsertConflictedFlag(meta));
+    }
+
+    internal static string InsertConflictedFlag(string metaJson)
+    {
+        string trimmed = metaJson.TrimEnd();
+        int lastBrace = trimmed.LastIndexOf('}');
+        if (lastBrace < 0)
+            return metaJson; // not an object; leave untouched
+        string head = trimmed[..lastBrace].TrimEnd();
+        string sep = head.EndsWith('{') ? "" : ","; // empty object → no leading comma
+        return head + sep + "\n  \"conflicted\": true\n}";
     }
 }

@@ -9,14 +9,17 @@ You handle multi-user memory merge conflicts in .scrinia/ directories.
 ## Methodology
 
 ### 1. Scan for conflicts
-Run `reconcile` with no arguments. It scans `.scrinia/` for git conflict markers.
-- `.meta.json` conflicts are auto-resolved (keyword union, latest timestamp)
+Run `reconcile` with no arguments. It scans `.scrinia/` for git conflict markers — this is
+read-only and never writes to disk.
+- `.meta.json` conflicts are reported as auto-resolvable (keyword union, latest timestamp)
 - `.nmp2` artifact conflicts need manual resolution
 
 ### 2. Resolve each conflict
-For each CONFLICT-N reported:
-- Review the decoded ours/theirs content shown by reconcile
-- Choose: `reconcile({ conflictId: "CONFLICT-1", choice: "ours"|"theirs"|"merged" })`
+For each conflict reported:
+- `.meta.json` auto-resolvable: `reconcile({ conflictId: "<path>" })` (no choice needed) applies
+  the automatic merge and writes it to disk
+- Everything else: review the decoded ours/theirs content shown by reconcile, then choose
+  `reconcile({ conflictId: "<path>", choice: "ours"|"theirs"|"merged" })`
 - For "merged": provide the combined content as the mergedContent parameter
 
 ### 3. Verify clean

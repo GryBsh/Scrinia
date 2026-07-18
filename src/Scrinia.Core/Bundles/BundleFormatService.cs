@@ -348,6 +348,10 @@ public static class BundleFormatService
                 continue;
 
             string categoryDir = Path.Combine(baseDir, category);
+            string fullBase = Path.GetFullPath(baseDir);
+            string fullCategoryDir = Path.GetFullPath(categoryDir);
+            if (!PathContainment.IsWithin(fullBase, fullCategoryDir))
+                continue; // reject traversal in the manifest category key
             Directory.CreateDirectory(categoryDir);
 
             foreach (var fileEl in categoryProp.Value.EnumerateArray())
@@ -367,8 +371,7 @@ public static class BundleFormatService
 
                 string destPath = Path.Combine(categoryDir, fileName);
                 string fullDest = Path.GetFullPath(destPath);
-                string fullCategory = Path.GetFullPath(categoryDir);
-                if (!fullDest.StartsWith(fullCategory, StringComparison.OrdinalIgnoreCase))
+                if (!PathContainment.IsWithin(fullBase, fullDest))
                     continue;
 
                 using var inStream = zipEntry.Open();

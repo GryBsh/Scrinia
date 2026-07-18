@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Logging;
 using Scrinia.Core.Resilience;
 using Scrinia.Plugin.Abstractions;
@@ -14,8 +15,10 @@ public static class HealthEndpoints
         // Unauthenticated — status only (no store/plugin/backend names)
         app.MapGet("/health/live", () => Results.Ok(new HealthResponse("ok")));
 
-        app.MapGet("/health/ready", StatusOnly);
-        app.MapGet("/health", StatusOnly); // backward-compat alias
+        // Readiness opens SQLite + enumerates stores per call — rate-limit to prevent
+        // amplification from unauthenticated callers hammering this endpoint.
+        app.MapGet("/health/ready", StatusOnly).RequireRateLimiting("api");
+        app.MapGet("/health", StatusOnly).RequireRateLimiting("api"); // backward-compat alias
 
         // Authenticated — full detail with store names, plugin names, backend info
         app.MapGet("/health/details", (ApiKeyStore keyStore, StoreManager storeManager,

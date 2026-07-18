@@ -34,13 +34,18 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
     private bool _disposed;
+    private readonly object _initLock = new();
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        (_provider as IDisposable)?.Dispose();
-        (_vectorStore as IDisposable)?.Dispose();
+        lock (_initLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            (_provider as IDisposable)?.Dispose();
+            (_vectorStore as IDisposable)?.Dispose();
+            _vectorStore = null;
+        }
     }
 
     // -- IScriniaPlugin (server path) --
@@ -71,38 +76,46 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     {
         if (_vectorStore is not null) return;
 
-        _logger ??= sp?.GetService<ILoggerFactory>()?.CreateLogger<EmbeddingsPlugin>()
-            ?? LoggerFactory.Create(b => b.AddConsole()).CreateLogger<EmbeddingsPlugin>();
-
-        string pluginsDir = Path.Combine(AppContext.BaseDirectory, "plugins");
-        string dataDir = Path.Combine(pluginsDir, "embeddings");
-        Directory.CreateDirectory(dataDir);
-
-        string modelsDir = Path.Combine(pluginsDir, "scri-plugin-embeddings");
-        Directory.CreateDirectory(modelsDir);
-
-        _vectorStore = new VectorStore(dataDir);
-
-        // Try Vulkan provider
-        try
+        lock (_initLock)
         {
-            if (VulkanModelManager.IsModelAvailable(modelsDir))
-            {
-                string modelPath = VulkanModelManager.GetModelPath(modelsDir);
-                _provider = VulkanEmbeddingProvider.Create(modelPath, 384, _logger);
-            }
-            else
-            {
-                _logger.LogWarning("Vulkan GGUF model not found at {Dir}. Plugin inactive.", modelsDir);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to create Vulkan embedding provider");
-        }
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_vectorStore is not null) return;
 
-        _logger.LogInformation("Embeddings plugin initialized: provider={Provider}, available={Available}",
-            _provider.GetType().Name, _provider.IsAvailable);
+            _logger ??= sp?.GetService<ILoggerFactory>()?.CreateLogger<EmbeddingsPlugin>()
+                ?? LoggerFactory.Create(b => b.AddConsole()).CreateLogger<EmbeddingsPlugin>();
+
+            string pluginsDir = Path.Combine(AppContext.BaseDirectory, "plugins");
+            string dataDir = Path.Combine(pluginsDir, "embeddings");
+            Directory.CreateDirectory(dataDir);
+
+            string modelsDir = Path.Combine(pluginsDir, "scri-plugin-embeddings");
+            Directory.CreateDirectory(modelsDir);
+
+            var vectorStore = new VectorStore(dataDir);
+
+            // Try Vulkan provider
+            try
+            {
+                if (VulkanModelManager.IsModelAvailable(modelsDir))
+                {
+                    string modelPath = VulkanModelManager.GetModelPath(modelsDir);
+                    _provider = VulkanEmbeddingProvider.Create(modelPath, 384, _logger);
+                }
+                else
+                {
+                    _logger.LogWarning("Vulkan GGUF model not found at {Dir}. Plugin inactive.", modelsDir);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to create Vulkan embedding provider");
+            }
+
+            _logger.LogInformation("Embeddings plugin initialized: provider={Provider}, available={Available}",
+                _provider.GetType().Name, _provider.IsAvailable);
+
+            _vectorStore = vectorStore; // assign LAST: it's the initialized sentinel
+        }
     }
 
     public override void MapEndpoints(IEndpointRouteBuilder endpoints)

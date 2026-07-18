@@ -55,7 +55,9 @@ internal static class WorkspaceSetup
     /// </summary>
     internal static async Task LoadPluginsAsync(CancellationToken ct = default)
     {
-        var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Warning));
+        var loggerFactory = LoggerFactory.Create(b => b
+            .AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace)
+            .SetMinimumLevel(LogLevel.Warning));
         var logger = loggerFactory.CreateLogger("Scrinia.Embeddings");
 
         string workspaceDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");

@@ -821,10 +821,11 @@ public sealed partial class ScriniaMcpTools
                 entityScores = await entityContributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
         }
 
+        // excludeTopics must be applied BEFORE the top-K limit cut in both branches — passing it
+        // straight into SearchAll (rather than post-filtering the already-limited result set)
+        // ensures excluded-topic hits never consume result slots.
         IReadOnlyList<SearchResult> matches = supplemental is { Count: > 0 }
-            ? store.SearchAll(effectiveQuery, scopes, limit, supplemental, entityScores)
-                .Where(r => !IMemoryStore.ShouldExcludeScope(IMemoryStore.GetResultScope(r), excludeTopics))
-                .ToList()
+            ? store.SearchAll(effectiveQuery, scopes, limit, excludeTopics, supplemental, entityScores)
             : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics, entityScores);
 
         // Post-filter by path prefix and attribute filter. Both are AND filters — the candidate
@@ -1590,7 +1591,7 @@ public sealed partial class ScriniaMcpTools
     private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)
     {
         var fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, relativePath.Trim()));
-        return fullPath.StartsWith(workspaceRoot, StringComparison.OrdinalIgnoreCase) ? fullPath : null;
+        return PathContainment.IsWithin(workspaceRoot, fullPath) ? fullPath : null;
     }
 
     private static string? ComputeFileHash(string fullPath)

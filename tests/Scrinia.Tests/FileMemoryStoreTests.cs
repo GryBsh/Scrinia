@@ -138,6 +138,35 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task ResolveArtifact_file_uri_rejects_sibling_prefix_escape()
+    {
+        // ".scrinia-backup" shares the ".scrinia" prefix but is a sibling directory,
+        // not a nested path — a naive StartsWith(scriniDir) check would incorrectly
+        // allow this to escape the sandbox.
+        string backupDir = Path.Combine(_tempDir, ".scrinia-backup");
+        Directory.CreateDirectory(backupDir);
+        string secretPath = Path.Combine(backupDir, "secret");
+        await File.WriteAllTextAsync(secretPath, "top secret");
+
+        Func<Task> act = async () => await _store.ResolveArtifactAsync($"file://{secretPath}");
+
+        await act.Should().ThrowAsync<UnauthorizedAccessException>();
+    }
+
+    [Fact]
+    public async Task ResolveArtifact_file_uri_allows_path_under_scrinia_dir()
+    {
+        string scriniaDir = Path.Combine(_tempDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        string okPath = Path.Combine(scriniaDir, "ok");
+        await File.WriteAllTextAsync(okPath, "legit content");
+
+        string resolved = await _store.ResolveArtifactAsync($"file://{okPath}");
+
+        resolved.Should().Be("legit content");
+    }
+
+    [Fact]
     public void ListScoped_includes_local_entries()
     {
         _store.Upsert(new ArtifactEntry("listed", "", 50, 1, DateTimeOffset.UtcNow));

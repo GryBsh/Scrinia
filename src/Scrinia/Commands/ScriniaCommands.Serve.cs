@@ -36,7 +36,10 @@ public partial class ScriniaCommands
     {
         if (!string.IsNullOrEmpty(remote))
         {
-            // Remote mode → HttpMemoryStore
+            // Remote mode → HttpMemoryStore. The server owns embeddings for remote memories;
+            // do NOT load local CLI plugins here — that would spin up a local embeddings
+            // pipeline (and write a stray .scrinia/ into cwd) for memories that don't live
+            // in a local store.
             var httpClient = new HttpClient { BaseAddress = new Uri(remote) };
             httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", apiKey ?? "");
@@ -53,10 +56,10 @@ public partial class ScriniaCommands
             // BM25-only search rather than blocking startup.
             if (!noAutoSetup)
                 await EnsureEmbeddingModelAsync(cancellationToken);
-        }
 
-        // Load CLI plugins (embeddings, etc.) — sets SearchContributorContext + MemoryEventSinkContext
-        await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+            // Load CLI plugins (embeddings, etc.) — sets SearchContributorContext + MemoryEventSinkContext
+            await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
+        }
 
         var builder = Host.CreateApplicationBuilder();
 

@@ -28,6 +28,7 @@ public static class TransientDetector
         SocketException => true,
         HttpRequestException hre when hre.InnerException is SocketException => true,
         HttpRequestException hre when hre.InnerException is IOException => true,
+        OperationCanceledException oce when oce.InnerException is TimeoutException => true,
         _ => false,
     };
 }
