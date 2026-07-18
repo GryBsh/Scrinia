@@ -594,6 +594,63 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
+    public async Task Forget_ByUri_NamespacedScope_NotifiesSinkWithScopedName()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = Scrinia.Core.MemoryStoreContext.Current!;
+
+        // "api:auth-flow" is v1 topic syntax -> routes to the namespaced
+        // "local-topic:memory/api" scope (not "local").
+        await Tools().Store(["hello world"], "api:auth-flow",
+            description: "test", tags: null, keywords: null);
+
+        var (expectedScope, subject) = store.ParseQualifiedName("api:auth-flow");
+        expectedScope.Should().Be("local-topic:memory/api",
+            because: "v1 'topic:subject' syntax must route to a namespaced scope, not local");
+
+        string uri = store.ArtifactUri(subject, expectedScope);
+
+        var capturingSink = new CapturingSink();
+        var previousSink = Scrinia.Core.MemoryEventSinkContext.Current;
+        Scrinia.Core.MemoryEventSinkContext.Current = capturingSink;
+        try
+        {
+            string result = await Tools().Forget(uri);
+            ResponseParser.Parse(result).Content.Should().Contain("Forgot",
+                because: "Forget by file:// URI must succeed for namespaced-scope memories");
+        }
+        finally
+        {
+            Scrinia.Core.MemoryEventSinkContext.Current = previousSink;
+        }
+
+        capturingSink.ReceivedQualifiedNames.Should().ContainSingle(
+            because: "the sink must be notified exactly once for the scope the memory actually lived in");
+        var (parsedScope, parsedSubject) = store.ParseQualifiedName(capturingSink.ReceivedQualifiedNames[0]);
+        parsedScope.Should().Be(expectedScope,
+            because: "forgetting via file:// URI must notify the sink with a round-trip-safe qualified " +
+                     "name so vectors are removed from the memory's REAL (namespaced) scope, not 'local'");
+        parsedSubject.Should().Be(subject);
+    }
+
+    private sealed class CapturingSink : Scrinia.Core.IMemoryEventSink
+    {
+        public List<string> ReceivedQualifiedNames { get; } = [];
+
+        public Task OnStoredAsync(string qualifiedName, string[] content, Scrinia.Core.IMemoryStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnAppendedAsync(string qualifiedName, string content, Scrinia.Core.IMemoryStore store, CancellationToken ct) =>
+            Task.CompletedTask;
+
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, Scrinia.Core.IMemoryStore store, CancellationToken ct)
+        {
+            if (wasDeleted) ReceivedQualifiedNames.Add(qualifiedName);
+            return Task.CompletedTask;
+        }
+    }
+
+    [Fact]
     public async Task Forget_NonExistentName_ReturnsError()
     {
         using var scope = new TestHelpers.StoreScope();

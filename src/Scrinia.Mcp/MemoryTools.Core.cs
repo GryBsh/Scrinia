@@ -1108,10 +1108,15 @@ public sealed partial class ScriniaMcpTools
             string name = FileMemoryStore.NameFromUri(nameOrUri);
 
             bool removedAny = false;
+            var removedScopes = new List<string>();
             foreach (string s in store.ResolveReadScopes())
             {
                 store.DeleteArtifact(name, s);
-                removedAny |= store.Remove(name, s);
+                if (store.Remove(name, s))
+                {
+                    removedScopes.Add(s);
+                    removedAny = true;
+                }
             }
 
             if (!removedAny)
@@ -1120,8 +1125,18 @@ public sealed partial class ScriniaMcpTools
                     ErrorCodes.NotFound,
                     "list() to see available memories").ToYaml();
 
-            try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(name, removedAny, store, cancellationToken) ?? Task.CompletedTask); }
-            catch { /* plugin errors must not block forget */ }
+            var sink = MemoryEventSinkContext.Current;
+            if (sink is not null)
+            {
+                foreach (string s in removedScopes)
+                {
+                    // Notify per scope the memory lived in, round-trip-safe, so vectors are
+                    // removed from EVERY scope's index — not just `local` (see the matching
+                    // comment on the non-file:// path below).
+                    try { await sink.OnForgottenAsync(store.FormatRoundTripQualifiedName(s, name), true, store, cancellationToken); }
+                    catch { /* plugin errors must not block forget */ }
+                }
+            }
 
             return ResponseBuilder.Success($"Forgot: {name}.").WithFileChanges().WithAction("forgotten").ToYaml();
         }
