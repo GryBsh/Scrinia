@@ -50,26 +50,32 @@ public sealed class CircuitBreaker
     public bool AllowRequest() => State != CircuitState.Open;
 
     /// <summary>
-    /// Attempts to claim the single half-open trial slot. Returns true for exactly one caller
-    /// after cooldown expiry; others get false until <see cref="RecordSuccess"/> or
-    /// <see cref="RecordFailure"/> resolves the trial.
+    /// Attempts to claim the single half-open trial slot. Returns a non-null <see cref="HalfOpenTrial"/>
+    /// token for exactly one caller after cooldown expiry; others get null until the trial is resolved.
+    /// <para>
+    /// Consumer contract: <c>using var trial = breaker.TryEnterHalfOpen(); if (trial is null) { /* treat
+    /// as open */ } else { /* make the probe call; call RecordSuccess/RecordFailure on the outcome; the
+    /// using disposes the token to release the slot even on exception/cancellation */ }</c>
+    /// </para>
     /// </summary>
-    public bool TryEnterHalfOpen()
+    public HalfOpenTrial? TryEnterHalfOpen()
     {
-        if (State != CircuitState.HalfOpen) return false;
-        return Interlocked.CompareExchange(ref _trialInFlight, 1, 0) == 0;
+        if (State != CircuitState.HalfOpen) return null;
+        if (Interlocked.CompareExchange(ref _trialInFlight, 1, 0) != 0) return null;
+        return new HalfOpenTrial(this);
     }
 
     /// <summary>Record a successful operation. Resets failure count, closes circuit.</summary>
+    /// <remarks>The half-open trial slot is released by disposing the <see cref="HalfOpenTrial"/> token, not here.</remarks>
     public void RecordSuccess()
     {
         Interlocked.Exchange(ref _consecutiveFailures, 0);
         Interlocked.Exchange(ref _state, (int)CircuitState.Closed);
         Interlocked.Exchange(ref _openedAtTicks, 0);
-        Interlocked.Exchange(ref _trialInFlight, 0);
     }
 
     /// <summary>Record a failed operation. Opens circuit if threshold reached.</summary>
+    /// <remarks>The half-open trial slot is released by disposing the <see cref="HalfOpenTrial"/> token, not here.</remarks>
     public void RecordFailure()
     {
         int failures = Interlocked.Increment(ref _consecutiveFailures);
@@ -78,7 +84,6 @@ public sealed class CircuitBreaker
             Interlocked.Exchange(ref _state, (int)CircuitState.Open);
             Interlocked.Exchange(ref _openedAtTicks, DateTime.UtcNow.Ticks);
         }
-        Interlocked.Exchange(ref _trialInFlight, 0);
     }
 
     /// <summary>Manually reset the circuit to closed state.</summary>
@@ -90,11 +95,27 @@ public sealed class CircuitBreaker
         Interlocked.Exchange(ref _trialInFlight, 0);
     }
 
+    private void ReleaseTrial() => Interlocked.Exchange(ref _trialInFlight, 0);
+
     private bool CooldownExpired()
     {
         long openedAt = Volatile.Read(ref _openedAtTicks);
         if (openedAt == 0) return false;
         return (DateTime.UtcNow.Ticks - openedAt) >= _cooldown.Ticks;
+    }
+
+    /// <summary>
+    /// RAII token representing ownership of the single half-open trial slot. Disposing the token
+    /// releases the slot exactly once, regardless of whether the probe succeeded, failed, threw,
+    /// or was cancelled.
+    /// </summary>
+    public sealed class HalfOpenTrial : IDisposable
+    {
+        private CircuitBreaker? _owner;
+
+        internal HalfOpenTrial(CircuitBreaker owner) => _owner = owner;
+
+        public void Dispose() => Interlocked.Exchange(ref _owner, null)?.ReleaseTrial();
     }
 }
 
