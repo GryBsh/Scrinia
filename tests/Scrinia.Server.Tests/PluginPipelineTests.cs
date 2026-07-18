@@ -156,6 +156,79 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
         wasDeleted.Should().BeTrue();
     }
 
+    // ── Namespaced-scope routing safety ─────────────────────────────────────
+    //
+    // Regression coverage for the same qualifiedName round-trip loss fixed in commit 1e81666
+    // (see docs task "F"): IMemoryStore.FormatQualifiedName intentionally strips the
+    // "memory/"/"entity/" namespace prefix for human-friendly display (a v1 "topic:subject"
+    // scope like "local-topic:memory/api" displays as "/api/subject"). That string is safe to
+    // *display* but NOT safe to re-parse — ParseQualifiedName(FormatQualifiedName(scope, subject))
+    // reconstructs a scope MISSING the namespace prefix. AfterStoreContext.QualifiedName and
+    // AfterAppendContext.Name are handed to embedding hooks (BuiltInEmbeddingsService /
+    // EmbeddingsPlugin) that re-parse them via ParseQualifiedName to decide which scope to route
+    // vectors under, so the REST Store/Append path had the identical bug as the already-fixed
+    // MCP/CLI paths.
+
+    [Fact]
+    public async Task After_store_hook_receives_round_trip_safe_name_for_namespaced_topic()
+    {
+        AfterStoreContext? captured = null;
+        var hook = new TestHook
+        {
+            OnAfterStore = (ctx, _) => { captured = ctx; return Task.CompletedTask; },
+        };
+        var pipeline = new PluginPipeline([hook]);
+        var store = GetStore();
+
+        // v1 "topic:subject" syntax -> "local-topic:memory/api" (the ordinary case for every
+        // non-skill, non-agent named topic).
+        await pipeline.StoreAsync(store, new StoreRequest(["auth flow notes"], "api:hook-ns-store-1"));
+
+        captured.Should().NotBeNull();
+        var (scope, subject) = store.ParseQualifiedName(captured!.QualifiedName);
+        scope.Should().Be("local-topic:memory/api",
+            because: "the hook must receive a qualifiedName that re-parses back to the memory's REAL scope, or embedding vectors get misfiled under the wrong scope and search never finds them");
+        subject.Should().Be("hook-ns-store-1");
+    }
+
+    [Fact]
+    public async Task After_append_hook_receives_round_trip_safe_name_for_namespaced_topic()
+    {
+        AfterAppendContext? captured = null;
+        var hook = new TestHook
+        {
+            OnAfterAppend = (ctx, _) => { captured = ctx; return Task.CompletedTask; },
+        };
+        var pipeline = new PluginPipeline([hook]);
+        var store = GetStore();
+
+        await pipeline.StoreAsync(store, new StoreRequest(["seed"], "api:hook-ns-append-1"));
+        await pipeline.AppendAsync(store, "api:hook-ns-append-1", "more data");
+
+        captured.Should().NotBeNull();
+        var (scope, subject) = store.ParseQualifiedName(captured!.Name);
+        scope.Should().Be("local-topic:memory/api",
+            because: "the hook must receive a qualifiedName that re-parses back to the memory's REAL scope, or embedding vectors get misfiled under the wrong scope and search never finds them");
+        subject.Should().Be("hook-ns-append-1");
+    }
+
+    [Fact]
+    public async Task After_store_hook_receives_plain_name_unchanged_for_local_scope()
+    {
+        // Non-namespaced ("local" scope) names are unaffected by the round-trip fix —
+        // FormatQualifiedName/FormatRoundTripQualifiedName agree for bare names.
+        AfterStoreContext? captured = null;
+        var hook = new TestHook
+        {
+            OnAfterStore = (ctx, _) => { captured = ctx; return Task.CompletedTask; },
+        };
+        var pipeline = new PluginPipeline([hook]);
+        var store = GetStore();
+
+        await pipeline.StoreAsync(store, new StoreRequest(["data"], "hook-plain-store-1"));
+        captured!.QualifiedName.Should().Be("hook-plain-store-1");
+    }
+
     // ── Cancellation ────────────────────────────────────────────────────────
 
     [Fact]
