@@ -30,7 +30,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
     public override string Version => "2.0.0";
 
     private IEmbeddingProvider _provider = new NullEmbeddingProvider();
-    private VectorStore? _vectorStore;
+    private volatile VectorStore? _vectorStore;
     private double _semanticWeight = 50.0;
     private ILogger _logger = null!;
     private bool _disposed;
