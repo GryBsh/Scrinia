@@ -51,6 +51,8 @@ internal static class LoCoMoCommand
                 scorer: BenchmarkScorer.ScoreFractionalById,
                 progress: progress,
                 ingestConcurrency: Program.FlagInt(args, "--ingest-concurrency", 1),
+                granularity: granularity.ToString().ToLowerInvariant(),
+                temporalScenario: BenchmarkRunner.SessionDateScenario,
                 ct: ct);
 
             PrintSummary(result);

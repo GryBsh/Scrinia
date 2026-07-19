@@ -62,23 +62,16 @@ public sealed class ScriniaRetriever : IRetriever
     // Empty when _buildSentenceIndex is false, so the reranker-off path pays nothing.
     private readonly ConcurrentDictionary<string, IReadOnlyList<float[]>> _sentenceCacheByContent = new();
     private readonly bool _buildSentenceIndex;
-    // Entity-graph recall probe (off by default — adds zero cost when disabled). When on,
-    // ingest buffers agent typed-keyword tags; the bipartite graph is built lazily at retrieve
-    // (EntityGraph.Build, conflict-driven node identity) and its Personalized PageRank score is
-    // passed as its OWN dedicated SearchAll source — not the supplemental channel. See EntityGraph.
-    private readonly bool _entityGraphEnabled;
-    private readonly double _entityGraphAlpha;
-    private readonly int _entityGraphIterations;
-    private readonly double _entityGraphWeight;
+    // Entity-graph recall probe (off by default — adds zero cost when disabled). When on, the
+    // query path builds a bipartite memory↔entity graph per query from the candidates' own
+    // attributes/keywords and scores Personalized PageRank via the SAME production
+    // EntityGraphScoreContributor the server uses, passed as its OWN dedicated SearchAll source
+    // (not the supplemental channel). Null when disabled.
+    private readonly EntityGraphScoreContributor? _entityGraphContributor;
     private FileMemoryStore _store;
     private int _resetCount;
     private ConcurrentDictionary<string, float[]> _vectorCache;
     private ConcurrentDictionary<string, IReadOnlyList<float[]>> _sentenceVectorCache;
-    // Per-question entity-graph inputs. Ingest buffers (memory, typed keywords) here under
-    // _ingestLock; the graph is built lazily on first retrieve via EntityGraph.Build so
-    // conflict-driven node identity sees the whole question's tag set. Both reset on ResetAsync.
-    private List<(string DocKey, IReadOnlyList<string>? Keywords)> _entityTags;
-    private EntityGraph? _entityGraph;
 
     /// <summary>
     /// Optional second-stage reranker. Set by <see cref="Cli.RetrieverFactory"/> after
@@ -129,15 +122,12 @@ public sealed class ScriniaRetriever : IRetriever
         // default keeps the embed cost path unchanged (~1 embed per doc) when no
         // reranker is configured.
         _buildSentenceIndex = buildSentenceIndex && _embeddingProvider is not null;
-        _entityGraphEnabled = entityGraphEnabled;
-        _entityGraphAlpha = entityGraphAlpha;
-        _entityGraphIterations = entityGraphIterations;
-        _entityGraphWeight = entityGraphWeight;
+        _entityGraphContributor = entityGraphEnabled
+            ? new EntityGraphScoreContributor(entityGraphWeight, entityGraphAlpha, entityGraphIterations)
+            : null;
         _store = CreateStore();
         _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
         _sentenceVectorCache = new ConcurrentDictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase);
-        _entityTags = new List<(string, IReadOnlyList<string>?)>();
-        _entityGraph = null;
     }
 
     public Task IngestAsync(HaystackDoc doc, CancellationToken ct = default) =>
@@ -249,12 +239,6 @@ public sealed class ScriniaRetriever : IRetriever
         lock (_ingestLock)
         {
             _store.Upsert(entry);
-            // Buffer typed keywords under the same lock that serializes store writes (the
-            // List isn't thread-safe and concurrent ingests would race it). The graph is
-            // built once, lazily, at retrieve time so conflict-driven node identity sees the
-            // whole question's tags.
-            if (_entityGraphEnabled && keywordSource is { Length: > 0 })
-                _entityTags.Add((sanitized, keywordSource));
         }
 
         if (_embeddingProvider is not null)
@@ -313,10 +297,15 @@ public sealed class ScriniaRetriever : IRetriever
         }
 
         // Entity-graph PPR recall signal as its OWN scoring source — matches production
-        // (a dedicated channel, not summed into supplemental). Baseline vs treatment runs are
-        // identical except for this signal, so the result diff isolates PPR's contribution.
-        IReadOnlyDictionary<string, double>? entityScores =
-            _entityGraphEnabled ? BuildEntityGraphScores(query) : null;
+        // (a dedicated channel, not summed into supplemental). Built per query by the same
+        // production EntityGraphScoreContributor from the candidates' attributes/keywords;
+        // inert (null) until memories carry entity tags, so baseline vs treatment isolates PPR.
+        IReadOnlyDictionary<string, double>? entityScores = null;
+        if (_entityGraphContributor is not null)
+        {
+            var entityCandidates = _store.ListScoped(scopes: null);
+            entityScores = await _entityGraphContributor.ComputeScoresAsync(query, entityCandidates, _store, ct);
+        }
 
         // In chunked mode we need a wider candidate set than topK because dedup will
         // collapse multiple chunks of the same parent to one hit. 10x is generous;
@@ -399,8 +388,6 @@ public sealed class ScriniaRetriever : IRetriever
         _store = CreateStore();
         _vectorCache = new ConcurrentDictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
         _sentenceVectorCache = new ConcurrentDictionary<string, IReadOnlyList<float[]>>(StringComparer.OrdinalIgnoreCase);
-        _entityTags = [];
-        _entityGraph = null;
         return Task.CompletedTask;
     }
 
@@ -436,34 +423,6 @@ public sealed class ScriniaRetriever : IRetriever
             supplemental[$"local|{kvp.Key}"] = sim * _semanticWeight;
         }
         return supplemental;
-    }
-
-    /// <summary>
-    /// Builds the entity-graph PPR score map, keyed <c>"local|{name}"</c> to match the search
-    /// candidate keys. Memory PPR mass is max-normalized to [0,1] — every graph-reached memory
-    /// keeps a positive boost, because the whole point is to lift buried-but-associated memories;
-    /// min-max would zero the weakest reached node, exactly the one most in need of a lift —
-    /// then scaled by <see cref="_entityGraphWeight"/> to match the embedding supplemental scale.
-    /// Returns null when no memory is reached (no query-entity seeds). Mirrors production
-    /// <see cref="EntityGraphScoreContributor"/>; consumed as its own SearchAll source.
-    /// </summary>
-    private Dictionary<string, double>? BuildEntityGraphScores(string query)
-    {
-        // Lazy one-time build: all ingests for the question have completed (per-question
-        // barrier in BenchmarkRunner), so the buffer is final and conflict-splitting sees
-        // the whole tag set. Cached until ResetAsync nulls it for the next question.
-        _entityGraph ??= EntityGraph.Build(_entityTags);
-        var ppr = _entityGraph.Score(query, _entityGraphAlpha, _entityGraphIterations);
-        if (ppr.Count == 0) return null;
-
-        double max = 0;
-        foreach (double v in ppr.Values) if (v > max) max = v;
-        if (max <= 0) return null;
-
-        var scores = new Dictionary<string, double>(ppr.Count, StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, mass) in ppr)
-            scores[$"local|{name}"] = (mass / max) * _entityGraphWeight;
-        return scores;
     }
 
     private static double CosineSimilarity(float[] a, float[] b)

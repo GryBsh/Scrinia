@@ -131,7 +131,7 @@ public static class BenchmarkScorer
     {
         ArgumentNullException.ThrowIfNull(results);
         if (results.Count == 0)
-            return new AggregateMetrics(0, 0, 0, 0, 0);
+            return new AggregateMetrics(0, 0, 0, 0, 0, 0, 0);
 
         double r5 = 0, r10 = 0, r50 = 0, ndcg = 0;
         foreach (var r in results)
@@ -142,9 +142,12 @@ public static class BenchmarkScorer
             ndcg += r.Ndcg10;
         }
 
-        double answerableSum = 0; int judged = 0;
+        double surfacedSum = 0, correctSum = 0; int judged = 0;
         foreach (var r in results)
-            if (r.Answerable is { } a) { answerableSum += a ? 1.0 : 0.0; judged++; }
+        {
+            if (r.AnsweredCorrectly is { } c) { correctSum += c ? 1.0 : 0.0; judged++; }
+            if (r.SurfacedFromContext is { } s) surfacedSum += s ? 1.0 : 0.0;
+        }
 
         int n = results.Count;
         return new AggregateMetrics(
@@ -153,7 +156,8 @@ public static class BenchmarkScorer
             RecallAt10: r10 / n,
             RecallAt50: r50 / n,
             Ndcg10: ndcg / n,
-            Answerable: judged > 0 ? answerableSum / judged : 0.0);
+            SurfacedRate: judged > 0 ? surfacedSum / judged : 0.0,
+            CorrectRate: judged > 0 ? correctSum / judged : 0.0);
     }
 
     /// <summary>

@@ -81,4 +81,41 @@ public class ScriniaRetrieverTests : IAsyncLifetime
         hits[0].Id.Should().Be("d1",
             because: "the typed keyword's value must be seeded into BM25 even when absent from content");
     }
+
+    [Fact]
+    public async Task EntityGraph_LiftsAssociatedMemory_SharingEntity_ButNotQueryTerms()
+    {
+        // Converged onto the production EntityGraphScoreContributor: the graph is built per query
+        // from the candidates' own typed keywords. d1 is tagged {alice, zeta}, d2 {zeta, bob};
+        // both share identical content that never contains "alice". Query "alice" seeds the alice
+        // node → d1, and PPR diffuses alice→zeta→d2, lifting d2 though it shares no query term.
+        var root = Path.Combine(Path.GetTempPath(), "scrinia-eg-on-" + Guid.NewGuid().ToString("N")[..8]);
+        await using var eg = new ScriniaRetriever(root, entityGraphEnabled: true);
+
+        await eg.IngestAsync(new HaystackDoc("d1", "kickoff sync recap", null),
+            agentAnchors: null, agentKeywords: new[] { "person:alice", "topic:zeta" });
+        await eg.IngestAsync(new HaystackDoc("d2", "kickoff sync recap", null),
+            agentAnchors: null, agentKeywords: new[] { "topic:zeta", "person:bob" });
+
+        var hits = await eg.RetrieveAsync("alice", topK: 5);
+
+        hits.Select(h => h.Id).Should().Contain("d2",
+            because: "the entity graph diffuses alice→zeta→the bob memory, lifting d2 though it never mentions alice");
+    }
+
+    [Fact]
+    public async Task EntityGraph_Off_LeavesAssociatedMemoryBuried()
+    {
+        // Same setup on the default (entity-graph-off) retriever: "alice" lexically hits only d1,
+        // so BM25 alone never surfaces d2. Pins the sibling test's lift to the entity graph.
+        await _retriever.IngestAsync(new HaystackDoc("d1", "kickoff sync recap", null),
+            agentAnchors: null, agentKeywords: new[] { "person:alice", "topic:zeta" });
+        await _retriever.IngestAsync(new HaystackDoc("d2", "kickoff sync recap", null),
+            agentAnchors: null, agentKeywords: new[] { "topic:zeta", "person:bob" });
+
+        var hits = await _retriever.RetrieveAsync("alice", topK: 5);
+
+        hits.Select(h => h.Id).Should().NotContain("d2",
+            because: "without the entity graph, d2 shares no query term with 'alice' and stays buried");
+    }
 }

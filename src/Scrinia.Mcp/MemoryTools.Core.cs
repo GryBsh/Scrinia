@@ -960,6 +960,7 @@ public sealed partial class ScriniaMcpTools
                     sb.Append('[').Append(index).Append("] entry  ").Append(label)
                       .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
+                    AppendDatesLine(sb, er.Item.Entry.CreatedAt, er.Item.Entry.UpdatedAt);
                     AppendAttributesLine(sb, er.Item.Entry.Attributes);
                     AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview));
                     AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Attributes));
@@ -977,6 +978,7 @@ public sealed partial class ScriniaMcpTools
                       .Append(" [chunk ").Append(cr.Chunk.ChunkIndex).Append('/').Append(cr.TotalChunks).Append(']')
                       .Append("  score=").Append(cr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
                       .Append("  ~").Append(estTokens).Append(" tokens\n");
+                    AppendDatesLine(sb, cr.ParentItem.Entry.CreatedAt, cr.ParentItem.Entry.UpdatedAt);
                     AppendAttributesLine(sb, cr.ParentItem.Entry.Attributes);
                     AppendDescription(sb, cr.Chunk.ContentPreview
                         ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview));
@@ -1006,6 +1008,15 @@ public sealed partial class ScriniaMcpTools
             sb.Append(tags[i]);
         }
         sb.Append('\n');
+    }
+
+    /// <summary>Render record dates as display-only pseudo-attributes from the entry's structural
+    /// CreatedAt/UpdatedAt — never stored in Attributes, never agent-writable. Date-only, ISO.</summary>
+    private static void AppendDatesLine(System.Text.StringBuilder sb, DateTimeOffset createdAt, DateTimeOffset? updatedAt)
+    {
+        sb.Append("    created: ").Append(createdAt.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+        if (updatedAt is { } u)
+            sb.Append("    updated: ").Append(u.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
     }
 
     private static void AppendAttributesLine(System.Text.StringBuilder sb, Dictionary<string, string[]>? fields)

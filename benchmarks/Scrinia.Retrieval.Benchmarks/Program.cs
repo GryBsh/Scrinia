@@ -24,6 +24,8 @@ internal static class Program
                 "longmemeval" => await LongMemEvalCommand.RunAsync(rest, CancellationToken.None),
                 "membench" => await MemBenchCommand.RunAsync(rest, CancellationToken.None),
                 "locomo" => await LoCoMoCommand.RunAsync(rest, CancellationToken.None),
+                "judge-replay" => await JudgeReplayCommand.RunAsync(rest, CancellationToken.None),
+                "rank" => await RankCommand.RunAsync(rest, CancellationToken.None),
                 _ => UnknownCommand(subcommand),
             };
         }
@@ -51,12 +53,20 @@ internal static class Program
               scrinia-bench longmemeval --data <file> [--split full|dev|held_out] [--granularity session|turn] [common-flags]
               scrinia-bench membench    --data <dir> [--limit <N>] [common-flags]
               scrinia-bench locomo      --data <file> [--granularity session|dialog] [common-flags]
+              scrinia-bench judge-replay --input <result.json> --judge --judge-provider <p> [judge flags]
+              scrinia-bench rank         [--dir <results-dir>]
 
             Subcommands:
               convomem      Run ConvoMem (Salesforce) evidence questions
               longmemeval   Run LongMemEval (xiaowu0162/longmemeval-cleaned), the headline benchmark
               membench      Run MemBench (ACL 2025) — 8500 items, 10 categories
               locomo        Run LoCoMo (snap-research/locomo) — 10 convs, 1986 QA pairs
+              judge-replay  Re-run ONLY the LLM judge over a prior run's persisted JudgeContext —
+                            no dataset, no retriever, exact live/replay parity. Writes <input>.judged.json.
+              rank          Rank scrinia_locomo*.json / *.judged.json result files under --dir by the
+                            judge CorrectRate/SurfacedRate metric (legacy Answerable-only files fall
+                            back automatically). Reads only each file's RunMetadata+Aggregate prefix,
+                            never the (25-180 MB) Questions array.
 
             Common flags:
               --data <path>            Dataset path (download yourself; see benchmarks README)

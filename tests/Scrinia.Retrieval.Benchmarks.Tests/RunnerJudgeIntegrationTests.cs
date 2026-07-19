@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
@@ -90,7 +91,7 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_WithJudge_PopulatesAnswerable_AndKeepsRecallIntact()
+    public async Task RunAsync_WithJudge_PopulatesSurfacedAndCorrect_AndKeepsRecallIntact()
     {
         var retriever = new StubRetriever([new RetrievalHit("d1", "Maria booked Lisbon.", 1.0)]);
         var question = new BenchmarkQuestion(
@@ -105,15 +106,17 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
             BenchmarkScorer.ScoreAnyHitById, ct: CancellationToken.None);
 
         result.Questions.Should().HaveCount(1);
-        result.Questions[0].Answerable.Should().BeTrue();
+        result.Questions[0].SurfacedFromContext.Should().BeTrue();
+        result.Questions[0].AnsweredCorrectly.Should().BeTrue();
         result.Questions[0].JudgeAnswer.Should().Be("Lisbon");
         result.Questions[0].JudgeGraderVerdict.Should().Be("correct");
         result.Questions[0].RecallAt10.Should().Be(1.0);
-        result.Aggregate.Answerable.Should().Be(1.0);
+        result.Aggregate.SurfacedRate.Should().Be(1.0);
+        result.Aggregate.CorrectRate.Should().Be(1.0);
     }
 
     [Fact]
-    public async Task RunGroupedAsync_WithJudge_PopulatesAnswerable_AndKeepsRecallIntact()
+    public async Task RunGroupedAsync_WithJudge_PopulatesSurfacedAndCorrect_AndKeepsRecallIntact()
     {
         var haystack = new[] { new HaystackDoc("d1", "Maria booked Lisbon.", null) };
         var retriever = new StubRetriever([new RetrievalHit("d1", "Maria booked Lisbon.", 1.0)]);
@@ -130,10 +133,71 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
             BenchmarkScorer.ScoreAnyHitById, ct: CancellationToken.None);
 
         result.Questions.Should().HaveCount(1);
-        result.Questions[0].Answerable.Should().BeTrue();
+        result.Questions[0].SurfacedFromContext.Should().BeTrue();
+        result.Questions[0].AnsweredCorrectly.Should().BeTrue();
         result.Questions[0].JudgeAnswer.Should().Be("Lisbon");
         result.Questions[0].JudgeGraderVerdict.Should().Be("correct");
         result.Questions[0].RecallAt10.Should().Be(1.0);
-        result.Aggregate.Answerable.Should().Be(1.0);
+        result.Aggregate.SurfacedRate.Should().Be(1.0);
+        result.Aggregate.CorrectRate.Should().Be(1.0);
+    }
+
+    [Fact]
+    public void WithCreatedDates_prefixes_known_and_passes_unknown_through()
+    {
+        var hits = new List<RetrievalHit> { new("D1:3", "I went yesterday", 1.0), new("D9:9", "unrelated", 0.5) };
+        var dates = new Dictionary<string, DateTimeOffset?> { ["D1:3"] = new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero) };
+        var result = BenchmarkRunner.WithCreatedDates(hits.Select(h => h.Text).ToList(), hits, dates);
+        Assert.Equal("created: 2023-05-04\nI went yesterday", result[0]);
+        Assert.Equal("unrelated", result[1]);
+    }
+
+    [Fact]
+    public void AnyDateSurfaced_true_when_any_passage_carries_a_created_line()
+    {
+        Assert.True(BenchmarkRunner.AnyDateSurfaced(["created: 2023-05-04\nfoo", "bar"]));
+        Assert.False(BenchmarkRunner.AnyDateSurfaced(["foo", "bar"]));
+    }
+
+    [Fact]
+    public async Task RunGroupedAsync_NoJudge_StillPersistsDatePrefixedContextAndGoldAnswer()
+    {
+        var timestamp = new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero);
+        var haystack = new[] { new HaystackDoc("d1", "Maria booked Lisbon.", timestamp) };
+        var retriever = new StubRetriever([new RetrievalHit("d1", "Maria booked Lisbon.", 1.0)]);
+        var question = new BenchmarkQuestion(
+            "q1", "Where did Maria go?", haystack, ["d1"], [], "single-hop", GoldAnswer: "Lisbon");
+        var group = new BenchmarkQuestionGroup("g1", haystack, [question]);
+
+        var result = await new BenchmarkRunner(NoOpAgentHarness.Instance, judge: null).RunGroupedAsync(
+            "bench-test", "no-judge-test",
+            ToAsync(new[] { group }), retriever, topK: 10,
+            BenchmarkScorer.ScoreAnyHitById,
+            temporalScenario: BenchmarkRunner.SessionDateScenario,
+            ct: CancellationToken.None);
+
+        result.Questions.Should().HaveCount(1);
+        result.Questions[0].JudgeContext.Should().NotBeNullOrEmpty();
+        result.Questions[0].JudgeContext![0].Should().StartWith("created: ");
+        result.Questions[0].DateSurfaced.Should().BeTrue();
+        result.Questions[0].GoldAnswer.Should().Be("Lisbon");
+        result.Questions[0].SurfacedFromContext.Should().BeNull();
+        result.Questions[0].AnsweredCorrectly.Should().BeNull();
+        result.RunMetadata.TemporalScenario.Should().Be("session-date-ingest");
+    }
+
+    [Fact]
+    public void RunMetadata_serializes_granularity_and_scenario_and_defaults_null()
+    {
+        var meta = new RunMetadata("locomo", "bm25", 50, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, "v",
+            Granularity: "dialog", TemporalScenario: "session-date-ingest");
+        string json = JsonSerializer.Serialize(meta, Program.JsonOutputOptions);
+        var back = JsonSerializer.Deserialize<RunMetadata>(json, Program.JsonOutputOptions)!;
+        Assert.Equal("dialog", back.Granularity);
+        Assert.Equal("session-date-ingest", back.TemporalScenario);
+
+        var bare = new RunMetadata("membench", "bm25", 10, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, "v");
+        Assert.Null(bare.Granularity);
+        Assert.Null(bare.TemporalScenario);
     }
 }

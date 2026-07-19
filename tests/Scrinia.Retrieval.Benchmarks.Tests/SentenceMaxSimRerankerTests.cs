@@ -200,7 +200,6 @@ public class SentenceMaxSimRerankerTests
             OriginalBytes: 100,
             ChunkCount: 0,
             CreatedAt: DateTimeOffset.UtcNow,
-            Description: "",
             Keywords: [name],
             TermFrequencies: null,
             ContentPreview: null);

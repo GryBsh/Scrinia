@@ -17,6 +17,9 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 /// </summary>
 public sealed class BenchmarkRunner
 {
+    public const string SessionDateScenario = "session-date-ingest";
+    public const int DefaultJudgeContextK = 10;
+
     private readonly IAgentHarness _agent;
     private readonly AnswerabilityJudge? _judge;
 
@@ -57,6 +60,8 @@ public sealed class BenchmarkRunner
         BenchmarkScorer.Scorer scorer,
         IProgress<RunProgress>? progress = null,
         int ingestConcurrency = 1,
+        string? granularity = null,
+        string? temporalScenario = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
@@ -79,18 +84,32 @@ public sealed class BenchmarkRunner
 
             await IngestHaystackAsync(retriever, q.Haystack, ingestConcurrency, _agent, ct);
 
+            var dateById = q.Haystack.ToDictionary(d => d.Id, d => d.Timestamp, StringComparer.OrdinalIgnoreCase);
+
             string queryText = await TransformQueryAsync(q.QueryText, ct);
             var hits = await retriever.RetrieveAsync(queryText, topK, ct);
             var scored = scorer(q, hits);
+
+            int contextK = _judge?.JudgeK ?? DefaultJudgeContextK;
+            var judgeContext = await BuildAnswererContextAsync(retriever, queryText, hits, dateById, contextK, ct);
+            scored = scored with
+            {
+                GoldAnswer = q.GoldAnswer,
+                JudgeContext = judgeContext,
+                DateSurfaced = AnyDateSurfaced(judgeContext),
+            };
+
             if (_judge is not null)
             {
-                var judgeContents = retriever is ISurfacedContentProvider scp
-                    ? await scp.GetSurfacedContentsAsync(queryText, _judge.JudgeK, ct)
-                    : hits.Select(h => h.Text).ToList();
-                var verdict = await _judge.JudgeAsync(
-                    q.Id, q.QueryText, q.GoldAnswer, judgeContents, ct);
+                var verdict = await _judge.JudgeAsync(q.Id, q.QueryText, q.GoldAnswer, judgeContext, ct);
                 if (verdict is not null)
-                    scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
+                    scored = scored with
+                    {
+                        SurfacedFromContext = verdict.SurfacedFromContext,
+                        AnsweredCorrectly = verdict.AnsweredCorrectly,
+                        JudgeAnswer = verdict.Answer,
+                        JudgeGraderVerdict = verdict.GraderVerdict,
+                    };
             }
             results.Add(scored);
             n++;
@@ -106,7 +125,9 @@ public sealed class BenchmarkRunner
             StartedAt: startedAt,
             CompletedAt: DateTimeOffset.UtcNow,
             QuestionCount: results.Count,
-            ScriniaVersion: ReadScriniaVersion());
+            ScriniaVersion: ReadScriniaVersion(),
+            Granularity: granularity,
+            TemporalScenario: temporalScenario);
 
         return new BenchmarkRunResult(meta, aggregate, perCategory, results);
     }
@@ -126,6 +147,8 @@ public sealed class BenchmarkRunner
         BenchmarkScorer.Scorer scorer,
         IProgress<RunProgress>? progress = null,
         int ingestConcurrency = 1,
+        string? granularity = null,
+        string? temporalScenario = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
@@ -147,21 +170,35 @@ public sealed class BenchmarkRunner
 
             await IngestHaystackAsync(retriever, group.SharedHaystack, ingestConcurrency, _agent, ct);
 
+            var dateById = group.SharedHaystack.ToDictionary(d => d.Id, d => d.Timestamp, StringComparer.OrdinalIgnoreCase);
+
             foreach (var q in group.Questions)
             {
                 ct.ThrowIfCancellationRequested();
                 string queryText = await TransformQueryAsync(q.QueryText, ct);
                 var hits = await retriever.RetrieveAsync(queryText, topK, ct);
                 var scored = scorer(q, hits);
+
+                int contextK = _judge?.JudgeK ?? DefaultJudgeContextK;
+                var judgeContext = await BuildAnswererContextAsync(retriever, queryText, hits, dateById, contextK, ct);
+                scored = scored with
+                {
+                    GoldAnswer = q.GoldAnswer,
+                    JudgeContext = judgeContext,
+                    DateSurfaced = AnyDateSurfaced(judgeContext),
+                };
+
                 if (_judge is not null)
                 {
-                    var judgeContents = retriever is ISurfacedContentProvider scp
-                        ? await scp.GetSurfacedContentsAsync(queryText, _judge.JudgeK, ct)
-                        : hits.Select(h => h.Text).ToList();
-                    var verdict = await _judge.JudgeAsync(
-                        q.Id, q.QueryText, q.GoldAnswer, judgeContents, ct);
+                    var verdict = await _judge.JudgeAsync(q.Id, q.QueryText, q.GoldAnswer, judgeContext, ct);
                     if (verdict is not null)
-                        scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
+                        scored = scored with
+                        {
+                            SurfacedFromContext = verdict.SurfacedFromContext,
+                            AnsweredCorrectly = verdict.AnsweredCorrectly,
+                            JudgeAnswer = verdict.Answer,
+                            JudgeGraderVerdict = verdict.GraderVerdict,
+                        };
                 }
                 results.Add(scored);
                 progress?.Report(new RunProgress(results.Count, scored));
@@ -177,8 +214,43 @@ public sealed class BenchmarkRunner
             StartedAt: startedAt,
             CompletedAt: DateTimeOffset.UtcNow,
             QuestionCount: results.Count,
-            ScriniaVersion: ReadScriniaVersion());
+            ScriniaVersion: ReadScriniaVersion(),
+            Granularity: granularity,
+            TemporalScenario: temporalScenario);
         return new BenchmarkRunResult(meta, aggregate, perCategory, results);
+    }
+
+    public static IReadOnlyList<string> WithCreatedDates(
+        IReadOnlyList<string> hitTexts, IReadOnlyList<RetrievalHit> hits,
+        IReadOnlyDictionary<string, DateTimeOffset?> dateById)
+    {
+        var outp = new List<string>(hitTexts.Count);
+        for (int i = 0; i < hitTexts.Count; i++)
+        {
+            DateTimeOffset? date = i < hits.Count && dateById.TryGetValue(hits[i].Id, out var d) ? d : null;
+            outp.Add(AnswererDateFormat.Apply(hitTexts[i], date));
+        }
+        return outp;
+    }
+
+    /// <summary>Deterministic, model-independent: did Scrinia put a resolvable created date in the answerer's context?</summary>
+    public static bool AnyDateSurfaced(IReadOnlyList<string> contents)
+    {
+        foreach (var c in contents) if (AnswererDateFormat.Present(c)) return true;
+        return false;
+    }
+
+    /// <summary>Assembles the date-prefixed answerer context for one question. Agentic retrievers return
+    /// already-date-prefixed surfaced content (Task 5); id-mapped retrievers get their top-k hit texts
+    /// date-prefixed here. This is the exact list persisted as JudgeContext and fed to the judge.</summary>
+    private static async Task<IReadOnlyList<string>> BuildAnswererContextAsync(
+        IRetriever retriever, string query, IReadOnlyList<RetrievalHit> hits,
+        IReadOnlyDictionary<string, DateTimeOffset?> dateById, int k, CancellationToken ct)
+    {
+        if (retriever is ISurfacedContentProvider scp)
+            return await scp.GetSurfacedContentsAsync(query, k, ct);
+        var top = hits.Take(k).ToList();
+        return WithCreatedDates(top.Select(h => h.Text).ToList(), top, dateById);
     }
 
     /// <summary>

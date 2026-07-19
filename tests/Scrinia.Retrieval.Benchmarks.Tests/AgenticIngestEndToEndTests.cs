@@ -53,9 +53,9 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         // Session s1 episode stores a memory citing gold doc D1:1; session s2 episode stores
         // a memory citing gold doc D2:1. Each episode is a tool_calls turn followed by a
         // no-tool-calls turn so the episode terminates (mirrors AgenticIngestHarnessTests).
-        var rememberLisbon = new ToolCallRequest("c1", "memory_remember",
+        var rememberLisbon = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
-        var rememberBerlin = new ToolCallRequest("c2", "memory_remember",
+        var rememberBerlin = new ToolCallRequest("c2", "remember",
             """{"path":"/findings/job","content":["Started a new job in Berlin.\nref: D2:1"]}""");
 
         var client = new ScriptedToolClient(
@@ -98,7 +98,7 @@ public sealed class AgenticIngestEndToEndTests : IDisposable
         // ConceptEmbeddingProvider (travel-concept words -> [1,0], else -> [0,1]) can
         // connect them. BM25 alone would score this memory zero against the query, so a
         // non-zero recall here can ONLY come from the semantic (hybrid) contributor.
-        var rememberLisbon = new ToolCallRequest("c1", "memory_remember",
+        var rememberLisbon = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
 
         var client = new ScriptedToolClient(

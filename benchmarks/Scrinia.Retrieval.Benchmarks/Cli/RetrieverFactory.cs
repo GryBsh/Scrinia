@@ -42,6 +42,16 @@ internal static class RetrieverFactory
         EmbedProviderKind embedKind = EmbeddingProviderLoader.ParseKind(
             Program.Flag(args, "--embed-provider"));
 
+        // Entity-graph recall probe. Off unless --entity-graph on|true. Parsed up here because
+        // BOTH arms consume it: the mechanical arm (below) and the agentic arm (next branch).
+        // The graph nodes are the memories' entity attributes/typed keywords; the mechanical
+        // arm sources them from the agent's `entity:` typed keywords (BuildAgentAsync force-
+        // enables typed extraction for it), the agentic arm from the attributes the episode writes.
+        bool entityGraph = ParseBool(Program.Flag(args, "--entity-graph"));
+        double entityGraphAlpha = ParseDouble(Program.Flag(args, "--entity-graph-alpha"), EntityGraphScoreContributor.DefaultAlpha);
+        int entityGraphIterations = ParseInt(Program.Flag(args, "--entity-graph-iterations"), EntityGraphScoreContributor.DefaultIterations);
+        double entityGraphWeight = ParseDouble(Program.Flag(args, "--entity-graph-weight"), EntityGraphScoreContributor.DefaultWeight);
+
         // Agentic-ingest arm: the LLM episode IS the ingestion, so this branch is
         // checked EARLY, before ScriniaRetriever's own embedder/reranker setup below.
         // By default (--mode bm25) it scores BM25 + fields, same as the mechanical BM25
@@ -63,11 +73,6 @@ internal static class RetrieverFactory
             if (Program.Flag(args, "--rerank") is { } rerankFlag && ParseRerank(rerankFlag) != RerankMode.None)
                 throw new ArgumentException(
                     "--agentic-ingest does not use the --rerank rerankers (cross-encoder / sentence-maxsim); its semantic rerank is the production hybrid, enabled with --mode bm25_embeddings. Drop --rerank or pass --rerank none.");
-
-            // Entity-graph is not yet supported in the agentic arm (deliberately out of
-            // scope for this feature).
-            if (ParseBool(Program.Flag(args, "--entity-graph")))
-                throw new ArgumentException("--entity-graph is not yet supported with --agentic-ingest.");
 
             string provider = Program.Flag(args, "--agent-provider")
                 ?? throw new ArgumentException("--agentic-ingest requires --agent-provider (openai | anthropic | ...).");
@@ -106,7 +111,11 @@ internal static class RetrieverFactory
             var agentic = new AgenticScriniaRetriever(agRoot, harness, new EpisodeCache(epCache), backend.ModelSlug,
                 RankerOptions.Default with { AlphaRelevance = 1.0, AlphaRecency = 0.0 },
                 embedder: agenticEmbedder,
-                embeddingOptions: agenticEmbedder is null ? null : new EmbeddingOptions());
+                embeddingOptions: agenticEmbedder is null ? null : new EmbeddingOptions(),
+                entityGraphEnabled: entityGraph,
+                entityGraphAlpha: entityGraphAlpha,
+                entityGraphIterations: entityGraphIterations,
+                entityGraphWeight: entityGraphWeight);
             string embeddingsStatus = agenticEmbedder is null
                 ? "off"
                 : $"on(dims={agenticEmbedder.Dimensions},weight={new EmbeddingOptions().SemanticWeight})";
@@ -137,14 +146,6 @@ internal static class RetrieverFactory
         RerankMode rerank = ParseRerank(Program.Flag(args, "--rerank"));
         double maxSimWeight = ParseDouble(Program.Flag(args, "--maxsim-weight"),
             SentenceMaxSimReranker.DefaultFirstStageWeight);
-
-        // Entity-graph recall probe. Off unless --entity-graph on|true. The entity source
-        // is the agent's `entity:` typed keywords, so BuildAgentAsync force-enables typed
-        // extraction whenever this is set (see below).
-        bool entityGraph = ParseBool(Program.Flag(args, "--entity-graph"));
-        double entityGraphAlpha = ParseDouble(Program.Flag(args, "--entity-graph-alpha"), 0.15);
-        int entityGraphIterations = ParseInt(Program.Flag(args, "--entity-graph-iterations"), 20);
-        double entityGraphWeight = ParseDouble(Program.Flag(args, "--entity-graph-weight"), 50.0);
 
         var rankerOptions = RankerOptions.Default with
         {
@@ -237,10 +238,13 @@ internal static class RetrieverFactory
     public static async Task<IAgentHarness> BuildAgentAsync(string[] args, CancellationToken ct)
     {
         AgentModes modes = ParseAgentMode(Program.Flag(args, "--agent"));
-        // The entity-graph probe sources its entities from the `entity:` typed keywords, so
-        // force typed extraction on whenever --entity-graph is set — even if the user didn't
-        // list `typed` in --agent. Without this the graph would be empty.
-        if (ParseBool(Program.Flag(args, "--entity-graph")))
+        // The mechanical arm's entity-graph probe sources its entities from the `entity:` typed
+        // keywords, so force typed extraction on whenever --entity-graph is set — even if the user
+        // didn't list `typed` in --agent. Without this the graph would be empty. Scoped to the
+        // mechanical arm: the agentic arm sources graph nodes from the attributes its episode
+        // writes, not from this typed-keyword agent, so forcing it there would spin up an unused
+        // harness (and demand a redundant --agent-provider).
+        if (ParseBool(Program.Flag(args, "--entity-graph")) && !HasFlag(args, "--agentic-ingest"))
             modes = modes with { TypedKeywords = true };
         if (!modes.AnyEnabled) return NoOpAgentHarness.Instance;
 
@@ -344,7 +348,8 @@ internal static class RetrieverFactory
     {
         Console.WriteLine();
         Console.WriteLine("=== judge answerability ===");
-        Console.WriteLine($"answerable@{judge.JudgeK}:  {result.Aggregate.Answerable:P1}");
+        Console.WriteLine($"correct@{judge.JudgeK}:  {result.Aggregate.CorrectRate:P1}");
+        Console.WriteLine($"surfaced@{judge.JudgeK}:  {result.Aggregate.SurfacedRate:P1}");
         Console.WriteLine($"  judged:   {judge.JudgedCount}");
         Console.WriteLine($"  no gold:  {judge.NoGoldCount}");
         Console.WriteLine($"  failed:   {judge.FailedCount}");

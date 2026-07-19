@@ -16,13 +16,13 @@ public sealed class EpisodeCacheTests : IDisposable
         string key = EpisodeCache.Key("qwen3", "v1", "transcript text");
         cache.TryGet(key, out _).Should().BeFalse();
 
-        var calls = new List<EpisodeToolCall> { new("memory_remember", """{"path":"/f/x","content":["a\nref: d1"]}""") };
+        var calls = new List<EpisodeToolCall> { new("remember", """{"path":"/f/x","content":["a\nref: d1"]}""") };
         cache.Put(key, calls);
 
         var reload = new EpisodeCache(_file);
         reload.TryGet(key, out var got).Should().BeTrue();
         got.Should().HaveCount(1);
-        got[0].ToolName.Should().Be("memory_remember");
+        got[0].ToolName.Should().Be("remember");
     }
 
     [Fact]

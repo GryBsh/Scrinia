@@ -30,7 +30,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         MemoryStoreContext.Current = store;
         try
         {
-            var remember = new ToolCallRequest("c1", "memory_remember",
+            var remember = new ToolCallRequest("c1", "remember",
                 """{"path":"/findings/lisbon","content":["Booked Lisbon.\nref: d1"]}""");
             var client = new ScriptedToolClient(
                 new ToolTurnResult(null, [remember], "tool_calls"),
@@ -41,7 +41,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
             var result = await harness.RunEpisodeAsync(docs, CancellationToken.None);
 
             result.Succeeded.Should().BeTrue();
-            result.ToolCalls.Should().ContainSingle(c => c.ToolName == "memory_remember");
+            result.ToolCalls.Should().ContainSingle(c => c.ToolName == "remember");
             store.SearchAll("Lisbon", null, 10).Should().NotBeEmpty();
         }
         finally { MemoryStoreContext.Current = null; }
@@ -70,7 +70,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         MemoryStoreContext.Current = new FileMemoryStore(_dir);
         try
         {
-            var bad = new ToolCallRequest("c1", "memory_remember", "{ not json");
+            var bad = new ToolCallRequest("c1", "remember", "{ not json");
             var client = new ScriptedToolClient(
                 new ToolTurnResult(null, [bad], "tool_calls"),
                 new ToolTurnResult("done", [], "stop"));
@@ -90,7 +90,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         MemoryStoreContext.Current = new FileMemoryStore(_dir);
         try
         {
-            var bad = new ToolCallRequest("c1", "memory_remember", null!);
+            var bad = new ToolCallRequest("c1", "remember", null!);
             var client = new ScriptedToolClient(
                 new ToolTurnResult(null, [bad], "tool_calls"),
                 new ToolTurnResult("done", [], "stop"));
@@ -112,7 +112,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         {
             var calls = new List<EpisodeToolCall>
             {
-                new("memory_remember", """{"path":"/f/x","content":["hello world\nref: d1"]}"""),
+                new("remember", """{"path":"/f/x","content":["hello world\nref: d1"]}"""),
             };
             await AgenticIngestHarness.ReplayAsync(calls, CancellationToken.None);
             ((FileMemoryStore)MemoryStoreContext.Current).SearchAll("hello", null, 10)
@@ -129,9 +129,9 @@ public sealed class AgenticIngestHarnessTests : IDisposable
         MemoryStoreContext.Current = store;
         try
         {
-            var remember = new ToolCallRequest("c1", "memory_remember",
+            var remember = new ToolCallRequest("c1", "remember",
                 """{"path":"/findings/x","content":["FIRST-FACT about Lisbon.\nref: D1:1"]}""");
-            var append = new ToolCallRequest("c2", "memory_append",
+            var append = new ToolCallRequest("c2", "append",
                 """{"path":"/findings/x","content":"SECOND-FACT about the flight.\nref: D1:2"}""");
             var client = new ScriptedToolClient(
                 new ToolTurnResult(null, [remember], "tool_calls"),
@@ -146,7 +146,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
             result.ToolCallErrors.Should().Be(0);
 
             // Read the stored memory back: BOTH facts must be present (append accumulated,
-            // memory_remember did NOT clobber the first).
+            // remember did NOT clobber the first).
             string recalled = await new ScriniaMcpTools().MemoryRecall("/findings/x", null, false, CancellationToken.None);
             recalled.Should().Contain("FIRST-FACT");
             recalled.Should().Contain("SECOND-FACT");
@@ -155,6 +155,8 @@ public sealed class AgenticIngestHarnessTests : IDisposable
     }
 
     [Fact]
-    public async Task PromptVersion_IsV2_ForFourToolRegime() =>
-        AgenticIngestPrompts.PromptVersion.Should().Be("v2");
+    public async Task PromptVersion_IsV3_AfterBareToolNameRename() =>
+        // Bumped v2 -> v3 when the bench tool surface was renamed from the stale memory_* names
+        // to the real MCP bare names, invalidating cached episodes whose ToolNames used memory_*.
+        AgenticIngestPrompts.PromptVersion.Should().Be("v3");
 }
