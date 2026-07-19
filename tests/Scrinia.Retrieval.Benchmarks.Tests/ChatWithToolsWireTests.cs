@@ -31,7 +31,7 @@ public sealed class ChatWithToolsWireTests
 
     private static readonly IReadOnlyList<ToolSpec> Tools =
     [
-        new ToolSpec("memory_remember", "Remember something", """{"type":"object","properties":{}}"""),
+        new ToolSpec("remember", "Remember something", """{"type":"object","properties":{}}"""),
     ];
 
     [Fact]
@@ -39,7 +39,7 @@ public sealed class ChatWithToolsWireTests
     {
         string toolCallsJson =
             """
-            [{"id": "call_1", "type": "function", "function": {"name": "memory_remember", "arguments": "{\"path\":\"/x\",\"content\":[\"a\"]}"}}]
+            [{"id": "call_1", "type": "function", "function": {"name": "remember", "arguments": "{\"path\":\"/x\",\"content\":[\"a\"]}"}}]
             """;
         string responseBody =
             $$"""
@@ -64,7 +64,7 @@ public sealed class ChatWithToolsWireTests
 
         result.Should().NotBeNull();
         result!.ToolCalls.Should().HaveCount(1);
-        result.ToolCalls[0].ToolName.Should().Be("memory_remember");
+        result.ToolCalls[0].ToolName.Should().Be("remember");
         result.ToolCalls[0].ArgumentsJson.Should().Contain("\"path\":\"/x\"");
     }
 

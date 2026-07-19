@@ -23,11 +23,20 @@ public sealed class AgenticIngestCliTests
     }
 
     [Fact]
-    public async Task AgenticIngest_WithEntityGraph_Throws()
+    public async Task AgenticIngest_WithEntityGraph_NoLongerRejected()
     {
-        string[] args = ["locomo", "--data", "x.json", "--agentic-ingest", "--agent-provider", "openai", "--entity-graph", "true"];
-        var act = async () => await RetrieverFactory.BuildAsync(args, "locomo", default);
-        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*entity-graph*");
+        // Entity-graph is now supported in the agentic arm (it sources graph nodes from the
+        // attributes the episode writes). Building must NOT reject the flag: whatever happens
+        // downstream (here the fake 'openai' provider is unreachable → InvalidOperationException),
+        // it must never be an ArgumentException that mentions entity-graph.
+        string[] args = ["locomo", "--data", "x.json", "--agentic-ingest",
+            "--agent-provider", "openai", "--agent-model", "gpt-4o-mini", "--entity-graph", "true"];
+        Exception? caught = null;
+        try { await RetrieverFactory.BuildAsync(args, "locomo", default); }
+        catch (Exception e) { caught = e; }
+
+        (caught is ArgumentException && caught.Message.Contains("entity-graph", StringComparison.OrdinalIgnoreCase))
+            .Should().BeFalse("the agentic arm now accepts --entity-graph instead of rejecting it");
     }
 
     [Fact]

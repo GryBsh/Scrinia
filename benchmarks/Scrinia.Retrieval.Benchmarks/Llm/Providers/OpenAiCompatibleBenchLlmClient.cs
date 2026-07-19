@@ -23,11 +23,11 @@ public sealed class OpenAiCompatibleBenchLlmClient : IBenchLlmClient, IToolCalli
 
     /// <summary>
     /// Factory for production use. Creates a self-owned <see cref="HttpClient"/>
-    /// with the request timeout from <paramref name="options"/>.
+    /// with an infinite timeout. Allowing enough time for rich memory read/write and reasoning to complete.
     /// </summary>
     public static OpenAiCompatibleBenchLlmClient Create(LlmOptions options)
     {
-        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds) };
+        var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         return new OpenAiCompatibleBenchLlmClient(options, http, ownsHttp: true);
     }
 

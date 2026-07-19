@@ -55,3 +55,9 @@ docs/reports
 
 # Downloaded ML model caches used by retrieval benchmarks (large binaries, not source)
 benchmarks/Scrinia.Retrieval.Benchmarks/tools/kompress/model-cache/
+
+**/.venv/
+
+docs/proposals/
+docs/research/
+docs/reviews/

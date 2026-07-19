@@ -11,39 +11,56 @@ import { spawnSync } from "node:child_process"
 
 const SCRI = "$$__SCRI__$$"
 
-export const ScriniaHint = async () => ({
-  "experimental.chat.messages.transform": async (_input: any, output: any) => {
-    try {
-      const messages = output?.messages
-      if (!Array.isArray(messages) || messages.length === 0) return
+function log(...args: any[]) {
+  console.log("[scrinia]", ...args)
+}
 
-      // Most recent user message text.
-      let prompt = ""
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i]
-        if (m?.info?.role !== "user") continue
-        const parts = Array.isArray(m?.parts) ? m.parts : []
-        prompt = parts
-          .filter((p: any) => p?.type === "text")
-          .map((p: any) => p?.text ?? "")
-          .join("\n")
-          .trim()
-        if (prompt) break
+function log_debug(...args: any[]) {
+  if (process.env.SCRINIA_DEBUG) console.debug("[scrinia]", ...args)
+}
+
+export const Scrinia = async () => {
+  
+  return ({
+    "experimental.chat.messages.transform": async (_input: any, output: any) => {
+      log("Dropping Hint")
+      try {
+        const messages = output?.messages
+        if (!Array.isArray(messages) || messages.length === 0) return
+
+        // Most recent user message text.
+        let prompt = ""
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i]
+          if (m?.info?.role !== "user") continue
+          const parts = Array.isArray(m?.parts) ? m.parts : []
+          prompt = parts
+            .filter((p: any) => p?.type === "text")
+            .map((p: any) => p?.text ?? "")
+            .join("\n")
+            .trim()
+          if (prompt) break
+        }
+        if (!prompt) return
+
+        const res = spawnSync(SCRI, ["hint", "--client", "opencode"], {
+          input: prompt,
+          encoding: "utf8",
+          timeout: 5000,
+        })
+        const hint = (res.stdout ?? "").trim()
+        if (!hint) {
+          log("No hint generated")
+          return
+        }
+
+        // Inject as a trailing system message: seen by the model, not authored by the user.
+        messages.push({ info: { role: "system" }, parts: [{ type: "text", text: hint }] })
+        log("Hint Dropped")
+        log_debug("Hint:", hint)
+      } catch {
+        // Experimental API drift or CLI failure — never break the user's session.
       }
-      if (!prompt) return
-
-      const res = spawnSync(SCRI, ["hint", "--client", "opencode"], {
-        input: prompt,
-        encoding: "utf8",
-        timeout: 5000,
-      })
-      const hint = (res.stdout ?? "").trim()
-      if (!hint) return
-
-      // Inject as a trailing system message: seen by the model, not authored by the user.
-      messages.push({ info: { role: "system" }, parts: [{ type: "text", text: hint }] })
-    } catch {
-      // Experimental API drift or CLI failure — never break the user's session.
-    }
-  },
-})
+    },
+  });
+}

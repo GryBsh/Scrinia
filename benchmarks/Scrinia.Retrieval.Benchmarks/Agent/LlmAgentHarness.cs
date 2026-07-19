@@ -36,7 +36,7 @@ public sealed class LlmAgentHarness : IAgentHarness
     private static readonly TimeSpan AnchorsBudget = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan RewriteBudget = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan HydeBudget = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan TypedKeywordsBudget = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan TypedKeywordsBudget = TimeSpan.FromSeconds(120);
 
     // Max-token budgets. Sized to cover the prompt's expected output plus headroom.
     // Anchors: 5-7 lines × ~60 chars × 1.5 tokens/char ≈ 400. Rewrite: one line ≈ 100.
@@ -44,7 +44,7 @@ public sealed class LlmAgentHarness : IAgentHarness
     private const int AnchorsMaxTokens = 400;
     private const int RewriteMaxTokens = 100;
     private const int HydeMaxTokens = 200;
-    private const int TypedKeywordsMaxTokens = 200;
+    private const int TypedKeywordsMaxTokens = 400;
 
     private readonly IBenchLlmClient _llm;
     private readonly LlmResponseCache _cache;
@@ -185,6 +185,7 @@ public sealed class LlmAgentHarness : IAgentHarness
         if (_cache.TryGetStringArray(TypedKeywordsOp, hash, out string[]? cached))
             return cached;  // may be null — null is cached to skip retries
 
+        //Console.WriteLine($"[scrinia-bench] prompt: {AgentPrompts.TypedKeywordsSystem}");
         string? raw;
         try
         {

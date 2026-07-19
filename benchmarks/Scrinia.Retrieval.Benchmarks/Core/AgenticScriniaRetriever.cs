@@ -35,7 +35,7 @@ public sealed record AgenticIngestStats(
 /// doc), this retriever BUFFERS docs at ingest time, grouped into ordered sessions,
 /// and defers all store writes to a lazy one-shot pass on the first
 /// <see cref="RetrieveAsync"/>: one <see cref="AgenticIngestHarness"/> episode per
-/// session runs a real LLM tool-calling loop (memory_remember/memory_search)
+/// session runs a real LLM tool-calling loop (remember/search)
 /// against a per-question <see cref="FileMemoryStore"/>, exactly like a live agent
 /// deciding what's worth remembering.
 ///
@@ -70,6 +70,12 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
     // Kept only when usable, mirroring ScriniaRetriever's guard.
     private readonly IEmbeddingProvider? _embedder;
     private readonly EmbeddingOptions _embeddingOptions;
+    // Entity-graph recall probe (off unless --entity-graph). Built per query by the SAME
+    // production EntityGraphScoreContributor the server uses, from each candidate memory's
+    // attributes — the agent writes those natively via remember/append, so this is effectively
+    // attributes-only (the agent's freeform keywords carry no type:value prefix and never form
+    // graph nodes). Passed as the dedicated SearchAll entity-graph source. Null when disabled.
+    private readonly EntityGraphScoreContributor? _entityGraphContributor;
 
     // Buffering — under _ingestLock. Sessions preserve first-seen order, both within
     // and across sessions, so episodes run in the order docs arrived.
@@ -127,7 +133,11 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         string modelSlug,
         RankerOptions? rankerOptions = null,
         IEmbeddingProvider? embedder = null,
-        EmbeddingOptions? embeddingOptions = null)
+        EmbeddingOptions? embeddingOptions = null,
+        bool entityGraphEnabled = false,
+        double entityGraphAlpha = EntityGraphScoreContributor.DefaultAlpha,
+        int entityGraphIterations = EntityGraphScoreContributor.DefaultIterations,
+        double entityGraphWeight = EntityGraphScoreContributor.DefaultWeight)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootDir);
         ArgumentNullException.ThrowIfNull(harness);
@@ -140,6 +150,9 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         _rankerOptions = rankerOptions ?? RankerOptions.Default;
         _embedder = embedder is { IsAvailable: true } ? embedder : null;
         _embeddingOptions = embeddingOptions ?? new EmbeddingOptions();
+        _entityGraphContributor = entityGraphEnabled
+            ? new EntityGraphScoreContributor(entityGraphWeight, entityGraphAlpha, entityGraphIterations)
+            : null;
         _store = CreateStore();
         RebuildEmbeddingPipeline(PerQuestionDir());
     }
@@ -196,7 +209,14 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         {
             var candidates = _store.ListScoped(scopes: null);
             var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
-            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: null);
+            var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: entityScores);
+        }
+        else if (_entityGraphContributor is not null)
+        {
+            var candidates = _store.ListScoped(scopes: null);
+            var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplementalScores: null, entityGraphScores: entityScores);
         }
         else
         {
@@ -263,7 +283,14 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         {
             var candidates = _store.ListScoped(scopes: null);
             var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
-            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: null);
+            var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: entityScores);
+        }
+        else if (_entityGraphContributor is not null)
+        {
+            var candidates = _store.ListScoped(scopes: null);
+            var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
+            results = _store.SearchAll(query, scopes: null, searchLimit, supplementalScores: null, entityGraphScores: entityScores);
         }
         else
         {
@@ -286,6 +313,19 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         }
         return contents;
     }
+
+    /// <summary>
+    /// Entity-graph PPR scores for the query over the candidate memories, via the production
+    /// <see cref="EntityGraphScoreContributor"/>. Null when the probe is disabled or no candidate
+    /// carries entity attributes (the contributor returns null → the dedicated SearchAll channel
+    /// stays inert). Attributes-only in practice: the agent tags entities as memory attributes,
+    /// and its freeform keywords carry no type:value prefix, so only attributes form graph nodes.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, double>?> ComputeEntityScoresAsync(
+        string query, IReadOnlyList<ScopedArtifact> candidates, CancellationToken ct) =>
+        _entityGraphContributor is null
+            ? null
+            : await _entityGraphContributor.ComputeScoresAsync(query, candidates, _store, ct);
 
     // ── Lazy episode run ─────────────────────────────────────────────────────
 

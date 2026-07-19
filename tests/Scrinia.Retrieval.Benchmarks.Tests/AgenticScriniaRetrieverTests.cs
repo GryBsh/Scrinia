@@ -55,10 +55,69 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         return (retriever, client, cache);
     }
 
+    /// <summary>Builds an entity-graph-enabled agentic retriever (BM25-only, no embedder).</summary>
+    private (AgenticScriniaRetriever retriever, ScriptedToolClient client, EpisodeCache cache) MakeRetrieverWithEntityGraph(
+        params ToolTurnResult?[] turns)
+    {
+        var client = new ScriptedToolClient(turns);
+        var harness = new AgenticIngestHarness(client, maxTurns: 8);
+        var cache = new EpisodeCache(_cacheFile);
+        var retriever = new AgenticScriniaRetriever(
+            _rootDir, harness, cache, modelSlug: "test-model", entityGraphEnabled: true);
+        return (retriever, client, cache);
+    }
+
+    [Fact]
+    public async Task EntityGraph_LiftsAssociatedMemory_FromAgentWrittenAttributes()
+    {
+        // Attributes-only entity source: the episode tags one memory {person:alice, topic:zeta}
+        // and another {topic:zeta, person:bob}; neither content mentions "alice". Query "alice"
+        // seeds the alice node → the alice memory, and PPR diffuses alice→zeta→the bob memory,
+        // lifting D1:2 (which the bob memory cites) though it never mentions alice.
+        var rememberAlice = new ToolCallRequest("c1", "remember",
+            """{"path":"/f/a","content":["kickoff recap.\nref: D1:1"],"attributes":{"person":["alice"],"topic":["zeta"]}}""");
+        var rememberBob = new ToolCallRequest("c2", "remember",
+            """{"path":"/f/b","content":["kickoff recap.\nref: D1:2"],"attributes":{"topic":["zeta"],"person":["bob"]}}""");
+        var (retriever, _, _) = MakeRetrieverWithEntityGraph(
+            new ToolTurnResult(null, [rememberAlice, rememberBob], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Alice: kickoff.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:2", "Bob: kickoff.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("alice", topK: 5);
+
+        hits.Select(h => h.Id).Should().Contain("D1:2",
+            because: "the entity graph diffuses alice→zeta→the bob memory, lifting its cited doc though it never mentions alice");
+    }
+
+    [Fact]
+    public async Task WithoutEntityGraph_AssociatedMemory_StaysBuried()
+    {
+        // Identical episode on the default (entity-graph-off) retriever: "alice" lexically hits
+        // only the alice memory, so D1:2 (cited by the zeta/bob memory) is not surfaced. Pins the
+        // sibling test's lift to the entity graph, not to ordinary field/BM25 scoring.
+        var rememberAlice = new ToolCallRequest("c1", "remember",
+            """{"path":"/f/a","content":["kickoff recap.\nref: D1:1"],"attributes":{"person":["alice"],"topic":["zeta"]}}""");
+        var rememberBob = new ToolCallRequest("c2", "remember",
+            """{"path":"/f/b","content":["kickoff recap.\nref: D1:2"],"attributes":{"topic":["zeta"],"person":["bob"]}}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [rememberAlice, rememberBob], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc("D1:1", "Alice: kickoff.", null, "s1"));
+        await retriever.IngestAsync(new HaystackDoc("D1:2", "Bob: kickoff.", null, "s1"));
+
+        var hits = await retriever.RetrieveAsync("alice", topK: 5);
+
+        hits.Select(h => h.Id).Should().NotContain("D1:2",
+            because: "without the entity graph, the zeta/bob memory shares no query term with 'alice'");
+    }
+
     [Fact]
     public async Task ProvenanceExpansion_ReturnsCitedDocs_InOrder()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -76,9 +135,9 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task DedupAcrossMemories_DocAppearsOnce()
     {
-        var remember1 = new ToolCallRequest("c1", "memory_remember",
+        var remember1 = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
-        var remember2 = new ToolCallRequest("c2", "memory_remember",
+        var remember2 = new ToolCallRequest("c2", "remember",
             """{"path":"/findings/b","content":["Lisbon trip details confirmed.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember1, remember2], "tool_calls"),
@@ -95,7 +154,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task CacheReplay_RoundTrips_WithoutSecondLlmCall()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var client = new ScriptedToolClient(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -142,7 +201,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // Attempt 1: the model replies with pure text and makes no tool call at all — an
         // empty episode. That triggers one fresh re-roll; the retry stores a memory, so the
         // session recovers and is counted as an agentic episode (not failed).
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, client, _) = MakeRetriever(
             new ToolTurnResult("I have nothing to store.", [], "stop"),          // attempt 1: no tool calls
@@ -182,7 +241,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task NoRefMemory_IncrementsMemoriesWithoutRefs_AndMapsToNoDoc()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip with no citation."]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -199,7 +258,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task MalformedToolCall_SurfacesInStats_ToolCallErrors()
     {
-        var bad = new ToolCallRequest("c1", "memory_remember", "{ not json");
+        var bad = new ToolCallRequest("c1", "remember", "{ not json");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [bad], "tool_calls"),
             new ToolTurnResult("done", [], "stop"));
@@ -216,11 +275,11 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     {
         // A well-formed tool call whose PATH VALUE the store rejects: '/findings/trip:lisbon'
         // is a v2 path (leading '/') with a colon in a segment, so PathParser.Parse throws
-        // ArgumentException out of memory_remember. That throw must be caught and counted as a
+        // ArgumentException out of remember. That throw must be caught and counted as a
         // tool-call error — NOT allowed to escape and abort the whole run (previously it bubbled
         // to Program.Main's top-level catch: "error: ArgumentException: Path must not contain
         // colons" and the entire benchmark exited 2).
-        var badPath = new ToolCallRequest("c1", "memory_remember",
+        var badPath = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip:lisbon","content":["Booked the Lisbon trip.\nref: d1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [badPath], "tool_calls"),
@@ -239,10 +298,10 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task FailedAttempt_PartialWrite_IsRolledBackBeforeRetry()
     {
         // Attempt 1: writes a memory citing D1:1, then fails (null turn).
-        var rememberD1 = new ToolCallRequest("c1", "memory_remember",
+        var rememberD1 = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/a","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         // Attempt 2 (retry): writes a memory citing D1:2, then stops cleanly.
-        var rememberD2 = new ToolCallRequest("c2", "memory_remember",
+        var rememberD2 = new ToolCallRequest("c2", "remember",
             """{"path":"/findings/b","content":["Lisbon trip confirmed.\nref: D1:2"]}""");
 
         var (retriever, _, _) = MakeRetriever(
@@ -265,7 +324,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task RetrievedHit_Text_IsMemoryContent_NotDocText()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/f/x","content":["MEMORY-SUMMARY-TOKEN about Lisbon.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -283,7 +342,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task Provenance_ParsesCommaListRefs_MapsAllCitedDialogs()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Trip planning consolidated.\nref: D1:1, D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -301,7 +360,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task Provenance_UnknownCitedId_CountsUnresolvable()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Cites a missing dialog.\nref: D9:99"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -319,7 +378,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     public async Task FullContent_UsesFullMemory_NotTruncatedPreview()
     {
         string longContent = "Lisbon trip planning. " + new string('x', 520) + " TAILTOKEN-AFTER-500\\nref: D1:1";
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             "{\"path\":\"summer-plans-summary\",\"content\":[\"" + longContent + "\"]}");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -337,7 +396,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task GetSurfacedContents_ReturnsMemoryContent_EvenWithNoResolvableRefs()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["JUDGE-VISIBLE consolidated Lisbon plan with no citation."]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -355,7 +414,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task Reindex_PopulatesVectorStore_AfterEpisode()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new StubEmbeddingProvider(),
@@ -373,7 +432,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task NoEmbedder_LeavesVectorPipelineNull_BehaviorUnchanged()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),
@@ -390,7 +449,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
     [Fact]
     public async Task Dispose_ReleasesVectorStore_NoThrow()
     {
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1"]}""");
         var (retriever, _, _) = MakeRetriever(
             new StubEmbeddingProvider(),
@@ -413,9 +472,9 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // BM25-only, both score 0 and neither surfaces. ConceptEmbeddingProvider makes the query
         // and the travel memory cosine-identical (both contain travel-concept words), so the
         // hybrid contributor's supplemental score is the ONLY thing that can surface D1:1.
-        var rememberTravel = new ToolCallRequest("c1", "memory_remember",
+        var rememberTravel = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon getaway.\nref: D1:1"]}""");
-        var rememberDistractor = new ToolCallRequest("c2", "memory_remember",
+        var rememberDistractor = new ToolCallRequest("c2", "remember",
             """{"path":"/findings/plumbing","content":["Fixed the kitchen sink plumbing.\nref: D2:1"]}""");
 
         var (hybridRetriever, _, _) = MakeRetriever(
@@ -455,7 +514,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         // Built WITHOUT an embedder — _searchContributor is null, so the query path must stay
         // byte-for-byte BM25-only. Reuses the lexically-matching-query assertion shape from
         // ProvenanceExpansion_ReturnsCitedDocs_InOrder to pin the no-embedder path unchanged.
-        var remember = new ToolCallRequest("c1", "memory_remember",
+        var remember = new ToolCallRequest("c1", "remember",
             """{"path":"/findings/trip","content":["Booked the Lisbon trip.\nref: D1:1\nref: D1:2"]}""");
         var (retriever, _, _) = MakeRetriever(
             new ToolTurnResult(null, [remember], "tool_calls"),

@@ -17,7 +17,7 @@ public interface IToolCallingClient
         int maxTokens, CancellationToken ct);
 }
 
-/// <summary>One memory_remember/memory_search call actually dispatched during an episode.</summary>
+/// <summary>One remember/search call actually dispatched during an episode.</summary>
 public sealed record EpisodeToolCall(string ToolName, string ArgumentsJson);
 
 /// <summary>Outcome of running one session episode.</summary>
@@ -29,8 +29,8 @@ public sealed record EpisodeResult(
 
 /// <summary>
 /// Drives one agentic-ingest "episode": a chat + tool-calling loop against an
-/// <see cref="IToolCallingClient"/>, dispatching the model's memory_remember /
-/// memory_search tool calls to a real <see cref="ScriniaMcpTools"/> instance that
+/// <see cref="IToolCallingClient"/>, dispatching the model's remember /
+/// search tool calls to a real <see cref="ScriniaMcpTools"/> instance that
 /// writes into whatever store is in <see cref="Scrinia.Core.MemoryStoreContext.Current"/>.
 ///
 /// <para>The harness does not own store lifecycle (the caller sets
@@ -64,7 +64,7 @@ public sealed class AgenticIngestHarness
 
     /// <summary>
     /// Runs one episode against the store currently in <see cref="Scrinia.Core.MemoryStoreContext.Current"/>.
-    /// Dispatches memory_remember/memory_search tool calls to a fresh <see cref="ScriniaMcpTools"/>.
+    /// Dispatches remember/search tool calls to a fresh <see cref="ScriniaMcpTools"/>.
     /// Returns the executed tool-call sequence (for the cache) + success flag.
     /// </summary>
     public async Task<EpisodeResult> RunEpisodeAsync(IReadOnlyList<HaystackDoc> sessionDocs, CancellationToken ct)
@@ -123,9 +123,9 @@ public sealed class AgenticIngestHarness
                 }
 
                 executed.Add(new EpisodeToolCall(call.ToolName, call.ArgumentsJson));
-                if (call.ToolName == "memory_remember") rememberCount++;
-                else if (call.ToolName == "memory_append") appendCount++;
-                else if (call.ToolName == "memory_search") searchCount++;
+                if (call.ToolName == "remember") rememberCount++;
+                else if (call.ToolName == "append") appendCount++;
+                else if (call.ToolName == "search") searchCount++;
             }
         }
 
@@ -187,13 +187,13 @@ public sealed class AgenticIngestHarness
             {
                 switch (call.ToolName)
                 {
-                    case "memory_remember":
+                    case "remember":
                         return await DispatchRememberAsync(tools, root, ct);
-                    case "memory_append":
+                    case "append":
                         return await DispatchAppendAsync(tools, root, ct);
-                    case "memory_recall":
+                    case "recall":
                         return await DispatchRecallAsync(tools, root, ct);
-                    case "memory_search":
+                    case "search":
                         return await DispatchSearchAsync(tools, root, ct);
                     default:
                         return ($"error: unknown tool '{call.ToolName}'", true);
@@ -214,18 +214,14 @@ public sealed class AgenticIngestHarness
         ScriniaMcpTools tools, JsonElement root, CancellationToken ct)
     {
         if (!TryGetString(root, "path", out string? path) || string.IsNullOrWhiteSpace(path))
-            return ("error: memory_remember requires 'path' and 'content'", true);
+            return ("error: remember requires 'path' and 'content'", true);
         if (!TryGetStringArray(root, "content", out string[]? content) || content is null || content.Length == 0)
-            return ("error: memory_remember requires 'path' and 'content'", true);
+            return ("error: remember requires 'path' and 'content'", true);
 
-        TryGetString(root, "description", out string? description);
-        TryGetStringArray(root, "tags", out string[]? tags);
+        TryGetAttributes(root, "attributes", out var attributes);
         TryGetStringArray(root, "keywords", out string[]? keywords);
-        TryGetStringArray(root, "anchors", out string[]? anchors);
 
-        string result = await tools.MemoryRemember(
-            path, content, description, tags, keywords, anchors,
-            reviewAfter: null, reviewWhen: null, codeRefs: null, ct);
+        string result = await tools.MemoryRemember(path, content, attributes, keywords, ct);
         return (result, false);
     }
 
@@ -233,16 +229,14 @@ public sealed class AgenticIngestHarness
         ScriniaMcpTools tools, JsonElement root, CancellationToken ct)
     {
         if (!TryGetString(root, "path", out string? path) || string.IsNullOrWhiteSpace(path))
-            return ("error: memory_append requires 'path' and 'content'", true);
+            return ("error: append requires 'path' and 'content'", true);
         if (!TryGetString(root, "content", out string? content) || string.IsNullOrWhiteSpace(content))
-            return ("error: memory_append requires 'path' and 'content'", true);
+            return ("error: append requires 'path' and 'content'", true);
 
-        TryGetString(root, "description", out string? description);
-        TryGetStringArray(root, "tags", out string[]? tags);
+        TryGetAttributes(root, "attributes", out var attributes);
         TryGetStringArray(root, "keywords", out string[]? keywords);
-        TryGetStringArray(root, "anchors", out string[]? anchors);
 
-        string result = await tools.MemoryAppend(path, content, description, tags, keywords, anchors, ct);
+        string result = await tools.MemoryAppend(path, content, attributes, keywords, ct);
         return (result, false);
     }
 
@@ -250,7 +244,7 @@ public sealed class AgenticIngestHarness
         ScriniaMcpTools tools, JsonElement root, CancellationToken ct)
     {
         if (!TryGetString(root, "path", out string? path) || string.IsNullOrWhiteSpace(path))
-            return ("error: memory_recall requires 'path'", true);
+            return ("error: recall requires 'path'", true);
 
         int? chunk = null;
         if (root.TryGetProperty("chunk", out var chunkEl) && chunkEl.ValueKind == JsonValueKind.Number
@@ -265,7 +259,7 @@ public sealed class AgenticIngestHarness
         ScriniaMcpTools tools, JsonElement root, CancellationToken ct)
     {
         if (!TryGetString(root, "query", out string? query) || string.IsNullOrWhiteSpace(query))
-            return ("error: memory_search requires 'query'", true);
+            return ("error: search requires 'query'", true);
 
         int limit = 20;
         if (root.TryGetProperty("limit", out var limitEl) && limitEl.ValueKind == JsonValueKind.Number
@@ -276,9 +270,9 @@ public sealed class AgenticIngestHarness
         TryGetString(root, "scopes", out string? scopes);
         TryGetString(root, "excludeTopics", out string? excludeTopics);
         TryGetString(root, "pathPrefix", out string? pathPrefix);
-        TryGetString(root, "tags", out string? tags);
+        TryGetAttributes(root, "attributeFilter", out var attributeFilter);
 
-        string result = await tools.MemorySearch(query, context, scopes, limit, excludeTopics, pathPrefix, tags, ct);
+        string result = await tools.MemorySearch(query, context, scopes, limit, excludeTopics, pathPrefix, attributeFilter, ct);
         return (result, false);
     }
 
@@ -306,6 +300,38 @@ public sealed class AgenticIngestHarness
                 list.Add(item.GetString() ?? "");
         }
         value = list.ToArray();
+        return true;
+    }
+
+    // Parse an attribute map (key -> string values) matching remember/append's `attributes`
+    // and search's `attributeFilter`. Lenient: a scalar string value is accepted as a
+    // single-element array, since a bench LLM often emits { "person": "maria" }.
+    private static bool TryGetAttributes(JsonElement root, string name, out Dictionary<string, string[]>? value)
+    {
+        value = null;
+        if (root.ValueKind != JsonValueKind.Object) return false;
+        if (!root.TryGetProperty(name, out var el)) return false;
+        if (el.ValueKind != JsonValueKind.Object) return false;
+
+        var map = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var prop in el.EnumerateObject())
+        {
+            var vals = new List<string>();
+            if (prop.Value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in prop.Value.EnumerateArray())
+                    if (item.ValueKind == JsonValueKind.String)
+                        vals.Add(item.GetString() ?? "");
+            }
+            else if (prop.Value.ValueKind == JsonValueKind.String)
+            {
+                vals.Add(prop.Value.GetString() ?? "");
+            }
+            if (vals.Count > 0)
+                map[prop.Name] = vals.ToArray();
+        }
+        if (map.Count == 0) return false;
+        value = map;
         return true;
     }
 
