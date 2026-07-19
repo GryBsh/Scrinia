@@ -52,7 +52,7 @@ internal static class LoCoMoCommand
                 progress: progress,
                 ingestConcurrency: Program.FlagInt(args, "--ingest-concurrency", 1),
                 granularity: granularity.ToString().ToLowerInvariant(),
-                temporalScenario: null,
+                temporalScenario: BenchmarkRunner.SessionDateScenario,
                 ct: ct);
 
             PrintSummary(result);
