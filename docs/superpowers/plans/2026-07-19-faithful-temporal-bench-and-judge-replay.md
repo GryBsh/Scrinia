@@ -339,7 +339,66 @@ git commit -m "feat(mcp): show created/updated pseudo-attributes on search+list 
 
 **Interfaces:**
 - Consumes: `HaystackDoc.Timestamp` (DateTimeOffset?), `RetrievalHit.Id`, `JudgeVerdict` from Task 1, `RunGroupedAsync` scenario param from Task 2.
-- Produces: `BenchmarkRunner.WithCreatedDates(IReadOnlyList<string> hitTexts, IReadOnlyList<RetrievalHit> hits, IReadOnlyDictionary<string, DateTimeOffset?> dateById)` — static, returns contents each prefixed `created: yyyy-MM-dd\n<text>` when a date is known. Scenario label constant `BenchmarkRunner.SessionDateScenario = "session-date-ingest"`.
+- Produces:
+  - `AnswererDateFormat` (new shared static class, `Core` namespace) — the single source of the answerer date format, reused by the id-mapped path (this task), the agentic path (Task 5), the date-presence diagnostic (Task 6), and replay (Task 7).
+  - `BenchmarkRunner.WithCreatedDates(IReadOnlyList<string> hitTexts, IReadOnlyList<RetrievalHit> hits, IReadOnlyDictionary<string, DateTimeOffset?> dateById)` — static, returns contents each date-prefixed when a date is known.
+  - Scenario label constant `BenchmarkRunner.SessionDateScenario = "session-date-ingest"`.
+
+- [ ] **Step 0: Create the shared formatter + failing test.** Create `benchmarks/Scrinia.Retrieval.Benchmarks/Core/AnswererDateFormat.cs`:
+
+```csharp
+using System.Globalization;
+
+namespace Scrinia.Retrieval.Benchmarks.Core;
+
+/// <summary>
+/// The single source of truth for how a memory's created date is surfaced to the judge answerer,
+/// mirroring the production search block's `created:` pseudo-attribute. Display/answerer only —
+/// this string is never fed to retrieval scoring. Used by both the id-mapped retriever path
+/// (BenchmarkRunner) and the agentic surfaced-content path (AgenticScriniaRetriever) so the two
+/// produce byte-identical framing, and by the deterministic date-presence diagnostic.
+/// </summary>
+public static class AnswererDateFormat
+{
+    public const string Prefix = "created: ";
+
+    /// <summary>Prefixes <paramref name="text"/> with `created: yyyy-MM-dd\n` when a date is known; passthrough otherwise.</summary>
+    public static string Apply(string text, DateTimeOffset? date) =>
+        date is { } d ? $"{Prefix}{d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}\n{text}" : text;
+
+    /// <summary>True iff <paramref name="content"/> carries a created-date line (leading or after a newline).</summary>
+    public static bool Present(string content) =>
+        content.StartsWith(Prefix, StringComparison.Ordinal) || content.Contains("\n" + Prefix, StringComparison.Ordinal);
+}
+```
+
+In `tests/Scrinia.Retrieval.Benchmarks.Tests/AnswererDateFormatTests.cs`:
+
+```csharp
+using Scrinia.Retrieval.Benchmarks.Core;
+using Xunit;
+
+public class AnswererDateFormatTests
+{
+    [Fact]
+    public void Apply_prefixes_known_date_and_passes_null_through()
+    {
+        var d = new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero);
+        Assert.Equal("created: 2023-05-04\nfoo", AnswererDateFormat.Apply("foo", d));
+        Assert.Equal("foo", AnswererDateFormat.Apply("foo", null));
+    }
+
+    [Fact]
+    public void Present_detects_leading_and_embedded_created_lines()
+    {
+        Assert.True(AnswererDateFormat.Present("created: 2023-05-04\nfoo"));
+        Assert.True(AnswererDateFormat.Present("header\ncreated: 2023-05-04\nfoo"));
+        Assert.False(AnswererDateFormat.Present("foo bar"));
+    }
+}
+```
+
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~AnswererDateFormat"` — Expected: FAIL first (class missing), then create the class and re-run to PASS.
 
 - [ ] **Step 1: Add a failing test for the prefixing helper.** In `RunnerJudgeIntegrationTests.cs`:
 
@@ -378,9 +437,7 @@ git commit -m "feat(mcp): show created/updated pseudo-attributes on search+list 
         for (int i = 0; i < hitTexts.Count; i++)
         {
             DateTimeOffset? date = i < hits.Count && dateById.TryGetValue(hits[i].Id, out var d) ? d : null;
-            outp.Add(date is { } dd
-                ? $"created: {dd.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}\n{hitTexts[i]}"
-                : hitTexts[i]);
+            outp.Add(AnswererDateFormat.Apply(hitTexts[i], date));
         }
         return outp;
     }
@@ -402,7 +459,7 @@ In the judge block, wrap the `judgeContents` used for the answerer. Change:
                         : hits.Select(h => h.Text).ToList();
 ```
 
-to (id-mapped path only — the agentic `ISurfacedContentProvider` path is not id-mapped, so it is left untouched and documented as a follow-up):
+to (the id-mapped branch gets dates here; the agentic `ISurfacedContentProvider` branch already returns date-prefixed content from Task 5, so it needs no wrapping here):
 
 ```csharp
                     IReadOnlyList<string> judgeContents = retriever is ISurfacedContentProvider scp
@@ -424,7 +481,129 @@ git commit -m "feat(bench): surface session created-date to the LoCoMo answerer 
 
 ---
 
-### Task 5: Deterministic date-presence sub-diagnostic (temporal)
+### Task 5: Surface created dates on the agentic-ingest answerer path
+
+The agentic arm answers via `GetSurfacedContentsAsync`, not the id-mapped hit texts, so Task 4 alone would leave it date-blind — and the agentic arm is the only mode with historical judge data. Episodes run per-session (`RunSessionEpisodeAsync(sessionDocs, …)`) and every doc in a session shares one `Timestamp`, so each agent-authored memory has a well-defined creation date: the session it was written during. This is the faithful mirror of production — the memory's own created date travels with it.
+
+**Files:**
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/AgenticScriniaRetriever.cs`
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticScriniaRetrieverTests.cs`
+
+**Interfaces:**
+- Consumes: `HaystackDoc.Timestamp`, `AnswererDateFormat.Apply` (Task 4).
+- Produces: `GetSurfacedContentsAsync` returns each memory's content date-prefixed with the authoring session's date. Internal `_createdDateByEntryName` map (entryName → authoring session date), rebuilt every `ResetAsync`. `RetrieveAsync` (the scorer path) is unchanged — dates never touch recall.
+
+- [ ] **Step 1: Add a failing test.** In `AgenticScriniaRetrieverTests.cs`, reusing the file's existing stub-harness/episode-cache setup (the pattern that ingests docs and runs a replayed episode writing a memory that cites a `D{n}:{i}` doc), add:
+
+```csharp
+    [Fact]
+    public async Task GetSurfacedContents_prefixes_memory_with_authoring_session_date()
+    {
+        // Arrange: ingest a 1-session haystack whose docs carry Timestamp 2023-05-04,
+        // with a cached episode that writes one memory citing D1:3. (Reuse existing helpers.)
+        var contents = await retriever.GetSurfacedContentsAsync("support group", k: 5);
+
+        Assert.NotEmpty(contents);
+        Assert.All(contents, c => Assert.StartsWith("created: 2023-05-04\n", c));
+    }
+
+    [Fact]
+    public async Task Retrieve_hits_are_not_date_prefixed_so_recall_is_unaffected()
+    {
+        var hits = await retriever.RetrieveAsync("support group", topK: 10);
+        Assert.All(hits, h => Assert.DoesNotContain("created: ", h.Text));
+    }
+```
+
+- [ ] **Step 2: Run them, verify they fail.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~GetSurfacedContents_prefixes|FullyQualifiedName~Retrieve_hits_are_not_date"` — Expected: FAIL (first: no prefix; second may already pass).
+
+- [ ] **Step 3: Add the created-date map + reset.** In `AgenticScriniaRetriever.cs`, add the field next to `_fullContentByEntryName` (~line 108):
+
+```csharp
+    // entryName -> the date of the session during which the memory was authored (its `created`).
+    // Rebuilt every ResetAsync alongside _fullContentByEntryName.
+    private Dictionary<string, DateTimeOffset?> _createdDateByEntryName = new(StringComparer.Ordinal);
+```
+
+In `ResetAsync`, next to `_fullContentByEntryName = new(...)` (~line 562):
+
+```csharp
+        _createdDateByEntryName = new Dictionary<string, DateTimeOffset?>(StringComparer.Ordinal);
+```
+
+- [ ] **Step 4: Stamp created dates per episode.** In `RunSessionEpisodeAsync`, move the `preEpisode` snapshot to the very top (before the `_cache.TryGet` branch) and stamp after each kept episode. Replace the method body from the `if (_cache.TryGet(...))` block through the fresh-success `return;` with:
+
+```csharp
+        var preEpisode = new HashSet<string>(
+            _store.ListScoped().Select(a => a.Entry.Name), StringComparer.Ordinal);
+
+        if (_cache.TryGet(key, out var cachedCalls))
+        {
+            await AgenticIngestHarness.ReplayAsync(cachedCalls, ct);
+            StampCreatedDates(preEpisode, sessionDocs);
+            _agenticEpisodes++;
+            return;
+        }
+
+        EpisodeResult result = await _harness.RunEpisodeAsync(sessionDocs, ct);
+        _toolCallErrors += result.ToolCallErrors;
+
+        if (!result.Succeeded || MadeNoToolCalls(result))
+        {
+            RollbackTo(preEpisode);
+            result = await _harness.RunEpisodeAsync(sessionDocs, ct);
+            _toolCallErrors += result.ToolCallErrors;
+        }
+
+        if (result.Succeeded && !MadeNoToolCalls(result))
+        {
+            _cache.Put(key, result.ToolCalls);
+            StampCreatedDates(preEpisode, sessionDocs);
+            _agenticEpisodes++;
+            return;
+        }
+```
+
+(The `RollbackTo(preEpisode)` + failed-episode tail below this block is unchanged.)
+
+- [ ] **Step 5: Implement `StampCreatedDates`.** Add near `RollbackTo`:
+
+```csharp
+    /// <summary>Records the authoring session's date as the `created` date of every memory added
+    /// during this episode (delta vs <paramref name="preEpisode"/>). All docs in a session share one
+    /// Timestamp; first-authoring wins, so a memory a later session appends to keeps its original date.</summary>
+    private void StampCreatedDates(HashSet<string> preEpisode, IReadOnlyList<HaystackDoc> sessionDocs)
+    {
+        DateTimeOffset? sessionDate = null;
+        foreach (var d in sessionDocs)
+            if (d.Timestamp is { } t) { sessionDate = t; break; }
+
+        foreach (var a in _store.ListScoped())
+            if (!preEpisode.Contains(a.Entry.Name) && !_createdDateByEntryName.ContainsKey(a.Entry.Name))
+                _createdDateByEntryName[a.Entry.Name] = sessionDate;
+    }
+```
+
+- [ ] **Step 6: Date-prefix the surfaced contents.** In `GetSurfacedContentsAsync`, replace the final `contents.Add(...)` line:
+
+```csharp
+            if (name is null || !seen.Add(name)) continue;
+            string full = _fullContentByEntryName.TryGetValue(name, out var f) ? f : string.Empty;
+            DateTimeOffset? date = _createdDateByEntryName.TryGetValue(name, out var dd) ? dd : null;
+            contents.Add(AnswererDateFormat.Apply(full, date));
+```
+
+- [ ] **Step 7: Run tests, verify green + commit.**
+
+```bash
+dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~AgenticScriniaRetriever"
+git add benchmarks/Scrinia.Retrieval.Benchmarks tests/Scrinia.Retrieval.Benchmarks.Tests
+git commit -m "feat(bench): surface authoring-session created-date on the agentic-ingest answerer path"
+```
+
+---
+
+### Task 6: Deterministic date-presence sub-diagnostic (temporal)
 
 **Files:**
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkResult.cs` (`QuestionResult` gains `bool? DateSurfaced = null`)
@@ -432,7 +611,7 @@ git commit -m "feat(bench): surface session created-date to the LoCoMo answerer 
 - Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/RunnerJudgeIntegrationTests.cs`
 
 **Interfaces:**
-- Consumes: the `created:`-prefixed judge contents from Task 4.
+- Consumes: the date-prefixed judge contents from Tasks 4 (id-mapped) and 5 (agentic); `AnswererDateFormat.Present`.
 - Produces: `QuestionResult.DateSurfaced` — true iff any answerer passage carried a `created:` line; null when not judged.
 
 - [ ] **Step 1: Add the field.** In `QuestionResult`, after `AnsweredCorrectly`:
@@ -462,7 +641,7 @@ git commit -m "feat(bench): surface session created-date to the LoCoMo answerer 
     public static bool AnyDateSurfaced(IReadOnlyList<string> judgeContents)
     {
         foreach (var c in judgeContents)
-            if (c.StartsWith("created: ", StringComparison.Ordinal) || c.Contains("\ncreated: ", StringComparison.Ordinal))
+            if (AnswererDateFormat.Present(c))
                 return true;
         return false;
     }
@@ -492,7 +671,7 @@ git commit -m "feat(bench): deterministic date-presence sub-diagnostic on judged
 
 ---
 
-### Task 6: Offline judge replay command
+### Task 7: Offline judge replay command
 
 **Files:**
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/JudgeReplayCommand.cs`
@@ -543,6 +722,8 @@ Key requirement: the `_qa{N}` numbering MUST match `LoCoMoLoader.ParseQa` exactl
   4. Recompute `Aggregate`/`PerCategory` via `BenchmarkScorer` and stamp `RunMetadata.TemporalScenario = BenchmarkRunner.SessionDateScenario` (keep existing `Granularity`).
   5. Serialize to `<input without .json>.judged.json`.
 
+**Fidelity note (agentic replay):** a *live* agentic judge answers over `GetSurfacedContentsAsync` (ungated full memory content, Task 5). Replay only has the saved `Retrieved` hits (doc-id-mapped, provenance-gated memory text), because surfaced contents aren't persisted in result files. So replaying an agentic run judges over a slightly narrower content set than a live judge would. Dates are still surfaced correctly (via `DateForHitId` on the saved doc ids), so the temporal signal is intact; the content-source gap is a pre-existing property of what result files store, not introduced here. If exact live/replay parity for agentic is needed later, persist surfaced contents in the result file — noted, out of scope for this plan.
+
 - [ ] **Step 8: Register the verb in `Program.cs`.** Add a `"judge-replay" => JudgeReplayCommand.RunAsync(rest, ct)` arm alongside the existing benchmark verbs (match the existing dispatch pattern).
 
 - [ ] **Step 9: Run tests, verify green + commit.**
@@ -555,7 +736,7 @@ git commit -m "feat(bench): offline judge-replay command over saved retrieval + 
 
 ---
 
-### Task 7: Ranking reader + PowerShell wrapper
+### Task 8: Ranking reader + PowerShell wrapper
 
 **Files:**
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/RankCommand.cs`
@@ -624,14 +805,14 @@ git commit -m "feat(bench): rank command + rank-locomo.ps1 (judge metric, legacy
 
 **Spec coverage:**
 - A (production date pseudo-attributes) → Task 3.
-- B (bench session-date seeding to answerer) → Task 4 (date already on `HaystackDoc.Timestamp`; injected into answerer contents, kept out of scoring).
+- B (bench session-date seeding to answerer) → Task 4 (id-mapped retrievers: bm25/embeddings/chunked) **and** Task 5 (agentic-ingest). Date already on `HaystackDoc.Timestamp`; surfaced into answerer contents on both answerer paths, kept out of scoring in both.
 - C (RunMetadata granularity + scenario) → Task 2.
-- D (offline judge replay) → Task 6.
-- E (ranking, legacy-tolerant) → Task 7.
-- F (surfaced/correct three-state + rename + date-presence sub-diagnostic) → Task 1 (schema split + aggregation) and Task 5 (deterministic date-presence). Per-category three-state is derivable from `PerCategory` `SurfacedRate`/`CorrectRate`; the ranking table (Task 7) surfaces overall rates. If an explicit not-surfaced/surfaced-but-wrong/correct per-category breakdown table is wanted in CLI output, it is a thin add on `PerCategory` — noted, not separately tasked.
+- D (offline judge replay) → Task 7.
+- E (ranking, legacy-tolerant) → Task 8.
+- F (surfaced/correct three-state + rename + date-presence sub-diagnostic) → Task 1 (schema split + aggregation) and Task 6 (deterministic date-presence). Per-category three-state is derivable from `PerCategory` `SurfacedRate`/`CorrectRate`; the ranking table (Task 8) surfaces overall rates. If an explicit not-surfaced/surfaced-but-wrong/correct per-category breakdown table is wanted in CLI output, it is a thin add on `PerCategory` — noted, not separately tasked.
 
-**Known scoping limit (documented, not silent):** Task 4 surfaces dates only on the **id-mapped** retriever path (bm25/embeddings/chunked). The agentic `ISurfacedContentProvider` path returns memory content not keyed by hit id, so date-threading through `AgenticScriniaRetriever`/`EpisodeCache` is a larger follow-up and is intentionally out of this plan. The two historically-judged runs are agentic-ingest; they will be re-judged via Task 6 replay for the id-mapped modes, and the agentic temporal lift is a separate future plan.
+**No deferred scope.** Both answerer paths — id-mapped (Task 4) and agentic-ingest (Task 5) — surface dates, so the agentic arm (the only mode with historical judge data) is fully covered live. The one remaining fidelity gap is agentic *replay* vs *live* content source, documented in Task 7's fidelity note; it does not affect the temporal signal and is a property of what result files persist, not a scope cut.
 
 **Placeholder scan:** No TBD/TODO. The one "placeholder" is the deliberate two-step wiring of `temporalScenario` (Task 2 sets `null`, Task 4 sets the real constant) — sequenced intentionally so Task 2 stays independently testable.
 
-**Type consistency:** `SurfacedFromContext`/`AnsweredCorrectly` (bool?) and `SurfacedRate`/`CorrectRate` (double) used identically across Tasks 1, 5, 6, 7. `WithCreatedDates`/`AnyDateSurfaced`/`SessionDateScenario` defined in Task 4/5 and consumed in Task 6. `LoCoMoGoldIndex.GoldAnswer`/`DateForHitId` defined and consumed within Task 6. `RankRow` defined and consumed within Task 7.
+**Type consistency:** `SurfacedFromContext`/`AnsweredCorrectly` (bool?) and `SurfacedRate`/`CorrectRate` (double) used identically across Tasks 1, 6, 7, 8. `AnswererDateFormat.Apply`/`.Present` defined in Task 4 and consumed in Tasks 5, 6, 7. `WithCreatedDates`/`SessionDateScenario` defined in Task 4; `AnyDateSurfaced` defined in Task 6; all consumed in Task 7. `StampCreatedDates`/`_createdDateByEntryName` are internal to Task 5. `LoCoMoGoldIndex.GoldAnswer`/`DateForHitId` defined and consumed within Task 7. `RankRow` defined and consumed within Task 8.
