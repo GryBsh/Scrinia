@@ -85,7 +85,7 @@ public sealed partial class LoCoMoLoader
                 string baseKey = prop.Name[..^"_date_time".Length];
                 if (TryParseSessionNumber(baseKey, out int n)
                     && prop.Value.ValueKind == JsonValueKind.String
-                    && DateTimeOffset.TryParse(prop.Value.GetString(), out var dt))
+                    && TryParseSessionDate(prop.Value.GetString(), out var dt))
                 {
                     var existing = sessions.TryGetValue(n, out var pre) ? pre : (baseKey, default, (DateTimeOffset?)null);
                     sessions[n] = (existing.Key, existing.Dialogs, dt);
@@ -262,6 +262,27 @@ public sealed partial class LoCoMoLoader
             ? tEl.GetString() ?? string.Empty : string.Empty;
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
         return string.IsNullOrEmpty(speaker) ? text : $"{speaker}: {text}";
+    }
+
+    /// <summary>
+    /// Parses LoCoMo session timestamps of the form <c>"1:56 pm on 8 May, 2023"</c>. The lenient
+    /// <see cref="DateTimeOffset.TryParse(string?, out DateTimeOffset)"/> rejects that shape (the
+    /// <c>"h:mm tt on"</c> prefix), so strip everything up to and including <c>" on "</c> and parse
+    /// the <c>"8 May, 2023"</c> remainder; fall back to a plain parse for any already-standard value
+    /// (e.g. ISO). No-timezone values are assumed UTC so the surfaced date is offset-stable. Every
+    /// one of the 288 timestamps in <c>locomo10.json</c> parses via the strip path; the prior plain
+    /// TryParse matched zero of them, silently leaving <c>Timestamp</c> null for every session.
+    /// </summary>
+    internal static bool TryParseSessionDate(string? raw, out DateTimeOffset dt)
+    {
+        dt = default;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+        int onIdx = raw.IndexOf(" on ", StringComparison.OrdinalIgnoreCase);
+        string candidate = onIdx >= 0 ? raw[(onIdx + 4)..] : raw;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        const System.Globalization.DateTimeStyles styles = System.Globalization.DateTimeStyles.AssumeUniversal;
+        return DateTimeOffset.TryParse(candidate, ci, styles, out dt)
+            || DateTimeOffset.TryParse(raw, ci, styles, out dt);
     }
 
     [GeneratedRegex(@"^session_(\d+)$", RegexOptions.CultureInvariant)]
