@@ -32,6 +32,36 @@ public class LoCoMoLoaderTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    [Fact]
+    public async Task Parses_published_locomo_session_timestamp_format()
+    {
+        // The real locomo10.json uses "h:mm tt on d MMMM, yyyy" (e.g. "1:56 pm on 8 May, 2023"),
+        // which DateTimeOffset.TryParse rejects — leaving Timestamp null for every session and
+        // silently disabling temporal grounding. Fixtures elsewhere in this file use a standard
+        // "2024-01-15 10:00" shape that parses, so they never caught this. Assert the REAL format.
+        const string json = """
+        [
+          {
+            "sample_id": "conv_real",
+            "conversation": {
+              "session_1": [{"speaker": "Caroline", "text": "I went to a support group yesterday"}],
+              "session_1_date_time": "1:56 pm on 8 May, 2023"
+            },
+            "qa": [{"question": "when?", "category": "temporal", "evidence": [{"dia_id": "D1:1"}]}]
+          }
+        ]
+        """;
+        await File.WriteAllTextAsync(_dataPath, json);
+
+        var groups = new List<BenchmarkQuestionGroup>();
+        var loader = new LoCoMoLoader(_dataPath, LoCoMoLoader.Granularity.Session);
+        await foreach (var g in loader.LoadAsync()) groups.Add(g);
+
+        var doc = groups.Single().SharedHaystack.Single();
+        doc.Timestamp.Should().NotBeNull(because: "the published 'h:mm tt on d MMMM, yyyy' format must parse");
+        doc.Timestamp!.Value.UtcDateTime.Date.Should().Be(new DateTime(2023, 5, 8));
+    }
+
     private const string SampleJson = """
     [
       {
