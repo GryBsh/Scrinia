@@ -2,48 +2,48 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the LoCoMo benchmark measure a temporally-faithful, layer-attributable answerability signal, replayable offline over already-saved retrieval, and mirror the date surface in the production MCP `search` tool.
+**Goal:** Make the LoCoMo benchmark measure a temporally-faithful, layer-attributable answerability signal, mirror the date surface in the production MCP `search` tool, and let any run be re-judged offline from data it persists at run time.
 
-**Architecture:** The production `search` result block gains `created`/`updated` pseudo-attributes derived from the entry's structural date fields (display-only). The LoCoMo answerer context mirrors this by prefixing each surfaced passage with its dataset session date (the date already rides on `HaystackDoc.Timestamp`). The judge's collapsed `Answerable` bit is split into `SurfacedFromContext` (answerer sentinel) + `AnsweredCorrectly` (grader), giving a per-category three-state attribution. An offline replay command re-runs only the judge over saved `Retrieved` hits, rejoining gold answers and dates from `locomo10.json`. A ranking reader summarizes runs by the judge metric.
+**Architecture:** The production `search` result block gains `created`/`updated` pseudo-attributes derived from the entry's structural date fields (display-only). Every benchmark run now assembles and **persists** the exact date-prefixed answerer context (top-JudgeK) plus the gold answer per question — whether or not a judge runs live. The judge's collapsed `Answerable` bit is split into `SurfacedFromContext` (answerer sentinel) + `AnsweredCorrectly` (grader). Because the answerer context is persisted, offline replay is a dataset-free, retriever-free re-run of the judge over saved context — no reconstruction, exact live/replay parity.
 
 **Tech Stack:** C# / .NET 10, xUnit, System.Text.Json, PowerShell (runner scripts).
 
 ## Global Constraints
 
 - Target framework: `net10.0`.
-- Build/test the solution with `-p:NuGetAudit=false` — `Scrinia.sln` restore otherwise fails on a pre-existing Scrinia.AppHost MessagePack NuGet-audit error unrelated to this work.
-- The `created`/date value is **display/answerer metadata only** — it must never enter BM25 tokenization or embedding input, in product or bench.
+- Build/test with `-p:NuGetAudit=false` — `Scrinia.sln` restore otherwise fails on a pre-existing Scrinia.AppHost MessagePack NuGet-audit error unrelated to this work.
+- The `created`/date value is **display/answerer metadata only** — never enters BM25 tokenization or embedding input, in product or bench.
 - The answerer prompt stays **general** — no LoCoMo-specific phrasing, gold format, or relative-time coaching added.
-- Date render format is ISO date-only: `created: 2023-05-03`. `updated:` line emitted only when the value is non-null.
-- `created`/`updated` pseudo-attributes are **derived from structural `Entry.CreatedAt`/`Entry.UpdatedAt`** — never written into the `Attributes` dictionary, never agent-writable.
+- Date render format is ISO date-only: `created: 2023-05-03`. `updated:` line only when non-null.
+- `created`/`updated` pseudo-attributes are **derived from structural `Entry.CreatedAt`/`Entry.UpdatedAt`** — never written into `Attributes`, never agent-writable.
+- Answerer-context persistence is **always on** (every run, every benchmark) — no gating flag.
+- `JudgeK` default is `10` (`RetrieverFactory.JudgeK`); the persisted-context K is `judge?.JudgeK ?? 10`.
 - Shell is PowerShell; runner scripts are `.ps1`.
 - Bench test project: `tests/Scrinia.Retrieval.Benchmarks.Tests`. MCP test project: `tests/Scrinia.Tests`.
 
 ---
 
-### Task 1: Split the collapsed `Answerable` signal into surfaced + correct
+### Task 1: Schema — split the judge bit + add persistence fields
 
 **Files:**
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Judge/AnswerabilityJudge.cs` (JudgeVerdict record ~line 12; `JudgeAsync` return ~line 100-102)
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Judge/JudgePrompts.cs` (expose the sentinel as a constant)
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Judge/JudgePrompts.cs`
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Judge/AnswerabilityJudge.cs` (JudgeVerdict ~line 12; `JudgeAsync` tail ~line 100)
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkResult.cs` (`QuestionResult`, `AggregateMetrics`)
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkRunner.cs` (both judge-write sites, ~line 93 and ~line 164)
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkScorer.cs` (`Aggregate`, ~line 150)
-- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AnswerabilityJudgeTests.cs`, `tests/Scrinia.Retrieval.Benchmarks.Tests/BenchmarkScorerTests.cs`
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkScorer.cs` (`Aggregate` ~line 150; empty-return)
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkRunner.cs` (both judge-write sites — minimal rename only; Task 4 restructures)
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/RetrieverFactory.cs` (`PrintJudgeSummary` ~line 351 reads `Aggregate.Answerable`)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AnswerabilityJudgeTests.cs`, `BenchmarkScorerTests.cs`
 
 **Interfaces:**
-- Produces: `JudgePrompts.NotAnswerableSentinel` (const string). `JudgeVerdict(bool SurfacedFromContext, bool AnsweredCorrectly, string Answer, string GraderVerdict)`. `QuestionResult` gains `bool? SurfacedFromContext`, `bool? AnsweredCorrectly` (replacing `bool? Answerable`). `AggregateMetrics` gains `double SurfacedRate`, `double CorrectRate` (replacing `double Answerable`).
-- Consumes: nothing from later tasks.
+- Produces: `JudgePrompts.NotAnswerableSentinel` (const). `AnswerabilityJudge.IsSurfaced(string?)` (static). `JudgeVerdict(bool SurfacedFromContext, bool AnsweredCorrectly, string Answer, string GraderVerdict)`. `QuestionResult` gains `bool? SurfacedFromContext`, `bool? AnsweredCorrectly`, `bool? DateSurfaced`, `string? GoldAnswer`, `IReadOnlyList<string>? JudgeContext` (and drops `bool? Answerable`). `AggregateMetrics` gains `double SurfacedRate`, `double CorrectRate` (drops `double Answerable`).
 
-- [ ] **Step 1: Expose the sentinel constant.** In `JudgePrompts.cs`, add above `AnswererSystem`:
+- [ ] **Step 1: Expose the sentinel.** In `JudgePrompts.cs`, add above `AnswererSystem`:
 
 ```csharp
-    /// <summary>The exact string the answerer emits when the context is insufficient.
-    /// Used as the deterministic "not surfaced" signal, so it must match AnswererSystem verbatim.</summary>
     public const string NotAnswerableSentinel = "NOT ANSWERABLE FROM CONTEXT";
 ```
 
-Then change `AnswererSystem` to interpolate it so the two can never drift:
+Change `AnswererSystem` from a `const` to a `static readonly string` that interpolates it (so they can't drift):
 
 ```csharp
     public static readonly string AnswererSystem =
@@ -53,11 +53,11 @@ Then change `AnswererSystem` to interpolate it so the two can never drift:
         $"{NotAnswerableSentinel}. Otherwise give the shortest correct answer (a few words).";
 ```
 
-- [ ] **Step 2: Add a surfaced-detection helper + failing test.** In `AnswerabilityJudgeTests.cs`, add:
+- [ ] **Step 2: Failing test for `IsSurfaced`.** In `AnswerabilityJudgeTests.cs`:
 
 ```csharp
     [Fact]
-    public void SurfacedFromContext_is_false_when_answer_is_the_sentinel()
+    public void IsSurfaced_false_only_for_the_sentinel()
     {
         Assert.False(AnswerabilityJudge.IsSurfaced(JudgePrompts.NotAnswerableSentinel));
         Assert.False(AnswerabilityJudge.IsSurfaced("  not answerable from context  "));
@@ -66,24 +66,24 @@ Then change `AnswererSystem` to interpolate it so the two can never drift:
     }
 ```
 
-- [ ] **Step 3: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~SurfacedFromContext_is_false"` — Expected: FAIL (`IsSurfaced` not defined).
+- [ ] **Step 3: Run it, verify FAIL.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~IsSurfaced_false_only"` — Expected: FAIL (`IsSurfaced` undefined).
 
-- [ ] **Step 4: Implement the split in `AnswerabilityJudge.cs`.** Replace the `JudgeVerdict` record and the tail of `JudgeAsync`:
+- [ ] **Step 4: Implement the split in `AnswerabilityJudge.cs`.** Replace the record:
 
 ```csharp
 public sealed record JudgeVerdict(bool SurfacedFromContext, bool AnsweredCorrectly, string Answer, string GraderVerdict);
 ```
 
-Add the static helper (place near the top of the class body):
+Add the helper near the top of the class body:
 
 ```csharp
     /// <summary>The answerer surfaced an answer iff it did not emit the not-answerable sentinel.
-    /// Case-insensitive, whitespace-trimmed, prefix-matched so trailing model chatter still counts as not-surfaced.</summary>
+    /// Case-insensitive, trimmed, prefix-matched so trailing chatter still counts as not-surfaced.</summary>
     public static bool IsSurfaced(string? answer) =>
         !(answer ?? string.Empty).Trim().StartsWith(JudgePrompts.NotAnswerableSentinel, StringComparison.OrdinalIgnoreCase);
 ```
 
-Change the return in `JudgeAsync` (was `bool answerable = JudgePrompts.ParseGrade(...)` / `new JudgeVerdict(answerable, answer, graderReply)`):
+Change the `JudgeAsync` tail (was `bool answerable = JudgePrompts.ParseGrade(...)` / `new JudgeVerdict(answerable, answer, graderReply)`):
 
 ```csharp
         bool correct = JudgePrompts.ParseGrade(graderReply);
@@ -91,11 +91,14 @@ Change the return in `JudgeAsync` (was `bool answerable = JudgePrompts.ParseGrad
         return new JudgeVerdict(IsSurfaced(answer), correct, answer, graderReply);
 ```
 
-- [ ] **Step 5: Update the schema records in `BenchmarkResult.cs`.** In `QuestionResult`, replace `bool? Answerable = null` with:
+- [ ] **Step 5: Update schema records in `BenchmarkResult.cs`.** In `QuestionResult`, replace `bool? Answerable = null` with:
 
 ```csharp
     bool? SurfacedFromContext = null,
     bool? AnsweredCorrectly = null,
+    bool? DateSurfaced = null,
+    string? GoldAnswer = null,
+    IReadOnlyList<string>? JudgeContext = null,
 ```
 
 In `AggregateMetrics`, replace `double Answerable = 0.0` with:
@@ -105,9 +108,9 @@ In `AggregateMetrics`, replace `double Answerable = 0.0` with:
     double CorrectRate = 0.0);
 ```
 
-Update the `AggregateMetrics` XML doc-comment sentence that mentions `Answerable` to name the two new rates.
+Update the `AggregateMetrics`/`QuestionResult` doc-comments that mention `Answerable` to name the new fields.
 
-- [ ] **Step 6: Update both judge-write sites in `BenchmarkRunner.cs`.** Replace each `scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = ..., JudgeGraderVerdict = ... }` (lines ~93 and ~164) with:
+- [ ] **Step 6: Minimal rename at the judge-write sites in `BenchmarkRunner.cs`.** (Task 4 restructures these; here just keep it compiling.) Replace each `scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = ..., JudgeGraderVerdict = ... }` (~lines 93, 164) with:
 
 ```csharp
                     scored = scored with
@@ -119,7 +122,9 @@ Update the `AggregateMetrics` XML doc-comment sentence that mentions `Answerable
                     };
 ```
 
-- [ ] **Step 7: Update `BenchmarkScorer.Aggregate` for two rates + a failing test.** In `BenchmarkScorerTests.cs` add:
+- [ ] **Step 7: Update `RetrieverFactory.PrintJudgeSummary`.** Change `result.Aggregate.Answerable` (~line 351) to `result.Aggregate.CorrectRate`; update the label from `answerable@` to `correct@` (and optionally add a `surfaced@` line reading `SurfacedRate`).
+
+- [ ] **Step 8: Failing test for two-rate aggregation.** In `BenchmarkScorerTests.cs`:
 
 ```csharp
     [Fact]
@@ -127,22 +132,22 @@ Update the `AggregateMetrics` XML doc-comment sentence that mentions `Answerable
     {
         var q = new BenchmarkQuestion("q", "query", [], ["g"], [], "single_hop");
         var hits = new List<RetrievalHit> { new("g", "t", 1.0) };
-        var surfacedCorrect = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = true, AnsweredCorrectly = true };
-        var surfacedWrong   = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = true, AnsweredCorrectly = false };
-        var notSurfaced     = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = false, AnsweredCorrectly = false };
-        var unjudged        = BenchmarkScorer.ScoreFractionalById(q, hits); // nulls
+        var correct  = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = true,  AnsweredCorrectly = true };
+        var wrong    = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = true,  AnsweredCorrectly = false };
+        var missed   = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = false, AnsweredCorrectly = false };
+        var unjudged = BenchmarkScorer.ScoreFractionalById(q, hits);
 
-        var agg = BenchmarkScorer.Aggregate([surfacedCorrect, surfacedWrong, notSurfaced, unjudged]);
+        var agg = BenchmarkScorer.Aggregate([correct, wrong, missed, unjudged]);
 
         Assert.Equal(4, agg.QuestionCount);
-        Assert.Equal(2.0 / 3.0, agg.SurfacedRate, 5); // 2 of 3 judged surfaced
-        Assert.Equal(1.0 / 3.0, agg.CorrectRate, 5);  // 1 of 3 judged correct
+        Assert.Equal(2.0 / 3.0, agg.SurfacedRate, 5);
+        Assert.Equal(1.0 / 3.0, agg.CorrectRate, 5);
     }
 ```
 
-- [ ] **Step 8: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Aggregate_reports_surfaced"` — Expected: FAIL (compile error on `SurfacedRate`).
+- [ ] **Step 9: Run it, verify FAIL.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Aggregate_reports_surfaced"` — Expected: FAIL (compile error `SurfacedRate`).
 
-- [ ] **Step 9: Implement in `BenchmarkScorer.Aggregate`.** Replace the `answerableSum`/`judged` block and the `return` with:
+- [ ] **Step 10: Implement in `BenchmarkScorer.Aggregate`.** Replace the `answerableSum`/`judged` block and the `return` with:
 
 ```csharp
         double surfacedSum = 0, correctSum = 0; int judged = 0;
@@ -163,15 +168,13 @@ Update the `AggregateMetrics` XML doc-comment sentence that mentions `Answerable
             CorrectRate: judged > 0 ? correctSum / judged : 0.0);
 ```
 
-Also fix the empty-results early return `new AggregateMetrics(0, 0, 0, 0, 0)` → `new AggregateMetrics(0, 0, 0, 0, 0, 0, 0)`.
+Fix the empty-results early return `new AggregateMetrics(0, 0, 0, 0, 0)` → `new AggregateMetrics(0, 0, 0, 0, 0, 0, 0)`.
 
-- [ ] **Step 10: Run the full bench test project, verify green.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false` — Expected: PASS (fix any other references to the removed `Answerable` field the compiler flags — e.g. `RunnerJudgeIntegrationTests.cs`, `RetrieverFactory.PrintJudgeSummary`; rename reads to `AnsweredCorrectly`/`CorrectRate`).
-
-- [ ] **Step 11: Commit.**
+- [ ] **Step 11: Run the full bench test project, verify GREEN + commit.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false` (fix any remaining `Answerable` references the compiler flags — e.g. `RunnerJudgeIntegrationTests.cs`).
 
 ```bash
 git add benchmarks/Scrinia.Retrieval.Benchmarks tests/Scrinia.Retrieval.Benchmarks.Tests
-git commit -m "feat(bench): split judge Answerable into SurfacedFromContext + AnsweredCorrectly"
+git commit -m "feat(bench): split judge bit into Surfaced/Correct; add persistence fields to QuestionResult"
 ```
 
 ---
@@ -181,14 +184,13 @@ git commit -m "feat(bench): split judge Answerable into SurfacedFromContext + An
 **Files:**
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkResult.cs` (`RunMetadata`)
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkRunner.cs` (`RunAsync`, `RunGroupedAsync` signatures + both `new RunMetadata(...)`)
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/LoCoMoCommand.cs` (pass values through)
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/LoCoMoCommand.cs`
 - Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/RunnerJudgeIntegrationTests.cs`
 
 **Interfaces:**
-- Consumes: nothing from later tasks.
-- Produces: `RunMetadata` gains `string? Granularity = null`, `string? TemporalScenario = null`. `RunGroupedAsync`/`RunAsync` gain trailing optional params `string? granularity = null, string? temporalScenario = null`.
+- Produces: `RunMetadata` gains `string? Granularity = null`, `string? TemporalScenario = null`. `RunAsync`/`RunGroupedAsync` gain optional `string? granularity = null, string? temporalScenario = null` before `ct`.
 
-- [ ] **Step 1: Add nullable fields to `RunMetadata`.** Append to the record (after `ScriniaVersion`):
+- [ ] **Step 1: Add nullable fields to `RunMetadata`** (after `ScriniaVersion`):
 
 ```csharp
     string ScriniaVersion,
@@ -196,7 +198,7 @@ git commit -m "feat(bench): split judge Answerable into SurfacedFromContext + An
     string? TemporalScenario = null);
 ```
 
-- [ ] **Step 2: Add a failing round-trip test.** In `RunnerJudgeIntegrationTests.cs`:
+- [ ] **Step 2: Failing round-trip test.** In `RunnerJudgeIntegrationTests.cs`:
 
 ```csharp
     [Fact]
@@ -215,17 +217,16 @@ git commit -m "feat(bench): split judge Answerable into SurfacedFromContext + An
     }
 ```
 
-- [ ] **Step 3: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~RunMetadata_serializes_granularity"` — Expected: FAIL (compile error, no `Granularity` param).
+- [ ] **Step 3: Run it, verify FAIL.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~RunMetadata_serializes_granularity"` — Expected: FAIL.
 
-- [ ] **Step 4: Thread params through `BenchmarkRunner`.** Add to the end of both `RunAsync` and `RunGroupedAsync` parameter lists (after `CancellationToken ct = default`, moving `ct` last is not required — add before `ct`):
+- [ ] **Step 4: Thread params through `BenchmarkRunner`.** Add to both `RunAsync` and `RunGroupedAsync` parameter lists before `CancellationToken ct = default`:
 
 ```csharp
         string? granularity = null,
         string? temporalScenario = null,
-        CancellationToken ct = default)
 ```
 
-In both `new RunMetadata(...)` blocks, add:
+In both `new RunMetadata(...)` blocks:
 
 ```csharp
             ScriniaVersion: ReadScriniaVersion(),
@@ -233,11 +234,9 @@ In both `new RunMetadata(...)` blocks, add:
             TemporalScenario: temporalScenario);
 ```
 
-- [ ] **Step 5: Pass values from `LoCoMoCommand`.** At the `RunGroupedAsync` call site, pass `granularity: granularity.ToString().ToLowerInvariant()` and (placeholder for Task 4) `temporalScenario: null`. Concretely, locate the `runner.RunGroupedAsync(...)` invocation and add the named arguments before `ct`.
+- [ ] **Step 5: Pass granularity from `LoCoMoCommand`.** At the `runner.RunGroupedAsync(...)` call, add `granularity: granularity.ToString().ToLowerInvariant()` and `temporalScenario: null` (Task 4 sets the real value).
 
-- [ ] **Step 6: Run tests + build the bench project.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~RunMetadata_serializes_granularity"` then `dotnet build benchmarks/Scrinia.Retrieval.Benchmarks -p:NuGetAudit=false` — Expected: PASS + build succeeds.
-
-- [ ] **Step 7: Commit.**
+- [ ] **Step 6: Run test + build, verify GREEN + commit.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~RunMetadata_serializes_granularity"` then `dotnet build benchmarks/Scrinia.Retrieval.Benchmarks -p:NuGetAudit=false`.
 
 ```bash
 git add benchmarks/Scrinia.Retrieval.Benchmarks tests/Scrinia.Retrieval.Benchmarks.Tests
@@ -249,38 +248,35 @@ git commit -m "feat(bench): record Granularity + TemporalScenario in RunMetadata
 ### Task 3: Render `created`/`updated` pseudo-attributes in the production search block
 
 **Files:**
-- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs` (`AppendResultBlock`, ~line 950-996; add a helper near `AppendAttributesLine` ~line 1011)
-- Test: `tests/Scrinia.Tests/McpDisplayCutoverTests.cs` (or a new `tests/Scrinia.Tests/SearchResultDateDisplayTests.cs`)
+- Modify: `src/Scrinia.Mcp/MemoryTools.Core.cs` (`AppendResultBlock` ~line 950; helper near `AppendAttributesLine` ~line 1011)
+- Test: `tests/Scrinia.Tests/SearchResultDateDisplayTests.cs` (new)
 
 **Interfaces:**
 - Consumes: `ArtifactEntry.CreatedAt` (DateTimeOffset), `ArtifactEntry.UpdatedAt` (DateTimeOffset?).
-- Produces: search/`list` result blocks for entry and chunk results contain a `    created: yyyy-MM-dd` line, and `    updated: yyyy-MM-dd` when `UpdatedAt` is non-null.
+- Produces: entry and chunk result blocks contain `    created: yyyy-MM-dd`, and `    updated: yyyy-MM-dd` when `UpdatedAt` non-null.
 
-- [ ] **Step 1: Add a failing test.** Create `tests/Scrinia.Tests/SearchResultDateDisplayTests.cs`. Follow the existing construction pattern in `McpDisplayCutoverTests.cs` for building a store, storing one entry, and calling `Search`. Assert on the returned body:
+- [ ] **Step 1: Failing test.** Create `tests/Scrinia.Tests/SearchResultDateDisplayTests.cs`, reusing the store/setup pattern in `McpDisplayCutoverTests.cs`:
 
 ```csharp
     [Fact]
     public async Task Search_result_block_shows_created_pseudo_attribute()
     {
-        // Arrange: store one memory (reuse the helper/setup McpDisplayCutoverTests uses).
-        // ... store an entry whose text contains a searchable term "pottery" ...
+        // Arrange: store one memory whose text contains "pottery" (reuse McpDisplayCutoverTests setup).
         string body = await tools.Search(query: "pottery");
-
         Assert.Matches(@"created: \d{4}-\d{2}-\d{2}", body);
-        // The created date must NOT appear as a stored attribute key the agent could round-trip.
-        Assert.DoesNotContain("\"created\"", body);
+        Assert.DoesNotContain("\"created\"", body); // display-only, never a stored attribute key
     }
 ```
 
-(Match the actual `Search` signature and store-setup used in `McpDisplayCutoverTests.cs`; if a shared fixture helper exists there, reuse it rather than re-implementing setup.)
+(Match the real `Search` signature + store setup used in `McpDisplayCutoverTests.cs`; reuse any shared fixture there.)
 
-- [ ] **Step 2: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Search_result_block_shows_created"` — Expected: FAIL (no `created:` line).
+- [ ] **Step 2: Run it, verify FAIL.** Run: `dotnet test tests/Scrinia.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Search_result_block_shows_created"` — Expected: FAIL.
 
-- [ ] **Step 3: Add the render helper.** In `MemoryTools.Core.cs`, next to `AppendAttributesLine`:
+- [ ] **Step 3: Add the helper** near `AppendAttributesLine`:
 
 ```csharp
-    /// <summary>Renders record dates as display-only pseudo-attributes, derived from the entry's
-    /// structural CreatedAt/UpdatedAt — never stored in Attributes, never agent-writable. Date-only, ISO.</summary>
+    /// <summary>Render record dates as display-only pseudo-attributes from the entry's structural
+    /// CreatedAt/UpdatedAt — never stored in Attributes, never agent-writable. Date-only, ISO.</summary>
     private static void AppendDatesLine(System.Text.StringBuilder sb, DateTimeOffset createdAt, DateTimeOffset? updatedAt)
     {
         sb.Append("    created: ").Append(createdAt.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
@@ -289,62 +285,52 @@ git commit -m "feat(bench): record Granularity + TemporalScenario in RunMetadata
     }
 ```
 
-- [ ] **Step 4: Call it from the entry and chunk arms of `AppendResultBlock`.** In the `EntryResult` case, immediately after the header `.Append("  ~").Append(estTokens).Append(" tokens\n");` line and before `AppendAttributesLine`, add:
+- [ ] **Step 4: Call it from the entry + chunk arms** of `AppendResultBlock`, right after the header `" tokens\n"` line and before `AppendAttributesLine`. In `EntryResult`:
 
 ```csharp
                     AppendDatesLine(sb, er.Item.Entry.CreatedAt, er.Item.Entry.UpdatedAt);
 ```
 
-In the `ChunkEntryResult` case, in the same position before its `AppendAttributesLine`, add:
+In `ChunkEntryResult`:
 
 ```csharp
                     AppendDatesLine(sb, cr.ParentItem.Entry.CreatedAt, cr.ParentItem.Entry.UpdatedAt);
 ```
 
-(TopicResult has no single entry date — leave it unchanged.)
+(TopicResult unchanged.)
 
-- [ ] **Step 5: Run the test, verify it passes.** Run: `dotnet test tests/Scrinia.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Search_result_block_shows_created"` — Expected: PASS.
+- [ ] **Step 5: Run the test, verify PASS.** Run: `dotnet test tests/Scrinia.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Search_result_block_shows_created"` — Expected: PASS.
 
-- [ ] **Step 6: Guard against index leakage.** Add a test asserting the date is display-only — search by the date string must not match a memory that doesn't contain that date in its text:
+- [ ] **Step 6: Index-leak guard test.** Add a test that stores a memory whose text has no date, searches for its created-date string, and asserts `No matching memories found.` (proves the date didn't enter the index). Run: `dotnet test tests/Scrinia.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~SearchResultDate"` — Expected: PASS.
 
-```csharp
-    [Fact]
-    public async Task Created_date_is_display_only_not_searchable()
-    {
-        // Store a memory whose TEXT does not contain any date. Search for its created date string.
-        string created = /* the stored entry's CreatedAt formatted yyyy-MM-dd */;
-        string body = await tools.Search(query: created);
-        Assert.Contains("No matching memories found.", body);
-    }
-```
-
-Run: `dotnet test tests/Scrinia.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Created_date_is_display_only"` — Expected: PASS (the render change adds no index term, so this passes without further code; if it fails, the date leaked into tokenization and must be reverted out of the index path).
-
-- [ ] **Step 7: Run the MCP display test file + commit.**
+- [ ] **Step 7: Commit.**
 
 ```bash
-dotnet test tests/Scrinia.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Display|FullyQualifiedName~SearchResultDate"
 git add src/Scrinia.Mcp/MemoryTools.Core.cs tests/Scrinia.Tests/SearchResultDateDisplayTests.cs
 git commit -m "feat(mcp): show created/updated pseudo-attributes on search+list result blocks"
 ```
 
 ---
 
-### Task 4: Surface the session date to the LoCoMo answerer (bench mirror)
+### Task 4: Always assemble + persist the date-prefixed answerer context (id-mapped path)
+
+The runner now builds the answerer context for **every** question and persists it (`JudgeContext` + `GoldAnswer` + `DateSurfaced`), whether or not a judge runs — this is what makes forward replay dataset-free. This task covers the id-mapped retrievers (bm25/embeddings/chunked); Task 5 makes the agentic branch return date-prefixed content so the same assembly code works there too.
 
 **Files:**
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkRunner.cs` (build a docId→date map per group; prefix judge contents)
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/LoCoMoCommand.cs` (set `temporalScenario`)
-- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/RunnerJudgeIntegrationTests.cs`
+- Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/AnswererDateFormat.cs`
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkRunner.cs` (context assembly in `RunAsync` + `RunGroupedAsync`)
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/LoCoMoCommand.cs` (scenario label)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AnswererDateFormatTests.cs` (new), `RunnerJudgeIntegrationTests.cs`
 
 **Interfaces:**
-- Consumes: `HaystackDoc.Timestamp` (DateTimeOffset?), `RetrievalHit.Id`, `JudgeVerdict` from Task 1, `RunGroupedAsync` scenario param from Task 2.
 - Produces:
-  - `AnswererDateFormat` (new shared static class, `Core` namespace) — the single source of the answerer date format, reused by the id-mapped path (this task), the agentic path (Task 5), the date-presence diagnostic (Task 6), and replay (Task 7).
-  - `BenchmarkRunner.WithCreatedDates(IReadOnlyList<string> hitTexts, IReadOnlyList<RetrievalHit> hits, IReadOnlyDictionary<string, DateTimeOffset?> dateById)` — static, returns contents each date-prefixed when a date is known.
-  - Scenario label constant `BenchmarkRunner.SessionDateScenario = "session-date-ingest"`.
+  - `AnswererDateFormat.Apply(string text, DateTimeOffset? date)` / `.Present(string content)` / `.Prefix` (const) — the single date-framing source, reused by Tasks 5, 6, 7.
+  - `BenchmarkRunner.WithCreatedDates(IReadOnlyList<string> hitTexts, IReadOnlyList<RetrievalHit> hits, IReadOnlyDictionary<string, DateTimeOffset?> dateById)`.
+  - `BenchmarkRunner.AnyDateSurfaced(IReadOnlyList<string> contents)`.
+  - `BenchmarkRunner.SessionDateScenario = "session-date-ingest"`, `BenchmarkRunner.DefaultJudgeContextK = 10`.
+  - `Task<IReadOnlyList<string>> BuildAnswererContextAsync(IRetriever, string query, IReadOnlyList<RetrievalHit> hits, IReadOnlyDictionary<string, DateTimeOffset?> dateById, int k, CancellationToken)` (private).
 
-- [ ] **Step 0: Create the shared formatter + failing test.** Create `benchmarks/Scrinia.Retrieval.Benchmarks/Core/AnswererDateFormat.cs`:
+- [ ] **Step 1: Create `AnswererDateFormat` + failing test.** Create `Core/AnswererDateFormat.cs`:
 
 ```csharp
 using System.Globalization;
@@ -352,21 +338,18 @@ using System.Globalization;
 namespace Scrinia.Retrieval.Benchmarks.Core;
 
 /// <summary>
-/// The single source of truth for how a memory's created date is surfaced to the judge answerer,
+/// Single source of truth for how a memory's created date is surfaced to the judge answerer,
 /// mirroring the production search block's `created:` pseudo-attribute. Display/answerer only —
-/// this string is never fed to retrieval scoring. Used by both the id-mapped retriever path
-/// (BenchmarkRunner) and the agentic surfaced-content path (AgenticScriniaRetriever) so the two
-/// produce byte-identical framing, and by the deterministic date-presence diagnostic.
+/// never fed to retrieval scoring. Shared by the id-mapped path (BenchmarkRunner), the agentic
+/// path (AgenticScriniaRetriever), and the date-presence diagnostic so all produce identical framing.
 /// </summary>
 public static class AnswererDateFormat
 {
     public const string Prefix = "created: ";
 
-    /// <summary>Prefixes <paramref name="text"/> with `created: yyyy-MM-dd\n` when a date is known; passthrough otherwise.</summary>
     public static string Apply(string text, DateTimeOffset? date) =>
         date is { } d ? $"{Prefix}{d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}\n{text}" : text;
 
-    /// <summary>True iff <paramref name="content"/> carries a created-date line (leading or after a newline).</summary>
     public static bool Present(string content) =>
         content.StartsWith(Prefix, StringComparison.Ordinal) || content.Contains("\n" + Prefix, StringComparison.Ordinal);
 }
@@ -392,45 +375,45 @@ public class AnswererDateFormatTests
     public void Present_detects_leading_and_embedded_created_lines()
     {
         Assert.True(AnswererDateFormat.Present("created: 2023-05-04\nfoo"));
-        Assert.True(AnswererDateFormat.Present("header\ncreated: 2023-05-04\nfoo"));
+        Assert.True(AnswererDateFormat.Present("head\ncreated: 2023-05-04\nfoo"));
         Assert.False(AnswererDateFormat.Present("foo bar"));
     }
 }
 ```
 
-Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~AnswererDateFormat"` — Expected: FAIL first (class missing), then create the class and re-run to PASS.
+Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~AnswererDateFormat"` — Expected: PASS (create the class if the first run fails to compile).
 
-- [ ] **Step 1: Add a failing test for the prefixing helper.** In `RunnerJudgeIntegrationTests.cs`:
+- [ ] **Step 2: Failing tests for the runner helpers.** In `RunnerJudgeIntegrationTests.cs`:
 
 ```csharp
     [Fact]
-    public void WithCreatedDates_prefixes_known_dates_and_passes_unknown_through()
+    public void WithCreatedDates_prefixes_known_and_passes_unknown_through()
     {
         var hits = new List<RetrievalHit> { new("D1:3", "I went yesterday", 1.0), new("D9:9", "unrelated", 0.5) };
-        var texts = hits.Select(h => h.Text).ToList();
         var dates = new Dictionary<string, DateTimeOffset?> { ["D1:3"] = new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero) };
-
-        var result = BenchmarkRunner.WithCreatedDates(texts, hits, dates);
-
+        var result = BenchmarkRunner.WithCreatedDates(hits.Select(h => h.Text).ToList(), hits, dates);
         Assert.Equal("created: 2023-05-04\nI went yesterday", result[0]);
-        Assert.Equal("unrelated", result[1]); // no date known → unchanged
+        Assert.Equal("unrelated", result[1]);
+    }
+
+    [Fact]
+    public void AnyDateSurfaced_true_when_any_passage_carries_a_created_line()
+    {
+        Assert.True(BenchmarkRunner.AnyDateSurfaced(["created: 2023-05-04\nfoo", "bar"]));
+        Assert.False(BenchmarkRunner.AnyDateSurfaced(["foo", "bar"]));
     }
 ```
 
-- [ ] **Step 2: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~WithCreatedDates_prefixes"` — Expected: FAIL (`WithCreatedDates` not defined).
+- [ ] **Step 3: Run them, verify FAIL.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~WithCreatedDates_prefixes_known|FullyQualifiedName~AnyDateSurfaced_true"` — Expected: FAIL.
 
-- [ ] **Step 3: Implement the helper + scenario constant in `BenchmarkRunner.cs`.**
+- [ ] **Step 4: Implement the helpers in `BenchmarkRunner.cs`.**
 
 ```csharp
     public const string SessionDateScenario = "session-date-ingest";
+    public const int DefaultJudgeContextK = 10;
 
-    /// <summary>Prefixes each answerer passage with its memory's ISO created date when known,
-    /// mirroring the production search block's `created:` pseudo-attribute. Display/answerer only —
-    /// this string is fed to the judge answerer, never to retrieval scoring. Only applies to the
-    /// id-mapped hit path; the map is keyed by RetrievalHit.Id.</summary>
     public static IReadOnlyList<string> WithCreatedDates(
-        IReadOnlyList<string> hitTexts,
-        IReadOnlyList<RetrievalHit> hits,
+        IReadOnlyList<string> hitTexts, IReadOnlyList<RetrievalHit> hits,
         IReadOnlyDictionary<string, DateTimeOffset?> dateById)
     {
         var outp = new List<string>(hitTexts.Count);
@@ -441,68 +424,105 @@ Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false -
         }
         return outp;
     }
+
+    /// <summary>Deterministic, model-independent: did Scrinia put a resolvable created date in the answerer's context?</summary>
+    public static bool AnyDateSurfaced(IReadOnlyList<string> contents)
+    {
+        foreach (var c in contents) if (AnswererDateFormat.Present(c)) return true;
+        return false;
+    }
+
+    /// <summary>Assembles the date-prefixed answerer context for one question. Agentic retrievers return
+    /// already-date-prefixed surfaced content (Task 5); id-mapped retrievers get their top-k hit texts
+    /// date-prefixed here. This is the exact list persisted as JudgeContext and fed to the judge.</summary>
+    private static async Task<IReadOnlyList<string>> BuildAnswererContextAsync(
+        IRetriever retriever, string query, IReadOnlyList<RetrievalHit> hits,
+        IReadOnlyDictionary<string, DateTimeOffset?> dateById, int k, CancellationToken ct)
+    {
+        if (retriever is ISurfacedContentProvider scp)
+            return await scp.GetSurfacedContentsAsync(query, k, ct);
+        var top = hits.Take(k).ToList();
+        return WithCreatedDates(top.Select(h => h.Text).ToList(), top, dateById);
+    }
 ```
 
-- [ ] **Step 4: Run it, verify it passes.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~WithCreatedDates_prefixes"` — Expected: PASS.
-
-- [ ] **Step 5: Wire the date map into `RunGroupedAsync`.** At the top of the `await foreach (var group in groups...)` body, after ingest, build the map once per group:
+- [ ] **Step 5: Rewrite the per-question tail in `RunGroupedAsync`** to always assemble + persist, then judge. Build the date map once per group (top of the `await foreach (var group…)` body, after ingest):
 
 ```csharp
             var dateById = group.SharedHaystack.ToDictionary(d => d.Id, d => d.Timestamp, StringComparer.OrdinalIgnoreCase);
 ```
 
-In the judge block, wrap the `judgeContents` used for the answerer. Change:
+Replace the per-question block (from `var hits = await retriever.RetrieveAsync(...)` through `results.Add(scored);`) with:
 
 ```csharp
-                    var judgeContents = retriever is ISurfacedContentProvider scp
-                        ? await scp.GetSurfacedContentsAsync(queryText, _judge.JudgeK, ct)
-                        : hits.Select(h => h.Text).ToList();
+                var hits = await retriever.RetrieveAsync(queryText, topK, ct);
+                var scored = scorer(q, hits);
+
+                int contextK = _judge?.JudgeK ?? DefaultJudgeContextK;
+                var judgeContext = await BuildAnswererContextAsync(retriever, queryText, hits, dateById, contextK, ct);
+                scored = scored with
+                {
+                    GoldAnswer = q.GoldAnswer,
+                    JudgeContext = judgeContext,
+                    DateSurfaced = AnyDateSurfaced(judgeContext),
+                };
+
+                if (_judge is not null)
+                {
+                    var verdict = await _judge.JudgeAsync(q.Id, q.QueryText, q.GoldAnswer, judgeContext, ct);
+                    if (verdict is not null)
+                        scored = scored with
+                        {
+                            SurfacedFromContext = verdict.SurfacedFromContext,
+                            AnsweredCorrectly = verdict.AnsweredCorrectly,
+                            JudgeAnswer = verdict.Answer,
+                            JudgeGraderVerdict = verdict.GraderVerdict,
+                        };
+                }
+                results.Add(scored);
 ```
 
-to (the id-mapped branch gets dates here; the agentic `ISurfacedContentProvider` branch already returns date-prefixed content from Task 5, so it needs no wrapping here):
+- [ ] **Step 6: Apply the same assembly in `RunAsync`** (the per-question-haystack path for other benchmarks). Build `dateById` from the question's own haystack just before the judge area:
 
 ```csharp
-                    IReadOnlyList<string> judgeContents = retriever is ISurfacedContentProvider scp
-                        ? await scp.GetSurfacedContentsAsync(queryText, _judge.JudgeK, ct)
-                        : WithCreatedDates(hits.Select(h => h.Text).ToList(), hits, dateById);
+            var dateById = q.Haystack.ToDictionary(d => d.Id, d => d.Timestamp, StringComparer.OrdinalIgnoreCase);
 ```
 
-- [ ] **Step 6: Set the scenario label in `LoCoMoCommand`.** Change the `temporalScenario:` argument on the `RunGroupedAsync` call from `null` (Task 2 placeholder) to `BenchmarkRunner.SessionDateScenario`.
+and replace its judge block with the same assemble-persist-then-judge shape as Step 5 (using `q` in scope). For benchmarks without timestamps, `Timestamp` is null and `WithCreatedDates` passes text through unchanged.
 
-- [ ] **Step 7: Add an integration assertion.** Extend `RunnerJudgeIntegrationTests.cs` with a test that runs `RunGroupedAsync` over a 1-group fixture with a stub judge that echoes its received contents, asserting the answerer saw a `created:`-prefixed passage and `RunMetadata.TemporalScenario == "session-date-ingest"`. (Reuse the existing stub-judge/harness pattern already in this test file.)
+- [ ] **Step 7: Set the scenario label in `LoCoMoCommand`.** Change the `temporalScenario:` argument on the `RunGroupedAsync` call from `null` to `BenchmarkRunner.SessionDateScenario`.
 
-- [ ] **Step 8: Run bench tests, verify green + commit.**
+- [ ] **Step 8: Integration test.** In `RunnerJudgeIntegrationTests.cs`, run `RunGroupedAsync` over a 1-group fixture whose docs carry a Timestamp, with **no judge**, and assert the emitted result has `Questions[0].JudgeContext` non-empty, its first entry `StartsWith("created: ")`, `Questions[0].DateSurfaced == true`, `Questions[0].GoldAnswer` populated, and `RunMetadata.TemporalScenario == "session-date-ingest"`. (Reuse the existing runner-fixture/stub-retriever pattern.)
+
+- [ ] **Step 9: Run bench tests, verify GREEN + commit.**
 
 ```bash
 dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false
 git add benchmarks/Scrinia.Retrieval.Benchmarks tests/Scrinia.Retrieval.Benchmarks.Tests
-git commit -m "feat(bench): surface session created-date to the LoCoMo answerer (session-date-ingest scenario)"
+git commit -m "feat(bench): always persist date-prefixed JudgeContext + GoldAnswer; DateSurfaced diagnostic"
 ```
 
 ---
 
-### Task 5: Surface created dates on the agentic-ingest answerer path
+### Task 5: Return date-prefixed surfaced content from the agentic-ingest arm
 
-The agentic arm answers via `GetSurfacedContentsAsync`, not the id-mapped hit texts, so Task 4 alone would leave it date-blind — and the agentic arm is the only mode with historical judge data. Episodes run per-session (`RunSessionEpisodeAsync(sessionDocs, …)`) and every doc in a session shares one `Timestamp`, so each agent-authored memory has a well-defined creation date: the session it was written during. This is the faithful mirror of production — the memory's own created date travels with it.
+`BuildAnswererContextAsync` (Task 4) routes agentic retrievers through `GetSurfacedContentsAsync`. This task makes that method date-prefix each memory with its authoring session's date, so the agentic arm — the only mode with historical judge data — is temporally faithful. Episodes run per-session; every doc in a session shares one `Timestamp`, so each agent-authored memory's created date is the session it was written during.
 
 **Files:**
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/AgenticScriniaRetriever.cs`
 - Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/AgenticScriniaRetrieverTests.cs`
 
 **Interfaces:**
-- Consumes: `HaystackDoc.Timestamp`, `AnswererDateFormat.Apply` (Task 4).
-- Produces: `GetSurfacedContentsAsync` returns each memory's content date-prefixed with the authoring session's date. Internal `_createdDateByEntryName` map (entryName → authoring session date), rebuilt every `ResetAsync`. `RetrieveAsync` (the scorer path) is unchanged — dates never touch recall.
+- Consumes: `HaystackDoc.Timestamp`, `AnswererDateFormat.Apply`.
+- Produces: `GetSurfacedContentsAsync` returns each memory's content date-prefixed with its authoring session date. Internal `_createdDateByEntryName` map, rebuilt every `ResetAsync`. `RetrieveAsync` (scorer path) unchanged.
 
-- [ ] **Step 1: Add a failing test.** In `AgenticScriniaRetrieverTests.cs`, reusing the file's existing stub-harness/episode-cache setup (the pattern that ingests docs and runs a replayed episode writing a memory that cites a `D{n}:{i}` doc), add:
+- [ ] **Step 1: Failing tests.** In `AgenticScriniaRetrieverTests.cs`, reusing the file's existing stub-harness/episode-cache setup that ingests a session (docs carrying a `Timestamp`) and replays an episode writing a memory citing `D1:3`:
 
 ```csharp
     [Fact]
     public async Task GetSurfacedContents_prefixes_memory_with_authoring_session_date()
     {
-        // Arrange: ingest a 1-session haystack whose docs carry Timestamp 2023-05-04,
-        // with a cached episode that writes one memory citing D1:3. (Reuse existing helpers.)
         var contents = await retriever.GetSurfacedContentsAsync("support group", k: 5);
-
         Assert.NotEmpty(contents);
         Assert.All(contents, c => Assert.StartsWith("created: 2023-05-04\n", c));
     }
@@ -515,13 +535,12 @@ The agentic arm answers via `GetSurfacedContentsAsync`, not the id-mapped hit te
     }
 ```
 
-- [ ] **Step 2: Run them, verify they fail.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~GetSurfacedContents_prefixes|FullyQualifiedName~Retrieve_hits_are_not_date"` — Expected: FAIL (first: no prefix; second may already pass).
+- [ ] **Step 2: Run them, verify FAIL.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~GetSurfacedContents_prefixes|FullyQualifiedName~Retrieve_hits_are_not_date"` — Expected: first FAILs.
 
-- [ ] **Step 3: Add the created-date map + reset.** In `AgenticScriniaRetriever.cs`, add the field next to `_fullContentByEntryName` (~line 108):
+- [ ] **Step 3: Add the map + reset.** Next to `_fullContentByEntryName` (~line 108):
 
 ```csharp
     // entryName -> the date of the session during which the memory was authored (its `created`).
-    // Rebuilt every ResetAsync alongside _fullContentByEntryName.
     private Dictionary<string, DateTimeOffset?> _createdDateByEntryName = new(StringComparer.Ordinal);
 ```
 
@@ -531,7 +550,7 @@ In `ResetAsync`, next to `_fullContentByEntryName = new(...)` (~line 562):
         _createdDateByEntryName = new Dictionary<string, DateTimeOffset?>(StringComparer.Ordinal);
 ```
 
-- [ ] **Step 4: Stamp created dates per episode.** In `RunSessionEpisodeAsync`, move the `preEpisode` snapshot to the very top (before the `_cache.TryGet` branch) and stamp after each kept episode. Replace the method body from the `if (_cache.TryGet(...))` block through the fresh-success `return;` with:
+- [ ] **Step 4: Stamp per episode.** In `RunSessionEpisodeAsync`, move the `preEpisode` snapshot to the very top (before `_cache.TryGet`) and stamp after each kept episode. Replace from `if (_cache.TryGet(...))` through the fresh-success `return;`:
 
 ```csharp
         var preEpisode = new HashSet<string>(
@@ -564,19 +583,17 @@ In `ResetAsync`, next to `_fullContentByEntryName = new(...)` (~line 562):
         }
 ```
 
-(The `RollbackTo(preEpisode)` + failed-episode tail below this block is unchanged.)
+(The `RollbackTo(preEpisode)` + failed-episode tail below is unchanged.)
 
-- [ ] **Step 5: Implement `StampCreatedDates`.** Add near `RollbackTo`:
+- [ ] **Step 5: Implement `StampCreatedDates`** near `RollbackTo`:
 
 ```csharp
-    /// <summary>Records the authoring session's date as the `created` date of every memory added
-    /// during this episode (delta vs <paramref name="preEpisode"/>). All docs in a session share one
-    /// Timestamp; first-authoring wins, so a memory a later session appends to keeps its original date.</summary>
+    /// <summary>Records the authoring session's date as the `created` date of every memory added this
+    /// episode (delta vs preEpisode). All docs in a session share one Timestamp; first-authoring wins.</summary>
     private void StampCreatedDates(HashSet<string> preEpisode, IReadOnlyList<HaystackDoc> sessionDocs)
     {
         DateTimeOffset? sessionDate = null;
-        foreach (var d in sessionDocs)
-            if (d.Timestamp is { } t) { sessionDate = t; break; }
+        foreach (var d in sessionDocs) if (d.Timestamp is { } t) { sessionDate = t; break; }
 
         foreach (var a in _store.ListScoped())
             if (!preEpisode.Contains(a.Entry.Name) && !_createdDateByEntryName.ContainsKey(a.Entry.Name))
@@ -584,7 +601,7 @@ In `ResetAsync`, next to `_fullContentByEntryName = new(...)` (~line 562):
     }
 ```
 
-- [ ] **Step 6: Date-prefix the surfaced contents.** In `GetSurfacedContentsAsync`, replace the final `contents.Add(...)` line:
+- [ ] **Step 6: Date-prefix surfaced contents.** In `GetSurfacedContentsAsync`, replace the final `contents.Add(...)`:
 
 ```csharp
             if (name is null || !seen.Add(name)) continue;
@@ -593,162 +610,130 @@ In `ResetAsync`, next to `_fullContentByEntryName = new(...)` (~line 562):
             contents.Add(AnswererDateFormat.Apply(full, date));
 ```
 
-- [ ] **Step 7: Run tests, verify green + commit.**
+- [ ] **Step 7: Run tests, verify GREEN + commit.**
 
 ```bash
 dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~AgenticScriniaRetriever"
 git add benchmarks/Scrinia.Retrieval.Benchmarks tests/Scrinia.Retrieval.Benchmarks.Tests
-git commit -m "feat(bench): surface authoring-session created-date on the agentic-ingest answerer path"
+git commit -m "feat(bench): agentic arm surfaces authoring-session created-date to the answerer"
 ```
 
 ---
 
-### Task 6: Deterministic date-presence sub-diagnostic (temporal)
+### Task 6: Offline judge replay over persisted context (dataset-free)
 
-**Files:**
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkResult.cs` (`QuestionResult` gains `bool? DateSurfaced = null`)
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Core/BenchmarkRunner.cs` (compute per judged question)
-- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/RunnerJudgeIntegrationTests.cs`
-
-**Interfaces:**
-- Consumes: the date-prefixed judge contents from Tasks 4 (id-mapped) and 5 (agentic); `AnswererDateFormat.Present`.
-- Produces: `QuestionResult.DateSurfaced` — true iff any answerer passage carried a `created:` line; null when not judged.
-
-- [ ] **Step 1: Add the field.** In `QuestionResult`, after `AnsweredCorrectly`:
-
-```csharp
-    bool? DateSurfaced = null,
-```
-
-- [ ] **Step 2: Add a failing test.** In `RunnerJudgeIntegrationTests.cs`:
-
-```csharp
-    [Fact]
-    public void DateSurfaced_true_when_any_passage_carries_a_created_line()
-    {
-        Assert.True(BenchmarkRunner.AnyDateSurfaced(["created: 2023-05-04\nfoo", "bar"]));
-        Assert.False(BenchmarkRunner.AnyDateSurfaced(["foo", "bar"]));
-    }
-```
-
-- [ ] **Step 3: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~DateSurfaced_true"` — Expected: FAIL.
-
-- [ ] **Step 4: Implement the helper + record it.** In `BenchmarkRunner.cs`:
-
-```csharp
-    /// <summary>Deterministic, model-independent: did Scrinia put a resolvable created date into the
-    /// answerer's context? Separates "surface layer put the date there" from the answerer's own judgment.</summary>
-    public static bool AnyDateSurfaced(IReadOnlyList<string> judgeContents)
-    {
-        foreach (var c in judgeContents)
-            if (AnswererDateFormat.Present(c))
-                return true;
-        return false;
-    }
-```
-
-In the `RunGroupedAsync` judge block, after computing `judgeContents` and before/with the verdict write, set `DateSurfaced`:
-
-```csharp
-                    if (verdict is not null)
-                        scored = scored with
-                        {
-                            SurfacedFromContext = verdict.SurfacedFromContext,
-                            AnsweredCorrectly = verdict.AnsweredCorrectly,
-                            JudgeAnswer = verdict.Answer,
-                            JudgeGraderVerdict = verdict.GraderVerdict,
-                            DateSurfaced = AnyDateSurfaced(judgeContents),
-                        };
-```
-
-- [ ] **Step 5: Run tests, verify green + commit.**
-
-```bash
-dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~DateSurfaced"
-git add benchmarks/Scrinia.Retrieval.Benchmarks tests/Scrinia.Retrieval.Benchmarks.Tests
-git commit -m "feat(bench): deterministic date-presence sub-diagnostic on judged questions"
-```
-
----
-
-### Task 7: Offline judge replay command
+Because Task 4 persists `JudgeContext` + `GoldAnswer` on every question, replay is a pure judge re-run — no dataset, no retriever, no reconstruction, exact live/replay parity. Runs produced before this plan lack `JudgeContext`; those questions are skipped and the count logged (by design — we do not target pre-existing files).
 
 **Files:**
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/JudgeReplayCommand.cs`
-- Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Judge/LoCoMoGoldIndex.cs` (rejoin gold answers + session dates from `locomo10.json`)
-- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Program.cs` (register the `judge-replay` verb)
-- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/JudgeReplayCommandTests.cs`
+- Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Program.cs` (register `judge-replay` verb)
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/JudgeReplayCommandTests.cs` (new)
 
 **Interfaces:**
-- Consumes: `LoCoMoLoader` id conventions (`session_N`, `D{n}:{i}`), `AnswerabilityJudge`, `RunGroupedAsync`'s judge-content shape, `WithCreatedDates`/`AnyDateSurfaced` from Tasks 4-5.
-- Produces:
-  - `LoCoMoGoldIndex.Load(string dataPath) : LoCoMoGoldIndex` with `string? GoldAnswer(string questionId)` and `DateTimeOffset? DateForHitId(string hitId)`.
-  - `JudgeReplayCommand.RunAsync(string[] args, CancellationToken)` writing `<input>.judged.json`.
+- Consumes: `QuestionResult.JudgeContext`/`GoldAnswer` (Task 1), `AnswerabilityJudge`, `BenchmarkRunner.AnyDateSurfaced`/`SessionDateScenario`, `RetrieverFactory.BuildJudgeAsync`.
+- Produces: `JudgeReplayCommand.RunAsync(string[] args, CancellationToken)` writing `<input>.judged.json`; `JudgeReplayCommand.ReplayAsync(BenchmarkRunResult input, AnswerabilityJudge judge, CancellationToken) : Task<BenchmarkRunResult>` (the testable core).
 
-- [ ] **Step 1: Failing test for gold rejoin + date-by-id.** In `JudgeReplayCommandTests.cs`, write a tiny `locomo10.json` fixture (one conversation, one session with a `_date_time`, one qa with `answer` + `evidence` `dia_id`) to a temp path, then:
+- [ ] **Step 1: Failing test for the core.** In `JudgeReplayCommandTests.cs`, build an in-memory `BenchmarkRunResult` with one `QuestionResult` that already has `JudgeContext = ["created: 2023-05-04\nI went yesterday"]`, `GoldAnswer = "May 4, 2023"`, and null judge fields; a stub `AnswerabilityJudge` (answerer → `"May 4, 2023"`, grader → `"correct"`; reuse the stub `IBenchLlmClient` from `AnswerabilityJudgeTests`/`RunnerJudgeIntegrationTests`):
 
 ```csharp
     [Fact]
-    public void LoCoMoGoldIndex_resolves_gold_answer_and_date_for_both_id_shapes()
+    public async Task ReplayAsync_judges_over_persisted_context_and_sets_all_fields()
     {
-        string path = WriteFixture(); // helper writes the JSON described above
-        var idx = LoCoMoGoldIndex.Load(path);
+        var input = OneQuestionResult(
+            judgeContext: ["created: 2023-05-04\nI went yesterday"],
+            goldAnswer: "May 4, 2023");
+        var judge = StubJudge(answer: "May 4, 2023", grade: "correct");
 
-        Assert.Equal("May 4, 2023", idx.GoldAnswer("conv_0_qa0"));
-        Assert.Equal(new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero), idx.DateForHitId("session_1"));
-        Assert.Equal(new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero), idx.DateForHitId("D1:3"));
+        var outp = await JudgeReplayCommand.ReplayAsync(input, judge, CancellationToken.None);
+
+        var q = outp.Questions[0];
+        Assert.True(q.SurfacedFromContext);
+        Assert.True(q.AnsweredCorrectly);
+        Assert.True(q.DateSurfaced);
+        Assert.Equal(1.0, outp.Aggregate.CorrectRate, 5);
+        Assert.Equal(BenchmarkRunner.SessionDateScenario, outp.RunMetadata.TemporalScenario);
+    }
+
+    [Fact]
+    public async Task ReplayAsync_skips_questions_without_persisted_context()
+    {
+        var input = OneQuestionResult(judgeContext: null, goldAnswer: "x"); // pre-existing file shape
+        var outp = await JudgeReplayCommand.ReplayAsync(input, StubJudge("x", "correct"), CancellationToken.None);
+        Assert.Null(outp.Questions[0].AnsweredCorrectly); // untouched
     }
 ```
 
-- [ ] **Step 2: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~LoCoMoGoldIndex_resolves"` — Expected: FAIL.
+- [ ] **Step 2: Run them, verify FAIL.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~ReplayAsync_"` — Expected: FAIL.
 
-- [ ] **Step 3: Implement `LoCoMoGoldIndex`.** Parse `locomo10.json` once, reusing `LoCoMoLoader`'s existing parsing conventions:
-  - Build `questionId → goldAnswer` by iterating conversations (`sample_id` → `conv_{idx}` fallback identical to `LoCoMoLoader`) and their `qa` arrays, replicating `LoCoMoLoader`'s `qaIdx` numbering (skip questions with blank `question` or empty `evidence`, exactly as the loader does, so `_qa{N}` ids line up).
-  - Build `sessionNum → date` from `session_N_date_time`.
-  - `DateForHitId`: `session_N` → date of N; `D{n}:{i}` → date of n (regex `^D(\d+):(\d+)$` and `^session_(\d+)$`, mirroring `LoCoMoLoader`).
+- [ ] **Step 3: Implement `JudgeReplayCommand.ReplayAsync`.**
 
-Key requirement: the `_qa{N}` numbering MUST match `LoCoMoLoader.ParseQa` exactly (same skip rules) or gold answers misalign. Factor the shared numbering into a single traversal that applies the loader's skip conditions verbatim.
+```csharp
+    public static async Task<BenchmarkRunResult> ReplayAsync(
+        BenchmarkRunResult input, AnswerabilityJudge judge, CancellationToken ct)
+    {
+        int skipped = 0;
+        var updated = new List<QuestionResult>(input.Questions.Count);
+        foreach (var q in input.Questions)
+        {
+            if (q.JudgeContext is not { Count: > 0 } || string.IsNullOrWhiteSpace(q.GoldAnswer))
+            {
+                skipped++;
+                updated.Add(q);
+                continue;
+            }
 
-- [ ] **Step 4: Run the index test, verify green.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~LoCoMoGoldIndex_resolves"` — Expected: PASS.
+            var verdict = await judge.JudgeAsync(q.QuestionId, q.Query, q.GoldAnswer, q.JudgeContext, ct);
+            updated.Add(verdict is null
+                ? q
+                : q with
+                {
+                    SurfacedFromContext = verdict.SurfacedFromContext,
+                    AnsweredCorrectly = verdict.AnsweredCorrectly,
+                    JudgeAnswer = verdict.Answer,
+                    JudgeGraderVerdict = verdict.GraderVerdict,
+                    DateSurfaced = BenchmarkRunner.AnyDateSurfaced(q.JudgeContext),
+                });
+        }
 
-- [ ] **Step 5: Failing test for end-to-end replay.** Write a minimal `BenchmarkRunResult` fixture JSON (one question, two `Retrieved` hits with ids `session_1`/`D1:3`, no judge fields) + the `locomo10.json` fixture; run `JudgeReplayCommand` with a stub `IBenchLlmClient` (answerer returns `"May 4, 2023"`, grader returns `"correct"`), assert the emitted `*.judged.json` has `SurfacedFromContext=true`, `AnsweredCorrectly=true`, `DateSurfaced=true`, and the original file is unchanged.
+        if (skipped > 0)
+            Console.Error.WriteLine($"[scrinia-bench:judge-replay] skipped {skipped}/{input.Questions.Count} question(s) with no persisted JudgeContext (pre-plan runs are not replay-ready).");
 
-- [ ] **Step 6: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~JudgeReplay"` — Expected: FAIL.
+        var aggregate = BenchmarkScorer.Aggregate(updated);
+        var perCategory = BenchmarkScorer.PerCategory(updated);
+        var meta = input.RunMetadata with { TemporalScenario = BenchmarkRunner.SessionDateScenario };
+        return new BenchmarkRunResult(meta, aggregate, perCategory, updated);
+    }
+```
 
-- [ ] **Step 7: Implement `JudgeReplayCommand.RunAsync`.** Flags: `--input <result.json>` (required), `--data <locomo10.json>` (required), `--judge`-family flags reused via `RetrieverFactory.BuildJudgeAsync`. Steps:
-  1. Deserialize the input `BenchmarkRunResult` with `Program.JsonOutputOptions`.
-  2. `var gold = LoCoMoGoldIndex.Load(dataPath);`
-  3. For each `QuestionResult q`: build `judgeContents = WithCreatedDates(q.Retrieved.Select(h => h.Text).ToList(), q.Retrieved, q.Retrieved.ToDictionary(h => h.Id, h => gold.DateForHitId(h.Id)))`; call `judge.JudgeAsync(q.QuestionId, q.Query, gold.GoldAnswer(q.QuestionId), judgeContents, ct)`; on non-null verdict write the four judge fields + `DateSurfaced = AnyDateSurfaced(judgeContents)`.
-  4. Recompute `Aggregate`/`PerCategory` via `BenchmarkScorer` and stamp `RunMetadata.TemporalScenario = BenchmarkRunner.SessionDateScenario` (keep existing `Granularity`).
-  5. Serialize to `<input without .json>.judged.json`.
+- [ ] **Step 4: Run the core tests, verify GREEN.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~ReplayAsync_"` — Expected: PASS.
 
-**Fidelity note (agentic replay):** a *live* agentic judge answers over `GetSurfacedContentsAsync` (ungated full memory content, Task 5). Replay only has the saved `Retrieved` hits (doc-id-mapped, provenance-gated memory text), because surfaced contents aren't persisted in result files. So replaying an agentic run judges over a slightly narrower content set than a live judge would. Dates are still surfaced correctly (via `DateForHitId` on the saved doc ids), so the temporal signal is intact; the content-source gap is a pre-existing property of what result files store, not introduced here. If exact live/replay parity for agentic is needed later, persist surfaced contents in the result file — noted, out of scope for this plan.
+- [ ] **Step 5: Implement `RunAsync` (file I/O + `--judge` wiring).** Flags: `--input <result.json>` (required), judge-family flags via `RetrieverFactory.BuildJudgeAsync`. Steps: deserialize `<input>` with `Program.JsonOutputOptions`; `var judge = await RetrieverFactory.BuildJudgeAsync(args, ct);` (error out if null — replay requires a judge); `var outp = await ReplayAsync(result, judge, ct);` serialize to `<input trimmed of .json>.judged.json`. Add a small file round-trip test asserting the sibling file is written and the original is byte-unchanged.
 
-- [ ] **Step 8: Register the verb in `Program.cs`.** Add a `"judge-replay" => JudgeReplayCommand.RunAsync(rest, ct)` arm alongside the existing benchmark verbs (match the existing dispatch pattern).
+- [ ] **Step 6: Register the verb** in `Program.cs`: add a `"judge-replay" => JudgeReplayCommand.RunAsync(rest, ct)` arm matching the existing dispatch pattern.
 
-- [ ] **Step 9: Run tests, verify green + commit.**
+- [ ] **Step 7: Run tests, verify GREEN + commit.**
 
 ```bash
-dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~JudgeReplay|FullyQualifiedName~LoCoMoGoldIndex"
+dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~JudgeReplay|FullyQualifiedName~Replay"
 git add benchmarks/Scrinia.Retrieval.Benchmarks tests/Scrinia.Retrieval.Benchmarks.Tests
-git commit -m "feat(bench): offline judge-replay command over saved retrieval + gold rejoin"
+git commit -m "feat(bench): dataset-free judge-replay over persisted JudgeContext"
 ```
 
 ---
 
-### Task 8: Ranking reader + PowerShell wrapper
+### Task 7: Ranking reader + PowerShell wrapper
 
 **Files:**
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/Cli/RankCommand.cs`
 - Modify: `benchmarks/Scrinia.Retrieval.Benchmarks/Program.cs` (register `rank` verb)
 - Create: `benchmarks/Scrinia.Retrieval.Benchmarks/scripts/rank-locomo.ps1`
-- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/RankCommandTests.cs`
+- Test: `tests/Scrinia.Retrieval.Benchmarks.Tests/RankCommandTests.cs` (new)
 
 **Interfaces:**
-- Consumes: `BenchmarkRunResult` JSON with `AggregateMetrics.CorrectRate`/`SurfacedRate` (Task 1) + `RunMetadata.Granularity`/`TemporalScenario` (Task 2); tolerant read of the legacy `Answerable` field for un-rejudged historical files.
+- Consumes: `AggregateMetrics.CorrectRate`/`SurfacedRate` (Task 1) + `RunMetadata.Granularity`/`TemporalScenario` (Task 2); tolerant read of the legacy `Answerable` field for un-rejudged historical files.
 - Produces: `RankCommand.Summarize(IEnumerable<string> files) : IReadOnlyList<RankRow>` where `RankRow(string File, int QuestionCount, double CorrectRate, double SurfacedRate, string? Granularity, string? TemporalScenario)`, sorted by `CorrectRate` desc.
 
-- [ ] **Step 1: Failing test for tolerant legacy read + sort.** In `RankCommandTests.cs`, write two fixtures — one new-schema (`CorrectRate`/`SurfacedRate`) and one legacy (`Answerable` only) — then:
+- [ ] **Step 1: Failing test for legacy-tolerant read + sort.** In `RankCommandTests.cs`, write two fixtures — one new-schema (`CorrectRate`/`SurfacedRate`), one legacy (`Answerable` only, value `0.42`):
 
 ```csharp
     [Fact]
@@ -757,26 +742,24 @@ git commit -m "feat(bench): offline judge-replay command over saved retrieval + 
         var rows = RankCommand.Summarize([legacyPath, newPath]);
         Assert.Equal(2, rows.Count);
         Assert.True(rows[0].CorrectRate >= rows[1].CorrectRate);
-        // legacy Answerable maps into CorrectRate; SurfacedRate is unknown (NaN/0 sentinel) for legacy.
         var legacy = rows.Single(r => r.File.EndsWith("legacy.json"));
         Assert.Equal(0.42, legacy.CorrectRate, 3);
     }
 ```
 
-- [ ] **Step 2: Run it, verify it fails.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Summarize_reads_new_and_legacy"` — Expected: FAIL.
+- [ ] **Step 2: Run it, verify FAIL.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Summarize_reads_new_and_legacy"` — Expected: FAIL.
 
-- [ ] **Step 3: Implement `RankCommand.Summarize`.** Parse each file's `Aggregate` and `RunMetadata` with `JsonDocument` (not the strict record) so a missing `CorrectRate` can fall back to a legacy `Answerable` property. Define `RankRow`. Sort by `CorrectRate` descending. `RunAsync(args, ct)` globs `--dir` (default the results dir) for `scrinia_locomo*.json` + `*.judged.json`, prints an aligned table with columns: file, n, correct%, surfaced%, granularity, scenario.
+- [ ] **Step 3: Implement `RankCommand.Summarize`.** Parse each file's `Aggregate` + `RunMetadata` with `JsonDocument` (tolerant), so a missing `CorrectRate` falls back to a legacy `Answerable` property. Define `RankRow`. Sort by `CorrectRate` desc. `RunAsync(args, ct)` globs `--dir` (default results dir) for `scrinia_locomo*.json` + `*.judged.json`, prints an aligned table: file, n, correct%, surfaced%, granularity, scenario.
 
-- [ ] **Step 4: Run it, verify it passes.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Summarize_reads_new_and_legacy"` — Expected: PASS.
+- [ ] **Step 4: Run it, verify PASS.** Run: `dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests -p:NuGetAudit=false --filter "FullyQualifiedName~Summarize_reads_new_and_legacy"` — Expected: PASS.
 
-- [ ] **Step 5: Register the verb + write the PowerShell wrapper.** In `Program.cs` add the `"rank"` arm. Create `scripts/rank-locomo.ps1`:
+- [ ] **Step 5: Register the verb + write the wrapper.** In `Program.cs` add the `"rank"` arm. Create `scripts/rank-locomo.ps1`:
 
 ```powershell
 #requires -version 7
-# Rank LoCoMo runs by judge metric. Optionally replay the judge over runs that lack judge data first.
+# Rank LoCoMo runs by judge metric. -Replay first re-judges runs that lack judge data (over persisted context).
 param(
     [string]$ResultsDir = "benchmarks/Scrinia.Retrieval.Benchmarks/results",
-    [string]$Data       = "benchmarks/Scrinia.Retrieval.Benchmarks/data/locomo10.json",
     [switch]$Replay,
     [string]$ReplayGlob = "scrinia_locomo_bm25_embeddings__chunked_*.json"
 )
@@ -784,14 +767,14 @@ $proj = "benchmarks/Scrinia.Retrieval.Benchmarks"
 if ($Replay) {
     Get-ChildItem -Path $ResultsDir -Filter $ReplayGlob |
         Where-Object { $_.Name -notlike "*.judged.json" } |
-        ForEach-Object {
-            dotnet run --project $proj -c Release -- judge-replay --input $_.FullName --data $Data --judge
-        }
+        ForEach-Object { dotnet run --project $proj -c Release -- judge-replay --input $_.FullName --judge }
 }
 dotnet run --project $proj -c Release -- rank --dir $ResultsDir
 ```
 
-- [ ] **Step 6: Smoke-run the script (no-replay) + commit.**
+(Note: `judge-replay` no longer needs `--data` — replay reads persisted context.)
+
+- [ ] **Step 6: Smoke-run (no-replay) + commit.**
 
 ```bash
 pwsh benchmarks/Scrinia.Retrieval.Benchmarks/scripts/rank-locomo.ps1
@@ -805,14 +788,14 @@ git commit -m "feat(bench): rank command + rank-locomo.ps1 (judge metric, legacy
 
 **Spec coverage:**
 - A (production date pseudo-attributes) → Task 3.
-- B (bench session-date seeding to answerer) → Task 4 (id-mapped retrievers: bm25/embeddings/chunked) **and** Task 5 (agentic-ingest). Date already on `HaystackDoc.Timestamp`; surfaced into answerer contents on both answerer paths, kept out of scoring in both.
+- B (bench session-date to answerer) → Task 4 (id-mapped: bm25/embeddings/chunked) **and** Task 5 (agentic-ingest). Date rides on `HaystackDoc.Timestamp`; surfaced into answerer context on both paths, kept out of scoring.
 - C (RunMetadata granularity + scenario) → Task 2.
-- D (offline judge replay) → Task 7.
-- E (ranking, legacy-tolerant) → Task 8.
-- F (surfaced/correct three-state + rename + date-presence sub-diagnostic) → Task 1 (schema split + aggregation) and Task 6 (deterministic date-presence). Per-category three-state is derivable from `PerCategory` `SurfacedRate`/`CorrectRate`; the ranking table (Task 8) surfaces overall rates. If an explicit not-surfaced/surfaced-but-wrong/correct per-category breakdown table is wanted in CLI output, it is a thin add on `PerCategory` — noted, not separately tasked.
+- D (offline judge replay) → Task 6, redesigned forward-looking: run assembles + persists `JudgeContext`+`GoldAnswer` (Task 4), replay re-judges over it dataset-free.
+- E (ranking, legacy-tolerant) → Task 7.
+- F (surfaced/correct three-state + rename + date-presence) → Task 1 (schema split + aggregation, `DateSurfaced`/`GoldAnswer`/`JudgeContext` fields) and Task 4 (`AnyDateSurfaced` computed + persisted for every question). Per-category three-state derivable from `PerCategory` `SurfacedRate`/`CorrectRate`; the rank table (Task 7) surfaces overall rates.
 
-**No deferred scope.** Both answerer paths — id-mapped (Task 4) and agentic-ingest (Task 5) — surface dates, so the agentic arm (the only mode with historical judge data) is fully covered live. The one remaining fidelity gap is agentic *replay* vs *live* content source, documented in Task 7's fidelity note; it does not affect the temporal signal and is a property of what result files persist, not a scope cut.
+**No deferred scope.** Both answerer paths surface dates (Tasks 4, 5). Forward-looking replay (per the agreed refinement) makes replay dataset-free and gives exact live/replay parity — the earlier `LoCoMoGoldIndex` rejoin, `DateForHitId` reconstruction, and agentic content-source gap are all eliminated, not deferred. Pre-plan result files are intentionally not replay-targeted (they lack `JudgeContext`); Task 6 skips and logs those questions.
 
-**Placeholder scan:** No TBD/TODO. The one "placeholder" is the deliberate two-step wiring of `temporalScenario` (Task 2 sets `null`, Task 4 sets the real constant) — sequenced intentionally so Task 2 stays independently testable.
+**Placeholder scan:** No TBD/TODO. The one intentional two-step is `temporalScenario` (Task 2 sets `null` so Task 2 stays independently testable; Task 4 sets the real constant).
 
-**Type consistency:** `SurfacedFromContext`/`AnsweredCorrectly` (bool?) and `SurfacedRate`/`CorrectRate` (double) used identically across Tasks 1, 6, 7, 8. `AnswererDateFormat.Apply`/`.Present` defined in Task 4 and consumed in Tasks 5, 6, 7. `WithCreatedDates`/`SessionDateScenario` defined in Task 4; `AnyDateSurfaced` defined in Task 6; all consumed in Task 7. `StampCreatedDates`/`_createdDateByEntryName` are internal to Task 5. `LoCoMoGoldIndex.GoldAnswer`/`DateForHitId` defined and consumed within Task 7. `RankRow` defined and consumed within Task 8.
+**Type consistency:** `SurfacedFromContext`/`AnsweredCorrectly`/`DateSurfaced` (bool?), `GoldAnswer` (string?), `JudgeContext` (IReadOnlyList<string>?) defined in Task 1, consumed in Tasks 4/6. `SurfacedRate`/`CorrectRate` (double) defined Task 1, consumed Tasks 1/7. `AnswererDateFormat.Apply`/`.Present`/`.Prefix` defined Task 4, consumed Tasks 4/5. `WithCreatedDates`/`AnyDateSurfaced`/`BuildAnswererContextAsync`/`SessionDateScenario`/`DefaultJudgeContextK` defined Task 4, consumed Tasks 4/6. `StampCreatedDates`/`_createdDateByEntryName` internal to Task 5. `JudgeReplayCommand.ReplayAsync`/`RunAsync` defined/consumed in Task 6. `RankRow`/`Summarize` in Task 7.

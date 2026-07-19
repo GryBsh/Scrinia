@@ -70,21 +70,21 @@ Extend the shared `RunMetadata` record with nullable fields, null for benchmarks
 
 Both `RunAsync` and `RunGroupedAsync` construction sites in `BenchmarkRunner` populate these from values threaded down from the command layer.
 
-### D. Judge offline replay tool
+### D. Forward-looking judge replay
 
-A bench CLI subcommand (wrapped by a PowerShell script for the user's shell) that takes an existing result file and produces judge scores without re-running retrieval:
+Replay is **forward-looking**, not a reconstruction of old files. Every run — regardless of whether a judge runs live — assembles and **persists** the exact answerer input per question, so replay is a pure judge re-run with no dataset and no retriever, giving exact live/replay parity. This replaces an earlier reconstruct-from-`locomo10.json` design whose gold-answer rejoin (fragile `_qa{N}` alignment), date re-hydration, and agentic content-source gap were all compromises; persisting the context at run time removes every one of them.
 
-1. Read the saved `Questions[]` (each has `QuestionId`, `Retrieved` hits, category).
-2. **Rejoin gold answers** from `locomo10.json` by `QuestionId` (result files do not store the gold QA answer).
-3. **Re-hydrate dates**: map each retrieved hit's `Id` (`session_N` or `D{n}:{i}`) to its session date and surface it as the `created` pseudo-attribute in the answerer's context — identical to a live run under Component B.
-4. Run **only** the judge (answerer + grader) over the reconstructed per-question context, reusing `AnswerabilityJudge` and its cache.
-5. Write `SurfacedFromContext` / `AnsweredCorrectly` / `JudgeAnswer` / `JudgeGraderVerdict` back into the question records and refresh the aggregate three-state rates / `PerCategory` (Component F), writing to a sibling file (`*.judged.json`) so the original is preserved.
+Two additions make it work:
 
-Cost is the LLM judge calls alone; retrieval is never repeated. This retroactively scores the historical corpus.
+1. **Run-time persistence (always on, every benchmark).** The runner builds the date-prefixed answerer context (top-JudgeK, `JudgeK` default 10) via the same path the judge uses, and writes it plus the gold answer onto each `QuestionResult` — new fields `JudgeContext` (the exact passages) and `GoldAnswer`. This is free for id-mapped retrievers and one extra local (no-LLM) search per question for the agentic arm. It doubles as an honest record of what the answerer saw.
+
+2. **The replay command** reads a result file and, for each question that has a persisted `JudgeContext` + `GoldAnswer`, runs **only** the judge (answerer + grader, reusing `AnswerabilityJudge` and its cache), writing `SurfacedFromContext` / `AnsweredCorrectly` / `JudgeAnswer` / `JudgeGraderVerdict` / `DateSurfaced` and refreshing the aggregate three-state rates / `PerCategory` (Component F) to a sibling `*.judged.json`. Cost is the LLM judge calls alone.
+
+Runs produced before this change lack `JudgeContext`; those questions are **skipped and the count logged** — pre-existing files are intentionally not replay-targeted (only two exist, both agentic-ingest, and reconstructing them would reintroduce the compromises above).
 
 ### E. Ranking — thin reader
 
-A thin reader over `Aggregate.Answerable` (and per-category) that ranks result files, working uniformly for freshly-`--judge`'d runs and Component-D-replayed runs. Surfaced via the same script entry point. Output includes granularity and temporal-scenario columns from `RunMetadata` so incomparable runs are visibly flagged rather than silently mixed.
+A thin reader over `Aggregate.CorrectRate`/`SurfacedRate` (and per-category) that ranks result files, working uniformly for freshly-`--judge`'d runs and Component-D-replayed runs, and tolerantly falling back to the legacy `Answerable` field for un-rejudged historical files. Surfaced via the same script entry point. Output includes granularity and temporal-scenario columns from `RunMetadata` so incomparable runs are visibly flagged rather than silently mixed.
 
 ### F. Per-category surfaced/correct attribution (all categories)
 
@@ -114,21 +114,24 @@ locomo10.json
   → retriever.Ingest / Retrieve  (date NOT in scoring path)
      → hits
   → answerer context = surfaced text + `created:` pseudo-attribute (Component A mechanism)
-     → AnswerabilityJudge (uncoached) → SurfacedFromContext + AnsweredCorrectly (Component F)
+     → persist as QuestionResult.JudgeContext + GoldAnswer (always — enables Component D)
+     → AnswerabilityJudge (uncoached, when --judge) → SurfacedFromContext + AnsweredCorrectly (Component F)
      → temporal date-presence sub-diagnostic (deterministic)
   → RunMetadata records Granularity + TemporalScenario (Component C)
 ```
 
-## Data flow (offline replay, Component D)
+## Data flow (forward replay, Component D)
 
 ```
-existing *.json (Retrieved hits, no dates, no gold answer)
-  + locomo10.json (gold answers + session dates)
-  → rejoin gold answer by QuestionId
-  → re-hydrate created date per hit Id → session date
-  → answerer context (identical to live) → judge → Answerable
+run time (always): assemble date-prefixed answerer context (top-JudgeK) + gold answer
+  → persist as QuestionResult.JudgeContext + GoldAnswer  (whether or not a judge runs live)
+
+replay: *.json (JudgeContext + GoldAnswer persisted)
+  → judge answerer + grader over the persisted context   (no dataset, no retriever)
+  → SurfacedFromContext + AnsweredCorrectly + DateSurfaced
   → write *.judged.json ; refresh aggregates
   → ranking reader (Component E)
+  (questions lacking JudgeContext — pre-plan runs — are skipped + logged)
 ```
 
 ## Faithfulness guardrails (explicit)
@@ -157,3 +160,4 @@ existing *.json (Retrieved hits, no dates, no gold answer)
 - Format: `created: 2023-05-03`, ISO date-only; `updated:` only when non-null.
 - One spec covering production surface + bench seeding + replay/ranking + metadata, reviewed together.
 - Component F generalized from a temporal-only date check to a universal per-category three-state attribution (not-surfaced / surfaced-but-wrong / correct); `Answerable` split into `SurfacedFromContext` + `AnsweredCorrectly`; id-recall retained as the deterministic retrieval lens; deterministic date-presence kept as a temporal sub-diagnostic.
+- Replay is **forward-looking**: every run persists `JudgeContext` + `GoldAnswer` per question (always on, all benchmarks), so replay is a dataset-free judge re-run with exact live/replay parity. This drops the `locomo10.json` rejoin, `_qa{N}` alignment, date re-hydration, and the agentic content-source gap. Pre-plan files (2, both agentic) are not replay-targeted — skipped + logged. Both answerer paths (id-mapped + agentic) surface dates; nothing deferred.
