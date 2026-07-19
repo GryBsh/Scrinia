@@ -106,6 +106,8 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
     // immutable during the query phase). Read by RetrieveAsync, BuildProvenanceMap, and
     // GetSurfacedContentsAsync so full content is resolved at most once per Reset.
     private Dictionary<string, string> _fullContentByEntryName = new(StringComparer.Ordinal);
+    // entryName -> the date of the session during which the memory was authored (its `created`).
+    private Dictionary<string, DateTimeOffset?> _createdDateByEntryName = new(StringComparer.Ordinal);
 
     // Cumulative run stats — NOT reset by ResetAsync; this is a whole-run summary
     // (Task 6 reads Stats after the full benchmark completes).
@@ -309,7 +311,9 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
                 _ => null,
             };
             if (name is null || !seen.Add(name)) continue;
-            contents.Add(_fullContentByEntryName.TryGetValue(name, out var full) ? full : string.Empty);
+            string full = _fullContentByEntryName.TryGetValue(name, out var f) ? f : string.Empty;
+            DateTimeOffset? date = _createdDateByEntryName.TryGetValue(name, out var dd) ? dd : null;
+            contents.Add(AnswererDateFormat.Apply(full, date));
         }
         return contents;
     }
@@ -383,15 +387,16 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         string transcript = AgenticIngestPrompts.SessionUserMessage(sessionDocs);
         string key = EpisodeCache.Key(_modelSlug, AgenticIngestPrompts.PromptVersion, transcript);
 
+        var preEpisode = new HashSet<string>(
+            _store.ListScoped().Select(a => a.Entry.Name), StringComparer.Ordinal);
+
         if (_cache.TryGet(key, out var cachedCalls))
         {
             await AgenticIngestHarness.ReplayAsync(cachedCalls, ct);
+            StampCreatedDates(preEpisode, sessionDocs);
             _agenticEpisodes++;
             return;
         }
-
-        var preEpisode = new HashSet<string>(
-            _store.ListScoped().Select(a => a.Entry.Name), StringComparer.Ordinal);
 
         EpisodeResult result = await _harness.RunEpisodeAsync(sessionDocs, ct);
         _toolCallErrors += result.ToolCallErrors;
@@ -416,6 +421,7 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
             // never an empty one (caching empty would freeze this session at "stores
             // nothing" on every future cache-hit run).
             _cache.Put(key, result.ToolCalls);
+            StampCreatedDates(preEpisode, sessionDocs);
             _agenticEpisodes++;
             return;
         }
@@ -457,6 +463,18 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         foreach (var a in _store.ListScoped().ToList())
             if (!preEpisode.Contains(a.Entry.Name))
                 _store.Remove(a.Entry.Name, a.Scope);
+    }
+
+    /// <summary>Records the authoring session's date as the `created` date of every memory added this
+    /// episode (delta vs preEpisode). All docs in a session share one Timestamp; first-authoring wins.</summary>
+    private void StampCreatedDates(HashSet<string> preEpisode, IReadOnlyList<HaystackDoc> sessionDocs)
+    {
+        DateTimeOffset? sessionDate = null;
+        foreach (var d in sessionDocs) if (d.Timestamp is { } t) { sessionDate = t; break; }
+
+        foreach (var a in _store.ListScoped())
+            if (!preEpisode.Contains(a.Entry.Name) && !_createdDateByEntryName.ContainsKey(a.Entry.Name))
+                _createdDateByEntryName[a.Entry.Name] = sessionDate;
     }
 
     /// <summary>
@@ -560,6 +578,7 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
         _ingested = false;
         _provenance = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         _fullContentByEntryName = new Dictionary<string, string>(StringComparer.Ordinal);
+        _createdDateByEntryName = new Dictionary<string, DateTimeOffset?>(StringComparer.Ordinal);
 
         return Task.CompletedTask;
     }

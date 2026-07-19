@@ -528,4 +528,37 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
         hits.Select(h => h.Id).Should().Equal("D1:1", "D1:2");
         hits.Should().OnlyContain(h => h.Score > 0);
     }
+
+    [Fact]
+    public async Task GetSurfacedContents_prefixes_memory_with_authoring_session_date()
+    {
+        var remember = new ToolCallRequest("c1", "remember",
+            """{"path":"/findings/support","content":["Talked about joining a support group.\nref: D1:3"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc(
+            "D1:3", "Maria: I joined a support group.", new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero), "s1"));
+
+        var contents = await retriever.GetSurfacedContentsAsync("support group", k: 5);
+        Assert.NotEmpty(contents);
+        Assert.All(contents, c => Assert.StartsWith("created: 2023-05-04\n", c));
+    }
+
+    [Fact]
+    public async Task Retrieve_hits_are_not_date_prefixed_so_recall_is_unaffected()
+    {
+        var remember = new ToolCallRequest("c1", "remember",
+            """{"path":"/findings/support","content":["Talked about joining a support group.\nref: D1:3"]}""");
+        var (retriever, _, _) = MakeRetriever(
+            new ToolTurnResult(null, [remember], "tool_calls"),
+            new ToolTurnResult("done", [], "stop"));
+
+        await retriever.IngestAsync(new HaystackDoc(
+            "D1:3", "Maria: I joined a support group.", new DateTimeOffset(2023, 5, 4, 0, 0, 0, TimeSpan.Zero), "s1"));
+
+        var hits = await retriever.RetrieveAsync("support group", topK: 10);
+        Assert.All(hits, h => Assert.DoesNotContain("created: ", h.Text));
+    }
 }
