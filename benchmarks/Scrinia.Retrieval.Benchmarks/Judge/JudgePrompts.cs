@@ -4,11 +4,13 @@ namespace Scrinia.Retrieval.Benchmarks.Judge;
 
 public static class JudgePrompts
 {
-    public const string AnswererSystem =
+    public const string NotAnswerableSentinel = "NOT ANSWERABLE FROM CONTEXT";
+
+    public static readonly string AnswererSystem =
         "You answer a question using ONLY the numbered context passages provided. " +
         "Base your answer strictly on that context — do not use outside knowledge. " +
         "If the context does not contain enough information to answer, reply exactly: " +
-        "NOT ANSWERABLE FROM CONTEXT. Otherwise give the shortest correct answer (a few words).";
+        $"{NotAnswerableSentinel}. Otherwise give the shortest correct answer (a few words).";
 
     public static string AnswererUser(string question, IReadOnlyList<string> retrievedContents)
     {

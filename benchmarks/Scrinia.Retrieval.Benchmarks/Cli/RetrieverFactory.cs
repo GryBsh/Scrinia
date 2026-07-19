@@ -344,7 +344,8 @@ internal static class RetrieverFactory
     {
         Console.WriteLine();
         Console.WriteLine("=== judge answerability ===");
-        Console.WriteLine($"answerable@{judge.JudgeK}:  {result.Aggregate.Answerable:P1}");
+        Console.WriteLine($"correct@{judge.JudgeK}:  {result.Aggregate.CorrectRate:P1}");
+        Console.WriteLine($"surfaced@{judge.JudgeK}:  {result.Aggregate.SurfacedRate:P1}");
         Console.WriteLine($"  judged:   {judge.JudgedCount}");
         Console.WriteLine($"  no gold:  {judge.NoGoldCount}");
         Console.WriteLine($"  failed:   {judge.FailedCount}");

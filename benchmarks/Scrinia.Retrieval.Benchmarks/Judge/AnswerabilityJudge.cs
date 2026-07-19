@@ -4,11 +4,13 @@ using Scrinia.Retrieval.Benchmarks.Llm.Providers;
 namespace Scrinia.Retrieval.Benchmarks.Judge;
 
 /// <summary>
-/// A single answerability verdict produced by <see cref="AnswerabilityJudge"/>: whether
-/// the retrieved context let the answerer LLM produce a response the grader LLM judged
-/// as matching the gold answer, plus the raw answerer/grader text for debugging.
+/// A single answerability verdict produced by <see cref="AnswerabilityJudge"/>. Splits two
+/// distinct signals: <see cref="SurfacedFromContext"/> (the answerer produced an answer
+/// rather than emitting the not-answerable sentinel) and <see cref="AnsweredCorrectly"/>
+/// (the grader LLM judged that answer as matching the gold answer), plus the raw
+/// answerer/grader text for debugging.
 /// </summary>
-public sealed record JudgeVerdict(bool Answerable, string Answer, string GraderVerdict);
+public sealed record JudgeVerdict(bool SurfacedFromContext, bool AnsweredCorrectly, string Answer, string GraderVerdict);
 
 /// <summary>
 /// LLM-judge answerability metric: for a question, runs an ANSWERER call (question +
@@ -28,6 +30,11 @@ public sealed class AnswerabilityJudge
     // aggregate. The judge model runs at a non-zero temperature, so a re-attempt genuinely
     // varies rather than reproducing the same blank.
     private const int MaxCallAttempts = 3;
+
+    /// <summary>The answerer surfaced an answer iff it did not emit the not-answerable sentinel.
+    /// Case-insensitive, trimmed, prefix-matched so trailing chatter still counts as not-surfaced.</summary>
+    public static bool IsSurfaced(string? answer) =>
+        !(answer ?? string.Empty).Trim().StartsWith(JudgePrompts.NotAnswerableSentinel, StringComparison.OrdinalIgnoreCase);
 
     private readonly IBenchLlmClient _llm;
     private readonly LlmResponseCache _cache;
@@ -97,9 +104,9 @@ public sealed class AnswerabilityJudge
             questionId).ConfigureAwait(false);
         if (graderReply is null) return null;
 
-        bool answerable = JudgePrompts.ParseGrade(graderReply);
+        bool correct = JudgePrompts.ParseGrade(graderReply);
         Interlocked.Increment(ref _judgedCount);
-        return new JudgeVerdict(answerable, answer, graderReply);
+        return new JudgeVerdict(IsSurfaced(answer), correct, answer, graderReply);
     }
 
     /// <summary>

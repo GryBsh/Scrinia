@@ -288,6 +288,23 @@ public class BenchmarkScorerTests
     }
 
     [Fact]
+    public void Aggregate_reports_surfaced_and_correct_rates_over_judged_only()
+    {
+        var q = new BenchmarkQuestion("q", "query", [], ["g"], [], "single_hop");
+        var hits = new List<RetrievalHit> { new("g", "t", 1.0) };
+        var correct  = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = true,  AnsweredCorrectly = true };
+        var wrong    = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = true,  AnsweredCorrectly = false };
+        var missed   = BenchmarkScorer.ScoreFractionalById(q, hits) with { SurfacedFromContext = false, AnsweredCorrectly = false };
+        var unjudged = BenchmarkScorer.ScoreFractionalById(q, hits);
+
+        var agg = BenchmarkScorer.Aggregate([correct, wrong, missed, unjudged]);
+
+        Assert.Equal(4, agg.QuestionCount);
+        Assert.Equal(2.0 / 3.0, agg.SurfacedRate, 5);
+        Assert.Equal(1.0 / 3.0, agg.CorrectRate, 5);
+    }
+
+    [Fact]
     public void Aggregate_empty_results_returns_zeros()
     {
         var agg = BenchmarkScorer.Aggregate(Array.Empty<QuestionResult>());

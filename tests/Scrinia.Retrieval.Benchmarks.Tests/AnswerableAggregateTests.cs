@@ -6,21 +6,21 @@ namespace Scrinia.Retrieval.Benchmarks.Tests;
 
 public sealed class AnswerableAggregateTests
 {
-    private static QuestionResult Q(bool? answerable) =>
-        new("id", "q", "cat", [], [], [], 0, 0, 0, 0, Answerable: answerable);
+    private static QuestionResult Q(bool? answeredCorrectly) =>
+        new("id", "q", "cat", [], [], [], 0, 0, 0, 0, AnsweredCorrectly: answeredCorrectly);
 
     [Fact]
-    public void Aggregate_AveragesAnswerable_OverJudgedOnly()
+    public void Aggregate_AveragesCorrectRate_OverJudgedOnly()
     {
         // 2 judged (one true, one false) + 1 un-judged (null) -> 0.5, not 1/3.
         var agg = BenchmarkScorer.Aggregate([Q(true), Q(false), Q(null)]);
-        agg.Answerable.Should().Be(0.5);
+        agg.CorrectRate.Should().Be(0.5);
     }
 
     [Fact]
-    public void Aggregate_Answerable_IsZero_WhenNoneJudged()
+    public void Aggregate_CorrectRate_IsZero_WhenNoneJudged()
     {
         var agg = BenchmarkScorer.Aggregate([Q(null), Q(null)]);
-        agg.Answerable.Should().Be(0.0);
+        agg.CorrectRate.Should().Be(0.0);
     }
 }

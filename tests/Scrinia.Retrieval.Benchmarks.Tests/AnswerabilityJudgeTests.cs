@@ -25,21 +25,32 @@ public sealed class AnswerabilityJudgeTests : IDisposable
         new(c, new LlmResponseCache(_cacheFile), "test", "test-model", judgeK: 10);
 
     [Fact]
-    public async Task Judge_CorrectGrade_YieldsAnswerableTrue()
+    public void IsSurfaced_false_only_for_the_sentinel()
+    {
+        Assert.False(AnswerabilityJudge.IsSurfaced(JudgePrompts.NotAnswerableSentinel));
+        Assert.False(AnswerabilityJudge.IsSurfaced("  not answerable from context  "));
+        Assert.True(AnswerabilityJudge.IsSurfaced("Yesterday"));
+        Assert.True(AnswerabilityJudge.IsSurfaced("2023-05-03"));
+    }
+
+    [Fact]
+    public async Task Judge_CorrectGrade_YieldsAnsweredCorrectlyTrue()
     {
         var c = new ScriptedLlmClient("Lisbon", "correct");
         var v = await Judge(c).JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
         v.Should().NotBeNull();
-        v!.Answerable.Should().BeTrue();
+        v!.AnsweredCorrectly.Should().BeTrue();
+        v.SurfacedFromContext.Should().BeTrue();
         v.Answer.Should().Be("Lisbon");
     }
 
     [Fact]
-    public async Task Judge_IncorrectGrade_YieldsAnswerableFalse()
+    public async Task Judge_IncorrectGrade_YieldsAnsweredCorrectlyFalse()
     {
         var c = new ScriptedLlmClient("Paris", "incorrect");
         var v = await Judge(c).JudgeAsync("q1", "Where?", "Lisbon", ["noise"], default);
-        v!.Answerable.Should().BeFalse();
+        v!.AnsweredCorrectly.Should().BeFalse();
+        v.SurfacedFromContext.Should().BeTrue();
     }
 
     [Fact]
@@ -62,7 +73,7 @@ public sealed class AnswerabilityJudgeTests : IDisposable
         j.FailedCount.Should().Be(1);
         // A fresh judge over the same inputs re-attempts (nothing was cached).
         var j2 = Judge(new ScriptedLlmClient("Lisbon", "correct"));
-        (await j2.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default))!.Answerable.Should().BeTrue();
+        (await j2.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default))!.AnsweredCorrectly.Should().BeTrue();
     }
 
     [Fact]
@@ -77,7 +88,7 @@ public sealed class AnswerabilityJudgeTests : IDisposable
         // persisted (that's correct, per-call behavior), so it is not re-asked here --
         // only the grader reply needs to be scripted for this second call to succeed.
         var j2 = Judge(new ScriptedLlmClient("correct"));
-        (await j2.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default))!.Answerable.Should().BeTrue();
+        (await j2.JudgeAsync("q1", "Where?", "Lisbon", ["x"], default))!.AnsweredCorrectly.Should().BeTrue();
     }
 
     [Fact]
@@ -89,7 +100,7 @@ public sealed class AnswerabilityJudgeTests : IDisposable
         var c = new ScriptedLlmClient(null, "Lisbon", "correct");
         var j = Judge(c);
         var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
-        v!.Answerable.Should().BeTrue();
+        v!.AnsweredCorrectly.Should().BeTrue();
         j.FailedCount.Should().Be(0, "a blank that recovers on retry is not a failure");
         c.CallCount.Should().Be(3, "answerer blank + answerer retry + grader");
     }
@@ -101,7 +112,7 @@ public sealed class AnswerabilityJudgeTests : IDisposable
         var c = new ScriptedLlmClient("Lisbon", null, "correct");
         var j = Judge(c);
         var v = await j.JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
-        v!.Answerable.Should().BeTrue();
+        v!.AnsweredCorrectly.Should().BeTrue();
         j.FailedCount.Should().Be(0);
         c.CallCount.Should().Be(3, "answerer + grader blank + grader retry");
     }
@@ -127,7 +138,7 @@ public sealed class AnswerabilityJudgeTests : IDisposable
             .JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
         var spy = new ScriptedLlmClient(); // would return null if called
         var v = await Judge(spy).JudgeAsync("q1", "Where?", "Lisbon", ["Maria booked Lisbon."], default);
-        v!.Answerable.Should().BeTrue();
+        v!.AnsweredCorrectly.Should().BeTrue();
         spy.CallCount.Should().Be(0, "identical inputs must hit the cache");
     }
 }

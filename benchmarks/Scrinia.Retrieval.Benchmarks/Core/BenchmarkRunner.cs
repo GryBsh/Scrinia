@@ -90,7 +90,13 @@ public sealed class BenchmarkRunner
                 var verdict = await _judge.JudgeAsync(
                     q.Id, q.QueryText, q.GoldAnswer, judgeContents, ct);
                 if (verdict is not null)
-                    scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
+                    scored = scored with
+                    {
+                        SurfacedFromContext = verdict.SurfacedFromContext,
+                        AnsweredCorrectly = verdict.AnsweredCorrectly,
+                        JudgeAnswer = verdict.Answer,
+                        JudgeGraderVerdict = verdict.GraderVerdict,
+                    };
             }
             results.Add(scored);
             n++;
@@ -161,7 +167,13 @@ public sealed class BenchmarkRunner
                     var verdict = await _judge.JudgeAsync(
                         q.Id, q.QueryText, q.GoldAnswer, judgeContents, ct);
                     if (verdict is not null)
-                        scored = scored with { Answerable = verdict.Answerable, JudgeAnswer = verdict.Answer, JudgeGraderVerdict = verdict.GraderVerdict };
+                        scored = scored with
+                    {
+                        SurfacedFromContext = verdict.SurfacedFromContext,
+                        AnsweredCorrectly = verdict.AnsweredCorrectly,
+                        JudgeAnswer = verdict.Answer,
+                        JudgeGraderVerdict = verdict.GraderVerdict,
+                    };
                 }
                 results.Add(scored);
                 progress?.Report(new RunProgress(results.Count, scored));

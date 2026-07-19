@@ -90,7 +90,7 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task RunAsync_WithJudge_PopulatesAnswerable_AndKeepsRecallIntact()
+    public async Task RunAsync_WithJudge_PopulatesSurfacedAndCorrect_AndKeepsRecallIntact()
     {
         var retriever = new StubRetriever([new RetrievalHit("d1", "Maria booked Lisbon.", 1.0)]);
         var question = new BenchmarkQuestion(
@@ -105,15 +105,17 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
             BenchmarkScorer.ScoreAnyHitById, ct: CancellationToken.None);
 
         result.Questions.Should().HaveCount(1);
-        result.Questions[0].Answerable.Should().BeTrue();
+        result.Questions[0].SurfacedFromContext.Should().BeTrue();
+        result.Questions[0].AnsweredCorrectly.Should().BeTrue();
         result.Questions[0].JudgeAnswer.Should().Be("Lisbon");
         result.Questions[0].JudgeGraderVerdict.Should().Be("correct");
         result.Questions[0].RecallAt10.Should().Be(1.0);
-        result.Aggregate.Answerable.Should().Be(1.0);
+        result.Aggregate.SurfacedRate.Should().Be(1.0);
+        result.Aggregate.CorrectRate.Should().Be(1.0);
     }
 
     [Fact]
-    public async Task RunGroupedAsync_WithJudge_PopulatesAnswerable_AndKeepsRecallIntact()
+    public async Task RunGroupedAsync_WithJudge_PopulatesSurfacedAndCorrect_AndKeepsRecallIntact()
     {
         var haystack = new[] { new HaystackDoc("d1", "Maria booked Lisbon.", null) };
         var retriever = new StubRetriever([new RetrievalHit("d1", "Maria booked Lisbon.", 1.0)]);
@@ -130,10 +132,12 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
             BenchmarkScorer.ScoreAnyHitById, ct: CancellationToken.None);
 
         result.Questions.Should().HaveCount(1);
-        result.Questions[0].Answerable.Should().BeTrue();
+        result.Questions[0].SurfacedFromContext.Should().BeTrue();
+        result.Questions[0].AnsweredCorrectly.Should().BeTrue();
         result.Questions[0].JudgeAnswer.Should().Be("Lisbon");
         result.Questions[0].JudgeGraderVerdict.Should().Be("correct");
         result.Questions[0].RecallAt10.Should().Be(1.0);
-        result.Aggregate.Answerable.Should().Be(1.0);
+        result.Aggregate.SurfacedRate.Should().Be(1.0);
+        result.Aggregate.CorrectRate.Should().Be(1.0);
     }
 }
