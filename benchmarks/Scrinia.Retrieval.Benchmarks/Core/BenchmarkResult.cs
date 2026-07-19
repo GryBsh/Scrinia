@@ -18,7 +18,9 @@ public sealed record RunMetadata(
     DateTimeOffset StartedAt,
     DateTimeOffset CompletedAt,
     int QuestionCount,
-    string ScriniaVersion);
+    string ScriniaVersion,
+    string? Granularity = null,
+    string? TemporalScenario = null);
 
 /// <summary>
 /// <see cref="SurfacedRate"/> and <see cref="CorrectRate"/> are both means over judged

@@ -57,6 +57,8 @@ public sealed class BenchmarkRunner
         BenchmarkScorer.Scorer scorer,
         IProgress<RunProgress>? progress = null,
         int ingestConcurrency = 1,
+        string? granularity = null,
+        string? temporalScenario = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
@@ -112,7 +114,9 @@ public sealed class BenchmarkRunner
             StartedAt: startedAt,
             CompletedAt: DateTimeOffset.UtcNow,
             QuestionCount: results.Count,
-            ScriniaVersion: ReadScriniaVersion());
+            ScriniaVersion: ReadScriniaVersion(),
+            Granularity: granularity,
+            TemporalScenario: temporalScenario);
 
         return new BenchmarkRunResult(meta, aggregate, perCategory, results);
     }
@@ -132,6 +136,8 @@ public sealed class BenchmarkRunner
         BenchmarkScorer.Scorer scorer,
         IProgress<RunProgress>? progress = null,
         int ingestConcurrency = 1,
+        string? granularity = null,
+        string? temporalScenario = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(benchmarkName);
@@ -189,7 +195,9 @@ public sealed class BenchmarkRunner
             StartedAt: startedAt,
             CompletedAt: DateTimeOffset.UtcNow,
             QuestionCount: results.Count,
-            ScriniaVersion: ReadScriniaVersion());
+            ScriniaVersion: ReadScriniaVersion(),
+            Granularity: granularity,
+            TemporalScenario: temporalScenario);
         return new BenchmarkRunResult(meta, aggregate, perCategory, results);
     }
 

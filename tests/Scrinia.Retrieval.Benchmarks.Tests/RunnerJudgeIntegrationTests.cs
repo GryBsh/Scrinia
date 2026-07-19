@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
@@ -139,5 +140,20 @@ public sealed class RunnerJudgeIntegrationTests : IDisposable
         result.Questions[0].RecallAt10.Should().Be(1.0);
         result.Aggregate.SurfacedRate.Should().Be(1.0);
         result.Aggregate.CorrectRate.Should().Be(1.0);
+    }
+
+    [Fact]
+    public void RunMetadata_serializes_granularity_and_scenario_and_defaults_null()
+    {
+        var meta = new RunMetadata("locomo", "bm25", 50, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, "v",
+            Granularity: "dialog", TemporalScenario: "session-date-ingest");
+        string json = JsonSerializer.Serialize(meta, Program.JsonOutputOptions);
+        var back = JsonSerializer.Deserialize<RunMetadata>(json, Program.JsonOutputOptions)!;
+        Assert.Equal("dialog", back.Granularity);
+        Assert.Equal("session-date-ingest", back.TemporalScenario);
+
+        var bare = new RunMetadata("membench", "bm25", 10, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1, "v");
+        Assert.Null(bare.Granularity);
+        Assert.Null(bare.TemporalScenario);
     }
 }
