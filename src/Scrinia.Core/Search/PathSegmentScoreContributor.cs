@@ -58,12 +58,12 @@ public sealed class PathSegmentScoreContributor : ISearchScoreContributor
 
     private static int CountPathTokenIntersection(ScopedArtifact candidate, HashSet<string> queryTokens)
     {
-        // Strip the "local-topic:" infrastructure prefix so its tokens ("local", "topic")
+        // Strip the "local:" infrastructure prefix so its tokens ("local", "topic")
         // don't pollute every candidate's path bag. After stripping, scope is the
         // raw topic path (e.g. "findings/auth-refactor"). Name is the leaf subject.
         string scope = candidate.Scope;
-        if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
-            scope = scope["local-topic:".Length..];
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            scope = scope["local:".Length..];
 
         int intersect = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

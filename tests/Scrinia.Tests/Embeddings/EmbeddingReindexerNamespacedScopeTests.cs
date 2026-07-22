@@ -59,9 +59,9 @@ public sealed class EmbeddingReindexerNamespacedScopeTests : IDisposable
     [Fact]
     public async Task ReindexAsync_NamespacedTopicScope_EmbedsRatherThanSkips()
     {
-        // "api:notes" v1 syntax -> "local-topic:memory/api" (the ordinary case for every
+        // "api:notes" v1 syntax -> "local:memory/api" (the ordinary case for every
         // non-skill, non-agent named topic).
-        const string scope = "local-topic:memory/api";
+        const string scope = "local:memory/api";
         SeedEntry(scope, "notes", "auth flow notes");
 
         string embeddingsDir = Path.Combine(_root, ".scrinia", "embeddings");
@@ -82,7 +82,7 @@ public sealed class EmbeddingReindexerNamespacedScopeTests : IDisposable
     [Fact]
     public async Task ReindexViaSinkAsync_NamespacedTopicScope_SinkReceivesCorrectScope()
     {
-        const string scope = "local-topic:memory/api";
+        const string scope = "local:memory/api";
         SeedEntry(scope, "notes", "auth flow notes");
 
         var capturingSink = new CapturingSink();

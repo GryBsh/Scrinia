@@ -34,7 +34,7 @@ public class FileMemoryStoreCacheTests : IDisposable
 
     private void Add(string topic, string name, string content)
     {
-        string scope = string.IsNullOrEmpty(topic) ? "local" : $"local-topic:{topic}";
+        string scope = string.IsNullOrEmpty(topic) ? "local" : $"local:{topic}";
         var entry = new ArtifactEntry(name, "", content.Length, 1, DateTimeOffset.UtcNow);
         _store.Upsert(entry, scope);
         string path = _store.ArtifactPath(name, scope);
@@ -59,15 +59,15 @@ public class FileMemoryStoreCacheTests : IDisposable
     {
         Add("memory/foo", "memo", "hello");
         string[] before = _store.DiscoverTopics();
-        before.Should().Contain("local-topic:memory/foo");
+        before.Should().Contain("local:memory/foo");
 
         // Add a memory in a brand new topic scope — Upsert must invalidate the cache.
         Add("memory/bar", "memo2", "world");
 
         string[] after = _store.DiscoverTopics();
         ReferenceEquals(before, after).Should().BeFalse("cache should have been invalidated");
-        after.Should().Contain("local-topic:memory/foo");
-        after.Should().Contain("local-topic:memory/bar");
+        after.Should().Contain("local:memory/foo");
+        after.Should().Contain("local:memory/bar");
     }
 
     [Fact]

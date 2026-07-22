@@ -16,7 +16,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     {
         foreach (var fact in corpus)
         {
-            string name = $"{fact.Topic}:{fact.Key}";
+            string name = $"/{fact.Topic}/{fact.Key}";
             await _tools.Store(
                 [fact.Content],
                 name,
@@ -77,7 +77,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
 
     public override async Task UpdateFactAsync(BenchmarkFact updated)
     {
-        string name = $"{updated.Topic}:{updated.Key}";
+        string name = $"/{updated.Topic}/{updated.Key}";
         await _tools.Store(
             [updated.Content],
             name,

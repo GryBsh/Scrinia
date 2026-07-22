@@ -56,7 +56,7 @@ public sealed class SearchExcludeTopicsTests
                 ContentPreview: "planning note"),
                 // Matches MemoryNaming.BuildScopedTopicScope("plan") — the scope form that
                 // excludeTopics: "plan" actually excludes (see IMemoryStore.BuildExcludedScopeSet).
-                scope: "local-topic:memory/plan");
+                scope: "local:plan");
         }
 
         // Non-excluded entries ("kb"): only a content-preview "contains" match (field score 5) —
@@ -72,7 +72,7 @@ public sealed class SearchExcludeTopicsTests
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
                 ContentPreview: "background text containing sentinel reference"),
-                scope: "local-topic:memory/kb");
+                scope: "local:kb");
         }
 
         SearchContributorContext.Current = new FakeScoreContributor();

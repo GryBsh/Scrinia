@@ -435,8 +435,8 @@ public sealed class ScriniaMcpToolsTests
             attributes: new Dictionary<string, string[]> { ["org"] = ["acme"], ["topic"] = ["renewal"] },
             keywords: ["renewed", "annual contract"]);
 
-        // "/findings/acme" is a v2 path — it resolves to scope "local-topic:findings", not "local".
-        var entry = ScriniaArtifactStore.LoadIndex("local-topic:findings").First(e => e.Name.Contains("acme"));
+        // "/findings/acme" is a v2 path — it resolves to scope "local:findings", not "local".
+        var entry = ScriniaArtifactStore.LoadIndex("local:findings").First(e => e.Name.Contains("acme"));
         entry.Attributes.Should().ContainKey("org");
         entry.Attributes!["org"].Should().Contain("acme");
         entry.Keywords.Should().Contain("annual contract");
@@ -451,8 +451,8 @@ public sealed class ScriniaMcpToolsTests
         await Tools().MemoryAppend(path: "/sessions/s1", content: "second",
             attributes: new Dictionary<string, string[]> { ["person"] = ["bob"], ["topic"] = ["standup"] });
 
-        // "/sessions/s1" is a v2 path — it resolves to scope "local-topic:sessions", not "local".
-        var entry = ScriniaArtifactStore.LoadIndex("local-topic:sessions").First(e => e.Name == "s1");
+        // "/sessions/s1" is a v2 path — it resolves to scope "local:sessions", not "local".
+        var entry = ScriniaArtifactStore.LoadIndex("local:sessions").First(e => e.Name == "s1");
         entry.Attributes!["person"].Should().Contain("alice").And.Contain("bob");   // multi-valued union
         entry.Attributes.Should().ContainKey("topic");
     }
@@ -474,8 +474,8 @@ public sealed class ScriniaMcpToolsTests
     public async Task List_Summary_ShowsTopicsAndStats()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["api notes"], "api:auth-flow", keywords: ["auth", "api"]);
-        await Tools().Store(["arch notes"], "arch:decisions", keywords: ["architecture"]);
+        await Tools().Store(["api notes"], "/api/auth-flow", keywords: ["auth", "api"]);
+        await Tools().Store(["arch notes"], "/arch/decisions", keywords: ["architecture"]);
         await Tools().Store(["local note"], "quick-ref");
 
         string result = await Tools().List(); // default = summary
@@ -484,8 +484,8 @@ public sealed class ScriniaMcpToolsTests
         content.Should().Contain("Memory Summary");
         content.Should().Contain("3 memories");
         content.Should().Contain("2 topic");
-        content.Should().Contain("topic:api");
-        content.Should().Contain("topic:arch");
+        content.Should().Contain("/api");
+        content.Should().Contain("/arch");
         content.Should().Contain("local");
         content.Should().Contain("Top keywords");
         content.Should().Contain("auth");
@@ -599,14 +599,14 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         var store = Scrinia.Core.MemoryStoreContext.Current!;
 
-        // "api:auth-flow" is v1 topic syntax -> routes to the namespaced
-        // "local-topic:memory/api" scope (not "local").
-        await Tools().Store(["hello world"], "api:auth-flow",
+        // "/api/auth-flow" is a topic path -> routes to the "local:api"
+        // scope (not "local").
+        await Tools().Store(["hello world"], "/api/auth-flow",
             description: "test", tags: null, keywords: null);
 
-        var (expectedScope, subject) = store.ParseQualifiedName("api:auth-flow");
-        expectedScope.Should().Be("local-topic:memory/api",
-            because: "v1 'topic:subject' syntax must route to a namespaced scope, not local");
+        var (expectedScope, subject) = store.ParseQualifiedName("/api/auth-flow");
+        expectedScope.Should().Be("local:api",
+            because: "a '/topic/subject' path must route to a namespaced scope, not local");
 
         string uri = store.ArtifactUri(subject, expectedScope);
 
@@ -794,22 +794,20 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public void ParseQualifiedName_TopicSubject_ReturnsLocalTopic()
+    public void ParseQualifiedName_TopicPath_ReturnsLocalTopic()
     {
-        var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName("dotnet:di-patterns");
+        var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName("/dotnet/di-patterns");
 
-        scope.Should().Be("local-topic:memory/dotnet");
+        scope.Should().Be("local:dotnet");
         subject.Should().Be("di-patterns");
     }
 
     [Fact]
-    public void ParseQualifiedName_ColonSeparated_ReturnsTopic()
+    public void ParseQualifiedName_ColonName_IsRejected()
     {
-        // "global:legacy-data" is now treated as topic="global", subject="legacy-data"
-        var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName("global:legacy-data");
+        var act = () => ScriniaArtifactStore.ParseQualifiedName("global:legacy-data");
 
-        scope.Should().Be("local-topic:memory/global");
-        subject.Should().Be("legacy-data");
+        act.Should().Throw<ArgumentException>().WithMessage("*/global/legacy-data*");
     }
 
     [Fact]
@@ -878,10 +876,10 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public void FormatQualifiedName_LocalTopic_ReturnsTopicColon()
+    public void FormatQualifiedName_LocalTopic_ReturnsPath()
     {
-        string result = ScriniaArtifactStore.FormatQualifiedName("local-topic:dotnet", "di");
-        result.Should().Be("dotnet:di");
+        string result = ScriniaArtifactStore.FormatQualifiedName("local:dotnet", "di");
+        result.Should().Be("/dotnet/di");
     }
 
     // ── FormatScopeLabel (3 tests) ───────────────────────────────────────────
@@ -895,7 +893,7 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void FormatScopeLabel_LocalTopic_ReturnsTopicName()
     {
-        ScriniaArtifactStore.FormatScopeLabel("local-topic:api").Should().Be("api");
+        ScriniaArtifactStore.FormatScopeLabel("local:api").Should().Be("api");
     }
 
     [Fact]
@@ -1171,24 +1169,24 @@ public sealed class ScriniaMcpToolsTests
     public async Task Store_LocalTopic_WritesToWorkspaceTopics()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["auth flow documentation"], "api:auth");
+        await Tools().Store(["auth flow documentation"], "/api/auth");
 
-        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "memory", "api", "auth.nmp2");
+        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "api", "auth.nmp2");
         File.Exists(expectedPath).Should().BeTrue(
-            because: "topic:subject must write to .scrinia/topics/topic/subject.nmp2 in workspace");
+            because: "a /topic/subject path must write to .scrinia/topics/topic/subject.nmp2 in workspace");
     }
 
     [Fact]
     public async Task List_LocalTopic_ShowsTopicNameAsScope()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["auth notes"], "api:auth-flow");
+        await Tools().Store(["auth notes"], "/api/auth-flow");
 
         string memories = await Tools().List(mode: "full");
         var content = ResponseParser.Parse(memories).Content!;
 
         content.Should().Contain("api",
-            because: "scope column for local-topic:api must display as 'api'");
+            because: "scope column for local:api must display as 'api'");
         content.Should().Contain("auth-flow",
             because: "the entry name must appear in the List output");
     }
@@ -1199,9 +1197,9 @@ public sealed class ScriniaMcpToolsTests
     public async Task Export_MultipleTopics_CreatesBundleFile()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["auth flow doc"], "api:auth");
-        await Tools().Store(["error handling"], "api:errors");
-        await Tools().Store(["db choice"], "arch:database");
+        await Tools().Store(["auth flow doc"], "/api/auth");
+        await Tools().Store(["error handling"], "/api/errors");
+        await Tools().Store(["db choice"], "/arch/database");
 
         string result = await Tools().Export(["api", "arch"]);
         var content = ResponseParser.Parse(result).Content!;
@@ -1225,8 +1223,8 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         // Create and export topics
-        await Tools().Store(["auth flow doc"], "api:auth");
-        await Tools().Store(["db choice"], "arch:database");
+        await Tools().Store(["auth flow doc"], "/api/auth");
+        await Tools().Store(["db choice"], "/arch/database");
         string exportResult = await Tools().Export(["api", "arch"]);
         var exportContent = ResponseParser.Parse(exportResult).Content!;
 
@@ -1234,8 +1232,8 @@ public sealed class ScriniaMcpToolsTests
         string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
 
         // Delete the original topics
-        await Tools().Forget("api:auth");
-        await Tools().Forget("arch:database");
+        await Tools().Forget("/api/auth");
+        await Tools().Forget("/arch/database");
 
         // Import from bundle
         string importResult = await Tools().Import(bundlePath);
@@ -1247,7 +1245,7 @@ public sealed class ScriniaMcpToolsTests
             because: "two topics were imported");
 
         // Verify entries are restored
-        string restored = await Tools().Show("api:auth");
+        string restored = await Tools().Show("/api/auth");
         ResponseParser.Parse(restored).Content.Should().Be("auth flow doc",
             because: "imported entries must be decodable");
     }
@@ -1256,15 +1254,15 @@ public sealed class ScriniaMcpToolsTests
     public async Task Import_FilteredTopics_ImportsOnlyRequested()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["auth flow doc"], "api:auth");
-        await Tools().Store(["db choice"], "arch:database");
+        await Tools().Store(["auth flow doc"], "/api/auth");
+        await Tools().Store(["db choice"], "/arch/database");
         string exportResult = await Tools().Export(["api", "arch"]);
         var exportContent = ResponseParser.Parse(exportResult).Content!;
         string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
 
         // Delete originals
-        await Tools().Forget("api:auth");
-        await Tools().Forget("arch:database");
+        await Tools().Forget("/api/auth");
+        await Tools().Forget("/arch/database");
 
         // Import only "api" topic
         string importResult = await Tools().Import(bundlePath, ["api"]);
@@ -1275,10 +1273,10 @@ public sealed class ScriniaMcpToolsTests
         importContent.Should().Contain("api");
 
         // api:auth should exist, arch:database should not
-        string restored = await Tools().Show("api:auth");
+        string restored = await Tools().Show("/api/auth");
         ResponseParser.Parse(restored).Content.Should().Be("auth flow doc");
 
-        string archResult = await Tools().Show("arch:database");
+        string archResult = await Tools().Show("/arch/database");
         ResponseParser.Parse(archResult).Error.Should().Contain("not found",
             because: "arch topic was not imported");
     }
@@ -2405,14 +2403,14 @@ public sealed class ScriniaMcpToolsTests
         // Neither body contains 'auth'. Path scoring must lift the path-match candidate.
         var candidates = new List<ScopedArtifact>
         {
-            new("local-topic:findings/auth-refactor", new ArtifactEntry(
+            new("local:findings/auth-refactor", new ArtifactEntry(
                 Name: "notes",
                 Uri: "stub://1",
                 OriginalBytes: 100,
                 ChunkCount: 1,
                 CreatedAt: DateTimeOffset.UtcNow,
                 ContentPreview: "unrelated body text")),
-            new("local-topic:archive", new ArtifactEntry(
+            new("local:archive", new ArtifactEntry(
                 Name: "shopping",
                 Uri: "stub://2",
                 OriginalBytes: 50,
@@ -2426,10 +2424,10 @@ public sealed class ScriniaMcpToolsTests
             "auth", candidates, store: null!, CancellationToken.None);
 
         scores.Should().NotBeNull();
-        scores!.Should().ContainKey("local-topic:findings/auth-refactor|notes",
+        scores!.Should().ContainKey("local:findings/auth-refactor|notes",
             because: "the candidate whose path contains 'auth' must receive a lift");
-        scores["local-topic:findings/auth-refactor|notes"].Should().BeApproximately(8.0, 0.01);
-        scores.Should().NotContainKey("local-topic:archive|shopping",
+        scores["local:findings/auth-refactor|notes"].Should().BeApproximately(8.0, 0.01);
+        scores.Should().NotContainKey("local:archive|shopping",
             because: "candidates with no path-token overlap must receive no entry (additive, not penalizing)");
     }
 
@@ -2438,7 +2436,7 @@ public sealed class ScriniaMcpToolsTests
     {
         var candidates = new List<ScopedArtifact>
         {
-            new("local-topic:findings/auth-refactor", new ArtifactEntry(
+            new("local:findings/auth-refactor", new ArtifactEntry(
                 Name: "notes",
                 Uri: "stub://1",
                 OriginalBytes: 100,

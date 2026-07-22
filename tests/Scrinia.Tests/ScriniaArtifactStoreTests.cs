@@ -40,8 +40,8 @@ public sealed class ScriniaArtifactStoreTests
     public void ResolveReadScopes_ExplicitFilter_ParsesCorrectly()
     {
         var scopes = ScriniaArtifactStore.ResolveReadScopes("local,dotnet");
-        scopes.Should().Equal(["local", "local-topic:memory/dotnet"],
-            because: "explicit scope filter must normalize bare topic names to namespace-aware local-topic");
+        scopes.Should().Equal(["local", "local:dotnet"],
+            because: "explicit scope filter must normalize bare topic names to the flat local-topic scope");
     }
 
     // ── LoadIndex ─────────────────────────────────────────────────────────────
@@ -383,7 +383,7 @@ public sealed class ScriniaArtifactStoreTests
 
         var topics = ScriniaArtifactStore.DiscoverTopics();
 
-        topics.Should().Contain("local-topic:api",
+        topics.Should().Contain("local:api",
             because: "local topic directories must be discovered");
     }
 
@@ -394,8 +394,8 @@ public sealed class ScriniaArtifactStoreTests
     {
         var result = ScriniaArtifactStore.NormalizeScopeFilters("api");
 
-        result.Should().Equal(["local-topic:memory/api"],
-            because: "bare topic names must resolve to namespace-aware local topic");
+        result.Should().Equal(["local:api"],
+            because: "bare topic names must resolve to the flat local-topic scope");
     }
 
     // ── v3 fields ────────────────────────────────────────────────────────────
@@ -592,7 +592,7 @@ public sealed class ScriniaArtifactStoreTests
         """;
         File.WriteAllText(Path.Combine(namespacedDir, "shared-concern.meta.json"), namespacedCollision);
 
-        var entries = ScriniaArtifactStore.LoadIndex("local-topic:entity/concern");
+        var entries = ScriniaArtifactStore.LoadIndex("local:entity/concern");
 
         entries.Should().Contain(e => e.Name == "legacy-concern",
             because: "legacy-only entries must be merged into the result");

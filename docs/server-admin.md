@@ -162,7 +162,7 @@ POST /api/v1/stores/{store}/memories
 
 ```json
 {
-  "name": "api:auth-flow",
+  "name": "/api/auth-flow",
   "content": ["Full text content here..."],
   "description": "OAuth2 authentication flow",
   "tags": ["auth", "oauth"],
@@ -179,10 +179,10 @@ The `content` array controls chunking: a single element creates a single-chunk m
 ```json
 {
   "name": "auth-flow",
-  "qualifiedName": "api:auth-flow",
+  "qualifiedName": "/api/auth-flow",
   "chunkCount": 1,
   "originalBytes": 1234,
-  "message": "Stored api:auth-flow (1 chunk, 1234 bytes)"
+  "message": "Stored /api/auth-flow (1 chunk, 1234 bytes)"
 }
 ```
 
@@ -201,7 +201,7 @@ GET /api/v1/stores/{store}/memories[?scopes=local,api]
   "memories": [
     {
       "name": "auth-flow",
-      "qualifiedName": "api:auth-flow",
+      "qualifiedName": "/api/auth-flow",
       "scope": "local-topic:api",
       "chunkCount": 1,
       "originalBytes": 1234,
@@ -301,7 +301,7 @@ POST /api/v1/stores/{store}/memories/{name}/copy
 
 ```json
 {
-  "destination": "arch:auth-flow",
+  "destination": "/arch/auth-flow",
   "overwrite": false
 }
 ```
@@ -320,7 +320,7 @@ GET /api/v1/stores/{store}/search?query=authentication[&scopes=local,api][&limit
 [
   {
     "type": "entry",
-    "name": "api:auth-flow",
+    "name": "/api/auth-flow",
     "score": 85.5,
     "description": "OAuth2 authentication flow",
     "chunkIndex": null,

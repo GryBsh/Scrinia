@@ -20,7 +20,7 @@ public interface IMemoryStore
     /// back to the same <paramref name="scope"/> it was built from. Unlike <see
     /// cref="FormatQualifiedName"/> — which intentionally strips the internal "memory/"/"entity/"
     /// namespace prefix from v1 "topic:subject" scopes for human-friendly display (so
-    /// "local-topic:memory/api" displays as "/api/subject" rather than "/memory/api/subject") —
+    /// "local:memory/api" displays as "/api/subject" rather than "/memory/api/subject") —
     /// this keeps the namespace segment, so the string stays lossless.
     ///
     /// <para>Use this (not <see cref="FormatQualifiedName"/>) anywhere the resulting string is
@@ -31,8 +31,8 @@ public interface IMemoryStore
     /// "agent" topic).</para>
     /// </summary>
     string FormatRoundTripQualifiedName(string scope, string subject) =>
-        scope.StartsWith("local-topic:", StringComparison.Ordinal)
-            ? $"/{scope["local-topic:".Length..]}/{subject}"
+        scope.StartsWith("local:", StringComparison.Ordinal)
+            ? $"/{scope["local:".Length..]}/{subject}"
             : subject;
 
     // CRUD
@@ -126,7 +126,7 @@ public interface IMemoryStore
 
     /// <summary>
     /// Returns true if the given scope should be excluded based on the excludeTopics string.
-    /// Case-insensitive. Topics are matched as "local-topic:{topicName}".
+    /// Case-insensitive. Topics are matched as "local:{topicName}".
     /// </summary>
     static bool ShouldExcludeScope(string scope, string? excludeTopics)
     {
@@ -137,7 +137,7 @@ public interface IMemoryStore
     }
 
     /// <summary>Builds a HashSet of excluded scope names from a comma-separated excludeTopics string.
-    /// Already-scoped inputs (containing '/') pass through as "local-topic:{input}";
+    /// Already-scoped inputs (containing '/') pass through as "local:{input}";
     /// bare topic names are routed through <see cref="MemoryNaming.BuildScopedTopicScope"/>.</summary>
     static HashSet<string> BuildExcludedScopeSet(string excludeTopics) =>
         new(
@@ -147,7 +147,7 @@ public interface IMemoryStore
                 {
                     var trimmed = t.Trim();
                     return trimmed.Contains('/')
-                        ? $"local-topic:{trimmed}"
+                        ? $"local:{trimmed}"
                         : MemoryNaming.BuildScopedTopicScope(trimmed.ToLowerInvariant());
                 }),
             StringComparer.OrdinalIgnoreCase);

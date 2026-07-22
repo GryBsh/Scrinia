@@ -61,7 +61,7 @@ public sealed class EmbeddingsPluginReindexTests : IDisposable
     [Fact]
     public async Task ReindexStoreAsync_NamespacedTopicScope_ResolvesWithoutLoggingFailure()
     {
-        const string scope = "local-topic:memory/api";
+        const string scope = "local:memory/api";
         SeedEntry(scope, "notes", "auth flow notes");
 
         using var plugin = new EmbeddingsPlugin();

@@ -20,18 +20,18 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Unpack an NMP/2 artifact back to its original text content.</summary>
     internal async Task<string> Show(
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
-                     "Use the exact name shown by list (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string artifactOrName,
+                     "Use the exact name shown by list (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] string artifactOrName,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
         string actionLabel = "shown",
         CancellationToken cancellationToken = default)
     {
         // ── Agent config: read .md file first, NMP/2 fallback ────────────
-        if (artifactOrName.StartsWith("agent:", StringComparison.OrdinalIgnoreCase))
+        if (artifactOrName.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
             var agentStore = MemoryStoreContext.Current;
             if (agentStore is not null)
             {
-                string agentSubject = artifactOrName["agent:".Length..].Trim();
+                string agentSubject = artifactOrName["/agent/".Length..].Trim();
                 string agentBaseDir = GetScriniaBaseDir(agentStore);
                 string agentFilePath = Path.Combine(agentBaseDir, "agent", $"{agentSubject}.md");
                 if (File.Exists(agentFilePath))
@@ -111,7 +111,7 @@ public sealed partial class ScriniaMcpTools
                      "chunk boundaries — each element becomes one independently retrievable chunk.")] string[] content,
         [Description("Human-readable name for this artifact (e.g. \"session-notes\", \"my-codebase\"). " +
                      "Invalid filename characters are replaced with '_'. " +
-                     "Naming: '/path/to/memory' (v2 path), 'topic:subject' (v1 compat), '/temp/subject' (ephemeral).")] string name,
+                     "Naming: '/path/to/memory' (e.g. '/api/auth-flow'), '/temp/subject' (ephemeral).")] string name,
         [Description("Optional description. If empty, the first 200 characters of content are used.")] string description = "",
         [Description("Optional tags for categorization.")] string[]? tags = null,
         [Description("Optional keywords for search. Merged with auto-extracted content terms. " +
@@ -253,15 +253,15 @@ public sealed partial class ScriniaMcpTools
                 .WithAction(actionLabel).ToYaml();
         }
 
-        // ── Agent config path (agent:* → .scrinia/agent/{name}.md) ──────
-        if (name.StartsWith("agent:", StringComparison.OrdinalIgnoreCase))
+        // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──────
+        if (name.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
-            string agentSubject = name["agent:".Length..].Trim();
+            string agentSubject = name["/agent/".Length..].Trim();
             if (string.IsNullOrWhiteSpace(agentSubject))
                 return ResponseBuilder.Error(
-                    "Agent config name required (e.g. 'agent:profile').",
+                    "Agent config name required (e.g. '/agent/profile').",
                     ErrorCodes.InvalidParameter,
-                    "Use a path like 'agent:profile' for the agent config.").ToYaml();
+                    "Use a path like '/agent/profile' for the agent config.").ToYaml();
 
             string baseDir = GetScriniaBaseDir(store);
             string agentDir = Path.Combine(baseDir, "agent");
@@ -411,7 +411,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Update metadata on an existing memory without re-encoding its content.</summary>
     internal Task<string> UpdateMeta(
-        [Description("Memory name (e.g. 'api:auth-flow', 'session-notes').")] string name,
+        [Description("Memory name (e.g. '/api/auth-flow', 'session-notes').")] string name,
         [Description("Keywords to add (merged with existing, not replaced).")] string[]? keywords = null,
         [Description("New description (replaces existing if provided).")] string? description = null,
         [Description("ISO 8601 date for review (replaces existing if provided).")] string? reviewAfter = null,
@@ -639,7 +639,7 @@ public sealed partial class ScriniaMcpTools
         sb.AppendLine("### Scopes");
         foreach (var group in grouped)
         {
-            string label = group.Key == "local" ? "local" : $"topic:{group.Key}";
+            string label = group.Key == "local" ? "local" : $"/{group.Key}";
             long groupBytes = group.Sum(e => e.Entry.OriginalBytes);
             sb.AppendLine($"- **{label}** — {group.Count()} {(group.Count() == 1 ? "memory" : "memories")}, {FormatBytes(groupBytes)}");
         }
@@ -1080,7 +1080,7 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Copies a memory artifact from one scope to another.</summary>
     internal Task<string> Copy(
         [Description("Memory name or file:// URI to copy.")] string nameOrUri,
-        [Description("Destination as qualified name (e.g. 'api:auth-flow' or 'my-notes'). " +
+        [Description("Destination as qualified name (e.g. '/api/auth-flow' or 'my-notes'). " +
                      "Use '~name' for ephemeral destination.")] string destination,
         [Description("When true, replaces destination memory if it already exists.")] bool overwrite = false,
         CancellationToken cancellationToken = default)
@@ -1092,7 +1092,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Removes a stored artifact and its index entry.</summary>
     internal async Task<string> Forget(
-        [Description("The artifact name (e.g. \"session-notes\", \"api:auth\", \"/temp/scratch\") or its file:// URI.")] string nameOrUri,
+        [Description("The artifact name (e.g. \"session-notes\", \"/api/auth\", \"/temp/scratch\") or its file:// URI.")] string nameOrUri,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -1186,7 +1186,7 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal async Task<string> Append(
         [Description("The text content to append.")] string content,
-        [Description("Memory name to append to (e.g. 'session-notes', 'api:auth-flow', '~scratch').")] string name,
+        [Description("Memory name to append to (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] string name,
         [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
         [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
         [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
@@ -1587,7 +1587,7 @@ public sealed partial class ScriniaMcpTools
             string qualName = store.FormatQualifiedName(
                 sa.Scope switch {
                     "local" => "local",
-                    var s when s.StartsWith("local-topic:") => s["local-topic:".Length..],
+                    var s when s.StartsWith("local:") => s["local:".Length..],
                     _ => sa.Scope
                 }, sa.Entry.Name);
 

@@ -454,8 +454,8 @@ public sealed class EmbeddingBenchmarkTests(ITestOutputHelper output) : IAsyncLi
 
         public async Task StoreAsync(string name, string topic, string content)
         {
-            // Use local-topic:{topic} scope for topic-scoped storage
-            string scope = $"local-topic:{topic}";
+            // Use local:{topic} scope for topic-scoped storage
+            string scope = $"local:{topic}";
             string artifact = Nmp2ChunkedEncoder.Encode(content);
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
             long originalBytes = System.Text.Encoding.UTF8.GetByteCount(content);
@@ -519,9 +519,9 @@ public sealed class EmbeddingBenchmarkTests(ITestOutputHelper output) : IAsyncLi
                     (scope, name) = (cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
                 else continue;
 
-                // Convert "local-topic:api" scope to "api" for matching
-                string topicPrefix = scope.StartsWith("local-topic:", StringComparison.Ordinal)
-                    ? scope["local-topic:".Length..]
+                // Convert "local:api" scope to "api" for matching
+                string topicPrefix = scope.StartsWith("local:", StringComparison.Ordinal)
+                    ? scope["local:".Length..]
                     : scope;
                 names.Add($"{topicPrefix}:{name}");
             }

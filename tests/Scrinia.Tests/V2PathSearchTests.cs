@@ -135,18 +135,16 @@ public sealed class V2PathSearchTests
     // ── Mixed v1+v2 tests ───────────────────────────────────────────────────
 
     [Fact]
-    public async Task List_MixedV1V2_ShowsBoth()
+    public async Task List_MultipleTopics_ShowsBoth()
     {
         using var scope = new TestHelpers.StoreScope();
-        // Store via v1 topic:name syntax
-        await Tools().Store(["V1 topic content about caching"], "patterns:caching", "V1 caching pattern");
-        // Store via v2 /path syntax
-        await Tools().Store(["V2 path content about logging"], "/observability/logging", "V2 logging notes");
+        await Tools().Store(["path content about caching"], "/patterns/caching", "caching pattern");
+        await Tools().Store(["path content about logging"], "/observability/logging", "logging notes");
 
         string result = await Tools().List(scopes: "all", mode: "full");
         var content = ResponseParser.Parse(result).Content!;
 
-        content.Should().Contain("caching", because: "v1 topic:name entries should appear in list");
-        content.Should().Contain("logging", because: "v2 /path entries should appear in list");
+        content.Should().Contain("caching", because: "topic-path entries should appear in list");
+        content.Should().Contain("logging", because: "topic-path entries should appear in list");
     }
 }

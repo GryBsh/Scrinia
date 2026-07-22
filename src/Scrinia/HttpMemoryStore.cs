@@ -304,7 +304,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                     {
                         "local" => "local",
                         "ephemeral" => "ephemeral",
-                        _ => $"local-topic:{item.Scope}"
+                        _ => $"local:{item.Scope}"
                     };
 
                     var entry = new ArtifactEntry(
@@ -514,7 +514,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // Discover from listing
         var items = ListScoped(null);
         return items
-            .Where(i => i.Scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            .Where(i => i.Scope.StartsWith("local:", StringComparison.Ordinal))
             .Select(i => i.Scope)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -526,12 +526,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         var items = ListScoped(scopes);
         var topics = new List<TopicInfo>();
         var grouped = items
-            .Where(i => i.Scope.StartsWith("local-topic:", StringComparison.Ordinal))
+            .Where(i => i.Scope.StartsWith("local:", StringComparison.Ordinal))
             .GroupBy(i => i.Scope);
 
         foreach (var g in grouped)
         {
-            string topicName = g.Key["local-topic:".Length..];
+            string topicName = g.Key["local:".Length..];
             topics.Add(new TopicInfo(
                 Scope: g.Key,
                 TopicName: topicName,

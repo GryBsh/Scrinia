@@ -10,6 +10,42 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — path-only memory names
+- **The `topic:subject` colon naming syntax was removed; names are paths.**
+  `api:auth` is now `/api/auth`. `ParseQualifiedName` rejects a colon name with
+  a message suggesting the path form. All display (`list`, `search`, store
+  confirmations) already rendered paths via `FileMemoryStore.FormatQualifiedName`,
+  but `ScriniaArtifactStore.FormatQualifiedName` (used by the CLI) still emitted
+  colon — it now emits paths too.
+- **The internal `memory/` topic namespace was dropped.** A topic now resolves
+  the same whether reached by a `/topic/subject` path or a bare topic filter —
+  `local-topic:{topic}` (`.scrinia/topics/{topic}/`), not
+  `local-topic:memory/{topic}`. This fixes `--scopes {topic}` / `Export([{topic}])`
+  not matching path-stored memories. Data under the old `.scrinia/topics/memory/`
+  layout is still read via fallback. `skill` (entity) and `agent` scopes are
+  unchanged.
+- Agent-config resolution moved from `agent:{name}` to the `/agent/{name}` path,
+  which also repairs `restore`'s `/agent/**`, `/patterns/**`, `/checkpoint/latest`,
+  and `/sessions/{today}` follow-ups (they were reading legacy colon-scoped dirs
+  that path writes never populate).
+- **In-content cross-references are now `[[/path]]` wiki-links.** The auto-linker
+  (`MaintenanceEventSink` / `ReferenceExtractor`) matches `[[/api/auth]]` /
+  `[[note]]` instead of bare `topic:subject`.
+- The internal topic-scope prefix was shortened from `local-topic:` to `local:`
+  (e.g. `local:api`), and `list --summary` now labels topic groups `/api` instead
+  of `topic:api`. Scope strings feed vector-store directory names, so semantic
+  search over existing topic data needs a one-time `scri reindex` (the same
+  reindex the namespace change above already requires; BM25 search is unaffected).
+
+### Changed (breaking) — flat CLI surface
+- **The `memory` command group is gone; its subcommands are now top-level.**
+  `scri memory list/search/show/store/forget/append/compact/link` become
+  `scri list/search/show/store/forget/append/compact/link`. There is no
+  `memory` alias — update any scripts that used the prefix.
+- Trimmed agent-directed meta-commentary from `--help`: `guide` no longer says
+  "Call once per session", and `hint`'s description drops the hook-envelope
+  internals (and a stray XML tag that was leaking into the rendered help).
+
 ### Removed (breaking) — LLM-at-rest enrichment
 - **LLM-at-rest enrichment pipeline deleted.** `LlmConsolidator` and the entire
   Tier 2 sweep over the local store is gone. Scrinia no longer consults an LLM

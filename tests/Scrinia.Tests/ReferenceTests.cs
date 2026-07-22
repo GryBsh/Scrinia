@@ -54,14 +54,14 @@ public sealed class ReferenceTests : IDisposable
     }
 
     [Fact]
-    public void ExtractMemoryRefs_FindsTopicSubject()
+    public void ExtractMemoryRefs_FindsWikiLinkPaths()
     {
-        string input = "See api:auth-flow and backlog:resilience for details";
+        string input = "See [[/api/auth-flow]] and [[/backlog/resilience]] for details";
 
         var refs = ReferenceExtractor.ExtractMemoryRefs(input);
 
-        refs.Should().Contain("api:auth-flow");
-        refs.Should().Contain("backlog:resilience");
+        refs.Should().Contain("/api/auth-flow");
+        refs.Should().Contain("/backlog/resilience");
     }
 
     [Fact]

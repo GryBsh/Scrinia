@@ -153,17 +153,17 @@ scri reconcile                              # scan .scrinia/ for merge conflicts
 scri consolidate                            # mechanical session compaction + stale-entry report (run manually as needed)
 scri reindex                                # force rebuild of every vector file (rarely needed; auto-runs on model switch)
 
-# Memory operations (grouped under "memory")
-scri memory list                            # summary view (topics, keywords, stats)
-scri memory list --summary=false            # full listing
-scri memory search "auth"                   # hybrid BM25 + semantic search
-scri memory store notes ./notes.md          # store a file as memory
-scri memory store api:auth ./auth.md        # store under a topic
-scri memory show api:auth                   # display memory content
-scri memory forget api:auth                 # delete a memory
-scri memory append notes ./more.md          # add a chunk
-scri memory compact notes --keep-recent 3   # merge old chunks; keep 3 newest
-scri memory link notes api:auth -r "see also" # bidirectional cross-reference
+# Memory operations
+scri list                                   # summary view (topics, keywords, stats)
+scri list --summary=false                   # full listing
+scri search "auth"                          # hybrid BM25 + semantic search
+scri store notes ./notes.md                 # store a file as memory
+scri store /api/auth ./auth.md              # store under a topic
+scri show /api/auth                         # display memory content
+scri forget /api/auth                       # delete a memory
+scri append notes ./more.md                 # add a chunk
+scri compact notes --keep-recent 3          # merge old chunks; keep 3 newest
+scri link notes /api/auth -r "see also"     # bidirectional cross-reference
 
 # Bundle files (grouped under "bundle")
 scri bundle export api                      # export topic to .scrinia-bundle
@@ -177,8 +177,8 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 | Pattern | Scope | Example |
 |---|---|---|
-| `subject` | Local store | `scri memory store session-notes file.md` |
-| `topic:subject` | Topic group | `scri memory store api:auth file.md` |
+| `subject` | Local store | `scri store session-notes file.md` |
+| `/topic/subject` | Topic group | `scri store /api/auth file.md` |
 | `~subject` | Ephemeral (in-memory) | Dies with process |
 
 ## MCP tools

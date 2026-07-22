@@ -469,8 +469,8 @@ public partial class ScriniaCommands
     /// <summary>True when the scope is the session-log scope under any namespacing variant.</summary>
     private static bool IsSessionScope(string scope)
     {
-        if (!scope.StartsWith("local-topic:", StringComparison.Ordinal)) return false;
-        string topicPart = scope["local-topic:".Length..];
+        if (!scope.StartsWith("local:", StringComparison.Ordinal)) return false;
+        string topicPart = scope["local:".Length..];
         return topicPart.Equals("sessions", StringComparison.OrdinalIgnoreCase)
             || topicPart.Equals("memory/sessions", StringComparison.OrdinalIgnoreCase)
             || topicPart.EndsWith("/sessions", StringComparison.OrdinalIgnoreCase);

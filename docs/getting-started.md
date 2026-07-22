@@ -74,7 +74,7 @@ scri memory list    # creates .scrinia/ if needed
 
 ```bash
 # From a file
-scri memory store api:auth-flow ./docs/auth.md -d "OAuth2 authentication flow"
+scri store /api/auth-flow ./docs/auth.md -d "OAuth2 authentication flow"
 
 # From stdin
 echo "Always use snake_case for API endpoints" | scri memory store conventions -

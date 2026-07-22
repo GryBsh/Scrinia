@@ -117,10 +117,10 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var store = tmp.NewStore();
-        store.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "note" }, "local-topic:findings");
+        store.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "note" }, "local:findings");
 
         AttributeMigration.MigrateStore(store).Migrated.Should().Be(1);
-        store.LoadIndex("local-topic:findings").First().Attributes!["file"].Should().BeEquivalentTo("src/A.cs");
+        store.LoadIndex("local:findings").First().Attributes!["file"].Should().BeEquivalentTo("src/A.cs");
     }
 
     [Fact]
@@ -269,12 +269,12 @@ public sealed class AttributeMigrationTests
         using var tmp = new TempWorkspace();
         var seed = tmp.NewStore();
         // Namespaced sibling so the bare flat dir is shadowed (reached only via the legacy merge).
-        // "local-topic:memory/api" is what MemoryNaming.BuildScopedTopicScope("api") produces (verified
+        // "local:memory/api" is what MemoryNaming.BuildScopedTopicScope("api") produces (verified
         // in FileMemoryStore.GetStoreDirForScope/ResolveLegacyFallbackDir): ClassifyTopic("api") == "memory",
         // so the namespaced dir is .scrinia/topics/memory/api and its legacy flat fallback is .scrinia/topics/api.
         seed.Upsert(MakeEntry(fields: new() { ["topic"] = ["api"] }) with { Name = "nsnote" }, MemoryNaming.BuildScopedTopicScope("api"));
         // Legacy entry in the bare flat dir .scrinia/topics/api
-        seed.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "flatnote" }, "local-topic:api");
+        seed.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "flatnote" }, "local:api");
         seed.Dispose();
 
         var cold = new FileMemoryStore(tmp.Root);
@@ -302,7 +302,7 @@ public sealed class AttributeMigrationTests
         var upgraded = AttributeMigration.Forward(
             MakeEntry(contentPreview: null) with { Name = "flatnote" });
 
-        store.PersistMigratedEntry(upgraded, flatDir, "local-topic:memory/api");
+        store.PersistMigratedEntry(upgraded, flatDir, "local:memory/api");
 
         File.Exists(Path.Combine(flatDir, "flatnote.meta.json")).Should().BeTrue("written to the given dir");
         // NOT promoted into the namespaced scope dir: no sidecar for "flatnote" was written there.

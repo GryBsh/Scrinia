@@ -58,7 +58,7 @@ public partial class ScriniaCommands
         return isError ? 1 : 0;
     }
 
-    /// <summary>Print the embedded agent guide. Call once per session.</summary>
+    /// <summary>Print the embedded agent guide.</summary>
     /// <param name="json">Output as JSON instead of raw markdown.</param>
     public async Task<int> Guide(
         bool json = false,

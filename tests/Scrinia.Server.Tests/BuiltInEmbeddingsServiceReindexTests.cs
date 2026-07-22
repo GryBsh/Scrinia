@@ -17,7 +17,7 @@ namespace Scrinia.Server.Tests;
 ///
 /// <see cref="IMemoryStore.FormatQualifiedName"/> intentionally strips the "memory/"/"entity/"
 /// namespace prefix for human-friendly display (a v1 "topic:subject" scope like
-/// "local-topic:memory/api" displays as "/api/subject"). Re-parsing that display string via
+/// "local:memory/api" displays as "/api/subject"). Re-parsing that display string via
 /// <see cref="IMemoryStore.ParseQualifiedName"/> reconstructs a scope MISSING the namespace
 /// prefix, so <c>ResolveArtifactAsync</c> can't find the artifact on disk and the memory is
 /// silently skipped (caught, logged, and dropped from the reindex count) for every ordinary
@@ -58,9 +58,9 @@ public sealed class BuiltInEmbeddingsServiceReindexTests : IDisposable
     [Fact]
     public async Task ReindexStoreAsync_NamespacedTopicScope_EmbedsRatherThanSkips()
     {
-        // "api:notes" v1 syntax -> "local-topic:memory/api" (the ordinary case for every
+        // "api:notes" v1 syntax -> "local:memory/api" (the ordinary case for every
         // non-skill, non-agent named topic).
-        const string scope = "local-topic:memory/api";
+        const string scope = "local:memory/api";
         SeedEntry(scope, "notes", "auth flow notes");
 
         using var vectorStore = new VectorStore(_embeddingsDir, expectedSignature: null);

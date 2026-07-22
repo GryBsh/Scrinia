@@ -32,18 +32,25 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
-    public void ParseQualifiedName_topic_scope()
+    public void ParseQualifiedName_topic_path()
     {
-        var (scope, subject) = _store.ParseQualifiedName("api:auth-flow");
-        scope.Should().Be("local-topic:memory/api");
+        var (scope, subject) = _store.ParseQualifiedName("/api/auth-flow");
+        scope.Should().Be("local:api");
         subject.Should().Be("auth-flow");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_colon_is_rejected()
+    {
+        var act = () => _store.ParseQualifiedName("api:auth-flow");
+        act.Should().Throw<ArgumentException>().WithMessage("*/api/auth-flow*");
     }
 
     [Fact]
     public void FormatQualifiedName_roundtrips()
     {
         _store.FormatQualifiedName("local", "notes").Should().Be("notes");
-        _store.FormatQualifiedName("local-topic:memory/api", "auth").Should().Be("/api/auth");
+        _store.FormatQualifiedName("local:memory/api", "auth").Should().Be("/api/auth");
     }
 
     [Fact]
@@ -195,7 +202,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(topicDir);
 
         var topics = _store.DiscoverTopics();
-        topics.Should().Contain("local-topic:api");
+        topics.Should().Contain("local:api");
     }
 
     [Fact]
@@ -221,9 +228,9 @@ public sealed class FileMemoryStoreTests : IDisposable
             ["imported"] = Nmp2ChunkedEncoder.Encode("Imported content")
         };
 
-        _store.ImportTopicEntries("local-topic:test", entries, contents, overwrite: false);
+        _store.ImportTopicEntries("local:test", entries, contents, overwrite: false);
 
-        var loaded = _store.LoadIndex("local-topic:test");
+        var loaded = _store.LoadIndex("local:test");
         loaded.Should().HaveCount(1);
         loaded[0].Name.Should().Be("imported");
     }
@@ -292,13 +299,13 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(topicDir);
 
         var first = _store.DiscoverTopics();
-        first.Should().Contain("local-topic:cached-topic");
+        first.Should().Contain("local:cached-topic");
 
         // Delete the directory — cache should still serve the result
         Directory.Delete(topicDir, recursive: true);
 
         var second = _store.DiscoverTopics();
-        second.Should().Contain("local-topic:cached-topic", "cached result should persist within TTL");
+        second.Should().Contain("local:cached-topic", "cached result should persist within TTL");
     }
 
     [Fact]
@@ -385,45 +392,39 @@ public sealed class FileMemoryStoreTests : IDisposable
     // ── Namespace separation ─────────────────────────────────────────────────
 
     [Fact]
-    public void ParseQualifiedName_EntityTopic_RoutesToEntityNamespace()
+    public void BuildScopedTopicScope_EntityTopic_RoutesToEntityNamespace()
     {
-        var (scope, subject) = _store.ParseQualifiedName("skill:my-skill");
-        scope.Should().Be("local-topic:entity/skill");
-        subject.Should().Be("my-skill");
+        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:entity/skill");
     }
 
     [Fact]
-    public void ParseQualifiedName_AgentTopic_RoutesToAgentScope()
+    public void BuildScopedTopicScope_AgentTopic_RoutesToAgentScope()
     {
-        var (scope, subject) = _store.ParseQualifiedName("agent:profile");
-        scope.Should().Be("local-topic:agent");
-        subject.Should().Be("profile");
+        MemoryNaming.BuildScopedTopicScope("agent").Should().Be("local:agent");
     }
 
     [Fact]
-    public void ParseQualifiedName_UserTopic_RoutesToMemoryNamespace()
+    public void BuildScopedTopicScope_UserTopic_RoutesToMemoryNamespace()
     {
-        var (scope, subject) = _store.ParseQualifiedName("dotnet:di-patterns");
-        scope.Should().Be("local-topic:memory/dotnet");
-        subject.Should().Be("di-patterns");
+        MemoryNaming.BuildScopedTopicScope("dotnet").Should().Be("local:dotnet");
     }
 
     [Fact]
     public void FormatQualifiedName_EntityNamespaced_StripsPrefix()
     {
-        _store.FormatQualifiedName("local-topic:entity/task", "my-task").Should().Be("/task/my-task");
+        _store.FormatQualifiedName("local:entity/task", "my-task").Should().Be("/task/my-task");
     }
 
     [Fact]
     public void FormatQualifiedName_MemoryNamespaced_StripsPrefix()
     {
-        _store.FormatQualifiedName("local-topic:memory/api", "auth").Should().Be("/api/auth");
+        _store.FormatQualifiedName("local:memory/api", "auth").Should().Be("/api/auth");
     }
 
     [Fact]
     public void FormatQualifiedName_AgentScope_StripsPrefix()
     {
-        _store.FormatQualifiedName("local-topic:agent", "profile").Should().Be("/agent/profile");
+        _store.FormatQualifiedName("local:agent", "profile").Should().Be("/agent/profile");
     }
 
     [Fact]
@@ -436,8 +437,8 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(memoryApiDir);
 
         var topics = _store.DiscoverTopics();
-        topics.Should().Contain("local-topic:entity/task");
-        topics.Should().Contain("local-topic:memory/api");
+        topics.Should().Contain("local:entity/task");
+        topics.Should().Contain("local:memory/api");
     }
 
     [Fact]
@@ -447,7 +448,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(agentDir);
 
         var topics = _store.DiscoverTopics();
-        topics.Should().Contain("local-topic:agent",
+        topics.Should().Contain("local:agent",
             because: "agent is a single scope without child directories");
     }
 
@@ -459,7 +460,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(legacyDir);
 
         var topics = _store.DiscoverTopics();
-        topics.Should().Contain("local-topic:custom-notes",
+        topics.Should().Contain("local:custom-notes",
             because: "legacy flat dirs not shadowed by namespace entries should still be discovered");
     }
 
@@ -473,9 +474,9 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(legacyDir);
 
         var topics = _store.DiscoverTopics();
-        topics.Should().Contain("local-topic:memory/api",
+        topics.Should().Contain("local:memory/api",
             because: "namespaced entry should be discovered");
-        topics.Should().NotContain("local-topic:api",
+        topics.Should().NotContain("local:api",
             because: "legacy flat dir shadowed by namespaced entry should be excluded");
     }
 
@@ -491,7 +492,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(legacyDir, "my-task.nmp2"), artifact);
 
         // Read via the namespaced scope — should fall back to legacy path
-        string read = await _store.ReadArtifactAsync("my-task", "local-topic:entity/task");
+        string read = await _store.ReadArtifactAsync("my-task", "local:entity/task");
         read.Should().Be(artifact,
             because: "ReadArtifactAsync should fall back to legacy flat path when the namespaced path does not exist");
     }
@@ -520,7 +521,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "task");
         Directory.CreateDirectory(namespacedDir);
 
-        var entries = _store.LoadIndex("local-topic:entity/task");
+        var entries = _store.LoadIndex("local:entity/task");
         entries.Should().Contain(e => e.Name == "legacy-entry",
             because: "entries from the legacy flat dir should be merged into the namespaced scope");
     }
@@ -559,7 +560,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         """;
         File.WriteAllText(Path.Combine(namespacedDir, "shared-entry.meta.json"), namespacedMeta);
 
-        var entries = _store.LoadIndex("local-topic:entity/task");
+        var entries = _store.LoadIndex("local:entity/task");
         entries.Should().ContainSingle(e => e.Name == "shared-entry",
             because: "same-name entries should not be duplicated");
         entries.First(e => e.Name == "shared-entry").ContentPreview.Should().Be("Namespaced version",
@@ -591,17 +592,17 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(namespacedDir);
 
         // Verify LoadIndex initially returns the legacy entry
-        var before = _store.LoadIndex("local-topic:entity/concern");
+        var before = _store.LoadIndex("local:entity/concern");
         before.Should().Contain(e => e.Name == "legacy-item",
             because: "legacy entry should be discovered before any namespaced upsert");
 
         // Now upsert a NEW entry into the namespaced scope
         _store.Upsert(
             new ArtifactEntry("new-namespaced", "", 200, 1, DateTimeOffset.UtcNow),
-            "local-topic:entity/concern");
+            "local:entity/concern");
 
         // Verify LoadIndex STILL returns the legacy entry alongside the new one
-        var after = _store.LoadIndex("local-topic:entity/concern");
+        var after = _store.LoadIndex("local:entity/concern");
         after.Should().Contain(e => e.Name == "legacy-item",
             because: "upserting a new namespaced entry must not evict legacy entries from the cache");
         after.Should().Contain(e => e.Name == "new-namespaced",
@@ -631,18 +632,18 @@ public sealed class FileMemoryStoreTests : IDisposable
         Directory.CreateDirectory(namespacedDir);
         _store.Upsert(
             new ArtifactEntry("removable-entry", "", 200, 1, DateTimeOffset.UtcNow),
-            "local-topic:entity/concern");
+            "local:entity/concern");
 
         // Verify LoadIndex returns both
-        var before = _store.LoadIndex("local-topic:entity/concern");
+        var before = _store.LoadIndex("local:entity/concern");
         before.Should().Contain(e => e.Name == "legacy-survivor");
         before.Should().Contain(e => e.Name == "removable-entry");
 
         // Remove the namespaced entry
-        _store.Remove("removable-entry", "local-topic:entity/concern").Should().BeTrue();
+        _store.Remove("removable-entry", "local:entity/concern").Should().BeTrue();
 
         // Verify LoadIndex STILL returns the legacy entry
-        var after = _store.LoadIndex("local-topic:entity/concern");
+        var after = _store.LoadIndex("local:entity/concern");
         after.Should().Contain(e => e.Name == "legacy-survivor",
             because: "removing a namespaced entry must not evict legacy entries from the cache");
         after.Should().NotContain(e => e.Name == "removable-entry",
@@ -710,7 +711,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         File.WriteAllText(Path.Combine(namespacedDir, "collision.meta.json"), namespacedCollisionMeta);
 
         // Call LoadIndex — verify both unique entries returned
-        var entries = _store.LoadIndex("local-topic:entity/concern");
+        var entries = _store.LoadIndex("local:entity/concern");
         entries.Should().Contain(e => e.Name == "legacy-only",
             because: "legacy-only entries must be merged into the result");
         entries.Should().Contain(e => e.Name == "namespaced-only",

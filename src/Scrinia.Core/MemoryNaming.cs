@@ -30,6 +30,28 @@ public static class MemoryNaming
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "entity", "memory", "agent" };
 
     /// <summary>
+    /// Throws if <paramref name="name"/> uses the removed v1 "topic:subject" colon
+    /// syntax. Memory names are paths now ("/topic/subject"); rejecting a bare colon
+    /// (rather than letting <c>SanitizeName</c> silently fold it into a mangled local
+    /// name) forces callers to migrate and surfaces the exact path to use.
+    /// </summary>
+    public static void RejectLegacyColonSyntax(string name)
+    {
+        int colon = name.IndexOf(':');
+        if (colon < 0) return;
+
+        string topic = name[..colon].Trim();
+        string subject = name[(colon + 1)..].Trim();
+        string suggestion = topic.Length > 0 && subject.Length > 0
+            ? $"/{topic}/{subject}"
+            : "/topic/subject";
+        throw new ArgumentException(
+            $"Memory names use path syntax now — '{name}' should be '{suggestion}'. " +
+            "The 'topic:subject' form was removed.",
+            nameof(name));
+    }
+
+    /// <summary>
     /// Strips the leading '~' from an ephemeral name.
     /// Returns the input unchanged if it does not start with '~'.
     /// </summary>
@@ -49,18 +71,22 @@ public static class MemoryNaming
     }
 
     /// <summary>
-    /// Builds the full internal scope string used by the storage layer.
-    /// Entity topics → "local-topic:entity/{topic}",
-    /// Agent topic  → "local-topic:agent",
-    /// Memory topics → "local-topic:memory/{topic}".
+    /// Builds the full internal scope string used by the storage layer. This must
+    /// match how a "/topic/subject" path resolves, so ordinary topics are flat —
+    /// only skill (entity) and agent keep a namespace:
+    /// Entity topics → "local:entity/{topic}",
+    /// Agent topic  → "local:agent",
+    /// Ordinary topics → "local:{topic}".
+    /// (The legacy "local:memory/{topic}" layout is still read via fallback.)
     /// </summary>
     public static string BuildScopedTopicScope(string topic)
     {
         var ns = ClassifyTopic(topic);
         return ns switch
         {
-            "agent" => "local-topic:agent",
-            _ => $"local-topic:{ns}/{topic}"
+            "agent" => "local:agent",
+            "entity" => $"local:entity/{topic}",
+            _ => $"local:{topic}"
         };
     }
 
@@ -83,16 +109,16 @@ public static class MemoryNaming
 
     /// <summary>
     /// Returns a human-friendly display label for an internal scope string.
-    /// "local" → "local", "local-topic:entity/task" → "task",
-    /// "local-topic:memory/api" → "api", "local-topic:agent" → "agent",
+    /// "local" → "local", "local:entity/task" → "task",
+    /// "local:memory/api" → "api", "local:agent" → "agent",
     /// "ephemeral" → "ephemeral".
     /// </summary>
     public static string FormatScopeLabel(string scope)
     {
         if (scope == "local") return "local";
         if (scope == "ephemeral") return "ephemeral";
-        if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
-            return StripNamespacePrefix(scope["local-topic:".Length..]);
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            return StripNamespacePrefix(scope["local:".Length..]);
         return scope;
     }
 }

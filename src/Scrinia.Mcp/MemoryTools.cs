@@ -81,7 +81,7 @@ public sealed partial class ScriniaMcpTools
         "content: ['observation', 'recommendation'], attributes: { org: ['acme'], topic: ['auth'] }, " +
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/temp/scratch', or 'topic:subject' for v1 compat).")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string path,
         [Description("Content array — each element becomes one independently retrievable chunk.")] string[] content,
         [Description("Optional typed attributes — a map of key to values. Recommended keys: person, place, " +
                      "org, thing, topic (entities that link related memories); file, ref (dependencies, hashed " +
@@ -132,7 +132,7 @@ public sealed partial class ScriniaMcpTools
         "Read a memory by path. Returns the full content unless a chunk index is provided. " +
         "Example: recall({ path: '/findings/SEC-001' }), or recall({ path: '/skill/qa' }) to load a skill.")]
     public async Task<string> MemoryRecall(
-        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', or 'topic:subject' for v1 compat). '/skill/' alone lists available skills.")] string path,
+        [Description("Memory path (e.g. '/findings/SEC-001', '/skill/qa', '/api/auth-flow'). '/skill/' alone lists available skills.")] string path,
         [Description("Optional 1-based chunk index to retrieve a single chunk.")] int? chunk = null,
         [Description("Skills only: when path is '/skill/{name}', return both the built-in and the project override side-by-side for merging. Ignored for non-skill paths.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)

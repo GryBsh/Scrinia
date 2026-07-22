@@ -20,13 +20,9 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>Pre-send relevance hint. Looks up the prompt against BM25 and emits a hook-output
-    /// envelope telling the agent which stored memories look relevant. Wired into agent CLIs
-    /// via the UserPromptSubmit hook. Default output is JSON
-    /// (<c>{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"..."}}</c>)
-    /// understood by Claude Code, Codex, and Copilot — the additionalContext channel injects
-    /// the hint without polluting the user's transcript. Returns empty stdout when the prompt
-    /// is short, no matches clear the score floor, or hints are disabled in config.</summary>
+    /// <summary>Match a prompt against stored memories and print a relevance hint. Drives the
+    /// UserPromptSubmit hook; prints nothing when the prompt is short, nothing clears the score
+    /// floor, or hints are disabled in config.</summary>
     /// <param name="prompt">Prompt text. If omitted, read from stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="plain">Emit the human-readable single-line hint instead of the hook JSON envelope. Use for direct CLI invocation; hooks use the default JSON shape.</param>

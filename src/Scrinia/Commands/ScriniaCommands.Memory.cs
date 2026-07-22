@@ -27,7 +27,7 @@ public partial class ScriniaCommands
     /// <param name="offset">Starting index for paginated output (0-based).</param>
     /// <param name="limit">Maximum entries to show (0 = unlimited).</param>
     /// <param name="json">Output as JSON instead of a table.</param>
-    internal Task<int> List(string? workspaceRoot = null, string? scopes = null,
+    public Task<int> List(string? workspaceRoot = null, string? scopes = null,
         bool summary = false, int offset = 0, int limit = 0, bool json = false)
     {
         WorkspaceSetup.Configure(workspaceRoot);
@@ -151,7 +151,7 @@ public partial class ScriniaCommands
         // Build scopes list
         var scopeEntries = grouped.Select(g =>
         {
-            string label = g.Key == "local" ? "local" : $"topic:{g.Key}";
+            string label = g.Key == "local" ? "local" : $"/{g.Key}";
             return new CliScopeEntry(label, g.Count(), g.Sum(e => e.Entry.OriginalBytes));
         }).ToList();
         if (ephemeralCount > 0)
@@ -247,7 +247,7 @@ public partial class ScriniaCommands
     /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral).</param>
     /// <param name="limit">Maximum results to return.</param>
     /// <param name="json">Output as JSON instead of a table.</param>
-    internal async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, bool json = false, CancellationToken cancellationToken = default)
+    public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, bool json = false, CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
@@ -333,7 +333,7 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Store a file as a named memory.</summary>
-    /// <param name="name">Memory name (e.g. 'session-notes', 'api:auth-flow', '~scratch').</param>
+    /// <param name="name">Memory name (e.g. 'session-notes', '/api/auth-flow', '~scratch').</param>
     /// <param name="file">File path to read content from. Use '-' or omit for stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="description">-d, Description for the memory.</param>
@@ -342,7 +342,7 @@ public partial class ScriniaCommands
     /// <param name="reviewAfter">ISO 8601 date after which this memory should be reviewed.</param>
     /// <param name="reviewWhen">Free-text condition for when this memory should be reviewed.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    internal async Task<int> Store(
+    public async Task<int> Store(
         [Argument] string name,
         [Argument] string? file = null,
         string? workspaceRoot = null,
@@ -405,11 +405,11 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Display memory content.</summary>
-    /// <param name="name">Memory name to display (e.g. 'session-notes', 'api:auth-flow', '~scratch').</param>
+    /// <param name="name">Memory name to display (e.g. 'session-notes', '/api/auth-flow', '~scratch').</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="output">-o, Write output to a file instead of stdout.</param>
     /// <param name="json">Output as JSON instead of raw text.</param>
-    internal async Task<int> Show(
+    public async Task<int> Show(
         [Argument] string name,
         string? workspaceRoot = null,
         string? output = null,
@@ -448,10 +448,10 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Delete a stored memory.</summary>
-    /// <param name="name">Memory name to delete (e.g. 'session-notes', 'api:auth-flow', '~scratch').</param>
+    /// <param name="name">Memory name to delete (e.g. 'session-notes', '/api/auth-flow', '~scratch').</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    internal async Task<int> Forget(
+    public async Task<int> Forget(
         [Argument] string name,
         string? workspaceRoot = null,
         bool json = false,
@@ -482,7 +482,7 @@ public partial class ScriniaCommands
     /// <param name="file">File path to read content from. Use '-' or omit for stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    internal async Task<int> Append(
+    public async Task<int> Append(
         [Argument] string name,
         [Argument] string? file = null,
         string? workspaceRoot = null,
@@ -525,7 +525,7 @@ public partial class ScriniaCommands
     /// <param name="keepRecent">-k, Keep only the N most recent chunks. 0 = merge all into one.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    internal async Task<int> Compact(
+    public async Task<int> Compact(
         [Argument] string name,
         int keepRecent = 0,
         string? workspaceRoot = null,
@@ -546,7 +546,7 @@ public partial class ScriniaCommands
     /// <param name="reason">-r, Optional reason for the connection.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="json">Output as JSON instead of formatted text.</param>
-    internal async Task<int> Link(
+    public async Task<int> Link(
         [Argument] string from,
         [Argument] string to,
         string? reason = null,

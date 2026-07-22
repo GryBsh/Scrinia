@@ -431,7 +431,7 @@ public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, Embeddi
 
         public async Task StoreFactAsync(BenchmarkFact fact)
         {
-            string scope = $"local-topic:{fact.Topic}";
+            string scope = $"local:{fact.Topic}";
             string artifact = Nmp2ChunkedEncoder.Encode(fact.Content);
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
             long originalBytes = System.Text.Encoding.UTF8.GetByteCount(fact.Content);
@@ -483,8 +483,8 @@ public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, Embeddi
                     (scope, name) = (cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
                 else continue;
 
-                string topic = scope.StartsWith("local-topic:", StringComparison.Ordinal)
-                    ? scope["local-topic:".Length..] : scope;
+                string topic = scope.StartsWith("local:", StringComparison.Ordinal)
+                    ? scope["local:".Length..] : scope;
                 names.Add($"{topic}:{name}");
             }
             return names;

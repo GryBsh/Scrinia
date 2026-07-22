@@ -10,9 +10,10 @@ public static partial class ReferenceExtractor
     [GeneratedRegex(@"(?<![""'`=:])(?:\.?/)?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
     private static partial Regex FilePathPattern();
 
-    // Memory names: topic:subject pattern (lowercase, hyphens allowed)
-    // Must not be preceded by :// (avoid URLs) or / (avoid file paths)
-    [GeneratedRegex(@"(?<![\w:/])([a-z][a-z0-9]*:[a-z][a-z0-9-]+)")]
+    // Memory names: [[wiki-link]] references, e.g. [[/api/auth]], [[session-notes]],
+    // or [[~scratch]]. The inner target is a path ('/topic/subject'), a bare local
+    // name, or an ephemeral '~name'. Brackets disambiguate refs from prose and file paths.
+    [GeneratedRegex(@"\[\[\s*(~?/?[a-z0-9][a-z0-9/_.-]*)\s*\]\]", RegexOptions.IgnoreCase)]
     private static partial Regex MemoryNamePattern();
 
     // Ephemeral memory names: ~name
@@ -32,7 +33,7 @@ public static partial class ReferenceExtractor
             .ToArray();
     }
 
-    /// <summary>Extract memory name references (topic:subject and ~ephemeral) from content.</summary>
+    /// <summary>Extract memory name references ([[/path]] / [[name]] wiki-links and ~ephemeral) from content.</summary>
     public static string[] ExtractMemoryRefs(string? content)
     {
         if (string.IsNullOrWhiteSpace(content))
