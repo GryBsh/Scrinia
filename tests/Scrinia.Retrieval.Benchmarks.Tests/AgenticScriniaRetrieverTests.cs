@@ -486,7 +486,7 @@ public sealed class AgenticScriniaRetrieverTests : IDisposable
 
         var hybridHits = await hybridRetriever.RetrieveAsync("vacation holiday plans", topK: 5);
 
-        // Empirically verified against the real WeightedFieldScorer (default Sum fusion):
+        // Empirically verified against the real WeightedAttributeScorer (default Sum fusion):
         // TryInsert's relevance gate is `fieldScore + normalizedBm25*5 + supplemental`, and it
         // only requires relevance > 0 — a zero-BM25, zero-field candidate DOES surface on
         // supplemental score alone. So this asserts hybrid CONTAINS D1:1 while BM25-only misses

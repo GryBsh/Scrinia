@@ -35,7 +35,7 @@ public sealed class LlmOptions
     /// Sampling temperature. The bench favours deterministic output (anchors, rewrites
     /// need to be reproducible across runs) so the default is low.
     /// </summary>
-    public double Temperature { get; set; } = 0.3;
+    public double Temperature { get; set; } =  0.3;
 
     /// <summary>
     /// HTTP request timeout applied per call. The agent harness sets stricter per-op

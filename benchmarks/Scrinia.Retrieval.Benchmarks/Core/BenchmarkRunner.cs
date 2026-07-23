@@ -86,7 +86,9 @@ public sealed class BenchmarkRunner
 
             var dateById = BuildDateById(q.Haystack);
 
-            string queryText = await TransformQueryAsync(q.QueryText, ct);
+            // Query passes through unchanged — the agent op is ingest-only (attributes +
+            // keywords); there is no query-side rewrite/HyDE transform.
+            string queryText = q.QueryText;
             var hits = await retriever.RetrieveAsync(queryText, topK, ct);
             var scored = scorer(q, hits);
 
@@ -175,7 +177,8 @@ public sealed class BenchmarkRunner
             foreach (var q in group.Questions)
             {
                 ct.ThrowIfCancellationRequested();
-                string queryText = await TransformQueryAsync(q.QueryText, ct);
+                // Query passes through unchanged — the agent op is ingest-only.
+                string queryText = q.QueryText;
                 var hits = await retriever.RetrieveAsync(queryText, topK, ct);
                 var scored = scorer(q, hits);
 
@@ -286,9 +289,8 @@ public sealed class BenchmarkRunner
         {
             foreach (var d in docs)
             {
-                var anchors = await agent.GenerateAnchorsAsync(d.Text, ct);
-                var typed = await agent.GenerateTypedKeywordsAsync(d.Text, ct);
-                await retriever.IngestAsync(d, anchors, typed, ct);
+                var ingest = await agent.GenerateIngestAsync(d.Text, ct);
+                await retriever.IngestAsync(d, ingest?.Attributes, ingest?.Keywords, ct);
             }
             return;
         }
@@ -299,31 +301,9 @@ public sealed class BenchmarkRunner
         };
         await Parallel.ForEachAsync(docs, options, async (doc, c) =>
         {
-            var anchors = await agent.GenerateAnchorsAsync(doc.Text, c);
-            var typed = await agent.GenerateTypedKeywordsAsync(doc.Text, c);
-            await retriever.IngestAsync(doc, anchors, typed, c);
+            var ingest = await agent.GenerateIngestAsync(doc.Text, c);
+            await retriever.IngestAsync(doc, ingest?.Attributes, ingest?.Keywords, c);
         });
-    }
-
-    /// <summary>
-    /// Apply the agent's query-side transforms (rewrite and/or HyDE) before sending
-    /// the query to the retriever. Both transforms compose: if rewrite is enabled,
-    /// the original query is replaced with the rewritten form; if HyDE is enabled,
-    /// the generated hypothetical is appended to whatever query text we end up
-    /// using (separated by two newlines so an embedding-based retriever sees both
-    /// surfaces as one semantic blob). When neither op is enabled — or both return
-    /// null — the original query passes through unchanged.
-    /// </summary>
-    private async Task<string> TransformQueryAsync(string originalQuery, CancellationToken ct)
-    {
-        string current = originalQuery;
-        string? rewritten = await _agent.RewriteQueryAsync(originalQuery, ct);
-        if (!string.IsNullOrWhiteSpace(rewritten))
-            current = rewritten;
-        string? hypothetical = await _agent.GenerateHypotheticalAsync(originalQuery, ct);
-        if (!string.IsNullOrWhiteSpace(hypothetical))
-            current = current + "\n\n" + hypothetical;
-        return current;
     }
 
     private static string ReadScriniaVersion() =>

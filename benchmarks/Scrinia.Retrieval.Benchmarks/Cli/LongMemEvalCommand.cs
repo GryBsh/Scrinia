@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
 using Scrinia.Retrieval.Benchmarks.Loaders;
 
@@ -60,6 +61,8 @@ internal static class LongMemEvalCommand
                 RetrieverFactory.PrintJudgeSummary(judge, result);
             if (retriever is AgenticScriniaRetriever ag)
                 RetrieverFactory.PrintAgenticStats(ag.Stats);
+            if (agent is LlmAgentHarness la)
+                RetrieverFactory.PrintAgentStats(la.Stats);
             await WriteJsonAsync(output, result, ct);
             Console.WriteLine($"wrote {output}");
         }
