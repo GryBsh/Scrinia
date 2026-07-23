@@ -68,7 +68,7 @@ public sealed class BundleV2Tests : IDisposable
             ContentPreview: contentPreview,
             Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
             {
-                [KnownFields.TagKey] = tags
+                [KnownAttributes.TagKey] = tags
             });
         _store.Upsert(entry, scope);
         _store.WriteArtifactAsync(subject, scope, content).GetAwaiter().GetResult();
@@ -339,7 +339,7 @@ public sealed class BundleV2Tests : IDisposable
 
         imported.ContentPreview.Should().Be("A hearty soup recipe.");
         imported.Attributes.Should().NotBeNull();
-        imported.Attributes!.Should().ContainKey(KnownFields.TagKey)
+        imported.Attributes!.Should().ContainKey(KnownAttributes.TagKey)
             .WhoseValue.Should().BeEquivalentTo(["cooking", "winter"]);
     }
 
@@ -394,7 +394,7 @@ public sealed class BundleV2Tests : IDisposable
 
         imported.ContentPreview.Should().Be("An old-format description");
         imported.Attributes.Should().NotBeNull();
-        imported.Attributes!.Should().ContainKey(KnownFields.TagKey)
+        imported.Attributes!.Should().ContainKey(KnownAttributes.TagKey)
             .WhoseValue.Should().BeEquivalentTo(["archived", "legacy"]);
     }
 

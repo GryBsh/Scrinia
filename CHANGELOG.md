@@ -10,6 +10,42 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — path-only memory names
+- **The `topic:subject` colon naming syntax was removed; names are paths.**
+  `api:auth` is now `/api/auth`. `ParseQualifiedName` rejects a colon name with
+  a message suggesting the path form. All display (`list`, `search`, store
+  confirmations) already rendered paths via `FileMemoryStore.FormatQualifiedName`,
+  but `ScriniaArtifactStore.FormatQualifiedName` (used by the CLI) still emitted
+  colon — it now emits paths too.
+- **The internal `memory/` topic namespace was dropped.** A topic now resolves
+  the same whether reached by a `/topic/subject` path or a bare topic filter —
+  `local-topic:{topic}` (`.scrinia/topics/{topic}/`), not
+  `local-topic:memory/{topic}`. This fixes `--scopes {topic}` / `Export([{topic}])`
+  not matching path-stored memories. Data under the old `.scrinia/topics/memory/`
+  layout is still read via fallback. `skill` (entity) and `agent` scopes are
+  unchanged.
+- Agent-config resolution moved from `agent:{name}` to the `/agent/{name}` path,
+  which also repairs `restore`'s `/agent/**`, `/patterns/**`, `/checkpoint/latest`,
+  and `/sessions/{today}` follow-ups (they were reading legacy colon-scoped dirs
+  that path writes never populate).
+- **In-content cross-references are now `[[/path]]` wiki-links.** The auto-linker
+  (`MaintenanceEventSink` / `ReferenceExtractor`) matches `[[/api/auth]]` /
+  `[[note]]` instead of bare `topic:subject`.
+- The internal topic-scope prefix was shortened from `local-topic:` to `local:`
+  (e.g. `local:api`), and `list --summary` now labels topic groups `/api` instead
+  of `topic:api`. Scope strings feed vector-store directory names, so semantic
+  search over existing topic data needs a one-time `scri reindex` (the same
+  reindex the namespace change above already requires; BM25 search is unaffected).
+
+### Changed (breaking) — flat CLI surface
+- **The `memory` command group is gone; its subcommands are now top-level.**
+  `scri memory list/search/show/store/forget/append/compact/link` become
+  `scri list/search/show/store/forget/append/compact/link`. There is no
+  `memory` alias — update any scripts that used the prefix.
+- Trimmed agent-directed meta-commentary from `--help`: `guide` no longer says
+  "Call once per session", and `hint`'s description drops the hook-envelope
+  internals (and a stray XML tag that was leaking into the rendered help).
+
 ### Removed (breaking) — LLM-at-rest enrichment
 - **LLM-at-rest enrichment pipeline deleted.** `LlmConsolidator` and the entire
   Tier 2 sweep over the local store is gone. Scrinia no longer consults an LLM
@@ -63,15 +99,20 @@ and all assembly attributes.
   existing callers that don't supply `anchors` see no behavior change.
 - **Bench-side agent harness** under
   `benchmarks/Scrinia.Retrieval.Benchmarks/Agent/` — an `IAgentHarness`
-  abstraction with `GenerateAnchorsAsync` / `RewriteQueryAsync` /
-  `GenerateHypotheticalAsync` ops, wired into the bench's ingest and query
-  paths. New CLI flags: `--agent <off|anchors|rewrite|hyde|all>`,
+  abstraction with a single `GenerateIngestAsync` op that, given a doc's
+  content, produces the same attributes map and keywords a production agent hands the
+  `remember` tool — a typed `attributes` map and freeform `keywords` — in one
+  LLM call. `ScriniaRetriever` writes the attributes into `ArtifactEntry.Attributes`
+  (feeding the field scorer + entity graph) and merges the keywords with its
+  mechanically-extracted ones (prod-faithful TF weights: attributes +3, agent
+  keywords +5). New CLI flags: bare `--agent` (on/off — required `--agent-provider`
+  when present),
   `--agent-provider <openai|anthropic|gemini|ollama|claude-cli|codex-cli|copilot-cli>`,
-  `--agent-base-url`, `--agent-model`, `--agent-api-key`. Per-op response
-  caching under `benchmarks/.../cache/agent-{provider}-{model}.ndjson` so
-  reruns hit the cache and only first-pass calls hit the LLM. See
-  [`docs/research/agent-harness.md`](research/agent-harness.md) for the full
-  design including the anti-data-leakage prompt discipline.
+  `--agent-base-url`, `--agent-model`, `--agent-api-key`. Response caching under
+  `benchmarks/.../cache/agent-{provider}-{model}.ndjson` so reruns hit the cache
+  and only first-pass calls hit the LLM. The op is ingest-only — there is no
+  query-side transform. The prompt is built from document content only
+  (anti-data-leakage: it never sees the gold-answer set or the question dataset).
 - The LLM clients themselves moved to
   `benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/`:
   `IBenchLlmClient`, `OpenAiCompatibleBenchLlmClient` (covers

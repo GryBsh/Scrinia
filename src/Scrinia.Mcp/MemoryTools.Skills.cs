@@ -127,7 +127,10 @@ public sealed partial class ScriniaMcpTools
 
     private static async Task<string> ReadLegacySkillNmpAsync(IMemoryStore store, string skillName, CancellationToken ct)
     {
-        string artifact = await store.ResolveArtifactAsync($"skill:{skillName}", ct);
+        // Legacy skill nmp artifacts live under the entity/skill scope (never the flat
+        // /skill path scope), so read them by explicit scope rather than a qualified name.
+        string artifact = await store.ReadArtifactAsync(
+            store.SanitizeName(skillName), MemoryNaming.BuildScopedTopicScope("skill"), ct);
         byte[] decoded = Nmp2Strategy.Instance.Decode(artifact);
         return Encoding.UTF8.GetString(decoded);
     }
@@ -265,7 +268,7 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            var (scope, _) = store.ParseQualifiedName("skill:placeholder");
+            string scope = MemoryNaming.BuildScopedTopicScope("skill");
             IReadOnlyList<ArtifactEntry> entries;
             try { entries = store.LoadIndex(scope); }
             catch { entries = []; }
@@ -416,7 +419,8 @@ public sealed partial class ScriniaMcpTools
             }
             else if (nmpContent is not null)
             {
-                var (scope, subject) = store.ParseQualifiedName($"skill:{skillName}");
+                string scope = MemoryNaming.BuildScopedTopicScope("skill");
+                string subject = store.SanitizeName(skillName);
                 var entries = store.LoadIndex(scope);
                 var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
                 if (entry?.Keywords is not null)

@@ -119,10 +119,10 @@ public sealed class AttributeReadersTests
     public void DisplayTags_never_null()
         => AttributeReaders.DisplayTags(null).Should().BeEmpty();
 
-    // ---- DisplayAnchors (mirrors DisplayTags with KnownFields.AnchorKey / "anchor") ----
+    // ---- DisplayAnchors (mirrors DisplayTags with KnownAttributes.AnchorKey / "anchor") ----
     [Fact]
     public void DisplayAnchors_reads_fields_anchor()
-        => AttributeReaders.DisplayAnchors(F((KnownFields.AnchorKey, new[] { "a", "b" })))
+        => AttributeReaders.DisplayAnchors(F((KnownAttributes.AnchorKey, new[] { "a", "b" })))
             .Should().Equal("a", "b");
 
     [Fact]

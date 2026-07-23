@@ -5,8 +5,9 @@ using Scrinia.Core.Models;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Integration tests for dual-mode (v1 topic:subject / v2 /path) parsing,
-/// FormatQualifiedName roundtrips, and legacy fallback resolution.
+/// Integration tests for path-based name parsing (the legacy "topic:subject"
+/// colon form is now rejected), FormatQualifiedName roundtrips, and legacy
+/// on-disk fallback resolution.
 /// </summary>
 public sealed class DualModeParseTests : IDisposable
 {
@@ -29,13 +30,15 @@ public sealed class DualModeParseTests : IDisposable
     // ── Dual-mode parsing tests ─────────────────────────────────────────────
 
     [Fact]
-    public void ParseQualifiedName_V1TopicName_StillWorks()
+    public void ParseQualifiedName_ColonName_IsRejected()
     {
-        // v1 syntax: "api:auth-flow" -> scope with topic "api", subject "auth-flow"
-        var (scope, subject) = _store.ParseQualifiedName("api:auth-flow");
+        // The v1 "topic:subject" colon syntax was removed — names are paths now.
+        // Rejecting (rather than silently sanitizing the colon away) surfaces the
+        // path to use.
+        var act = () => _store.ParseQualifiedName("api:auth-flow");
 
-        scope.Should().Be("local-topic:memory/api");
-        subject.Should().Be("auth-flow");
+        act.Should().Throw<ArgumentException>()
+            .WithMessage("*/api/auth-flow*");
     }
 
     [Fact]
@@ -44,7 +47,7 @@ public sealed class DualModeParseTests : IDisposable
         // v2 syntax: "/api/auth-flow" -> scope with "api", subject "auth-flow"
         var (scope, subject) = _store.ParseQualifiedName("/api/auth-flow");
 
-        scope.Should().Be("local-topic:api");
+        scope.Should().Be("local:api");
         subject.Should().Be("auth-flow");
     }
 
@@ -53,10 +56,10 @@ public sealed class DualModeParseTests : IDisposable
     {
         // v2 deep path: "/goal/G-5/research/frontend"
         // PathParser sees "goal" as entity type -> EntityPair("goal","G-5"), then "research","frontend" as tags
-        // All segments build scope: "local-topic:goal/G-5/research", subject "frontend"
+        // All segments build scope: "local:goal/G-5/research", subject "frontend"
         var (scope, subject) = _store.ParseQualifiedName("/goal/G-5/research/frontend");
 
-        scope.Should().Be("local-topic:goal/G-5/research");
+        scope.Should().Be("local:goal/G-5/research");
         subject.Should().Be("frontend");
     }
 
@@ -71,17 +74,19 @@ public sealed class DualModeParseTests : IDisposable
     }
 
     [Fact]
-    public async Task StoreViaV1_RecallViaV2Deep_Works()
+    public async Task StoreViaLegacyScope_RecallViaV2Deep_Works()
     {
-        // Store using v1 syntax "research:frontend" -> .scrinia/topics/entity/research/
-        var (scopeV1, subjectV1) = _store.ParseQualifiedName("research:frontend");
+        // Store using the legacy namespaced topic scope (the on-disk shape v1
+        // colon names used to produce) -> .scrinia/topics/memory/research/
+        string scopeV1 = MemoryNaming.BuildScopedTopicScope("research");
+        string subjectV1 = _store.SanitizeName("frontend");
         await _store.WriteArtifactAsync(subjectV1, scopeV1, "v1 stored content");
 
         string v1Path = _store.ArtifactPath(subjectV1, scopeV1);
         File.Exists(v1Path).Should().BeTrue("v1 write should create the file");
 
         // Recall using v2 deep path "/goal/G-5/research/frontend"
-        // v2 scope = "local-topic:goal/G-5/research" -> .scrinia/memories/goal/G-5/research/
+        // v2 scope = "local:goal/G-5/research" -> .scrinia/memories/goal/G-5/research/
         // Legacy fallback finds .scrinia/topics/entity/research/ (namespaced) or
         // .scrinia/topics/research/ (flat). The ResolveV2LegacyDir uses the leaf "research".
         var (scopeV2, subjectV2) = _store.ParseQualifiedName("/goal/G-5/research/frontend");
@@ -90,25 +95,15 @@ public sealed class DualModeParseTests : IDisposable
     }
 
     [Fact]
-    public async Task StoreViaV2_RecallViaV1_Works()
+    public async Task StoreViaV2_RoundTrips()
     {
-        // Store using v2 syntax
+        // Store using v2 path syntax and read it straight back.
         var (scopeV2, subjectV2) = _store.ParseQualifiedName("/api/auth-flow");
         await _store.WriteArtifactAsync(subjectV2, scopeV2, "v2 stored content");
 
-        // v2 path stores to .scrinia/memories/api/auth-flow.nmp2
         string v2Path = _store.ArtifactPath(subjectV2, scopeV2);
         File.Exists(v2Path).Should().BeTrue("v2 write should create the file");
 
-        // v1 syntax "api:auth-flow" resolves to scope "local-topic:memory/api"
-        // which maps to .scrinia/topics/memory/api/ — a different directory.
-        // The v1 fallback won't find the v2 file directly, but we verify
-        // v1 can still be written and read independently.
-        var (scopeV1, subjectV1) = _store.ParseQualifiedName("api:auth-flow");
-
-        // Create a symlink scenario by writing the same content to v1 location
-        // to prove both paths can coexist — the real fallback test is in
-        // StoreViaV1_RecallViaV2_Works above. Here we just verify v2 storage works.
         string v2Content = await _store.ReadArtifactAsync(subjectV2, scopeV2);
         v2Content.Should().Be("v2 stored content");
     }
@@ -187,8 +182,8 @@ public sealed class DualModeParseTests : IDisposable
             Path.Combine(legacyDir, "auth-flow.meta.json"),
             System.Text.Json.JsonSerializer.Serialize(entry));
 
-        // Use the v1 scope to load index — the legacy dir should be discovered
-        var (scopeV1, _) = _store.ParseQualifiedName("api:auth-flow");
+        // Use the legacy namespaced scope to load index — the legacy dir should be discovered
+        string scopeV1 = MemoryNaming.BuildScopedTopicScope("api");
         var entries = _store.LoadIndex(scopeV1);
 
         entries.Should().Contain(e => e.Name == "auth-flow",
@@ -210,13 +205,13 @@ public sealed class DualModeParseTests : IDisposable
     }
 
     [Fact]
-    public void FormatQualifiedName_V1Scope_ReturnsTopicSyntax()
+    public void FormatQualifiedName_LegacyNamespacedScope_ReturnsPathSyntax()
     {
-        // v1 scope from parsing "api:auth-flow"
-        var (scope, subject) = _store.ParseQualifiedName("api:auth-flow");
+        // A legacy namespaced topic scope (local:memory/api) still formats
+        // as a path for display.
+        string scope = MemoryNaming.BuildScopedTopicScope("api");
 
-        // FormatQualifiedName should reconstruct the v1 topic:subject syntax
-        string formatted = _store.FormatQualifiedName(scope, subject);
+        string formatted = _store.FormatQualifiedName(scope, "auth-flow");
 
         formatted.Should().Be("/api/auth-flow");
     }
@@ -226,10 +221,10 @@ public sealed class DualModeParseTests : IDisposable
     [Fact]
     public void ParseQualifiedName_V2ThreeSegment_ReturnsCorrectScopeAndSubject()
     {
-        // "/agent/profile" -> 2 segments, scope "local-topic:agent", subject "profile"
+        // "/agent/profile" -> 2 segments, scope "local:agent", subject "profile"
         var (scope, subject) = _store.ParseQualifiedName("/agent/profile");
 
-        scope.Should().Be("local-topic:agent");
+        scope.Should().Be("local:agent");
         subject.Should().Be("profile");
     }
 
@@ -269,10 +264,10 @@ public sealed class DualModeParseTests : IDisposable
     }
 
     [Fact]
-    public void ParseAndFormat_V1Topic_Roundtrips()
+    public void ParseAndFormat_TwoSegmentPath_Roundtrips()
     {
-        // Full roundtrip: parse v1 topic:subject -> format -> should get same name back
-        string original = "patterns:retry";
+        // A two-segment path roundtrips through parse -> format unchanged.
+        string original = "/patterns/retry";
         var (scope, subject) = _store.ParseQualifiedName(original);
         string formatted = _store.FormatQualifiedName(scope, subject);
 
@@ -283,10 +278,10 @@ public sealed class DualModeParseTests : IDisposable
     public void ParseQualifiedName_V2EntityPath_ScopeIncludesEntitySegments()
     {
         // "/concern/SEC-054" -> entity pair concern/SEC-054
-        // scope = "local-topic:concern", subject = "SEC-054"
+        // scope = "local:concern", subject = "SEC-054"
         var (scope, subject) = _store.ParseQualifiedName("/concern/SEC-054");
 
-        scope.Should().Be("local-topic:concern");
+        scope.Should().Be("local:concern");
         subject.Should().Be("SEC-054");
     }
 

@@ -166,15 +166,12 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
     // ── Ingest (buffer only — this arm's real ingestion is the episode) ─────────
 
     public Task IngestAsync(HaystackDoc doc, CancellationToken ct = default) =>
-        IngestAsync(doc, anchors: null, keywords: null, ct);
+        IngestAsync(doc, attributes: null, keywords: null, ct);
 
-    /// <inheritdoc/>
-    public Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? anchors, CancellationToken ct = default) =>
-        IngestAsync(doc, anchors, keywords: null, ct);
-
-    /// <summary>Anchors and keywords are IGNORED in this arm — the agent decides what to remember.</summary>
+    /// <summary>Attributes and keywords are IGNORED in this arm — the agent's own episode
+    /// decides what to remember (and supplies its own attributes/keywords via tool calls).</summary>
     public Task IngestAsync(
-        HaystackDoc doc, IReadOnlyList<string>? anchors, IReadOnlyList<string>? keywords, CancellationToken ct = default)
+        HaystackDoc doc, IReadOnlyDictionary<string, string[]>? attributes, IReadOnlyList<string>? keywords, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ct.ThrowIfCancellationRequested();

@@ -52,10 +52,10 @@ public sealed class ConsolidateReembedTests : IDisposable
         // Bare "sessions" (no "memory/" namespace prefix) round-trips cleanly through
         // FileMemoryStore's FormatQualifiedName -> ParseQualifiedName pair. A "memory/X"
         // v1-namespaced scope does NOT round-trip (Format collapses it to "/X/subject",
-        // and Parse reconstructs that back to bare "local-topic:X", losing the "memory/"
+        // and Parse reconstructs that back to bare "local:X", losing the "memory/"
         // prefix) — that's a pre-existing FileMemoryStore quirk unrelated to this fix, so
         // this test avoids it to isolate what's actually under test: the re-embed wiring.
-        const string scope = "local-topic:sessions";
+        const string scope = "local:sessions";
 
         // Seed a genuine multi-chunk artifact on disk (EncodeChunks with >1 element — Encode()
         // alone always produces a single chunk regardless of content length).

@@ -6,7 +6,7 @@ namespace Scrinia.Core.Search;
 /// Combines multiple <see cref="ISearchScoreContributor"/> instances into one, summing
 /// per-key scores. Lets us stack independent signals — e.g. embeddings semantic similarity
 /// plus path-segment overlap — without changing <see cref="SearchContributorContext"/>'s
-/// single-valued contract or pushing per-key score merging into <c>WeightedFieldScorer</c>.
+/// single-valued contract or pushing per-key score merging into <c>WeightedAttributeScorer</c>.
 ///
 /// <para>Sum (not max) matches the additive semantics already baked into the scorer:
 /// each contributor is an independent signal whose contribution adds to the final

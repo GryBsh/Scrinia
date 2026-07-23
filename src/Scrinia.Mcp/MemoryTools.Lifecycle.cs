@@ -642,7 +642,7 @@ public sealed partial class ScriniaMcpTools
 
             if (!usedMdFiles)
             {
-                var (agentScope, _) = store.ParseQualifiedName("agent:placeholder");
+                var (agentScope, _) = store.ParseQualifiedName("/agent/placeholder");
                 var agentEntries = store.LoadIndex(agentScope);
                 foreach (var entry in agentEntries)
                     followUpNames.Add($"/agent/{entry.Name}");
@@ -653,7 +653,7 @@ public sealed partial class ScriniaMcpTools
         // Collect patterns/* names for followUp
         try
         {
-            var (patternsScope, _) = store.ParseQualifiedName("patterns:placeholder");
+            var (patternsScope, _) = store.ParseQualifiedName("/patterns/placeholder");
             var patternsEntries = store.LoadIndex(patternsScope);
             foreach (var entry in patternsEntries)
                 followUpNames.Add($"/patterns/{entry.Name}");
@@ -663,7 +663,7 @@ public sealed partial class ScriniaMcpTools
         // Checkpoint:latest — followUp if exists
         try
         {
-            string checkpointArtifact = await store.ResolveArtifactAsync("checkpoint:latest", cancellationToken);
+            string checkpointArtifact = await store.ResolveArtifactAsync("/checkpoint/latest", cancellationToken);
             if (!string.IsNullOrEmpty(checkpointArtifact))
                 followUpNames.Add("/checkpoint/latest");
         }
@@ -673,7 +673,7 @@ public sealed partial class ScriniaMcpTools
         try
         {
             string today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
-            await store.ResolveArtifactAsync($"sessions:{today}", cancellationToken);
+            await store.ResolveArtifactAsync($"/sessions/{today}", cancellationToken);
             followUpNames.Add($"/sessions/{today}");
         }
         catch (FileNotFoundException) { /* no session log for today */ }

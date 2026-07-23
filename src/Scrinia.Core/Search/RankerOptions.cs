@@ -3,12 +3,12 @@ using System.Globalization;
 namespace Scrinia.Core.Search;
 
 /// <summary>
-/// How <see cref="WeightedFieldScorer.SearchAll(string, IEnumerable{ScopedArtifact}, IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/>
-/// combines the three relevance signals — field-match score, normalized BM25, and
+/// How <see cref="WeightedAttributeScorer.SearchAll(string, IEnumerable{ScopedArtifact}, IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/>
+/// combines the three relevance signals — attribute-match score, normalized BM25, and
 /// supplemental embedding cosine — into a single value passed to the recency
 /// composition.
 /// <list type="bullet">
-/// <item><see cref="Sum"/>: <c>fieldScore + normalizedBm25·5 + supplemental</c>. Historical
+/// <item><see cref="Sum"/>: <c>attributeScore + normalizedBm25·5 + supplemental</c>. Historical
 /// default. Magnitudes are uneven (BM25 contributes up to ~500, embeddings up to ~50 in
 /// the bench harness), so the lexical signal dominates.</item>
 /// <item><see cref="Rrf"/>: Reciprocal Rank Fusion with <c>k=60</c>. Each source is ranked
@@ -27,13 +27,13 @@ public enum FusionMode
     /// <summary>Historical sum-with-weights. Default.</summary>
     Sum = 0,
 
-    /// <summary>Reciprocal Rank Fusion across field-match, BM25, and supplemental sources.</summary>
+    /// <summary>Reciprocal Rank Fusion across attribute-match, BM25, and supplemental sources.</summary>
     Rrf = 1,
 }
 
 /// <summary>
 /// Tunable weights for the additive ranker composition used by
-/// <see cref="WeightedFieldScorer.SearchAll(string, IEnumerable{ScopedArtifact}, IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/>.
+/// <see cref="WeightedAttributeScorer.SearchAll(string, IEnumerable{ScopedArtifact}, IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/>.
 /// The score for an entry with relevance &gt; 0 is:
 ///
 /// <code>
@@ -48,7 +48,7 @@ public enum FusionMode
 /// more recent memory.
 ///
 /// Setting α_recency = 0 reduces the ranker to relevance only — useful in tests that need
-/// to isolate field + BM25 signals from temporal bumps.
+/// to isolate attribute + BM25 signals from temporal bumps.
 ///
 /// <para><see cref="Fusion"/> selects how the three retrieval signals combine inside the
 /// "relevance" term. Default <see cref="FusionMode.Sum"/> matches the historical behavior;

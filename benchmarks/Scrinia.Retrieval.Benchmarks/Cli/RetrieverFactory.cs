@@ -44,9 +44,9 @@ internal static class RetrieverFactory
 
         // Entity-graph recall probe. Off unless --entity-graph on|true. Parsed up here because
         // BOTH arms consume it: the mechanical arm (below) and the agentic arm (next branch).
-        // The graph nodes are the memories' entity attributes/typed keywords; the mechanical
-        // arm sources them from the agent's `entity:` typed keywords (BuildAgentAsync force-
-        // enables typed extraction for it), the agentic arm from the attributes the episode writes.
+        // The graph nodes are the memories' typed attributes; the mechanical arm sources them
+        // from the attributes the ingest agent generates (BuildAgentAsync treats --entity-graph
+        // as implying --agent), the agentic arm from the attributes its episode writes.
         bool entityGraph = ParseBool(Program.Flag(args, "--entity-graph"));
         double entityGraphAlpha = ParseDouble(Program.Flag(args, "--entity-graph-alpha"), EntityGraphScoreContributor.DefaultAlpha);
         int entityGraphIterations = ParseInt(Program.Flag(args, "--entity-graph-iterations"), EntityGraphScoreContributor.DefaultIterations);
@@ -62,10 +62,10 @@ internal static class RetrieverFactory
         // HasFlag rather than the `--flag value` pair idiom Program.Flag uses.
         if (HasFlag(args, "--agentic-ingest"))
         {
-            // Mutually exclusive with query/ingest agent decorations — this arm's
+            // Mutually exclusive with the mechanical agent harness — this arm's
             // ingestion IS the agent episode.
-            if (ParseAgentMode(Program.Flag(args, "--agent")).AnyEnabled)
-                throw new ArgumentException("--agentic-ingest cannot be combined with --agent <ops>; the episode is the agent.");
+            if (HasFlag(args, "--agent"))
+                throw new ArgumentException("--agentic-ingest cannot be combined with --agent; the episode is the agent.");
 
             // The cross-encoder / sentence-maxsim rerankers operate on ScriniaRetriever's
             // sentence index, which the agentic arm does not build. The agentic arm's
@@ -229,39 +229,39 @@ internal static class RetrieverFactory
 
     /// <summary>
     /// Builds an <see cref="IAgentHarness"/> from CLI args. Returns
-    /// <see cref="NoOpAgentHarness.Instance"/> for the default <c>--agent off</c>.
-    /// When any agent op is enabled, requires <c>--agent-provider</c> and dispatches
-    /// to <see cref="AgentClientBuilder.BuildAsync"/> to construct the LLM transport.
-    /// The harness owns its own <see cref="LlmResponseCache"/> at
+    /// <see cref="NoOpAgentHarness.Instance"/> when the bare <c>--agent</c> flag is absent.
+    /// When present, requires <c>--agent-provider</c> and dispatches to
+    /// <see cref="AgentClientBuilder.BuildAsync"/> to construct the LLM transport. The
+    /// harness owns its own <see cref="LlmResponseCache"/> at
     /// <c>cache/agent-{provider}-{model}.ndjson</c>.
     /// </summary>
     public static async Task<IAgentHarness> BuildAgentAsync(string[] args, CancellationToken ct)
     {
-        AgentModes modes = ParseAgentMode(Program.Flag(args, "--agent"));
-        // The mechanical arm's entity-graph probe sources its entities from the `entity:` typed
-        // keywords, so force typed extraction on whenever --entity-graph is set — even if the user
-        // didn't list `typed` in --agent. Without this the graph would be empty. Scoped to the
-        // mechanical arm: the agentic arm sources graph nodes from the attributes its episode
-        // writes, not from this typed-keyword agent, so forcing it there would spin up an unused
-        // harness (and demand a redundant --agent-provider).
-        if (ParseBool(Program.Flag(args, "--entity-graph")) && !HasFlag(args, "--agentic-ingest"))
-            modes = modes with { TypedKeywords = true };
-        if (!modes.AnyEnabled) return NoOpAgentHarness.Instance;
+        // `--agent` is a bare on/off flag. Its single op is ingest-time curation — the agent
+        // generates the attributes map + keywords a production `remember` call would carry.
+        // The mechanical entity-graph probe sources its nodes from those generated attributes,
+        // so --entity-graph (on the mechanical arm) implies --agent; without a curating agent
+        // there'd be no attributes for the graph to walk. Scoped to the mechanical arm: the
+        // agentic arm's episode writes its own attributes, so it never needs this harness.
+        bool agentOn = HasFlag(args, "--agent")
+            || (ParseBool(Program.Flag(args, "--entity-graph")) && !HasFlag(args, "--agentic-ingest"));
+        if (!agentOn) return NoOpAgentHarness.Instance;
 
         string provider = Program.Flag(args, "--agent-provider")
             ?? throw new ArgumentException(
-                "--agent " + modes.Label() + " requires --agent-provider " +
+                "--agent requires --agent-provider " +
                 "(openai | anthropic | gemini | ollama | claude-cli | codex-cli | copilot-cli)");
         string? model = Program.Flag(args, "--agent-model");
         string? baseUrl = Program.Flag(args, "--agent-base-url");
         string? apiKey = Program.Flag(args, "--agent-api-key");
+        int maxAttempts = ParseInt(Program.Flag(args, "--agent-max-attempts"), LlmAgentHarness.DefaultMaxAttempts);
         var backend = await AgentClientBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
         string cacheDir = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache");
         string cacheFile = Path.Combine(cacheDir, $"agent-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
         var cache = new LlmResponseCache(cacheFile);
-        var harness = new LlmAgentHarness(backend.Llm, cache, backend.ProviderId, backend.ModelSlug, modes);
+        var harness = new LlmAgentHarness(backend.Llm, cache, backend.ProviderId, backend.ModelSlug, maxAttempts);
         Console.Error.WriteLine(
-            $"[scrinia-bench] agent harness enabled: provider={backend.ProviderId} model={backend.ModelSlug} ops={modes.Label()} cache={cacheFile}");
+            $"[scrinia-bench] agent harness enabled: provider={backend.ProviderId} model={backend.ModelSlug} op=ingest maxAttempts={maxAttempts} cache={cacheFile}");
         return harness;
     }
 
@@ -271,8 +271,8 @@ internal static class RetrieverFactory
     /// regardless of position.</summary>
     private static bool HasFlag(string[] args, string name) => Array.IndexOf(args, name) >= 0;
 
-    /// <summary>Max tool-call turns per agentic-ingest session episode. Mirrors the
-    /// <see cref="ParseAgentMode"/> public/internal helper style so it's unit-testable.</summary>
+    /// <summary>Max tool-call turns per agentic-ingest session episode. Internal so it's
+    /// unit-testable.</summary>
     internal static int EpisodeMaxTurns(string[] args) => ParseInt(Program.Flag(args, "--episode-max-turns"), 16);
 
     /// <summary>The <c>max_tokens</c> sent on every agentic-ingest turn. On an
@@ -299,6 +299,24 @@ internal static class RetrieverFactory
         Console.WriteLine($"memories without refs: {s.MemoriesWithoutRefs}");
         Console.WriteLine($"unresolvable refs:     {s.UnresolvableRefs}");
         Console.WriteLine($"tool-call errors:      {s.ToolCallErrors}");
+    }
+
+    /// <summary>Prints the mechanical <c>--agent</c> ingest tally so a run can reconcile
+    /// docs-seen against attributes/keywords produced and confirm nothing was silently dropped
+    /// on the (default-silent) empty-reply path. No-op unless the agent harness actually ran.</summary>
+    public static void PrintAgentStats(AgentIngestStats s)
+    {
+        Console.WriteLine();
+        Console.WriteLine("=== agent ingest stats ===");
+        Console.WriteLine($"docs seen:        {s.Seen}");
+        Console.WriteLine($"  empty content:  {s.EmptyContent}  (skipped, no call)");
+        Console.WriteLine($"  cache hits:     {s.CacheHits}");
+        Console.WriteLine($"  llm docs:       {s.LlmDocs}  (attempts={s.LlmAttempts})");
+        Console.WriteLine($"produced:         {s.Produced}");
+        Console.WriteLine($"empty/failed:     {s.Failed}  (reached model, no usable attributes/keywords; uncached)");
+        long reconcile = s.EmptyContent + s.CacheHits + s.LlmDocs;
+        string ok = reconcile == s.Seen && s.Produced == s.CacheHits + (s.LlmDocs - s.Failed) ? "ok" : "MISMATCH";
+        Console.WriteLine($"reconcile:        seen={s.Seen} == empty+cache+llm={reconcile}; cache lines added this run={s.LlmDocs - s.Failed} [{ok}]");
     }
 
     internal static int JudgeK(string[] args) => ParseInt(Program.Flag(args, "--judge-k"), 10);
@@ -362,10 +380,6 @@ internal static class RetrieverFactory
         _ => throw new ArgumentException($"unknown --chunk '{raw}'. Expected: none | prod"),
     };
 
-    /// <summary>Parses <c>--agent</c> into an <see cref="AgentModes"/>. Delegates to
-    /// <see cref="AgentModes.Parse"/> so the parse logic lives with the type and stays unit-testable.</summary>
-    public static AgentModes ParseAgentMode(string? raw) => AgentModes.Parse(raw);
-
     private static FusionMode ParseFusion(string? raw) => raw?.ToLowerInvariant() switch
     {
         null or "" or "sum" => FusionMode.Sum,
@@ -415,14 +429,9 @@ internal static class RetrieverFactory
             && !string.Equals(ck, "off", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(ck, "false", StringComparison.OrdinalIgnoreCase))
             tags.Add("chunked");
-        // Agent harness tag — one of agent-anchors / agent-rewrite / agent-hyde /
-        // agent-all when the harness is active. Off (the default) emits no tag so
-        // baseline result files stay clean.
-        if (Program.Flag(args, "--agent") is { } ag)
-        {
-            var modes = ParseAgentMode(ag);
-            if (modes.AnyEnabled) tags.Add("agent-" + modes.Label());
-        }
+        // Agent harness tag — bare `agent` when the ingest-curation harness is active.
+        // Off (the default) emits no tag so baseline result files stay clean.
+        if (HasFlag(args, "--agent")) tags.Add("agent");
         // Agentic-ingest tag so its result files never collide with the mechanical arms.
         if (HasFlag(args, "--agentic-ingest")) tags.Add("agentic-ingest");
         if (Program.Flag(args, "--alpha-recency") is { } r) tags.Add($"rec{r}");

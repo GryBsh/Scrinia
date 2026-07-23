@@ -10,7 +10,7 @@ The top-level surface is organized by purpose:
 |---|---|
 | Infrastructure | `serve`, `setup`, `config`, `reindex` |
 | Lifecycle | `guide`, `restore`, `reconcile`, `consolidate`, `hint` |
-| Memory operations | `memory list / search / show / store / forget / append / compact / link` |
+| Memory operations | `list / search / show / store / forget / append / compact / link` |
 | Bundle files | `bundle export / import / pack` |
 
 `scri migrate_v1` is still callable for one-shot v1→v2 store migration but is hidden from `--help` (see [scri migrate_v1](#scri-migrate_v1)).
@@ -38,12 +38,12 @@ scri serve --remote http://localhost:5000 --api-key <key> [--store default]
 
 **Remote mode** proxies all MCP tool calls to a Scrinium instance over HTTP — no local embedding model needed.
 
-### scri memory list
+### scri list
 
 List stored memories. Defaults to summary mode (topics, keywords, stats). Use `--summary false` for the full table with chunk counts, sizes, token estimates, and review markers.
 
 ```bash
-scri memory list [--workspace-root <path>] [--scopes local,api,ephemeral]
+scri list [--workspace-root <path>] [--scopes local,api,ephemeral]
     [--summary] [--offset 0] [--limit 50] [--json]
 ```
 
@@ -54,20 +54,20 @@ scri memory list [--workspace-root <path>] [--scopes local,api,ephemeral]
 | `--limit` | `50` | Maximum entries to return |
 | `--json` | `false` | Output as JSON |
 
-### scri memory search
+### scri search
 
 Search memories using BM25 + weighted-field hybrid scoring. With the embeddings plugin active, semantic vector scores are blended in.
 
 ```bash
-scri memory search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
+scri search "query" [--workspace-root <path>] [--scopes local,api] [--limit 20]
 ```
 
-### scri memory store
+### scri store
 
 Compress and persist text as a named memory. Reads from a file path or stdin (`-`).
 
 ```bash
-scri memory store <name> [file] [--workspace-root <path>]
+scri store <name> [file] [--workspace-root <path>]
     [-d description] [-t tag1,tag2] [-k keyword1,keyword2]
     [--review-after 2026-06-01] [--review-when "when auth changes"]
 ```
@@ -75,14 +75,14 @@ scri memory store <name> [file] [--workspace-root <path>]
 **Examples:**
 
 ```bash
-scri memory store session-notes ./notes.md
-scri memory store api:auth ./auth.md -k oauth,jwt --review-when "when auth system changes"
-cat notes.md | scri memory store session-notes -
+scri store session-notes ./notes.md
+scri store /api/auth ./auth.md -k oauth,jwt --review-when "when auth system changes"
+cat notes.md | scri store session-notes -
 ```
 
 **Retrieval anchors.** Anchors are supplied as the **`anchor` attribute** via
 the MCP `remember` tool's `attributes` parameter (`attributes: { anchor: [...] }`)
-— the CLI `memory store` surface does not expose it as a flag. Anchors are
+— the CLI `store` surface does not expose it as a flag. Anchors are
 agent-supplied **retrieval bridges**: short phrases, questions, or category-level
 paraphrases that bridge likely user queries to the entry's content. Use the
 vocabulary you expect users to query with, not the vocabulary already in the
@@ -105,20 +105,20 @@ naturally) and are scored like any attribute value (see the attributes model).
 }
 ```
 
-### scri memory show
+### scri show
 
 Decode and display a memory's full content. Optionally write to a file.
 
 ```bash
-scri memory show <name> [--workspace-root <path>] [-o output.md]
+scri show <name> [--workspace-root <path>] [-o output.md]
 ```
 
-### scri memory forget
+### scri forget
 
 Delete a stored memory and remove its index entry.
 
 ```bash
-scri memory forget <name> [--workspace-root <path>]
+scri forget <name> [--workspace-root <path>]
 ```
 
 ### scri guide
@@ -133,41 +133,41 @@ scri guide [--json]
 Default output is the raw Markdown. `--json` wraps the response in the standard
 MCP envelope (`{ action, status, yaml }`) for tooling consumption.
 
-### scri memory append
+### scri append
 
 Append a new chunk to an existing memory. The previous version is archived to
 `{scope}/versions/{name}_{timestamp}.nmp2` so the append is undoable.
 
 ```bash
-scri memory append <name> [<file>] [--workspace-root <path>] [--json]
+scri append <name> [<file>] [--workspace-root <path>] [--json]
 ```
 
 ```bash
 # From a file
-scri memory append session-notes ./more.md
+scri append session-notes ./more.md
 
 # From stdin
-echo "another paragraph" | scri memory append session-notes
+echo "another paragraph" | scri append session-notes
 ```
 
 If the target memory doesn't exist, `append` falls back to creating it as a
-single-chunk memory (equivalent to `memory store`).
+single-chunk memory (equivalent to `store`).
 
-### scri memory compact
+### scri compact
 
 Merge the chunks of a multi-chunk memory back into a single chunk (or keep the N
 newest). The pre-compact version is archived first.
 
 ```bash
-scri memory compact <name> [--keep-recent N] [--workspace-root <path>] [--json]
+scri compact <name> [--keep-recent N] [--workspace-root <path>] [--json]
 ```
 
 - Default (`--keep-recent 0`): all chunks are concatenated into one.
 - `--keep-recent N` (N ≥ 1): keep only the N most recent chunks; older ones are dropped.
 
 ```bash
-scri memory compact session-notes               # merge all chunks
-scri memory compact session-notes --keep-recent 5  # keep last 5
+scri compact session-notes               # merge all chunks
+scri compact session-notes --keep-recent 5  # keep last 5
 ```
 
 ### scri consolidate
@@ -185,7 +185,7 @@ in the agent that writes them.
 - Reports stats: total memories, total bytes, count of entries past their `review` date.
 
 Stale entries (past their `review` date) are reported but NOT deleted —
-review them with `scri memory list` and decide manually.
+review them with `scri list` and decide manually.
 
 ```bash
 scri consolidate [--auto] [--dry-run] [--debounce-minutes 30] \
@@ -204,17 +204,17 @@ compaction, or wire it into a scheduled task. The previous SessionEnd-hook
 auto-install was paired with an LLM-enrichment sweep at session close; that
 pipeline is gone, so there's no reason to fire this command per-session anymore.
 
-### scri memory link
+### scri link
 
 Create a bidirectional reference between two memories. Both sides get a
 `ref:{other}` keyword so searches and graph traversals discover the connection.
 
 ```bash
-scri memory link <from> <to> [-r reason] [--workspace-root <path>] [--json]
+scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]
 ```
 
 ```bash
-scri memory link api:auth-flow patterns:retry -r "auth retries use the documented pattern"
+scri link /api/auth-flow /patterns/retry -r "auth retries use the documented pattern"
 ```
 
 ### scri restore
@@ -470,7 +470,7 @@ Recommended workflow:
 ```bash
 scri migrate_v1 --dry-run         # preview what would be moved
 scri migrate_v1                   # run the migration (backup created automatically)
-# verify your memories are accessible via scri memory list / scri memory show
+# verify your memories are accessible via scri list / scri show
 scri migrate_v1 --cleanup         # remove the v1 originals
 ```
 
@@ -482,9 +482,9 @@ the pre-migration state.
 All CLI commands support a `--json` flag for machine-readable JSON output. This uses a source-generated `CliJsonContext` for trimming safety.
 
 ```bash
-scri memory list --json
-scri memory search "auth" --json
-scri memory show api:auth-flow --json
+scri list --json
+scri search "auth" --json
+scri show /api/auth-flow --json
 ```
 
 ## Workspace

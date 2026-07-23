@@ -6,7 +6,7 @@ using Scrinia.Core.Search;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// P6.5: <see cref="WeightedFieldScorer"/> deleted its legacy direct-carrier scoring blocks
+/// P6.5: <see cref="WeightedAttributeScorer"/> deleted its legacy direct-carrier scoring blocks
 /// (Tags exact/contains, RetrievalAnchors contains, key:value-in-Keywords dual-read,
 /// Description contains) now that Fields is populated everywhere via read-time forward-fill
 /// (<see cref="Scrinia.Core.Migration.AttributeMigration"/>, P6.1/P6.3). These tests prove the
@@ -38,7 +38,7 @@ public sealed class ScorerCleanupTests
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().Contain("widgets");
 
-        var scored = new WeightedFieldScorer().Search("widgets", [new ScopedArtifact("local", entry)], 10);
+        var scored = new WeightedAttributeScorer().Search("widgets", [new ScopedArtifact("local", entry)], 10);
 
         scored.Should().ContainSingle();
         scored[0].Score.Should().Be(40,
@@ -69,7 +69,7 @@ public sealed class ScorerCleanupTests
         var entries = store.LoadIndex("local");
         var scoped = entries.Select(e => new ScopedArtifact("local", e)).ToList();
 
-        var scored = new WeightedFieldScorer().Search("widgets", scoped, 10);
+        var scored = new WeightedAttributeScorer().Search("widgets", scoped, 10);
 
         scored.Should().HaveCount(2);
         var tagResult = scored.Single(r => r.Item.Entry.Name == "tag-only");

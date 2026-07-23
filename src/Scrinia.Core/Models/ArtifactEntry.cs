@@ -24,8 +24,8 @@ public sealed record ArtifactEntry(
     /// <summary>
     /// Unified multi-valued **attributes** — key:value facts from agent-supplied keywords
     /// (person:x routed at write time), mechanical content extraction, and reference
-    /// extraction (file/ref). Keys lowercase, values verbatim. See Search.FieldExtractor
-    /// and Search.KnownFields. Null for pre-attributes entries (graceful degradation).
+    /// extraction (file/ref). Keys lowercase, values verbatim. See Search.AttributeExtractor
+    /// and Search.KnownAttributes. Null for pre-attributes entries (graceful degradation).
     /// </summary>
     [property: System.Text.Json.Serialization.JsonPropertyName("attributes")]
     Dictionary<string, string[]>? Attributes = null)

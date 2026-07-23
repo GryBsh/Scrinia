@@ -22,7 +22,7 @@ public static class AttributeReaders
         date = null;
         condition = null;
         if (attributes is not null
-            && attributes.TryGetValue(KnownFields.ReviewKey, out var review)
+            && attributes.TryGetValue(KnownAttributes.ReviewKey, out var review)
             && review is not null)
         {
             foreach (string token in review)
@@ -57,7 +57,7 @@ public static class AttributeReaders
     /// <summary>Tags for display/aggregation: <c>Attributes["tag"]</c> when that key exists. Never null.</summary>
     public static IReadOnlyList<string> DisplayTags(IReadOnlyDictionary<string, string[]>? attributes)
     {
-        if (attributes is not null && attributes.TryGetValue(KnownFields.TagKey, out var tags) && tags is not null)
+        if (attributes is not null && attributes.TryGetValue(KnownAttributes.TagKey, out var tags) && tags is not null)
             return tags;
         return [];
     }
@@ -68,7 +68,7 @@ public static class AttributeReaders
     /// </summary>
     public static IReadOnlyList<string> DisplayAnchors(IReadOnlyDictionary<string, string[]>? attributes)
     {
-        if (attributes is not null && attributes.TryGetValue(KnownFields.AnchorKey, out var anchors) && anchors is not null)
+        if (attributes is not null && attributes.TryGetValue(KnownAttributes.AnchorKey, out var anchors) && anchors is not null)
             return anchors;
         return [];
     }

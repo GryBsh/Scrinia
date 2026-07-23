@@ -26,7 +26,7 @@ public sealed class PathSegmentScoreContributor : ISearchScoreContributor
     private readonly double _weight;
 
     /// <param name="weight">Multiplier on the path-token intersection count. Default
-    /// matches the order of magnitude of Description's field-score (10) and sits below
+    /// matches the order of magnitude of Description's attribute-score (10) and sits below
     /// curated keyword hits (12–40); tune via bench sweeps. A weight of 0 disables
     /// scoring entirely without removing the contributor from the pipeline.</param>
     public PathSegmentScoreContributor(double weight = DefaultWeight)
@@ -58,12 +58,12 @@ public sealed class PathSegmentScoreContributor : ISearchScoreContributor
 
     private static int CountPathTokenIntersection(ScopedArtifact candidate, HashSet<string> queryTokens)
     {
-        // Strip the "local-topic:" infrastructure prefix so its tokens ("local", "topic")
+        // Strip the "local:" infrastructure prefix so its tokens ("local", "topic")
         // don't pollute every candidate's path bag. After stripping, scope is the
         // raw topic path (e.g. "findings/auth-refactor"). Name is the leaf subject.
         string scope = candidate.Scope;
-        if (scope.StartsWith("local-topic:", StringComparison.Ordinal))
-            scope = scope["local-topic:".Length..];
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            scope = scope["local:".Length..];
 
         int intersect = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

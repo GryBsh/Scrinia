@@ -131,22 +131,20 @@ public sealed class ScriniaRetriever : IRetriever
     }
 
     public Task IngestAsync(HaystackDoc doc, CancellationToken ct = default) =>
-        IngestAsync(doc, agentAnchors: null, agentKeywords: null, ct);
-
-    /// <inheritdoc/>
-    public Task IngestAsync(HaystackDoc doc, IReadOnlyList<string>? agentAnchors, CancellationToken ct = default) =>
-        IngestAsync(doc, agentAnchors, agentKeywords: null, ct);
+        IngestAsync(doc, agentAttributes: null, agentKeywords: null, ct);
 
     /// <summary>
-    /// Full ingest overload. Agent anchors flow into the <c>anchor</c> attribute of
-    /// <see cref="ArtifactEntry.Attributes"/> and seed BM25 at +2; agent typed keywords are
-    /// appended to <see cref="ArtifactEntry.Keywords"/>
-    /// (for the field scorer) and their tokenized values seed BM25 at +5 — prod-faithful weights
-    /// (Store: agent keywords +5, anchors +2). Both null preserves baseline behavior.
+    /// Full ingest overload mirroring the production <c>remember</c> surface. Agent
+    /// <paramref name="agentAttributes"/> flow into <see cref="ArtifactEntry.Attributes"/>
+    /// (so the field scorer + entity graph see the typed facets) and their key/value tokens
+    /// seed BM25 at +3; agent <paramref name="agentKeywords"/> are merged into
+    /// <see cref="ArtifactEntry.Keywords"/> and their value tokens seed BM25 at +5 —
+    /// prod-faithful weights (Store: agent keywords +5, fields/attributes +3, auto +2). Both
+    /// null preserves baseline mechanical behavior.
     /// </summary>
     public async Task IngestAsync(
         HaystackDoc doc,
-        IReadOnlyList<string>? agentAnchors,
+        IReadOnlyDictionary<string, string[]>? agentAttributes,
         IReadOnlyList<string>? agentKeywords,
         CancellationToken ct = default)
     {
@@ -155,7 +153,7 @@ public sealed class ScriniaRetriever : IRetriever
 
         if (!_chunked)
         {
-            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, agentAnchors, agentKeywords, ct);
+            await IngestEntryAsync(doc.Id, doc.Text, doc.Timestamp, agentAttributes, agentKeywords, ct);
             return;
         }
 
@@ -164,44 +162,57 @@ public sealed class ScriniaRetriever : IRetriever
         foreach (var (idx, text) in windows)
         {
             string chunkId = $"{doc.Id}{ChunkSeparator}{idx}";
-            await IngestEntryAsync(chunkId, text, doc.Timestamp, agentAnchors, agentKeywords, ct);
+            await IngestEntryAsync(chunkId, text, doc.Timestamp, agentAttributes, agentKeywords, ct);
+        }
+    }
+
+    /// <summary>Tokenizes <paramref name="text"/> and adds <paramref name="boost"/> to each
+    /// token's count in <paramref name="tf"/> — the field/attribute TF-seeding primitive,
+    /// mirroring <c>AttributeExtractor.SeedTermFrequencies</c>.</summary>
+    private static void SeedTokens(Dictionary<string, int> tf, string text, int boost)
+    {
+        foreach (string token in TextAnalysis.Tokenize(text))
+        {
+            tf.TryGetValue(token, out int count);
+            tf[token] = count + boost;
         }
     }
 
     private async Task IngestEntryAsync(
         string id, string text, DateTimeOffset? timestamp,
-        IReadOnlyList<string>? agentAnchors, IReadOnlyList<string>? agentKeywords, CancellationToken ct)
+        IReadOnlyDictionary<string, string[]>? agentAttributes, IReadOnlyList<string>? agentKeywords, CancellationToken ct)
     {
         string sanitized = SanitizeName(id);
         var (keywords, tf) = TextAnalysis.AnalyzeText(text);
 
-        // Materialise agent signals as plain arrays.
-        string[]? anchorSource = agentAnchors is { Count: > 0 }
-            ? (agentAnchors as string[] ?? [.. agentAnchors])
+        // Materialise agent signals. Attributes = the typed facet map the agent supplied;
+        // keywords = the agent's freeform search terms.
+        Dictionary<string, string[]>? attributeSource = agentAttributes is { Count: > 0 }
+            ? new Dictionary<string, string[]>(agentAttributes, StringComparer.OrdinalIgnoreCase)
             : null;
         string[]? keywordSource = agentKeywords is { Count: > 0 }
             ? (agentKeywords as string[] ?? [.. agentKeywords])
             : null;
 
-        // Seed agent-derived tokens into the TF dict. Prod-faithful weights: anchor
-        // tokens +2 (Store anchor seeding), typed-keyword VALUE tokens +5 (Store agent
-        // keyword seeding). IndexTokensForKeyword strips the type prefix and tokenizes
-        // the value so "topic:home renovation" seeds [home, renovation], not a dead
-        // monolithic key.
+        // Seed agent-derived tokens into the TF dict. Prod-faithful weights (see
+        // AttributeExtractor.SeedTermFrequencies and MemoryTools remember): attribute key +
+        // value tokens +3, agent keyword VALUE tokens +5. IndexTokensForKeyword strips a
+        // type prefix and tokenizes the value so a "topic:home renovation" keyword seeds
+        // [home, renovation], not a dead monolithic key.
         Dictionary<string, int> mergedTf = tf;
-        if (anchorSource is { Length: > 0 } || keywordSource is { Length: > 0 })
+        if (attributeSource is { Count: > 0 } || keywordSource is { Length: > 0 })
         {
             mergedTf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var (k, v) in tf)
                 mergedTf[k] = v;  // mergedTf starts empty — direct copy of text-derived TF
-            if (anchorSource is { Length: > 0 })
+            if (attributeSource is { Count: > 0 })
             {
-                foreach (string anchor in anchorSource)
-                    foreach (string token in TextAnalysis.Tokenize(anchor))
-                    {
-                        mergedTf.TryGetValue(token, out int count);
-                        mergedTf[token] = count + 2;
-                    }
+                foreach (var (key, values) in attributeSource)
+                {
+                    SeedTokens(mergedTf, key, boost: 3);
+                    foreach (string value in values)
+                        SeedTokens(mergedTf, value, boost: 3);
+                }
             }
             if (keywordSource is { Length: > 0 })
             {
@@ -214,8 +225,8 @@ public sealed class ScriniaRetriever : IRetriever
             }
         }
 
-        // Entry keywords = auto-extracted ∪ typed keywords, so the field scorer's
-        // exact/contains paths see the full `prefix:value` tags.
+        // Entry keywords = auto-extracted ∪ agent keywords, so the field scorer's
+        // exact/contains paths see the agent's search terms too.
         string[] entryKeywords = keywordSource is { Length: > 0 }
             ? keywords.Concat(keywordSource).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
             : keywords;
@@ -229,9 +240,7 @@ public sealed class ScriniaRetriever : IRetriever
             Keywords: entryKeywords,
             TermFrequencies: mergedTf,
             ContentPreview: text,
-            Attributes: anchorSource is { Length: > 0 }
-                ? new Dictionary<string, string[]> { ["anchor"] = anchorSource }
-                : null);
+            Attributes: attributeSource);
 
         // FileMemoryStore.Upsert isn't thread-safe — serialize it across concurrent doc
         // ingests (parallel mode). The embedding call below is awaited OUTSIDE this lock so

@@ -107,7 +107,7 @@ public class VectorStoreTests : IDisposable
     public async Task TotalVectorCount_SumsAllScopes()
     {
         await _store.UpsertAsync("local", "a", null, [0.1f]);
-        await _store.UpsertAsync("local-topic:api", "b", null, [0.2f]);
+        await _store.UpsertAsync("local:api", "b", null, [0.2f]);
         await _store.UpsertAsync("ephemeral", "c", null, [0.3f]);
 
         _store.Count().Should().Be(3);

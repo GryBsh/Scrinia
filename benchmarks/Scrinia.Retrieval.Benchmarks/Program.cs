@@ -80,14 +80,16 @@ internal static class Program
               --chunk-overlap <N>      Override chunk overlap (default 200; only honored when --chunk prod)
               --category <name>        Run only questions in this category. Enables per-category process fanout (see run-benchmarks.ps1 -Parallel).
 
-            Agent harness flags (simulates a production agent around scrinia — anchors at ingest, query rewrite/HyDE at search):
-              --agent <mode>           off (default) | anchors | rewrite | hyde | all — what the agent does.
-                                       'anchors' generates retrieval anchors per doc at ingest; 'rewrite' rewrites the query before search;
-                                       'hyde' appends a hypothetical answer to the query; 'all' enables every op.
-              --agent-provider <p>     Required when --agent != off: openai | anthropic | gemini | ollama | claude-cli | codex-cli | copilot-cli
+            Agent harness flags (simulates a production agent curating memories at ingest — the same
+            attributes map + keywords a real agent hands the `remember` MCP tool, generated in one LLM call per doc):
+              --agent                  Bare on/off flag. Present = the agent generates an attributes map
+                                       and keywords per doc at ingest (merged with mechanically-extracted keywords);
+                                       absent = purely mechanical ingestion. There is no query-side transform.
+              --agent-provider <p>     REQUIRED when --agent is present: openai | anthropic | gemini | ollama | claude-cli | codex-cli | copilot-cli
               --agent-base-url <url>   Optional HTTP endpoint override for ollama/openai.
               --agent-model <m>        Required for ollama/openai/anthropic/gemini; optional for agent CLIs.
               --agent-api-key <key>    Bearer / API key for openai/anthropic/gemini. Ollama doesn't need one.
+              --agent-max-attempts <n> Tries per doc when the model returns an empty/unparseable reply (default: 1 = retries OFF). Set >1 to enable retries; temperature > 0 so each re-roll differs. A doc that never yields attributes/keywords is left uncached, so a rerun retries it.
               --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --agent is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
 
             Agentic-ingest arm (locomo, longmemeval): the LLM IS the ingestion — a real tool-calling
@@ -96,7 +98,7 @@ internal static class Program
             --mode bm25_embeddings it runs the full production ingestion+retrieval pipeline: the
             agent-written memories are embedded and hybrid-reranked (VectorStore + HybridReranker +
             path-segment), same as production.
-              --agentic-ingest         Enable the agentic-ingest arm. Requires --agent-provider (openai-compatible only). Mutually exclusive with --agent <ops>.
+              --agentic-ingest         Enable the agentic-ingest arm. Requires --agent-provider (openai-compatible only). Mutually exclusive with --agent.
               --episode-max-turns <n> Max tool-call turns per session episode (default 16)
               --episode-max-tokens <n> max_tokens per turn. On an OpenAI-compatible server this bounds the WHOLE request (prompt + generation), and the prompt (guide + full session transcript + tool schemas, growing each turn with recalls/search hits) starts near 5k tokens. Default 32768; set it to your server's context window (n_ctx).
 

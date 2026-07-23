@@ -161,7 +161,7 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
     // Regression coverage for the same qualifiedName round-trip loss fixed in commit 1e81666
     // (see docs task "F"): IMemoryStore.FormatQualifiedName intentionally strips the
     // "memory/"/"entity/" namespace prefix for human-friendly display (a v1 "topic:subject"
-    // scope like "local-topic:memory/api" displays as "/api/subject"). That string is safe to
+    // scope like "local:memory/api" displays as "/api/subject"). That string is safe to
     // *display* but NOT safe to re-parse — ParseQualifiedName(FormatQualifiedName(scope, subject))
     // reconstructs a scope MISSING the namespace prefix. AfterStoreContext.QualifiedName and
     // AfterAppendContext.Name are handed to embedding hooks (BuiltInEmbeddingsService /
@@ -180,13 +180,13 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
         var pipeline = new PluginPipeline([hook]);
         var store = GetStore();
 
-        // v1 "topic:subject" syntax -> "local-topic:memory/api" (the ordinary case for every
+        // "/topic/subject" path -> "local:api" (the ordinary case for every
         // non-skill, non-agent named topic).
-        await pipeline.StoreAsync(store, new StoreRequest(["auth flow notes"], "api:hook-ns-store-1"));
+        await pipeline.StoreAsync(store, new StoreRequest(["auth flow notes"], "/api/hook-ns-store-1"));
 
         captured.Should().NotBeNull();
         var (scope, subject) = store.ParseQualifiedName(captured!.QualifiedName);
-        scope.Should().Be("local-topic:memory/api",
+        scope.Should().Be("local:api",
             because: "the hook must receive a qualifiedName that re-parses back to the memory's REAL scope, or embedding vectors get misfiled under the wrong scope and search never finds them");
         subject.Should().Be("hook-ns-store-1");
     }
@@ -202,12 +202,12 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
         var pipeline = new PluginPipeline([hook]);
         var store = GetStore();
 
-        await pipeline.StoreAsync(store, new StoreRequest(["seed"], "api:hook-ns-append-1"));
-        await pipeline.AppendAsync(store, "api:hook-ns-append-1", "more data");
+        await pipeline.StoreAsync(store, new StoreRequest(["seed"], "/api/hook-ns-append-1"));
+        await pipeline.AppendAsync(store, "/api/hook-ns-append-1", "more data");
 
         captured.Should().NotBeNull();
         var (scope, subject) = store.ParseQualifiedName(captured!.Name);
-        scope.Should().Be("local-topic:memory/api",
+        scope.Should().Be("local:api",
             because: "the hook must receive a qualifiedName that re-parses back to the memory's REAL scope, or embedding vectors get misfiled under the wrong scope and search never finds them");
         subject.Should().Be("hook-ns-append-1");
     }

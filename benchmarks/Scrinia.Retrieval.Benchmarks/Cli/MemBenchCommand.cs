@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
 using Scrinia.Retrieval.Benchmarks.Loaders;
 
@@ -51,6 +52,8 @@ internal static class MemBenchCommand
                 ct: ct);
 
             PrintSummary(result);
+            if (agent is LlmAgentHarness la)
+                RetrieverFactory.PrintAgentStats(la.Stats);
             await WriteJsonAsync(output, result, ct);
             Console.WriteLine($"wrote {output}");
         }

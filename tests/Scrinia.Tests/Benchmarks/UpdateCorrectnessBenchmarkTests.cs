@@ -134,9 +134,9 @@ public sealed class UpdateCorrectnessBenchmarkTests(ITestOutputHelper output)
 
         // Store a fact with reviewAfter in the past
         var tools = new ScriniaMcpTools();
-        await tools.Store(
+        await tools.Remember(
             ["This fact should be marked stale."],
-            "debug:stale-test",
+            "/debug/stale-test",
             description: "Test staleness",
             reviewAfter: "2020-01-01");
 

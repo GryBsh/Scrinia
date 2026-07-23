@@ -38,7 +38,7 @@ public static class SearchContributorContext
 /// Parallel to <see cref="SearchContributorContext"/>, but for the entity-graph signal,
 /// which is scored as its <i>own</i> source rather than summed into the supplemental
 /// channel (see <see cref="EntityGraphScoreContributor"/>). Kept separate so the entity
-/// scores reach <c>WeightedFieldScorer</c> as a distinct fusion source instead of being
+/// scores reach <c>WeightedAttributeScorer</c> as a distinct fusion source instead of being
 /// merged with embeddings/path-segment.
 /// <para>Same Current/Default contract and rationale as
 /// <see cref="SearchContributorContext"/>: the server sets <see cref="Current"/> per

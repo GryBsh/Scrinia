@@ -181,7 +181,7 @@ public static class BundleFormatService
                 // top-level array. Modern bundles carry "attributes" (a key → string[] dict,
                 // including the "tag" key) instead. Read both; the modern "attributes" reading
                 // wins if it already has a "tag" key, otherwise the legacy top-level "tags"
-                // fills Attributes[KnownFields.TagKey] so neither source is lost.
+                // fills Attributes[KnownAttributes.TagKey] so neither source is lost.
                 string[]? legacyTags = null;
                 if (entryEl.TryGetProperty("tags", out var tagsEl) && tagsEl.ValueKind == JsonValueKind.Array)
                     legacyTags = tagsEl.EnumerateArray().Select(t2 => t2.GetString() ?? "").Where(t2 => t2.Length > 0).ToArray();
@@ -199,10 +199,10 @@ public static class BundleFormatService
                     }
                 }
 
-                if (legacyTags is { Length: > 0 } && (attributes is null || !attributes.ContainsKey(KnownFields.TagKey)))
+                if (legacyTags is { Length: > 0 } && (attributes is null || !attributes.ContainsKey(KnownAttributes.TagKey)))
                 {
                     attributes ??= new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-                    attributes[KnownFields.TagKey] = legacyTags;
+                    attributes[KnownAttributes.TagKey] = legacyTags;
                 }
 
                 DateTimeOffset createdAt = entryEl.TryGetProperty("createdAt", out var ca)

@@ -54,14 +54,14 @@ public sealed class ReferenceTests : IDisposable
     }
 
     [Fact]
-    public void ExtractMemoryRefs_FindsTopicSubject()
+    public void ExtractMemoryRefs_FindsWikiLinkPaths()
     {
-        string input = "See api:auth-flow and backlog:resilience for details";
+        string input = "See [[/api/auth-flow]] and [[/backlog/resilience]] for details";
 
         var refs = ReferenceExtractor.ExtractMemoryRefs(input);
 
-        refs.Should().Contain("api:auth-flow");
-        refs.Should().Contain("backlog:resilience");
+        refs.Should().Contain("/api/auth-flow");
+        refs.Should().Contain("/backlog/resilience");
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class ReferenceTests : IDisposable
     public async Task Store_ExtractsFileRefsAsFields()
     {
         // Arrange & Act — store a memory with content mentioning a file path
-        await _tools.Store(
+        await _tools.Remember(
             ["This change modifies src/Foo.cs to add new functionality."],
             "ref-file-test");
 
@@ -114,7 +114,7 @@ public sealed class ReferenceTests : IDisposable
     public async Task References_FindsMemoryByFileRef()
     {
         // Arrange — store a memory that mentions a file path
-        await _tools.Store(
+        await _tools.Remember(
             ["Updated src/Bar.cs with new validation logic."],
             "ref-bar-test");
 
@@ -130,8 +130,8 @@ public sealed class ReferenceTests : IDisposable
     public async Task Link_CreatesBidirectionalRefFields()
     {
         // Arrange — create two memories
-        await _tools.Store(["Memory A content"], "link-test-a");
-        await _tools.Store(["Memory B content"], "link-test-b");
+        await _tools.Remember(["Memory A content"], "link-test-a");
+        await _tools.Remember(["Memory B content"], "link-test-b");
 
         // Act — link them
         string result = await _tools.Link("link-test-a", "link-test-b", "test reason");
@@ -166,8 +166,8 @@ public sealed class ReferenceTests : IDisposable
     public async Task References_FindsLinkedMemory()
     {
         // Arrange — create two memories and link them
-        await _tools.Store(["Alpha content"], "linked-alpha");
-        await _tools.Store(["Beta content"], "linked-beta");
+        await _tools.Remember(["Alpha content"], "linked-alpha");
+        await _tools.Remember(["Beta content"], "linked-beta");
         await _tools.Link("linked-alpha", "linked-beta");
 
         // Act — search references for alpha
@@ -190,10 +190,10 @@ public sealed class ReferenceTests : IDisposable
         await File.WriteAllTextAsync(fullPath, "public class Example {}");
 
         // Act — store a memory with codeRefs pointing to the file
-        await _tools.Store(
+        await _tools.Remember(
             ["Documents the Example class."],
             "coderef-hash-test",
-            codeRefs: [relPath]);
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Assert — verify the entry's FileHashes contains the file with a non-empty hash
         var store = MemoryStoreContext.Current!;
@@ -213,10 +213,10 @@ public sealed class ReferenceTests : IDisposable
         string relPath = "nonexistent/phantom.cs";
 
         // Act — store with codeRefs pointing to a missing file (should not throw)
-        await _tools.Store(
+        await _tools.Remember(
             ["References a file that doesn't exist."],
             "coderef-missing-test",
-            codeRefs: [relPath]);
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Assert — FileHashes should be empty or not contain the missing file
         var store = MemoryStoreContext.Current!;
@@ -240,10 +240,10 @@ public sealed class ReferenceTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllTextAsync(fullPath, "// stable content");
 
-        await _tools.Store(
+        await _tools.Remember(
             ["Tracks stable.cs for drift."],
             "drift-ok-test",
-            codeRefs: [relPath]);
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Act — check drift via list(mode: "drift")
         string result = await _tools.List(mode: "drift");
@@ -264,10 +264,10 @@ public sealed class ReferenceTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllTextAsync(fullPath, "// original content");
 
-        await _tools.Store(
+        await _tools.Remember(
             ["Tracks changing.cs for drift."],
             "drift-changed-test",
-            codeRefs: [relPath]);
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Modify the file after storing
         await File.WriteAllTextAsync(fullPath, "// modified content — different hash");
@@ -289,10 +289,10 @@ public sealed class ReferenceTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllTextAsync(fullPath, "// will be deleted");
 
-        await _tools.Store(
+        await _tools.Remember(
             ["Tracks ephemeral.cs for drift."],
             "drift-missing-test",
-            codeRefs: [relPath]);
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Delete the file after storing
         File.Delete(fullPath);
@@ -314,10 +314,10 @@ public sealed class ReferenceTests : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllTextAsync(fullPath, "// original");
 
-        await _tools.Store(
+        await _tools.Remember(
             ["Tracks drifted.cs."],
             "drift-list-test",
-            codeRefs: [relPath]);
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Modify the file after storing
         await File.WriteAllTextAsync(fullPath, "// changed");

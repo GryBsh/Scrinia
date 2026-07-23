@@ -22,8 +22,8 @@ public sealed class CliDisplayCutoverTests
         ContentPreview: "cli preview",
         Attributes: new Dictionary<string, string[]>
         {
-            [KnownFields.ReviewKey] = [reviewDate.ToString("o")],
-            [KnownFields.TagKey] = ["alpha"],
+            [KnownAttributes.ReviewKey] = [reviewDate.ToString("o")],
+            [KnownAttributes.TagKey] = ["alpha"],
         });
 
     // ── BuildCliSummary: new-carrier source (Attributes/ContentPreview) ─────────────────────
@@ -51,7 +51,7 @@ public sealed class CliDisplayCutoverTests
         var cli = ScriniaCommands.BuildCliMemoryEntry(scoped, DateTimeOffset.UtcNow);
 
         cli.IsStale.Should().BeTrue();
-        cli.Attributes.Should().ContainKey(KnownFields.TagKey)
+        cli.Attributes.Should().ContainKey(KnownAttributes.TagKey)
             .WhoseValue.Should().BeEquivalentTo(["alpha"]);
         cli.Description.Should().Be("cli preview");
     }

@@ -40,13 +40,13 @@ public sealed class WriterCutoverTests
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         await File.WriteAllTextAsync(fullPath, "class Probe {}");
 
-        await Tools().Store(
+        await Tools().Remember(
             ["Widget subsystem depends on the probe."],
             "writer-cutover-store",
             tags: ["widgets"],
             reviewAfter: "2026-08-01",
             anchors: ["how does the widget subsystem work"],
-            codeRefs: [relPath]);
+            attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Raw sidecar read — bypasses FileMemoryStore's read-time Forward entirely (see class doc).
         var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-store");
@@ -70,7 +70,7 @@ public sealed class WriterCutoverTests
         // Base entry deliberately carries no review data — anything under "review" below
         // can only have come from THIS UpdateMeta call's own Forward pass, not carried
         // over from Store's.
-        await Tools().Store(["base content"], "writer-cutover-update");
+        await Tools().Remember(["base content"], "writer-cutover-update");
 
         await Tools().UpdateMeta(
             "writer-cutover-update",
@@ -91,7 +91,7 @@ public sealed class WriterCutoverTests
     public async Task Append_Persistent_FoldsToAttributesAtWriteTime()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(
+        await Tools().Remember(
             ["Initial content about the auth flow."],
             "writer-cutover-append",
             tags: ["auth"],
@@ -116,7 +116,7 @@ public sealed class WriterCutoverTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Store(
+        await Tools().Remember(
             ["Ephemeral scratch note about the widget subsystem."],
             "~writer-cutover-eph-store",
             tags: ["widgets"],
@@ -138,7 +138,7 @@ public sealed class WriterCutoverTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Store(
+        await Tools().Remember(
             ["Initial ephemeral note about the auth flow."],
             "~writer-cutover-eph-append",
             tags: ["auth"],
@@ -174,7 +174,7 @@ public sealed class WriterCutoverTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Store(
+        await Tools().Remember(
             ["Ephemeral scratch note about the widget subsystem."],
             "~writer-cutover-eph-list",
             tags: ["widgets"],
@@ -200,7 +200,7 @@ public sealed class WriterCutoverTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Store(
+        await Tools().Remember(
             ["Ephemeral scratch note about the widget subsystem."],
             "~writer-cutover-eph-copy",
             tags: ["widgets"],

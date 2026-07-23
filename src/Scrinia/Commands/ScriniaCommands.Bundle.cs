@@ -186,7 +186,7 @@ public partial class ScriniaCommands
             string entryContentPreview = !string.IsNullOrWhiteSpace(description) ? desc : preview;
 
             Dictionary<string, string[]>? attributes = tagArray is { Length: > 0 }
-                ? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownFields.TagKey] = tagArray }
+                ? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.TagKey] = tagArray }
                 : null;
 
             entries.Add(new ArtifactEntry(

@@ -85,8 +85,7 @@ public sealed class OpenAiCompatibleBenchLlmClient : IBenchLlmClient, IToolCalli
         }
     }
 
-    public Task<string?> CompleteAsync(string systemPrompt, string userPrompt,
-        int maxTokens, bool jsonMode, CancellationToken ct)
+    public Task<string?> CompleteAsync(string systemPrompt, string userPrompt, int maxTokens, bool jsonMode, CancellationToken ct)
     {
         var request = new ChatRequest(
             Model: _options.Model,

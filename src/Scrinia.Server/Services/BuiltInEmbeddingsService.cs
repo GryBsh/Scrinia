@@ -134,7 +134,7 @@ public sealed class BuiltInEmbeddingsService :
             {
                 // Resolve directly by (scope, subject) rather than round-tripping through
                 // FormatQualifiedName -> ResolveArtifactAsync -> ParseQualifiedName: for a v1
-                // namespaced topic scope (e.g. "local-topic:memory/api"), FormatQualifiedName
+                // namespaced topic scope (e.g. "local:memory/api"), FormatQualifiedName
                 // intentionally strips the "memory/" prefix for display, so re-parsing that
                 // string reconstructs the WRONG scope and the artifact can never be found.
                 // Mirrors EmbeddingReindexer.ReindexAsync's fix for the identical bug. Ephemeral

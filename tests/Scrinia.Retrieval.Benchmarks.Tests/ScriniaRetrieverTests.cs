@@ -66,36 +66,36 @@ public class ScriniaRetrieverTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Typed_keyword_value_is_retrievable_even_when_absent_from_content()
+    public async Task Attribute_value_is_retrievable_even_when_absent_from_content()
     {
-        // Content never contains "zorptree"; only the typed keyword carries it.
+        // Content never contains "zorptree"; only the agent attribute value carries it.
         await _retriever.IngestAsync(
             new HaystackDoc("d1", "the subsystem orchestrates lifecycle hooks", null),
-            agentAnchors: null,
-            agentKeywords: new[] { "topic:zorptree" });
+            new Dictionary<string, string[]> { ["topic"] = new[] { "zorptree" } },
+            null);
         await _retriever.IngestAsync(new HaystackDoc("d2", "completely unrelated gardening notes", null));
 
         var hits = await _retriever.RetrieveAsync("zorptree", topK: 5);
 
         hits.Should().NotBeEmpty();
         hits[0].Id.Should().Be("d1",
-            because: "the typed keyword's value must be seeded into BM25 even when absent from content");
+            because: "the attribute's value must be seeded into BM25 even when absent from content");
     }
 
     [Fact]
     public async Task EntityGraph_LiftsAssociatedMemory_SharingEntity_ButNotQueryTerms()
     {
         // Converged onto the production EntityGraphScoreContributor: the graph is built per query
-        // from the candidates' own typed keywords. d1 is tagged {alice, zeta}, d2 {zeta, bob};
+        // from the candidates' own attributes. d1 is tagged {alice, zeta}, d2 {zeta, bob};
         // both share identical content that never contains "alice". Query "alice" seeds the alice
         // node → d1, and PPR diffuses alice→zeta→d2, lifting d2 though it shares no query term.
         var root = Path.Combine(Path.GetTempPath(), "scrinia-eg-on-" + Guid.NewGuid().ToString("N")[..8]);
         await using var eg = new ScriniaRetriever(root, entityGraphEnabled: true);
 
         await eg.IngestAsync(new HaystackDoc("d1", "kickoff sync recap", null),
-            agentAnchors: null, agentKeywords: new[] { "person:alice", "topic:zeta" });
+            new Dictionary<string, string[]> { ["person"] = new[] { "alice" }, ["topic"] = new[] { "zeta" } }, null);
         await eg.IngestAsync(new HaystackDoc("d2", "kickoff sync recap", null),
-            agentAnchors: null, agentKeywords: new[] { "topic:zeta", "person:bob" });
+            new Dictionary<string, string[]> { ["topic"] = new[] { "zeta" }, ["person"] = new[] { "bob" } }, null);
 
         var hits = await eg.RetrieveAsync("alice", topK: 5);
 
@@ -109,9 +109,9 @@ public class ScriniaRetrieverTests : IAsyncLifetime
         // Same setup on the default (entity-graph-off) retriever: "alice" lexically hits only d1,
         // so BM25 alone never surfaces d2. Pins the sibling test's lift to the entity graph.
         await _retriever.IngestAsync(new HaystackDoc("d1", "kickoff sync recap", null),
-            agentAnchors: null, agentKeywords: new[] { "person:alice", "topic:zeta" });
+            new Dictionary<string, string[]> { ["person"] = new[] { "alice" }, ["topic"] = new[] { "zeta" } }, null);
         await _retriever.IngestAsync(new HaystackDoc("d2", "kickoff sync recap", null),
-            agentAnchors: null, agentKeywords: new[] { "topic:zeta", "person:bob" });
+            new Dictionary<string, string[]> { ["topic"] = new[] { "zeta" }, ["person"] = new[] { "bob" } }, null);
 
         var hits = await _retriever.RetrieveAsync("alice", topK: 5);
 

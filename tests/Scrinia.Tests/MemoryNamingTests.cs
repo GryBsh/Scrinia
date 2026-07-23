@@ -38,7 +38,7 @@ public class MemoryNamingTests
     [Fact]
     public void FormatScopeLabel_LocalTopic_ExtractsTopicName()
     {
-        MemoryNaming.FormatScopeLabel("local-topic:api").Should().Be("api");
+        MemoryNaming.FormatScopeLabel("local:api").Should().Be("api");
     }
 
     [Fact]
@@ -92,24 +92,24 @@ public class MemoryNamingTests
     [Fact]
     public void BuildScopedTopicScope_Skill_RouteToEntityNamespace()
     {
-        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local-topic:entity/skill");
+        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:entity/skill");
     }
 
     [Fact]
     public void BuildScopedTopicScope_Agent_ReturnsSingleScope()
     {
-        MemoryNaming.BuildScopedTopicScope("agent").Should().Be("local-topic:agent",
+        MemoryNaming.BuildScopedTopicScope("agent").Should().Be("local:agent",
             because: "agent is a single scope without a child directory");
     }
 
     [Theory]
-    [InlineData("api", "local-topic:memory/api")]
-    [InlineData("dotnet", "local-topic:memory/dotnet")]
-    [InlineData("patterns", "local-topic:memory/patterns")]
-    [InlineData("my-notes", "local-topic:memory/my-notes")]
-    [InlineData("goal", "local-topic:memory/goal")]
-    [InlineData("task", "local-topic:memory/task")]
-    public void BuildScopedTopicScope_UserTopics_RouteToMemoryNamespace(string topic, string expected)
+    [InlineData("api", "local:api")]
+    [InlineData("dotnet", "local:dotnet")]
+    [InlineData("patterns", "local:patterns")]
+    [InlineData("my-notes", "local:my-notes")]
+    [InlineData("goal", "local:goal")]
+    [InlineData("task", "local:task")]
+    public void BuildScopedTopicScope_UserTopics_RouteToFlatTopic(string topic, string expected)
     {
         MemoryNaming.BuildScopedTopicScope(topic).Should().Be(expected);
     }
@@ -160,21 +160,21 @@ public class MemoryNamingTests
     [Fact]
     public void FormatScopeLabel_EntityNamespacedScope_StripsToTopicName()
     {
-        MemoryNaming.FormatScopeLabel("local-topic:entity/task").Should().Be("task");
-        MemoryNaming.FormatScopeLabel("local-topic:entity/project").Should().Be("project");
+        MemoryNaming.FormatScopeLabel("local:entity/task").Should().Be("task");
+        MemoryNaming.FormatScopeLabel("local:entity/project").Should().Be("project");
     }
 
     [Fact]
     public void FormatScopeLabel_MemoryNamespacedScope_StripsToTopicName()
     {
-        MemoryNaming.FormatScopeLabel("local-topic:memory/api").Should().Be("api");
-        MemoryNaming.FormatScopeLabel("local-topic:memory/dotnet").Should().Be("dotnet");
+        MemoryNaming.FormatScopeLabel("local:memory/api").Should().Be("api");
+        MemoryNaming.FormatScopeLabel("local:memory/dotnet").Should().Be("dotnet");
     }
 
     [Fact]
     public void FormatScopeLabel_AgentScope_ReturnsAgent()
     {
-        MemoryNaming.FormatScopeLabel("local-topic:agent").Should().Be("agent");
+        MemoryNaming.FormatScopeLabel("local:agent").Should().Be("agent");
     }
 
     // ── ReservedNamespaceDirs ────────────────────────────────────────────────
