@@ -8,7 +8,7 @@ namespace Scrinia.Commands;
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(CliListOutput))]
 [JsonSerializable(typeof(CliListSummaryOutput))]
-[JsonSerializable(typeof(CliFieldEntry))]
+[JsonSerializable(typeof(CliAttributeEntry))]
 [JsonSerializable(typeof(CliSearchOutput))]
 [JsonSerializable(typeof(CliShowOutput))]
 [JsonSerializable(typeof(CliStoreOutput))]
@@ -49,15 +49,19 @@ internal sealed record CliSearchResult(
     int EstimatedTokens,
     string Description,
     int? ChunkIndex,
-    int? TotalChunks);
+    int? TotalChunks,
+    Dictionary<string, string[]>? Attributes,
+    string? CreatedAt,
+    string? UpdatedAt,
+    string[]? Anchors);
 
 internal sealed record CliListOutput(CliMemoryEntry[] Memories, int Total, string? Rendered);
 internal sealed record CliScopeEntry(string Name, int Count, long TotalBytes);
-internal sealed record CliFieldEntry(string Key, int Count);
+internal sealed record CliAttributeEntry(string Key, int Count);
 internal sealed record CliListSummaryOutput(
     int TotalMemories, long TotalBytes, int EstimatedTokens,
     int TopicCount, int EphemeralCount, int StaleCount, int ReviewCount,
-    CliScopeEntry[] Scopes, string[]? TopKeywords, CliFieldEntry[]? TopFields, string? Rendered);
+    CliScopeEntry[] Scopes, string[]? TopKeywords, CliAttributeEntry[]? TopAttributes, string? Rendered);
 internal sealed record CliSearchOutput(CliSearchResult[] Results, int Total, string Query);
 internal sealed record CliShowOutput(string Name, string Content, int Length);
 internal sealed record CliStoreOutput(string Name, int ChunkCount, long OriginalBytes, string Message);

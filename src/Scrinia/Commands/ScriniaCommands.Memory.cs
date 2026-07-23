@@ -157,42 +157,12 @@ public partial class ScriniaCommands
         if (ephemeralCount > 0)
             scopeEntries.Add(new CliScopeEntry("ephemeral", ephemeralCount, entries.Where(e => e.Scope == "ephemeral").Sum(e => e.Entry.OriginalBytes)));
 
-        // Top keywords — key:value-shaped keywords are legacy typed-prefix entries now
-        // routed into Fields, so exclude them here to avoid double-reporting; see the
-        // fields tally below for their structured counterpart.
-        var keywordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in entries)
-        {
-            if (item.Entry.Keywords is { Length: > 0 })
-                foreach (var kw in item.Entry.Keywords)
-                {
-                    if (TypedKeywordShape().IsMatch(kw)) continue;
-                    keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
-                }
-            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes))
-                keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
-        }
-        var topKeywords = keywordCounts
-            .OrderByDescending(kv => kv.Value)
-            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-            .Take(10)
-            .Select(kv => kv.Key)
-            .ToArray();
-
-        // Top fields — aggregates entry.Attributes keys (KnownFields entity/reference keys
-        // plus any scalar fields) across entries that carry structured attributes.
-        var fieldCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in entries)
-        {
-            if (item.Entry.Attributes is not { Count: > 0 } fields) continue;
-            foreach (var key in fields.Keys)
-                fieldCounts[key] = fieldCounts.GetValueOrDefault(key) + 1;
-        }
-        var topFields = fieldCounts
-            .OrderByDescending(kv => kv.Value)
-            .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-            .Take(10)
-            .Select(kv => new CliFieldEntry(kv.Key, kv.Value))
+        // Top keywords + top attributes come from the shared aggregator that also backs the MCP
+        // `list` summary, so the CLI and tool surfaces report identically (typed keywords excluded
+        // from the keyword tally, attributes counted per key).
+        var (topKeywords, topAttributesRaw) = ScriniaMcpTools.AggregateSummaryFacets(entries);
+        var topAttributes = topAttributesRaw
+            .Select(a => new CliAttributeEntry(a.Key, a.Count))
             .ToArray();
 
         // Build rendered text for CLI display
@@ -218,11 +188,11 @@ public partial class ScriniaCommands
                 sb.AppendLine("[bold]Top keywords[/]");
                 sb.AppendLine($"  {Markup.Escape(string.Join(", ", topKeywords))}");
             }
-            if (topFields.Length > 0)
+            if (topAttributes.Length > 0)
             {
                 sb.AppendLine();
-                sb.AppendLine("[bold]Top fields[/]");
-                sb.AppendLine($"  {Markup.Escape(string.Join(", ", topFields.Select(f => $"{f.Key} ({f.Count})")))}");
+                sb.AppendLine("[bold]Top attributes[/]");
+                sb.AppendLine($"  {Markup.Escape(string.Join(", ", topAttributes.Select(f => $"{f.Key} ({f.Count})")))}");
             }
             rendered = sb.ToString();
         }
@@ -232,27 +202,34 @@ public partial class ScriniaCommands
             staleCount, reviewCount,
             scopeEntries.ToArray(),
             topKeywords.Length > 0 ? topKeywords : null,
-            topFields.Length > 0 ? topFields : null,
+            topAttributes.Length > 0 ? topAttributes : null,
             rendered);
     }
-
-    /// <summary>Matches legacy typed-prefix keywords (e.g. <c>person:maria</c>) so the raw
-    /// keyword tally can exclude them — they're now routed into structured Fields.</summary>
-    [System.Text.RegularExpressions.GeneratedRegex(@"^[A-Za-z][A-Za-z0-9_-]{0,29}:.+")]
-    private static partial System.Text.RegularExpressions.Regex TypedKeywordShape();
 
     /// <summary>Search memories.</summary>
     /// <param name="query">Search term to match against memory names and descriptions.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>
     /// <param name="scopes">Comma-separated scopes to search (e.g. local,api,ephemeral).</param>
     /// <param name="limit">Maximum results to return.</param>
+    /// <param name="context">Context terms appended to the query for scoring only — bridges vocabulary mismatches.</param>
+    /// <param name="excludeTopics">Comma-separated topic names to exclude from results.</param>
+    /// <param name="pathPrefix">Path prefix to scope results, e.g. '/findings/'.</param>
     /// <param name="json">Output as JSON instead of a table.</param>
-    public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null, int limit = 20, bool json = false, CancellationToken cancellationToken = default)
+    public async Task<int> Search([Argument] string query, string? workspaceRoot = null, string? scopes = null,
+        int limit = 20, string? context = null, string? excludeTopics = null, string? pathPrefix = null,
+        bool json = false, CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
-        var matches = ScriniaArtifactStore.SearchAll(query, scopes, limit);
+        // Route through the same scoring pipeline as the MCP `search` tool so the CLI ranks with
+        // the embeddings + entity-graph contributors it just loaded (not BM25-only) and surfaces
+        // the same per-hit attributes/dates/anchors the tool does. MemoryStoreContext.Current is
+        // set by WorkspaceSetup.Configure above.
+        var store = MemoryStoreContext.Current!;
+        var matches = await ScriniaMcpTools.ExecuteSearchAsync(
+            store, query, scopes, limit, excludeTopics, context, pathPrefix,
+            attributeFilter: null, cancellationToken);
         if (matches.Count == 0)
         {
             if (json)
@@ -264,22 +241,7 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            var results = matches.Select<SearchResult, CliSearchResult>(match => match switch
-            {
-                ChunkEntryResult cr => new CliSearchResult("chunk",
-                    cr.ParentItem.Scope == "ephemeral" ? $"~{cr.ParentItem.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
-                    cr.Score, (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4),
-                    cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
-                    cr.Chunk.ChunkIndex, cr.TotalChunks),
-                EntryResult er => new CliSearchResult("entry",
-                    er.Item.Scope == "ephemeral" ? $"~{er.Item.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
-                    er.Score, (int)(er.Item.Entry.OriginalBytes / 4),
-                    AttributeReaders.PreviewText(er.Item.Entry.ContentPreview), null, null),
-                TopicResult tr => new CliSearchResult("topic",
-                    MemoryNaming.FormatScopeLabel(tr.Scope),
-                    tr.Score, 0, tr.Description, null, null),
-                _ => new CliSearchResult("unknown", "", 0, 0, "", null, null),
-            }).ToArray();
+            var results = matches.Select(BuildCliSearchResult).ToArray();
             WriteJson(new CliSearchOutput(results, results.Length, query), CliJsonContext.Default.CliSearchOutput);
             return 0;
         }
@@ -290,46 +252,65 @@ public partial class ScriniaCommands
             .AddColumn("Name")
             .AddColumn(new TableColumn("Score").RightAligned())
             .AddColumn(new TableColumn("~Tokens").RightAligned())
+            .AddColumn("Attributes")
             .AddColumn("Description");
 
         foreach (var match in matches)
         {
-            if (match is ChunkEntryResult cr)
-            {
-                string name = cr.ParentItem.Scope == "ephemeral"
-                    ? $"~{cr.ParentItem.Entry.Name}"
-                    : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
-                string chunkLabel = $"{name} [chunk {cr.Chunk.ChunkIndex}/{cr.TotalChunks}]";
-                string desc = cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview);
-                desc = desc.Replace('\n', ' ').Replace('\r', ' ');
-                if (desc.Length > 60) desc = desc[..57] + "...";
-                int estTokens = (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4);
-
-                table.AddRow("chunk", Markup.Escape(chunkLabel), $"{cr.Score:F0}", estTokens.ToString(), Markup.Escape(desc));
-            }
-            else if (match is EntryResult er)
-            {
-                string name = er.Item.Scope == "ephemeral"
-                    ? $"~{er.Item.Entry.Name}"
-                    : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name);
-                string desc = AttributeReaders.PreviewText(er.Item.Entry.ContentPreview).Replace('\n', ' ').Replace('\r', ' ');
-                if (desc.Length > 60) desc = desc[..57] + "...";
-                int estTokens = (int)(er.Item.Entry.OriginalBytes / 4);
-
-                table.AddRow("entry", Markup.Escape(name), $"{er.Score:F0}", estTokens.ToString(), Markup.Escape(desc));
-            }
-            else if (match is TopicResult tr)
-            {
-                string label = MemoryNaming.FormatScopeLabel(tr.Scope);
-                string desc = tr.Description.Replace('\n', ' ').Replace('\r', ' ');
-                if (desc.Length > 60) desc = desc[..57] + "...";
-
-                table.AddRow("topic", Markup.Escape(label), $"{tr.Score:F0}", "", Markup.Escape(desc));
-            }
+            var r = BuildCliSearchResult(match);
+            string name = match is ChunkEntryResult cr
+                ? $"{r.Name} [chunk {cr.Chunk.ChunkIndex}/{cr.TotalChunks}]"
+                : r.Name;
+            string desc = r.Description.Replace('\n', ' ').Replace('\r', ' ');
+            if (desc.Length > 60) desc = desc[..57] + "...";
+            string attrs = FormatAttributesInline(r.Attributes);
+            string tokens = r.Type == "topic" ? "" : r.EstimatedTokens.ToString();
+            table.AddRow(r.Type, Markup.Escape(name), $"{r.Score:F0}", tokens, Markup.Escape(attrs), Markup.Escape(desc));
         }
 
         AnsiConsole.Write(table);
         return 0;
+    }
+
+    /// <summary>Projects a <see cref="SearchResult"/> into the CLI's JSON/table shape, surfacing the
+    /// same per-hit attributes/dates/anchors the MCP <c>search</c> tool renders (finding: the CLI
+    /// used to drop them). Chunk hits carry their parent entry's attributes/dates; topic hits carry
+    /// none.</summary>
+    internal static CliSearchResult BuildCliSearchResult(SearchResult match) => match switch
+    {
+        ChunkEntryResult cr => new CliSearchResult("chunk",
+            cr.ParentItem.Scope == "ephemeral" ? $"~{cr.ParentItem.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
+            cr.Score, (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4),
+            cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
+            cr.Chunk.ChunkIndex, cr.TotalChunks,
+            cr.ParentItem.Entry.Attributes,
+            cr.ParentItem.Entry.CreatedAt.ToString("o"), cr.ParentItem.Entry.UpdatedAt?.ToString("o"),
+            DisplayAnchorsOrNull(cr.ParentItem.Entry.Attributes)),
+        EntryResult er => new CliSearchResult("entry",
+            er.Item.Scope == "ephemeral" ? $"~{er.Item.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
+            er.Score, (int)(er.Item.Entry.OriginalBytes / 4),
+            AttributeReaders.PreviewText(er.Item.Entry.ContentPreview), null, null,
+            er.Item.Entry.Attributes,
+            er.Item.Entry.CreatedAt.ToString("o"), er.Item.Entry.UpdatedAt?.ToString("o"),
+            DisplayAnchorsOrNull(er.Item.Entry.Attributes)),
+        TopicResult tr => new CliSearchResult("topic",
+            MemoryNaming.FormatScopeLabel(tr.Scope),
+            tr.Score, 0, tr.Description, null, null, null, null, null, null),
+        _ => new CliSearchResult("unknown", "", 0, 0, "", null, null, null, null, null, null),
+    };
+
+    private static string[]? DisplayAnchorsOrNull(Dictionary<string, string[]>? attributes)
+    {
+        var anchors = AttributeReaders.DisplayAnchors(attributes);
+        return anchors.Count > 0 ? anchors.ToArray() : null;
+    }
+
+    /// <summary>Compact one-line rendering of an attribute map for the search table's Attributes
+    /// column (e.g. "topic: auth; org: acme"). Empty when the hit carries no attributes.</summary>
+    private static string FormatAttributesInline(Dictionary<string, string[]>? attributes)
+    {
+        if (attributes is not { Count: > 0 }) return "";
+        return string.Join("; ", attributes.Select(kv => $"{kv.Key}: {string.Join(", ", kv.Value)}"));
     }
 
     /// <summary>Store a file as a named memory.</summary>
@@ -386,7 +367,7 @@ public partial class ScriniaCommands
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Store([content], name, description ?? "", tagArray,
+        string result = await tools.Remember([content], name, description ?? "", tagArray,
             keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
 
         if (json)
@@ -419,7 +400,7 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Show(name, cancellationToken: cancellationToken);
+        string result = await tools.Recall(name, cancellationToken: cancellationToken);
 
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {

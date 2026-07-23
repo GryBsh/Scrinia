@@ -9,8 +9,8 @@ namespace Scrinia.Core.Migration;
 /// attributes model. ADDITIVE — legacy fields are left populated so the legacy read/scoring
 /// paths keep working; clearing them and removing the model fields is the cleanup plan.
 /// Also folds recognized-key <c>key:value</c>-shaped legacy keywords (e.g. <c>person:maria</c>,
-/// <c>ref:other-note</c>) into <c>Fields[key]</c> whenever <c>key</c> is one of
-/// <see cref="KnownFields.RecommendedKeys"/> — this mirrors the scorer's dual-read
+/// <c>ref:other-note</c>) into <c>Attributes[key]</c> whenever <c>key</c> is one of
+/// <see cref="KnownAttributes.RecommendedKeys"/> — this mirrors the scorer's dual-read
 /// <c>key:value</c>-in-Keywords parse so that parse can eventually be retired without
 /// regressing pre-unification entries. The keyword itself is left in <c>Keywords</c>
 /// unchanged (additive, not a rewrite). Keywords whose key is NOT a recognized attribute
@@ -51,14 +51,14 @@ public static class AttributeMigration
         if (!string.IsNullOrWhiteSpace(reviewWhen))
             review.Add(reviewWhen!);
         if (review.Count > 0)
-            incoming[KnownFields.ReviewKey] = review.ToArray();
+            incoming[KnownAttributes.ReviewKey] = review.ToArray();
         if (anchors is { Length: > 0 })
         {
             var cleanAnchors = anchors
                 .Where(a => !string.IsNullOrWhiteSpace(a))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            if (cleanAnchors.Length > 0) incoming[KnownFields.AnchorKey] = cleanAnchors;
+            if (cleanAnchors.Length > 0) incoming[KnownAttributes.AnchorKey] = cleanAnchors;
         }
         return incoming;
     }
@@ -72,38 +72,38 @@ public static class AttributeMigration
 
         if (entry.Keywords is { Length: > 0 })
         {
-            Dictionary<string, List<string>>? kwFields = null;
+            Dictionary<string, List<string>>? kwAttributes = null;
             foreach (string kw in entry.Keywords)
             {
                 int sep = kw.IndexOf(':');
                 if (sep <= 0 || sep >= kw.Length - 1) continue;
-                // Canonicalize the KEY to lowercase (mirrors FieldExtractor.RouteKeywords) so the
-                // persisted Fields key survives a JSON round-trip that drops the OrdinalIgnoreCase
+                // Canonicalize the KEY to lowercase (mirrors AttributeExtractor.RouteKeywords) so the
+                // persisted Attributes key survives a JSON round-trip that drops the OrdinalIgnoreCase
                 // comparer; RecommendedKeys matching is case-insensitive so this is safe.
                 string key = kw[..sep].ToLowerInvariant();
-                if (!KnownFields.RecommendedKeys.Contains(key)) continue;
-                kwFields ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-                if (!kwFields.TryGetValue(key, out var list))
-                    kwFields[key] = list = new List<string>();
+                if (!KnownAttributes.RecommendedKeys.Contains(key)) continue;
+                kwAttributes ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                if (!kwAttributes.TryGetValue(key, out var list))
+                    kwAttributes[key] = list = new List<string>();
                 // value kept verbatim (no length/URL guard) to preserve scorer key:value parity; canonicalize the KEY only
                 string value = kw[(sep + 1)..];
                 if (!list.Contains(value, StringComparer.OrdinalIgnoreCase))
                     list.Add(value);
             }
-            if (kwFields is not null)
-                foreach (var (k, v) in kwFields)
+            if (kwAttributes is not null)
+                foreach (var (k, v) in kwAttributes)
                     incoming[k] = incoming.TryGetValue(k, out var existing)
                         ? existing.Union(v, StringComparer.OrdinalIgnoreCase).ToArray()
                         : v.ToArray();
         }
 
-        var mergedFields = incoming.Count > 0 ? KnownFields.Merge(entry.Attributes, incoming) : entry.Attributes;
+        var mergedAttributes = incoming.Count > 0 ? KnownAttributes.Merge(entry.Attributes, incoming) : entry.Attributes;
 
         string[]? mergedKeywords = entry.Keywords;
 
         return entry with
         {
-            Attributes = mergedFields,
+            Attributes = mergedAttributes,
             Keywords = mergedKeywords,
         };
     }
@@ -113,11 +113,11 @@ public static class AttributeMigration
     public static bool MigratesTo(ArtifactEntry entry, out ArtifactEntry migrated)
     {
         migrated = Forward(entry);
-        return !FieldsSetEqual(entry.Attributes, migrated.Attributes)
+        return !AttributesSetEqual(entry.Attributes, migrated.Attributes)
             || !SetEqual(entry.Keywords, migrated.Keywords)
             // Ordinal (case-sensitive) is intentional here: ContentPreview is verbatim display text, so a
             // case-only change is a real change — unlike the OrdinalIgnoreCase set comparisons above, which
-            // treat Fields/Keywords as case-insensitive facet tokens.
+            // treat Attributes/Keywords as case-insensitive facet tokens.
             || !string.Equals(entry.ContentPreview, migrated.ContentPreview, StringComparison.Ordinal);
     }
 
@@ -130,7 +130,7 @@ public static class AttributeMigration
         return sa.SetEquals(sb);
     }
 
-    private static bool FieldsSetEqual(
+    private static bool AttributesSetEqual(
         Dictionary<string, string[]>? a, Dictionary<string, string[]>? b)
     {
         int ca = a?.Count ?? 0, cb = b?.Count ?? 0;

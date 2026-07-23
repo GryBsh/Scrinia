@@ -3,15 +3,15 @@ using System.Text.RegularExpressions;
 namespace Scrinia.Core.Search;
 
 /// <summary>
-/// Populates the unified Fields store from its two mechanical sources: content extraction
+/// Populates the attribute map from its two mechanical sources: content extraction
 /// (frontmatter, line-start <c>key: value</c>, <c>**Bold:** label</c> lines) and agent-keyword
 /// routing (<c>key:value</c>-shaped entries in the keywords param). LLM-free, regex-only,
 /// run at write time. Values verbatim — exact-match signal for what BM25 tokenization shreds
 /// (versions, dates, hyphenated identifiers, statuses). Conservative: nothing inside code
-/// fences, URL-remainder values skipped, tight key charset, value + field caps.
-/// Merge semantics live in <see cref="KnownFields"/>, not here.
+/// fences, URL-remainder values skipped, tight key charset, value + attribute caps.
+/// Merge semantics live in <see cref="KnownAttributes"/>, not here.
 /// </summary>
-public static partial class FieldExtractor
+public static partial class AttributeExtractor
 {
     public const int MaxValueLength = 120;
 
@@ -25,10 +25,10 @@ public static partial class FieldExtractor
 
     // Keyword routing: key charset before first colon, non-empty remainder.
     [GeneratedRegex(@"^([A-Za-z][A-Za-z0-9_-]{0,29}):(.+)$")]
-    private static partial Regex KeywordFieldPattern();
+    private static partial Regex KeywordAttributePattern();
 
     /// <summary>
-    /// Extracts fields from content. Multi-valued keys (per <see cref="KnownFields"/>)
+    /// Extracts attributes from content. Multi-valued keys (per <see cref="KnownAttributes"/>)
     /// accumulate; scalar keys are first-wins within one text. Null when none found.
     /// </summary>
     public static Dictionary<string, string[]>? Extract(string? content)
@@ -60,22 +60,22 @@ public static partial class FieldExtractor
             }
             firstLine = false;
 
-            var (key, value) = MatchFieldLine(line);
+            var (key, value) = MatchAttributeLine(line);
             if (key is null) continue;
 
             found ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-            AddField(found, key, value!);
+            AddAttribute(found, key, value!);
         }
 
-        return ToFieldDict(found);
+        return ToAttributeDict(found);
     }
 
     /// <summary>
-    /// Splits agent-supplied keywords into field-shaped entries (routed to Fields) and plain
+    /// Splits agent-supplied keywords into attribute-shaped entries (routed to the attribute map) and plain
     /// keywords. Routing rule: key charset before the first colon, non-empty remainder that
     /// doesn't start with <c>//</c> (URL guard) and fits the value cap. Either side null when empty.
     /// </summary>
-    public static (Dictionary<string, string[]>? Fields, string[]? Keywords) RouteKeywords(string[]? keywords)
+    public static (Dictionary<string, string[]>? Attributes, string[]? Keywords) RouteKeywords(string[]? keywords)
     {
         if (keywords is not { Length: > 0 })
             return (null, null);
@@ -86,13 +86,13 @@ public static partial class FieldExtractor
         foreach (string kw in keywords)
         {
             if (string.IsNullOrWhiteSpace(kw)) continue;
-            Match m = KeywordFieldPattern().Match(kw.Trim());
+            Match m = KeywordAttributePattern().Match(kw.Trim());
             string? value = m.Success ? m.Groups[2].Value.Trim() : null;
             if (value is { Length: > 0 and <= MaxValueLength }
                 && !value.StartsWith("//", StringComparison.Ordinal))
             {
                 found ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-                AddField(found, m.Groups[1].Value.ToLowerInvariant(), value);
+                AddAttribute(found, m.Groups[1].Value.ToLowerInvariant(), value);
             }
             else
             {
@@ -100,21 +100,21 @@ public static partial class FieldExtractor
             }
         }
 
-        return (ToFieldDict(found), plain is { Count: > 0 } ? [.. plain] : null);
+        return (ToAttributeDict(found), plain is { Count: > 0 } ? [.. plain] : null);
     }
 
     /// <summary>
-    /// Seeds field keys and value tokens into a term-frequency dictionary at +3 per token —
-    /// between the auto-keyword (+2) and agent-keyword (+5) boosts — so BM25 picks up field
+    /// Seeds attribute keys and value tokens into a term-frequency dictionary at +3 per token —
+    /// between the auto-keyword (+2) and agent-keyword (+5) boosts — so BM25 picks up attribute
     /// vocabulary transparently.
     /// </summary>
     public static void SeedTermFrequencies(
-        Dictionary<string, string[]>? fields, Dictionary<string, int> tf)
+        Dictionary<string, string[]>? attributes, Dictionary<string, int> tf)
     {
-        if (fields is not { Count: > 0 })
+        if (attributes is not { Count: > 0 })
             return;
 
-        foreach (var kv in fields)
+        foreach (var kv in attributes)
         {
             Seed(kv.Key, tf);
             foreach (string value in kv.Value)
@@ -131,41 +131,41 @@ public static partial class FieldExtractor
         }
     }
 
-    /// <summary>File and memory references as unified fields — {file: [...], ref: [...]}.
+    /// <summary>File and memory references as unified attributes — {file: [...], ref: [...]}.
     /// Replaces the retired file:/ref: prefixed-keyword emission.</summary>
-    public static Dictionary<string, string[]>? ExtractRefFields(string text)
+    public static Dictionary<string, string[]>? ExtractRefAttributes(string text)
     {
         var fileRefs = ReferenceExtractor.ExtractFileRefs(text);
         var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(text);
         if (fileRefs.Length == 0 && memoryRefs.Length == 0) return null;
-        var fields = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-        if (fileRefs.Length > 0) fields["file"] = fileRefs;
-        if (memoryRefs.Length > 0) fields["ref"] = memoryRefs;
-        return fields;
+        var attributes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (fileRefs.Length > 0) attributes["file"] = fileRefs;
+        if (memoryRefs.Length > 0) attributes["ref"] = memoryRefs;
+        return attributes;
     }
 
     /// <summary>Multi-valued keys accumulate (deduped); scalar keys are first-wins.</summary>
-    private static void AddField(Dictionary<string, List<string>> found, string key, string value)
+    private static void AddAttribute(Dictionary<string, List<string>> found, string key, string value)
     {
         if (found.TryGetValue(key, out var values))
         {
-            if (KnownFields.IsMultiValued(key)
+            if (KnownAttributes.IsMultiValued(key)
                 && !values.Contains(value, StringComparer.OrdinalIgnoreCase))
                 values.Add(value);
             // scalar + existing → first-wins: ignore
         }
-        else if (found.Count < KnownFields.MaxFields)
+        else if (found.Count < KnownAttributes.MaxAttributes)
         {
             found[key] = [value];
         }
     }
 
-    private static Dictionary<string, string[]>? ToFieldDict(Dictionary<string, List<string>>? found) =>
+    private static Dictionary<string, string[]>? ToAttributeDict(Dictionary<string, List<string>>? found) =>
         found is { Count: > 0 }
             ? found.ToDictionary(kv => kv.Key, kv => kv.Value.ToArray(), StringComparer.OrdinalIgnoreCase)
             : null;
 
-    private static (string? Key, string? Value) MatchFieldLine(string line)
+    private static (string? Key, string? Value) MatchAttributeLine(string line)
     {
         Match m = BoldLabelPattern().Match(line);
         if (!m.Success)

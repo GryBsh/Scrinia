@@ -37,7 +37,7 @@ public sealed class RankerCompositionTests
     [Fact]
     public void RecencyTerm_AtZeroDays_IsOne()
     {
-        double term = WeightedFieldScorer.ComputeRecencyTerm(DateTimeOffset.UtcNow, tauDays: 14);
+        double term = WeightedAttributeScorer.ComputeRecencyTerm(DateTimeOffset.UtcNow, tauDays: 14);
         term.Should().BeApproximately(1.0, 0.01);
     }
 
@@ -45,7 +45,7 @@ public sealed class RankerCompositionTests
     public void RecencyTerm_AtTauDays_IsApproxOneOverE()
     {
         // exp(-1) ≈ 0.3679 — the characteristic value at one time-constant.
-        double term = WeightedFieldScorer.ComputeRecencyTerm(
+        double term = WeightedAttributeScorer.ComputeRecencyTerm(
             DateTimeOffset.UtcNow.AddDays(-14), tauDays: 14);
         term.Should().BeApproximately(Math.Exp(-1), 0.01);
     }
@@ -54,7 +54,7 @@ public sealed class RankerCompositionTests
     public void RecencyTerm_FarPast_AsymptoticallyZero()
     {
         // 100 days at τ=14 → exp(-7.14) ≈ 0.0008 — effectively zero for ranking purposes.
-        double term = WeightedFieldScorer.ComputeRecencyTerm(
+        double term = WeightedAttributeScorer.ComputeRecencyTerm(
             DateTimeOffset.UtcNow.AddDays(-100), tauDays: 14);
         term.Should().BeLessThan(0.01);
     }
@@ -64,7 +64,7 @@ public sealed class RankerCompositionTests
     {
         // Clock skew across cloud-sync setups can produce future-dated entries; they should
         // not artificially boost above "today".
-        double future = WeightedFieldScorer.ComputeRecencyTerm(
+        double future = WeightedAttributeScorer.ComputeRecencyTerm(
             DateTimeOffset.UtcNow.AddDays(7), tauDays: 14);
         future.Should().BeApproximately(1.0, 0.01);
     }
@@ -73,7 +73,7 @@ public sealed class RankerCompositionTests
     public void RecencyTerm_ZeroTau_DegradesToZero()
     {
         // Pathological config — guards against accidental NaN/Inf if a user sets tau=0.
-        double term = WeightedFieldScorer.ComputeRecencyTerm(
+        double term = WeightedAttributeScorer.ComputeRecencyTerm(
             DateTimeOffset.UtcNow.AddDays(-1), tauDays: 0);
         term.Should().Be(0);
     }
@@ -86,7 +86,7 @@ public sealed class RankerCompositionTests
         // α_recency = 0 → only relevance contributes. Useful for the BM25-only baselines
         // we want to keep comparing against.
         var opts = new RankerOptions(AlphaRecency: 0);
-        var scorer = new WeightedFieldScorer(opts);
+        var scorer = new WeightedAttributeScorer(opts);
 
         var oldEntry = MakeEntry("oauth-flow", createdAt: DateTimeOffset.UtcNow.AddDays(-365));
         var newEntry = MakeEntry("oauth-flow-new", createdAt: DateTimeOffset.UtcNow);
@@ -107,7 +107,7 @@ public sealed class RankerCompositionTests
         // Two entries with identical name + TF profile; the only differentiator is age.
         // Pre-change ranker would put them effectively tied (linear +10% boost is noise);
         // exp-decay with τ=14 days should put the fresh one well ahead.
-        var scorer = new WeightedFieldScorer(); // defaults: α_recency=1.0, τ=14
+        var scorer = new WeightedAttributeScorer(); // defaults: α_recency=1.0, τ=14
         var freshEntry = MakeEntry("alpha", createdAt: DateTimeOffset.UtcNow);
         var staleEntry = MakeEntry("beta", createdAt: DateTimeOffset.UtcNow.AddDays(-90));
 
@@ -135,7 +135,7 @@ public sealed class RankerCompositionTests
     {
         // The relevance > 0 gate must hold — a fresh memory with no text match should
         // not surface just because it's recent. This preserves "search must match" semantics.
-        var scorer = new WeightedFieldScorer();
+        var scorer = new WeightedAttributeScorer();
         var matchingButOld = MakeEntry("oauth-flow", createdAt: DateTimeOffset.UtcNow.AddDays(-200),
             keywords: ["oauth"],
             tf: new Dictionary<string, int> { ["oauth"] = 5 });
@@ -154,8 +154,8 @@ public sealed class RankerCompositionTests
     [Fact]
     public void CustomTau_NarrowerHalfLife_PenalizesWeekOldEntriesMore()
     {
-        var sharpDecay = new WeightedFieldScorer(new RankerOptions(TauDays: 2));
-        var slowDecay = new WeightedFieldScorer(new RankerOptions(TauDays: 30));
+        var sharpDecay = new WeightedAttributeScorer(new RankerOptions(TauDays: 2));
+        var slowDecay = new WeightedAttributeScorer(new RankerOptions(TauDays: 30));
 
         var entries = new[]
         {
@@ -197,7 +197,7 @@ public sealed class RankerCompositionTests
             keywords: ["shared"],
             tf: new Dictionary<string, int> { ["shared"] = 1 });
 
-        // Supplemental keyed as "{scope}|{name}" — see WeightedFieldScorer.GetSupplemental.
+        // Supplemental keyed as "{scope}|{name}" — see WeightedAttributeScorer.GetSupplemental.
         // Magnitudes mirror what the bench passes (cosine × 50.0).
         var supplemental = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
         {
@@ -205,9 +205,9 @@ public sealed class RankerCompositionTests
             ["local|doc-b"] = 45.0, // strong semantic match
         };
 
-        var sumScorer = new WeightedFieldScorer(
+        var sumScorer = new WeightedAttributeScorer(
             new RankerOptions(AlphaRecency: 0, Fusion: FusionMode.Sum));
-        var rrfScorer = new WeightedFieldScorer(
+        var rrfScorer = new WeightedAttributeScorer(
             new RankerOptions(AlphaRecency: 0, Fusion: FusionMode.Rrf));
 
         var sumResults = sumScorer.SearchAll("shared", [docA, docB], [], 10, supplemental);
@@ -244,7 +244,7 @@ public sealed class RankerCompositionTests
             keywords: ["bicycle"],
             tf: new Dictionary<string, int> { ["bicycle"] = 5 });
 
-        var rrfScorer = new WeightedFieldScorer(
+        var rrfScorer = new WeightedAttributeScorer(
             new RankerOptions(AlphaRecency: 0, Fusion: FusionMode.Rrf));
 
         var results = rrfScorer.SearchAll("oauth", [matching, unrelated], [], 10);
@@ -273,7 +273,7 @@ public sealed class RankerCompositionTests
             ["local|embed-only"] = 40.0,
         };
 
-        var rrfScorer = new WeightedFieldScorer(
+        var rrfScorer = new WeightedAttributeScorer(
             new RankerOptions(AlphaRecency: 0, Fusion: FusionMode.Rrf));
 
         var results = rrfScorer.SearchAll("shared", [bm25Only, embedOnly], [], 10, supplemental);

@@ -28,8 +28,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two topic-scoped entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Source content placeholder."], "/test/source");
-        await _tools.Store(["Target content placeholder."], "/test/target");
+        await _tools.Remember(["Source content placeholder."], "/test/source");
+        await _tools.Remember(["Target content placeholder."], "/test/target");
 
         // Act — fire OnStoredAsync with content that references /test/target
         await _sink.OnStoredAsync(
@@ -54,7 +54,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create an entry with no inbound refs from any other entry
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Isolated content with no references."], "/test/lonely");
+        await _tools.Remember(["Isolated content with no references."], "/test/lonely");
 
         // Act — fire OnStoredAsync (content doesn't reference anything)
         await _sink.OnStoredAsync(
@@ -78,10 +78,10 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create entry A that has a ref:/test/linked keyword (simulating an inbound ref)
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Content of linked entry."], "/test/linked");
+        await _tools.Remember(["Content of linked entry."], "/test/linked");
 
         // Manually add ref:/test/linked keyword on some other entry to simulate an inbound reference
-        await _tools.Store(["Some referencing content."], "/test/referrer", keywords: ["ref:/test/linked"]);
+        await _tools.Remember(["Some referencing content."], "/test/referrer", keywords: ["ref:/test/linked"]);
 
         // Act — fire OnStoredAsync for the linked entry
         await _sink.OnStoredAsync(
@@ -105,8 +105,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Alpha content."], "/test/alpha");
-        await _tools.Store(["Beta content."], "/test/beta");
+        await _tools.Remember(["Alpha content."], "/test/alpha");
+        await _tools.Remember(["Beta content."], "/test/beta");
 
         // Act — fire OnAppendedAsync with content mentioning /test/beta
         await _sink.OnAppendedAsync(
@@ -131,7 +131,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create an entry
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Self-referencing content."], "/test/selfref");
+        await _tools.Remember(["Self-referencing content."], "/test/selfref");
 
         // Act — fire OnStoredAsync with content that references itself
         await _sink.OnStoredAsync(
@@ -166,8 +166,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Source content."], "/test/src");
-        await _tools.Store(["Destination content."], "/test/dst");
+        await _tools.Remember(["Source content."], "/test/src");
+        await _tools.Remember(["Destination content."], "/test/dst");
 
         string[] content = ["This references [[/test/dst]] in the analysis."];
 
@@ -205,7 +205,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create an orphan entry
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Orphan content."], "/test/wasorphan");
+        await _tools.Remember(["Orphan content."], "/test/wasorphan");
 
         // Fire sink to mark it as orphan
         await _sink.OnStoredAsync(
@@ -222,7 +222,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         entry.Keywords.Should().Contain("orphan", "entry should initially be flagged as orphan");
 
         // Act — create a referrer and fire sink for the orphan again
-        await _tools.Store(["References [[/test/wasorphan]] here."], "/test/referrer2", keywords: ["ref:/test/wasorphan"]);
+        await _tools.Remember(["References [[/test/wasorphan]] here."], "/test/referrer2", keywords: ["ref:/test/wasorphan"]);
 
         await _sink.OnStoredAsync(
             "/test/wasorphan",
@@ -244,8 +244,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     {
         // Arrange — create two topic-scoped entries
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Source content placeholder."], "/test/fieldsource");
-        await _tools.Store(["Target content placeholder."], "/test/fieldtarget");
+        await _tools.Remember(["Source content placeholder."], "/test/fieldsource");
+        await _tools.Remember(["Target content placeholder."], "/test/fieldtarget");
 
         // Act — fire OnStoredAsync with content that references /test/fieldtarget
         await _sink.OnStoredAsync(
@@ -274,8 +274,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         // Arrange — create an entry that will be referenced, and a referrer whose
         // Fields["ref"] (not a legacy ref: keyword) points at it, simulating the new write shape.
         var store = MemoryStoreContext.Current!;
-        await _tools.Store(["Content of field-linked entry."], "/test/fieldlinked");
-        await _tools.Store(["Some referencing content."], "/test/fieldreferrer");
+        await _tools.Remember(["Content of field-linked entry."], "/test/fieldlinked");
+        await _tools.Remember(["Some referencing content."], "/test/fieldreferrer");
 
         var (referrerScope, referrerSubject) = store.ParseQualifiedName("/test/fieldreferrer");
         var referrerEntry = store.LoadIndex(referrerScope)
@@ -286,7 +286,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var (linkedScope, linkedSubject) = store.ParseQualifiedName("/test/fieldlinked");
         string linkedQualified = store.FormatQualifiedName(linkedScope, linkedSubject);
 
-        var referrerFields = KnownFields.Merge(referrerEntry.Attributes, new() { ["ref"] = [linkedQualified] });
+        var referrerFields = KnownAttributes.Merge(referrerEntry.Attributes, new() { ["ref"] = [linkedQualified] });
         store.Upsert(referrerEntry with { Attributes = referrerFields }, referrerScope);
 
         // Act — fire OnStoredAsync for the linked entry

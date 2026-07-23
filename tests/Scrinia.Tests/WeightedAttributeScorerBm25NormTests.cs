@@ -5,15 +5,15 @@ using Scrinia.Core.Search;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Regression coverage for Task 16: <see cref="WeightedFieldScorer"/> used to min-max-normalize
+/// Regression coverage for Task 16: <see cref="WeightedAttributeScorer"/> used to min-max-normalize
 /// BM25 (<c>(raw - min) / range * 100</c>). When exactly one candidate carries the only positive
 /// BM25 signal in the corpus, that candidate is simultaneously the min AND the max, so it
-/// normalizes to 0. If BM25 is its only signal (no name/keyword/field/preview match), the
+/// normalizes to 0. If BM25 is its only signal (no name/keyword/attribute/preview match), the
 /// <c>relevance &lt;= 0</c> gate in <c>TryInsert</c> drops it from results entirely — a unique,
 /// keyword-only match vanishes. Max-normalization (matching <c>EntityGraphScoreContributor</c>
 /// and <c>MmrReranker</c>) fixes this: the sole positive scorer normalizes to 100, not 0.
 /// </summary>
-public sealed class WeightedFieldScorerBm25NormTests
+public sealed class WeightedAttributeScorerBm25NormTests
 {
     private static ScopedArtifact MakeEntry(
         string name,
@@ -35,7 +35,7 @@ public sealed class WeightedFieldScorerBm25NormTests
     public void UniqueBodyOnlyMatch_IsNotDroppedByBm25Normalization()
     {
         // "lighthouse" appears ONLY in doc-one's indexed body (TermFrequencies) — not in its
-        // Name, Keywords, Attributes, or ContentPreview — so ScoreEntry's field score is 0 for
+        // Name, Keywords, Attributes, or ContentPreview — so ScoreEntry's attribute score is 0 for
         // this term and BM25 is doc-one's only signal. doc-two shares no terms with the query at
         // all, so it contributes zero to the min/max BM25 window. That leaves doc-one as the sole
         // positive-BM25 candidate: under the old min-max scheme it IS the min and the max, so it
@@ -47,7 +47,7 @@ public sealed class WeightedFieldScorerBm25NormTests
             keywords: ["unrelated"],
             tf: new Dictionary<string, int> { ["unrelated"] = 3 });
 
-        var scorer = new WeightedFieldScorer(new RankerOptions(AlphaRecency: 0));
+        var scorer = new WeightedAttributeScorer(new RankerOptions(AlphaRecency: 0));
 
         var results = scorer.SearchAll("lighthouse", [docOne, docTwo], [], 10);
 

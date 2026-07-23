@@ -254,7 +254,7 @@ public sealed record HintResult(bool Emitted, IReadOnlyList<HintMatch> Matches)
 
 /// <param name="Scope">Memory's scope (e.g. <c>local</c>, <c>local:api</c>).</param>
 /// <param name="Name">Memory's name within scope.</param>
-/// <param name="Score">BM25 + field-match score from the searcher.</param>
+/// <param name="Score">BM25 + attribute-match score from the searcher.</param>
 public sealed record HintMatch(string Scope, string Name, double Score);
 
 /// <summary>

@@ -4,42 +4,42 @@ using Scrinia.Core.Search;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Tests for <see cref="FieldExtractor"/> — mechanical key:value extraction (frontmatter,
-/// line-start pairs, bold labels) and agent-keyword routing into the unified Fields store.
+/// Tests for <see cref="AttributeExtractor"/> — mechanical key:value extraction (frontmatter,
+/// line-start pairs, bold labels) and agent-keyword routing into the attribute map.
 /// </summary>
-public sealed class FieldExtractorTests
+public sealed class AttributeExtractorTests
 {
     [Fact]
     public void Extract_FrontmatterAndLineStartAndBoldLabel()
     {
         string content = "---\nStatus: Active\n---\nverdict: no-go\n**Why:** taxes retrieval\nProse: is skipped when value is prose? No — this extracts too.";
-        var fields = FieldExtractor.Extract(content);
+        var attributes = AttributeExtractor.Extract(content);
 
-        fields.Should().NotBeNull();
-        fields!["status"].Should().BeEquivalentTo(["Active"], because: "keys lowercase, values verbatim");
-        fields["verdict"].Should().BeEquivalentTo(["no-go"]);
-        fields["why"].Should().BeEquivalentTo(["taxes retrieval"]);
+        attributes.Should().NotBeNull();
+        attributes!["status"].Should().BeEquivalentTo(["Active"], because: "keys lowercase, values verbatim");
+        attributes["verdict"].Should().BeEquivalentTo(["no-go"]);
+        attributes["why"].Should().BeEquivalentTo(["taxes retrieval"]);
     }
 
     [Fact]
     public void Extract_BoldLabel_ColonOutsideVariant()
     {
-        FieldExtractor.Extract("**Status**: active")!["status"].Should().BeEquivalentTo(["active"]);
+        AttributeExtractor.Extract("**Status**: active")!["status"].Should().BeEquivalentTo(["active"]);
     }
 
     [Fact]
     public void Extract_MultiValuedKey_AccumulatesWithinText()
     {
-        var fields = FieldExtractor.Extract("person: Alice\nperson: Bob");
-        fields!["person"].Should().BeEquivalentTo(["Alice", "Bob"],
+        var attributes = AttributeExtractor.Extract("person: Alice\nperson: Bob");
+        attributes!["person"].Should().BeEquivalentTo(["Alice", "Bob"],
             because: "entity keys accumulate within one text");
     }
 
     [Fact]
     public void Extract_ScalarKey_FirstWinsWithinText()
     {
-        var fields = FieldExtractor.Extract("status: first\nstatus: second");
-        fields!["status"].Should().BeEquivalentTo(["first"],
+        var attributes = AttributeExtractor.Extract("status: first\nstatus: second");
+        attributes!["status"].Should().BeEquivalentTo(["first"],
             because: "scalar keys are first-wins within one extraction pass");
     }
 
@@ -47,7 +47,7 @@ public sealed class FieldExtractorTests
     public void Extract_Guards_FenceUrlCharsetLengthEmpty()
     {
         string longVal = new string('x', 121);
-        var fields = FieldExtractor.Extract(
+        var attributes = AttributeExtractor.Extract(
             "```\nfenced: skipped\n```\n" +
             "http://example.com\n" +          // key "http", value "//..." → URL guard
             "1key: starts with digit\n" +
@@ -56,30 +56,30 @@ public sealed class FieldExtractorTests
             $"longval: {longVal}\n" +
             "emptyval:\n" +
             "ok: fine");
-        fields.Should().NotBeNull();
-        fields.Should().HaveCount(1);
-        fields!["ok"].Should().BeEquivalentTo(["fine"]);
+        attributes.Should().NotBeNull();
+        attributes.Should().HaveCount(1);
+        attributes!["ok"].Should().BeEquivalentTo(["fine"]);
     }
 
     [Fact]
-    public void Extract_CapsAtMaxFields_AndNullWhenNone()
+    public void Extract_CapsAtMaxAttributes_AndNullWhenNone()
     {
         var lines = Enumerable.Range(1, 40).Select(i => $"key{i}: value{i}");
-        FieldExtractor.Extract(string.Join("\n", lines))!.Should().HaveCount(KnownFields.MaxFields);
-        FieldExtractor.Extract("Just prose.").Should().BeNull();
-        FieldExtractor.Extract(null).Should().BeNull();
+        AttributeExtractor.Extract(string.Join("\n", lines))!.Should().HaveCount(KnownAttributes.MaxAttributes);
+        AttributeExtractor.Extract("Just prose.").Should().BeNull();
+        AttributeExtractor.Extract(null).Should().BeNull();
     }
 
     [Fact]
-    public void RouteKeywords_SplitsFieldShapedFromPlain()
+    public void RouteKeywords_SplitsAttributeShapedFromPlain()
     {
-        var (fields, keywords) = FieldExtractor.RouteKeywords(
+        var (attributes, keywords) = AttributeExtractor.RouteKeywords(
             ["person:Nick", "status:active", "plainword", "http://x.com", "person:Maria"]);
 
-        fields.Should().NotBeNull();
-        fields!["person"].Should().BeEquivalentTo(["Nick", "Maria"],
+        attributes.Should().NotBeNull();
+        attributes!["person"].Should().BeEquivalentTo(["Nick", "Maria"],
             because: "multi-valued keys accumulate; values verbatim");
-        fields["status"].Should().BeEquivalentTo(["active"]);
+        attributes["status"].Should().BeEquivalentTo(["active"]);
         keywords.Should().BeEquivalentTo(["plainword", "http://x.com"],
             because: "plain and URL-guarded keywords stay keywords");
     }
@@ -87,8 +87,8 @@ public sealed class FieldExtractorTests
     [Fact]
     public void RouteKeywords_NullAndAllPlain()
     {
-        FieldExtractor.RouteKeywords(null).Should().Be((null, null));
-        var (f, k) = FieldExtractor.RouteKeywords(["alpha", "beta"]);
+        AttributeExtractor.RouteKeywords(null).Should().Be((null, null));
+        var (f, k) = AttributeExtractor.RouteKeywords(["alpha", "beta"]);
         f.Should().BeNull();
         k.Should().BeEquivalentTo(["alpha", "beta"]);
     }
@@ -96,10 +96,10 @@ public sealed class FieldExtractorTests
     [Fact]
     public void SeedTermFrequencies_Plus3PerTokenFromKeysAndAllValues()
     {
-        var fields = new Dictionary<string, string[]> { ["verdict"] = ["rejected", "quiescent decision"] };
+        var attributes = new Dictionary<string, string[]> { ["verdict"] = ["rejected", "quiescent decision"] };
         var tf = new Dictionary<string, int> { ["decision"] = 1 };
 
-        FieldExtractor.SeedTermFrequencies(fields, tf);
+        AttributeExtractor.SeedTermFrequencies(attributes, tf);
 
         tf["verdict"].Should().Be(3);
         tf["rejected"].Should().Be(3);
@@ -111,38 +111,38 @@ public sealed class FieldExtractorTests
     public void SeedTermFrequencies_NullOrEmpty_NoOp()
     {
         var tf = new Dictionary<string, int>();
-        FieldExtractor.SeedTermFrequencies(null, tf);
-        FieldExtractor.SeedTermFrequencies(new(), tf);
+        AttributeExtractor.SeedTermFrequencies(null, tf);
+        AttributeExtractor.SeedTermFrequencies(new(), tf);
         tf.Should().BeEmpty();
     }
 
     [Fact]
-    public void ArtifactEntry_Fields_RoundTripsThroughIndexSaveLoad()
+    public void ArtifactEntry_Attributes_RoundTripsThroughIndexSaveLoad()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
 
         var entry = new Scrinia.Core.Models.ArtifactEntry(
-            Name: "fields-roundtrip", Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
+            Name: "attributes-roundtrip", Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
             Attributes: new Dictionary<string, string[]> { ["person"] = ["Alice", "Bob"], ["status"] = ["no-go"] });
 
         store.Upsert(entry, "local");
-        var reloaded = store.LoadIndex("local").Single(e => e.Name == "fields-roundtrip");
+        var reloaded = store.LoadIndex("local").Single(e => e.Name == "attributes-roundtrip");
 
         reloaded.Attributes!["person"].Should().BeEquivalentTo(["Alice", "Bob"]);
         reloaded.Attributes["status"].Should().BeEquivalentTo(["no-go"], because: "values verbatim through JSON");
     }
 
     private static Scrinia.Core.Models.ArtifactEntry MakeEntry(
-        string name, Dictionary<string, string[]>? fields = null, string[]? keywords = null) =>
+        string name, Dictionary<string, string[]>? attributes = null, string[]? keywords = null) =>
         new(
             Name: name, Uri: "file:///dev/null", OriginalBytes: 10, ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
-            Keywords: keywords, Attributes: fields);
+            Keywords: keywords, Attributes: attributes);
 
     [Fact]
-    public void SearchAll_FieldValueExact_OutranksFieldlessEntry()
+    public void SearchAll_AttributeValueExact_OutranksAttributelessEntry()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
@@ -171,11 +171,11 @@ public sealed class FieldExtractorTests
     }
 
     [Fact]
-    public void SearchAll_LegacyTypedKeyword_ScoresLikeAField()
+    public void SearchAll_LegacyTypedKeyword_ScoresLikeAnAttribute()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);
-        // Pre-migration entry: person:maria lives in Keywords, Fields is null.
+        // Pre-migration entry: person:maria lives in Keywords, Attributes is null.
         store.Upsert(MakeEntry("legacy", keywords: ["person:maria"]), "local");
         store.Upsert(MakeEntry("bystander"), "local");
 
@@ -183,7 +183,7 @@ public sealed class FieldExtractorTests
         results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
             .Should().Be("legacy",
             because: "read-time forward-fill (AttributeMigration) promotes key:value-shaped legacy " +
-                "keywords into Fields before scoring runs, so the Fields block scores it identically " +
+                "keywords into Attributes before scoring runs, so the Attributes block scores it identically " +
                 "without the scorer parsing Keywords itself (P6.5: that direct dual-read was retired)");
     }
 }

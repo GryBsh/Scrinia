@@ -17,8 +17,9 @@ namespace Scrinia.Mcp;
 
 public sealed partial class ScriniaMcpTools
 {
-    /// <summary>Unpack an NMP/2 artifact back to its original text content.</summary>
-    internal async Task<string> Show(
+    /// <summary>Recall: unpack an NMP/2 artifact (or a memory resolved by name) back to its
+    /// original text content. Backs the MCP <c>recall</c> tool and <c>scri show</c>.</summary>
+    internal async Task<string> Recall(
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
                      "Use the exact name shown by list (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] string artifactOrName,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
@@ -104,8 +105,9 @@ public sealed partial class ScriniaMcpTools
 
     // ── Persistent memory tools ───────────────────────────────────────────────
 
-    /// <summary>Compress text and persist it as a named artifact in a memory scope.</summary>
-    internal async Task<string> Store(
+    /// <summary>Remember: compress text and persist it as a named artifact in a memory scope.
+    /// Backs the MCP <c>remember</c> tool and <c>scri store</c>.</summary>
+    internal async Task<string> Remember(
         [Description("The text content to compress and store. " +
                      "Pass a single element for a single-chunk artifact, or multiple elements to control " +
                      "chunk boundaries — each element becomes one independently retrievable chunk.")] string[] content,
@@ -117,16 +119,15 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional keywords for search. Merged with auto-extracted content terms. " +
                      "Prefer TYPED keywords using one of these types: 'person:<name>', 'place:<name>', " +
                      "'org:<name>', 'thing:<name>', 'topic:<theme>'. Typed entries, and any other " +
-                     "key:value keyword, become structured fields — an exact-match retrieval signal and " +
+                     "key:value keyword, become structured attributes — an exact-match retrieval signal and " +
                      "entity-graph input, so a query mentioning one entity can surface this memory via a " +
                      "related entity even with no text overlap. Plain keywords remain search keywords. " +
                      "Use the same canonical name for an entity across memories; the type lets a person and a " +
                      "place that share a name stay distinct.")] string[]? keywords = null,
-        [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content. Indexed for both field-score lookup and BM25 via term-frequency seeding.")]
+        [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content. Indexed for both attribute-score lookup and BM25 via term-frequency seeding.")]
         string[]? anchors = null,
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
         [Description("Optional free-text condition describing when this memory should be reviewed (e.g. 'when auth system changes').")] string? reviewWhen = null,
-        [Description("Optional file paths this memory depends on. Hashes are recorded to detect drift.")] string[]? codeRefs = null,
         IReadOnlyDictionary<string, string[]>? attributes = null,
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
@@ -137,14 +138,14 @@ public sealed partial class ScriniaMcpTools
         // Compute text analysis: keywords + term frequencies (single-pass)
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
 
-        // Unified fields: key:value-shaped agent keywords route to Fields; only plain
+        // Unified attributes: key:value-shaped agent keywords route to Attributes; only plain
         // keywords participate in the keyword merge. Prefixed-keyword writes are retired.
-        var (routedFields, plainKeywords) = FieldExtractor.RouteKeywords(keywords);
+        var (routedAttributes, plainKeywords) = AttributeExtractor.RouteKeywords(keywords);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(plainKeywords, autoKeywords);
 
-        // References land in Fields (file/ref), not as prefixed keywords.
+        // References land in Attributes (file/ref), not as prefixed keywords.
         string rawContent = string.Join("\n", content);
-        var refFields = FieldExtractor.ExtractRefFields(rawContent);
+        var refAttributes = AttributeExtractor.ExtractRefAttributes(rawContent);
 
         // Boost keywords in TF: agent keywords +5, auto-extracted +2. Typed keywords
         // (prefix:value) seed their tokenized VALUE so the parts are BM25-matchable — the
@@ -162,7 +163,7 @@ public sealed partial class ScriniaMcpTools
 
         // Seed agent-supplied retrieval anchors into the TF dict so BM25 picks up
         // anchor-derived tokens. Each token gets +2 — the same weight auto-extracted
-        // keywords get; the field-score branch (+15) carries the agent-curated boost.
+        // keywords get; the attribute-score branch (+15) carries the agent-curated boost.
         // Empty/whitespace anchors are dropped here; null is treated the same as [].
         string[]? cleanedAnchors = null;
         if (anchors is { Length: > 0 })
@@ -185,12 +186,12 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
-        // Assemble unified fields: routed keywords ∪ content extraction ∪ references,
+        // Assemble unified attributes: routed keywords ∪ content extraction ∪ references,
         // then fold in explicit agent attributes (they win scalar collisions), then seed
         // key/value tokens into TF.
-        var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
-        fields = KnownFields.Merge(fields, NormalizeAttributes(attributes));
-        FieldExtractor.SeedTermFrequencies(fields, tf);
+        var entryAttributes = KnownAttributes.Merge(KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)), refAttributes);
+        entryAttributes = KnownAttributes.Merge(entryAttributes, NormalizeAttributes(attributes));
+        AttributeExtractor.SeedTermFrequencies(entryAttributes, tf);
 
         ChunkEntry[]? chunkEntries = content.Length > 1
             ? TextAnalysis.ComputeChunkEntries(store, content)
@@ -218,14 +219,14 @@ public sealed partial class ScriniaMcpTools
             DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
             DateTimeOffset? ephUpdatedAt = existingEph is not null ? DateTimeOffset.UtcNow : null;
 
-            // Dual-write: fold tag/anchor into Fields at write time, mirroring how
-            // AttributeMigration.Forward populates the persistent path's Fields (Task 1).
-            // EphemeralEntry carries only Tags/RetrievalAnchors as legacy attribute-fields
+            // Dual-write: fold tag/anchor into Attributes at write time, mirroring how
+            // AttributeMigration.Forward populates the persistent path's Attributes (Task 1).
+            // EphemeralEntry carries only Tags/RetrievalAnchors as legacy attribute-attributes
             // (no ReviewAfter/ReviewWhen/FileHashes), so only tag/anchor route here.
             var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-            if (tags is { Length: > 0 }) ephIncoming[KnownFields.TagKey] = tags;
-            if (cleanedAnchors is { Length: > 0 }) ephIncoming[KnownFields.AnchorKey] = cleanedAnchors;
-            var ephFields = ephIncoming.Count > 0 ? KnownFields.Merge(fields, ephIncoming) : fields;
+            if (tags is { Length: > 0 }) ephIncoming[KnownAttributes.TagKey] = tags;
+            if (cleanedAnchors is { Length: > 0 }) ephIncoming[KnownAttributes.AnchorKey] = cleanedAnchors;
+            var ephAttributes = ephIncoming.Count > 0 ? KnownAttributes.Merge(entryAttributes, ephIncoming) : entryAttributes;
 
             var ephEntry = new EphemeralEntry(
                 Name: key,
@@ -238,7 +239,7 @@ public sealed partial class ScriniaMcpTools
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
-                Attributes: ephFields);
+                Attributes: ephAttributes);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -319,7 +320,7 @@ public sealed partial class ScriniaMcpTools
         // Feed date-parseable values into the existing reviewAfter parse (first wins); join the
         // rest into reviewWhen. Only when the legacy params weren't explicitly supplied.
         if (reviewAfter is null && reviewWhen is null
-            && fields is not null && fields.TryGetValue(KnownFields.ReviewKey, out var reviewVals))
+            && entryAttributes is not null && entryAttributes.TryGetValue(KnownAttributes.ReviewKey, out var reviewVals))
         {
             var whenParts = new List<string>();
             foreach (string v in reviewVals)
@@ -345,13 +346,14 @@ public sealed partial class ScriniaMcpTools
                 reviewWhen = "when counts in this memory change";
         }
 
-        // Compute code reference hashes — explicit codeRefs + auto-detected file field values
+        // Compute code-reference hashes from the `file` attribute values (drift detection). File
+        // dependencies flow in exclusively via attributes.file now — the legacy codeRefs parameter
+        // was retired.
         string storeDir = store.GetStoreDirForScope("local");
         string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
         string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
 
-        var allRefPaths = (codeRefs ?? [])
-            .Concat(fields is not null && fields.TryGetValue("file", out var fileRefs)
+        var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
                 ? fileRefs : [])
             .Distinct(StringComparer.OrdinalIgnoreCase);
 
@@ -368,7 +370,7 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
-        // Dual-write: fold tag/anchor/review/file into Fields at write time — the attributes-native
+        // Dual-write: fold tag/anchor/review/file into Attributes at write time — the attributes-native
         // write path (byte-identical to AttributeMigration.Forward's fold, Task 1). Inserted here,
         // immediately before construction, so it captures the auto-derived reviewWhen (above) and
         // the completed codeRefDict (above) — inserting any earlier would fold stale/empty values.
@@ -376,7 +378,7 @@ public sealed partial class ScriniaMcpTools
             tags, codeRefDict?.Keys, parsedReviewAfter,
             string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen, cleanedAnchors);
         if (carrier.Count > 0)
-            fields = KnownFields.Merge(fields, carrier);
+            entryAttributes = KnownAttributes.Merge(entryAttributes, carrier);
 
         var entry = new ArtifactEntry(
             Name: subject,
@@ -390,7 +392,7 @@ public sealed partial class ScriniaMcpTools
             UpdatedAt: updatedAt,
             ChunkEntries: chunkEntries,
             FileHashes: codeRefDict,
-            Attributes: fields);
+            Attributes: entryAttributes);
         entry = AttributeMigration.Forward(entry);
 
         store.Upsert(entry, scope);
@@ -443,8 +445,8 @@ public sealed partial class ScriniaMcpTools
         // Track what changed for the response message
         var changes = new List<string>();
 
-        // Route key:value-shaped additions into Fields; only plain ones merge into Keywords.
-        var (routedFields, plainAdds) = FieldExtractor.RouteKeywords(keywords);
+        // Route key:value-shaped additions into Attributes; only plain ones merge into Keywords.
+        var (routedAttributes, plainAdds) = AttributeExtractor.RouteKeywords(keywords);
 
         string[]? mergedKeywords = entry.Keywords;
         int addedCount = 0;
@@ -456,11 +458,11 @@ public sealed partial class ScriniaMcpTools
             if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
         }
 
-        Dictionary<string, string[]>? mergedFields = entry.Attributes;
-        if (routedFields is not null)
+        Dictionary<string, string[]>? mergedAttributes = entry.Attributes;
+        if (routedAttributes is not null)
         {
-            mergedFields = KnownFields.Merge(entry.Attributes, routedFields);
-            changes.Add($"{routedFields.Count} field(s) merged");
+            mergedAttributes = KnownAttributes.Merge(entry.Attributes, routedAttributes);
+            changes.Add($"{routedAttributes.Count} attribute(s) merged");
         }
 
         // Replace description if provided — displayed via ContentPreview (updatedContentPreview
@@ -504,15 +506,15 @@ public sealed partial class ScriniaMcpTools
         // members below + the Forward call at the end of this method). ADD/REPLACE ONLY — no
         // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
         // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
-        // key, so KnownFields.Merge PRESERVES any existing Attributes["review"] rather than
-        // clearing it. KnownFields.Merge always returns a NEW dictionary, so this never mutates
-        // entry.Attributes (== mergedFields when routedFields is null) in place.
+        // key, so KnownAttributes.Merge PRESERVES any existing Attributes["review"] rather than
+        // clearing it. KnownAttributes.Merge always returns a NEW dictionary, so this never mutates
+        // entry.Attributes (== mergedAttributes when routedAttributes is null) in place.
         var reviewParts = new List<string>(2);
         if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
         if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
         if (reviewParts.Count > 0)
-            mergedFields = KnownFields.Merge(mergedFields,
-                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownFields.ReviewKey] = reviewParts.ToArray() });
+            mergedAttributes = KnownAttributes.Merge(mergedAttributes,
+                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.ReviewKey] = reviewParts.ToArray() });
 
         // ContentPreview direct write — Merge 3 Task 2b option A: an explicit new description
         // wins and becomes the displayed ContentPreview; otherwise the existing ContentPreview
@@ -540,26 +542,26 @@ public sealed partial class ScriniaMcpTools
             updatedTf = tf;
         }
 
-        if (routedFields is not null)
+        if (routedAttributes is not null)
         {
-            var tfForFields = updatedTf is not null
+            var tfForAttributes = updatedTf is not null
                 ? new Dictionary<string, int>(updatedTf) : new Dictionary<string, int>();
-            // Agent-curated fields seed at +5, matching agent keywords (not the +3 auto rate).
-            foreach (var kv in routedFields)
+            // Agent-curated attributes seed at +5, matching agent keywords (not the +3 auto rate).
+            foreach (var kv in routedAttributes)
                 foreach (string v in kv.Value)
                     foreach (string token in TextAnalysis.Tokenize(v))
                     {
-                        tfForFields.TryGetValue(token, out int c);
-                        tfForFields[token] = c + 5;
+                        tfForAttributes.TryGetValue(token, out int c);
+                        tfForAttributes[token] = c + 5;
                     }
-            updatedTf = tfForFields;
+            updatedTf = tfForAttributes;
         }
 
         var updated = entry with
         {
             Keywords = mergedKeywords,
             TermFrequencies = updatedTf,
-            Attributes = mergedFields,
+            Attributes = mergedAttributes,
             ContentPreview = updatedContentPreview,
             UpdatedAt = DateTimeOffset.UtcNow
         };
@@ -647,52 +649,69 @@ public sealed partial class ScriniaMcpTools
             sb.AppendLine($"- **ephemeral** — {ephemeralCount} {(ephemeralCount == 1 ? "memory" : "memories")}");
         sb.AppendLine();
 
-        // Top keywords — aggregate from Keywords and Tags across all entries
-        var keywordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in entries)
+        // Top keywords + top attributes — computed by the shared aggregator that also backs
+        // `scri list --summary`, so the two surfaces never diverge (they used to: the MCP side
+        // double-reported the typed keywords the CLI filtered, and rendered attributes per value
+        // rather than per key).
+        var (topKeywords, topAttributes) = AggregateSummaryFacets(entries);
+        if (topKeywords.Length > 0)
         {
-            if (item.Entry.Keywords is { Length: > 0 })
-                foreach (var kw in item.Entry.Keywords)
-                    keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
-            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes))
-                keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
-        }
-        if (keywordCounts.Count > 0)
-        {
-            var topKeywords = keywordCounts
-                .OrderByDescending(kv => kv.Value)
-                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-                .Take(10)
-                .Select(kv => kv.Key);
-            sb.AppendLine($"### Top keywords");
+            sb.AppendLine("### Top keywords");
             sb.AppendLine(string.Join(", ", topKeywords));
             sb.AppendLine();
         }
-
-        // Top attributes — aggregate attribute values across all entries (new model's facets).
-        var attrCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in entries)
+        if (topAttributes.Length > 0)
         {
-            if (item.Entry.Attributes is { Count: > 0 })
-                foreach (var kv in item.Entry.Attributes)
-                    foreach (var v in kv.Value)
-                        attrCounts[$"{kv.Key}:{v}"] = attrCounts.GetValueOrDefault($"{kv.Key}:{v}") + 1;
-        }
-        if (attrCounts.Count > 0)
-        {
-            var topAttrs = attrCounts
-                .OrderByDescending(kv => kv.Value)
-                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-                .Take(10)
-                .Select(kv => kv.Key);
             sb.AppendLine("### Top attributes");
-            sb.AppendLine(string.Join(", ", topAttrs));
+            sb.AppendLine(string.Join(", ", topAttributes.Select(a => $"{a.Key} ({a.Count})")));
             sb.AppendLine();
         }
 
         sb.Append("Use `list({ mode: 'full' })` to see all entries, or `search({ query: '...' })` to find specific memories.");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Aggregates the "Top keywords" and "Top attributes" facets for the list summary. Shared by
+    /// the MCP <c>list</c> tool (<see cref="BuildSummary"/>) and the <c>scri list --summary</c> CLI
+    /// so both surfaces report identically. Typed-keyword-shaped entries (e.g. <c>person:maria</c>)
+    /// are excluded from keywords — they're routed into structured Attributes and counted there
+    /// (per key) instead, to avoid double-reporting the same facet.
+    /// </summary>
+    internal static (string[] TopKeywords, (string Key, int Count)[] TopAttributes) AggregateSummaryFacets(
+        IEnumerable<ScopedArtifact> entries)
+    {
+        var keywordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var attributeCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in entries)
+        {
+            if (item.Entry.Keywords is { Length: > 0 })
+                foreach (var kw in item.Entry.Keywords)
+                {
+                    if (TypedKeywordShape.IsMatch(kw)) continue;
+                    keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
+                }
+            foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes))
+                keywordCounts[tag] = keywordCounts.GetValueOrDefault(tag) + 1;
+
+            if (item.Entry.Attributes is { Count: > 0 } attributes)
+                foreach (var key in attributes.Keys)
+                    attributeCounts[key] = attributeCounts.GetValueOrDefault(key) + 1;
+        }
+
+        var topKeywords = keywordCounts
+            .OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(10).Select(kv => kv.Key).ToArray();
+        var topAttributes = attributeCounts
+            .OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(10).Select(kv => (kv.Key, kv.Value)).ToArray();
+        return (topKeywords, topAttributes);
+    }
+
+    /// <summary>Matches legacy typed-prefix keywords (e.g. <c>person:maria</c>) so the raw keyword
+    /// tally can exclude them — they're routed into structured Attributes.</summary>
+    private static readonly Regex TypedKeywordShape =
+        new(@"^[A-Za-z][A-Za-z0-9_-]{0,29}:.+", RegexOptions.Compiled);
 
     internal static string BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)
     {
@@ -803,9 +822,37 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
+        var matches = await ExecuteSearchAsync(
+            store, query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken);
 
+        if (matches.Count == 0)
+            return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
+
+        string body = FormatRichSearchResults(store, matches);
+        return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
+    }
+
+    /// <summary>
+    /// The single scoring pipeline behind BOTH the MCP <c>search</c> tool and the <c>scri search</c>
+    /// CLI command — the two used to diverge (the CLI ran BM25-only, ignoring the embeddings and
+    /// entity-graph contributors it had already loaded). Computes the effective query, folds in
+    /// supplemental (embeddings) and entity-graph scores from the ambient contexts, runs the
+    /// weighted BM25+attribute scorer, and applies path-prefix / attribute post-filters. Callers
+    /// format the returned <see cref="SearchResult"/>s for their own surface (YAML / table / JSON).
+    /// </summary>
+    internal static async Task<IReadOnlyList<SearchResult>> ExecuteSearchAsync(
+        IMemoryStore store,
+        string query,
+        string? scopes,
+        int limit,
+        string? excludeTopics,
+        string? context,
+        string? pathPrefix,
+        IReadOnlyDictionary<string, string[]>? attributeFilter,
+        CancellationToken cancellationToken)
+    {
         // Augment the query with caller-supplied context for scoring. The bare query is preserved
-        // for any user-facing echo; the effective query feeds BM25, field scoring, and embeddings
+        // for any user-facing echo; the effective query feeds BM25, attribute scoring, and embeddings
         // alike so a single signal carries through all three.
         string effectiveQuery = string.IsNullOrWhiteSpace(context) ? query : $"{query} {context}";
 
@@ -836,13 +883,7 @@ public sealed partial class ScriniaMcpTools
         // Post-filter by path prefix and attribute filter. Both are AND filters — the candidate
         // must satisfy every active constraint. Filters apply uniformly to entry, chunk, and
         // topic results so callers don't need to know which result type to expect.
-        matches = ApplyPostFilters(store, matches, pathPrefix, attributeFilter);
-
-        if (matches.Count == 0)
-            return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
-
-        string body = FormatRichSearchResults(store, matches);
-        return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
+        return ApplyPostFilters(store, matches, pathPrefix, attributeFilter);
     }
 
     private static IReadOnlyList<SearchResult> ApplyPostFilters(
@@ -884,16 +925,16 @@ public sealed partial class ScriniaMcpTools
     private static bool MatchesAttributes(SearchResult match, IReadOnlyDictionary<string, string[]>? filter)
     {
         if (filter is null || filter.Count == 0) return true;
-        Dictionary<string, string[]>? fields = match switch
+        Dictionary<string, string[]>? attributes = match switch
         {
             EntryResult er => er.Item.Entry.Attributes,
             ChunkEntryResult cr => cr.ParentItem.Entry.Attributes,
             _ => null,   // TopicResult carries no attributes — excluded when a filter is active
         };
-        if (fields is null || fields.Count == 0) return false;
+        if (attributes is null || attributes.Count == 0) return false;
         foreach (var want in filter)
         {
-            if (!fields.TryGetValue(want.Key.Trim().ToLowerInvariant(), out var have) || have is null || have.Length == 0)
+            if (!attributes.TryGetValue(want.Key.Trim().ToLowerInvariant(), out var have) || have is null || have.Length == 0)
                 return false;
             if (want.Value is { Length: > 0 })
             {
@@ -911,7 +952,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>
-    /// Renders one block per match with the persisted entry fields surfaced. The agent
+    /// Renders one block per match with the persisted entry attributes surfaced. The agent
     /// gets enough decision-making context per hit — description, tags, retrieval
     /// anchors — to either answer directly or pick which hits warrant a recall,
     /// without a second round trip per candidate.
@@ -1019,11 +1060,11 @@ public sealed partial class ScriniaMcpTools
             sb.Append("    updated: ").Append(u.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
     }
 
-    private static void AppendAttributesLine(System.Text.StringBuilder sb, Dictionary<string, string[]>? fields)
+    private static void AppendAttributesLine(System.Text.StringBuilder sb, Dictionary<string, string[]>? attributes)
     {
-        if (fields is null || fields.Count == 0) return;
+        if (attributes is null || attributes.Count == 0) return;
         sb.Append("    attributes:\n");
-        foreach (var kv in fields)
+        foreach (var kv in attributes)
         {
             sb.Append("      ").Append(kv.Key).Append(": ");
             sb.Append(string.Join(", ", kv.Value)).Append('\n');
@@ -1180,7 +1221,7 @@ public sealed partial class ScriniaMcpTools
     /// <summary>
     /// Append content as a new chunk to an existing memory, or create it if it does not exist.
     /// Preserves the memory's curated retrieval metadata (anchors, tags, keywords, description,
-    /// codeRefs) and merges any caller-supplied <paramref name="tags"/> / <paramref name="keywords"/> /
+    /// file references) and merges any caller-supplied <paramref name="tags"/> / <paramref name="keywords"/> /
     /// <paramref name="anchors"/> into it — appended content can introduce new concepts users will
     /// query for, and the metadata `remember` set must not be silently discarded on append.
     /// </summary>
@@ -1210,7 +1251,7 @@ public sealed partial class ScriniaMcpTools
         {
             // Non-existent → create as single-chunk (same as Store). Forward any
             // caller-supplied metadata so a create-via-append is not lossy.
-            return await this.Store([content], name,
+            return await this.Remember([content], name,
                 description: description ?? "",
                 tags: tags,
                 keywords: keywords,
@@ -1236,12 +1277,12 @@ public sealed partial class ScriniaMcpTools
         var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
 
-        // Unified fields: key:value-shaped agent keywords route to Fields, same as Store.
+        // Unified attributes: key:value-shaped agent keywords route to Attributes, same as Store.
         // Only the plain remainder participates in the entry-level keyword merge below.
-        var (routedNewFields, plainNewKeywords) = FieldExtractor.RouteKeywords(keywords);
+        var (routedNewAttributes, plainNewKeywords) = AttributeExtractor.RouteKeywords(keywords);
 
         // Ref/file references are no longer folded into chunk-level keywords — they land in
-        // Fields via the entry-level merge in BuildAppendMetadata.
+        // Attributes via the entry-level merge in BuildAppendMetadata.
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
             ContentPreview: store.GenerateContentPreview(content),
@@ -1275,7 +1316,7 @@ public sealed partial class ScriniaMcpTools
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEph?.ContentPreview, AttributeReaders.DisplayTags(existingEph?.Attributes).ToArray(),
                 existingEph?.Keywords, AttributeReaders.DisplayAnchors(existingEph?.Attributes).ToArray(),
-                content, routedNewFields, existingEph?.Attributes, attributes);
+                content, routedNewAttributes, existingEph?.Attributes, attributes);
 
             ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1293,7 +1334,7 @@ public sealed partial class ScriniaMcpTools
                 TermFrequencies: meta.Tf,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ChunkEntries: updatedChunks,
-                Attributes: meta.Fields);
+                Attributes: meta.Attributes);
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
@@ -1322,7 +1363,7 @@ public sealed partial class ScriniaMcpTools
                 fullText, description, tags, plainNewKeywords, anchors,
                 existingEntry?.ContentPreview, AttributeReaders.DisplayTags(existingEntry?.Attributes).ToArray(),
                 existingEntry?.Keywords, AttributeReaders.DisplayAnchors(existingEntry?.Attributes).ToArray(),
-                content, routedNewFields, existingEntry?.Attributes, attributes);
+                content, routedNewAttributes, existingEntry?.Attributes, attributes);
 
             ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
             ChunkEntry[] updatedChunks = existingChunks is not null
@@ -1339,16 +1380,16 @@ public sealed partial class ScriniaMcpTools
             qualifiedName = store.FormatQualifiedName(scope, subject);
             sinkQualifiedName = store.FormatRoundTripQualifiedName(scope, subject);
 
-            // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Fields, but
+            // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Attributes, but
             // review/file aren't available there — they come from existingEntry, which is only a
             // local at this construction site. Fold them here so Attributes carries the full
-            // legacy carrier set even though tags/anchors are already in meta.Fields (passed null
+            // legacy carrier set even though tags/anchors are already in meta.Attributes (passed null
             // below to avoid double-folding them).
             AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
             var carrier = AttributeMigration.BuildCarrierAttributes(
                 tags: null, existingEntry?.FileHashes?.Keys, existingReviewDate,
                 existingReviewWhen, anchors: null);
-            var appendAttrs = carrier.Count > 0 ? KnownFields.Merge(meta.Fields, carrier) : meta.Fields;
+            var appendAttrs = carrier.Count > 0 ? KnownAttributes.Merge(meta.Attributes, carrier) : meta.Attributes;
 
             var entry = new ArtifactEntry(
                 Name: subject,
@@ -1387,12 +1428,12 @@ public sealed partial class ScriniaMcpTools
     /// Description member); <paramref name="existingDescription"/> is sourced from the caller's
     /// <c>ContentPreview</c>, the surviving curated-description carrier.
     /// </summary>
-    private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors, Dictionary<string, string[]>? Fields)
+    private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors, Dictionary<string, string[]>? Attributes)
         BuildAppendMetadata(
             string fullText,
             string? newDescription, string[]? newTags, string[]? newKeywords, string[]? newAnchors,
             string? existingDescription, string[]? existingTags, string[]? existingKeywords, string[]? existingAnchors,
-            string appendedContent, Dictionary<string, string[]>? routedNewFields, Dictionary<string, string[]>? existingFields,
+            string appendedContent, Dictionary<string, string[]>? routedNewAttributes, Dictionary<string, string[]>? existingAttributes,
             IReadOnlyDictionary<string, string[]>? attributes)
     {
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
@@ -1403,7 +1444,7 @@ public sealed partial class ScriniaMcpTools
         // boost too — a negligible, intentional over-weight in exchange for never losing a
         // curated term.) Mirrors Store's keyword/TF contract.
         // Ref/file references are no longer concatenated in here as prefixed keywords —
-        // they land in Fields via the merge below. Dropping the concat here is intentional:
+        // they land in Attributes via the merge below. Dropping the concat here is intentional:
         // entry-level keywords no longer carry file:/ref: entries.
         string[] curatedKeywords = UnionDistinct(existingKeywords, newKeywords);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(
@@ -1442,27 +1483,27 @@ public sealed partial class ScriniaMcpTools
                 ? existingDescription!
                 : fullText[..Math.Min(200, fullText.Length)];
 
-        // Unified fields: incoming = routed new keywords ∪ content extraction ∪ references
-        // from the appended chunk; merged per KnownFields (entity/ref union, scalar
+        // Unified attributes: incoming = routed new keywords ∪ content extraction ∪ references
+        // from the appended chunk; merged per KnownAttributes (entity/ref union, scalar
         // newer-wins). Seed the merged set at +3 — TF is rebuilt from scratch per append,
-        // so carried-forward fields must re-seed (same contract as merged anchors).
-        var incoming = KnownFields.Merge(
-            KnownFields.Merge(routedNewFields, FieldExtractor.Extract(appendedContent)),
-            FieldExtractor.ExtractRefFields(appendedContent));
-        incoming = KnownFields.Merge(incoming, NormalizeAttributes(attributes));   // explicit agent attributes
-        var mergedFields = KnownFields.Merge(existingFields, incoming);
+        // so carried-forward attributes must re-seed (same contract as merged anchors).
+        var incoming = KnownAttributes.Merge(
+            KnownAttributes.Merge(routedNewAttributes, AttributeExtractor.Extract(appendedContent)),
+            AttributeExtractor.ExtractRefAttributes(appendedContent));
+        incoming = KnownAttributes.Merge(incoming, NormalizeAttributes(attributes));   // explicit agent attributes
+        var mergedAttributes = KnownAttributes.Merge(existingAttributes, incoming);
 
-        // Dual-write: fold the fully-merged tag/anchor set into Fields at write time —
+        // Dual-write: fold the fully-merged tag/anchor set into Attributes at write time —
         // same mechanism as Store, mirroring AttributeMigration.Forward for the persistent
         // path (Task 1). Uses the already-merged mergedTags/mergedAnchors (existing ∪ new)
-        // so Fields carries the same values that land in Tags/RetrievalAnchors below.
+        // so Attributes carries the same values that land in Tags/RetrievalAnchors below.
         var tagAnchorIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-        if (mergedTags.Length > 0) tagAnchorIncoming[KnownFields.TagKey] = mergedTags;
-        if (mergedAnchors is { Length: > 0 }) tagAnchorIncoming[KnownFields.AnchorKey] = mergedAnchors;
+        if (mergedTags.Length > 0) tagAnchorIncoming[KnownAttributes.TagKey] = mergedTags;
+        if (mergedAnchors is { Length: > 0 }) tagAnchorIncoming[KnownAttributes.AnchorKey] = mergedAnchors;
         if (tagAnchorIncoming.Count > 0)
-            mergedFields = KnownFields.Merge(mergedFields, tagAnchorIncoming);
+            mergedAttributes = KnownAttributes.Merge(mergedAttributes, tagAnchorIncoming);
 
-        FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+        AttributeExtractor.SeedTermFrequencies(mergedAttributes, tf);
 
         return (
             desc,
@@ -1470,7 +1511,7 @@ public sealed partial class ScriniaMcpTools
             mergedKeywords.Length > 0 ? mergedKeywords : null,
             tf.Count > 0 ? tf : null,
             mergedAnchors,
-            mergedFields);
+            mergedAttributes);
     }
 
     /// <summary>Case-insensitive union of two optional string arrays, preserving first-seen casing and order; drops null/whitespace.</summary>
@@ -1511,8 +1552,8 @@ public sealed partial class ScriniaMcpTools
                      k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
                 ||
                 (sa.Entry.Attributes is not null &&
-                 (MatchesFieldRef(sa.Entry.Attributes, "file", target) ||
-                  MatchesFieldRef(sa.Entry.Attributes, "ref", target))))
+                 (MatchesRefAttributeb(sa.Entry.Attributes, "file", target) ||
+                  MatchesRefAttributeb(sa.Entry.Attributes, "ref", target))))
             .Select(sa => store.FormatQualifiedName(sa.Scope, sa.Entry.Name))
             .Distinct()
             .ToList();
@@ -1525,11 +1566,11 @@ public sealed partial class ScriniaMcpTools
         return Task.FromResult(ResponseBuilder.Success(result).WithAction("searched").ToYaml());
     }
 
-    /// <summary>Reference-field match: exact value or path-suffix ("/{target}") — the fields-side
+    /// <summary>Reference-attribute match: exact value or path-suffix ("/{target}") — the attributes-side
     /// twin of the legacy file:/ref: keyword predicate in References.</summary>
-    private static bool MatchesFieldRef(Dictionary<string, string[]> fields, string key, string target)
+    private static bool MatchesRefAttributeb(Dictionary<string, string[]> attributes, string key, string target)
     {
-        foreach (var kv in fields)
+        foreach (var kv in attributes)
         {
             if (!kv.Key.Equals(key, StringComparison.OrdinalIgnoreCase)) continue;
             foreach (string v in kv.Value)
@@ -1544,8 +1585,8 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Create a bidirectional relationship between two memories. Writes a unified
-    /// <c>ref</c> field on each side (via <see cref="UpdateMeta"/>, which routes the
-    /// <c>ref:{name}</c>-shaped keyword into <c>Fields["ref"]</c> instead of a legacy keyword).
+    /// <c>ref</c> attribute on each side (via <see cref="UpdateMeta"/>, which routes the
+    /// <c>ref:{name}</c>-shaped keyword into <c>Attributes["ref"]</c> instead of a legacy keyword).
     /// </summary>
     internal async Task<string> Link(
         [Description("Source memory name.")] string from,
@@ -1553,9 +1594,9 @@ public sealed partial class ScriniaMcpTools
         [Description("Reason for the connection.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
-        // Add ref:{to} field to {from} (UpdateMeta routes the ref:-shaped keyword into Fields)
+        // Add ref:{to} attribute to {from} (UpdateMeta routes the ref:-shaped keyword into Attributes)
         string result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
-        // Add ref:{from} field to {to}
+        // Add ref:{from} attribute to {to}
         string result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
 
         if (result1.Contains("status: error") || result2.Contains("status: error"))
@@ -1584,12 +1625,10 @@ public sealed partial class ScriniaMcpTools
         {
             if (sa.Entry.FileHashes is null or { Count: 0 }) continue;
 
-            string qualName = store.FormatQualifiedName(
-                sa.Scope switch {
-                    "local" => "local",
-                    var s when s.StartsWith("local:") => s["local:".Length..],
-                    _ => sa.Scope
-                }, sa.Entry.Name);
+            // Pass sa.Scope straight in — FormatQualifiedName already handles the "local"/"local:topic"
+            // forms. The earlier pre-strip of the "local:" prefix fed it a bare topic ("api"), which
+            // it can't recognise, so topic-scoped drift rows lost their "/topic/" path.
+            string qualName = store.FormatQualifiedName(sa.Scope, sa.Entry.Name);
 
             foreach (var (path, storedHash) in sa.Entry.FileHashes)
             {
@@ -1616,7 +1655,7 @@ public sealed partial class ScriniaMcpTools
         {
             string msg = okCount > 0
                 ? $"All {okCount} code references are current. No drift detected."
-                : "No memories have code references. Use codeRefs parameter on remember to track file dependencies.";
+                : "No memories have code references. Add a file attribute on remember (attributes: { file: ['path'] }) to track file dependencies.";
             return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed").ToYaml());
         }
 
@@ -1641,8 +1680,8 @@ public sealed partial class ScriniaMcpTools
         catch { return null; }
     }
 
-    /// <summary>Lowercases attribute keys and trims/drops empty values, matching the Fields
-    /// convention (FieldExtractor lowercases keys). Null when nothing survives.</summary>
+    /// <summary>Lowercases attribute keys and trims/drops empty values, matching the Attributes
+    /// convention (AttributeExtractor lowercases keys). Null when nothing survives.</summary>
     private static Dictionary<string, string[]>? NormalizeAttributes(IReadOnlyDictionary<string, string[]>? attributes)
     {
         if (attributes is not { Count: > 0 }) return null;

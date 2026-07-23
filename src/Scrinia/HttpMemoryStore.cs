@@ -316,7 +316,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                         ContentPreview: item.Description,
                         UpdatedAt: item.UpdatedAt,
                         Attributes: item.Tags is { Length: > 0 } tags
-                            ? new Dictionary<string, string[]> { [KnownFields.TagKey] = tags }
+                            ? new Dictionary<string, string[]> { [KnownAttributes.TagKey] = tags }
                             : null);
                     result.Add(new ScopedArtifact(scope, entry));
                 }

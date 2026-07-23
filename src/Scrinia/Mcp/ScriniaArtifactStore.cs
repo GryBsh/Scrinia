@@ -528,7 +528,7 @@ internal static partial class ScriniaArtifactStore
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer();
+        var searcher = new WeightedAttributeScorer();
         var candidates = ListScoped(scopes);
         var results = searcher.Search(query, candidates, limit);
         return results.Select(r => r.Item).ToList();
@@ -539,7 +539,7 @@ internal static partial class ScriniaArtifactStore
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer();
+        var searcher = new WeightedAttributeScorer();
         return searcher.Search(query, ListScoped(scopes), limit);
     }
 
@@ -548,7 +548,7 @@ internal static partial class ScriniaArtifactStore
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer();
+        var searcher = new WeightedAttributeScorer();
         var candidates = ListScoped(scopes);
         var topics = GatherTopicInfos(scopes);
         return searcher.SearchAll(query, candidates, topics, limit);

@@ -13,7 +13,7 @@ namespace Scrinia.Core.Search;
 ///
 /// <para>Unlike the embeddings/path-segment contributors (which sum into the shared
 /// supplemental channel), this signal is consumed as its <i>own</i> fusion source in
-/// <c>WeightedFieldScorer</c> via <see cref="EntityGraphScoreContext"/> — so its mass never
+/// <c>WeightedAttributeScorer</c> via <see cref="EntityGraphScoreContext"/> — so its mass never
 /// collapses into the embedding rank under RRF fusion.</para>
 ///
 /// <para>Stateless and graceful: returns <c>null</c> when the query has no matching entity

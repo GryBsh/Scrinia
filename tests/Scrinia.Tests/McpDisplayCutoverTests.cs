@@ -40,8 +40,8 @@ public sealed class McpDisplayCutoverTests : IDisposable
         ContentPreview: "the preview",
         Attributes: new Dictionary<string, string[]>
         {
-            [KnownFields.ReviewKey] = [reviewDate.ToString("o")],
-            [KnownFields.TagKey] = ["alpha"],
+            [KnownAttributes.ReviewKey] = [reviewDate.ToString("o")],
+            [KnownAttributes.TagKey] = ["alpha"],
         });
 
     // ── New-carrier source (Attributes/ContentPreview) ─────────────────────────────────────
@@ -84,7 +84,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
             ContentPreview: "search preview text",
             Attributes: new Dictionary<string, string[]>
             {
-                [KnownFields.AnchorKey] = ["anchor-one", "anchor-two"],
+                [KnownAttributes.AnchorKey] = ["anchor-one", "anchor-two"],
             });
         var scoped = new ScopedArtifact("local", entry);
         var result = new EntryResult(scoped, 42.0);

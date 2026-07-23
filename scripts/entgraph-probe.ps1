@@ -7,11 +7,12 @@
     For each multi-hop category, runs two scrinia-bench cells that are identical except
     for the entity-graph signal:
 
-        baseline : --agent typed --rerank none
-        treatment: --agent typed --rerank none --entity-graph on
+        baseline : --agent --rerank none
+        treatment: --agent --rerank none --entity-graph on
 
-    Both carry the typed-keyword TF seeding, so the only difference is the PPR
-    supplemental score — the diff isolates the entity graph's recall contribution.
+    Both carry the agent-generated attributes (which seed the entity nodes), so the only
+    difference is the PPR supplemental score — the diff isolates the entity graph's recall
+    contribution.
 
     Runs at --top-k 200 so each result JSON captures gold ranks well past the top of the
     pool, letting the analysis report how far gold lifted. Then loads each JSON pair and
@@ -108,8 +109,8 @@ function Invoke-Cell {
 
     $benchArgs = @(
         "membench", "--data", $data, "--mode", "bm25_embeddings", "--top-k", $TopK,
-        "--category", $Category, 
-        "--agent", "typed", "--agent-provider", $Provider,
+        "--category", $Category,
+        "--agent", "--agent-provider", $Provider,
         "--agent-base-url", $AgentBaseUrl, "--agent-model", $AgentModel,
         "--agent-api-key", $env:LLMACTL_KEY,
         "--output", $out

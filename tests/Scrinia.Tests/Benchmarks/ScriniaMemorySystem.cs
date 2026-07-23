@@ -17,7 +17,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
         foreach (var fact in corpus)
         {
             string name = $"/{fact.Topic}/{fact.Key}";
-            await _tools.Store(
+            await _tools.Remember(
                 [fact.Content],
                 name,
                 description: fact.Question,
@@ -45,7 +45,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
             // Show the top result to simulate actual retrieval
             if (names.Count > 0)
             {
-                string showResult = await _tools.Show(names[0]);
+                string showResult = await _tools.Recall(names[0]);
                 charsConsumed += showResult.Length;
                 if (!showResult.StartsWith("Error:"))
                     foundContent.Add(showResult);
@@ -78,7 +78,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     public override async Task UpdateFactAsync(BenchmarkFact updated)
     {
         string name = $"/{updated.Topic}/{updated.Key}";
-        await _tools.Store(
+        await _tools.Remember(
             [updated.Content],
             name,
             description: updated.Question,

@@ -8,7 +8,7 @@ namespace Scrinia.Core.Embeddings;
 /// rather than the entire corpus, making semantic search efficient for large stores.
 ///
 /// Flow:
-/// 1. WeightedFieldScorer produces BM25+field scored candidates
+/// 1. WeightedAttributeScorer produces BM25+attribute scored candidates
 /// 2. This contributor receives those candidates and embeds only them
 /// 3. Cosine similarity scores are returned as supplemental scores
 ///

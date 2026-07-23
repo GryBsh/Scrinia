@@ -4,7 +4,7 @@ namespace Scrinia.Core.Search;
 /// Bipartite entity graph + Personalized PageRank, used by the entity-graph retrieval
 /// signal (<see cref="EntityGraphScoreContributor"/>). Nodes are <b>memories</b> (by
 /// scoped key) and <b>entities</b> — attribute <c>(key, value)</c> nodes, one per distinct
-/// tag: any field/keyword key, not just person/place/org/thing/topic; an edge links a memory
+/// tag: any attribute/keyword key, not just person/place/org/thing/topic; an edge links a memory
 /// to each entity it was tagged with.
 ///
 /// <para><b>What it's for:</b> the keyword+vector pool buries memories that share little
@@ -101,22 +101,22 @@ public sealed class EntityGraph
     }
 
     /// <summary>
-    /// Fields-side sibling of <see cref="ParseTypedEntities"/>: yields (key, value) pairs for
-    /// <b>every</b> field key, uniformly — not just <c>KnownFields.EntityKeys</c> — so any
+    /// Attributes-side sibling of <see cref="ParseTypedEntities"/>: yields (key, value) pairs for
+    /// <b>every</b> attribute key, uniformly — not just <c>KnownAttributes.EntityKeys</c> — so any
     /// attribute (e.g. co-<c>file:</c>/co-<c>status:</c> memories) can become a graph
-    /// association, not only the five blessed entity keys. Type is the lowercased field key,
+    /// association, not only the five blessed entity keys. Type is the lowercased attribute key,
     /// values lowercased and kept whole. Together with <see cref="ParseTypedEntities"/> they
-    /// give Build its dual-read: legacy typed keywords ∪ unified fields.
+    /// give Build its dual-read: legacy typed keywords ∪ unified attributes.
     ///
     /// <para><see cref="Build"/> gives each of these (type, value) tuples its own <c>type:value</c>
     /// node, so arbitrary keys never cross-link on a shared value (<c>status:done</c> and
     /// <c>outcome:done</c> are distinct nodes; so are <c>tag:paris</c> and <c>place:paris</c>).</para>
     /// </summary>
-    public static IEnumerable<(string Type, string Value)> ParseEntityFields(
-        IReadOnlyDictionary<string, string[]>? fields)
+    public static IEnumerable<(string Type, string Value)> ParseEntityAttributes(
+        IReadOnlyDictionary<string, string[]>? attributes)
     {
-        if (fields is null) yield break;
-        foreach (var kv in fields)
+        if (attributes is null) yield break;
+        foreach (var kv in attributes)
         {
             string type = kv.Key.ToLowerInvariant();
             foreach (string raw in kv.Value)
@@ -130,25 +130,25 @@ public sealed class EntityGraph
     /// <summary>
     /// Builds a graph from a set of <c>(memory, keywords)</c> docs. Delegates to the
     /// <see cref="Build(IEnumerable{ValueTuple{string, IReadOnlyList{string}, IReadOnlyDictionary{string, string[]}}})"/>
-    /// 3-tuple overload with no fields, so behavior for legacy typed-keyword-only callers is
+    /// 3-tuple overload with no attributes, so behavior for legacy typed-keyword-only callers is
     /// unchanged.
     /// </summary>
     public static EntityGraph Build(IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords)> docs)
         => Build(docs?.Select(d => (d.DocKey, d.Keywords, (IReadOnlyDictionary<string, string[]>?)null)) ?? []);
 
     /// <summary>
-    /// Builds a graph from a set of <c>(memory, keywords, fields)</c> docs, applying
+    /// Builds a graph from a set of <c>(memory, keywords, attributes)</c> docs, applying
     /// <b>uniform <c>type:value</c> node identity</b>: every <c>(type, value)</c> pair is its own
     /// node, distinct by construction — no conflict pass, no bare-value folding. A value shared
     /// across unrelated keys (<c>status:done</c> vs <c>outcome:done</c>; <c>person:paris</c> vs
     /// <c>place:paris</c>) is never one node, so unrelated keys never falsely cross-link on a
     /// shared value. Per-doc tags are the union of <see cref="ParseTypedEntities"/> (legacy typed
-    /// keywords) and <see cref="ParseEntityFields"/> (unified Fields), so a doc carrying either or
+    /// keywords) and <see cref="ParseEntityAttributes"/> (unified Attributes), so a doc carrying either or
     /// both sources graphs identically. Use this rather than per-doc <see cref="AddDoc"/> whenever
-    /// the input carries typed keywords or fields, so node identity is applied consistently.
+    /// the input carries typed keywords or attributes, so node identity is applied consistently.
     /// </summary>
     public static EntityGraph Build(
-        IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords, IReadOnlyDictionary<string, string[]>? Fields)> docs)
+        IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords, IReadOnlyDictionary<string, string[]>? Attributes)> docs)
     {
         var graph = new EntityGraph();
         if (docs is null) return graph;
@@ -156,12 +156,12 @@ public sealed class EntityGraph
         // Uniform node identity: every (type, value) is the node "type:value". No conflict-split
         // pass — a value under two different keys (person:paris vs place:paris; status:done vs
         // outcome:done) is two distinct nodes by construction, so unrelated keys never cross-link.
-        foreach (var (docKey, keywords, fields) in docs)
+        foreach (var (docKey, keywords, attributes) in docs)
         {
             if (string.IsNullOrWhiteSpace(docKey)) continue;
             var nodeKeys = new List<string>();
             foreach (var (type, value) in ParseTypedEntities(keywords)) nodeKeys.Add($"{type}:{value}");
-            foreach (var (type, value) in ParseEntityFields(fields)) nodeKeys.Add($"{type}:{value}");
+            foreach (var (type, value) in ParseEntityAttributes(attributes)) nodeKeys.Add($"{type}:{value}");
             if (nodeKeys.Count == 0) continue;
             graph.AddDoc(docKey, nodeKeys);
         }

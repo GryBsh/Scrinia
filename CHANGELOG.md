@@ -99,15 +99,20 @@ and all assembly attributes.
   existing callers that don't supply `anchors` see no behavior change.
 - **Bench-side agent harness** under
   `benchmarks/Scrinia.Retrieval.Benchmarks/Agent/` — an `IAgentHarness`
-  abstraction with `GenerateAnchorsAsync` / `RewriteQueryAsync` /
-  `GenerateHypotheticalAsync` ops, wired into the bench's ingest and query
-  paths. New CLI flags: `--agent <off|anchors|rewrite|hyde|all>`,
+  abstraction with a single `GenerateIngestAsync` op that, given a doc's
+  content, produces the same attributes map and keywords a production agent hands the
+  `remember` tool — a typed `attributes` map and freeform `keywords` — in one
+  LLM call. `ScriniaRetriever` writes the attributes into `ArtifactEntry.Attributes`
+  (feeding the field scorer + entity graph) and merges the keywords with its
+  mechanically-extracted ones (prod-faithful TF weights: attributes +3, agent
+  keywords +5). New CLI flags: bare `--agent` (on/off — required `--agent-provider`
+  when present),
   `--agent-provider <openai|anthropic|gemini|ollama|claude-cli|codex-cli|copilot-cli>`,
-  `--agent-base-url`, `--agent-model`, `--agent-api-key`. Per-op response
-  caching under `benchmarks/.../cache/agent-{provider}-{model}.ndjson` so
-  reruns hit the cache and only first-pass calls hit the LLM. See
-  [`docs/research/agent-harness.md`](research/agent-harness.md) for the full
-  design including the anti-data-leakage prompt discipline.
+  `--agent-base-url`, `--agent-model`, `--agent-api-key`. Response caching under
+  `benchmarks/.../cache/agent-{provider}-{model}.ndjson` so reruns hit the cache
+  and only first-pass calls hit the LLM. The op is ingest-only — there is no
+  query-side transform. The prompt is built from document content only
+  (anti-data-leakage: it never sees the gold-answer set or the question dataset).
 - The LLM clients themselves moved to
   `benchmarks/Scrinia.Retrieval.Benchmarks/Llm/Providers/`:
   `IBenchLlmClient`, `OpenAiCompatibleBenchLlmClient` (covers

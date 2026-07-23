@@ -26,7 +26,7 @@ public sealed class PathSegmentScoreContributor : ISearchScoreContributor
     private readonly double _weight;
 
     /// <param name="weight">Multiplier on the path-token intersection count. Default
-    /// matches the order of magnitude of Description's field-score (10) and sits below
+    /// matches the order of magnitude of Description's attribute-score (10) and sits below
     /// curated keyword hits (12–40); tune via bench sweeps. A weight of 0 disables
     /// scoring entirely without removing the contributor from the pipeline.</param>
     public PathSegmentScoreContributor(double weight = DefaultWeight)

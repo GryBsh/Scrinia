@@ -3,7 +3,7 @@ namespace Scrinia.Core.Embeddings;
 /// <summary>
 /// Slices arbitrary text into overlapping fixed-size windows for chunked embedding. Each
 /// window becomes one vector in the store, keyed by <c>chunkIndex</c>; search-time dedup by
-/// memory name (see <see cref="Search.WeightedFieldScorer"/>) collapses chunk matches back to a
+/// memory name (see <see cref="Search.WeightedAttributeScorer"/>) collapses chunk matches back to a
 /// single result per memory while letting the score come from whichever window matched best.
 ///
 /// <para>Char-based rather than token-aware: avoids a tokenizer dependency and produces

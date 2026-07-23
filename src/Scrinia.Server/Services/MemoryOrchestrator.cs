@@ -21,9 +21,9 @@ public static class MemoryOrchestrator
         // Text analysis (single-pass)
         var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
 
-        // Unified fields: key:value-shaped agent keywords route to Fields; only plain
+        // Unified attributes: key:value-shaped agent keywords route to Attributes; only plain
         // keywords participate in the keyword merge.
-        var (routedFields, plainKeywords) = FieldExtractor.RouteKeywords(req.Keywords);
+        var (routedAttributes, plainKeywords) = AttributeExtractor.RouteKeywords(req.Keywords);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(plainKeywords, autoKeywords);
         // Typed keywords (prefix:value) seed their tokenized VALUE so the parts are
         // BM25-matchable; see TextAnalysis.IndexTokensForKeyword.
@@ -37,9 +37,9 @@ public static class MemoryOrchestrator
             }
         }
 
-        var refFields = FieldExtractor.ExtractRefFields(joined);
-        var fields = KnownFields.Merge(KnownFields.Merge(routedFields, FieldExtractor.Extract(joined)), refFields);
-        FieldExtractor.SeedTermFrequencies(fields, tf);
+        var refAttributes = AttributeExtractor.ExtractRefAttributes(joined);
+        var attributes = KnownAttributes.Merge(KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)), refAttributes);
+        AttributeExtractor.SeedTermFrequencies(attributes, tf);
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
             ? TextAnalysis.ComputeChunkEntries(store, req.Content)
@@ -68,8 +68,8 @@ public static class MemoryOrchestrator
             // DTO field, not an entry member). EphemeralEntry carries no other request-supplied
             // attribute source on this path, so tag is the only carrier to route here.
             var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-            if (req.Tags is { Length: > 0 }) ephIncoming[KnownFields.TagKey] = req.Tags;
-            var ephFields = ephIncoming.Count > 0 ? KnownFields.Merge(fields, ephIncoming) : fields;
+            if (req.Tags is { Length: > 0 }) ephIncoming[KnownAttributes.TagKey] = req.Tags;
+            var ephAttributes = ephIncoming.Count > 0 ? KnownAttributes.Merge(attributes, ephIncoming) : attributes;
 
             var ephEntry = new EphemeralEntry(
                 Name: key,
@@ -82,7 +82,7 @@ public static class MemoryOrchestrator
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
-                Attributes: ephFields);
+                Attributes: ephAttributes);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -126,7 +126,7 @@ public static class MemoryOrchestrator
             req.Tags, fileKeys: null, parsedReviewAfter,
             string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen, anchors: null);
         if (carrier.Count > 0)
-            fields = KnownFields.Merge(fields, carrier);
+            attributes = KnownAttributes.Merge(attributes, carrier);
 
         var entry = new ArtifactEntry(
             Name: subject,
@@ -139,7 +139,7 @@ public static class MemoryOrchestrator
             TermFrequencies: tf.Count > 0 ? tf : null,
             UpdatedAt: updatedAt,
             ChunkEntries: chunkEntries,
-            Attributes: fields);
+            Attributes: attributes);
 
         // Keyword/file safety-net: Forward folds recognized key:value keywords and FileHashes->file
         // into Attributes. (tag/review were already folded into Attributes from the request params
@@ -222,10 +222,10 @@ public static class MemoryOrchestrator
 
             string contentPreview = existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText);
 
-            var incoming = KnownFields.Merge(
-                FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
-            var mergedFields = KnownFields.Merge(existingEph?.Attributes, incoming);
-            FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+            var incoming = KnownAttributes.Merge(
+                AttributeExtractor.Extract(content), AttributeExtractor.ExtractRefAttributes(content));
+            var mergedAttributes = KnownAttributes.Merge(existingEph?.Attributes, incoming);
+            AttributeExtractor.SeedTermFrequencies(mergedAttributes, tf);
 
             var ephEntry = new EphemeralEntry(
                 Name: key,
@@ -238,7 +238,7 @@ public static class MemoryOrchestrator
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ChunkEntries: updatedChunks,
-                Attributes: mergedFields);
+                Attributes: mergedAttributes);
 
             store.RememberEphemeral(key, ephEntry);
             qualifiedName = $"~{key}";
@@ -263,16 +263,16 @@ public static class MemoryOrchestrator
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
 
-            var incoming = KnownFields.Merge(
-                FieldExtractor.Extract(content), FieldExtractor.ExtractRefFields(content));
-            var mergedFields = KnownFields.Merge(existingEntry?.Attributes, incoming);
-            FieldExtractor.SeedTermFrequencies(mergedFields, tf);
+            var incoming = KnownAttributes.Merge(
+                AttributeExtractor.Extract(content), AttributeExtractor.ExtractRefAttributes(content));
+            var mergedAttributes = KnownAttributes.Merge(existingEntry?.Attributes, incoming);
+            AttributeExtractor.SeedTermFrequencies(mergedAttributes, tf);
 
             AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
             var carrier = AttributeMigration.BuildCarrierAttributes(
                 tags: null, fileKeys: null, existingReviewDate, existingReviewWhen, anchors: null);
             if (carrier.Count > 0)
-                mergedFields = KnownFields.Merge(mergedFields, carrier);
+                mergedAttributes = KnownAttributes.Merge(mergedAttributes, carrier);
 
             var entry = new ArtifactEntry(
                 Name: subject,
@@ -285,7 +285,7 @@ public static class MemoryOrchestrator
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: DateTimeOffset.UtcNow,
                 ChunkEntries: updatedChunks,
-                Attributes: mergedFields);
+                Attributes: mergedAttributes);
 
             // Keyword/file safety-net: Forward folds recognized key:value keywords and FileHashes->file
             // into Attributes. Review carried over from existingEntry is already folded into Attributes

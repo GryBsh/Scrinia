@@ -172,7 +172,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     /// <summary>
     /// Tunable ranker weights — read by <see cref="SearchAll(string, string?, int)"/>
-    /// when constructing the underlying <see cref="WeightedFieldScorer"/>. Set at
+    /// when constructing the underlying <see cref="WeightedAttributeScorer"/>. Set at
     /// construction; <c>WorkspaceSetup.Configure</c> passes the workspace's
     /// <c>Scrinia:Search:*</c> config-derived values.
     /// </summary>
@@ -1302,7 +1302,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer(RankerOptions);
+        var searcher = new WeightedAttributeScorer(RankerOptions);
         var candidates = ListScoped(scopes);
         // Derive topic infos directly from the candidates we already loaded above instead of
         // calling GatherTopicInfos — which would LoadIndex every topic scope a second time.
@@ -1378,7 +1378,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer(RankerOptions);
+        var searcher = new WeightedAttributeScorer(RankerOptions);
         var candidates = ListScoped(scopes, excludeTopics);
         // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
         // candidates, so building topic infos from this filtered set automatically gives us
@@ -1403,7 +1403,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searcher = new WeightedFieldScorer(RankerOptions);
+        var searcher = new WeightedAttributeScorer(RankerOptions);
         var candidates = ListScoped(scopes, excludeTopics);
         // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
         // candidates, so building topic infos from this filtered set automatically gives us

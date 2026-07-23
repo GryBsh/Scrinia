@@ -4,9 +4,9 @@ using Scrinia.Core.Search;
 namespace Scrinia.Core;
 
 /// <summary>
-/// Automatic memory maintenance: creates bidirectional ref links (via <c>Fields["ref"]</c>)
+/// Automatic memory maintenance: creates bidirectional ref links (via <c>Attributes["ref"]</c>)
 /// when content references other memories, and flags orphan memories with no inbound
-/// references (dual-reading legacy <c>ref:</c> keywords alongside the ref field).
+/// references (dual-reading legacy <c>ref:</c> keywords alongside the ref attribute).
 /// </summary>
 public sealed class MaintenanceEventSink : IMemoryEventSink
 {
@@ -43,7 +43,7 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         // 1. Extract memory references from content
         var memoryRefs = ReferenceExtractor.ExtractMemoryRefs(content);
 
-        // 2. For each referenced memory that exists, add the source to Fields["ref"] on the target
+        // 2. For each referenced memory that exists, add the source to Attributes["ref"] on the target
         foreach (var refName in memoryRefs)
         {
             // Skip self-references
@@ -59,16 +59,16 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
 
                 if (targetEntry is null) continue; // referenced memory doesn't exist
 
-                // Write the ref FIELD (unified attributes) — no more ref: keyword emission.
+                // Write the ref attribute (unified attributes) — no more ref: keyword emission.
                 string[] existingRefs = targetEntry.Attributes is not null
                     && targetEntry.Attributes.TryGetValue("ref", out var r) ? r : [];
                 if (existingRefs.Contains(qualifiedName, StringComparer.OrdinalIgnoreCase)
                     || targetEntry.Keywords?.Contains($"ref:{qualifiedName}", StringComparer.OrdinalIgnoreCase) == true)
                     continue; // already linked (either shape)
 
-                var updatedFields = KnownFields.Merge(
+                var updatedAttributes = KnownAttributes.Merge(
                     targetEntry.Attributes, new() { ["ref"] = [qualifiedName] });
-                store.Upsert(targetEntry with { Attributes = updatedFields }, targetScope);
+                store.Upsert(targetEntry with { Attributes = updatedAttributes }, targetScope);
             }
             catch
             {

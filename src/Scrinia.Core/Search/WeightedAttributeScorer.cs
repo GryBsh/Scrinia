@@ -3,32 +3,32 @@ using Scrinia.Core.Models;
 namespace Scrinia.Core.Search;
 
 /// <summary>
-/// Linear-scan weighted field scorer with multi-term support and BM25 content search.
+/// Linear-scan weighted attribute scorer with multi-term support and BM25 content search.
 ///
 /// Multi-term queries split on whitespace; each term is scored independently
 /// and per-term max scores are summed. This ensures "DI patterns" ranks entries
 /// matching both terms higher than entries matching only one.
 ///
-/// Hybrid scoring: finalScore = weightedFieldScore + bm25Score * 5.0
+/// Hybrid scoring: finalScore = weightedAttributeScore + bm25Score * 5.0
 ///
 /// Entry scoring (per term):
 ///
-/// Match type                  Score
-/// ─────────────────────       ─────
-/// Exact name match             100
-/// Field key:value pair exact    50
-/// Keyword exact match           40
-/// Field value exact match       40
-/// Name starts with              30
-/// Name contains                 20
-/// Keyword contains              12
-/// Field value contains          12
-/// Content preview contains       5
+/// Match type                    Score
+/// ─────────────────────         ─────
+/// Exact name match               100
+/// Attribute key:value pair exact  50
+/// Keyword exact match             40
+/// Attribute value exact match     40
+/// Name starts with                30
+/// Name contains                   20
+/// Keyword contains                12
+/// Attribute value contains        12
+/// Content preview contains         5
 ///
 /// Tags, retrieval anchors, and description are no longer scored directly — read-time
 /// forward-fill (<see cref="Scrinia.Core.Migration.AttributeMigration"/>) promotes tags into
-/// Fields["tag"] and anchors into Fields["anchor"] before scoring ever runs, so they score as
-/// ordinary Field rows above (P6.5 cleanup: Fields is populated everywhere, so the legacy
+/// Attributes["tag"] and anchors into Attributes["anchor"] before scoring ever runs, so they score
+/// as ordinary attribute rows above (P6.5 cleanup: Attributes is populated everywhere, so the legacy
 /// direct-carrier rows and the key:value-in-Keywords dual-read were retired).
 ///
 /// Topic scoring (per term):
@@ -46,22 +46,22 @@ namespace Scrinia.Core.Search;
 /// All matching is case-insensitive. Results sorted by score desc, then newest first.
 /// Entries without TF data (v2 index) get bm25Score=0 (graceful degradation).
 /// </summary>
-internal sealed class WeightedFieldScorer
+internal sealed class WeightedAttributeScorer
 {
     private const double Bm25Weight = 5.0;
 
     /// <summary>
     /// Ranker composition weights. <see cref="SearchAll(string, IEnumerable{ScopedArtifact},
     /// IEnumerable{TopicInfo}, int, IReadOnlyDictionary{string, double}?)"/> combines
-    /// relevance (field + BM25 + supplemental) with exp-decay recency additively per
+    /// relevance (attribute + BM25 + supplemental) with exp-decay recency additively per
     /// <see cref="RankerOptions"/>. The legacy <c>Search</c> method does not apply
     /// recency — only SearchAll does.
     /// </summary>
     private readonly RankerOptions _options;
 
-    public WeightedFieldScorer() : this(RankerOptions.Default) { }
+    public WeightedAttributeScorer() : this(RankerOptions.Default) { }
 
-    public WeightedFieldScorer(RankerOptions options)
+    public WeightedAttributeScorer(RankerOptions options)
     {
         _options = options ?? RankerOptions.Default;
     }
@@ -88,9 +88,9 @@ internal sealed class WeightedFieldScorer
 
         foreach (var candidate in candidateList)
         {
-            double fieldScore = ScoreEntry(query, candidate.Entry);
+            double attributeScore = ScoreEntry(query, candidate.Entry);
             double bm25Score = ComputeBm25(queryTerms, candidate.Entry, avgDocLen, corpusSize, docFreqs);
-            double total = fieldScore + bm25Score * Bm25Weight;
+            double total = attributeScore + bm25Score * Bm25Weight;
             if (total > 0)
                 scored.Add(new ScoredArtifact(candidate, total));
         }
@@ -119,7 +119,7 @@ internal sealed class WeightedFieldScorer
     /// Supplemental score keys: "{scope}|{name}" for entries, "{scope}|{name}|{chunkIndex}" for chunks.
     ///
     /// BM25 scores are normalized to 0–100 (max-norm: raw / corpus-max) before combining with
-    /// field scores. Max-norm (not min-max) so a single/weakest positive match still surfaces —
+    /// attribute scores. Max-norm (not min-max) so a single/weakest positive match still surfaces —
     /// min-max would zero out a candidate that is simultaneously the min and the max.
     /// Multi-term intersection bonus of (matchedTerms - 1) * 15 rewards queries matching multiple terms.
     /// Uses a min-heap (size K) for top-K selection instead of full sort for efficiency.
@@ -167,7 +167,7 @@ internal sealed class WeightedFieldScorer
             }
         }
 
-        // ── Pass 2: Combine normalized BM25 with field scores, deduplicate inline ──
+        // ── Pass 2: Combine normalized BM25 with attribute scores, deduplicate inline ──
         // Track best score per memory for deduplication during scoring. Relevance gates
         // the composition (recency is a bump, not a standalone signal) so entries with
         // zero text match never surface even if they're fresh.
@@ -192,13 +192,13 @@ internal sealed class WeightedFieldScorer
             for (int i = 0; i < candidateList.Count; i++)
             {
                 var candidate = candidateList[i];
-                double fieldScore = ScoreEntry(query, candidate.Entry);
+                double attributeScore = ScoreEntry(query, candidate.Entry);
                 double normalizedBm25 = maxBm25 > 0 ? entryBm25[i] / maxBm25 * 100.0 : 0;
                 double supplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
                 // Entity-graph PPR is its own additive source (keyed at entry level), not folded
                 // into supplemental — so it stays a distinct signal under any fusion mode.
                 double entityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
-                TryInsert(candidate, fieldScore + normalizedBm25 * Bm25Weight + supplemental + entityGraph,
+                TryInsert(candidate, attributeScore + normalizedBm25 * Bm25Weight + supplemental + entityGraph,
                     total => new EntryResult(candidate, total));
             }
 
@@ -206,12 +206,12 @@ internal sealed class WeightedFieldScorer
             {
                 var candidate = candidateList[candidateIdx];
                 var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
-                double chunkFieldScore = ScoreChunkEntry(query, chunk, candidate.Entry);
+                double chunkAttributeScore = ScoreChunkEntry(query, chunk, candidate.Entry);
                 double normalizedChunkBm25 = maxBm25 > 0 ? rawBm25 / maxBm25 * 100.0 : 0;
                 double chunkSupplemental = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
                 // Entity scores are entry-level; reuse the parent's value for chunk cells.
                 double chunkEntityGraph = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
-                TryInsert(candidate, chunkFieldScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental + chunkEntityGraph,
+                TryInsert(candidate, chunkAttributeScore + normalizedChunkBm25 * Bm25Weight + chunkSupplemental + chunkEntityGraph,
                     total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
             }
         }
@@ -351,11 +351,11 @@ internal sealed class WeightedFieldScorer
             }
         }
 
-        // Unified-field matching. Compound "key:value" query terms hitting a (key, value)
+        // Attribute matching. Compound "key:value" query terms hitting a (key, value)
         // pair score 50 (tag-exact parity); a term equal to a value scores 40 (keyword-exact
         // parity); contained in a value, 12. Explicit OrdinalIgnoreCase everywhere: dictionary
-        // comparers don't survive JSON round-trips. Fields is now populated everywhere (read-time
-        // forward-fill promotes legacy Tags/RetrievalAnchors/key:value-shaped Keywords into Fields
+        // comparers don't survive JSON round-trips. Attributes is now populated everywhere (read-time
+        // forward-fill promotes legacy Tags/RetrievalAnchors/key:value-shaped Keywords into Attributes
         // before this ever runs — see AttributeMigration.Forward), so this is the sole tag/keyword
         // -pair scorer; the old direct key:value-in-Keywords parse here was retired in P6.5.
         int sep = term.IndexOf(':');
@@ -364,13 +364,13 @@ internal sealed class WeightedFieldScorer
 
         if (entry.Attributes is { Count: > 0 })
         {
-            foreach (var field in entry.Attributes)
+            foreach (var attr in entry.Attributes)
             {
-                double w = KnownFields.AttributeWeight(field.Key);   // curation knob; 1.0 at parity
-                foreach (string value in field.Value)
+                double w = KnownAttributes.AttributeWeight(attr.Key);   // curation knob; 1.0 at parity
+                foreach (string value in attr.Value)
                 {
                     if (termKey is not null
-                        && field.Key.Equals(termKey, StringComparison.OrdinalIgnoreCase)
+                        && attr.Key.Equals(termKey, StringComparison.OrdinalIgnoreCase)
                         && value.Equals(termValue, StringComparison.OrdinalIgnoreCase))
                         score = Math.Max(score, 50 * w);
                     else if (value.Equals(term, StringComparison.OrdinalIgnoreCase))
@@ -528,7 +528,7 @@ internal sealed class WeightedFieldScorer
         }
 
         // Parent tags at half weight (20 exact, 6 contains) — sourced from Attributes["tag"] (Tags->Attributes cutover)
-        if (parentEntry.Attributes is { } pf && pf.TryGetValue(KnownFields.TagKey, out var parentTags) && parentTags is not null)
+        if (parentEntry.Attributes is { } pf && pf.TryGetValue(KnownAttributes.TagKey, out var parentTags) && parentTags is not null)
         {
             foreach (string tag in parentTags)
             {
@@ -573,7 +573,7 @@ internal sealed class WeightedFieldScorer
     private const double RrfK = 60.0;
 
     /// <summary>
-    /// Reciprocal Rank Fusion across the retrieval signals — field-match score, raw BM25,
+    /// Reciprocal Rank Fusion across the retrieval signals — attribute-match score, raw BM25,
     /// supplemental (embedding) score, and the entity-graph PPR score. Builds a unified cell
     /// list across entry-level and chunk-level candidates, ranks each cell independently within
     /// each source, then sums <c>1/(k + rank)</c> contributions. Cells with zero score in a
@@ -598,7 +598,7 @@ internal sealed class WeightedFieldScorer
         // computed eagerly because we need them to build per-source rankings before any single
         // cell can be fused. Entity-graph scores are entry-level (keyed "{scope}|{name}"), so
         // chunk cells reuse their parent's value.
-        var fieldScores = new double[cellCount];
+        var attributeScores = new double[cellCount];
         var bm25Scores = new double[cellCount];
         var supplementals = new double[cellCount];
         var entityScores = new double[cellCount];
@@ -606,7 +606,7 @@ internal sealed class WeightedFieldScorer
         for (int i = 0; i < candidateList.Count; i++)
         {
             var candidate = candidateList[i];
-            fieldScores[i] = ScoreEntry(query, candidate.Entry);
+            attributeScores[i] = ScoreEntry(query, candidate.Entry);
             bm25Scores[i] = entryBm25[i];
             supplementals[i] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, supplementalScores);
             entityScores[i] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
@@ -618,13 +618,13 @@ internal sealed class WeightedFieldScorer
             var (candidateIdx, chunkIdx, rawBm25) = chunkBm25List[ci];
             var candidate = candidateList[candidateIdx];
             var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
-            fieldScores[idx] = ScoreChunkEntry(query, chunk, candidate.Entry);
+            attributeScores[idx] = ScoreChunkEntry(query, chunk, candidate.Entry);
             bm25Scores[idx] = rawBm25;
             supplementals[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, chunkIdx, supplementalScores);
             entityScores[idx] = GetSupplemental(candidate.Scope, candidate.Entry.Name, null, entityGraphScores);
         }
 
-        int[] rankField = ComputeRanks(fieldScores);
+        int[] rankAttribute = ComputeRanks(attributeScores);
         int[] rankBm25 = ComputeRanks(bm25Scores);
         int[] rankSupp = ComputeRanks(supplementals);
         int[] rankEntity = ComputeRanks(entityScores);
@@ -635,16 +635,16 @@ internal sealed class WeightedFieldScorer
             var (candidateIdx, chunkIdx, _) = chunkBm25List[ci];
             var candidate = candidateList[candidateIdx];
             var chunk = candidate.Entry.ChunkEntries!.First(c => c.ChunkIndex == chunkIdx);
-            double rrf = RrfScore(fieldScores[idx], bm25Scores[idx], supplementals[idx], entityScores[idx],
-                rankField[idx], rankBm25[idx], rankSupp[idx], rankEntity[idx]);
+            double rrf = RrfScore(attributeScores[idx], bm25Scores[idx], supplementals[idx], entityScores[idx],
+                rankAttribute[idx], rankBm25[idx], rankSupp[idx], rankEntity[idx]);
             if (rrf <= 0) continue;
             tryInsert(candidate, rrf, total => new ChunkEntryResult(candidate, chunk, candidate.Entry.ChunkCount, total));
         }
 
         for (int i = 0; i < candidateList.Count; i++)
         {
-            double rrf = RrfScore(fieldScores[i], bm25Scores[i], supplementals[i], entityScores[i],
-                rankField[i], rankBm25[i], rankSupp[i], rankEntity[i]);
+            double rrf = RrfScore(attributeScores[i], bm25Scores[i], supplementals[i], entityScores[i],
+                rankAttribute[i], rankBm25[i], rankSupp[i], rankEntity[i]);
             if (rrf <= 0) continue;
             var candidate = candidateList[i];
             tryInsert(candidate, rrf, total => new EntryResult(candidate, total));
@@ -652,11 +652,11 @@ internal sealed class WeightedFieldScorer
     }
 
     private static double RrfScore(
-        double fieldScore, double bm25, double supplemental, double entityGraph,
-        int rankField, int rankBm25, int rankSupp, int rankEntity)
+        double attributeScore, double bm25, double supplemental, double entityGraph,
+        int rankAttribute, int rankBm25, int rankSupp, int rankEntity)
     {
         double rrf = 0;
-        if (fieldScore > 0) rrf += 1.0 / (RrfK + rankField);
+        if (attributeScore > 0) rrf += 1.0 / (RrfK + rankAttribute);
         if (bm25 > 0) rrf += 1.0 / (RrfK + rankBm25);
         if (supplemental > 0) rrf += 1.0 / (RrfK + rankSupp);
         if (entityGraph > 0) rrf += 1.0 / (RrfK + rankEntity);

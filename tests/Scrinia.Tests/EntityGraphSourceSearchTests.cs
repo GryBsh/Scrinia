@@ -8,7 +8,7 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Exercises the entity-graph score channel end-to-end through the public
 /// <see cref="FileMemoryStore.SearchAll(string, string?, int, IReadOnlyDictionary{string, double}?, IReadOnlyDictionary{string, double}?)"/>
-/// (WeightedFieldScorer is internal). Confirms the entity source is a distinct fusion source
+/// (WeightedAttributeScorer is internal). Confirms the entity source is a distinct fusion source
 /// under both Sum and RRF, and that an empty/null entity dict is inert (no-regression guard).
 /// </summary>
 public sealed class EntityGraphSourceSearchTests : IDisposable

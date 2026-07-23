@@ -22,7 +22,7 @@ public sealed class ChunkIndexingTests
         using var scope = new TestHelpers.StoreScope();
         string[] chunks = ["## Auth\nOAuth2 JWT flow.", "## Users\nCRUD endpoint roles."];
 
-        await Tools().Store(chunks, "chunk-idx");
+        await Tools().Remember(chunks, "chunk-idx");
 
         var entries = ScriniaArtifactStore.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "chunk-idx").Which;
@@ -39,7 +39,7 @@ public sealed class ChunkIndexingTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        await Tools().Store(["Just one chunk."], "single-idx");
+        await Tools().Remember(["Just one chunk."], "single-idx");
 
         var entries = ScriniaArtifactStore.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "single-idx").Which;
@@ -56,7 +56,7 @@ public sealed class ChunkIndexingTests
             "PostgreSQL database tables indexes queries transactions"
         ];
 
-        await Tools().Store(chunks, "distinct-kw");
+        await Tools().Remember(chunks, "distinct-kw");
 
         var entries = ScriniaArtifactStore.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "distinct-kw").Which;
@@ -78,7 +78,7 @@ public sealed class ChunkIndexingTests
     public async Task Append_AddsChunkEntry()
     {
         using var scope = new TestHelpers.StoreScope();
-        await Tools().Store(["Initial single chunk."], "append-ce");
+        await Tools().Remember(["Initial single chunk."], "append-ce");
 
         await Tools().Append("Appended new chunk with unique xylophone content.", "append-ce");
 
@@ -96,7 +96,7 @@ public sealed class ChunkIndexingTests
     {
         using var scope = new TestHelpers.StoreScope();
         string[] origChunks = ["Chunk alpha content.", "Chunk bravo content."];
-        await Tools().Store(origChunks, "append-multi");
+        await Tools().Remember(origChunks, "append-multi");
 
         await Tools().Append("Chunk charlie content.", "append-multi");
 
@@ -121,7 +121,7 @@ public sealed class ChunkIndexingTests
             "Authentication OAuth2 bearer tokens JWT refresh flow login",
             "Xylophone marimba vibraphone percussion instruments musical"
         ];
-        await Tools().Store(chunks, "search-chunk");
+        await Tools().Remember(chunks, "search-chunk");
 
         // Search for a keyword unique to chunk 2
         var results = ScriniaArtifactStore.SearchAll("xylophone");
@@ -139,7 +139,7 @@ public sealed class ChunkIndexingTests
         using var scope = new TestHelpers.StoreScope();
         // Store with a name and chunk content that both match the query
         string[] chunks = ["Alpha content here.", "Beta content here."];
-        await Tools().Store(chunks, "dedup-test", description: "alpha beta test");
+        await Tools().Remember(chunks, "dedup-test", description: "alpha beta test");
 
         var results = ScriniaArtifactStore.SearchAll("alpha");
         // Should only have one result for dedup-test (not both entry + chunk)
@@ -159,7 +159,7 @@ public sealed class ChunkIndexingTests
             "Authentication OAuth2 bearer tokens refresh",
             "Xylophone marimba vibraphone percussion musical"
         ];
-        await Tools().Store(chunks, "label-test");
+        await Tools().Remember(chunks, "label-test");
 
         string output = await Tools().Search("xylophone");
         output.Should().Contain("[chunk");
@@ -173,7 +173,7 @@ public sealed class ChunkIndexingTests
     {
         using var scope = new TestHelpers.StoreScope();
         string[] chunks = ["Part one content.", "Part two content."];
-        await Tools().Store(chunks, "copy-src");
+        await Tools().Remember(chunks, "copy-src");
 
         await Tools().Copy("copy-src", "copy-dst", overwrite: true);
 
@@ -195,7 +195,7 @@ public sealed class ChunkIndexingTests
             "Configuration patterns for container orchestration systems.",
             "Monitoring alerting dashboards and observability."
         ];
-        await Tools().Store(chunks, "infra-guide",
+        await Tools().Remember(chunks, "infra-guide",
             keywords: ["kubernetes", "docker", "infrastructure"]);
 
         // Search for "kubernetes" — chunk should inherit parent keyword score
@@ -219,7 +219,7 @@ public sealed class ChunkIndexingTests
             "Endpoint handler implementation details.",
             "Database migration scripts and procedures."
         ];
-        await Tools().Store(chunks, "backend-docs",
+        await Tools().Remember(chunks, "backend-docs",
             tags: ["backend", "api"]);
 
         // Search for "backend" — should find via parent tag

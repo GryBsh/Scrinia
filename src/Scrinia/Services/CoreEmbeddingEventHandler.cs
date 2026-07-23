@@ -11,7 +11,7 @@ namespace Scrinia.Services;
 /// <para>Slices each memory's joined content via <see cref="TextChunker.SliceWindows"/>
 /// so long memories produce multiple vectors (one per overlapping window), keeping every
 /// part of the memory reachable via semantic search. Search-time dedup in
-/// <c>WeightedFieldScorer.SearchAll</c> collapses chunk matches back to one result per
+/// <c>WeightedAttributeScorer.SearchAll</c> collapses chunk matches back to one result per
 /// memory.</para>
 /// </summary>
 internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink

@@ -119,7 +119,7 @@ public sealed partial class ScriniaMcpTools
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
-        string result = await Store(content, path,
+        string result = await Remember(content, path,
             keywords: keywords, attributes: attributes,
             actionLabel: "remembered", cancellationToken: cancellationToken);
         string? typoHint = ReservedPrefixGuard.HintFor(path);
@@ -149,7 +149,7 @@ public sealed partial class ScriniaMcpTools
                 "recall({ path: '...' })",
                 "list() to discover available paths").ToYaml();
 
-        return await Show(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken);
+        return await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken);
     }
 
     [McpServerTool(Name = "search"), Description(

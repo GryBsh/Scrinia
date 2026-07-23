@@ -16,7 +16,7 @@ namespace Scrinia.Core.Search;
 /// would otherwise miss.</para>
 ///
 /// <para>Similarity is <b>TF-cosine</b> over <see cref="ArtifactEntry.TermFrequencies"/>
-/// — already in memory after <c>WeightedFieldScorer.SearchAll</c> runs, so MMR is
+/// — already in memory after <c>WeightedAttributeScorer.SearchAll</c> runs, so MMR is
 /// effectively free on the search hot path. Legacy entries with null TF (the v2 index
 /// format) are treated as maximally-diverse to everything; they neither flood nor get
 /// flooded out.</para>

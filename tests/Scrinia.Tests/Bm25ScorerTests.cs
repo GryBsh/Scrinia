@@ -147,7 +147,7 @@ public sealed class Bm25ScorerTests
     [Fact]
     public void NormalizedBm25_InSearchAll_ProducesNonNegativeScores()
     {
-        // Verify through WeightedFieldScorer.SearchAll that normalized scores work correctly
+        // Verify through WeightedAttributeScorer.SearchAll that normalized scores work correctly
         var candidates = new[]
         {
             new ScopedArtifact("local", new ArtifactEntry("auth-doc", "", 100, 1, DateTimeOffset.UtcNow,
@@ -158,7 +158,7 @@ public sealed class Bm25ScorerTests
                 TermFrequencies: new Dictionary<string, int> { ["other"] = 8 })),
         };
 
-        var scorer = new WeightedFieldScorer();
+        var scorer = new WeightedAttributeScorer();
         var results = scorer.SearchAll("auth", candidates, [], 10);
 
         results.Should().NotBeEmpty();
@@ -187,7 +187,7 @@ public sealed class Bm25ScorerTests
             Keywords: ["target"],
             TermFrequencies: new Dictionary<string, int> { ["target"] = 20 })));
 
-        var scorer = new WeightedFieldScorer();
+        var scorer = new WeightedAttributeScorer();
         var results = scorer.SearchAll("target", candidates, [], 5);
 
         results.Should().HaveCountLessOrEqualTo(5);
@@ -212,7 +212,7 @@ public sealed class Bm25ScorerTests
                 TermFrequencies: new Dictionary<string, int> { ["irrelevant"] = 5 })),
         };
 
-        var scorer = new WeightedFieldScorer();
+        var scorer = new WeightedAttributeScorer();
         var results = scorer.SearchAll("best match", candidates, [], 10);
 
         // "best-match" should score highest (matches both terms + intersection bonus)
@@ -232,7 +232,7 @@ public sealed class Bm25ScorerTests
         // Entry whose ONLY match for "maria" is its person attribute value — no name,
         // tag, keyword, anchor, or description match. AttributeWeight("person") is 1.0
         // at parity, so this must surface exactly as it did before the weight-scaling
-        // change (a pure regression guard around WeightedFieldScorer.ScoreEntryTerm's
+        // change (a pure regression guard around WeightedAttributeScorer.ScoreEntryTerm's
         // Fields block).
         var candidates = new[]
         {
@@ -240,7 +240,7 @@ public sealed class Bm25ScorerTests
                 Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] })),
         };
 
-        var scorer = new WeightedFieldScorer();
+        var scorer = new WeightedAttributeScorer();
         var results = scorer.SearchAll("maria", candidates, [], 10);
 
         results.Should().ContainSingle();
