@@ -10,6 +10,37 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — CLI/MCP memory-surface parity
+- **`list` and `search` were the last two CLI commands that reimplemented their
+  MCP tool counterpart instead of delegating; they now share one core.**
+  `scri search` previously ran BM25-only — it loaded the embeddings and
+  entity-graph contributors but never passed them to the scorer. It now routes
+  through the shared `ExecuteSearchAsync` pipeline, so CLI and MCP search rank
+  identically (fused BM25 + embeddings + entity graph).
+- **`scri search --json` gained per-hit `attributes`, `createdAt`, `updatedAt`,
+  and `anchors`** (previously only type/name/score/tokens/description/chunk
+  info), and the table gained an Attributes column — matching what the MCP
+  `search` tool already surfaced. New optional flags: `--context`,
+  `--exclude-topics`, `--path-prefix`.
+- **`list --summary` "Top attributes" now reports per key with counts
+  (`topic (3)`) on both surfaces.** The MCP tool previously enumerated per
+  `key:value` (`topic:auth`); the CLI already used per-key counts. Both now share
+  one aggregator (`AggregateSummaryFacets`), which also excludes typed-keyword
+  shapes from "Top keywords" on both surfaces — the MCP side used to
+  double-report them.
+- Internal handler cores renamed to match their tool verbs: `Store` →
+  `Remember`, `Show` → `Recall`. No MCP tool or CLI command name changed.
+- The dead `codeRefs` parameter on the internal remember handler was removed;
+  file dependencies flow in exclusively via the `file` attribute
+  (`attributes: { file: ['path'] }`), which already drove drift detection.
+
+### Fixed — CLI/MCP memory-surface parity
+- `list mode:'drift'` (and `scri list --drift`) no longer drops the topic path
+  from drift rows: a memory at `/api/auth-flow` reported as bare `auth-flow`
+  because the scope was pre-stripped of its `local:` prefix before formatting.
+  It now passes the scope straight to `FormatQualifiedName`, so topic-scoped
+  drift rows keep their `/topic/` path.
+
 ### Changed (breaking) — path-only memory names
 - **The `topic:subject` colon naming syntax was removed; names are paths.**
   `api:auth` is now `/api/auth`. `ParseQualifiedName` rejects a colon name with
