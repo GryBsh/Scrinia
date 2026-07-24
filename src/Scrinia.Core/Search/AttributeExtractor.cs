@@ -131,6 +131,133 @@ public static partial class AttributeExtractor
         }
     }
 
+    public const int MaxMentionSpans = 32;
+
+    // Capitalized words that are almost never a standalone prose entity: pronouns, articles,
+    // weekday/month names, and common sentence-openers (imperative verbs, conjunctions, auxiliaries,
+    // contractions). Matched case-sensitively against the raw (capitalized) token, so it only ever
+    // affects a capitalized occurrence — a lowercase "set"/"in" mid-sentence already breaks a run.
+    // This is the whole precision guard: it filters sentence-leading common words while keeping
+    // sentence-leading SUBJECTS (real names/places). Tunable; extend as real usage reveals leaks.
+    private static readonly HashSet<string> MentionStopWords =
+        new(StringComparer.Ordinal)
+        {
+            "I", "A", "An", "The", "This", "That", "These", "Those", "It", "Its",
+            "He", "His", "Him", "She", "Her", "They", "Their", "Them", "We", "Our", "Us", "You", "Your",
+            "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+            "January", "February", "March", "April", "May", "June", "July",
+            "August", "September", "October", "November", "December",
+            // common sentence-openers
+            "Set", "Get", "Run", "Use", "Add", "See", "Note", "Let", "Try", "Make", "Take",
+            "Check", "Ensure", "Also", "Then", "When", "While", "If", "Else", "Because",
+            "After", "Before", "Now", "Here", "There", "First", "Next", "Finally", "However",
+            "Do", "Does", "Did", "Is", "Are", "Was", "Were", "Be", "Been", "Being",
+            "Have", "Has", "Had", "Will", "Would", "Should", "Could", "Can", "May", "Might", "Must",
+            "Not", "No", "Yes", "So", "But", "And", "Or", "For", "Of", "To", "Nor",
+            "In", "On", "At", "By", "With", "From", "As", "Per", "Every", "Each", "Some", "Any", "All",
+            "Don't", "Doesn't", "Didn't", "Can't", "Won't", "Isn't", "Aren't", "Wasn't", "Weren't",
+            "It's", "That's", "There's", "Let's", "We're", "We've", "You're", "They're", "I'm", "I've",
+        };
+
+    /// <summary>
+    /// Mechanical prose entity-span extraction (Piece 2, Stage 1). Emits capitalized-noun-phrase
+    /// runs as <c>mention:&lt;value&gt;</c> presence facts. LLM-free; embedder-free. A run is a
+    /// maximal sequence of consecutive capitalized, non-stop-word tokens taken outside code fences,
+    /// inline-code spans, and YAML frontmatter; the value is the run joined and lowercased, kept
+    /// whole. No positional/echo logic. Returns null when no span survives.
+    /// </summary>
+    public static Dictionary<string, string[]>? ExtractMentionSpans(string? content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+            return null;
+
+        var values = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        bool inFence = false, firstLine = true, inFrontmatter = false;
+        foreach (string rawLine in content.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            if (line.StartsWith("```", StringComparison.Ordinal)) { inFence = !inFence; firstLine = false; continue; }
+            if (inFence) { firstLine = false; continue; }
+            if (line.Trim() == "---")
+            {
+                if (firstLine) inFrontmatter = true;
+                else if (inFrontmatter) inFrontmatter = false;
+                firstLine = false;
+                continue;
+            }
+            firstLine = false;
+            if (inFrontmatter) continue;
+
+            if (!ScanMentionLine(StripInlineCode(line), values, seen))
+                break; // per-memory cap reached
+        }
+
+        return values.Count > 0
+            ? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.MentionKey] = [.. values] }
+            : null;
+    }
+
+    /// <summary>Blanks out inline `code` spans (backtick-delimited) with spaces so their tokens
+    /// are never scanned, while preserving column positions.</summary>
+    private static string StripInlineCode(string line)
+    {
+        if (line.IndexOf('`') < 0) return line;
+        var chars = line.ToCharArray();
+        bool inCode = false;
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] == '`') { inCode = !inCode; chars[i] = ' '; }
+            else if (inCode) chars[i] = ' ';
+        }
+        return new string(chars);
+    }
+
+    /// <summary>Appends normalized mention values from one line into <paramref name="values"/>.
+    /// Returns false when the per-memory cap is reached (caller stops scanning).</summary>
+    private static bool ScanMentionLine(string line, List<string> values, HashSet<string> seen)
+    {
+        var run = new List<string>();
+
+        bool Emit()
+        {
+            if (run.Count == 0) return true;
+            string norm = string.Join(' ', run).Trim().ToLowerInvariant();
+            run.Clear();
+            if (norm.Length > 0 && seen.Add(norm))
+            {
+                values.Add(norm);
+                if (values.Count >= MaxMentionSpans) return false;
+            }
+            return true;
+        }
+
+        int i = 0, n = line.Length;
+        while (i < n)
+        {
+            char c = line[i];
+            if (char.IsWhiteSpace(c)) { i++; continue; }
+
+            if (IsWordChar(c))
+            {
+                int start = i;
+                while (i < n && IsWordChar(line[i])) i++;
+                string token = line[start..i];
+                if (char.IsUpper(token[0]) && !MentionStopWords.Contains(token))
+                    run.Add(token);
+                else if (!Emit())
+                    return false;
+                continue;
+            }
+            if (!Emit()) return false;
+            i++;
+        }
+        return Emit();
+
+        static bool IsWordChar(char ch) => char.IsLetterOrDigit(ch) || ch == '\'' || ch == '-';
+    }
+
     /// <summary>File and memory references as unified attributes — {file: [...], ref: [...]}.
     /// Replaces the retired file:/ref: prefixed-keyword emission.</summary>
     public static Dictionary<string, string[]>? ExtractRefAttributes(string text)
