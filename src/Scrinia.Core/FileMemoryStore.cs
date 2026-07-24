@@ -39,8 +39,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     // Upsert / Remove. Rebuilt lazily on next GetEntityFactStore() call from each scope's
     // facts.json sidecar (reused when its validity token matches the current index) or
     // re-derived from entries when the sidecar is missing/stale.
+    //
+    // _factStoreLock is NEVER held while building the merged view (that requires ListScoped
+    // / LoadIndex, which take the per-scope index locks) — only at entry, to publish the
+    // built result, and at Upsert/Remove's invalidation point. Upsert/Remove take the index
+    // write-lock first and then (briefly) _factStoreLock; a build that instead held
+    // _factStoreLock across an index-lock acquisition would invert that order and deadlock
+    // against a concurrent mutation on the same scope. _factStoreGeneration guards against
+    // caching a snapshot that a mutation invalidated mid-build: a build started before gen G
+    // that finishes after a mutation bumped it to G+1 returns its result but does not cache it.
     private readonly object _factStoreLock = new();
     private EntityFactStore? _factStore;
+    private long _factStoreGeneration;
 
     /// <summary>
     /// In-memory cache of a scope's index entries with O(1) name→position lookup
@@ -1074,7 +1084,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
 
-            lock (_factStoreLock) { _factStore = null; }
+            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
         }
         finally
         {
@@ -1123,7 +1133,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
 
-            lock (_factStoreLock) { _factStore = null; }
+            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
 
             return true;
         }
@@ -1312,50 +1322,62 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     public EntityFactStore GetEntityFactStore()
     {
+        long gen;
         lock (_factStoreLock)
         {
-            if (_factStore is not null) return _factStore;
+            if (_factStore is not null) return _factStore;   // fast path
+            gen = _factStoreGeneration;
+        }
 
-            var merged = new List<MemoryEntities>();
-            foreach (var group in ListScoped(null).GroupBy(sa => sa.Scope, StringComparer.Ordinal))
+        // Build WITHOUT holding _factStoreLock — ListScoped/LoadIndex take the per-scope index
+        // locks below, and Upsert/Remove acquire those in the opposite order (index lock, then
+        // _factStoreLock) to invalidate. Holding _factStoreLock across this loop would invert
+        // that order and deadlock against a concurrent mutation on the same scope.
+        var merged = new List<MemoryEntities>();
+        foreach (var group in ListScoped(null).GroupBy(sa => sa.Scope, StringComparer.Ordinal))
+        {
+            string scope = group.Key;
+            var items = group.ToList();
+
+            // "ephemeral" (and any other scope with no on-disk store) has no directory to
+            // hold a sidecar — GetStoreDirForScope throws for it. Derive its facts in-memory
+            // only; everything else about the merge is unaffected.
+            string? sidecarPath = null;
+            try { sidecarPath = Path.Combine(GetStoreDirForScope(scope), "facts.json"); }
+            catch (ArgumentException) { /* no on-disk store for this scope */ }
+
+            string token = EntityFactSidecar.ComputeToken(
+                items.Select(sa => (((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name),
+                                    sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt)));
+
+            IReadOnlyList<MemoryEntities>? mems = null;
+            if (sidecarPath is not null && File.Exists(sidecarPath))
             {
-                string scope = group.Key;
-                var items = group.ToList();
-
-                // "ephemeral" (and any other scope with no on-disk store) has no directory to
-                // hold a sidecar — GetStoreDirForScope throws for it. Derive its facts in-memory
-                // only; everything else about the merge is unaffected.
-                string? sidecarPath = null;
-                try { sidecarPath = Path.Combine(GetStoreDirForScope(scope), "facts.json"); }
-                catch (ArgumentException) { /* no on-disk store for this scope */ }
-
-                string token = EntityFactSidecar.ComputeToken(
-                    items.Select(sa => (((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name),
-                                        sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt)));
-
-                IReadOnlyList<MemoryEntities>? mems = null;
-                if (sidecarPath is not null && File.Exists(sidecarPath))
-                {
-                    var loaded = EntityFactSidecar.TryLoad(SafeReadAllText(sidecarPath));
-                    if (loaded is { } l && l.Token == token) mems = l.Memories;
-                }
-
-                if (mems is null)
-                {
-                    mems = items
-                        .Select(sa => EntityFactDerivation.Derive(
-                            sa, ((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name)))
-                        .Where(m => m is not null)
-                        .Select(m => m!)
-                        .ToArray();
-                    if (sidecarPath is not null)
-                        TryWriteAllText(sidecarPath, EntityFactSidecar.Serialize(token, mems));
-                }
-
-                merged.AddRange(mems);
+                var loaded = EntityFactSidecar.TryLoad(SafeReadAllText(sidecarPath));
+                if (loaded is { } l && l.Token == token) mems = l.Memories;
             }
 
-            return _factStore = new EntityFactStore(merged);
+            if (mems is null)
+            {
+                mems = items
+                    .Select(sa => EntityFactDerivation.Derive(
+                        sa, ((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name)))
+                    .Where(m => m is not null)
+                    .Select(m => m!)
+                    .ToArray();
+                if (sidecarPath is not null)
+                    TryWriteAllText(sidecarPath, EntityFactSidecar.Serialize(token, mems));
+            }
+
+            merged.AddRange(mems);
+        }
+        var built = new EntityFactStore(merged);
+
+        lock (_factStoreLock)
+        {
+            if (_factStore is not null) return _factStore;          // another thread published while we built
+            if (_factStoreGeneration == gen) _factStore = built;    // no mutation during build -> safe to cache
+            return built;                                           // else return fresh but don't cache a stale snapshot
         }
     }
 

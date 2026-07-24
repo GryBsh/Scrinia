@@ -59,4 +59,49 @@ public sealed class EntityFactStorePersistenceTests
         store.Upsert(Entry("b", d, attributes: new() { ["topic"] = ["auth"] }), "local");
         store.GetEntityFactStore().MentionCount(EntityRef.Of("topic", "auth")).Should().Be(2); // fresh
     }
+
+    /// <summary>
+    /// Regression for a lock-ordering deadlock: GetEntityFactStore used to hold _factStoreLock
+    /// across ListScoped/LoadIndex (which take the per-scope index lock) — order
+    /// _factStoreLock -&gt; index-lock. Upsert/Remove take the index write-lock first, then
+    /// _factStoreLock -&gt; the opposite order. A query racing a mutation on the same scope could
+    /// deadlock. Time-bounded (Stopwatch controls loop duration only, not the assertion) so a
+    /// regression fails fast instead of hanging the suite.
+    /// </summary>
+    [Fact]
+    public void ConcurrentQueryAndMutation_DoesNotDeadlock()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        var d = DateTimeOffset.Parse("2023-01-01T00:00:00Z");
+        store.Upsert(Entry("seed", d, attributes: new() { ["topic"] = ["auth"] }), "local");
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var runFor = TimeSpan.FromSeconds(1);
+
+        var tasks = new List<Task>();
+        for (int i = 0; i < 4; i++)
+        {
+            tasks.Add(Task.Run(() =>
+            {
+                while (stopwatch.Elapsed < runFor)
+                    store.GetEntityFactStore();
+            }));
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            int idx = i;
+            tasks.Add(Task.Run(() =>
+            {
+                while (stopwatch.Elapsed < runFor)
+                {
+                    store.Upsert(Entry($"mut{idx}", d, attributes: new() { ["topic"] = ["auth"] }), "local");
+                    store.Remove($"mut{idx}", "local");
+                }
+            }));
+        }
+
+        bool completed = Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(15));
+        completed.Should().BeTrue("a concurrent GetEntityFactStore + Upsert/Remove race on the same scope must not deadlock");
+    }
 }
