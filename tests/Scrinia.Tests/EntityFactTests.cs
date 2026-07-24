@@ -1,10 +1,9 @@
 using FluentAssertions;
 using Scrinia.Core.Search;
-using Xunit;
 
 namespace Scrinia.Tests;
 
-public class EntityFactTests
+public sealed class EntityFactTests
 {
     [Fact]
     public void EntityRef_Of_LowercasesKeyAndValue()
@@ -19,5 +18,11 @@ public class EntityFactTests
     {
         EntityRef.Of("thing", "Seraphim").Should().Be(EntityRef.Of("THING", "seraphim"));
         EntityRef.Of("thing", "seraphim").Should().NotBe(EntityRef.Of("thing", "susie"));
+    }
+
+    [Fact]
+    public void EntityRef_Of_TrimsAndLowercases()
+    {
+        EntityRef.Of("  Person  ", "  Maria  ").Should().Be(EntityRef.Of("person", "maria"));
     }
 }

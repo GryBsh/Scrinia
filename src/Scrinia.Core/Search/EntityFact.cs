@@ -6,7 +6,7 @@ namespace Scrinia.Core.Search;
 public readonly record struct EntityRef(string Key, string Value)
 {
     public static EntityRef Of(string key, string value) =>
-        new(key.ToLowerInvariant(), value.ToLowerInvariant());
+        new(key.Trim().ToLowerInvariant(), value.Trim().ToLowerInvariant());
 }
 
 /// <summary>Compact per-memory unit: the memory's effective date and its distinct entity set.

@@ -1,0 +1,1 @@
+- [Scrinia's dual key:value parsers](scrinia_dual_keyvalue_parsers.md) — scorer's raw parse (transient) vs FieldExtractor.RouteKeywords (persisted, canonicalizes case) — don't mirror the wrong one.
