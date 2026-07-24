@@ -115,9 +115,9 @@ public sealed class EntityGraphTests
     }
 
     [Fact]
-    public void ParseTypedEntities_KeepsRealTypesAndLegacyEntity_ValuesWhole_InOrder()
+    public void ParseEntityKeywords_KeepsRealTypesAndLegacyEntity_ValuesWhole_InOrder()
     {
-        EntityGraph.ParseTypedEntities(
+        EntityGraph.ParseEntityKeywords(
                 ["person:Maria", "topic:cooking", "place:home renovation", "entity:acme"])
             .Should().Equal(
                 ("person", "maria"), ("topic", "cooking"),
@@ -130,9 +130,9 @@ public sealed class EntityGraphTests
     [InlineData("plainkeyword")]      // no prefix
     [InlineData("person:")]           // empty value
     [InlineData(":maria")]            // empty prefix
-    public void ParseTypedEntities_DropsUnknownOrEmpty(string keyword)
+    public void ParseEntityKeywords_DropsUnknownOrEmpty(string keyword)
     {
-        EntityGraph.ParseTypedEntities([keyword]).Should().BeEmpty();
+        EntityGraph.ParseEntityKeywords([keyword]).Should().BeEmpty();
     }
 
     // --- Build: uniform type:value node identity ---

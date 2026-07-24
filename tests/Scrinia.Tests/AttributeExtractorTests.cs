@@ -171,7 +171,7 @@ public sealed class AttributeExtractorTests
     }
 
     [Fact]
-    public void SearchAll_LegacyTypedKeyword_ScoresLikeAnAttribute()
+    public void SearchAll_LegacyKeyValueKeyword_ScoresLikeAnAttribute()
     {
         using var scope = new TestHelpers.StoreScope();
         var store = new Scrinia.Core.FileMemoryStore(scope.WorkspaceDir);

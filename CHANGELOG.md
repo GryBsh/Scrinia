@@ -25,7 +25,7 @@ and all assembly attributes.
 - **`list --summary` "Top attributes" now reports per key with counts
   (`topic (3)`) on both surfaces.** The MCP tool previously enumerated per
   `key:value` (`topic:auth`); the CLI already used per-key counts. Both now share
-  one aggregator (`AggregateSummaryFacets`), which also excludes typed-keyword
+  one aggregator (`AggregateSummaryFacets`), which also excludes key:value-keyword
   shapes from "Top keywords" on both surfaces — the MCP side used to
   double-report them.
 - Internal handler cores renamed to match their tool verbs: `Store` →

@@ -1753,9 +1753,9 @@ public sealed class ScriniaMcpToolsTests
     }
 
     [Fact]
-    public async Task Store_TypedKeyword_ValueIsBm25Matchable()
+    public async Task Store_KeyValueKeyword_ValueIsBm25Matchable()
     {
-        // A typed keyword (prefix:value) used to be seeded into TF as the monolithic
+        // A key:value keyword (prefix:value) used to be seeded into TF as the monolithic
         // "person:mary" string — a key no tokenized query term can ever equal, so it was
         // dead weight in BM25. Now it routes to Fields["person"] (unified fields), and the
         // tokenized VALUE is seeded into TF (via AttributeExtractor.SeedTermFrequencies) so the
@@ -1774,14 +1774,14 @@ public sealed class ScriniaMcpToolsTests
             because: "prefixed keywords are no longer written");
         entry.TermFrequencies.Should().NotBeNull();
         entry.TermFrequencies!.Should().ContainKey("mary",
-            because: "the typed keyword's value must be seeded into TF as a real BM25 term");
+            because: "the key:value keyword's value must be seeded into TF as a real BM25 term");
         entry.TermFrequencies.Should().NotContainKey("person:mary",
             because: "the monolithic prefixed token is dead weight in BM25 and must not be seeded as-is");
 
         var parsed = ResponseParser.Parse(await Tools().Search("Mary"));
         parsed.Status.Should().Be("success");
         parsed.Content.Should().Contain("typed-kw-test",
-            because: "a typed keyword's value must be reachable via BM25 even when absent from content");
+            because: "a key:value keyword's value must be reachable via BM25 even when absent from content");
     }
 
     [Fact]

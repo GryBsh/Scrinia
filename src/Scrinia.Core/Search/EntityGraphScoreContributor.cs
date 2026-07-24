@@ -4,8 +4,8 @@ namespace Scrinia.Core.Search;
 
 /// <summary>
 /// Scores candidates by Personalized PageRank over an entity graph built — statelessly,
-/// per query — from the candidates' own typed keywords (person/place/org/thing/topic).
-/// Surfaces memories
+/// per query — from the candidates' own entity attributes (person/place/org/thing/topic, plus
+/// legacy key:value entity keywords). Surfaces memories
 /// associated to a query entity through a shared entity that lexical/semantic scoring
 /// buries (query names A; the gold memory is about B, which co-occurs with A). Validated
 /// as a within-pool precision lever in finding #8 of
@@ -17,8 +17,8 @@ namespace Scrinia.Core.Search;
 /// collapses into the embedding rank under RRF fusion.</para>
 ///
 /// <para>Stateless and graceful: returns <c>null</c> when the query has no matching entity
-/// seeds or no candidate carries typed keywords, so it is inert (zero effect) until agents
-/// supply typed keywords. Cost is O(candidates × keywords) to build the graph
+/// seeds or no candidate carries entity attributes, so it is inert (zero effect) until agents
+/// supply entity attributes (or legacy key:value entity keywords). Cost is O(candidates × keywords) to build the graph
 /// plus the PPR iterations — the same per-query order as the embeddings flat scan already on
 /// the hot path.</para>
 /// </summary>

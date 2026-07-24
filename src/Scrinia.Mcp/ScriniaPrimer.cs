@@ -27,7 +27,7 @@ public static class ScriniaPrimer
           `/sessions/`, `/checkpoint/`, `/temp/`.
         - `.scrinia/` changes are part of your commits.
 
-        Call `guide()` for the full primer — chunks, skills, typed keywords, and recovery.
+        Call `guide()` for the full primer — chunks, skills, attributes, and recovery.
         """;
 
     /// <summary>

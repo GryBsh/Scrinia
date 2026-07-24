@@ -36,8 +36,9 @@ restore()                                  — resume after context loss
 - **Paths** are hierarchical and auto-tagged for search (`/api/auth-flow` → `[api, auth, flow]`).
   Reserved prefixes: `/skill/`, `/agent/`, `/patterns/`, `/findings/`, `/learn/`, `/sessions/`,
   `/checkpoint/`, `/temp/` (ephemeral).
-- **Typed keywords** link memories across the entity graph. Prefer `person:`, `place:`, `org:`,
-  `thing:`, `topic:` over bare terms, and name an entity the same way every time.
+- **Attributes** — typed facets (`person:`, `place:`, `org:`, `thing:`, `topic:`) — link memories
+  across the entity graph. Pass them in the `attributes` map (same-shaped `key:value` keywords route
+  there too), and name an entity the same way every time.
 - **`.scrinia/` changes are part of your commits.**
 
 Call `guide()` for the full primer — chunks, skills, review markers, and recovery details.

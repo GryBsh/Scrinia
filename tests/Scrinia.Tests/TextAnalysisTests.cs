@@ -208,7 +208,7 @@ public sealed class TextAnalysisTests
     }
 
     [Fact]
-    public void IndexTokensForKeyword_TypedKeyword_StripsPrefix_IndexesValue()
+    public void IndexTokensForKeyword_KeyValueKeyword_StripsPrefix_IndexesValue()
     {
         // The type prefix (file/person/ref) is structural — only the value tokenizes in.
         TextAnalysis.IndexTokensForKeyword("file:src/Foo.cs").Should().Equal("src", "foo", "cs");

@@ -145,14 +145,14 @@ public static class TextAnalysis
 
     /// <summary>
     /// Expands a keyword into the tokens that should be seeded into the BM25 term-frequency
-    /// index. A plain keyword tokenizes normally; a typed keyword of the form
+    /// index. A plain keyword tokenizes normally; a key:value keyword of the form
     /// <c>prefix:value</c> (e.g. <c>file:src/Foo.cs</c>, <c>person:Mary</c>, <c>ref:/findings/x</c>)
     /// indexes the tokenized <i>value</i> only — the type prefix is structural metadata that
     /// stays on the keyword itself (for attribute-score / facet / cross-link use), not a content term.
     ///
-    /// <para>Typed keywords must not be seeded into TF as-is: the whole <c>prefix:value</c>
+    /// <para>Key:value keywords must not be seeded into TF as-is: the whole <c>prefix:value</c>
     /// string is a single dictionary key that no tokenized query term can ever equal, so it
-    /// contributes nothing to BM25 (dead weight). Seeding the value tokens makes typed-keyword
+    /// contributes nothing to BM25 (dead weight). Seeding the value tokens makes key:value keyword
     /// values first-class search terms — a "person:Mary" keyword becomes matchable by a "Mary"
     /// query even when "Mary" never appears in the content.</para>
     /// </summary>

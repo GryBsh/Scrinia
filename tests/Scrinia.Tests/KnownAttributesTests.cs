@@ -74,7 +74,7 @@ public sealed class KnownAttributesTests
         var scoresKw = fromKeywords.Score("tell me about maria", 0.15, 20);
         var scoresF = fromAttributes.Score("tell me about maria", 0.15, 20);
         scoresF.Should().BeEquivalentTo(scoresKw,
-            because: "an attributes entry and a legacy typed-keyword entry must graph identically");
+            because: "an attributes entry and a legacy key:value keyword entry must graph identically");
     }
 
     [Fact]

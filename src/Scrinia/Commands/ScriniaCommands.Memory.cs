@@ -158,7 +158,7 @@ public partial class ScriniaCommands
             scopeEntries.Add(new CliScopeEntry("ephemeral", ephemeralCount, entries.Where(e => e.Scope == "ephemeral").Sum(e => e.Entry.OriginalBytes)));
 
         // Top keywords + top attributes come from the shared aggregator that also backs the MCP
-        // `list` summary, so the CLI and tool surfaces report identically (typed keywords excluded
+        // `list` summary, so the CLI and tool surfaces report identically (key:value keywords excluded
         // from the keyword tally, attributes counted per key).
         var (topKeywords, topAttributesRaw) = ScriniaMcpTools.AggregateSummaryFacets(entries);
         var topAttributes = topAttributesRaw

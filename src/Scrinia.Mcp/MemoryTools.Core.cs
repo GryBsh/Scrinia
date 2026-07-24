@@ -117,8 +117,8 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional description. If empty, the first 200 characters of content are used.")] string description = "",
         [Description("Optional tags for categorization.")] string[]? tags = null,
         [Description("Optional keywords for search. Merged with auto-extracted content terms. " +
-                     "Prefer TYPED keywords using one of these types: 'person:<name>', 'place:<name>', " +
-                     "'org:<name>', 'thing:<name>', 'topic:<theme>'. Typed entries, and any other " +
+                     "Prefer key:value keywords using one of these entity types: 'person:<name>', 'place:<name>', " +
+                     "'org:<name>', 'thing:<name>', 'topic:<theme>'. These entries, and any other " +
                      "key:value keyword, become structured attributes — an exact-match retrieval signal and " +
                      "entity-graph input, so a query mentioning one entity can surface this memory via a " +
                      "related entity even with no text overlap. Plain keywords remain search keywords. " +
@@ -147,7 +147,7 @@ public sealed partial class ScriniaMcpTools
         string rawContent = string.Join("\n", content);
         var refAttributes = AttributeExtractor.ExtractRefAttributes(rawContent);
 
-        // Boost keywords in TF: agent keywords +5, auto-extracted +2. Typed keywords
+        // Boost keywords in TF: agent keywords +5, auto-extracted +2. Key:value keywords
         // (prefix:value) seed their tokenized VALUE so the parts are BM25-matchable — the
         // monolithic "prefix:value" string is never a tokenized query term, so seeding it
         // as-is is dead weight. See TextAnalysis.IndexTokensForKeyword.
@@ -651,7 +651,7 @@ public sealed partial class ScriniaMcpTools
 
         // Top keywords + top attributes — computed by the shared aggregator that also backs
         // `scri list --summary`, so the two surfaces never diverge (they used to: the MCP side
-        // double-reported the typed keywords the CLI filtered, and rendered attributes per value
+        // double-reported the key:value keywords the CLI filtered, and rendered attributes per value
         // rather than per key).
         var (topKeywords, topAttributes) = AggregateSummaryFacets(entries);
         if (topKeywords.Length > 0)
@@ -674,7 +674,7 @@ public sealed partial class ScriniaMcpTools
     /// <summary>
     /// Aggregates the "Top keywords" and "Top attributes" facets for the list summary. Shared by
     /// the MCP <c>list</c> tool (<see cref="BuildSummary"/>) and the <c>scri list --summary</c> CLI
-    /// so both surfaces report identically. Typed-keyword-shaped entries (e.g. <c>person:maria</c>)
+    /// so both surfaces report identically. Key:value keyword-shaped entries (e.g. <c>person:maria</c>)
     /// are excluded from keywords — they're routed into structured Attributes and counted there
     /// (per key) instead, to avoid double-reporting the same facet.
     /// </summary>
@@ -688,7 +688,7 @@ public sealed partial class ScriniaMcpTools
             if (item.Entry.Keywords is { Length: > 0 })
                 foreach (var kw in item.Entry.Keywords)
                 {
-                    if (TypedKeywordShape.IsMatch(kw)) continue;
+                    if (KeyValueKeywordShape.IsMatch(kw)) continue;
                     keywordCounts[kw] = keywordCounts.GetValueOrDefault(kw) + 1;
                 }
             foreach (var tag in AttributeReaders.DisplayTags(item.Entry.Attributes))
@@ -710,7 +710,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Matches legacy typed-prefix keywords (e.g. <c>person:maria</c>) so the raw keyword
     /// tally can exclude them — they're routed into structured Attributes.</summary>
-    private static readonly Regex TypedKeywordShape =
+    private static readonly Regex KeyValueKeywordShape =
         new(@"^[A-Za-z][A-Za-z0-9_-]{0,29}:.+", RegexOptions.Compiled);
 
     internal static string BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)

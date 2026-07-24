@@ -66,7 +66,7 @@ public sealed class EntityGraphScoreContributorTests
     }
 
     [Fact]
-    public async Task ComputeScores_NoTypedKeywords_ReturnsNull()
+    public async Task ComputeScores_NoKeyValueKeywords_ReturnsNull()
     {
         var candidates = new List<ScopedArtifact> { Doc("a", "plainkw", "anotherbareterm") };
 

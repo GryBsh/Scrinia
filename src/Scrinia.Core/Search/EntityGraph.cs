@@ -30,9 +30,9 @@ public sealed class EntityGraph
     private readonly Dictionary<string, HashSet<string>> _docToEntities = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The typed-keyword markers <see cref="ParseTypedEntities"/> recognizes as entity types
+    /// The key:value keyword markers <see cref="ParseEntityKeywords"/> recognizes as entity types
     /// (person/place/org/thing/topic). The legacy untyped <c>entity:</c> marker is NOT in this
-    /// set — <see cref="ParseTypedEntities"/> keeps it as its own type <c>"entity"</c> instead.
+    /// set — <see cref="ParseEntityKeywords"/> keeps it as its own type <c>"entity"</c> instead.
     /// </summary>
     public static readonly IReadOnlySet<string> RealTypes =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "person", "place", "org", "thing", "topic" };
@@ -77,7 +77,7 @@ public sealed class EntityGraph
     }
 
     /// <summary>
-    /// Parses typed-keyword tags into <c>(type, value)</c> pairs — the graph's node source.
+    /// Parses key:value keyword tags into <c>(type, value)</c> pairs — the graph's node source.
     /// Recognizes the <see cref="RealTypes"/> (person/place/org/thing/topic) plus the legacy
     /// untyped <c>entity:</c> marker (kept as type <c>"entity"</c> so pre-typing data still
     /// graphs; it never participates in a type conflict). Both type and value are lowercased;
@@ -85,7 +85,7 @@ public sealed class EntityGraph
     /// <see cref="TextAnalysis.IndexTokensForKeyword"/>. Shared by the production contributor and
     /// the bench so "what counts as a graph tag" has one definition.
     /// </summary>
-    public static IEnumerable<(string Type, string Value)> ParseTypedEntities(IEnumerable<string>? keywords)
+    public static IEnumerable<(string Type, string Value)> ParseEntityKeywords(IEnumerable<string>? keywords)
     {
         if (keywords is null) yield break;
         foreach (string kw in keywords)
@@ -101,12 +101,12 @@ public sealed class EntityGraph
     }
 
     /// <summary>
-    /// Attributes-side sibling of <see cref="ParseTypedEntities"/>: yields (key, value) pairs for
+    /// Attributes-side sibling of <see cref="ParseEntityKeywords"/>: yields (key, value) pairs for
     /// <b>every</b> attribute key, uniformly — not just <c>KnownAttributes.EntityKeys</c> — so any
     /// attribute (e.g. co-<c>file:</c>/co-<c>status:</c> memories) can become a graph
     /// association, not only the five blessed entity keys. Type is the lowercased attribute key,
-    /// values lowercased and kept whole. Together with <see cref="ParseTypedEntities"/> they
-    /// give Build its dual-read: legacy typed keywords ∪ unified attributes.
+    /// values lowercased and kept whole. Together with <see cref="ParseEntityKeywords"/> they
+    /// give Build its dual-read: legacy key:value keywords ∪ unified attributes.
     ///
     /// <para><see cref="Build"/> gives each of these (type, value) tuples its own <c>type:value</c>
     /// node, so arbitrary keys never cross-link on a shared value (<c>status:done</c> and
@@ -130,7 +130,7 @@ public sealed class EntityGraph
     /// <summary>
     /// Builds a graph from a set of <c>(memory, keywords)</c> docs. Delegates to the
     /// <see cref="Build(IEnumerable{ValueTuple{string, IReadOnlyList{string}, IReadOnlyDictionary{string, string[]}}})"/>
-    /// 3-tuple overload with no attributes, so behavior for legacy typed-keyword-only callers is
+    /// 3-tuple overload with no attributes, so behavior for legacy key:value keyword-only callers is
     /// unchanged.
     /// </summary>
     public static EntityGraph Build(IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords)> docs)
@@ -142,10 +142,10 @@ public sealed class EntityGraph
     /// node, distinct by construction — no conflict pass, no bare-value folding. A value shared
     /// across unrelated keys (<c>status:done</c> vs <c>outcome:done</c>; <c>person:paris</c> vs
     /// <c>place:paris</c>) is never one node, so unrelated keys never falsely cross-link on a
-    /// shared value. Per-doc tags are the union of <see cref="ParseTypedEntities"/> (legacy typed
+    /// shared value. Per-doc tags are the union of <see cref="ParseEntityKeywords"/> (legacy key:value
     /// keywords) and <see cref="ParseEntityAttributes"/> (unified Attributes), so a doc carrying either or
     /// both sources graphs identically. Use this rather than per-doc <see cref="AddDoc"/> whenever
-    /// the input carries typed keywords or attributes, so node identity is applied consistently.
+    /// the input carries key:value keywords or attributes, so node identity is applied consistently.
     /// </summary>
     public static EntityGraph Build(
         IEnumerable<(string DocKey, IReadOnlyList<string>? Keywords, IReadOnlyDictionary<string, string[]>? Attributes)> docs)
@@ -160,7 +160,7 @@ public sealed class EntityGraph
         {
             if (string.IsNullOrWhiteSpace(docKey)) continue;
             var nodeKeys = new List<string>();
-            foreach (var (type, value) in ParseTypedEntities(keywords)) nodeKeys.Add($"{type}:{value}");
+            foreach (var (type, value) in ParseEntityKeywords(keywords)) nodeKeys.Add($"{type}:{value}");
             foreach (var (type, value) in ParseEntityAttributes(attributes)) nodeKeys.Add($"{type}:{value}");
             if (nodeKeys.Count == 0) continue;
             graph.AddDoc(docKey, nodeKeys);

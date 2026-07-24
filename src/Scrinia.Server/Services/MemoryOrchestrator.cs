@@ -25,7 +25,7 @@ public static class MemoryOrchestrator
         // keywords participate in the keyword merge.
         var (routedAttributes, plainKeywords) = AttributeExtractor.RouteKeywords(req.Keywords);
         var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(plainKeywords, autoKeywords);
-        // Typed keywords (prefix:value) seed their tokenized VALUE so the parts are
+        // Key:value keywords (prefix:value) seed their tokenized VALUE so the parts are
         // BM25-matchable; see TextAnalysis.IndexTokensForKeyword.
         foreach (string kw in mergedKeywords)
         {
