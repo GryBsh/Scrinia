@@ -61,4 +61,33 @@ public class EntityTypeClassifierTests
         var c = Make(new Dictionary<string, float[]>());
         (await c.TypeAsync("weirdtoken", [], default)).Should().BeNull();
     }
+
+    [Fact]
+    public async Task CentroidNormalization_IsLoadBearing_ForSpreadSeeds()
+    {
+        // "place" seeds map to three DISTINCT unit vectors clustered around the x-axis (not the
+        // identical-vector trick the other centroid test uses), so their RAW (pre-normalization)
+        // mean has magnitude ~0.449 -- below CentroidThreshold (0.50) -- even though every seed
+        // agrees in direction with the x-axis test value. Only L2-normalizing the centroid
+        // (restoring magnitude 1, same direction) pushes the similarity to 1.0. Without that
+        // normalization step this test flips: the classifier would return null instead of "place".
+        float[] v1 = [1f, 0f, 0f];
+        float[] v2 = [0.1736f, 0.9848f, 0f];   // +80 degrees off the x-axis
+        float[] v3 = [0.1736f, -0.9848f, 0f];  // -80 degrees off the x-axis
+        float[][] spread = [v1, v2, v3];
+
+        var map = new Dictionary<string, float[]> { ["axis"] = [1f, 0f, 0f] };
+        var placeSeeds = EntityTypeClassifier.SeedVocab["place"];
+        for (int i = 0; i < placeSeeds.Length; i++) map[placeSeeds[i]] = spread[i % spread.Length];
+
+        // Other four types point along orthogonal-ish axes so their similarity to "axis" stays
+        // ~0 regardless of normalization -- only "place"'s centroid magnitude is under test.
+        foreach (var seed in EntityTypeClassifier.SeedVocab["person"]) map[seed] = [0f, 1f, 0f];
+        foreach (var seed in EntityTypeClassifier.SeedVocab["org"]) map[seed] = [0f, 0f, 1f];
+        foreach (var seed in EntityTypeClassifier.SeedVocab["thing"]) map[seed] = [0f, -1f, 0f];
+        foreach (var seed in EntityTypeClassifier.SeedVocab["topic"]) map[seed] = [0f, 0f, -1f];
+
+        var c = Make(map);
+        (await c.TypeAsync("axis", [], default)).Should().Be("place");
+    }
 }
