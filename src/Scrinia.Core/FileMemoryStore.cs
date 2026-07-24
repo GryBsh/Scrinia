@@ -1144,6 +1144,71 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
+    /// Atomically load-mutate-persist the entry for <paramref name="subject"/> in <paramref
+    /// name="scope"/> under a single acquisition of the per-scope write lock. Returns false when
+    /// the entry is missing or <paramref name="mutate"/> returns null (no write). This is the seam
+    /// the async typing sink uses to write attribute promotions back — it fires NO event sinks.
+    /// Mirrors <see cref="Remove"/>'s identity resolution (meta path) and <see cref="Upsert"/>'s
+    /// persist/invalidate tail.
+    /// </summary>
+    public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    {
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            string storeDir = GetStoreDirForScope(scope);
+            string metaPath = Path.Combine(storeDir, SanitizeName(subject) + ".meta.json");
+            if (!File.Exists(metaPath)) return false;
+
+            var current = LoadEntriesFromSidecars(storeDir)
+                .Select(e => e.NormalizeAttributesKey())
+                .FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+            if (current is null) return false;
+
+            var updated = mutate(current);
+            if (updated is null) return false;
+
+            // Stamp UpdatedAt so the per-scope facts.json validity token (keyed on name +
+            // UpdatedAt??CreatedAt, not content) actually changes. Without this, a mutate that
+            // only touches Attributes without bumping the timestamp leaves the token identical
+            // to the last-written sidecar, and GetEntityFactStore trusts that stale file instead
+            // of rebuilding — silently defeating the fact-store invalidation this method exists
+            // to guarantee.
+            updated = updated with { UpdatedAt = DateTimeOffset.UtcNow };
+
+            WriteSidecar(updated, storeDir);
+
+            _indexCache.TryRemove(scope, out _);
+            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
+            string? legacyDir = ResolveLegacyFallbackDir(scope);
+            if (legacyDir is not null && Directory.Exists(legacyDir))
+            {
+                var legacyEntries = LoadEntriesFromSidecars(legacyDir);
+                var namespacedNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+                foreach (var le in legacyEntries)
+                {
+                    if (!namespacedNames.Contains(le.Name))
+                        entries.Add(le.NormalizeAttributesKey());
+                }
+            }
+            _indexCache[scope] = new CachedIndex(entries);
+
+            if (scope.StartsWith("local:", StringComparison.Ordinal))
+                _cachedTopics = null;
+
+            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+
+            return true;
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
     /// Loads index entries from cache or disk. Unlike <see cref="LoadIndexUnsafe"/>,
     /// this does NOT take a lock — caller must already hold a write lock.
     /// </summary>

@@ -42,6 +42,25 @@ public interface IMemoryStore
     void Upsert(ArtifactEntry entry, string scope = "local");
     bool Remove(string name, string scope = "local");
 
+    /// <summary>
+    /// Atomically load the entry for <paramref name="subject"/> in <paramref name="scope"/>, apply
+    /// <paramref name="mutate"/>, and persist the result. Returns false when the entry is missing or
+    /// <paramref name="mutate"/> returns null (no write). Fires NO event sinks — it is the seam the
+    /// async typing sink uses to write promotions back without re-entering the sink pipeline.
+    /// <para>Default implementation is a non-atomic load→mutate→Upsert, adequate for in-memory/test
+    /// stores with no concurrent writers. FileMemoryStore overrides it to run under its per-scope
+    /// write lock.</para>
+    /// </summary>
+    bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    {
+        var current = LoadIndex(scope).FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+        if (current is null) return false;
+        var updated = mutate(current);
+        if (updated is null) return false;
+        Upsert(updated, scope);
+        return true;
+    }
+
     // Listing & Search
     List<ScopedArtifact> ListScoped(string? scopes = null);
     IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20);
