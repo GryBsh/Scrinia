@@ -1170,14 +1170,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             var updated = mutate(current);
             if (updated is null) return false;
 
-            // Stamp UpdatedAt so the per-scope facts.json validity token (keyed on name +
-            // UpdatedAt??CreatedAt, not content) actually changes. Without this, a mutate that
-            // only touches Attributes without bumping the timestamp leaves the token identical
-            // to the last-written sidecar, and GetEntityFactStore trusts that stale file instead
-            // of rebuilding — silently defeating the fact-store invalidation this method exists
-            // to guarantee.
-            updated = updated with { UpdatedAt = DateTimeOffset.UtcNow };
-
             WriteSidecar(updated, storeDir);
 
             _indexCache.TryRemove(scope, out _);
@@ -1413,7 +1405,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             string token = EntityFactSidecar.ComputeToken(
                 items.Select(sa => (((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name),
-                                    sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt)));
+                                    sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt,
+                                    EntitySignature(sa.Entry))));
 
             IReadOnlyList<MemoryEntities>? mems = null;
             if (sidecarPath is not null && File.Exists(sidecarPath))
@@ -1444,6 +1437,32 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (_factStoreGeneration == gen) _factStore = built;    // no mutation during build -> safe to cache
             return built;                                           // else return fresh but don't cache a stale snapshot
         }
+    }
+
+    /// <summary>
+    /// Deterministic, order-independent summary of everything <see cref="EntityFactDerivation.Derive"/>
+    /// reads from an entry — <c>Attributes</c> and <c>Keywords</c> (the same union
+    /// <c>EntityGraph.ParseEntityKeywords ∪ ParseEntityAttributes</c> consumes) — for use as the
+    /// content component of a <see cref="EntityFactSidecar.ComputeToken"/> entry. Attribute keys and,
+    /// within each key, its values are sorted so two attribute dictionaries that differ only in
+    /// insertion/enumeration order produce the same signature. Keywords are sorted the same way.
+    /// Over-invalidating on a non-entity field (e.g. capitalization noise elsewhere) is acceptable —
+    /// it just costs a safe rebuild; under-invalidating (missing a real entity change) is the bug
+    /// this signature exists to close.
+    /// </summary>
+    private static string EntitySignature(ArtifactEntry entry)
+    {
+        string attrs = entry.Attributes is null
+            ? string.Empty
+            : string.Join(";", entry.Attributes
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(kv => $"{kv.Key.ToLowerInvariant()}=[{string.Join(",", kv.Value.OrderBy(v => v, StringComparer.OrdinalIgnoreCase))}]"));
+
+        string kws = entry.Keywords is null
+            ? string.Empty
+            : string.Join(",", entry.Keywords.OrderBy(k => k, StringComparer.OrdinalIgnoreCase));
+
+        return $"{attrs}|kw=[{kws}]";
     }
 
     private static string SafeReadAllText(string path)
