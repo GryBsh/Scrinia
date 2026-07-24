@@ -35,6 +35,13 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     // search hot path even when nothing had changed.
     private string[]? _cachedTopics;
 
+    // Merged cross-scope entity fact store. Invalidated event-driven (set to null) by
+    // Upsert / Remove. Rebuilt lazily on next GetEntityFactStore() call from each scope's
+    // facts.json sidecar (reused when its validity token matches the current index) or
+    // re-derived from entries when the sidecar is missing/stale.
+    private readonly object _factStoreLock = new();
+    private EntityFactStore? _factStore;
+
     /// <summary>
     /// In-memory cache of a scope's index entries with O(1) name→position lookup
     /// and lazily computed BM25 corpus statistics.
@@ -1066,6 +1073,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // Invalidate topic discovery cache when saving a topic scope
             if (scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
+
+            lock (_factStoreLock) { _factStore = null; }
         }
         finally
         {
@@ -1113,6 +1122,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             // at the corresponding write paths.
             if (scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
+
+            lock (_factStoreLock) { _factStore = null; }
 
             return true;
         }
@@ -1290,6 +1301,72 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 result.Add(new ScopedArtifact(scope, entry));
         }
         return result;
+    }
+
+    // ── Entity Facts ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The merged cross-scope <see cref="EntityFactStore"/>. Built lazily and cached; invalidated on
+    /// any Upsert/Remove. Each scope's facts persist in a <c>facts.json</c> sidecar, reused when its
+    /// validity token matches the current index and rebuilt-and-rewritten otherwise (never trusted blindly).
+    /// </summary>
+    public EntityFactStore GetEntityFactStore()
+    {
+        lock (_factStoreLock)
+        {
+            if (_factStore is not null) return _factStore;
+
+            var merged = new List<MemoryEntities>();
+            foreach (var group in ListScoped(null).GroupBy(sa => sa.Scope, StringComparer.Ordinal))
+            {
+                string scope = group.Key;
+                var items = group.ToList();
+
+                // "ephemeral" (and any other scope with no on-disk store) has no directory to
+                // hold a sidecar — GetStoreDirForScope throws for it. Derive its facts in-memory
+                // only; everything else about the merge is unaffected.
+                string? sidecarPath = null;
+                try { sidecarPath = Path.Combine(GetStoreDirForScope(scope), "facts.json"); }
+                catch (ArgumentException) { /* no on-disk store for this scope */ }
+
+                string token = EntityFactSidecar.ComputeToken(
+                    items.Select(sa => (((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name),
+                                        sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt)));
+
+                IReadOnlyList<MemoryEntities>? mems = null;
+                if (sidecarPath is not null && File.Exists(sidecarPath))
+                {
+                    var loaded = EntityFactSidecar.TryLoad(SafeReadAllText(sidecarPath));
+                    if (loaded is { } l && l.Token == token) mems = l.Memories;
+                }
+
+                if (mems is null)
+                {
+                    mems = items
+                        .Select(sa => EntityFactDerivation.Derive(
+                            sa, ((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name)))
+                        .Where(m => m is not null)
+                        .Select(m => m!)
+                        .ToArray();
+                    if (sidecarPath is not null)
+                        TryWriteAllText(sidecarPath, EntityFactSidecar.Serialize(token, mems));
+                }
+
+                merged.AddRange(mems);
+            }
+
+            return _factStore = new EntityFactStore(merged);
+        }
+    }
+
+    private static string SafeReadAllText(string path)
+    {
+        try { return File.ReadAllText(path); } catch { return string.Empty; }
+    }
+
+    private static void TryWriteAllText(string path, string content)
+    {
+        try { File.WriteAllText(path, content); } catch { /* in-memory store is still correct */ }
     }
 
     public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20)
