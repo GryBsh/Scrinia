@@ -175,17 +175,17 @@ Search combines three scoring mechanisms into a single ranked result set.
 ### Scoring Formula
 
 ```
-finalScore = weightedFieldScore + (normalizedBm25 * 5.0) + supplementalScore
+finalScore = weightedAttributeScore + (normalizedBm25 * 5.0) + supplementalScore
 ```
 
 Where:
-- **weightedFieldScore**: Field-specific matching (0-100+ points)
+- **weightedAttributeScore**: Attribute-specific matching (0-100+ points)
 - **normalizedBm25**: BM25 relevance normalized to 0-100 via min-max
 - **supplementalScore**: Plugin-provided scores (e.g., cosine similarity from embeddings)
 
-### Weighted Field Scoring
+### Weighted Attribute Scoring
 
-Each query term is matched against entry fields with different weights:
+Each query term is matched against entry attributes with different weights:
 
 | Match Type | Score |
 |------------|-------|
@@ -201,9 +201,9 @@ Each query term is matched against entry fields with different weights:
 
 (There is no separate tag or description scoring: `tag` is an ordinary attribute key scored via the attribute rows, and a curated description lives in `ContentPreview`.)
 
-Attribute scores are multiplied by a per-key weight (`KnownFields.AttributeWeight(key)`, seeded at 1.0 so it changes no score today; the curation knob that replaced the old EntityKeys-only graph gate). **Legacy entries:** the scorer reads only `entry.Attributes`; `key:value`-shaped legacy `Keywords` (e.g. `person:maria` written before unification) are promoted into `Attributes` by the load-time forward-fill (`AttributeMigration.Forward`), so pre-migration entries score identically without a re-index — the on-the-fly key:value re-parse that once lived in the scorer was retired in P6.5. See `WeightedFieldScorer.ScoreEntryTerm` in `Scrinia.Core.Search`.
+Attribute scores are multiplied by a per-key weight (`KnownAttributes.AttributeWeight(key)`, seeded at 1.0 so it changes no score today; the curation knob that replaced the old EntityKeys-only graph gate). **Legacy entries:** the scorer reads only `entry.Attributes`; `key:value`-shaped legacy `Keywords` (e.g. `person:maria` written before unification) are promoted into `Attributes` by the load-time forward-fill (`AttributeMigration.Forward`), so pre-migration entries score identically without a re-index — the on-the-fly key:value re-parse that once lived in the scorer was retired in P6.5. See `WeightedAttributeScorer.ScoreEntryTerm` in `Scrinia.Core.Search`.
 
-**Chunk scoring** uses parent metadata at half weight plus chunk-specific fields.
+**Chunk scoring** uses parent metadata at half weight plus chunk-specific attributes.
 
 **Topic scoring** follows a similar pattern (exact topic name: 100, tag match: 50, etc.).
 
@@ -250,14 +250,14 @@ Tokenization: split on non-alphanumeric characters, lowercase, filter stop words
 
 `Attributes` (`ArtifactEntry.Attributes`, `Dictionary<string, string[]>?`, JSON `"attributes"`) is the unified set of typed facets that replaced the older scheme of encoding structured facts as prefixed keywords (`person:maria`, `file:src/Foo.cs`). An attribute key is either an **entity key** (recommended entity vocabulary) or a **reference key** (feeds cross-reference tracking); everything else is scalar state. Both write paths (MCP `Store`/`Append` and the server orchestrator) route agent keywords, mechanical content extraction, and reference extraction into `Attributes` instead of emitting prefixed keywords. Prefixed-keyword *writes* are retired; prefixed-keyword *reads* are preserved everywhere via dual-read (see below), so entries written before this change keep working with no re-index or backfill.
 
-#### KnownFields
+#### KnownAttributes
 
-`KnownFields` in `Scrinia.Core.Search` is the single schema point — the only place that knows which attribute keys are multi-valued and what merge semantics apply:
+`KnownAttributes` in `Scrinia.Core.Search` is the single schema point — the only place that knows which attribute keys are multi-valued and what merge semantics apply:
 
 ```csharp
-public static class KnownFields
+public static class KnownAttributes
 {
-    public const int MaxFields = 32;
+    public const int MaxAttributes = 32;
     public static readonly IReadOnlySet<string> EntityKeys;     // person, place, org, thing, topic
     public static readonly IReadOnlySet<string> ReferenceKeys;  // file, ref
     public const string ReviewKey = "review";
@@ -272,28 +272,28 @@ public static class KnownFields
 
 - **Entity keys** (`person`, `place`, `org`, `thing`, `topic`) union-merge and are the **recommended** entity vocabulary — but every attribute key feeds the entity graph uniformly, not just these five (see Dual-read below).
 - **Reference keys** (`file`, `ref`) union-merge and feed References/Link/orphan tracking plus the **`FileHashes`** builder.
-- Per-key influence is a soft weight (`KnownFields.AttributeWeight`, seeded at parity — every key `1.0`) that **replaced the old "only EntityKeys build the graph" gate**. `RecommendedKeys` is guidance plus the weight-table seed, not a gate.
+- Per-key influence is a soft weight (`KnownAttributes.AttributeWeight`, seeded at parity — every key `1.0`) that **replaced the old "only EntityKeys build the graph" gate**. `RecommendedKeys` is guidance plus the weight-table seed, not a gate.
 - All other keys are scalar: `Merge` treats incoming as newer-wins (first-wins would freeze stale statuses), except multi-valued keys which union-dedupe with existing values keeping their original order.
-- `MaxFields = 32` caps total attribute keys per entry; existing keys count first against the cap.
+- `MaxAttributes = 32` caps total attribute keys per entry; existing keys count first against the cap.
 
-#### FieldExtractor
+#### AttributeExtractor
 
-`FieldExtractor` in `Scrinia.Core.Search` is the single write-time entry point with three sources feeding one attribute bag:
+`AttributeExtractor` in `Scrinia.Core.Search` is the single write-time entry point with three sources feeding one attribute bag:
 
 - **`RouteKeywords(keywords)`** -- agent-keyword routing. Splits agent-supplied keywords into attribute-shaped (`key:value` -> `Attributes`) and plain (stay in `Keywords`, still participate in BM25/keyword scoring).
 - **`Extract(content)`** -- mechanical content extraction. Line-by-line scan for frontmatter, `key: value` line-starts, and `**Bold:** value` labels; skips code fences.
-- **`ExtractRefFields(content)`** -- reference extraction. Delegates to `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs` and packages results as `{file: [...], ref: [...]}`, replacing the retired `file:`/`ref:` prefixed-keyword emission.
+- **`ExtractRefAttributes(content)`** -- reference extraction. Delegates to `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs` and packages results as `{file: [...], ref: [...]}`, replacing the retired `file:`/`ref:` prefixed-keyword emission.
 - **`SeedTermFrequencies(attributes, tf)`** -- not an extraction source; seeds attribute keys/values into the term-frequency dictionary (+3/token) so BM25 also matches attribute vocabulary.
 
-`ReferenceExtractor` itself (source-generated regexes for file-path and memory-reference patterns) still exists as the low-level parser underneath `ExtractRefFields` — it's no longer called directly by the write paths to emit keywords.
+`ReferenceExtractor` itself (source-generated regexes for file-path and memory-reference patterns) still exists as the low-level parser underneath `ExtractRefAttributes` — it's no longer called directly by the write paths to emit keywords.
 
 #### Dual-read
 
 Every consumer of typed/prefixed data reads **both** shapes so old entries (which only ever had prefixed `Keywords`, since `Attributes` didn't exist yet) and new entries (which have `Attributes`) retrieve identically:
 
-- **Scorer** (`WeightedFieldScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), each × the per-key `AttributeWeight`. It does not re-parse `key:value` `Keywords` — that on-the-fly parse was retired in P6.5; the load-time forward-fill promotes such keywords into `Attributes` first.
-- **Entity graph** (`EntityGraph.Build`): unions `ParseTypedEntities(keywords)` (legacy `type:value` keywords) with `ParseEntityFields(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownFields.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
-- **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Attributes["ref"]` for inbound references; new links are written forward-only into the `ref` attribute (no more `ref:` keyword emission) via `KnownFields.Merge`.
+- **Scorer** (`WeightedAttributeScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), each × the per-key `AttributeWeight`. It does not re-parse `key:value` `Keywords` — that on-the-fly parse was retired in P6.5; the load-time forward-fill promotes such keywords into `Attributes` first.
+- **Entity graph** (`EntityGraph.Build`): unions `ParseEntityKeywords(keywords)` (legacy `type:value` keywords) with `ParseEntityAttributes(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownAttributes.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
+- **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Attributes["ref"]` for inbound references; new links are written forward-only into the `ref` attribute (no more `ref:` keyword emission) via `KnownAttributes.Merge`.
 - **FileHashes**: the MCP `Store` write path unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `ArtifactEntry.FileHashes`.
 
 This is a **forward-only migration**: `Attributes` is `null` for entries written before this change and stays `null` — there is no backfill script. Dual-read at the scorer/graph/orphan layers is what keeps old and new entries behaving the same, permanently, without a re-index.

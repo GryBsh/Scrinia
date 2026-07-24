@@ -8,7 +8,7 @@ Scrinia has built-in semantic vector search in `Scrinia.Core`. It embeds text in
                 Search query
                      |
           +----------v----------+
-          |  WeightedFieldScorer |  BM25 + field matching → top-K candidates
+          |  WeightedAttributeScorer |  BM25 + attribute matching → top-K candidates
           +----------+----------+
                      |
           +----------v----------+
@@ -17,7 +17,7 @@ Scrinia has built-in semantic vector search in `Scrinia.Core`. It embeds text in
           +----------+----------+
                      |
           +----------v----------+
-          |    Final scoring     |  fieldScore + bm25*5 + semanticScore
+          |    Final scoring     |  attributeScore + bm25*5 + semanticScore
           +---------------------+
 ```
 
@@ -337,7 +337,7 @@ manual `scri config Scrinia:Embeddings:ChunkSize 1800`.
   per-chunk scoring path)
 - `{scope}|{name}` — max-aggregated score across all chunks of that memory
 
-`WeightedFieldScorer.SearchAll` reads the whole-memory key for the per-entry
+`WeightedAttributeScorer.SearchAll` reads the whole-memory key for the per-entry
 scoring pass and ends up with exactly one result per memory at the best chunk's
 score. No chunk-vs-chunk-vs-whole double-counting.
 
@@ -405,7 +405,7 @@ public sealed class HybridReranker : ISearchScoreContributor
 ```
 
 **Flow:**
-1. `WeightedFieldScorer` produces top-K BM25+field candidates
+1. `WeightedAttributeScorer` produces top-K BM25+attribute candidates
 2. `HybridReranker` receives these candidates
 3. Embeds the search query
 4. Groups candidates by scope
@@ -415,7 +415,7 @@ public sealed class HybridReranker : ISearchScoreContributor
 
 These supplemental scores are added to the final score:
 ```
-finalScore = weightedFieldScore + (normalizedBm25 * 5.0) + supplementalScore
+finalScore = weightedAttributeScore + (normalizedBm25 * 5.0) + supplementalScore
 ```
 
 ## CLI Integration
