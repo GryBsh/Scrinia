@@ -109,6 +109,7 @@ internal static class Program
               --judge-base-url <u>    OpenAI-compatible endpoint for the judge.
               --judge-api-key <k>     API key for the judge provider.
               --judge-k <n>           Retrieved items the answerer sees (default 10).
+              --judge-concurrency <N> Max concurrent judge calls (answerer+grader) per conversation (locomo only; default 1 = sequential). The judge is network-bound and the run's bottleneck, so 8-32 slashes wall-time; the LLM-server rate limit and its context/batch capacity cap the useful upper bound. Retrieval stays sequential; only the judge parallelizes. Output order is unchanged.
               --judge-answer-max-tokens <n>  Answerer max_tokens — bounds the whole request (query + top-k surfaced memories + answer). Default 8192.
               --judge-grade-max-tokens <n>   Grader max_tokens — bounds the whole request (query + gold + candidate answer + verdict). Default 2048.
 

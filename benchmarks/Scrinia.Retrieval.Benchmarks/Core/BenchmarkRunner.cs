@@ -149,6 +149,7 @@ public sealed class BenchmarkRunner
         BenchmarkScorer.Scorer scorer,
         IProgress<RunProgress>? progress = null,
         int ingestConcurrency = 1,
+        int judgeConcurrency = 1,
         string? granularity = null,
         string? temporalScenario = null,
         CancellationToken ct = default)
@@ -159,9 +160,11 @@ public sealed class BenchmarkRunner
         ArgumentNullException.ThrowIfNull(retriever);
         ArgumentNullException.ThrowIfNull(scorer);
         if (ingestConcurrency < 1) ingestConcurrency = 1;
+        if (judgeConcurrency < 1) judgeConcurrency = 1;
 
         var startedAt = DateTimeOffset.UtcNow;
         var results = new List<QuestionResult>();
+        int completed = 0;
         bool first = true;
 
         await foreach (var group in groups.WithCancellation(ct))
@@ -173,29 +176,44 @@ public sealed class BenchmarkRunner
             await IngestHaystackAsync(retriever, group.SharedHaystack, ingestConcurrency, _agent, ct);
 
             var dateById = BuildDateById(group.SharedHaystack);
+            var qs = group.Questions;
 
-            foreach (var q in group.Questions)
+            // Phase 1 (sequential, local): retrieve + build answerer context + score every
+            // question. These are index reads over the already-ingested haystack — kept
+            // sequential so the retriever is never touched concurrently. Query passes through
+            // unchanged (the agent op is ingest-only).
+            var scoredArr = new QuestionResult[qs.Count];
+            for (int i = 0; i < qs.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
-                // Query passes through unchanged — the agent op is ingest-only.
-                string queryText = q.QueryText;
-                var hits = await retriever.RetrieveAsync(queryText, topK, ct);
+                var q = qs[i];
+                var hits = await retriever.RetrieveAsync(q.QueryText, topK, ct);
                 var scored = scorer(q, hits);
-
                 int contextK = _judge?.JudgeK ?? DefaultJudgeContextK;
-                var judgeContext = await BuildAnswererContextAsync(retriever, queryText, hits, dateById, contextK, ct);
-                scored = scored with
+                var judgeContext = await BuildAnswererContextAsync(retriever, q.QueryText, hits, dateById, contextK, ct);
+                scoredArr[i] = scored with
                 {
                     GoldAnswer = q.GoldAnswer,
                     JudgeContext = judgeContext,
                     DateSurfaced = AnyDateSurfaced(judgeContext),
                 };
+            }
 
+            // Phase 2: judge each question. The judge does only the answerer + grader LLM
+            // calls, which hit the network and the thread-safe LlmResponseCache — never the
+            // retriever — so it parallelizes up to judgeConcurrency (the run's bottleneck).
+            // Verdicts are written back by index, so output order is independent of completion
+            // order. When there's no judge (or judgeConcurrency == 1) this stays sequential and
+            // just reports progress per question, identical to the prior behavior.
+            async ValueTask FinalizeAsync(int i, CancellationToken c)
+            {
                 if (_judge is not null)
                 {
-                    var verdict = await _judge.JudgeAsync(q.Id, q.QueryText, q.GoldAnswer, judgeContext, ct);
+                    var q = qs[i];
+                    var verdict = await _judge.JudgeAsync(
+                        q.Id, q.QueryText, q.GoldAnswer, scoredArr[i].JudgeContext ?? [], c);
                     if (verdict is not null)
-                        scored = scored with
+                        scoredArr[i] = scoredArr[i] with
                         {
                             SurfacedFromContext = verdict.SurfacedFromContext,
                             AnsweredCorrectly = verdict.AnsweredCorrectly,
@@ -203,9 +221,26 @@ public sealed class BenchmarkRunner
                             JudgeGraderVerdict = verdict.GraderVerdict,
                         };
                 }
-                results.Add(scored);
-                progress?.Report(new RunProgress(results.Count, scored));
+                int done = Interlocked.Increment(ref completed);
+                progress?.Report(new RunProgress(done, scoredArr[i]));
             }
+
+            if (_judge is not null && judgeConcurrency > 1)
+            {
+                var judgeOptions = new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = judgeConcurrency,
+                    CancellationToken = ct,
+                };
+                await Parallel.ForEachAsync(Enumerable.Range(0, qs.Count), judgeOptions, FinalizeAsync);
+            }
+            else
+            {
+                for (int i = 0; i < qs.Count; i++)
+                    await FinalizeAsync(i, ct);
+            }
+
+            results.AddRange(scoredArr);
         }
 
         var aggregate = BenchmarkScorer.Aggregate(results);
