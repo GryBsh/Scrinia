@@ -44,9 +44,11 @@ public static class MemoryOrchestrator
                 KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)),
                 refAttributes),
             mentionAttributes);
-        // No shadow-drop needed here: StoreRequest carries no explicit agent-attributes field
-        // (unlike the MCP path's `attributes` param), so nothing folds in after mentionAttributes
-        // that could shadow it with a typed entity key.
+        // StoreRequest carries no explicit agent-attributes field, but req.Keywords can still
+        // route a "person:jolene"-shaped entry into routedAttributes (above) — which collides
+        // with a mention:jolene span extracted from the same content. Shadow-drop unconditionally;
+        // it's a no-op when nothing shadows.
+        attributes = AttributeExtractor.DropMentionsShadowedByTypedKeys(attributes);
         AttributeExtractor.SeedTermFrequencies(attributes, tf);
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
