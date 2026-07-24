@@ -186,11 +186,16 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
-        // Assemble unified attributes: routed keywords ∪ content extraction ∪ references,
-        // then fold in explicit agent attributes (they win scalar collisions), then seed
-        // key/value tokens into TF.
-        var entryAttributes = KnownAttributes.Merge(KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)), refAttributes);
+        // Assemble unified attributes: routed keywords ∪ content extraction ∪ references ∪ prose
+        // mention spans, then fold in explicit agent attributes (they win scalar collisions), then
+        // seed key/value tokens into TF.
+        var entryAttributes = KnownAttributes.Merge(
+            KnownAttributes.Merge(
+                KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)),
+                refAttributes),
+            AttributeExtractor.ExtractMentionSpans(joined));
         entryAttributes = KnownAttributes.Merge(entryAttributes, NormalizeAttributes(attributes));
+        entryAttributes = AttributeExtractor.DropMentionsShadowedByTypedKeys(entryAttributes);
         AttributeExtractor.SeedTermFrequencies(entryAttributes, tf);
 
         ChunkEntry[]? chunkEntries = content.Length > 1

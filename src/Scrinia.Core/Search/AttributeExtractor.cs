@@ -199,6 +199,31 @@ public static partial class AttributeExtractor
             : null;
     }
 
+    /// <summary>Removes any <see cref="KnownAttributes.MentionKey"/> value that also appears under
+    /// one of <see cref="KnownAttributes.EntityKeys"/> in the same entry — the typed key
+    /// (agent-supplied or otherwise) is authoritative, and a duplicate untyped mention would
+    /// double-count the entity in aggregation (entity graph, top-attributes facets). Shared by
+    /// both write paths (MCP <c>MemoryTools.Core.cs</c>, server <c>MemoryOrchestrator</c>) so the
+    /// dedup logic lives once. Returns <paramref name="attrs"/> unchanged (same reference) when
+    /// there is nothing to shadow-drop.</summary>
+    public static Dictionary<string, string[]>? DropMentionsShadowedByTypedKeys(Dictionary<string, string[]>? attrs)
+    {
+        if (attrs is null || !attrs.TryGetValue(KnownAttributes.MentionKey, out var mentions) || mentions.Length == 0)
+            return attrs;
+
+        var typedValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in KnownAttributes.EntityKeys)
+            if (attrs.TryGetValue(key, out var vals))
+                foreach (var v in vals) typedValues.Add(v);
+
+        var kept = mentions.Where(m => !typedValues.Contains(m)).ToArray();
+        if (kept.Length == mentions.Length) return attrs;
+
+        if (kept.Length == 0) attrs.Remove(KnownAttributes.MentionKey);
+        else attrs[KnownAttributes.MentionKey] = kept;
+        return attrs;
+    }
+
     /// <summary>Blanks out inline `code` spans (backtick-delimited) with spaces so their tokens
     /// are never scanned, while preserving column positions.</summary>
     private static string StripInlineCode(string line)

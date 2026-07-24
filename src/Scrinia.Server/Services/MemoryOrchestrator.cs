@@ -38,7 +38,15 @@ public static class MemoryOrchestrator
         }
 
         var refAttributes = AttributeExtractor.ExtractRefAttributes(joined);
-        var attributes = KnownAttributes.Merge(KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)), refAttributes);
+        var mentionAttributes = AttributeExtractor.ExtractMentionSpans(joined);
+        var attributes = KnownAttributes.Merge(
+            KnownAttributes.Merge(
+                KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)),
+                refAttributes),
+            mentionAttributes);
+        // No shadow-drop needed here: StoreRequest carries no explicit agent-attributes field
+        // (unlike the MCP path's `attributes` param), so nothing folds in after mentionAttributes
+        // that could shadow it with a typed entity key.
         AttributeExtractor.SeedTermFrequencies(attributes, tf);
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
