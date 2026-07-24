@@ -51,4 +51,29 @@ public sealed class EntityFactStore
             .OrderBy(e => e.Key, StringComparer.Ordinal)
             .ThenBy(e => e.Value, StringComparer.Ordinal)
             .ToArray();
+
+    public IReadOnlyList<EntityFact> Timeline(EntityRef entity) =>
+        Facts(entity)
+            .OrderBy(f => f.Date)
+            .ThenBy(f => f.MemoryId, StringComparer.Ordinal)
+            .ToArray();
+
+    public (DateTimeOffset First, DateTimeOffset Last)? Span(EntityRef entity)
+    {
+        if (!_byEntity.TryGetValue(entity, out var mems) || mems.Count == 0) return null;
+        return (mems.Min(m => m.Date), mems.Max(m => m.Date));
+    }
+
+    public IReadOnlyList<(EntityRef Entity, int Count)> Neighbors(EntityRef entity)
+    {
+        if (!_byEntity.TryGetValue(entity, out var mems)) return [];
+        return mems
+            .SelectMany(m => m.Entities.Where(e => e != entity))
+            .GroupBy(e => e)
+            .Select(g => (Entity: g.Key, Count: g.Count()))
+            .OrderByDescending(t => t.Count)
+            .ThenBy(t => t.Entity.Key, StringComparer.Ordinal)
+            .ThenBy(t => t.Entity.Value, StringComparer.Ordinal)
+            .ToArray();
+    }
 }
