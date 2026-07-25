@@ -56,6 +56,36 @@ public class EntityTypingEventHandlerTests
         reloaded.Attributes!["thing"].Should().Contain("seraphim");
     }
 
+    /// <summary>
+    /// Guards the switch from a bespoke <c>store.ListScoped(null)</c> scan to
+    /// <c>store.GetEntityFactStore().Entities(key)</c> for gathering the existing typed vocabulary
+    /// (review follow-up: the old scan re-walked the whole store on every write event; the fact
+    /// store is cached and generation-invalidated). The typed anchor lives in a DIFFERENT scope
+    /// (<c>local:other</c>) than the memory being typed (<c>local:findings</c>) -- linking still
+    /// succeeds only if the vocab genuinely comes from the fact store's merged cross-scope view.
+    /// </summary>
+    [Fact]
+    public async Task Promotes_MentionToTypedKey_ViaFactStore_AcrossScopes()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.Store;
+        store.Upsert(new ArtifactEntry("known", "uri", 1, 1, DateTimeOffset.UtcNow,
+            Attributes: new(StringComparer.OrdinalIgnoreCase) { ["thing"] = ["susie"] }), "local:other");
+        store.Upsert(Mentioning("note", "seraphim"), "local:findings");
+
+        var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
+        var sink = new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3));
+
+        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+
+        var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "note");
+        reloaded.Attributes!.TryGetValue("mention", out var m);
+        (m ?? []).Should().NotContain("seraphim");
+        reloaded.Attributes!["thing"].Should().Contain("seraphim",
+            "the existing typed vocabulary must come from the fact store's cross-scope merged " +
+            "view (GetEntityFactStore), not a same-scope-only read");
+    }
+
     [Fact]
     public async Task EmbedderAbsent_NoOp_MentionRemains()
     {

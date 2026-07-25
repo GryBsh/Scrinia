@@ -41,15 +41,14 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
         if (!entry.Attributes.TryGetValue(KnownAttributes.MentionKey, out var mentions) || mentions.Length == 0)
             return;
 
-        // Existing typed vocabulary across all scopes (values under the five entity keys).
+        // Existing typed vocabulary across all scopes, from the cached cross-scope fact store
+        // (cache-on-first-read, invalidated on mutation) rather than a bespoke ListScoped(null)
+        // rescan on every write event.
+        var facts = store.GetEntityFactStore();
         var existingTyped = new List<(string Value, string Type)>();
-        foreach (var scoped in store.ListScoped(null))
-        {
-            if (scoped.Entry.Attributes is null) continue;
-            foreach (var key in KnownAttributes.EntityKeys)
-                if (scoped.Entry.Attributes.TryGetValue(key, out var vals))
-                    foreach (var v in vals) existingTyped.Add((v, key));
-        }
+        foreach (var key in KnownAttributes.EntityKeys)
+            foreach (var e in facts.Entities(key))
+                existingTyped.Add((e.Value, key));
 
         // Classify (async, no lock held).
         var moves = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
