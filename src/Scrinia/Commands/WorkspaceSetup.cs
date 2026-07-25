@@ -246,7 +246,11 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([
+                    eventHandler,
+                    new EntityTypingEventHandler(provider),
+                    new MaintenanceEventSink(),
+                ]);
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] HTTP embeddings ready " +
@@ -289,7 +293,11 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.Default = new CompositeEventSink([eventHandler, new MaintenanceEventSink()]);
+                MemoryEventSinkContext.Default = new CompositeEventSink([
+                    eventHandler,
+                    new EntityTypingEventHandler(provider),
+                    new MaintenanceEventSink(),
+                ]);
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings ready " +

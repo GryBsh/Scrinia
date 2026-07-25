@@ -14,12 +14,17 @@ public static class EntityFactSidecar
 {
     public const int Version = 1;
 
-    /// <summary>Order-independent, content-sensitive token over a scope's (id, effective-date) pairs.
-    /// Effective date = <c>UpdatedAt ?? CreatedAt</c>. Sorting makes it independent of entry order.</summary>
-    public static string ComputeToken(IEnumerable<(string Id, DateTimeOffset EffectiveDate)> entries)
+    /// <summary>Order-independent, content-sensitive token over a scope's (id, effective-date,
+    /// content-signature) triples. Effective date = <c>UpdatedAt ?? CreatedAt</c>; the content
+    /// signature is a deterministic summary of the entity-bearing fields (Attributes/Keywords) —
+    /// see <c>FileMemoryStore.EntitySignature</c>. Including it means a mutation that changes an
+    /// entry's entity data invalidates the token even when its timestamp is untouched (e.g. a
+    /// store-level attribute rewrite that must not re-date the entry). Sorting makes the whole
+    /// token independent of entry order.</summary>
+    public static string ComputeToken(IEnumerable<(string Id, DateTimeOffset EffectiveDate, string ContentSignature)> entries)
     {
         var lines = entries
-            .Select(e => $"{e.Id} {e.EffectiveDate.UtcDateTime:O}")
+            .Select(e => $"{e.Id} {e.EffectiveDate.UtcDateTime:O} {e.ContentSignature}")
             .OrderBy(s => s, StringComparer.Ordinal);
         byte[] hash = SHA256.HashData(global::System.Text.Encoding.UTF8.GetBytes(string.Join("\n", lines)));
         return Convert.ToHexStringLower(hash);

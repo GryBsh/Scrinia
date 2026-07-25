@@ -108,4 +108,19 @@ public sealed class KnownAttributesTests
     {
         KnownAttributes.ReviewKey.Should().Be("review");
     }
+
+    [Fact]
+    public void Mention_IsMultiValued_AndUnionsOnMerge()
+    {
+        KnownAttributes.MentionKey.Should().Be("mention");
+        KnownAttributes.IsMultiValued("mention").Should().BeTrue();
+        KnownAttributes.IsMultiValued("MENTION").Should().BeTrue(); // case-insensitive
+
+        var existing = new Dictionary<string, string[]> { ["mention"] = ["seraphim"] };
+        var incoming = new Dictionary<string, string[]> { ["mention"] = ["france"] };
+
+        var merged = KnownAttributes.Merge(existing, incoming);
+
+        merged!["mention"].Should().BeEquivalentTo(["seraphim", "france"]);
+    }
 }

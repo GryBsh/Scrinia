@@ -15,7 +15,7 @@ public class EntityFactSidecarTests
         {
             new MemoryEntities("m1", D1, [EntityRef.Of("person", "jolene"), EntityRef.Of("place", "france")]),
         };
-        string token = EntityFactSidecar.ComputeToken([("m1", D1)]);
+        string token = EntityFactSidecar.ComputeToken([("m1", D1, "sig")]);
 
         string json = EntityFactSidecar.Serialize(token, mems);
         var loaded = EntityFactSidecar.TryLoad(json);
@@ -28,10 +28,31 @@ public class EntityFactSidecarTests
     [Fact]
     public void ComputeToken_IsOrderIndependent_AndChangesWithContent()
     {
-        var a = EntityFactSidecar.ComputeToken([("m1", D1), ("m2", D1)]);
-        var b = EntityFactSidecar.ComputeToken([("m2", D1), ("m1", D1)]);
+        var a = EntityFactSidecar.ComputeToken([("m1", D1, "sig1"), ("m2", D1, "sig2")]);
+        var b = EntityFactSidecar.ComputeToken([("m2", D1, "sig2"), ("m1", D1, "sig1")]);
         a.Should().Be(b);                                     // order-independent
-        EntityFactSidecar.ComputeToken([("m1", D1)]).Should().NotBe(a); // content-sensitive
+        EntityFactSidecar.ComputeToken([("m1", D1, "sig1")]).Should().NotBe(a); // content-sensitive
+    }
+
+    [Fact]
+    public void ComputeToken_ChangesWhenContentSignatureChanges_EvenWithIdenticalIdAndDate()
+    {
+        // The whole point of the content-signature component: an attribute-only mutation (no
+        // id change, no timestamp change) must still move the token, so a stale on-disk
+        // facts.json sidecar isn't blindly trusted after a content-only rewrite.
+        var before = EntityFactSidecar.ComputeToken([("m1", D1, "mention=[seraphim]|kw=[]")]);
+        var after = EntityFactSidecar.ComputeToken([("m1", D1, "thing=[seraphim]|kw=[]")]);
+
+        before.Should().NotBe(after);
+    }
+
+    [Fact]
+    public void ComputeToken_IsStable_WhenNothingChanges()
+    {
+        var a = EntityFactSidecar.ComputeToken([("m1", D1, "mention=[seraphim]|kw=[]")]);
+        var b = EntityFactSidecar.ComputeToken([("m1", D1, "mention=[seraphim]|kw=[]")]);
+
+        a.Should().Be(b);
     }
 
     [Fact]

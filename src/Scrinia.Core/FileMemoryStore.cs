@@ -1144,6 +1144,63 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
+    /// Atomically load-mutate-persist the entry for <paramref name="subject"/> in <paramref
+    /// name="scope"/> under a single acquisition of the per-scope write lock. Returns false when
+    /// the entry is missing or <paramref name="mutate"/> returns null (no write). This is the seam
+    /// the async typing sink uses to write attribute promotions back — it fires NO event sinks.
+    /// Mirrors <see cref="Remove"/>'s identity resolution (meta path) and <see cref="Upsert"/>'s
+    /// persist/invalidate tail.
+    /// </summary>
+    public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    {
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            string storeDir = GetStoreDirForScope(scope);
+            string metaPath = Path.Combine(storeDir, SanitizeName(subject) + ".meta.json");
+            if (!File.Exists(metaPath)) return false;
+
+            var current = LoadEntriesFromSidecars(storeDir)
+                .Select(e => e.NormalizeAttributesKey())
+                .FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+            if (current is null) return false;
+
+            var updated = mutate(current);
+            if (updated is null) return false;
+
+            WriteSidecar(updated, storeDir);
+
+            _indexCache.TryRemove(scope, out _);
+            var entries = LoadEntriesFromSidecars(storeDir).Select(e => e.NormalizeAttributesKey()).ToList();
+            string? legacyDir = ResolveLegacyFallbackDir(scope);
+            if (legacyDir is not null && Directory.Exists(legacyDir))
+            {
+                var legacyEntries = LoadEntriesFromSidecars(legacyDir);
+                var namespacedNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+                foreach (var le in legacyEntries)
+                {
+                    if (!namespacedNames.Contains(le.Name))
+                        entries.Add(le.NormalizeAttributesKey());
+                }
+            }
+            _indexCache[scope] = new CachedIndex(entries);
+
+            if (scope.StartsWith("local:", StringComparison.Ordinal))
+                _cachedTopics = null;
+
+            lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+
+            return true;
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
+    /// <summary>
     /// Loads index entries from cache or disk. Unlike <see cref="LoadIndexUnsafe"/>,
     /// this does NOT take a lock — caller must already hold a write lock.
     /// </summary>
@@ -1348,7 +1405,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             string token = EntityFactSidecar.ComputeToken(
                 items.Select(sa => (((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name),
-                                    sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt)));
+                                    sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt,
+                                    EntitySignature(sa.Entry))));
 
             IReadOnlyList<MemoryEntities>? mems = null;
             if (sidecarPath is not null && File.Exists(sidecarPath))
@@ -1379,6 +1437,32 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             if (_factStoreGeneration == gen) _factStore = built;    // no mutation during build -> safe to cache
             return built;                                           // else return fresh but don't cache a stale snapshot
         }
+    }
+
+    /// <summary>
+    /// Deterministic, order-independent summary of everything <see cref="EntityFactDerivation.Derive"/>
+    /// reads from an entry — <c>Attributes</c> and <c>Keywords</c> (the same union
+    /// <c>EntityGraph.ParseEntityKeywords ∪ ParseEntityAttributes</c> consumes) — for use as the
+    /// content component of a <see cref="EntityFactSidecar.ComputeToken"/> entry. Attribute keys and,
+    /// within each key, its values are sorted so two attribute dictionaries that differ only in
+    /// insertion/enumeration order produce the same signature. Keywords are sorted the same way.
+    /// Over-invalidating on a non-entity field (e.g. capitalization noise elsewhere) is acceptable —
+    /// it just costs a safe rebuild; under-invalidating (missing a real entity change) is the bug
+    /// this signature exists to close.
+    /// </summary>
+    private static string EntitySignature(ArtifactEntry entry)
+    {
+        string attrs = entry.Attributes is null
+            ? string.Empty
+            : string.Join(";", entry.Attributes
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(kv => $"{kv.Key.ToLowerInvariant()}=[{string.Join(",", kv.Value.OrderBy(v => v, StringComparer.OrdinalIgnoreCase))}]"));
+
+        string kws = entry.Keywords is null
+            ? string.Empty
+            : string.Join(",", entry.Keywords.OrderBy(k => k, StringComparer.OrdinalIgnoreCase));
+
+        return $"{attrs}|kw=[{kws}]";
     }
 
     private static string SafeReadAllText(string path)

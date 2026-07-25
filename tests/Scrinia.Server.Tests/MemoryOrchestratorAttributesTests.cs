@@ -159,4 +159,27 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
         ephEntry!.ContentPreview.Should().Be("curated eph notes",
             because: "append with no description param must preserve the curated ContentPreview (ephemeral path)");
     }
+
+    /// <summary>
+    /// StoreRequest has no explicit-attributes field, but req.Keywords can still route a
+    /// "person:jolene"-shaped entry into the typed `person` attribute (via
+    /// AttributeExtractor.RouteKeywords) — which collides with a `mention:jolene` span
+    /// mechanically extracted from prose in the same content. Without the shadow-drop, both land
+    /// in the persisted entry and double-count the entity in aggregation (entity graph,
+    /// top-attributes facets). This is the server-path counterpart to the MCP path's
+    /// agent-`attributes`-param collision, covered by MentionSpanWiringTests.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_KeywordRoutedTypedAttribute_ShadowsProseMention()
+    {
+        await MemoryOrchestrator.StoreAsync(_store,
+            new StoreRequest(["We saw Jolene in France."], "server-mention-shadow",
+                Keywords: ["person:jolene"]));
+
+        var entry = _store.LoadIndex("local").Single(e => e.Name == "server-mention-shadow");
+        entry.Attributes!["person"].Should().Contain("jolene");
+        entry.Attributes.TryGetValue("mention", out var mentions);
+        (mentions ?? []).Should().NotContain("jolene",
+            because: "a keyword-routed typed attribute must not also be left as an untyped mention");
+    }
 }

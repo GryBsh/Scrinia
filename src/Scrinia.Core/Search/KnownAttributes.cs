@@ -29,6 +29,13 @@ public static class KnownAttributes
     /// fold was retired in P6.5).</summary>
     public const string AnchorKey = "anchor";
 
+    /// <summary>The neutral key untyped prose entity spans are written under at write time
+    /// (Piece 2). Multi-valued — a memory mentions several spans. The async typing sink promotes
+    /// individual values from here into the typed entity keys; anything it cannot confidently type
+    /// stays here and still aggregates (it is an ordinary attribute key, so the entity graph and
+    /// EntityFactStore already treat each mention:value as an entity).</summary>
+    public const string MentionKey = "mention";
+
     /// <summary>The guided attribute keys — what the guide teaches and agents write most.
     /// The engine treats any key uniformly; this set is guidance + the weight-table seed, not a gate.</summary>
     public static readonly IReadOnlySet<string> RecommendedKeys =
@@ -51,7 +58,9 @@ public static class KnownAttributes
 
     /// <summary>Multi-valued keys accumulate across appends; everything else is scalar newer-wins.</summary>
     public static bool IsMultiValued(string key) =>
-        EntityKeys.Contains(key) || ReferenceKeys.Contains(key);
+        EntityKeys.Contains(key)
+        || ReferenceKeys.Contains(key)
+        || string.Equals(key, MentionKey, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Merges incoming attributes over existing per the key-class semantics: multi-valued keys

@@ -38,7 +38,17 @@ public static class MemoryOrchestrator
         }
 
         var refAttributes = AttributeExtractor.ExtractRefAttributes(joined);
-        var attributes = KnownAttributes.Merge(KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)), refAttributes);
+        var mentionAttributes = AttributeExtractor.ExtractMentionSpans(joined);
+        var attributes = KnownAttributes.Merge(
+            KnownAttributes.Merge(
+                KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)),
+                refAttributes),
+            mentionAttributes);
+        // StoreRequest carries no explicit agent-attributes field, but req.Keywords can still
+        // route a "person:jolene"-shaped entry into routedAttributes (above) — which collides
+        // with a mention:jolene span extracted from the same content. Shadow-drop unconditionally;
+        // it's a no-op when nothing shadows.
+        attributes = AttributeExtractor.DropMentionsShadowedByTypedKeys(attributes);
         AttributeExtractor.SeedTermFrequencies(attributes, tf);
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
