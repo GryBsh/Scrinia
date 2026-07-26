@@ -835,7 +835,7 @@ public sealed partial class ScriniaMcpTools
         if (matches.Count == 0)
             return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
 
-        string body = FormatRichSearchResults(store, matches);
+        string body = FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
         return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
     }
 
@@ -1023,9 +1023,11 @@ public sealed partial class ScriniaMcpTools
     /// response size; anchors is capped at <see cref="MaxAnchorsPerResult"/>. Tags omitted
     /// when empty; anchors section omitted when null/empty.
     /// </remarks>
-    private static string FormatRichSearchResults(IMemoryStore store, IReadOnlyList<SearchResult> matches)
+    private static string FormatRichSearchResults(
+        IMemoryStore store, IReadOnlyList<SearchResult> matches, IReadOnlyList<EntityFactSummary> entityFacts)
     {
         var sb = new System.Text.StringBuilder();
+        AppendEntityFactsBlock(sb, entityFacts);
         sb.Append("results: ").Append(matches.Count).Append('\n');
 
         for (int i = 0; i < matches.Count; i++)
@@ -1035,6 +1037,41 @@ public sealed partial class ScriniaMcpTools
         }
 
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Renders the compact entity-facts preamble that precedes the <c>results:</c> section
+    /// when the query named a known entity. One line per summary: mention count (singular
+    /// "memory" for 1), an optional first→last date span, and an optional "; with ..." clause
+    /// listing the top co-occurring entities. Absent entirely when there are no summaries.
+    /// </summary>
+    private static void AppendEntityFactsBlock(
+        System.Text.StringBuilder sb, IReadOnlyList<EntityFactSummary> facts)
+    {
+        if (facts.Count == 0) return;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        sb.Append("entity_facts:\n");
+        foreach (var f in facts)
+        {
+            sb.Append("  ").Append(f.Entity.Key).Append(':').Append(f.Entity.Value)
+              .Append(" — ").Append(f.MentionCount).Append(f.MentionCount == 1 ? " memory" : " memories");
+            if (f.First is { } first && f.Last is { } last)
+                sb.Append(", ")
+                  .Append(first.ToString("yyyy-MM-dd", ci)).Append('→').Append(last.ToString("yyyy-MM-dd", ci));
+            if (f.TopCoOccurring.Count > 0)
+            {
+                sb.Append("; with ");
+                for (int i = 0; i < f.TopCoOccurring.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    var c = f.TopCoOccurring[i];
+                    sb.Append(c.Entity.Key).Append(':').Append(c.Entity.Value)
+                      .Append(" (").Append(c.Count).Append(')');
+                }
+            }
+            sb.Append('\n');
+        }
+        sb.Append('\n'); // blank line between the block and results:
     }
 
     private const int MaxDescriptionChars = 1500;

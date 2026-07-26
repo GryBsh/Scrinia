@@ -77,4 +77,50 @@ public class AutoSurfaceEntityFactsTests
         outcome.EntityFacts.Single(f => f.Entity.Value == "jolene").MentionCount
             .Should().Be(1, "the excluded 'plan' scope must not contribute to the count");
     }
+
+    [Fact]
+    public async Task RendersEntityFactsBlock_BeforeResults()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = MemoryStoreContext.Current!;
+        store.Upsert(Note("m1", ("person", ["jolene"]), ("place", ["france"])), "local:findings");
+        store.Upsert(Note("m2", ("person", ["jolene"]), ("place", ["france"])), "local:findings");
+
+        string yaml = await new ScriniaMcpTools().Search("jolene", cancellationToken: default);
+
+        yaml.Should().Contain("entity_facts:");
+        yaml.Should().Contain("person:jolene");
+        yaml.Should().Contain("2 memories");
+        yaml.Should().Contain("with place:france (2)");
+        yaml.IndexOf("entity_facts:", StringComparison.Ordinal)
+            .Should().BeLessThan(yaml.IndexOf("results:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SingleMention_UsesSingular_AndNoCoOccurrenceClause()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = MemoryStoreContext.Current!;
+        store.Upsert(Note("solo", ("person", ["jolene"])), "local:findings");
+
+        string yaml = await new ScriniaMcpTools().Search("jolene", cancellationToken: default);
+
+        yaml.Should().Contain("1 memory");
+        yaml.Should().NotContain("; with ");
+    }
+
+    [Fact]
+    public async Task NoEntityNamed_NoBlock()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = MemoryStoreContext.Current!;
+        store.Upsert(Note("m1", ("person", ["jolene"])), "local:findings");
+
+        // "seraphim" is only in ContentPreview (so it matches for a results list) but is NOT an
+        // entity attribute on any memory, so the seeder names no entity -> no block.
+        string yaml = await new ScriniaMcpTools().Search("seraphim", cancellationToken: default);
+
+        yaml.Should().NotContain("entity_facts:");
+        yaml.Should().Contain("results:");
+    }
 }
