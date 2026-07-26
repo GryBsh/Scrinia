@@ -82,4 +82,42 @@ public class FactsToolTests
         var yaml = await new ScriniaMcpTools().Facts("intersect", entities: ["person:jolene"]);
         yaml.Should().Contain("status: error");
     }
+
+    [Fact]
+    public async Task Cli_Facts_Entities_PrintsYaml()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        Seed(MemoryStoreContext.Current!);
+        var prevOut = Console.Out;
+        var sw = new StringWriter();
+        Console.SetOut(sw);
+        try
+        {
+            int code = await new Scrinia.Commands.ScriniaCommands()
+                .Facts("entities", workspaceRoot: scope.WorkspaceDir);
+            code.Should().Be(0);
+        }
+        finally { Console.SetOut(prevOut); }
+
+        sw.ToString().Should().Contain("action: facts").And.Contain("person:jolene");
+    }
+
+    [Fact]
+    public async Task Cli_Facts_Intersect_SplitsCommaSeparatedTarget()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        Seed(MemoryStoreContext.Current!);
+        var prevOut = Console.Out;
+        var sw = new StringWriter();
+        Console.SetOut(sw);
+        try
+        {
+            int code = await new Scrinia.Commands.ScriniaCommands()
+                .Facts("intersect", target: "person:jolene,place:france", workspaceRoot: scope.WorkspaceDir);
+            code.Should().Be(0);
+        }
+        finally { Console.SetOut(prevOut); }
+
+        sw.ToString().Should().Contain("memories: 1").And.Contain("trip");
+    }
 }
