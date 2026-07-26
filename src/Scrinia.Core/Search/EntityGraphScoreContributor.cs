@@ -51,32 +51,35 @@ public sealed class EntityGraphScoreContributor : ISearchScoreContributor
     {
         if (string.IsNullOrWhiteSpace(query) || candidates is null || candidates.Count == 0)
             return None;
+        return Task.FromResult(Score(EntityFactDerivation.BuildStore(candidates), query));
+    }
 
-        // Build the bipartite graph from the candidates we were handed, keyed by the same
-        // "{scope}|{name}" the scorer looks up supplemental scores with. Build assigns every
-        // attribute (type, value) a uniform "type:value" node, so unrelated keys sharing a
-        // value stay distinct; the full candidate set is passed so all associations are seen.
-        var docs = new List<(string, IReadOnlyList<string>?, IReadOnlyDictionary<string, string[]>?)>(candidates.Count);
-        foreach (var c in candidates)
-            docs.Add(($"{c.Scope}|{c.Entry.Name}", c.Entry.Keywords, c.Entry.Attributes));
-        var graph = EntityGraph.Build(docs);
-        if (graph.DocCount == 0) return None;
+    /// <summary>Runs the entity-graph PPR signal over a ready <see cref="EntityFactStore"/> — the caller
+    /// selects the store (cached cross-scope when fully unfiltered, else a scoped build over the query's
+    /// candidates). Max-normalizes the PPR mass and scales by the weight; keyed by "{scope}|{name}".
+    /// Returns null when there are no seeds, no reachable docs, or zero mass (the None short-circuits).</summary>
+    public IReadOnlyDictionary<string, double>? Score(EntityFactStore factStore, string query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return null;
 
-        var ppr = graph.Score(query, _alpha, _iterations);
-        if (ppr.Count == 0) return None;
+        var (entityToDocs, docToEntities) = factStore.ScoringAdjacency();
+        if (entityToDocs.Count == 0) return null;
 
-        // Max-normalize (every graph-reached memory keeps a positive boost — min-max would
-        // zero the weakest reached node, which is the one most in need of a lift) and scale.
+        var seeds = EntityQuerySeeder.Seed(query, entityToDocs.Keys);
+        if (seeds.Count == 0) return null;
+
+        var ppr = PersonalizedPageRank.Score(entityToDocs, docToEntities, seeds, _alpha, _iterations);
+        if (ppr.Count == 0) return null;
+
         double max = 0;
         foreach (double v in ppr.Values)
             if (v > max) max = v;
-        if (max <= 0) return None;
+        if (max <= 0) return null;
 
         var scores = new Dictionary<string, double>(ppr.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var (key, mass) in ppr)
             scores[key] = (mass / max) * _weight;
-
-        return Task.FromResult<IReadOnlyDictionary<string, double>?>(scores);
+        return scores;
     }
 
     private static Task<IReadOnlyDictionary<string, double>?> None =>
