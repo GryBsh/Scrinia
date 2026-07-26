@@ -14,10 +14,10 @@ public class FactsQueryTests
     // jolene: 3 memories (co-occurs france x2, seraphim x1); france: 2; seraphim: 1; also mention:jolene x1.
     private static EntityFactStore Store() => new(
     [
-        new MemoryEntities("/f/trip", D1, [R("person", "jolene"), R("place", "france")]),
-        new MemoryEntities("/s/mar",  D2, [R("person", "jolene"), R("place", "france"), R("thing", "seraphim")]),
-        new MemoryEntities("/f/solo", D3, [R("person", "jolene")]),
-        new MemoryEntities("/n/note", D2, [R("mention", "jolene")]),
+        new MemoryEntities("local", "/f/trip", D1, [R("person", "jolene"), R("place", "france")]),
+        new MemoryEntities("local", "/s/mar",  D2, [R("person", "jolene"), R("place", "france"), R("thing", "seraphim")]),
+        new MemoryEntities("local", "/f/solo", D3, [R("person", "jolene")]),
+        new MemoryEntities("local", "/n/note", D2, [R("mention", "jolene")]),
     ]);
 
     [Fact]

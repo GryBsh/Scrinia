@@ -47,12 +47,12 @@ public static class SearchContributorContext
 /// </summary>
 public static class EntityGraphScoreContext
 {
-    private static readonly AsyncLocal<ISearchScoreContributor?> _current = new();
-    private static ISearchScoreContributor? _default;
+    private static readonly AsyncLocal<EntityGraphScoreContributor?> _current = new();
+    private static EntityGraphScoreContributor? _default;
 
     /// <summary>Gets/sets the entity-graph contributor for the current async context, falling back to <see cref="Default"/>.</summary>
-    public static ISearchScoreContributor? Current { get => _current.Value ?? _default; set => _current.Value = value; }
+    public static EntityGraphScoreContributor? Current { get => _current.Value ?? _default; set => _current.Value = value; }
 
     /// <summary>Process-wide default used when no AsyncLocal value is set (CLI single-session mode).</summary>
-    public static ISearchScoreContributor? Default { get => _default; set => _default = value; }
+    public static EntityGraphScoreContributor? Default { get => _default; set => _default = value; }
 }

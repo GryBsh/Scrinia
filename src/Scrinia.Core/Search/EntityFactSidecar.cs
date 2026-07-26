@@ -12,7 +12,7 @@ namespace Scrinia.Core.Search;
 /// </summary>
 public static class EntityFactSidecar
 {
-    public const int Version = 1;
+    public const int Version = 2;
 
     /// <summary>Order-independent, content-sensitive token over a scope's (id, effective-date,
     /// content-signature) triples. Effective date = <c>UpdatedAt ?? CreatedAt</c>; the content
@@ -35,7 +35,7 @@ public static class EntityFactSidecar
         var dto = new Dto(
             Version, token,
             memories.Select(m => new MemDto(
-                m.MemoryId, m.Date,
+                m.Scope, m.Subject, m.Date,
                 m.Entities.Select(e => new RefDto(e.Key, e.Value)).ToArray())).ToArray());
         return JsonSerializer.Serialize(dto, SidecarJsonContext.Default.Dto);
     }
@@ -49,7 +49,7 @@ public static class EntityFactSidecar
 
         var mems = dto.Memories
             .Select(m => new MemoryEntities(
-                m.MemoryId, m.Date,
+                m.Scope, m.Subject, m.Date,
                 m.Entities.Select(r => new EntityRef(r.Key, r.Value)).ToArray()))
             .ToArray();
         return (dto.Token, mems);
@@ -61,7 +61,8 @@ public static class EntityFactSidecar
         [property: JsonPropertyName("memories")] MemDto[] Memories);
 
     internal sealed record MemDto(
-        [property: JsonPropertyName("id")] string MemoryId,
+        [property: JsonPropertyName("s")] string Scope,
+        [property: JsonPropertyName("j")] string Subject,
         [property: JsonPropertyName("date")] DateTimeOffset Date,
         [property: JsonPropertyName("entities")] RefDto[] Entities);
 

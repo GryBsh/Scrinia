@@ -890,7 +890,12 @@ public sealed partial class ScriniaMcpTools
             if (contributor is not null)
                 supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
             if (entityContributor is not null)
-                entityScores = await entityContributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
+            {
+                var factStore = string.IsNullOrWhiteSpace(scopes) && string.IsNullOrWhiteSpace(excludeTopics)
+                    ? store.GetEntityFactStore()                       // cached, no rebuild
+                    : EntityFactDerivation.BuildStore(candidates);     // scoped / topic-excluded
+                entityScores = entityContributor.Score(factStore, query: effectiveQuery);
+            }
         }
 
         // excludeTopics must be applied BEFORE the top-K limit cut in both branches — passing it
@@ -919,12 +924,7 @@ public sealed partial class ScriniaMcpTools
     private static IReadOnlyList<EntityFactSummary> BuildEntityFacts(
         IMemoryStore store, string effectiveQuery, IReadOnlyList<ScopedArtifact> candidates)
     {
-        var memories = candidates
-            .Select(sa => EntityFactDerivation.Derive(
-                sa, store.FormatRoundTripQualifiedName(sa.Scope, sa.Entry.Name)))
-            .Where(m => m is not null)
-            .Select(m => m!);
-        var factStore = new EntityFactStore(memories);
+        var factStore = EntityFactDerivation.BuildStore(candidates);
 
         // Map "type:value" -> EntityRef so we round-trip named keys without re-parsing colons.
         var refByKey = new Dictionary<string, EntityRef>(StringComparer.Ordinal);

@@ -197,4 +197,13 @@ public class MemoryNamingTests
         MemoryNaming.ReservedNamespaceDirs.Should().NotContain(dir,
             because: "only namespace directory names (entity, memory, agent) should be reserved");
     }
+
+    // ── FormatRoundTrip ──────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("local:memory/api", "auth", "/memory/api/auth")] // local: keeps the namespace segment
+    [InlineData("local", "SEC-001", "SEC-001")]                  // bare local -> subject as-is
+    [InlineData("ephemeral", "note", "note")]                    // non-local -> subject as-is
+    public void FormatRoundTrip_MatchesLegacyDefault(string scope, string subject, string expected) =>
+        MemoryNaming.FormatRoundTrip(scope, subject).Should().Be(expected);
 }

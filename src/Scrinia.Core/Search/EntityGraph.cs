@@ -190,74 +190,10 @@ public sealed class EntityGraph
         var seeds = SeedEntities(query);
         if (seeds.Count == 0) return empty;
 
-        if (alpha < 0) alpha = 0;
-        if (alpha > 1) alpha = 1;
-        if (iterations < 1) iterations = 1;
-
-        double seedMass = 1.0 / seeds.Count;
-        var restart = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        foreach (string s in seeds) restart[s] = seedMass;
-
-        // entity-side distribution; initialised to the restart distribution.
-        var entityScore = new Dictionary<string, double>(restart, StringComparer.OrdinalIgnoreCase);
-        var docScore = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-
-        for (int it = 0; it < iterations; it++)
-        {
-            // entity -> memory: each entity splits its mass evenly across its memories.
-            docScore.Clear();
-            foreach (var (entity, p) in entityScore)
-            {
-                if (p <= 0) continue;
-                var docs = _entityToDocs[entity];
-                double share = p / docs.Count;
-                foreach (string d in docs)
-                {
-                    docScore.TryGetValue(d, out double acc);
-                    docScore[d] = acc + share;
-                }
-            }
-
-            // memory -> entity: each memory splits its mass evenly across its entities,
-            // then teleport: (1-alpha) * diffused + alpha * restart.
-            var nextEntity = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (doc, p) in docScore)
-            {
-                if (p <= 0) continue;
-                var ents = _docToEntities[doc];
-                double share = p / ents.Count;
-                foreach (string e in ents)
-                {
-                    nextEntity.TryGetValue(e, out double acc);
-                    nextEntity[e] = acc + share;
-                }
-            }
-
-            entityScore = new Dictionary<string, double>(nextEntity.Count, StringComparer.OrdinalIgnoreCase);
-            foreach (var (e, p) in nextEntity)
-                entityScore[e] = (1 - alpha) * p;
-            foreach (var (e, p) in restart)
-            {
-                entityScore.TryGetValue(e, out double acc);
-                entityScore[e] = acc + alpha * p;
-            }
-        }
-
-        // Final memory-side distribution reflects the converged entity distribution.
-        docScore.Clear();
-        foreach (var (entity, p) in entityScore)
-        {
-            if (p <= 0) continue;
-            var docs = _entityToDocs[entity];
-            double share = p / docs.Count;
-            foreach (string d in docs)
-            {
-                docScore.TryGetValue(d, out double acc);
-                docScore[d] = acc + share;
-            }
-        }
-
-        return docScore;
+        return PersonalizedPageRank.Score(
+            _entityToDocs.ToDictionary(kv => kv.Key, kv => (IReadOnlyCollection<string>)kv.Value, StringComparer.OrdinalIgnoreCase),
+            _docToEntities.ToDictionary(kv => kv.Key, kv => (IReadOnlyCollection<string>)kv.Value, StringComparer.OrdinalIgnoreCase),
+            seeds, alpha, iterations);
     }
 
     /// <summary>

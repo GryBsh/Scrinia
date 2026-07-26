@@ -76,4 +76,30 @@ public sealed class EntityFactStore
             .ThenBy(t => t.Entity.Value, StringComparer.Ordinal)
             .ToArray();
     }
+
+    /// <summary>Projects the store into the two adjacency maps <see cref="PersonalizedPageRank.Score"/>
+    /// consumes: entity nodes as "{key}:{value}" (matching <see cref="EntityGraph"/> node identity) and
+    /// doc keys as each memory's <see cref="MemoryEntities.ScoringKey"/>. Built from the existing index;
+    /// no new derivation.</summary>
+    public (IReadOnlyDictionary<string, IReadOnlyCollection<string>> EntityToDocs,
+            IReadOnlyDictionary<string, IReadOnlyCollection<string>> DocToEntities) ScoringAdjacency()
+    {
+        var e2d = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        var d2e = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (entity, mems) in _byEntity)
+        {
+            string node = $"{entity.Key}:{entity.Value}";
+            foreach (var m in mems)
+            {
+                (e2d.TryGetValue(node, out var docs) ? docs : e2d[node] = new(StringComparer.OrdinalIgnoreCase))
+                    .Add(m.ScoringKey);
+                (d2e.TryGetValue(m.ScoringKey, out var ents) ? ents : d2e[m.ScoringKey] = new(StringComparer.OrdinalIgnoreCase))
+                    .Add(node);
+            }
+        }
+
+        return (e2d.ToDictionary(kv => kv.Key, kv => (IReadOnlyCollection<string>)kv.Value, StringComparer.OrdinalIgnoreCase),
+                d2e.ToDictionary(kv => kv.Key, kv => (IReadOnlyCollection<string>)kv.Value, StringComparer.OrdinalIgnoreCase));
+    }
 }

@@ -10,7 +10,7 @@ public sealed class EntityFactStoreTests
     private static readonly DateTimeOffset D2 = DateTimeOffset.Parse("2023-02-01T00:00:00Z");
 
     private static MemoryEntities Mem(string id, DateTimeOffset date, params (string k, string v)[] ents) =>
-        new(id, date, ents.Select(e => EntityRef.Of(e.k, e.v)).ToArray());
+        new("local", id, date, ents.Select(e => EntityRef.Of(e.k, e.v)).ToArray());
 
     private static EntityFactStore Store(params MemoryEntities[] mems) => new(mems);
 
