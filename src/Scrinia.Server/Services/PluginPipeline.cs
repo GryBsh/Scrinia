@@ -174,7 +174,12 @@ public sealed class PluginPipeline
             if (contributor is not null)
                 supplemental = await contributor.ComputeScoresAsync(query, candidates, store, ct);
             if (entityContributor is not null)
-                entityScores = await entityContributor.ComputeScoresAsync(query, candidates, store, ct);
+            {
+                var factStore = string.IsNullOrWhiteSpace(scopes)
+                    ? store.GetEntityFactStore()                       // cached, no rebuild
+                    : EntityFactDerivation.BuildStore(candidates);     // scoped
+                entityScores = entityContributor.Score(factStore, query);
+            }
         }
 
         // Entity-graph scores are a separate fusion source (not summed into supplemental).
