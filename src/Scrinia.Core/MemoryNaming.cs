@@ -121,4 +121,14 @@ public static class MemoryNaming
             return StripNamespacePrefix(scope["local:".Length..]);
         return scope;
     }
+
+    /// <summary>
+    /// Pure form of <see cref="IMemoryStore.FormatRoundTripQualifiedName"/>: builds a qualified name
+    /// that re-parses back to <paramref name="scope"/>, keeping the internal "memory/"/"entity/"
+    /// namespace segment (lossless), without needing a store instance.
+    /// </summary>
+    public static string FormatRoundTrip(string scope, string subject) =>
+        scope.StartsWith("local:", StringComparison.Ordinal)
+            ? $"/{scope["local:".Length..]}/{subject}"
+            : subject;
 }

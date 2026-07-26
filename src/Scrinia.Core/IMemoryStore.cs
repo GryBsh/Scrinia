@@ -31,9 +31,7 @@ public interface IMemoryStore
     /// "agent" topic).</para>
     /// </summary>
     string FormatRoundTripQualifiedName(string scope, string subject) =>
-        scope.StartsWith("local:", StringComparison.Ordinal)
-            ? $"/{scope["local:".Length..]}/{subject}"
-            : subject;
+        MemoryNaming.FormatRoundTrip(scope, subject);
 
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
