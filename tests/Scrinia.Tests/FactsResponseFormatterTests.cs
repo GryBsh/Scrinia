@@ -72,4 +72,41 @@ public class FactsResponseFormatterTests
         yaml.Should().Contain("status: warning");
         yaml.Should().Contain("zzz");
     }
+
+    [Fact]
+    public void Profile_NullSpan_OmitsSpanLine()
+    {
+        var yaml = FactsResponseFormatter.ToYaml(new ProfileResult(
+            R("person", "jolene"), 3, null, null,
+            [new EntityCount(R("place", "france"), 2)],
+            [new TimelineEntry("/f/trip", D1)], TimelineTruncated: false));
+        yaml.Should().NotContain("span:");
+    }
+
+    [Fact]
+    public void Profile_EmptyNeighbors_OmitsCoOccurringLine()
+    {
+        var yaml = FactsResponseFormatter.ToYaml(new ProfileResult(
+            R("person", "jolene"), 3, D1, D2,
+            [],
+            [new TimelineEntry("/f/trip", D1)], TimelineTruncated: false));
+        yaml.Should().NotContain("co-occurring:");
+    }
+
+    [Fact]
+    public void Profile_EmptyTimeline_StillRendersHeaderWithZeroCount()
+    {
+        var yaml = FactsResponseFormatter.ToYaml(new ProfileResult(
+            R("person", "jolene"), 3, D1, D2,
+            [new EntityCount(R("place", "france"), 2)],
+            [], TimelineTruncated: false));
+        yaml.Should().Contain("timeline (0");
+    }
+
+    [Fact]
+    public void Entities_EmptyItems_RendersShowingZeroOfZero()
+    {
+        var yaml = FactsResponseFormatter.ToYaml(new EntitiesListResult([], Total: 0, Truncated: false));
+        yaml.Should().Contain("showing 0 of 0");
+    }
 }

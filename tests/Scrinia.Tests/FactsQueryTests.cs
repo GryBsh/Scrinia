@@ -139,4 +139,13 @@ public class FactsQueryTests
     {
         FactsQuery.Intersect(Store(), ["person:nobody", "place:france"]).Should().BeOfType<NotFoundResult>();
     }
+
+    [Fact]
+    public void Intersect_EmptyArgs_ReturnsEmpty_NoThrow()
+    {
+        var r = (IntersectionResult)FactsQuery.Intersect(Store(), []);
+        r.Count.Should().Be(0);
+        r.Memories.Should().BeEmpty();
+        r.Members.Should().BeEmpty();
+    }
 }

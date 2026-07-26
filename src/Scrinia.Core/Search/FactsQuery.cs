@@ -80,6 +80,9 @@ public static class FactsQuery
     /// to that member's Disambiguation/NotFound result (op not performed).</summary>
     public static FactsResult Intersect(EntityFactStore store, IReadOnlyList<string> entityArgs)
     {
+        if (entityArgs.Count == 0)
+            return new IntersectionResult([], [], 0);
+
         var refs = new List<EntityRef>(entityArgs.Count);
         foreach (var arg in entityArgs)
         {

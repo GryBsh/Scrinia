@@ -29,14 +29,14 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
-        string normalizedOp = (op ?? string.Empty).Trim().ToLowerInvariant();
+        string normalizedOp = op.Trim().ToLowerInvariant();
         string? entity = normalizedOp == "profile" ? target : null;
         string[]? entities = normalizedOp == "intersect"
             ? (target ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             : null;
 
         string yaml = await new ScriniaMcpTools().Facts(
-            op!, entity, entities, key, scopes, excludeTopics, limit, cancellationToken);
+            op, entity, entities, key, scopes, excludeTopics, limit, cancellationToken);
         return EmitMcpResult(yaml, json, "facts");
     }
 }
