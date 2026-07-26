@@ -827,8 +827,10 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
-        var matches = await ExecuteSearchAsync(
-            store, query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken);
+        var outcome = await ExecuteSearchAsync(
+            store, query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter,
+            cancellationToken, surfaceEntityFacts: true);
+        var matches = outcome.Matches;
 
         if (matches.Count == 0)
             return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
@@ -837,6 +839,13 @@ public sealed partial class ScriniaMcpTools
         return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
     }
 
+    /// <summary>The result of a scoring-pipeline run: the ranked matches plus the (possibly empty)
+    /// entity fact summaries for entities the query named. EntityFacts is always empty unless the
+    /// caller passes surfaceEntityFacts: true.</summary>
+    internal readonly record struct SearchOutcome(
+        IReadOnlyList<SearchResult> Matches,
+        IReadOnlyList<EntityFactSummary> EntityFacts);
+
     /// <summary>
     /// The single scoring pipeline behind BOTH the MCP <c>search</c> tool and the <c>scri search</c>
     /// CLI command — the two used to diverge (the CLI ran BM25-only, ignoring the embeddings and
@@ -844,8 +853,10 @@ public sealed partial class ScriniaMcpTools
     /// supplemental (embeddings) and entity-graph scores from the ambient contexts, runs the
     /// weighted BM25+attribute scorer, and applies path-prefix / attribute post-filters. Callers
     /// format the returned <see cref="SearchResult"/>s for their own surface (YAML / table / JSON).
+    /// When <paramref name="surfaceEntityFacts"/> is set, also derives entity fact summaries from
+    /// the same candidate set for the entities the query named (MCP search only; CLI leaves it off).
     /// </summary>
-    internal static async Task<IReadOnlyList<SearchResult>> ExecuteSearchAsync(
+    internal static async Task<SearchOutcome> ExecuteSearchAsync(
         IMemoryStore store,
         string query,
         string? scopes,
@@ -854,7 +865,8 @@ public sealed partial class ScriniaMcpTools
         string? context,
         string? pathPrefix,
         IReadOnlyDictionary<string, string[]>? attributeFilter,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool surfaceEntityFacts = false)
     {
         // Augment the query with caller-supplied context for scoring. The bare query is preserved
         // for any user-facing echo; the effective query feeds BM25, attribute scoring, and embeddings
@@ -867,11 +879,14 @@ public sealed partial class ScriniaMcpTools
         // into supplemental — see EntityGraphScoreContributor.
         var contributor = SearchContributorContext.Current;
         var entityContributor = EntityGraphScoreContext.Current;
+        IReadOnlyList<ScopedArtifact>? candidates = null;
+        if (contributor is not null || entityContributor is not null || surfaceEntityFacts)
+            candidates = store.ListScoped(scopes, excludeTopics);
+
         IReadOnlyDictionary<string, double>? supplemental = null;
         IReadOnlyDictionary<string, double>? entityScores = null;
-        if (contributor is not null || entityContributor is not null)
+        if (candidates is not null)
         {
-            var candidates = store.ListScoped(scopes, excludeTopics);
             if (contributor is not null)
                 supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
             if (entityContributor is not null)
@@ -888,7 +903,39 @@ public sealed partial class ScriniaMcpTools
         // Post-filter by path prefix and attribute filter. Both are AND filters — the candidate
         // must satisfy every active constraint. Filters apply uniformly to entry, chunk, and
         // topic results so callers don't need to know which result type to expect.
-        return ApplyPostFilters(store, matches, pathPrefix, attributeFilter);
+        var filtered = ApplyPostFilters(store, matches, pathPrefix, attributeFilter);
+
+        IReadOnlyList<EntityFactSummary> entityFacts = [];
+        if (surfaceEntityFacts && candidates is { Count: > 0 })
+            entityFacts = BuildEntityFacts(store, effectiveQuery, candidates);
+
+        return new SearchOutcome(filtered, entityFacts);
+    }
+
+    /// <summary>Builds up to 3 entity fact summaries from the same scope+excludeTopics-filtered
+    /// candidate set the scorer used — never a separate store read, never a hidden scope. Derives a
+    /// scoped EntityFactStore, detects the entities the query names via the shared seeder, and
+    /// projects them. Empty when the query names no known entity.</summary>
+    private static IReadOnlyList<EntityFactSummary> BuildEntityFacts(
+        IMemoryStore store, string effectiveQuery, IReadOnlyList<ScopedArtifact> candidates)
+    {
+        var memories = candidates
+            .Select(sa => EntityFactDerivation.Derive(
+                sa, store.FormatRoundTripQualifiedName(sa.Scope, sa.Entry.Name)))
+            .Where(m => m is not null)
+            .Select(m => m!);
+        var factStore = new EntityFactStore(memories);
+
+        // Map "type:value" -> EntityRef so we round-trip named keys without re-parsing colons.
+        var refByKey = new Dictionary<string, EntityRef>(StringComparer.Ordinal);
+        foreach (var e in factStore.Entities())
+            refByKey[$"{e.Key}:{e.Value}"] = e;
+        if (refByKey.Count == 0) return [];
+
+        var named = EntityQuerySeeder.Seed(effectiveQuery, refByKey.Keys)
+            .Select(k => refByKey[k]);
+
+        return EntityFactSummarizer.Summarize(factStore, named);
     }
 
     private static IReadOnlyList<SearchResult> ApplyPostFilters(
