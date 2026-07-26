@@ -49,4 +49,70 @@ public static class FactsQuery
         var items = all.Take(cap).ToArray();
         return new EntitiesListResult(items, all.Length, all.Length > items.Length);
     }
+
+    public const int ProfileNeighborLimit = 10;
+
+    /// <summary>Deep-dive on one entity: count, span, top co-occurrences, and the chronological
+    /// timeline (capped at <paramref name="timelineLimit"/>). Ambiguous/not-found bare args surface
+    /// as Disambiguation/NotFound results.</summary>
+    public static FactsResult Profile(EntityFactStore store, string entityArg, int timelineLimit)
+    {
+        var resolution = Resolve(store, entityArg);
+        if (resolution is not EntityResolution.Resolved resolved)
+            return FromFailedResolution(resolution);
+
+        var e = resolved.Entity;
+        var span = store.Span(e);
+        var neighbors = store.Neighbors(e)
+            .Take(ProfileNeighborLimit)
+            .Select(n => new EntityCount(n.Entity, n.Count))
+            .ToArray();
+
+        var full = store.Timeline(e);   // already Date asc then MemoryId ordinal
+        int cap = timelineLimit < 0 ? 0 : timelineLimit;
+        var timeline = full.Take(cap).Select(f => new TimelineEntry(f.MemoryId, f.Date)).ToArray();
+
+        return new ProfileResult(e, store.MentionCount(e), span?.First, span?.Last,
+            neighbors, timeline, full.Count > timeline.Length);
+    }
+
+    /// <summary>Memories mentioning ALL given entities. Any ambiguous/not-found member short-circuits
+    /// to that member's Disambiguation/NotFound result (op not performed).</summary>
+    public static FactsResult Intersect(EntityFactStore store, IReadOnlyList<string> entityArgs)
+    {
+        var refs = new List<EntityRef>(entityArgs.Count);
+        foreach (var arg in entityArgs)
+        {
+            var resolution = Resolve(store, arg);
+            if (resolution is not EntityResolution.Resolved r)
+                return FromFailedResolution(resolution);
+            refs.Add(r.Entity);
+        }
+
+        var ids = store.MemoriesFor(refs.ToArray());
+        // Dates: every intersecting memory appears in each member's facts, so the first member's
+        // facts carry the dates. No new store method needed.
+        var idSet = new HashSet<string>(ids, StringComparer.Ordinal);
+        var dateById = store.Facts(refs[0])
+            .Where(f => idSet.Contains(f.MemoryId))
+            .GroupBy(f => f.MemoryId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Date, StringComparer.Ordinal);
+
+        var memories = ids
+            .Select(id => new TimelineEntry(id, dateById.TryGetValue(id, out var d) ? d : default))
+            .OrderBy(m => m.Date)
+            .ThenBy(m => m.MemoryId, StringComparer.Ordinal)
+            .ToArray();
+
+        return new IntersectionResult(refs, memories, memories.Length);
+    }
+
+    /// <summary>Maps an already-computed non-Resolved resolution to the matching FactsResult.</summary>
+    private static FactsResult FromFailedResolution(EntityResolution resolution) =>
+        resolution switch
+        {
+            EntityResolution.Ambiguous a => new DisambiguationResult(a.Arg, a.Candidates),
+            EntityResolution.NotFound n => new NotFoundResult(n.Arg),
+            _ => throw new InvalidOperationException("FromFailedResolution called with a Resolved resolution."),
+        };
 }
