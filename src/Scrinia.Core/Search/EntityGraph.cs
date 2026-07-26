@@ -270,34 +270,7 @@ public sealed class EntityGraph
     /// the graph structure (no false cross-type bridge), not in lexical seeding. No LLM is
     /// involved.
     /// </summary>
-    private List<string> SeedEntities(string query)
-    {
-        string queryLower = query.ToLowerInvariant();
-        var queryTokens = new HashSet<string>(TextAnalysis.Tokenize(query), StringComparer.OrdinalIgnoreCase);
-
-        var seeds = new List<string>();
-        foreach (string node in _entityToDocs.Keys)
-        {
-            string surface = SurfaceOf(node);
-            if (queryLower.Contains(surface, StringComparison.Ordinal))
-            {
-                seeds.Add(node);
-                continue;
-            }
-            var entityTokens = TextAnalysis.Tokenize(surface);
-            if (entityTokens.Count > 0 && entityTokens.All(queryTokens.Contains))
-                seeds.Add(node);
-        }
-        return seeds;
-    }
-
-    /// <summary>The surface form a node seeds on: the value after the type prefix. Every node built
-    /// by <see cref="Build"/> is <c>type:value</c>, so <c>place:paris</c> and <c>status:done</c> both
-    /// seed from their bare value. A node with no <c>:</c> (defensive — direct <see cref="AddDoc"/>
-    /// callers may pass bare values) seeds on the whole key.</summary>
-    private static string SurfaceOf(string nodeKey)
-    {
-        int colon = nodeKey.IndexOf(':');
-        return colon > 0 && colon < nodeKey.Length - 1 ? nodeKey[(colon + 1)..] : nodeKey;
-    }
+    private List<string> SeedEntities(string query) =>
+        EntityQuerySeeder.Seed(query, _entityToDocs.Keys);
 }
+
