@@ -13,16 +13,17 @@ public class EntityFactSidecarTests
     {
         var mems = new[]
         {
-            new MemoryEntities("m1", D1, [EntityRef.Of("person", "jolene"), EntityRef.Of("place", "france")]),
+            new MemoryEntities("local", "m1", D1, [EntityRef.Of("person", "jolene"), EntityRef.Of("place", "france")]),
         };
-        string token = EntityFactSidecar.ComputeToken([("m1", D1, "sig")]);
+        string token = EntityFactSidecar.ComputeToken([("local|m1", D1, "sig")]);
 
         string json = EntityFactSidecar.Serialize(token, mems);
         var loaded = EntityFactSidecar.TryLoad(json);
 
         loaded.Should().NotBeNull();
         loaded!.Value.Token.Should().Be(token);
-        loaded.Value.Memories.Should().BeEquivalentTo(mems);
+        loaded.Value.Memories.Should().BeEquivalentTo(mems);       // Scope+Subject survive the round-trip
+        loaded.Value.Memories[0].ScoringKey.Should().Be("local|m1");
     }
 
     [Fact]
@@ -60,5 +61,13 @@ public class EntityFactSidecarTests
     {
         string bad = """{"version":999,"token":"x","memories":[]}""";
         EntityFactSidecar.TryLoad(bad).Should().BeNull();
+    }
+
+    [Fact]
+    public void TryLoad_RejectsV1Sidecar()
+    {
+        // A v1 document (old "id"-keyed schema) must be rejected so it rebuilds as v2.
+        string v1 = """{"version":1,"token":"x","memories":[{"id":"m1","date":"2023-01-01T00:00:00+00:00","entities":[]}]}""";
+        EntityFactSidecar.TryLoad(v1).Should().BeNull();
     }
 }

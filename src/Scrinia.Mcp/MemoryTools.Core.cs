@@ -919,12 +919,7 @@ public sealed partial class ScriniaMcpTools
     private static IReadOnlyList<EntityFactSummary> BuildEntityFacts(
         IMemoryStore store, string effectiveQuery, IReadOnlyList<ScopedArtifact> candidates)
     {
-        var memories = candidates
-            .Select(sa => EntityFactDerivation.Derive(
-                sa, store.FormatRoundTripQualifiedName(sa.Scope, sa.Entry.Name)))
-            .Where(m => m is not null)
-            .Select(m => m!);
-        var factStore = new EntityFactStore(memories);
+        var factStore = EntityFactDerivation.BuildStore(candidates);
 
         // Map "type:value" -> EntityRef so we round-trip named keys without re-parsing colons.
         var refByKey = new Dictionary<string, EntityRef>(StringComparer.Ordinal);

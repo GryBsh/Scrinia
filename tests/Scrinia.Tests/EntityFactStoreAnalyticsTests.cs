@@ -11,7 +11,7 @@ public sealed class EntityFactStoreAnalyticsTests
     private static readonly DateTimeOffset D3 = DateTimeOffset.Parse("2023-05-01T00:00:00Z");
 
     private static MemoryEntities Mem(string id, DateTimeOffset date, params (string k, string v)[] ents) =>
-        new(id, date, ents.Select(e => EntityRef.Of(e.k, e.v)).ToArray());
+        new("local", id, date, ents.Select(e => EntityRef.Of(e.k, e.v)).ToArray());
 
     [Fact]
     public void Timeline_OrdersByDate_AndSpanReturnsFirstLast()

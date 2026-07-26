@@ -63,11 +63,6 @@ public sealed partial class ScriniaMcpTools
     {
         if (string.IsNullOrWhiteSpace(scopes) && string.IsNullOrWhiteSpace(excludeTopics))
             return store.GetEntityFactStore();
-
-        var memories = store.ListScoped(scopes, excludeTopics)
-            .Select(sa => EntityFactDerivation.Derive(sa, store.FormatRoundTripQualifiedName(sa.Scope, sa.Entry.Name)))
-            .Where(m => m is not null)
-            .Select(m => m!);
-        return new EntityFactStore(memories);
+        return EntityFactDerivation.BuildStore(store.ListScoped(scopes, excludeTopics));
     }
 }

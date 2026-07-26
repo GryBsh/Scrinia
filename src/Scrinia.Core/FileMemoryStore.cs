@@ -1404,7 +1404,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             catch (ArgumentException) { /* no on-disk store for this scope */ }
 
             string token = EntityFactSidecar.ComputeToken(
-                items.Select(sa => (((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name),
+                items.Select(sa => ($"{scope}|{sa.Entry.Name}",
                                     sa.Entry.UpdatedAt ?? sa.Entry.CreatedAt,
                                     EntitySignature(sa.Entry))));
 
@@ -1417,12 +1417,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             if (mems is null)
             {
-                mems = items
-                    .Select(sa => EntityFactDerivation.Derive(
-                        sa, ((IMemoryStore)this).FormatRoundTripQualifiedName(scope, sa.Entry.Name)))
-                    .Where(m => m is not null)
-                    .Select(m => m!)
-                    .ToArray();
+                mems = items.Select(EntityFactDerivation.Derive).Where(m => m is not null).Select(m => m!).ToArray();
                 if (sidecarPath is not null)
                     TryWriteAllText(sidecarPath, EntityFactSidecar.Serialize(token, mems));
             }

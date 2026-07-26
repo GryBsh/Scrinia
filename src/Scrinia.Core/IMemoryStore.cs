@@ -72,10 +72,7 @@ public interface IMemoryStore
     /// </para>
     /// </summary>
     EntityFactStore GetEntityFactStore() =>
-        new(ListScoped(null)
-            .Select(sa => EntityFactDerivation.Derive(sa, FormatRoundTripQualifiedName(sa.Scope, sa.Entry.Name)))
-            .Where(m => m is not null)
-            .Select(m => m!));
+        EntityFactDerivation.BuildStore(ListScoped(null));
 
     // Listing & Search
     List<ScopedArtifact> ListScoped(string? scopes = null);

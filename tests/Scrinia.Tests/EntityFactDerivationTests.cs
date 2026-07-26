@@ -23,10 +23,12 @@ public sealed class EntityFactDerivationTests
             keywords: ["person:jolene", "plain-term"],
             attributes: new() { ["place"] = ["france"], ["thing"] = ["seraphim"] });
 
-        var me = EntityFactDerivation.Derive(item, "m1");
+        var me = EntityFactDerivation.Derive(item);
 
         me.Should().NotBeNull();
-        me!.Date.Should().Be(updated); // UpdatedAt wins
+        me!.Date.Should().Be(updated);
+        me.MemoryId.Should().Be("m1");        // FormatRoundTrip("local", "m1")
+        me.ScoringKey.Should().Be("local|m1");
         me.Entities.Should().BeEquivalentTo(new[]
         {
             EntityRef.Of("person", "jolene"),
@@ -39,6 +41,6 @@ public sealed class EntityFactDerivationTests
     public void Derive_NoEntities_ReturnsNull()
     {
         var item = Entry("m2", "local", DateTimeOffset.UtcNow, keywords: ["just", "plain", "words"]);
-        EntityFactDerivation.Derive(item, "m2").Should().BeNull();
+        EntityFactDerivation.Derive(item).Should().BeNull();
     }
 }

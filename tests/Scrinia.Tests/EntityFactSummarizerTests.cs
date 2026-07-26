@@ -15,9 +15,9 @@ public class EntityFactSummarizerTests
     // jolene appears in 3 memories; france in 2 (both co-occur with jolene); seraphim in 1.
     private static EntityFactStore Store() => new(
     [
-        new MemoryEntities("m1", D1, [R("person", "jolene"), R("place", "france")]),
-        new MemoryEntities("m2", D2, [R("person", "jolene"), R("place", "france"), R("thing", "seraphim")]),
-        new MemoryEntities("m3", D3, [R("person", "jolene")]),
+        new MemoryEntities("local", "m1", D1, [R("person", "jolene"), R("place", "france")]),
+        new MemoryEntities("local", "m2", D2, [R("person", "jolene"), R("place", "france"), R("thing", "seraphim")]),
+        new MemoryEntities("local", "m3", D3, [R("person", "jolene")]),
     ]);
 
     [Fact]
