@@ -31,7 +31,8 @@ public class FactsQueryTests
     public void Resolve_BareValue_Ambiguous_ListsCandidates()
     {
         var r = FactsQuery.Resolve(Store(), "jolene").Should().BeOfType<EntityResolution.Ambiguous>().Which;
-        r.Candidates.Select(c => c.Entity).Should().BeEquivalentTo([R("person", "jolene"), R("mention", "jolene")]);
+        // Assert ordering: person:jolene (count 3) before mention:jolene (count 1)
+        r.Candidates.Select(c => c.Entity).Should().Equal(R("person", "jolene"), R("mention", "jolene"));
     }
 
     [Fact]
@@ -52,7 +53,12 @@ public class FactsQueryTests
     public void EntitiesList_SortsByCountDesc_AndFiltersByKey()
     {
         var all = (EntitiesListResult)FactsQuery.EntitiesList(Store(), key: null, limit: 50);
-        all.Items[0].Should().Be(new EntityCount(R("person", "jolene"), 3)); // highest count first
+        // Assert full ordering: count desc (3, 2, 1, 1), then key ordinal for ties (mention < thing)
+        all.Items.Select(i => i.Entity).Should().Equal(
+            R("person", "jolene"),
+            R("place", "france"),
+            R("mention", "jolene"),
+            R("thing", "seraphim"));
         all.Total.Should().Be(4);
         all.Truncated.Should().BeFalse();
 
