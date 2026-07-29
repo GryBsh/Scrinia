@@ -255,13 +255,15 @@ internal static class RetrieverFactory
         string? baseUrl = Program.Flag(args, "--agent-base-url");
         string? apiKey = Program.Flag(args, "--agent-api-key");
         int maxAttempts = ParseInt(Program.Flag(args, "--agent-max-attempts"), LlmAgentHarness.DefaultMaxAttempts);
+        int ingestMaxTokens = ParseInt(Program.Flag(args, "--agent-max-tokens"), LlmAgentHarness.DefaultIngestMaxTokens);
         var backend = await AgentClientBuilder.BuildAsync(provider, model, baseUrl, apiKey, ct);
         string cacheDir = Path.Combine("benchmarks", "Scrinia.Retrieval.Benchmarks", "cache");
         string cacheFile = Path.Combine(cacheDir, $"agent-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
         var cache = new LlmResponseCache(cacheFile);
-        var harness = new LlmAgentHarness(backend.Llm, cache, backend.ProviderId, backend.ModelSlug, maxAttempts);
+        var failures = new FailureSink(FailureSink.PathForCache(cacheFile));
+        var harness = new LlmAgentHarness(backend.Llm, cache, backend.ProviderId, backend.ModelSlug, maxAttempts, ingestMaxTokens, failures);
         Console.Error.WriteLine(
-            $"[scrinia-bench] agent harness enabled: provider={backend.ProviderId} model={backend.ModelSlug} op=ingest maxAttempts={maxAttempts} cache={cacheFile}");
+            $"[scrinia-bench] agent harness enabled: provider={backend.ProviderId} model={backend.ModelSlug} op=ingest maxAttempts={maxAttempts} maxTokens={ingestMaxTokens} cache={cacheFile}");
         return harness;
     }
 
@@ -317,6 +319,8 @@ internal static class RetrieverFactory
         long reconcile = s.EmptyContent + s.CacheHits + s.LlmDocs;
         string ok = reconcile == s.Seen && s.Produced == s.CacheHits + (s.LlmDocs - s.Failed) ? "ok" : "MISMATCH";
         Console.WriteLine($"reconcile:        seen={s.Seen} == empty+cache+llm={reconcile}; cache lines added this run={s.LlmDocs - s.Failed} [{ok}]");
+        if (s.Failed > 0 && s.FailuresPath is not null)
+            Console.WriteLine($"failures logged:  {s.Failed} → {s.FailuresPath}  (full prompt + raw per attempt)");
     }
 
     internal static int JudgeK(string[] args) => ParseInt(Program.Flag(args, "--judge-k"), 10);
@@ -355,7 +359,8 @@ internal static class RetrieverFactory
             $"judge-{backend.ProviderId}-{backend.ModelSlug}.ndjson");
         int answerMax = JudgeAnswerMaxTokens(args);
         int gradeMax = JudgeGradeMaxTokens(args);
-        var judge = new AnswerabilityJudge(backend.Llm, new LlmResponseCache(cacheFile), backend.ProviderId, backend.ModelSlug, JudgeK(args), answerMax, gradeMax);
+        var failures = new FailureSink(FailureSink.PathForCache(cacheFile));
+        var judge = new AnswerabilityJudge(backend.Llm, new LlmResponseCache(cacheFile), backend.ProviderId, backend.ModelSlug, JudgeK(args), answerMax, gradeMax, failures);
         Console.Error.WriteLine($"[scrinia-bench] judge enabled: provider={backend.ProviderId} model={backend.ModelSlug} judgeK={JudgeK(args)} answerMaxTokens={answerMax} gradeMaxTokens={gradeMax} cache={cacheFile}");
         return judge;
     }
@@ -371,6 +376,8 @@ internal static class RetrieverFactory
         Console.WriteLine($"  judged:   {judge.JudgedCount}");
         Console.WriteLine($"  no gold:  {judge.NoGoldCount}");
         Console.WriteLine($"  failed:   {judge.FailedCount}");
+        if (judge.FailedCount > 0 && judge.FailuresPath is not null)
+            Console.WriteLine($"  failures logged: {judge.FailedCount} → {judge.FailuresPath}  (full prompt + raw per attempt)");
     }
 
     private static bool ParseChunk(string? raw) => raw?.ToLowerInvariant() switch

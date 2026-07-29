@@ -90,6 +90,7 @@ internal static class Program
               --agent-model <m>        Required for ollama/openai/anthropic/gemini; optional for agent CLIs.
               --agent-api-key <key>    Bearer / API key for openai/anthropic/gemini. Ollama doesn't need one.
               --agent-max-attempts <n> Tries per doc when the model returns an empty/unparseable reply (default: 1 = retries OFF). Set >1 to enable retries; temperature > 0 so each re-roll differs. A doc that never yields attributes/keywords is left uncached, so a rerun retries it.
+              --agent-max-tokens <n>   max_tokens for the ingest call (default: 32768). On an OpenAI-compatible server this bounds the WHOLE request (prompt + reply); the ingest prompt is doc-sized (like an agentic-ingest turn), so the default matches --episode-max-tokens. Set it to your server's context window (n_ctx).
               --ingest-concurrency <N> Max concurrent IngestAsync calls per question's haystack (default: 1 = sequential). Set to 4-16 when --agent is active to keep wall-time tractable; subscription CLI rate limits and your local CPU cap the useful upper bound.
 
             Agentic-ingest arm (locomo, longmemeval): the LLM IS the ingestion — a real tool-calling

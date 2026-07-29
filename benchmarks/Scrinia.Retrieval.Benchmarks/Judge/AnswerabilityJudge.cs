@@ -42,6 +42,7 @@ public sealed class AnswerabilityJudge
     private readonly string _modelSlug;
     private readonly int _answerMaxTokens;
     private readonly int _graderMaxTokens;
+    private readonly FailureSink? _failureSink;
 
     private int _judgedCount;
     private int _noGoldCount;
@@ -56,7 +57,7 @@ public sealed class AnswerabilityJudge
     /// verdict truncates to empty and the question is counted failed.</param>
     public AnswerabilityJudge(IBenchLlmClient llm, LlmResponseCache cache,
         string providerId, string modelSlug, int judgeK,
-        int answerMaxTokens = 8192, int graderMaxTokens = 2048)
+        int answerMaxTokens = 8192, int graderMaxTokens = 2048, FailureSink? failureSink = null)
     {
         _llm = llm;
         _cache = cache;
@@ -65,7 +66,11 @@ public sealed class AnswerabilityJudge
         JudgeK = judgeK;
         _answerMaxTokens = answerMaxTokens;
         _graderMaxTokens = graderMaxTokens;
+        _failureSink = failureSink;
     }
+
+    /// <summary>Path of the per-run failures NDJSON drain, if one was attached; else null.</summary>
+    public string? FailuresPath => _failureSink?.FilePath;
 
     public int JudgeK { get; }
     public int JudgedCount => _judgedCount;
@@ -91,17 +96,17 @@ public sealed class AnswerabilityJudge
         string? answer = await GetOrCallAsync(
             AnswerOp,
             LlmResponseCache.Hash(string.Join("|", _modelSlug, question, JudgeK, string.Join("", distinctContents))),
-            () => _llm.CompleteAsync(JudgePrompts.AnswererSystem, JudgePrompts.AnswererUser(question, distinctContents), _answerMaxTokens, false, ct),
+            JudgePrompts.AnswererSystem, JudgePrompts.AnswererUser(question, distinctContents), _answerMaxTokens,
             failureLabel: "answerer",
-            questionId).ConfigureAwait(false);
+            questionId, ct).ConfigureAwait(false);
         if (answer is null) return null;
 
         string? graderReply = await GetOrCallAsync(
             GradeOp,
             LlmResponseCache.Hash(string.Join("|", _modelSlug, question, answer, goldAnswer)),
-            () => _llm.CompleteAsync(JudgePrompts.GraderSystem, JudgePrompts.GraderUser(question, answer, goldAnswer), _graderMaxTokens, false, ct),
+            JudgePrompts.GraderSystem, JudgePrompts.GraderUser(question, answer, goldAnswer), _graderMaxTokens,
             failureLabel: "grader",
-            questionId).ConfigureAwait(false);
+            questionId, ct).ConfigureAwait(false);
         if (graderReply is null) return null;
 
         bool correct = JudgePrompts.ParseGrade(graderReply);
@@ -111,34 +116,46 @@ public sealed class AnswerabilityJudge
 
     /// <summary>
     /// Cache-through call: on hit (and the cached value is non-blank) returns the cached
-    /// string; otherwise invokes <paramref name="call"/> up to <see cref="MaxCallAttempts"/>
-    /// times and returns the first non-blank result, caching it. A null/blank result (a
-    /// transport failure, or a 200 with empty content) is retried; if EVERY attempt is blank
-    /// it is logged, tallied as a failure, and never cached (so a resumed run re-attempts it).
+    /// string; otherwise calls the model (system + user prompt, <paramref name="maxTokens"/>) up to
+    /// <see cref="MaxCallAttempts"/> times and returns the first non-blank result, caching it. A
+    /// blank result (a 200 with empty content) is retried; a recovery on a later attempt is logged,
+    /// and every attempt is counted in a single unit so the retry lines and the final failure line
+    /// agree. If EVERY attempt is blank it is logged, tallied, drained to the failure sink (with the
+    /// full prompt + every attempt's raw), and never cached (so a resumed run re-attempts it).
     /// </summary>
     private async Task<string?> GetOrCallAsync(
-        string op, string hash, Func<Task<string?>> call, string failureLabel, string questionId)
+        string op, string hash, string systemPrompt, string userPrompt, int maxTokens,
+        string failureLabel, string questionId, CancellationToken ct)
     {
         if (_cache.TryGetString(op, hash, out string? cached) && !string.IsNullOrWhiteSpace(cached))
             return cached;
 
+        var attemptLog = new List<FailureAttempt>();
         for (int attempt = 1; attempt <= MaxCallAttempts; attempt++)
         {
-            string? result = await call().ConfigureAwait(false);
+            string? result = await _llm.CompleteAsync(systemPrompt, userPrompt, maxTokens, false, ct).ConfigureAwait(false);
+            attemptLog.Add(new FailureAttempt(attempt, result, null));
             if (!string.IsNullOrWhiteSpace(result))
             {
                 _cache.PutString(op, hash, result);
+                if (attempt > 1)
+                    Console.Error.WriteLine(
+                        $"[scrinia-bench:judge] {failureLabel} recovered for {questionId} on attempt {attempt}/{MaxCallAttempts}");
                 return result;
             }
 
             if (attempt < MaxCallAttempts)
                 Console.Error.WriteLine(
-                    $"[scrinia-bench:judge] {failureLabel} blank for {questionId}, retrying ({attempt}/{MaxCallAttempts - 1})");
+                    $"[scrinia-bench:judge] {failureLabel} blank for {questionId} (attempt {attempt}/{MaxCallAttempts}), retrying");
         }
 
         Console.Error.WriteLine(
-            $"[scrinia-bench:judge] {failureLabel} failed for {questionId}: null/blank completion after {MaxCallAttempts} attempts");
+            $"[scrinia-bench:judge] {failureLabel} failed for {questionId}: blank after {MaxCallAttempts} attempts");
         Interlocked.Increment(ref _failedCount);
+        _failureSink?.Record(new FailureRecord(
+            Role: failureLabel, Id: questionId, Reason: "empty-completion",
+            Attempts: MaxCallAttempts, MaxTokens: maxTokens, PromptChars: systemPrompt.Length + userPrompt.Length,
+            SystemPrompt: systemPrompt, UserPrompt: userPrompt, AttemptLog: attemptLog));
         return null;
     }
 

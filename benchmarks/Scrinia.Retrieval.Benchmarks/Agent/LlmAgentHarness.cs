@@ -35,9 +35,13 @@ public sealed class LlmAgentHarness : IAgentHarness
     // an attribute map and a keyword list in a single JSON reply.
     private static readonly TimeSpan IngestBudget = TimeSpan.FromSeconds(120);
 
-    // max_tokens for the JSON reply: attribute map (up to 12 keys × a few values) plus a
-    // keyword list (up to 24) with JSON punctuation ≈ a few hundred tokens; 512 leaves headroom.
-    private const int IngestMaxTokens = 512;
+    /// <summary>Default <c>max_tokens</c> for the ingest call. The JSON reply itself is small (an
+    /// attribute map plus a keyword list), but on an OpenAI-compatible server <c>max_tokens</c> bounds
+    /// the WHOLE request (prompt + reply), and the ingest prompt (system + the full doc) is comparable
+    /// in size to an agentic-ingest turn — so this matches that arm's default (<c>--episode-max-tokens</c>,
+    /// 32768) to clear the prompt with room to answer, or the reply truncates to empty. Override with
+    /// <c>--agent-max-tokens</c>.</summary>
+    public const int DefaultIngestMaxTokens = 32768;
 
     /// <summary>Default attempts per doc: 1, i.e. retries OFF. Retrying is an opt-in feature —
     /// raise <c>--agent-max-attempts</c> above 1 to enable it. Small models intermittently
@@ -49,6 +53,8 @@ public sealed class LlmAgentHarness : IAgentHarness
     private readonly IBenchLlmClient _llm;
     private readonly LlmResponseCache _cache;
     private readonly int _maxAttempts;
+    private readonly int _ingestMaxTokens;
+    private readonly FailureSink? _failureSink;
 
     // Whole-run tally. Ingest runs under Parallel.ForEachAsync, so these are touched
     // concurrently — mutate only via Interlocked. Surfaced through Stats.
@@ -75,14 +81,19 @@ public sealed class LlmAgentHarness : IAgentHarness
         LlmDocs: Interlocked.Read(ref _llmDocs),
         LlmAttempts: Interlocked.Read(ref _llmAttempts),
         Produced: Interlocked.Read(ref _produced),
-        Failed: Interlocked.Read(ref _failed));
+        Failed: Interlocked.Read(ref _failed))
+    {
+        FailuresPath = _failureSink?.FilePath,
+    };
 
     public LlmAgentHarness(
         IBenchLlmClient llm,
         LlmResponseCache cache,
         string providerId,
         string modelSlug,
-        int maxAttempts = DefaultMaxAttempts)
+        int maxAttempts = DefaultMaxAttempts,
+        int ingestMaxTokens = DefaultIngestMaxTokens,
+        FailureSink? failureSink = null)
     {
         ArgumentNullException.ThrowIfNull(llm);
         ArgumentNullException.ThrowIfNull(cache);
@@ -93,6 +104,8 @@ public sealed class LlmAgentHarness : IAgentHarness
         ProviderId = providerId;
         ModelSlug = modelSlug;
         _maxAttempts = maxAttempts < 1 ? 1 : maxAttempts;
+        _ingestMaxTokens = ingestMaxTokens < 1 ? DefaultIngestMaxTokens : ingestMaxTokens;
+        _failureSink = failureSink;
     }
 
     public async Task<AgentIngest?> GenerateIngestAsync(string content, CancellationToken ct)
@@ -118,18 +131,21 @@ public sealed class LlmAgentHarness : IAgentHarness
         // never produced attributes/keywords is left uncached so a later rerun retries it too, mirroring the
         // agentic-ingest arm's "never cache a failed episode" rule.
         Interlocked.Increment(ref _llmDocs);
+        string ingestUser = AgentPrompts.IngestUser(content);
+        var attemptLog = new List<FailureAttempt>(_maxAttempts);
         for (int attempt = 1; attempt <= _maxAttempts; attempt++)
         {
             Interlocked.Increment(ref _llmAttempts);
             string? raw;
+            string? error = null;
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(IngestBudget);
                 raw = await _llm.CompleteAsync(
                     AgentPrompts.IngestSystem,
-                    AgentPrompts.IngestUser(content),
-                    maxTokens: IngestMaxTokens,
+                    ingestUser,
+                    maxTokens: _ingestMaxTokens,
                     jsonMode: true,
                     cts.Token);
             }
@@ -140,7 +156,9 @@ public sealed class LlmAgentHarness : IAgentHarness
                 Console.Error.WriteLine(
                     $"[scrinia-bench] agent:ingest attempt {attempt}/{_maxAttempts} failed for hash {hash[..8]}: {ex.GetType().Name}: {ex.Message}");
                 raw = null;
+                error = $"{ex.GetType().Name}: {ex.Message}";
             }
+            attemptLog.Add(new FailureAttempt(attempt, raw, error));
 
             var parsed = AgentPrompts.ParseIngest(raw);
             if (parsed is not null)
@@ -154,14 +172,32 @@ public sealed class LlmAgentHarness : IAgentHarness
         }
 
         // Exhausted every attempt without a usable reply. Deliberately NOT cached — a rerun
-        // gets fresh attempts. Only log when retries are enabled (maxAttempts > 1): with
-        // retries off, an occasional empty reply is expected and logging every one just spams
-        // the console; when the user opted into retries, a doc still failing is worth surfacing.
+        // gets fresh attempts. The console keeps only the whole-run tally (an empty reply with
+        // retries off is expected and per-doc logging would spam); the per-doc detail — full
+        // prompt + every attempt's raw — is drained to the failure sink so it can be inspected.
         Interlocked.Increment(ref _failed);
         if (_maxAttempts > 1)
             Console.Error.WriteLine(
                 $"[scrinia-bench] agent:ingest empty/unparseable for hash {hash[..8]} after {_maxAttempts} attempt(s); no attributes/keywords stored for this doc.");
+        _failureSink?.Record(new FailureRecord(
+            Role: "ingest", Id: hash, Reason: DeriveReason(attemptLog),
+            Attempts: _maxAttempts, MaxTokens: _ingestMaxTokens,
+            PromptChars: AgentPrompts.IngestSystem.Length + ingestUser.Length,
+            SystemPrompt: AgentPrompts.IngestSystem, UserPrompt: ingestUser, AttemptLog: attemptLog));
         return null;
+    }
+
+    /// <summary>Classifies a failed doc from its attempts: a thrown attempt → transport-error;
+    /// otherwise a non-blank-but-unparseable reply → unparseable; otherwise every reply was blank.</summary>
+    private static string DeriveReason(List<FailureAttempt> log)
+    {
+        bool anyError = false, anyText = false;
+        foreach (var a in log)
+        {
+            if (a.Error is not null) anyError = true;
+            if (!string.IsNullOrWhiteSpace(a.Response)) anyText = true;
+        }
+        return anyError ? "transport-error" : anyText ? "unparseable" : "empty-completion";
     }
 }
 
@@ -180,4 +216,8 @@ public sealed record AgentIngestStats(
     long LlmDocs,
     long LlmAttempts,
     long Produced,
-    long Failed);
+    long Failed)
+{
+    /// <summary>Path of the per-run failures NDJSON drain, if one was attached; else null.</summary>
+    public string? FailuresPath { get; init; }
+}
