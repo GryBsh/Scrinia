@@ -1,6 +1,9 @@
 using System.Reflection;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using FluentAssertions.Execution;
+using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Scrinia.Mcp;
 using Scrinia.Server.Auth;
@@ -92,6 +95,131 @@ public sealed class McpPermissionFilterTests
     {
         McpPermissionFilter.IsWritePermission(McpPermissionFilter.RequiredPermission("tools/call", tool))
             .Should().Be(expected);
+    }
+
+    /// <summary>
+    /// Bare-bones <see cref="McpServer"/> stub so tests can construct a real <see cref="MessageContext"/>
+    /// and drive <see cref="McpPermissionFilter.Filter"/> end to end, without a live MCP session, SSO
+    /// claims, or HTTP round trip. None of these members are exercised by the filter itself — the
+    /// filter only reads <c>ctx.JsonRpcMessage</c> — so every override is a throwaway default.
+    /// </summary>
+#pragma warning disable MCPEXP002 // McpServer's protected ctor is experimental; this is a test double, not a real server.
+    private sealed class NoopMcpServer : McpServer
+    {
+        public override string? SessionId => null;
+        public override string? NegotiatedProtocolVersion => null;
+        public override ClientCapabilities? ClientCapabilities => null;
+        public override Implementation? ClientInfo => null;
+        public override McpServerOptions ServerOptions { get; } = new();
+        public override IServiceProvider? Services => null;
+        public override LoggingLevel? LoggingLevel => null;
+
+        public override Task RunAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public override Task<JsonRpcResponse> SendRequestAsync(JsonRpcRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Not exercised by the permission filter under test.");
+
+        public override Task SendMessageAsync(JsonRpcMessage message, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public override IAsyncDisposable RegisterNotificationHandler(string method, Func<JsonRpcNotification, CancellationToken, ValueTask> handler) =>
+            throw new NotSupportedException("Not exercised by the permission filter under test.");
+
+        public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+#pragma warning restore MCPEXP002
+
+    /// <summary>Builds a <see cref="MessageContext"/> wrapping a <c>tools/call</c> request for <paramref name="toolName"/>.</summary>
+    private static MessageContext CreateToolCallContext(string toolName)
+    {
+        var request = new JsonRpcRequest
+        {
+            Id = new RequestId(1),
+            Method = "tools/call",
+            Params = new JsonObject { ["name"] = toolName },
+        };
+        return new MessageContext(new NoopMcpServer(), request);
+    }
+
+    /// <summary>
+    /// Behavioral tests driving the actual <see cref="McpPermissionFilter.Filter"/> delegate — the glue
+    /// the pure <see cref="McpPermissionFilter.IsWritePermission"/>/<see cref="McpPermissionFilter.RequiredPermission"/>
+    /// unit tests above can't verify: that <see cref="McpPermissionFilter.CurrentStoreReadOnly"/> is read
+    /// via the correct (non-inverted) AsyncLocal and actually short-circuits the pipeline.
+    /// </summary>
+    public sealed class FilterBehaviorTests : IDisposable
+    {
+        public void Dispose()
+        {
+            // AsyncLocals are static on McpPermissionFilter; reset after every test so state can't leak
+            // into a sibling test.
+            McpPermissionFilter.CurrentPermissions = null;
+            McpPermissionFilter.CurrentStoreReadOnly = false;
+        }
+
+        [Fact]
+        public async Task WriteTool_DeniedWhenStoreReadOnly()
+        {
+            McpPermissionFilter.CurrentPermissions = ["store", "append", "forget", "search", "read"];
+            McpPermissionFilter.CurrentStoreReadOnly = true;
+            bool reached = false;
+            McpMessageHandler next = (_, _) => { reached = true; return Task.CompletedTask; };
+            McpMessageHandler handler = McpPermissionFilter.Filter(next);
+            MessageContext ctx = CreateToolCallContext("remember");
+
+            Func<Task> act = () => handler(ctx, CancellationToken.None);
+
+            await act.Should().ThrowAsync<McpException>();
+            reached.Should().BeFalse("a read-only store must block the write tool before it reaches the next handler");
+        }
+
+        [Fact]
+        public async Task WriteTool_AllowedWhenStoreWritable()
+        {
+            McpPermissionFilter.CurrentPermissions = ["store", "append", "forget", "search", "read"];
+            McpPermissionFilter.CurrentStoreReadOnly = false;
+            bool reached = false;
+            McpMessageHandler next = (_, _) => { reached = true; return Task.CompletedTask; };
+            McpMessageHandler handler = McpPermissionFilter.Filter(next);
+            MessageContext ctx = CreateToolCallContext("remember");
+
+            await handler(ctx, CancellationToken.None);
+
+            reached.Should().BeTrue("a writable store must let a permitted write tool reach the next handler");
+        }
+
+        [Fact]
+        public async Task ReadTool_AllowedEvenWhenStoreReadOnly()
+        {
+            McpPermissionFilter.CurrentPermissions = ["store", "append", "forget", "search", "read"];
+            McpPermissionFilter.CurrentStoreReadOnly = true;
+            bool reached = false;
+            McpMessageHandler next = (_, _) => { reached = true; return Task.CompletedTask; };
+            McpMessageHandler handler = McpPermissionFilter.Filter(next);
+            MessageContext ctx = CreateToolCallContext("search");
+
+            await handler(ctx, CancellationToken.None);
+
+            reached.Should().BeTrue("read-only must gate writes only; reads must proceed regardless of the flag");
+        }
+
+        [Fact]
+        public async Task WriteTool_MissingPermission_DeniedRegardlessOfReadOnlyFlag()
+        {
+            // Ordering check: a caller lacking the permission outright must see the permission error,
+            // not the read-only error, even when the store also happens to be read-only.
+            McpPermissionFilter.CurrentPermissions = ["search", "read"];
+            McpPermissionFilter.CurrentStoreReadOnly = true;
+            bool reached = false;
+            McpMessageHandler next = (_, _) => { reached = true; return Task.CompletedTask; };
+            McpMessageHandler handler = McpPermissionFilter.Filter(next);
+            MessageContext ctx = CreateToolCallContext("remember");
+
+            Func<Task> act = () => handler(ctx, CancellationToken.None);
+
+            (await act.Should().ThrowAsync<McpException>()).WithMessage("*lacks the 'store' permission*");
+            reached.Should().BeFalse();
+        }
     }
 
     [Fact]
