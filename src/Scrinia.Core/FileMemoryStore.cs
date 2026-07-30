@@ -1035,6 +1035,15 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string storeDir = GetStoreDirForScope(scope);
         Directory.CreateDirectory(storeDir);
 
+        // Delete orphaned sidecars: any *.meta.json whose entry is no longer present. Runs under the
+        // caller's write lock; storeDir holds only artifact sidecars, so this is scope-local and safe.
+        var expected = new HashSet<string>(
+            entries.Select(e => SanitizeName(e.Name) + ".meta.json"),
+            StringComparer.OrdinalIgnoreCase);
+        foreach (string metaFile in Directory.EnumerateFiles(storeDir, "*.meta.json").ToList())
+            if (!expected.Contains(Path.GetFileName(metaFile)))
+                File.Delete(metaFile);
+
         // Write per-artifact sidecar metadata files
         WriteSidecars(entries, storeDir);
 

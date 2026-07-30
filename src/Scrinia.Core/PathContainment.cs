@@ -11,8 +11,16 @@ public static class PathContainment
     /// Both operands are canonicalized (symlinks/junctions resolved on every existing segment) before comparison.</summary>
     public static bool IsWithin(string baseDir, string candidate)
     {
-        string baseFull = ResolveReal(baseDir);
-        string candFull = ResolveReal(candidate);
+        string baseFull, candFull;
+        try
+        {
+            baseFull = ResolveReal(baseDir);
+            candFull = ResolveReal(candidate);
+        }
+        catch (IOException)
+        {
+            return false; // symlink loop / too many links: containment unprovable → deny (fail closed)
+        }
         if (string.Equals(baseFull, candFull, PathComparison))
             return true;
         string withSep = baseFull.EndsWith(Path.DirectorySeparatorChar)
@@ -56,10 +64,10 @@ public static class PathContainment
                 continue; // not-yet-existing segment: keep lexical form
 
             string? target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+            // FileSystemInfo.ResolveLinkTarget(returnFinalTarget: true).FullName is always absolute,
+            // so no relative-combine branch is reachable here.
             if (target is not null)
-                resolved = Path.IsPathRooted(target)
-                    ? target
-                    : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(resolved)!, target));
+                resolved = target;
         }
         return Path.GetFullPath(resolved);
     }
