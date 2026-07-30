@@ -283,6 +283,11 @@ builder.Services
             // reqCtx is the auth-populated request-scoped context, which the message filter can't
             // resolve (it runs in a fresh scope). Flows to the filter via the session execution context.
             McpPermissionFilter.CurrentPermissions = reqCtx.Permissions;
+            // Same reasoning as CurrentPermissions above: capture the store's read-only status here,
+            // from the auth-populated reqCtx, so the MCP write tools (remember/append/forget/compact/
+            // link/reconcile) are denied when the caller's store_access grant is read-only — parity
+            // with the REST write handlers (task B4).
+            McpPermissionFilter.CurrentStoreReadOnly = !MemoryEndpoints.IsWritable(reqCtx, storeName);
             MemoryStoreContext.Current = sm.GetStore(storeName);
             SearchContributorContext.Current = httpContext.RequestServices.GetService<ISearchScoreContributor>();
             // Entity-graph signal is embedder-independent and on by default; stateless, so a

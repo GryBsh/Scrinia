@@ -65,6 +65,35 @@ public sealed class McpPermissionFilterTests
         McpPermissionFilter.RequiredPermission("tools/call", "facts").Should().Be("search");
     }
 
+    [Theory]
+    [InlineData("store", true)]
+    [InlineData("append", true)]
+    [InlineData("forget", true)]
+    [InlineData("search", false)]
+    [InlineData("read", false)]
+    [InlineData(null, false)]
+    public void IsWritePermission_ClassifiesMutatingPermissions(string? permission, bool expected)
+    {
+        McpPermissionFilter.IsWritePermission(permission).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("remember", true)]
+    [InlineData("append", true)]
+    [InlineData("forget", true)]
+    [InlineData("compact", true)]
+    [InlineData("link", true)]
+    [InlineData("reconcile", true)]
+    [InlineData("search", false)]
+    [InlineData("list", false)]
+    [InlineData("facts", false)]
+    [InlineData("recall", false)]
+    public void IsWritePermission_ComposedWithRequiredPermission_MatchesToolMutationStatus(string tool, bool expected)
+    {
+        McpPermissionFilter.IsWritePermission(McpPermissionFilter.RequiredPermission("tools/call", tool))
+            .Should().Be(expected);
+    }
+
     [Fact]
     public void EveryRegisteredTool_HasAPermissionMapping_OrIsIntentionallyUngated()
     {

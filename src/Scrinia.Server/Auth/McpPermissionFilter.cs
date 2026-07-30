@@ -34,6 +34,30 @@ public static class McpPermissionFilter
         set => _permissions.Value = value;
     }
 
+    // AsyncLocal<bool> defaults to false when unset, so the flag is phrased as "read-only" (not
+    // "writable"): unset therefore means "not read-only" = writable, which is what the CLI stdio
+    // server (which sets nothing) needs — it must keep allowing writes unchanged.
+    private static readonly AsyncLocal<bool> _storeReadOnly = new();
+
+    /// <summary>
+    /// Whether the current MCP session's store is read-only for the caller. Set in
+    /// <c>ConfigureSessionOptions</c> alongside <see cref="CurrentPermissions"/>, from the same
+    /// <see cref="RequestContext"/> via <c>MemoryEndpoints.IsWritable</c>. Defaults to <c>false</c>
+    /// (writable) when unset, so the CLI stdio server — which never sets it — is unaffected.
+    /// </summary>
+    public static bool CurrentStoreReadOnly
+    {
+        get => _storeReadOnly.Value;
+        set => _storeReadOnly.Value = value;
+    }
+
+    private static readonly HashSet<string> WritePermissions =
+        new(StringComparer.OrdinalIgnoreCase) { "store", "append", "forget" };
+
+    /// <summary>True when <paramref name="permission"/> authorizes a mutating operation.</summary>
+    public static bool IsWritePermission(string? permission) =>
+        permission is not null && WritePermissions.Contains(permission);
+
     /// <summary>
     /// Maps an MCP request to the permission it requires, or <c>null</c> when the request needs no
     /// specific permission (handshake/discovery, and the bootstrap/recovery tools <c>guide</c> and
@@ -84,6 +108,14 @@ public static class McpPermissionFilter
                     // an acceptable authz outcome — the operation is denied without leaking internals.
                     throw new McpException(
                         $"This API key lacks the '{required}' permission required for this operation.");
+
+                // Read-only store boundary (parity with the REST write handlers, task B4): a caller
+                // with the permission granted can still be denied if the store itself is read-only
+                // for them (e.g. an SSO store_access claim). Checked after the permission-granted
+                // check so a caller lacking the permission sees that error first.
+                if (IsWritePermission(required) && CurrentStoreReadOnly)
+                    throw new McpException(
+                        "This store is read-only for this key; the requested operation would modify it.");
             }
         }
 
