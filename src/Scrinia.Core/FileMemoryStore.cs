@@ -1600,6 +1600,44 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
+    /// Pre-limit path/attribute filtering: filters the candidate and topic lists BEFORE the scorer
+    /// applies the top-K cut, so a selective filter fills to <paramref name="limit"/> instead of
+    /// returning the post-limit remnant. Every filter dimension is a property of the parent
+    /// candidate (path/attributes) or the topic (scope label); chunk results inherit their parent's,
+    /// so filtering parents covers them.
+    /// </summary>
+    public IReadOnlyList<SearchResult> SearchAll(
+        string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores,
+        string? pathPrefix,
+        IReadOnlyDictionary<string, string[]>? attributeFilter)
+    {
+        bool hasPath = !string.IsNullOrWhiteSpace(pathPrefix);
+        bool hasAttr = attributeFilter is { Count: > 0 };
+        if (!hasPath && !hasAttr)
+            return SearchAll(query, scopes, limit, excludeTopics, supplementalScores, entityGraphScores);
+
+        if (string.IsNullOrWhiteSpace(query))
+            return [];
+
+        var searcher = new WeightedAttributeScorer(RankerOptions);
+        var allCandidates = ListScoped(scopes, excludeTopics);
+        var entryCandidates = allCandidates
+            .Where(c => SearchResultFilter.CandidateMatches(this, c, pathPrefix, attributeFilter))
+            .ToList();
+        // Topics carry no attributes: an active attribute filter drops them all. Otherwise filter
+        // topics by their own scope label, derived from the UNFILTERED candidate set (a topic can
+        // match even when its entries are filtered out by a longer path prefix, and vice versa).
+        var topics = hasAttr
+            ? new List<TopicInfo>()
+            : BuildTopicInfosFromCandidates(allCandidates)
+                .Where(t => SearchResultFilter.TopicMatches(t, pathPrefix))
+                .ToList();
+        return searcher.SearchAll(query, entryCandidates, topics, limit, supplementalScores, entityGraphScores);
+    }
+
+    /// <summary>
     /// Efficient override of the default interface method: resolves scopes then excludes
     /// the specified topic scopes.
     /// </summary>

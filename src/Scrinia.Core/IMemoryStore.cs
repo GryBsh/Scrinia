@@ -141,6 +141,27 @@ public interface IMemoryStore
                 .ToList();
 
     /// <summary>
+    /// Searches with supplemental + entity-graph scores, then keeps only results matching the
+    /// path-prefix / attribute filter. The default implementation post-filters after the base
+    /// SearchAll (correct filtering, but it cannot guarantee fill-to-limit for stores without a
+    /// scorer). <see cref="FileMemoryStore"/> overrides this to filter candidates BEFORE the top-K
+    /// cut so a filtered search returns up to <paramref name="limit"/> matching results.
+    /// </summary>
+    IReadOnlyList<SearchResult> SearchAll(
+        string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores,
+        string? pathPrefix,
+        IReadOnlyDictionary<string, string[]>? attributeFilter)
+    {
+        var results = SearchAll(query, scopes, limit, excludeTopics, supplementalScores, entityGraphScores);
+        bool hasPath = !string.IsNullOrWhiteSpace(pathPrefix);
+        bool hasAttr = attributeFilter is { Count: > 0 };
+        if (!hasPath && !hasAttr) return results;
+        return results.Where(r => SearchResultFilter.Matches(this, r, pathPrefix, attributeFilter)).ToList();
+    }
+
+    /// <summary>
     /// Resolves read scopes, excluding the specified topic scopes.
     /// Default implementation post-filters after calling <see cref="ResolveReadScopes(string?)"/>.
     /// FileMemoryStore overrides with efficient scope-level filtering.
