@@ -487,9 +487,20 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             r => TransientDetector.IsTransient(r),
             _retryOptions, logger: null, ct);
         if (resp.IsSuccessStatusCode)
+        {
             _circuitBreaker.RecordSuccess();
-        else if (TransientDetector.IsTransient(resp))
-            _circuitBreaker.RecordFailure();
+        }
+        else
+        {
+            // A reachable server that answered with a failure status must not look like a
+            // successful store to callers (matches FileMemoryStore's throw-on-failure contract).
+            if (TransientDetector.IsTransient(resp))
+                _circuitBreaker.RecordFailure();
+            throw new HttpRequestException(
+                $"Remote store write failed for '{qualifiedName}': {(int)resp.StatusCode} {resp.StatusCode}.",
+                inner: null,
+                statusCode: resp.StatusCode);
+        }
     }
 
     public async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)

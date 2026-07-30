@@ -11,6 +11,7 @@ using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.Core.Resilience;
 using Scrinia.Core.Search;
 using Scrinia.Commands.Hooks;
 using Scrinia.Mcp;
@@ -25,12 +26,14 @@ public partial class ScriniaCommands
     /// <param name="remote">Scrinia.Server URL for remote mode (e.g. http://localhost:5000).</param>
     /// <param name="apiKey">API key for remote server authentication.</param>
     /// <param name="store">Target store name on the remote server (default: "default").</param>
+    /// <param name="allowInsecureTransport">Permit sending the API key over a non-HTTPS connection to a non-loopback host (insecure).</param>
     /// <param name="noAutoSetup">Skip the first-run embedding model download. Without the model the server still runs but falls back to BM25-only search.</param>
     public async Task<int> Serve(
         string? workspaceRoot = null,
         string? remote = null,
         string? apiKey = null,
         string? store = null,
+        bool allowInsecureTransport = false,
         bool noAutoSetup = false,
         CancellationToken cancellationToken = default)
     {
@@ -40,6 +43,19 @@ public partial class ScriniaCommands
             // do NOT load local CLI plugins here — that would spin up a local embeddings
             // pipeline (and write a stray .scrinia/ into cwd) for memories that don't live
             // in a local store.
+            try
+            {
+                RemoteTransportGuard.Validate(
+                    new Uri(remote),
+                    hasApiKey: !string.IsNullOrWhiteSpace(apiKey),
+                    allowInsecure: allowInsecureTransport,
+                    warn: msg => Console.Error.WriteLine(msg));
+            }
+            catch (InsecureTransportException ex)
+            {
+                Console.Error.WriteLine($"[scrinia:error] {ex.Message}");
+                return 1;
+            }
             var httpClient = new HttpClient { BaseAddress = new Uri(remote) };
             httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", apiKey ?? "");

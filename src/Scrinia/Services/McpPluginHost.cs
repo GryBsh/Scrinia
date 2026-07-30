@@ -2,6 +2,7 @@ using System.Text.Json;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Scrinia.Core;
+using Scrinia.Core.Embeddings;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
@@ -21,6 +22,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     private McpClient? _client;
     private string _exePath = "";
     private string[] _arguments = [];
+    private Dictionary<string, string?> _environment = new();
     private int _failCount;
     private const int MaxRestarts = 3;
     private bool _degraded;
@@ -33,18 +35,6 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     public bool HasSearchCapability => _hasSearch && _isAvailable && !_degraded;
     public bool HasEventSinkCapability => (_hasUpsert || _hasRemove) && _isAvailable && !_degraded;
 
-    private static readonly string[] ConfigKeys =
-    [
-        "Scrinia:Embeddings:Provider",
-        "Scrinia:Embeddings:Hardware",
-        "Scrinia:Embeddings:SemanticWeight",
-        "Scrinia:Embeddings:OllamaBaseUrl",
-        "Scrinia:Embeddings:OllamaModel",
-        "Scrinia:Embeddings:OpenAiApiKey",
-        "Scrinia:Embeddings:OpenAiModel",
-        "Scrinia:Embeddings:OpenAiBaseUrl",
-    ];
-
     /// <summary>
     /// Starts the plugin process via MCP stdio transport. Verifies it's alive with a status call.
     /// </summary>
@@ -53,6 +43,7 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
     {
         _exePath = exePath;
         _arguments = BuildArguments(dataDir, modelsDir, getConfig);
+        _environment = BuildSecretEnvironment(getConfig);
         await ConnectAsync(ct);
 
         // Verify the plugin is alive
@@ -82,11 +73,12 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         }
     }
 
-    private static string[] BuildArguments(string dataDir, string modelsDir, Func<string, string?> getConfig)
+    internal static string[] BuildArguments(string dataDir, string modelsDir, Func<string, string?> getConfig)
     {
         var args = new List<string> { "--data-dir", dataDir, "--models-dir", modelsDir };
-        foreach (var key in ConfigKeys)
+        foreach (var key in PluginConfigProtocol.Keys)
         {
+            if (PluginConfigProtocol.IsSecret(key)) continue; // secrets go via the environment
             var val = getConfig(key);
             if (val is not null)
             {
@@ -97,12 +89,27 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
         return args.ToArray();
     }
 
+    internal static Dictionary<string, string?> BuildSecretEnvironment(Func<string, string?> getConfig)
+    {
+        var env = new Dictionary<string, string?>();
+        foreach (var key in PluginConfigProtocol.Keys)
+        {
+            if (!PluginConfigProtocol.IsSecret(key)) continue;
+            var val = getConfig(key);
+            if (val is not null)
+                env[PluginConfigProtocol.EnvVarName(key)] = val;
+        }
+        return env;
+    }
+
     private async Task ConnectAsync(CancellationToken ct)
     {
         var transport = new StdioClientTransport(new StdioClientTransportOptions
         {
             Command = _exePath,
             Arguments = _arguments,
+            // Secret config (API keys) is handed to the child via its environment, never argv.
+            EnvironmentVariables = _environment,
             Name = "scrinia-plugin",
             StandardErrorLines = line => Console.Error.WriteLine(line),
             ShutdownTimeout = TimeSpan.FromSeconds(3),

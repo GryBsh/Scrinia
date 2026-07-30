@@ -28,6 +28,9 @@ for (int i = 0; i < args.Length; i++)
     }
 }
 
+// Secret config (API keys) arrives via the environment, never argv (Stream 5 S1).
+PluginConfigProtocol.ApplySecretEnvironment(configValues, Environment.GetEnvironmentVariable);
+
 dataDir ??= Path.Combine(AppContext.BaseDirectory, "..", ".scrinia");
 dataDir = Path.GetFullPath(dataDir);
 Directory.CreateDirectory(dataDir);
