@@ -214,6 +214,11 @@ public sealed partial class ScriniaMcpTools
         string baseDir = GetScriniaBaseDir(store);
         string skillsDir = Path.Combine(baseDir, "skills");
         string filePath = Path.Combine(skillsDir, $"{name}.md");
+        if (!PathContainment.IsWithin(skillsDir, filePath))
+            return ResponseBuilder.Error(
+                $"Invalid skill name '{name}'.",
+                ErrorCodes.InvalidParameter,
+                "remember({ path: '/skill/my-helper', content: [...] })").ToYaml();
         Directory.CreateDirectory(skillsDir);
 
         ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
@@ -380,6 +385,10 @@ public sealed partial class ScriniaMcpTools
 
         string baseDir = GetScriniaBaseDir(store);
         string filePath = Path.Combine(baseDir, "skills", $"{skillName}.md");
+        if (!PathContainment.IsWithin(Path.Combine(baseDir, "skills"), filePath))
+            return ResponseBuilder.Error(
+                $"Invalid skill name '{skillName}'.", ErrorCodes.NotFound,
+                "recall({ path: '/skill/' }) to list available skills").ToYaml();
         string? diskContent = null;
         if (File.Exists(filePath))
         {
