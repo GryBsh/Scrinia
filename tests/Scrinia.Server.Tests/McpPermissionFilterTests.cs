@@ -60,6 +60,12 @@ public sealed class McpPermissionFilterTests
     }
 
     [Fact]
+    public void Facts_RequiresSearchPermission()
+    {
+        McpPermissionFilter.RequiredPermission("tools/call", "facts").Should().Be("search");
+    }
+
+    [Fact]
     public void EveryRegisteredTool_HasAPermissionMapping_OrIsIntentionallyUngated()
     {
         // Guards the hand-maintained parallel copy: a tool advertised to agents that the

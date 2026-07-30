@@ -46,7 +46,7 @@ public static class McpPermissionFilter
     {
         "tools/call" => toolName switch
         {
-            "search" or "list" => "search",
+            "search" or "list" or "facts" => "search",
             "recall" => "read",
             "remember" or "compact" or "link" or "reconcile" => "store",
             "append" => "append",
