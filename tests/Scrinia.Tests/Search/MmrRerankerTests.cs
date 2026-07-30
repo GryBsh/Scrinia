@@ -262,21 +262,36 @@ public sealed class MmrRerankerTests
     }
 
     [Fact]
-    public void Rerank_ChunkWithNullTf_FallsBackToParentTf()
+    public void Rerank_ChunkWithNullTf_FallsBackToParentTf_AndIsPenalizedAsRedundant()
     {
-        var parentTf = new Dictionary<string, int> { ["auth"] = 3 };
-        var entry = new ArtifactEntry("doc", "", 100, 1, DateTimeOffset.UtcNow)
+        // A: entry, TF {x:10}, top score -> picked first.
+        var aEntry = new ArtifactEntry("a", "", 100, 1, DateTimeOffset.UtcNow)
+        { TermFrequencies = new Dictionary<string, int> { ["x"] = 10 } };
+        // B: chunk with NULL own TF; its parent has TF {x:10} (identical to A). The fallback makes
+        //    B redundant with A (cosine 1.0); without the fallback GetTf would return null and B
+        //    would look maximally diverse and win the 2nd slot.
+        var bParent = new ArtifactEntry("b", "", 100, 1, DateTimeOffset.UtcNow)
+        { TermFrequencies = new Dictionary<string, int> { ["x"] = 10 } };
+        // C: entry, TF {y:10} -> orthogonal to A (cosine 0), lower relevance than B.
+        var cEntry = new ArtifactEntry("c", "", 100, 1, DateTimeOffset.UtcNow)
+        { TermFrequencies = new Dictionary<string, int> { ["y"] = 10 } };
+
+        var results = new List<SearchResult>
         {
-            TermFrequencies = parentTf,
+            new EntryResult(new ScopedArtifact("local:memory", aEntry), 100.0),
+            new ChunkEntryResult(new ScopedArtifact("local:memory", bParent),
+                new ChunkEntry(0, "", null, null), 1, 90.0),   // null chunk TF
+            new EntryResult(new ScopedArtifact("local:memory", cEntry), 80.0),
         };
-        var parent = new ScopedArtifact("local:memory", entry);
 
-        // Chunk carries no TF of its own -> GetTf must fall back to the parent dict, not throw.
-        var chunk = new ChunkEntry(0, "", null, null);
-        var results = new List<SearchResult> { new ChunkEntryResult(parent, chunk, 1, 50.0) };
+        // k=2, lambda=0.5. With the parent-TF fallback: pick A, then C (B is penalized as redundant
+        // with A). If the fallback were removed, B would win the 2nd slot instead of C.
+        var reranked = MmrReranker.Rerank(results, k: 2, lambda: 0.5);
 
-        var reranked = MmrReranker.Rerank(results, k: 1, lambda: 0.5);
-
-        reranked.Should().ContainSingle();
+        reranked.Should().HaveCount(2);
+        reranked[0].Should().BeOfType<EntryResult>().Which.Item.Entry.Name.Should().Be("a");
+        var entries = reranked.OfType<EntryResult>().Select(e => e.Item.Entry.Name).ToList();
+        entries.Should().Contain("c");
+        reranked.OfType<ChunkEntryResult>().Should().BeEmpty(); // B (null-TF chunk) demoted out
     }
 }
