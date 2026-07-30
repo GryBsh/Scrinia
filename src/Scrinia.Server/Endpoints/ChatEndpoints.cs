@@ -17,8 +17,10 @@ public static class ChatEndpoints
         group.MapPost("/", async (string store, ChatRequest req, RequestContext ctx,
             ChatProviderCache providerCache, ILoggerFactory loggerFactory, CancellationToken ct) =>
         {
-            if (!ctx.HasPermission("chat"))
-                return Results.Json(new ErrorResponse("Permission 'chat' required."), statusCode: 403);
+            if (!ctx.HasPermission("chat") || !ctx.HasPermission("read") || !ctx.HasPermission("search"))
+                return Results.Json(
+                    new ErrorResponse("Permissions 'chat', 'read', and 'search' are required."),
+                    statusCode: 403);
 
             // ── Input validation (SEC-051) ──────────────────────────────────
             const int MaxMessages = 1000;
