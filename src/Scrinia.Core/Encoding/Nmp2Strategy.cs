@@ -122,6 +122,13 @@ public sealed class Nmp2Strategy : IEncodingStrategy
 
     public byte[] Decode(string artifact)
     {
+        byte[] decoded = DecodeCore(artifact);
+        VerifyIntegrity(artifact, decoded);
+        return decoded;
+    }
+
+    private byte[] DecodeCore(string artifact)
+    {
         int maxBytes = MaxDecodedBytes;
 
         if (IsMultiChunk(artifact))
@@ -173,6 +180,23 @@ public sealed class Nmp2Strategy : IEncodingStrategy
 
         byte[] compressed = padded[..compressedLen];
         return BrotliDecompressBounded(compressed, maxBytes);
+    }
+
+    /// <summary>Verifies decoded output against the header's declared length and CRC32.
+    /// Length is checked when the header declares one (&gt; 0); CRC when present.</summary>
+    private static void VerifyIntegrity(string artifact, byte[] decoded)
+    {
+        var meta = Instance.ParseHeader(artifact);
+        if (meta.OriginalBytes > 0 && decoded.Length != meta.OriginalBytes)
+            throw new InvalidDataException(
+                $"NMP/2 length mismatch: header declares {meta.OriginalBytes}B, decoded {decoded.Length}B.");
+        if (meta.Crc32 is uint expected)
+        {
+            uint actual = Crc32.HashToUInt32(decoded);
+            if (actual != expected)
+                throw new InvalidDataException(
+                    $"NMP/2 CRC32 mismatch: header {expected:X8}, decoded {actual:X8}.");
+        }
     }
 
     public bool CanDecode(string artifact) =>
