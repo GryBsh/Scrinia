@@ -67,6 +67,25 @@ public sealed class PathContainmentHardeningTests
         PathContainment.IsWithin(baseDir, baseDir.ToLowerInvariant() + "/x").Should().BeFalse();
     }
 
+    [Fact]
+    public void SymlinkLoop_FailsClosed_ReturnsFalse()
+    {
+        string baseDir = Path.Combine(Path.GetTempPath(), "pc-loop-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(baseDir);
+        string loopA = Path.Combine(baseDir, "a");
+        string loopB = Path.Combine(baseDir, "b");
+        try
+        {
+            // a -> b, b -> a : resolving either throws IOException (too many links / loop).
+            Directory.CreateSymbolicLink(loopA, loopB);
+            Directory.CreateSymbolicLink(loopB, loopA);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        { return; } // environment can't create symlinks; skip
+        // Must fail closed (return false), never throw.
+        PathContainment.IsWithin(baseDir, Path.Combine(loopA, "x")).Should().BeFalse();
+    }
+
     private static bool TryCreateDirSymlink(string link, string target)
     {
         try { Directory.CreateSymbolicLink(link, target); return true; }
