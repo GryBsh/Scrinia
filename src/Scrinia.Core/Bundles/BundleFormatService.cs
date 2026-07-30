@@ -344,6 +344,8 @@ public static class BundleFormatService
         foreach (var categoryProp in fileEntitiesEl.EnumerateObject())
         {
             string category = categoryProp.Name;
+            if (!FileEntityCategories.Contains(category, StringComparer.OrdinalIgnoreCase))
+                continue; // only workflows/skills/agent may be imported — reject arbitrary category keys
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
                 continue;
 
