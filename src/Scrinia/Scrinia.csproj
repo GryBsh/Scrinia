@@ -26,4 +26,8 @@
     <ProjectReference Include="..\Scrinia.Mcp\Scrinia.Mcp.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Scrinia.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -22,7 +22,11 @@ public static class Nmp2ConflictHandler
         // 2. Both changed: conflict-as-data
         // %A path is something like .scrinia/topics/api/auth-flow.nmp2
         string dir = Path.GetDirectoryName(oursPath)!;
-        string conflictDir = Path.Combine(dir, config.ConflictDir);
+        string dirFull = Path.GetFullPath(dir);
+        string conflictDir = Path.GetFullPath(Path.Combine(dir, config.ConflictDir));
+        if (Path.IsPathRooted(config.ConflictDir) || !IsWithin(dirFull, conflictDir))
+            throw new InvalidOperationException(
+                $"merge.config ConflictDir '{config.ConflictDir}' escapes the artifact directory.");
         string currentDir = Path.Combine(conflictDir, "current");
         string incomingDir = Path.Combine(conflictDir, "incoming");
 
@@ -81,6 +85,20 @@ public static class Nmp2ConflictHandler
 
         string meta = File.ReadAllText(metaPath);
         File.WriteAllText(metaPath, InsertConflictedFlag(meta));
+    }
+
+    // Local lexical containment check. Scrinia.Merge is a standalone AOT/trimmed executable
+    // with no Scrinia.Core dependency, so we deliberately do NOT pull in PathContainment here;
+    // the merge driver only needs to reject rooted/traversal ConflictDir values.
+    // Lexical only; does not resolve symlinks.
+    private static bool IsWithin(string baseFull, string candidateFull)
+    {
+        if (string.Equals(baseFull, candidateFull, StringComparison.Ordinal))
+            return true;
+        string withSep = baseFull.EndsWith(Path.DirectorySeparatorChar)
+            ? baseFull
+            : baseFull + Path.DirectorySeparatorChar;
+        return candidateFull.StartsWith(withSep, StringComparison.Ordinal);
     }
 
     internal static string InsertConflictedFlag(string metaJson)

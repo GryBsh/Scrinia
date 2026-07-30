@@ -144,13 +144,12 @@ public partial class ScriniaCommands
         exportsDir = Path.GetFullPath(exportsDir);
         Directory.CreateDirectory(exportsDir);
 
-        string bundleName = string.IsNullOrWhiteSpace(output)
-            ? $"{sanitizedTopic}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}"
-            : output;
-        if (!bundleName.EndsWith(".scrinia-bundle", StringComparison.OrdinalIgnoreCase))
-            bundleName += ".scrinia-bundle";
-
-        string bundlePath = Path.Combine(exportsDir, bundleName);
+        if (!TryResolveBundlePath(exportsDir, output, out string bundlePath, out string? pathError, sanitizedTopic))
+        {
+            if (json) { WriteJsonError(pathError!); return Task.FromResult(1); }
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(pathError!)}");
+            return Task.FromResult(1);
+        }
 
         var entries = new List<ArtifactEntry>();
         var artifactContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -247,5 +246,27 @@ public partial class ScriniaCommands
                 $"({ScriniaMcpTools.FormatBytes(fileSize)}) at {Markup.Escape(bundlePath)}[/]");
         }
         return Task.FromResult(0);
+    }
+
+    /// <summary>Resolves the bundle output path inside <paramref name="exportsDir"/>, rejecting any
+    /// --output that escapes it (absolute path or traversal).</summary>
+    internal static bool TryResolveBundlePath(
+        string exportsDir, string? output, out string bundlePath, out string? error, string defaultPrefix = "bundle")
+    {
+        error = null;
+        string bundleName = string.IsNullOrWhiteSpace(output)
+            ? $"{defaultPrefix}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}"
+            : output;
+        if (!bundleName.EndsWith(".scrinia-bundle", StringComparison.OrdinalIgnoreCase))
+            bundleName += ".scrinia-bundle";
+
+        bundlePath = Path.GetFullPath(Path.Combine(exportsDir, bundleName));
+        if (!PathContainment.IsWithin(exportsDir, bundlePath))
+        {
+            error = $"--output '{output}' must stay within the exports directory.";
+            bundlePath = "";
+            return false;
+        }
+        return true;
     }
 }

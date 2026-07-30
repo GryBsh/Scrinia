@@ -55,6 +55,25 @@ public sealed class ChatEndpointTests : IClassFixture<ScriniaServerFactory>
     }
 
     [Fact]
+    public async Task Chat_WithoutReadAndSearch_Is403()
+    {
+        // chat-only key (no read/search) scoped to the primary store.
+        var keyStore = _factory.Services.GetRequiredService<ApiKeyStore>();
+        var (rawKey, _, _) = keyStore.CreateKey("chat-only", [_factory.PrimaryStore], ["chat"], "chat-only");
+
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rawKey);
+
+        var req = new ChatRequest([new ChatMessage("user", "hello")]);
+        var content = new StringContent(
+            JsonSerializer.Serialize(req, ChatJsonContext.Default.ChatRequest),
+            Encoding.UTF8, "application/json");
+
+        var resp = await client.PostAsync($"/api/v1/stores/{_factory.PrimaryStore}/chat/", content);
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
     public async Task Chat_returns_503_when_no_providers_configured()
     {
         // Default test setup has no chat providers configured

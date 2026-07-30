@@ -34,6 +34,11 @@ public static class MemoryEndpoints
     private const int MaxNameLength = 256;
     private const long MaxContentBytes = 5 * 1024 * 1024; // 5 MB per element
 
+    /// <summary>True when the caller may write to <paramref name="store"/> — i.e. the store is not
+    /// marked read-only by an SSO store_access claim. API keys default to read-write.</summary>
+    internal static bool IsWritable(RequestContext ctx, string store) =>
+        !string.Equals(ctx.GetStoreAccessLevel(store), "read-only", StringComparison.OrdinalIgnoreCase);
+
     private static async Task<IResult> StoreMemory(
         string store,
         StoreRequest req,
@@ -43,6 +48,9 @@ public static class MemoryEndpoints
     {
         if (!ctx.HasPermission("store"))
             return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
+
+        if (!IsWritable(ctx, store))
+            return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
         if (req.Content is null || req.Content.Length == 0 || string.IsNullOrWhiteSpace(req.Name))
             return Results.BadRequest(new ErrorResponse("content and name are required."));
@@ -134,6 +142,9 @@ public static class MemoryEndpoints
         if (!ctx.HasPermission("forget"))
             return Results.Json(new ErrorResponse("Permission 'forget' required."), statusCode: 403);
 
+        if (!IsWritable(ctx, store))
+            return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
+
         string decoded = Uri.UnescapeDataString(name);
 
         try
@@ -159,6 +170,9 @@ public static class MemoryEndpoints
     {
         if (!ctx.HasPermission("append"))
             return Results.Json(new ErrorResponse("Permission 'append' required."), statusCode: 403);
+
+        if (!IsWritable(ctx, store))
+            return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
         string decoded = Uri.UnescapeDataString(name);
         if (string.IsNullOrWhiteSpace(req.Content))
@@ -189,6 +203,9 @@ public static class MemoryEndpoints
     {
         if (!ctx.HasPermission("copy"))
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
+
+        if (!IsWritable(ctx, store))
+            return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
 
         string decoded = Uri.UnescapeDataString(name);
         if (string.IsNullOrWhiteSpace(req.Destination))
@@ -316,6 +333,9 @@ public static class MemoryEndpoints
     {
         if (!ctx.HasPermission("import"))
             return Results.Json(new ErrorResponse("Permission 'import' required."), statusCode: 403);
+
+        if (!IsWritable(ctx, store))
+            return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
         // Kestrel's global MaxRequestBodySize (10 MB, set in Program.cs) is below the
         // intended 50 MB bundle-import ceiling (FormOptions.MultipartBodyLengthLimit).

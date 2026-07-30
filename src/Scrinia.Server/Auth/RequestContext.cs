@@ -21,6 +21,9 @@ public sealed class RequestContext
         Stores.Contains("*", StringComparer.OrdinalIgnoreCase)
         || Stores.Contains(storeName, StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>True when the caller holds wildcard store access ("*") — the global admin role.</summary>
+    public bool IsGlobalAdmin => Stores.Contains("*", StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Store access level claims, populated from SSO claim transformer.</summary>
     public string[] StoreAccessLevels { get; set; } = [];
 

@@ -21,6 +21,10 @@
     <ProjectReference Include="..\Scrinia.Plugin.Abstractions\Scrinia.Plugin.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Scrinia.Server.Tests" />
+  </ItemGroup>
+
   <Target Name="BuildWebUI" BeforeTargets="Build" Condition="Exists('../../web/package.json') AND !Exists('wwwroot/index.html')">
     <Exec Command="npm ci" WorkingDirectory="../../web" />
     <Exec Command="npm run build" WorkingDirectory="../../web" />
