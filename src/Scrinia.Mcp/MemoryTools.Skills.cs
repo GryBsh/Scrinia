@@ -145,6 +145,12 @@ public sealed partial class ScriniaMcpTools
     {
         var store = CurrentStore;
 
+        if (!FileEntityName.IsValid(name))
+            return ResponseBuilder.Error(
+                $"Invalid skill name '{name}'. Use letters, digits, '-', '_' or '.' only.",
+                ErrorCodes.InvalidParameter,
+                "remember({ path: '/skill/my-helper', content: [...] })").ToYaml();
+
         string promptContent;
         string role;
         string scaffoldLower = scaffold.Trim().ToLowerInvariant();
@@ -367,6 +373,11 @@ public sealed partial class ScriniaMcpTools
     private static async Task<string> LoadSkillAsync(
         IMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
     {
+        if (!FileEntityName.IsValid(skillName))
+            return ResponseBuilder.Error(
+                $"Invalid skill name '{skillName}'.", ErrorCodes.NotFound,
+                "recall({ path: '/skill/' }) to list available skills").ToYaml();
+
         string baseDir = GetScriniaBaseDir(store);
         string filePath = Path.Combine(baseDir, "skills", $"{skillName}.md");
         string? diskContent = null;
