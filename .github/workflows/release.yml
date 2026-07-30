@@ -9,7 +9,41 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          include-prerelease: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+
+      - name: Build Web UI
+        run: cd web && npm ci && npm run build
+
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
+      - name: Test (Scrinia.Tests)
+        run: dotnet test tests/Scrinia.Tests/ --no-build -c Release
+      - name: Test (Scrinia.Server.Tests)
+        run: dotnet test tests/Scrinia.Server.Tests/ --no-build -c Release
+      - name: Test (Scrinia.Merge.Tests)
+        run: dotnet test tests/Scrinia.Merge.Tests/ --no-build -c Release
+      # Model2Vec/Vulkan embedding-provider tests use [SkippableFact] and skip
+      # (not fail) when the model download is unavailable, so this is safe
+      # to run unconditionally in CI even without network access to the model host.
+      - name: Test (Scrinia.Plugin.Embeddings.Tests)
+        run: dotnet test tests/Scrinia.Plugin.Embeddings.Tests/ --no-build -c Release
+      - name: Test (Scrinia.Retrieval.Benchmarks.Tests)
+        run: dotnet test tests/Scrinia.Retrieval.Benchmarks.Tests/ --no-build -c Release
+
   build-cli:
+    needs: test
     strategy:
       matrix:
         include:
@@ -90,6 +124,7 @@ jobs:
           fi
 
   build-server:
+    needs: test
     strategy:
       matrix:
         include:
@@ -137,6 +172,7 @@ jobs:
         run: gh release upload ${{ github.event.release.tag_name }} ${{ matrix.archive }} --clobber
 
   build-docker:
+    needs: test
     runs-on: ubuntu-latest
 
     steps:

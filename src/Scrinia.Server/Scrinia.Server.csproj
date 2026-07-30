@@ -13,6 +13,10 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
     <PackageReference Include="Scalar.AspNetCore" Version="2.4.18" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.0.0" />
+    <!-- Transitive-override security fixes: pin the patched versions of packages pulled in
+         via Microsoft.Data.Sqlite / Microsoft.AspNetCore.OpenApi. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" /> <!-- CVE-2025-6965 -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />             <!-- CVE-2026-49451 -->
   </ItemGroup>
 
   <ItemGroup>
