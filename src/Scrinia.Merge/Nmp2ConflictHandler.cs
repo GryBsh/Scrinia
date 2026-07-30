@@ -90,6 +90,7 @@ public static class Nmp2ConflictHandler
     // Local lexical containment check. Scrinia.Merge is a standalone AOT/trimmed executable
     // with no Scrinia.Core dependency, so we deliberately do NOT pull in PathContainment here;
     // the merge driver only needs to reject rooted/traversal ConflictDir values.
+    // Lexical only; does not resolve symlinks.
     private static bool IsWithin(string baseFull, string candidateFull)
     {
         if (string.Equals(baseFull, candidateFull, StringComparison.Ordinal))

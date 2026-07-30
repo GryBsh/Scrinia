@@ -389,6 +389,9 @@ app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Runs after auth (per-user partitioning needs the authenticated identity): unauthenticated
+// requests are rejected by auth before ever reaching the limiter. Acceptable trade-off — API
+// keys are high-entropy, so pre-auth request volume isn't a meaningful abuse vector here.
 app.UseRateLimiter();
 
 app.Use(async (context, next) =>

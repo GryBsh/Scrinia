@@ -27,6 +27,12 @@ public static class PathContainment
     /// segments are kept lexically. Resolving per-segment (not just the final node) means a symlinked ancestor
     /// is followed too.
     /// </summary>
+    /// <remarks>
+    /// <see cref="Path.GetFullPath(string)"/> collapses any <c>..</c> segments lexically before symlink
+    /// resolution begins. This is an accepted residual alongside the documented TOCTOU window: a
+    /// traversal segment can't smuggle a path past containment, since the collapsed form is what gets
+    /// resolved and compared.
+    /// </remarks>
     private static string ResolveReal(string path)
     {
         string full = Path.GetFullPath(path);
