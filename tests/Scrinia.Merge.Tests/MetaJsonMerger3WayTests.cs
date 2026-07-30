@@ -28,8 +28,8 @@ public class MetaJsonMerger3WayTests
         var result = MetaJsonMerger.Merge(ancestor, ours, theirs, new MergeConfig());
 
         Assert.Equal(MetaJsonMerger.MergeResult.Resolved, result);
-        var merged = JsonSerializer.Deserialize<MetaEntry>(File.ReadAllText(ours))!;
-        Assert.Equal("new-from-theirs", merged.Description); // BUG: currently keeps "old"
+        using var mergedDoc = JsonDocument.Parse(File.ReadAllText(ours));
+        Assert.Equal("new-from-theirs", mergedDoc.RootElement.GetProperty("Description").GetString()); // BUG: currently keeps "old"
     }
 
     [Fact]
