@@ -91,9 +91,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             string modelsDir = Path.Combine(pluginsDir, "scri-plugin-embeddings");
             Directory.CreateDirectory(modelsDir);
 
-            var vectorStore = new VectorStore(dataDir);
-
-            // Try Vulkan provider
+            // Initialize the provider FIRST so the store can be signed with its signature.
             try
             {
                 if (VulkanModelManager.IsModelAvailable(modelsDir))
@@ -113,6 +111,12 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             _logger.LogInformation("Embeddings plugin initialized: provider={Provider}, available={Available}",
                 _provider.GetType().Name, _provider.IsAvailable);
+
+            // Sign the store with the active provider's signature (null when unavailable — a transient
+            // provider-load failure must not quarantine good vectors). On a real provider change, mismatched
+            // files self-quarantine on first load and rebuild via reindex.
+            string? expectedSignature = ChunkedSignature.ForProvider(_provider, new EmbeddingOptions());
+            var vectorStore = new VectorStore(dataDir, expectedSignature);
 
             _vectorStore = vectorStore; // assign LAST: it's the initialized sentinel
         }

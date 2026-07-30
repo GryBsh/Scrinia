@@ -44,7 +44,6 @@ double semanticWeight = 50.0;
 if (configValues.TryGetValue("Scrinia:Embeddings:SemanticWeight", out var sw) && double.TryParse(sw, out var swVal))
     semanticWeight = swVal;
 
-var vectorStore = new VectorStore(embeddingsDir);
 IEmbeddingProvider provider;
 
 if (VulkanModelManager.IsModelAvailable(modelsDir))
@@ -59,6 +58,9 @@ else
 }
 
 var options = new EmbeddingOptions { SemanticWeight = semanticWeight };
+
+// Sign the store with the active provider's signature (null when unavailable — non-destructive).
+var vectorStore = new VectorStore(embeddingsDir, ChunkedSignature.ForProvider(provider, options));
 
 Console.Error.WriteLine($"[scrinia:info] Embeddings plugin started (provider={provider.GetType().Name})");
 

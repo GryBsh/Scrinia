@@ -261,4 +261,26 @@ public class VectorStoreTests : IDisposable
         vectors.Should().HaveCount(1);
         reopen.HasStaleQuarantines.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task NullSignatureStore_LoadsExistingSignedFile_WithoutQuarantine()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"scrinia_vs_null_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            // Write a signed file under signature "x".
+            var signed = new VectorStore(dir, expectedSignature: "x");
+            await signed.UpsertAsync("local:memory", "doc", null, new float[] { 1, 0, 0 });
+
+            // A store constructed with a null signature must NOT quarantine it (non-destructive):
+            var unsigned = new VectorStore(dir, expectedSignature: null);
+            var loaded = unsigned.GetVectors("local:memory");
+
+            loaded.Should().ContainSingle(v => v.Name == "doc");
+            unsigned.HasStaleQuarantines.Should().BeFalse();
+            Directory.GetFiles(dir, "*.stale-*", SearchOption.AllDirectories).Should().BeEmpty();
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { } }
+    }
 }
