@@ -226,7 +226,27 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(qualifiedName, [content], store, ct);
+        EnsureInitialized();
+        if (_vectorStore is null) return;
+
+        // An append mutates the memory: re-embed the FULL current content, not just the appended
+        // fragment (which would overwrite the document vector with just the fragment). Read the
+        // current artifact and route it through the shared embed path (which now Removes stale
+        // vectors first). ReadArtifactAsync returns the ENCODED nmp2 artifact — decode it the same
+        // way EmbeddingReindexer does before embedding.
+        try
+        {
+            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+            string artifact = await store.ReadArtifactAsync(subject, scope, ct);
+            if (string.IsNullOrWhiteSpace(artifact)) return;
+            string fullText = System.Text.Encoding.UTF8.GetString(
+                new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
+            await EmbedAndIndexAsync(qualifiedName, [fullText], store, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
+        }
     }
 
     public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
@@ -262,6 +282,12 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             var vectors = await _provider.EmbedBatchAsync(
                 items.Select(x => x.text).ToList(), ct);
             if (vectors is null) return;
+
+            // Atomic per-memory replace: clear prior vectors (including stale higher-index chunks
+            // from a previous, larger chunk count) before upserting the new set — mirrors
+            // EmbeddingReindexer. No-op when the name has no prior vectors, so first-time stores
+            // are unaffected.
+            await _vectorStore.RemoveAsync(scope, subject, ct);
 
             for (int i = 0; i < vectors.Length; i++)
                 await _vectorStore.UpsertAsync(scope, subject, items[i].chunkIndex, vectors[i], ct);
