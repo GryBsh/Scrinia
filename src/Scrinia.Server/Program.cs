@@ -380,10 +380,11 @@ app.UseStaticFiles();
 app.UseMiddleware<RequestTimingMiddleware>();
 
 app.UseCors();
-app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseRateLimiter();
 
 app.Use(async (context, next) =>
 {
