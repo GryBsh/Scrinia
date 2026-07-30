@@ -62,19 +62,26 @@ public static class KeyEndpoints
             new CreateKeyResponse(rawKey, keyId, userId, req.Stores, req.Permissions ?? []));
     }
 
-    private static IResult ListKeys(ApiKeyStore keyStore)
+    // A caller may manage a key iff it is a global admin, or every store the key grants is
+    // one the caller can access (all, not any — a key granting an out-of-scope store stays hidden).
+    private static bool CanManage(RequestContext ctx, string[] keyStores) =>
+        ctx.IsGlobalAdmin || (keyStores.Length > 0 && keyStores.All(ctx.CanAccessStore));
+
+    private static IResult ListKeys(RequestContext ctx, ApiKeyStore keyStore)
     {
-        var keys = keyStore.ListKeys();
-        var dtos = keys.Select(k => new KeySummaryDto(
-            k.Id, k.UserId, k.Stores, k.Permissions,
-            k.Label, k.CreatedAt, k.LastUsedAt, k.Revoked)).ToArray();
+        var dtos = keyStore.ListKeys()
+            .Where(k => CanManage(ctx, k.Stores))
+            .Select(k => new KeySummaryDto(
+                k.Id, k.UserId, k.Stores, k.Permissions,
+                k.Label, k.CreatedAt, k.LastUsedAt, k.Revoked))
+            .ToArray();
         return Results.Ok(dtos);
     }
 
-    private static IResult GetKey(string keyId, ApiKeyStore keyStore)
+    private static IResult GetKey(string keyId, RequestContext ctx, ApiKeyStore keyStore)
     {
         var key = keyStore.GetKey(keyId);
-        if (key is null)
+        if (key is null || !CanManage(ctx, key.Stores))
             return Results.NotFound(new ErrorResponse($"Key '{keyId}' not found."));
 
         return Results.Ok(new KeySummaryDto(
@@ -82,8 +89,12 @@ public static class KeyEndpoints
             key.Label, key.CreatedAt, key.LastUsedAt, key.Revoked));
     }
 
-    private static IResult RevokeKey(string keyId, ApiKeyStore keyStore)
+    private static IResult RevokeKey(string keyId, RequestContext ctx, ApiKeyStore keyStore)
     {
+        var key = keyStore.GetKey(keyId);
+        if (key is null || !CanManage(ctx, key.Stores))
+            return Results.NotFound(new ErrorResponse($"Key '{keyId}' not found or already revoked."));
+
         bool revoked = keyStore.RevokeKey(keyId);
         if (!revoked)
             return Results.NotFound(new ErrorResponse($"Key '{keyId}' not found or already revoked."));
