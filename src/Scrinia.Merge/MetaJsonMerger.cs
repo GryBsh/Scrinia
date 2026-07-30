@@ -28,9 +28,9 @@ public static class MetaJsonMerger
         if (!TryMergeField(GetString(ancestor, "name"), GetString(ours, "name"), GetString(theirs, "name"), out var name)) return MergeResult.Conflict;
         if (!TryMergeField(GetString(ancestor, "uri"), GetString(ours, "uri"), GetString(theirs, "uri"), out var uri)) return MergeResult.Conflict;
         if (!TryMergeField(GetString(ancestor, "description"), GetString(ours, "description"), GetString(theirs, "description"), out var description)) return MergeResult.Conflict;
-        if (!TryMergeField(GetInt(ancestor, "originalBytes"), GetInt(ours, "originalBytes"), GetInt(theirs, "originalBytes"), out var originalBytesN)) return MergeResult.Conflict;
+        if (!TryMergeField(GetLong(ancestor, "originalBytes"), GetLong(ours, "originalBytes"), GetLong(theirs, "originalBytes"), out var originalBytesN)) return MergeResult.Conflict;
         if (!TryMergeField(GetInt(ancestor, "chunkCount"), GetInt(ours, "chunkCount"), GetInt(theirs, "chunkCount"), out var chunkCountN)) return MergeResult.Conflict;
-        int originalBytes = originalBytesN ?? GetInt(ours, "originalBytes") ?? 0;
+        long originalBytes = originalBytesN ?? GetLong(ours, "originalBytes") ?? 0;
         int chunkCount = chunkCountN ?? GetInt(ours, "chunkCount") ?? 0;
 
         // Union keywords (already known similar by Jaccard).
@@ -49,8 +49,11 @@ public static class MetaJsonMerger
         SetString(ours, "description", description);
         ours["originalBytes"] = originalBytes;
         ours["chunkCount"] = chunkCount;
-        ours["keywords"] = new JsonArray(keywords.Order(StringComparer.OrdinalIgnoreCase)
-            .Select(k => (JsonNode?)JsonValue.Create(k)).ToArray());
+        if (keywords.Count > 0)
+            ours["keywords"] = new JsonArray(keywords.Order(StringComparer.OrdinalIgnoreCase)
+                .Select(k => (JsonNode?)JsonValue.Create(k)).ToArray());
+        else
+            ours.Remove("keywords");
         SetString(ours, "updatedAt", updatedAt);
         SetString(ours, "createdAt", createdAt);
 
@@ -69,6 +72,9 @@ public static class MetaJsonMerger
 
     private static int? GetInt(JsonObject? o, string key) =>
         o is not null && o.TryGetPropertyValue(key, out var n) && n is JsonValue v && v.TryGetValue<int>(out var i) ? i : null;
+
+    private static long? GetLong(JsonObject? o, string key) =>
+        o is not null && o.TryGetPropertyValue(key, out var n) && n is JsonValue v && v.TryGetValue<long>(out var i) ? i : null;
 
     private static string[]? GetStrings(JsonObject? o, string key)
     {

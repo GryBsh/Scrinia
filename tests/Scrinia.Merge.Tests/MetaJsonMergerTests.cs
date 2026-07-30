@@ -180,4 +180,41 @@ public sealed class MetaJsonMergerTests : IDisposable
         MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig()).Should().Be(MetaJsonMerger.MergeResult.Conflict);
         File.ReadAllText(ours).Should().Be(oursJson); // untouched
     }
+
+    [Fact]
+    public void Merge_OriginalBytesExceedsIntMaxValue_IsPreserved()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json"), ours = Path.Combine(dir, "ours.meta.json"), theirs = Path.Combine(dir, "theirs.meta.json");
+        // originalBytes exceeds int.MaxValue (2,147,483,647) — must survive the merge as a long.
+        string json = """{"name":"m","keywords":["auth","jwt"],"originalBytes":3000000000}""";
+        File.WriteAllText(a, json);
+        File.WriteAllText(ours, json);
+        File.WriteAllText(theirs, json);
+
+        var result = MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig());
+        result.Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(ours));
+        doc.RootElement.GetProperty("originalBytes").GetInt64().Should().Be(3_000_000_000L);
+    }
+
+    [Fact]
+    public void Merge_BothSidesNoKeywords_OmitsKeywordsProperty()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json"), ours = Path.Combine(dir, "ours.meta.json"), theirs = Path.Combine(dir, "theirs.meta.json");
+        string json = """{"name":"m","keywords":[]}""";
+        File.WriteAllText(a, json);
+        File.WriteAllText(ours, json);
+        File.WriteAllText(theirs, json);
+
+        var result = MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig());
+        result.Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(ours));
+        doc.RootElement.TryGetProperty("keywords", out _).Should().BeFalse();
+    }
 }
