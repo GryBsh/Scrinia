@@ -212,4 +212,86 @@ public sealed class MmrRerankerTests
         overOne.Should().NotThrow();
         negative.Should().NotThrow();
     }
+
+    // ── Chunk-level term frequencies ─────────────────────────────────────────
+
+    [Fact]
+    public void Rerank_TwoChunksOfSameParent_WithDifferentChunkTf_AreNotTreatedAsDuplicates()
+    {
+        // Same parent entry, but each chunk has a DISTINCT term-frequency profile.
+        // The parent TF contains vocabulary from both chunks, making them look similar
+        // if we incorrectly use parent TF for all chunks.
+        var parentTf = new Dictionary<string, int> { ["auth"] = 5, ["token"] = 5 };
+        var entry = new ArtifactEntry("doc", "", 100, 3, DateTimeOffset.UtcNow)
+        {
+            TermFrequencies = parentTf,
+        };
+        var parent = new ScopedArtifact("local:memory", entry);
+
+        var chunkA = new ChunkEntry(0, "", null, new Dictionary<string, int> { ["auth"] = 10 });
+        var chunkB = new ChunkEntry(1, "", null, new Dictionary<string, int> { ["token"] = 10 });
+
+        // Chunk C has TF matching the parent (high similarity to parent),
+        // and has high relevance score.
+        var chunkC = new ChunkEntry(2, "", null, new Dictionary<string, int> { ["auth"] = 5, ["token"] = 5 });
+
+        var results = new List<SearchResult>
+        {
+            new ChunkEntryResult(parent, chunkA, 3, 100.0),
+            new ChunkEntryResult(parent, chunkB, 3, 50.0),
+            new ChunkEntryResult(parent, chunkC, 3, 95.0),
+        };
+
+        // Without the fix: all chunks use parent TF, so all have cosine similarity ~1.0 to each other.
+        // MMR picks chunkA (score 100), then between B (score 50) and C (score 95):
+        //   B: 0.5 * 0.5 - 0.5 * 1.0 = -0.25
+        //   C: 0.5 * 0.95 - 0.5 * 1.0 = -0.025
+        //   → picks C, result = [A, C]
+        //
+        // With the fix: chunkA and chunkB are orthogonal (different TF), so cosine = 0.
+        // MMR picks chunkA, then between B and C:
+        //   B: 0.5 * 0.5 - 0.5 * 0 = 0.25
+        //   C: 0.5 * 0.95 - 0.5 * ~0.707 ≈ 0.121 (C's TF is similar to A's parent, not exact)
+        //   → picks B, result = [A, B]
+        var reranked = MmrReranker.Rerank(results, k: 2, lambda: 0.5);
+
+        reranked.Should().HaveCount(2);
+        var chunks = reranked.OfType<ChunkEntryResult>().Select(c => c.Chunk.ChunkIndex).ToList();
+        chunks.Should().Contain(0, "chunkA should always be selected (highest relevance)");
+        chunks.Should().Contain(1, "with chunk-level TF, chunkB should be selected because it's orthogonal to chunkA, not chunkC");
+    }
+
+    [Fact]
+    public void Rerank_ChunkWithNullTf_FallsBackToParentTf_AndIsPenalizedAsRedundant()
+    {
+        // A: entry, TF {x:10}, top score -> picked first.
+        var aEntry = new ArtifactEntry("a", "", 100, 1, DateTimeOffset.UtcNow)
+        { TermFrequencies = new Dictionary<string, int> { ["x"] = 10 } };
+        // B: chunk with NULL own TF; its parent has TF {x:10} (identical to A). The fallback makes
+        //    B redundant with A (cosine 1.0); without the fallback GetTf would return null and B
+        //    would look maximally diverse and win the 2nd slot.
+        var bParent = new ArtifactEntry("b", "", 100, 1, DateTimeOffset.UtcNow)
+        { TermFrequencies = new Dictionary<string, int> { ["x"] = 10 } };
+        // C: entry, TF {y:10} -> orthogonal to A (cosine 0), lower relevance than B.
+        var cEntry = new ArtifactEntry("c", "", 100, 1, DateTimeOffset.UtcNow)
+        { TermFrequencies = new Dictionary<string, int> { ["y"] = 10 } };
+
+        var results = new List<SearchResult>
+        {
+            new EntryResult(new ScopedArtifact("local:memory", aEntry), 100.0),
+            new ChunkEntryResult(new ScopedArtifact("local:memory", bParent),
+                new ChunkEntry(0, "", null, null), 1, 90.0),   // null chunk TF
+            new EntryResult(new ScopedArtifact("local:memory", cEntry), 80.0),
+        };
+
+        // k=2, lambda=0.5. With the parent-TF fallback: pick A, then C (B is penalized as redundant
+        // with A). If the fallback were removed, B would win the 2nd slot instead of C.
+        var reranked = MmrReranker.Rerank(results, k: 2, lambda: 0.5);
+
+        reranked.Should().HaveCount(2);
+        reranked[0].Should().BeOfType<EntryResult>().Which.Item.Entry.Name.Should().Be("a");
+        var entries = reranked.OfType<EntryResult>().Select(e => e.Item.Entry.Name).ToList();
+        entries.Should().Contain("c");
+        reranked.OfType<ChunkEntryResult>().Should().BeEmpty(); // B (null-TF chunk) demoted out
+    }
 }

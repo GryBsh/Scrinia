@@ -15,11 +15,13 @@ namespace Scrinia.Core.Search;
 /// sources (a <c>/findings/</c> note, a <c>/skill/</c> entry) that the BM25 top-3
 /// would otherwise miss.</para>
 ///
-/// <para>Similarity is <b>TF-cosine</b> over <see cref="ArtifactEntry.TermFrequencies"/>
-/// — already in memory after <c>WeightedAttributeScorer.SearchAll</c> runs, so MMR is
-/// effectively free on the search hot path. Legacy entries with null TF (the v2 index
-/// format) are treated as maximally-diverse to everything; they neither flood nor get
-/// flooded out.</para>
+/// <para>Similarity is <b>TF-cosine</b> over term-frequency dicts: for artifact results,
+/// the artifact's <see cref="ArtifactEntry.TermFrequencies"/>; for chunk results, the
+/// chunk's own term frequencies (or the parent artifact's if the chunk has none).
+/// Term frequencies are already in memory after <c>WeightedAttributeScorer.SearchAll</c>
+/// runs, so MMR is effectively free on the search hot path. Legacy entries with null TF
+/// (the v2 index format) are treated as maximally-diverse to everything; they neither
+/// flood nor get flooded out.</para>
 ///
 /// <para>λ corner cases:
 /// <list type="bullet">
@@ -172,11 +174,13 @@ public static class MmrReranker
     /// Pulls the TF dict from any SearchResult subtype. TopicResult has no TF — return null
     /// so the cosine helper treats it as fully diverse from anything else. Returns the
     /// concrete Dictionary type to avoid an interface dispatch on every TryGetValue.
+    /// For chunk results, uses the chunk's own term frequencies if available,
+    /// falling back to the parent entry's term frequencies for legacy chunks that have none.
     /// </summary>
     private static Dictionary<string, int>? GetTf(SearchResult r) => r switch
     {
         EntryResult er => er.Item.Entry.TermFrequencies,
-        ChunkEntryResult cr => cr.ParentItem.Entry.TermFrequencies,
+        ChunkEntryResult cr => cr.Chunk.TermFrequencies ?? cr.ParentItem.Entry.TermFrequencies,
         _ => null,
     };
 }

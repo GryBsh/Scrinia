@@ -91,9 +91,7 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             string modelsDir = Path.Combine(pluginsDir, "scri-plugin-embeddings");
             Directory.CreateDirectory(modelsDir);
 
-            var vectorStore = new VectorStore(dataDir);
-
-            // Try Vulkan provider
+            // Initialize the provider FIRST so the store can be signed with its signature.
             try
             {
                 if (VulkanModelManager.IsModelAvailable(modelsDir))
@@ -113,6 +111,12 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             _logger.LogInformation("Embeddings plugin initialized: provider={Provider}, available={Available}",
                 _provider.GetType().Name, _provider.IsAvailable);
+
+            // Sign the store with the active provider's signature (null when unavailable — a transient
+            // provider-load failure must not quarantine good vectors). On a real provider change, mismatched
+            // files self-quarantine on first load and rebuild via reindex.
+            string? expectedSignature = ChunkedSignature.ForProvider(_provider, new EmbeddingOptions());
+            var vectorStore = new VectorStore(dataDir, expectedSignature);
 
             _vectorStore = vectorStore; // assign LAST: it's the initialized sentinel
         }
@@ -222,7 +226,27 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
     public async Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
     {
-        await EmbedAndIndexAsync(qualifiedName, [content], store, ct);
+        EnsureInitialized();
+        if (_vectorStore is null) return;
+
+        // An append mutates the memory: re-embed the FULL current content, not just the appended
+        // fragment (which would overwrite the document vector with just the fragment). Read the
+        // current artifact and route it through the shared embed path (which now Removes stale
+        // vectors first). ReadArtifactAsync returns the ENCODED nmp2 artifact — decode it the same
+        // way EmbeddingReindexer does before embedding.
+        try
+        {
+            var (scope, subject) = store.ParseQualifiedName(qualifiedName);
+            string artifact = await store.ReadArtifactAsync(subject, scope, ct);
+            if (string.IsNullOrWhiteSpace(artifact)) return;
+            string fullText = System.Text.Encoding.UTF8.GetString(
+                new Scrinia.Core.Encoding.Nmp2Strategy().Decode(artifact));
+            await EmbedAndIndexAsync(qualifiedName, [fullText], store, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to re-embed appended memory '{Name}'", qualifiedName);
+        }
     }
 
     public async Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
@@ -257,7 +281,24 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             var vectors = await _provider.EmbedBatchAsync(
                 items.Select(x => x.text).ToList(), ct);
-            if (vectors is null) return;
+            if (vectors is null || vectors.Length != items.Count)
+            {
+                // A bad/mismatched embed result must return BEFORE RemoveAsync — otherwise a
+                // provider that returns the wrong count would wipe the existing vectors for this
+                // memory and then throw (or silently under/over-write), leaving it with zero
+                // vectors. Mirrors EmbeddingReindexer's `vectors.Length != chunks.Count` guard.
+                if (vectors is not null)
+                    _logger?.LogWarning(
+                        "Embed returned {Got} vectors for {Want} inputs for '{Name}'; skipping to preserve existing vectors.",
+                        vectors.Length, items.Count, qualifiedName);
+                return;
+            }
+
+            // Atomic per-memory replace: clear prior vectors (including stale higher-index chunks
+            // from a previous, larger chunk count) before upserting the new set — mirrors
+            // EmbeddingReindexer. No-op when the name has no prior vectors, so first-time stores
+            // are unaffected.
+            await _vectorStore.RemoveAsync(scope, subject, ct);
 
             for (int i = 0; i < vectors.Length; i++)
                 await _vectorStore.UpsertAsync(scope, subject, items[i].chunkIndex, vectors[i], ct);

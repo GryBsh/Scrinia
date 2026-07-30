@@ -905,17 +905,12 @@ public sealed partial class ScriniaMcpTools
             }
         }
 
-        // excludeTopics must be applied BEFORE the top-K limit cut in both branches — passing it
-        // straight into SearchAll (rather than post-filtering the already-limited result set)
-        // ensures excluded-topic hits never consume result slots.
-        IReadOnlyList<SearchResult> matches = supplemental is { Count: > 0 }
-            ? store.SearchAll(effectiveQuery, scopes, limit, excludeTopics, supplemental, entityScores)
-            : store.SearchAll(effectiveQuery, scopes, limit, excludeTopics, entityScores);
-
-        // Post-filter by path prefix and attribute filter. Both are AND filters — the candidate
-        // must satisfy every active constraint. Filters apply uniformly to entry, chunk, and
-        // topic results so callers don't need to know which result type to expect.
-        var filtered = ApplyPostFilters(store, matches, pathPrefix, attributeFilter);
+        // pathPrefix / attributeFilter are pushed into SearchAll so they apply BEFORE the top-K cut
+        // (symmetric with excludeTopics). A filtered search fills to `limit` instead of returning the
+        // post-limit remnant. Empty supplemental is normalized to null so the scorer skips it.
+        var supp = supplemental is { Count: > 0 } ? supplemental : null;
+        IReadOnlyList<SearchResult> filtered = store.SearchAll(
+            effectiveQuery, scopes, limit, excludeTopics, supp, entityScores, pathPrefix, attributeFilter);
 
         IReadOnlyList<EntityFactSummary> entityFacts = [];
         if (surfaceEntityFacts && candidates is { Count: > 0 })
@@ -943,71 +938,6 @@ public sealed partial class ScriniaMcpTools
             .Select(k => refByKey[k]);
 
         return EntityFactSummarizer.Summarize(factStore, named);
-    }
-
-    private static IReadOnlyList<SearchResult> ApplyPostFilters(
-        IMemoryStore store,
-        IReadOnlyList<SearchResult> matches,
-        string? pathPrefix,
-        IReadOnlyDictionary<string, string[]>? attributeFilter)
-    {
-        if (string.IsNullOrWhiteSpace(pathPrefix) && (attributeFilter is null || attributeFilter.Count == 0))
-            return matches;
-
-        var kept = new List<SearchResult>(matches.Count);
-        foreach (var match in matches)
-        {
-            if (!MatchesPathPrefix(store, match, pathPrefix)) continue;
-            if (!MatchesAttributes(match, attributeFilter)) continue;
-            kept.Add(match);
-        }
-        return kept;
-    }
-
-    private static bool MatchesPathPrefix(IMemoryStore store, SearchResult match, string? pathPrefix)
-    {
-        if (string.IsNullOrWhiteSpace(pathPrefix)) return true;
-        string label = match switch
-        {
-            EntryResult er => er.Item.Scope == "ephemeral"
-                ? $"~{er.Item.Entry.Name}"
-                : store.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
-            ChunkEntryResult cr => cr.ParentItem.Scope == "ephemeral"
-                ? $"~{cr.ParentItem.Entry.Name}"
-                : store.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
-            TopicResult tr => MemoryNaming.FormatScopeLabel(tr.Scope),
-            _ => string.Empty,
-        };
-        return label.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool MatchesAttributes(SearchResult match, IReadOnlyDictionary<string, string[]>? filter)
-    {
-        if (filter is null || filter.Count == 0) return true;
-        Dictionary<string, string[]>? attributes = match switch
-        {
-            EntryResult er => er.Item.Entry.Attributes,
-            ChunkEntryResult cr => cr.ParentItem.Entry.Attributes,
-            _ => null,   // TopicResult carries no attributes — excluded when a filter is active
-        };
-        if (attributes is null || attributes.Count == 0) return false;
-        foreach (var want in filter)
-        {
-            if (!attributes.TryGetValue(want.Key.Trim().ToLowerInvariant(), out var have) || have is null || have.Length == 0)
-                return false;
-            if (want.Value is { Length: > 0 })
-            {
-                bool any = false;
-                foreach (string wv in want.Value)
-                {
-                    foreach (string hv in have)
-                        if (string.Equals(hv, wv, StringComparison.OrdinalIgnoreCase)) { any = true; break; }
-                    if (any) break;
-                }
-                if (!any) return false;
-            }
-        }
-        return true;
     }
 
     /// <summary>

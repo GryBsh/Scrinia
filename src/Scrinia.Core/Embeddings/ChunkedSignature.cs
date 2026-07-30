@@ -15,4 +15,16 @@ public static class ChunkedSignature
     /// </summary>
     public static string Compose(string providerSignature, int chunkSize, int overlap) =>
         $"{providerSignature}|c{chunkSize}o{overlap}";
+
+    /// <summary>
+    /// The signature a live-serving store should expect for vectors produced by
+    /// <paramref name="provider"/>, or <c>null</c> when the provider is unavailable. A store built
+    /// with a null signature disables quarantine-on-mismatch, so a transient provider-load failure
+    /// never quarantines good vectors. Uses the same <see cref="Compose"/> as the reindexer, so a
+    /// reindex with the same provider + options reproduces a byte-identical signature.
+    /// </summary>
+    public static string? ForProvider(IEmbeddingProvider provider, EmbeddingOptions options)
+        => provider.IsAvailable
+            ? Compose(provider.Signature, options.ChunkSize, options.ChunkOverlap)
+            : null;
 }
