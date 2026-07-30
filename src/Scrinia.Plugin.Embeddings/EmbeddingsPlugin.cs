@@ -281,7 +281,18 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
 
             var vectors = await _provider.EmbedBatchAsync(
                 items.Select(x => x.text).ToList(), ct);
-            if (vectors is null) return;
+            if (vectors is null || vectors.Length != items.Count)
+            {
+                // A bad/mismatched embed result must return BEFORE RemoveAsync — otherwise a
+                // provider that returns the wrong count would wipe the existing vectors for this
+                // memory and then throw (or silently under/over-write), leaving it with zero
+                // vectors. Mirrors EmbeddingReindexer's `vectors.Length != chunks.Count` guard.
+                if (vectors is not null)
+                    _logger?.LogWarning(
+                        "Embed returned {Got} vectors for {Want} inputs for '{Name}'; skipping to preserve existing vectors.",
+                        vectors.Length, items.Count, qualifiedName);
+                return;
+            }
 
             // Atomic per-memory replace: clear prior vectors (including stale higher-index chunks
             // from a previous, larger chunk count) before upserting the new set — mirrors

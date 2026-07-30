@@ -42,6 +42,27 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         public void Dispose() { }
     }
 
+    // Fake that always returns an EMPTY batch (0 vectors, regardless of input count) to exercise
+    // the mismatch guard. IEmbeddingProvider.EmbedBatchAsync has a default interface implementation
+    // that fans out to EmbedAsync 1:1, so it must be explicitly overridden here to force a
+    // mismatched result. An empty result is the cleanest reproduction of the finding's "RemoveAsync
+    // then zero vectors written" failure mode: with a partial-but-nonzero mismatch (e.g. 2 vectors
+    // for 1 input) the old code's loop indexes past `items` and throws mid-loop, which — because
+    // EmbedAndIndexAsync's try/catch swallows the exception — can leave a corrupted-but-nonzero
+    // count that isn't a reliable regression signal. Zero vectors removes that ambiguity: the loop
+    // body never executes, so without the guard the memory ends up with exactly zero vectors.
+    private sealed class EmptyBatchProvider : IEmbeddingProvider
+    {
+        public bool IsAvailable => true;
+        public int Dimensions => 1;
+        public string Signature => "fake:empty";
+        public Task<float[]?> EmbedAsync(string text, CancellationToken ct = default)
+            => Task.FromResult<float[]?>(new float[] { text.Length });
+        public Task<float[][]?> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
+            => Task.FromResult<float[][]?>(Array.Empty<float[]>());
+        public void Dispose() { }
+    }
+
     public EmbeddingsPluginIncrementalEmbedTests()
     {
         _root = Path.Combine(Path.GetTempPath(), $"scrinia_inc_{Guid.NewGuid():N}");
@@ -125,5 +146,32 @@ public sealed class EmbeddingsPluginIncrementalEmbedTests : IDisposable
         // not the 5-char fragment. LengthProvider makes this observable.
         var doc = _vectors.GetVectors(scope).Single(v => v.Name == subject && v.ChunkIndex is null);
         doc.Vector[0].Should().Be(appendedFull.Length);
+    }
+
+    [Fact]
+    public async Task Store_WithMismatchedBatchCount_PreservesExistingVectors()
+    {
+        using var plugin = BuildPlugin();
+        const string scope = "local:memory";
+        const string qn = "/memory/notes";
+
+        // Store with the good deterministic provider first: 3 chunks -> doc + 3 chunk vectors = 4.
+        await plugin.OnStoredAsync(qn, new[] { "aaa", "bbb", "ccc" }, _store, CancellationToken.None);
+        int before = _vectors.GetVectors(scope).Count(v => v.Name == "notes");
+        before.Should().Be(4);
+
+        // Swap in a provider that always returns a mismatched (empty) vector batch. Without the
+        // guard, EmbedAndIndexAsync would RemoveAsync the existing 4 vectors FIRST and then the
+        // upsert loop would never execute (0 vectors to iterate), leaving the memory with ZERO
+        // vectors. With the guard, the mismatch is detected before RemoveAsync runs, so the
+        // original 4 vectors are untouched.
+        typeof(EmbeddingsPlugin).GetField("_provider", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(plugin, new EmptyBatchProvider());
+
+        Func<Task> act = () => plugin.OnStoredAsync(qn, new[] { "ddd" }, _store, CancellationToken.None);
+        await act.Should().NotThrowAsync();
+
+        _vectors.GetVectors(scope).Count(v => v.Name == "notes").Should().Be(before,
+            because: "a mismatched embed result must be rejected before RemoveAsync runs, so the existing vectors survive");
     }
 }
