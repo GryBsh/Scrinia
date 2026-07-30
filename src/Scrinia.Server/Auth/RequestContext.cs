@@ -18,8 +18,7 @@ public sealed class RequestContext
         Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
 
     public bool CanAccessStore(string storeName) =>
-        Stores.Contains("*", StringComparer.OrdinalIgnoreCase)
-        || Stores.Contains(storeName, StringComparer.OrdinalIgnoreCase);
+        IsGlobalAdmin || Stores.Contains(storeName, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>True when the caller holds wildcard store access ("*") — the global admin role.</summary>
     public bool IsGlobalAdmin => Stores.Contains("*", StringComparer.OrdinalIgnoreCase);
