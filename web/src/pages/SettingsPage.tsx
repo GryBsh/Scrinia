@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getEmbeddingsStatus, getEmbeddingsSettings, updateEmbeddingsSettings, reindexEmbeddings } from '../api/client'
+import { getEmbeddingsStatus, getEmbeddingsSettings, updateEmbeddingsSettings, reindexEmbeddings, validateEmbeddingsSettings } from '../api/client'
 import type { EmbeddingsSettings, EmbeddingsSettingsUpdate } from '../api/types'
 import { RefreshCw, Save } from 'lucide-react'
 
@@ -153,13 +153,17 @@ function SettingsForm({
 }) {
   const [semanticWeight, setSemanticWeight] = useState(String(settings.semanticWeight))
   const [maxBatchSize, setMaxBatchSize] = useState(String(settings.maxBatchSize))
+  const [fieldErrors, setFieldErrors] = useState<{ semanticWeight?: string; maxBatchSize?: string }>({})
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault()
-    onSave({
-      semanticWeight: parseFloat(semanticWeight),
-      maxBatchSize: parseInt(maxBatchSize, 10),
-    })
+    const { values, errors } = validateEmbeddingsSettings(semanticWeight, maxBatchSize)
+    if (!values) {
+      setFieldErrors(errors)
+      return
+    }
+    setFieldErrors({})
+    onSave(values)
   }
 
   return (
@@ -180,6 +184,9 @@ function SettingsForm({
               step="0.1"
               className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+            {fieldErrors.semanticWeight && (
+              <p className="text-red-500 text-xs mt-1">{fieldErrors.semanticWeight}</p>
+            )}
           </div>
           <div>
             <label className="text-xs text-gray-500">Max Batch Size (1-64)</label>
@@ -192,6 +199,9 @@ function SettingsForm({
               step="1"
               className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+            {fieldErrors.maxBatchSize && (
+              <p className="text-red-500 text-xs mt-1">{fieldErrors.maxBatchSize}</p>
+            )}
           </div>
         </div>
 
