@@ -86,6 +86,27 @@ export function isAuthenticated(): boolean {
   return hasToken();
 }
 
+// ── Login ─────────────────────────────────────────────────────────────────────
+
+export type LoginOutcome = 'valid' | 'invalid' | 'unverifiable';
+
+// Validate a candidate key against a route any authenticated key can call
+// (not the ManageKeys-gated /keys endpoint). 401 = invalid; 2xx or 403 = valid
+// (a non-admin key may lack scopes but can still sign in); anything else, or a
+// network failure, is unverifiable — the caller must fail closed.
+export async function validateApiKey(key: string): Promise<LoginOutcome> {
+  try {
+    const resp = await fetch(`${API_BASE}/stores/default/memories?limit=1`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (resp.status === 401) return 'invalid';
+    if (resp.ok || resp.status === 403) return 'valid';
+    return 'unverifiable';
+  } catch {
+    return 'unverifiable';
+  }
+}
+
 // ── Health ───────────────────────────────────────────────────────────────────
 
 export async function getHealth(): Promise<HealthResponse> {

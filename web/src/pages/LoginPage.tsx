@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { setToken } from '../api/client'
+import { setToken, validateApiKey } from '../api/client'
 import { KeyRound } from 'lucide-react'
 
 export default function LoginPage() {
@@ -12,25 +12,18 @@ export default function LoginPage() {
     e.preventDefault()
     if (!key.trim()) return
 
-    // Validate against a route any authenticated key can call (not the
-    // ManageKeys-gated /api/v1/keys endpoint) — a valid key without
-    // key-management permission must still be able to log in.
-    setToken(key.trim())
-    try {
-      const resp = await fetch('/api/v1/stores/default/memories?limit=1', {
-        headers: { Authorization: `Bearer ${key.trim()}` },
-      })
-      if (resp.status === 401) {
-        setError('Invalid API key.')
-        localStorage.removeItem('scrinia-api-key')
-        return
-      }
-      // 403 no longer means "invalid key" — a valid non-admin key may lack
-      // some scopes but can still log in.
-    } catch {
-      // Network error — proceed anyway, key might still be valid
+    const outcome = await validateApiKey(key.trim())
+    if (outcome === 'invalid') {
+      setError('Invalid API key.')
+      return
+    }
+    if (outcome === 'unverifiable') {
+      setError("Couldn't verify your key — the server is unreachable or returned an error. Try again.")
+      return
     }
 
+    // valid — persist only now, then enter the app
+    setToken(key.trim())
     navigate('/', { replace: true })
   }
 
