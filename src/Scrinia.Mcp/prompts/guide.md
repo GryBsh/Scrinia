@@ -1,6 +1,6 @@
 # Scrinia — Agent Memory Guide
 
-Scrinia is persistent, project-scoped memory and reusable skill prompts, exposed as MCP tools. Memories live in `.scrinia/`, so they travel with the code and shared with every agent on the repo. This guide covers the model and the tools that operate on it.
+Scrinia is persistent, project-scoped memory and reusable skill prompts, exposed as MCP tools. Memories live in `.scrinia/`, so they travel with the code and are shared with every agent on the repo. This guide covers the model and the tools that operate on it.
 
 ## The model
 
