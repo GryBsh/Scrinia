@@ -289,6 +289,25 @@ export function reindexEmbeddings() {
 
 // ── Chat ────────────────────────────────────────────────────────────────────
 
+// Accumulate `chunk` onto `prev`, split into complete `\n`-terminated lines,
+// and return every `data: ` payload plus the leftover partial line. On the
+// final call (`final: true`) the remaining buffer is treated as a complete
+// line so a last event with no trailing newline is not dropped.
+export function drainSse(
+  prev: string,
+  chunk: string,
+  final: boolean,
+): { data: string[]; buffer: string } {
+  const buffer = prev + chunk;
+  const parts = buffer.split('\n');
+  const remainder = final ? '' : (parts.pop() ?? '');
+  const data: string[] = [];
+  for (const line of parts) {
+    if (line.startsWith('data: ')) data.push(line.slice('data: '.length));
+  }
+  return { data, buffer: remainder };
+}
+
 export function getChatProviders(store: string) {
   return apiFetch<ChatProvidersResponse>(`${API_BASE}/stores/${store}/chat/providers`);
 }
@@ -328,26 +347,31 @@ export async function streamChat(
     throw new Error(msg);
   }
 
-  const reader = response.body!.getReader();
+  if (!response.body) {
+    throw new Error('Streaming not supported: empty response body.');
+  }
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+
+  const emit = (payloads: string[]) => {
+    for (const d of payloads) {
+      try {
+        const event: ChatEvent = JSON.parse(d);
+        onEvent(event);
+      } catch { /* skip malformed lines */ }
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice('data: '.length);
-      try {
-        const event: ChatEvent = JSON.parse(data);
-        onEvent(event);
-      } catch { /* skip malformed lines */ }
-    }
+    const r = drainSse(buffer, decoder.decode(value, { stream: true }), false);
+    buffer = r.buffer;
+    emit(r.data);
   }
+  // Final decoder flush + drain so a last event without a trailing newline is delivered.
+  const tail = drainSse(buffer, decoder.decode(), true);
+  emit(tail.data);
 }
 

@@ -86,3 +86,31 @@ describe('validateEmbeddingsSettings', () => {
     expect(validateEmbeddingsSettings('200', '64').values).toEqual({ semanticWeight: 200, maxBatchSize: 64 })
   })
 })
+
+import { drainSse } from './client'
+
+describe('drainSse', () => {
+  it('buffers an incomplete line without emitting', () => {
+    const r = drainSse('', 'data: hel', false)
+    expect(r.data).toEqual([])
+    expect(r.buffer).toBe('data: hel')
+  })
+
+  it('emits a line once completed across chunks', () => {
+    const r = drainSse('data: hel', 'lo\n', false)
+    expect(r.data).toEqual(['hello'])
+    expect(r.buffer).toBe('')
+  })
+
+  it('emits the final line on flush even without a trailing newline', () => {
+    const r = drainSse('', 'data: last', true)
+    expect(r.data).toEqual(['last'])
+    expect(r.buffer).toBe('')
+  })
+
+  it('ignores non-data lines', () => {
+    const r = drainSse('', 'event: ping\ndata: x\n', false)
+    expect(r.data).toEqual(['x'])
+    expect(r.buffer).toBe('')
+  })
+})
