@@ -51,7 +51,8 @@ public sealed class ResponseParserTests
     public void Truncated_Content_AppendsFollowUpHint()
     {
         // Build content larger than the response cap (~8 KB) and confirm the YAML output
-        // surfaces a followUp entry pointing to the next chunk.
+        // surfaces a tool-agnostic recovery hint — NOT a false "next chunk" continuation
+        // (truncation is character-based, not chunk-aligned, and fires for any tool).
         string large = new('x', 16 * 1024);
         var yaml = ResponseBuilder.Success(large).ToYaml();
 
@@ -61,8 +62,14 @@ public sealed class ResponseParserTests
         parsed.Content.Should().NotBeNull();
         parsed.Content!.Should().EndWith("... (truncated)",
             because: "the in-content truncation marker must still be present");
-        parsed.FollowUp.Should().Contain(hint => hint.Contains("truncated", StringComparison.OrdinalIgnoreCase),
-            because: "agents reading followUp must see a directive to fetch the next chunk");
+
+        var hint = parsed.FollowUp.Should().ContainSingle(h => h.Contains("truncated", StringComparison.OrdinalIgnoreCase)).Subject;
+        hint.Should().Contain("search",
+            because: "the hint must offer a tool-agnostic way to narrow results");
+        hint.Should().NotContain("N+1",
+            because: "truncation is character-based, so promising chunk N+1 continues the cut is false");
+        hint.Should().NotContain("next chunk",
+            because: "the hint must not promise a chunk-based continuation that does not exist");
     }
 
     [Fact]
