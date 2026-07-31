@@ -6,7 +6,8 @@
 
 ## Problem
 
-Two confirmed findings, both verified against live code.
+Two confirmed review findings (1, 2), plus two adjacent accuracy gaps the user
+folded into this stream (3, 4). All verified against live code.
 
 ### 1. MCP tool-surface documentation drift
 
@@ -64,19 +65,45 @@ This is misleading:
   `search`, `list`, `guide`, `facts` — none of which take a `path`+`chunk`
   resumption. The hint points those callers at a nonsensical next step.
 
+### 3. `guide.md` missing the `facts` tool
+
+`src/Scrinia.Mcp/prompts/guide.md` is **not** affected by the dispatcher drift —
+it already documents per-verb tools. But its "## The tools" section covers only
+**eleven** of the twelve: `remember`, `recall`, `search`, `list`, `append`,
+`forget`, `compact`, `link`, `restore`, `reconcile`, `guide`. The `facts` tool
+is undocumented in the agent-facing primer.
+
+`guide.md` also carries an unrelated **uncommitted working-tree edit** by the
+user: deletion of the "### Scrinia vs. platform auto-memory" subsection (net
+−4 lines). Per the user's decision, that pending deletion is committed on the
+stream branch together with the `facts` addition.
+
+### 4. `CLAUDE.md` stale dispatcher form
+
+`../CLAUDE.md` (tracked in the **parent `workspace-scrinia` repo**, not this
+one) uses the old dispatcher form in two lines:
+
+- `memory('search', ...)` → should be `search({ query: ... })`
+- `memory('remember', { path, content: [...] })` → should be
+  `remember({ path, content: [...] })`
+
 ## Scope
 
 **In scope:**
 
 - Correct the MCP tool-surface description across all **six** active doc files.
 - Reword the `McpResponse` truncation hint to be accurate and tool-agnostic.
+- Add the missing `facts` tool section to `guide.md` (carrying the user's
+  pending WIP deletion along on the stream branch).
+- Fix `CLAUDE.md`'s two dispatcher-form lines — as a **standalone edit in the
+  parent `workspace-scrinia` repo**, NOT part of the Scrinia branch or the
+  `--no-ff` merge. The user commits it in the parent repo at their discretion.
 
 **Out of scope (explicitly):**
 
-- `src/Scrinia.Mcp/prompts/guide.md` — a reserved user working-tree file; never
-  touched by this stream even if it carries the same drift.
-- `workspace-scrinia/CLAUDE.md` — outside this repo's docs tree; its
-  `memory('search', …)` form is an intentional conceptual simplification.
+- The other three reserved working-tree files — `.gitignore`,
+  `src/Scrinia.Mcp/plugins/opencode/package.json`,
+  `src/Scrinia.Mcp/plugins/opencode/scrinia.ts` — never touched.
 - Historical `docs/planning/**` and `docs/superpowers/**` specs/plans —
   point-in-time records, left as written.
 - Making the truncation hint fully context-aware (threading the source
@@ -140,6 +167,23 @@ implementation):
 Drops the false "chunk: N+1 continues from the cut" promise; gives advice valid
 regardless of which tool produced the content.
 
+### `guide.md` — add `facts`
+
+Add one `### facts` section under "## The tools", consistent with the sibling
+sections (a one-line signature plus a short "what it's for" gloss). Place it
+after `reconcile` / alongside the query-oriented tools. Describe the three ops
+(`entities`, `profile`, `intersect`) briefly, matching the tool's own
+description in `MemoryTools.Facts.cs`. No count is introduced (the section list
+is unnumbered), so nothing new can drift. The user's pending subsection deletion
+is left in place and rides along in the same commit.
+
+### `CLAUDE.md` — dispatcher-form fix
+
+Two line edits only (`memory('search', …)` → `search({ query: … })`;
+`memory('remember', …)` → `remember({ … })`). Applied in the parent
+`workspace-scrinia` repo working tree and left staged/unstaged there for the
+user — deliberately excluded from the Scrinia branch and merge.
+
 ## Testing
 
 - Docs: no automated tests. Verification is `dotnet build Scrinia.sln` staying
@@ -148,13 +192,17 @@ regardless of which tool produced the content.
 - `McpResponse`: search the test tree for any assertion on the truncation
   string (`chunk: N+1`, "Content truncated") and update it to the new wording.
   Run the relevant test project. Build WITHOUT `-p:NuGetAudit=false`.
+- `guide.md`: it is an embedded resource served by `guide()` / `scri guide`.
+  Check the test tree for any assertion on guide content (e.g. a test asserting
+  the tool list or a golden snapshot) and update it if the `facts` addition
+  trips it. Otherwise no test change.
 
 ## Constraints (standing, carried across all streams)
 
 - `web/`-style discipline: change only what the finding requires.
-- Never stage/commit/touch the four reserved working-tree files:
+- Never stage/commit/touch the three reserved working-tree files:
   `.gitignore`, `src/Scrinia.Mcp/plugins/opencode/package.json`,
-  `src/Scrinia.Mcp/plugins/opencode/scrinia.ts`,
-  `src/Scrinia.Mcp/prompts/guide.md`.
+  `src/Scrinia.Mcp/plugins/opencode/scrinia.ts`. (`guide.md` was the fourth
+  reserved file; the user lifted the restriction for this stream only.)
 - Build/test without `-p:NuGetAudit=false`.
 - Merge `--no-ff`, keeping the branch. Never revert without explicit permission.
