@@ -22,6 +22,8 @@ public sealed class ScriniaMcpPromptsResourcesTests
         prompt.Should().Contain("remember");
         prompt.Should().NotContain("memory_remember");
         prompt.Should().Contain("Reserved paths");
+        prompt.Should().Contain("facts",
+            because: "the facts tool must be documented in the agent guide");
     }
 
     [Fact]

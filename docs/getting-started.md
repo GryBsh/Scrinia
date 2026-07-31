@@ -102,7 +102,7 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
 }
 ```
 
-Now your AI assistant has access to two MCP tools (`guide`, `memory`) for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
+Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
 
 ## Quick Start: HTTP API Server
 
@@ -161,12 +161,15 @@ Memories are organized into three scopes:
 
 ## MCP Tools Overview
 
-When connected via MCP, Scrinia exposes two tools:
+When connected via MCP, Scrinia exposes one tool per operation, each with its own schema. Grouped by purpose:
 
-| Tool | Actions | Purpose |
+| Group | Tools | Purpose |
 |------|---------|---------|
-| `guide` | *(none — standalone)* | Session playbook (call once per session) |
-| `memory` | `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, `reconcile` | Unified memory dispatcher; skill paths (`/skill/...`) are routed through it |
+| Lifecycle | `guide`, `restore`, `reconcile` | Session playbook + context restore, and merge-conflict resolution |
+| Memory | `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link` | Store, read, find, and maintain memories |
+| Facts | `facts` | Aggregate/relational entity queries (`entities`, `profile`, `intersect`) |
+
+`guide` is standalone — call it once per session. Skill paths (`/skill/...`) are routed through `remember` (create/override) and `recall` (load/list), not a separate tool.
 
 ### Reserved Paths
 

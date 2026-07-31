@@ -1,6 +1,6 @@
 # Scrinia CLI Reference
 
-`scri` is the command-line interface and MCP server for Scrinia. It manages persistent memories and serves as an MCP server exposing two tools (`guide` and `memory`) for AI coding tools.
+`scri` is the command-line interface and MCP server for Scrinia. It manages persistent memories and serves as an MCP server exposing one tool per operation — `guide`, the per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`), and `facts` — for AI coding tools.
 
 ## Surface overview
 
@@ -715,11 +715,11 @@ Names are sanitized for filesystem safety: `..` is stripped, `/` and `\` are rep
 
 ### Reserved Path Conventions
 
-Memory paths are free-form, but a small set of namespaces have first-class behavior in the `memory` tool:
+Memory paths are free-form, but a small set of namespaces have first-class behavior:
 
 | Path | Purpose |
 |------|---------|
-| `/skill/...` | Reusable specialist prompts (built-in or override). Routed through `memory()` to load/store on disk under `.scrinia/skills/`. |
+| `/skill/...` | Reusable specialist prompts (built-in or override). Routed through `recall` (load/list) and `remember` (create/override) to disk under `.scrinia/skills/`. |
 | `/agent/...` | Agent profile and behavioral norms (`.scrinia/agent/{name}.md` with sidecar metadata). |
 | `/patterns/...` | Recurring patterns and conventions. |
 | `/sessions/...` | Session logs by date. |

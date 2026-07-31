@@ -417,7 +417,7 @@ Soft-deletes the key (sets `revoked = true`). Revoked keys immediately stop auth
 
 The server exposes MCP Streamable HTTP at `/mcp`. This allows MCP clients that support HTTP transport to connect directly to the server without the CLI.
 
-Both MCP tools (`guide` and `memory`) are available through this endpoint, authenticated with the same API key scheme.
+All of Scrinia's MCP tools (`guide` plus the per-verb memory tools and `facts`) are available through this endpoint, authenticated with the same API key scheme.
 
 ## Health Endpoints
 
