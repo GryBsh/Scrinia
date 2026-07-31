@@ -109,6 +109,14 @@ Use it before non-trivial work; skip it when the request is self-contained.
 
 `reconcile({ conflictId?, choice?, mergedContent? })` — no arguments scans `.scrinia/` for git merge conflicts; a `conflictId` plus a `choice` (`ours` / `theirs` / `merged`) resolves one.
 
+### facts — query the entity graph
+
+`facts({ op, entity?, entities?, key?, scopes?, excludeTopics?, limit? })` — aggregate and relational questions `search` can't express. Three ops: `entities` lists the known entity vocabulary, `profile` returns one entity's counts, date span, and co-occurrences, and `intersect` returns memories mentioning *all* of the given entities.
+
+```
+facts({ op: 'intersect', entities: ['person:jolene', 'place:france'] })
+```
+
 ### guide — this guide
 
 `guide()` returns this guide and restores your workspace context in one call. Call it once at session start.
@@ -164,7 +172,3 @@ After a context reset, `restore()` brings back your profile, patterns, session l
 ### Workspace
 
 Scrinia writes to `.scrinia/`. Commit those changes — that is how memory travels with the code.
-
-### Scrinia vs. platform auto-memory
-
-Don't duplicate your platform's own auto-memory (e.g. Claude Code's per-user memory). Scrinia is workspace-scoped — it travels with the repo, so it holds project context: architecture, decisions, sessions, findings, skills. Platform auto-memory is user-scoped — it holds cross-project preferences and collaboration notes.
