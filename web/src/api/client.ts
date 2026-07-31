@@ -86,18 +86,69 @@ export function isAuthenticated(): boolean {
   return hasToken();
 }
 
+// ── Login ─────────────────────────────────────────────────────────────────────
+
+export type LoginOutcome = 'valid' | 'invalid' | 'unverifiable';
+
+// Validate a candidate key against a route any authenticated key can call
+// (not the ManageKeys-gated /keys endpoint). 401 = invalid; 2xx or 403 = valid
+// (a non-admin key may lack scopes but can still sign in); anything else, or a
+// network failure, is unverifiable — the caller must fail closed.
+export async function validateApiKey(key: string): Promise<LoginOutcome> {
+  try {
+    const resp = await fetch(`${API_BASE}/stores/default/memories?limit=1`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (resp.status === 401) return 'invalid';
+    if (resp.ok || resp.status === 403) return 'valid';
+    return 'unverifiable';
+  } catch {
+    return 'unverifiable';
+  }
+}
+
 // ── Health ───────────────────────────────────────────────────────────────────
 
+export type HealthDetailsAction = 'use-body' | 'redirect' | 'fallback' | 'error';
+
+// 401 → the key is gone, redirect to login; 403 → the key lacks the `health`
+// permission, fall back to the unauthenticated status; 200/503 → an authorized
+// detailed body (503 carries the degraded detail); anything else → a genuine
+// failure that must surface rather than be masked by the fallback.
+export function classifyDetailsStatus(status: number): HealthDetailsAction {
+  if (status === 401) return 'redirect';
+  if (status === 403) return 'fallback';
+  if (status === 200 || status === 503) return 'use-body';
+  return 'error';
+}
+
+export function classifyReadyStatus(status: number): 'use-body' | 'error' {
+  return status === 200 || status === 503 ? 'use-body' : 'error';
+}
+
 export async function getHealth(): Promise<HealthResponse> {
-  // Use /health/details (authenticated) for full check data including store names.
-  // Falls back to /health/ready (unauthenticated, status-only) if auth fails.
   const token = getToken();
   if (token) {
-    try {
-      return await apiFetch<HealthResponse>('/health/details');
-    } catch { /* fall through to unauthenticated */ }
+    const resp = await fetch('/health/details', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    switch (classifyDetailsStatus(resp.status)) {
+      case 'redirect':
+        clearToken();
+        window.location.href = '/login';
+        throw new Error('Unauthorized');
+      case 'use-body':
+        return resp.json();
+      case 'error':
+        throw new Error(`Health check failed: HTTP ${resp.status}`);
+      case 'fallback':
+        break; // 403 — key lacks `health` permission; fall through to status-only
+    }
   }
   const resp = await fetch('/health/ready');
+  if (classifyReadyStatus(resp.status) === 'error') {
+    throw new Error(`Health check failed: HTTP ${resp.status}`);
+  }
   return resp.json();
 }
 
@@ -185,6 +236,36 @@ export function revokeKey(keyId: string) {
 
 // ── Embeddings ──────────────────────────────────────────────────────────────
 
+export interface SettingsValidation {
+  values: EmbeddingsSettingsUpdate | null;
+  errors: { semanticWeight?: string; maxBatchSize?: string };
+}
+
+// Parse the two numeric settings strings with `Number` (stricter than
+// parseFloat/parseInt — "12abc" and "" become NaN/0 and are rejected here
+// rather than silently serialized as null). Ranges match the inputs' min/max.
+export function validateEmbeddingsSettings(
+  semanticWeightStr: string,
+  maxBatchSizeStr: string,
+): SettingsValidation {
+  const errors: { semanticWeight?: string; maxBatchSize?: string } = {};
+
+  const weight = Number(semanticWeightStr);
+  if (semanticWeightStr.trim() === '' || !Number.isFinite(weight) || weight < 0 || weight > 200) {
+    errors.semanticWeight = 'Enter a number between 0 and 200.';
+  }
+
+  const batch = Number(maxBatchSizeStr);
+  if (maxBatchSizeStr.trim() === '' || !Number.isInteger(batch) || batch < 1 || batch > 64) {
+    errors.maxBatchSize = 'Enter a whole number between 1 and 64.';
+  }
+
+  if (errors.semanticWeight || errors.maxBatchSize) {
+    return { values: null, errors };
+  }
+  return { values: { semanticWeight: weight, maxBatchSize: batch }, errors: {} };
+}
+
 export function getEmbeddingsStatus() {
   return apiFetch<EmbeddingsStatus>(`${API_BASE}/plugins/embeddings/status`);
 }
@@ -207,6 +288,25 @@ export function reindexEmbeddings() {
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────
+
+// Accumulate `chunk` onto `prev`, split into complete `\n`-terminated lines,
+// and return every `data: ` payload plus the leftover partial line. On the
+// final call (`final: true`) the remaining buffer is treated as a complete
+// line so a last event with no trailing newline is not dropped.
+export function drainSse(
+  prev: string,
+  chunk: string,
+  final: boolean,
+): { data: string[]; buffer: string } {
+  const buffer = prev + chunk;
+  const parts = buffer.split('\n');
+  const remainder = final ? '' : (parts.pop() ?? '');
+  const data: string[] = [];
+  for (const line of parts) {
+    if (line.startsWith('data: ')) data.push(line.slice('data: '.length));
+  }
+  return { data, buffer: remainder };
+}
 
 export function getChatProviders(store: string) {
   return apiFetch<ChatProvidersResponse>(`${API_BASE}/stores/${store}/chat/providers`);
@@ -247,26 +347,31 @@ export async function streamChat(
     throw new Error(msg);
   }
 
-  const reader = response.body!.getReader();
+  if (!response.body) {
+    throw new Error('Streaming not supported: empty response body.');
+  }
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+
+  const emit = (payloads: string[]) => {
+    for (const d of payloads) {
+      try {
+        const event: ChatEvent = JSON.parse(d);
+        onEvent(event);
+      } catch { /* skip malformed lines */ }
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice('data: '.length);
-      try {
-        const event: ChatEvent = JSON.parse(data);
-        onEvent(event);
-      } catch { /* skip malformed lines */ }
-    }
+    const r = drainSse(buffer, decoder.decode(value, { stream: true }), false);
+    buffer = r.buffer;
+    emit(r.data);
   }
+  // Final decoder flush + drain so a last event without a trailing newline is delivered.
+  const tail = drainSse(buffer, decoder.decode(), true);
+  emit(tail.data);
 }
 

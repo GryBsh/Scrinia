@@ -191,8 +191,9 @@ function CreateKeyForm({
 
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="text-xs text-gray-500">User ID *</label>
+          <label htmlFor="key-user-id" className="text-xs text-gray-500">User ID *</label>
           <input
+            id="key-user-id"
             type="text"
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
@@ -201,8 +202,9 @@ function CreateKeyForm({
           />
         </div>
         <div>
-          <label className="text-xs text-gray-500">Label</label>
+          <label htmlFor="key-label" className="text-xs text-gray-500">Label</label>
           <input
+            id="key-label"
             type="text"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
@@ -210,8 +212,9 @@ function CreateKeyForm({
           />
         </div>
         <div>
-          <label className="text-xs text-gray-500">Stores (comma-sep) *</label>
+          <label htmlFor="key-stores" className="text-xs text-gray-500">Stores (comma-sep) *</label>
           <input
+            id="key-stores"
             type="text"
             value={stores}
             onChange={(e) => setStores(e.target.value)}
@@ -220,8 +223,9 @@ function CreateKeyForm({
           />
         </div>
         <div>
-          <label className="text-xs text-gray-500">Permissions (comma-sep)</label>
+          <label htmlFor="key-permissions" className="text-xs text-gray-500">Permissions (comma-sep)</label>
           <input
+            id="key-permissions"
             type="text"
             value={permissions}
             onChange={(e) => setPermissions(e.target.value)}
