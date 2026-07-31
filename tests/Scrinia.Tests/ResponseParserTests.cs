@@ -63,13 +63,9 @@ public sealed class ResponseParserTests
         parsed.Content!.Should().EndWith("... (truncated)",
             because: "the in-content truncation marker must still be present");
 
+        // Tool-agnostic narrowing, not a false chunk-based continuation (see comment above).
         var hint = parsed.FollowUp.Should().ContainSingle(h => h.Contains("truncated", StringComparison.OrdinalIgnoreCase)).Subject;
-        hint.Should().Contain("search",
-            because: "the hint must offer a tool-agnostic way to narrow results");
-        hint.Should().NotContain("N+1",
-            because: "truncation is character-based, so promising chunk N+1 continues the cut is false");
-        hint.Should().NotContain("next chunk",
-            because: "the hint must not promise a chunk-based continuation that does not exist");
+        hint.Should().Contain("search").And.NotContain("N+1").And.NotContain("next chunk");
     }
 
     [Fact]
