@@ -81,9 +81,9 @@ builder.Services
     .WithTools<ScriniaMcpTools>();
 ```
 
-The two MCP tools (`guide`, `memory`) are exposed by `ScriniaMcpTools`, a sealed partial class registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
+The MCP tools are exposed by `ScriniaMcpTools`, a sealed partial class registered via `WithTools<T>()`. They access the store via `MemoryStoreContext.Current`, which is set during workspace initialization.
 
-`memory()` is the unified dispatcher for `remember`/`store`, `recall`/`show`, `forget`, `search`, `list`, `append`, `compact`, `link`, `restore`, and `reconcile`. Skill-path routing (`/skill/...`) handles skill creation/load through the same entry point.
+Each operation is its own tool with its own schema: `guide`, `remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`, and `facts`. Skill-path routing (`/skill/...`) handles skill create/load inside `remember`/`recall`.
 
 ### Remote Mode
 
@@ -249,7 +249,7 @@ All CLI commands support a `--json` flag for machine-readable JSON output. A sou
 ## Test Coverage
 
 `Scrinia.Tests` covers:
-- The two MCP tools (`guide`, `memory`)
+- The MCP tools (`guide`, the per-verb memory tools, and `facts`)
 - Store operations and edge cases
 - Search ranking and scoring
 - Encoding and chunking
