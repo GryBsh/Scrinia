@@ -109,16 +109,46 @@ export async function validateApiKey(key: string): Promise<LoginOutcome> {
 
 // ── Health ───────────────────────────────────────────────────────────────────
 
+export type HealthDetailsAction = 'use-body' | 'redirect' | 'fallback' | 'error';
+
+// 401 → the key is gone, redirect to login; 403 → the key lacks the `health`
+// permission, fall back to the unauthenticated status; 200/503 → an authorized
+// detailed body (503 carries the degraded detail); anything else → a genuine
+// failure that must surface rather than be masked by the fallback.
+export function classifyDetailsStatus(status: number): HealthDetailsAction {
+  if (status === 401) return 'redirect';
+  if (status === 403) return 'fallback';
+  if (status === 200 || status === 503) return 'use-body';
+  return 'error';
+}
+
+export function classifyReadyStatus(status: number): 'use-body' | 'error' {
+  return status === 200 || status === 503 ? 'use-body' : 'error';
+}
+
 export async function getHealth(): Promise<HealthResponse> {
-  // Use /health/details (authenticated) for full check data including store names.
-  // Falls back to /health/ready (unauthenticated, status-only) if auth fails.
   const token = getToken();
   if (token) {
-    try {
-      return await apiFetch<HealthResponse>('/health/details');
-    } catch { /* fall through to unauthenticated */ }
+    const resp = await fetch('/health/details', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    switch (classifyDetailsStatus(resp.status)) {
+      case 'redirect':
+        clearToken();
+        window.location.href = '/login';
+        throw new Error('Unauthorized');
+      case 'use-body':
+        return resp.json();
+      case 'error':
+        throw new Error(`Health check failed: HTTP ${resp.status}`);
+      case 'fallback':
+        break; // 403 — key lacks `health` permission; fall through to status-only
+    }
   }
   const resp = await fetch('/health/ready');
+  if (classifyReadyStatus(resp.status) === 'error') {
+    throw new Error(`Health check failed: HTTP ${resp.status}`);
+  }
   return resp.json();
 }
 
