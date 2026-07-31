@@ -1,6 +1,6 @@
 # Scrinia — Agent Memory Guide
 
-Scrinia is persistent, project-scoped memory and reusable skill prompts, exposed as MCP tools. Memories live in `.scrinia/`, so they travel with the code and are shared with every agent that works on the repo. This guide covers the model Scrinia stores and the tools that operate on it.
+Scrinia is persistent, project-scoped memory and reusable skill prompts, exposed as MCP tools. Memories live in `.scrinia/`, so they travel with the code and shared with every agent on the repo. This guide covers the model and the tools that operate on it.
 
 ## The model
 
@@ -31,9 +31,9 @@ attributes: { person: ['maria'], org: ['acme'], review: ['2026-08-01'] }
 
 Keys Scrinia understands specially:
 
-- **Entities** — `person`, `place`, `org`, `thing`, `topic`. The recommended vocabulary for the people, places, orgs, things, and themes memories most often link on.
+- **Entities** — `person`, `place`, `org`, `thing`, `topic`. The recommended vocabulary for the people, places, orgs, things, and themes memories link on.
 - **Dependencies** — `file`, `ref`. Recorded (and, for `file`, hashed) so Scrinia flags drift when a referenced file changes.
-- **Review** — `review`. An ISO date (`2026-08-01`), a condition (`when auth changes`), or both; flagged memories surface as `[stale]` / `[review?]` in `list`. (Scrinia auto-adds one to memories that cite specific counts, e.g. "759 tests.")
+- **Review** — `review`. An ISO date (`2026-08-01`), a condition (`when auth changes`), or both; flagged memories surface as `[stale]` / `[review?]` in `list`. Scrinia auto-adds one to memories citing specific counts (e.g. "759 tests").
 
 Any key is allowed — these are just the ones with built-in behavior.
 
@@ -41,13 +41,9 @@ Any key is allowed — these are just the ones with built-in behavior.
 
 **Keywords** are the distinctive terms and likely search phrasings for a memory. They merge with the terms Scrinia extracts from the content and seed the search index: `keywords: ['oauth flow', 'token refresh']`.
 
-### Attributes vs. keywords
-
-**Keywords** are free-text search signal for a lexical query. **Attributes** are structured facets that filter (`attributeFilter: { topic: ['auth'] }`) and link memories in the graph. Keywords answer "what words find this"; attributes answer "what facts this is about." Good memories have both.
-
 ### The entity graph
 
-Attributes build a graph linking memories that share an attribute **key and value** — and it is not limited to entity keys: the engine treats every key uniformly, so `project:apollo` links two memories just as `person:maria` does. A search naming one linked value can then surface related memories that share no query words — a note tagging both `org:acme` and `person:maria` lets a query about Acme reach Maria. Two habits keep links clean:
+Attributes build a graph linking memories that share a **key and value** — not just entity keys: every key is treated uniformly, so `project:apollo` links memories just as `person:maria` does. A search naming one linked value surfaces related memories that share no query words — a note tagging both `org:acme` and `person:maria` lets a query about Acme reach Maria. Two habits keep links clean:
 
 - **Name a value the same way every time** — `person:maria`, never also `person:maria rodriguez`.
 - **Type honestly** — the entity type separates a same-named person and place (`person:paris` vs `place:paris`).
@@ -159,7 +155,7 @@ recall({ path: '/skill/' })                            — list skills
 remember({ path: '/skill/my-helper', content: [...] }) — create or override
 ```
 
-Built-ins: `auditor`, `qa`, `debugger`, `chaos-engineer`, `onboarder`, `merge-safety`, `evolutionary`, `self-reflector`. They live at `.scrinia/skills/{name}.md`; a project override takes precedence. Merge an override against an updated built-in with `recall({ path: '/skill/{name}', withBuiltin: true })`.
+Built-ins: `auditor`, `qa`, `debugger`, `chaos-engineer`, `onboarder`, `merge-safety`, `evolutionary`, `self-reflector`. They live at `.scrinia/skills/{name}.md`; a project override takes precedence. Merge one against an updated built-in with `recall({ path: '/skill/{name}', withBuiltin: true })`.
 
 ### Sessions
 
