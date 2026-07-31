@@ -11,8 +11,8 @@ Scrinia is structured as a set of .NET 10 projects with a shared core library, m
                                     |
                   +---------------------------------------------+
                   |              scri (CLI + MCP)                |
-                  |  ScriniaCommands | MCP Tools (2)             |
-                  |                  | guide, memory             |
+                  |  ScriniaCommands | MCP Tools (12)            |
+                  |                  | guide + verbs             |
                   +--------+------------+------------------------+
                            |            |
               +------------+            +-----+
@@ -44,7 +44,7 @@ Scrinia is structured as a set of .NET 10 projects with a shared core library, m
 Scrinia.sln (11 projects)
   src/
     Scrinia.Core/                    Shared library: encoding, models, search, storage
-    Scrinia.Mcp/                     MCP tool definitions (2 tools: guide, memory)
+    Scrinia.Mcp/                     MCP tool definitions (12 per-verb tools)
     Scrinia/                         CLI executable (AssemblyName: scri)
     Scrinia.Server/                  ASP.NET Core HTTP API + Web UI
     Scrinia.AppHost/                 .NET Aspire orchestration
@@ -77,7 +77,7 @@ Scrinia.Core  <--  Scrinia.Mcp  <--  Scrinia (CLI)
 
 Key constraints:
 - **Core** has no ASP.NET or native dependencies (only `System.IO.Hashing`). Includes built-in embeddings (Model2Vec, API providers, VectorStore, HybridReranker).
-- **Mcp** depends only on Core and `ModelContextProtocol`. Contains two MCP tools (`guide`, `memory`) using noun('action') dispatch, plus `ScriniaMcpJsonContext` for trimming safety
+- **Mcp** depends only on Core and `ModelContextProtocol`. Defines the MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`) and `facts` — each with its own JSON schema, plus `ScriniaMcpJsonContext` for trimming safety
 - **CLI** is trimmed and single-file; plugins run as separate processes
 - **Server** references everything except the CLI plugin executable
 - **Plugin.Abstractions** uses `FrameworkReference` for ASP.NET (no package dependency)
