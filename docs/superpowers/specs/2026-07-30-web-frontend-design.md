@@ -196,6 +196,18 @@ message. `SettingsForm.handleSave` calls the validator, and:
 
 Per-field errors render inline beneath each input.
 
+> **Pre-existing context (out of scope):** the server registers only `GET
+> /status`, `GET /settings`, and `POST /reindex` under `/plugins/embeddings`
+> (`src/Scrinia.Server/Program.cs:476-512`) — there is **no `PUT /settings`
+> handler**. `updateEmbeddingsSettings` therefore hits the SPA fallback and
+> fails with the "endpoint may not exist" guard regardless of input. This is a
+> pre-existing gap, not in the review's Stream 6 findings, and is not addressed
+> here (web-only, no server changes). Fix #3 remains worthwhile: it stops
+> `null` from being sent and gives the user inline feedback before the request,
+> and is correct for when the endpoint is added. The ranges (`0–200`, `1–64`)
+> come from the existing inputs' `min`/`max` attributes, the only authority for
+> these UI-only guardrails.
+
 **Tests:** valid inputs → populated `values`, no errors; empty string →
 error, `values` null; out-of-range (`-1`, `250`, `0`, `65`) → error; non-integer
 batch size (`3.5`) → error.
