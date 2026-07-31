@@ -12,7 +12,7 @@ export default function SearchBar({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (value.trim()) onSearch(value.trim())
+    onSearch(value.trim())
   }
 
   return (
@@ -21,6 +21,7 @@ export default function SearchBar({
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
         <input
           type="text"
+          aria-label={placeholder}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder={placeholder}

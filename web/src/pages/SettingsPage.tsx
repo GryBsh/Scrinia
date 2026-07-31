@@ -174,8 +174,9 @@ function SettingsForm({
       <div className="p-4 space-y-4">
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="text-xs text-gray-500">Semantic Weight (0-200)</label>
+            <label htmlFor="settings-semantic-weight" className="text-xs text-gray-500">Semantic Weight (0-200)</label>
             <input
+              id="settings-semantic-weight"
               type="number"
               value={semanticWeight}
               onChange={(e) => setSemanticWeight(e.target.value)}
@@ -189,8 +190,9 @@ function SettingsForm({
             )}
           </div>
           <div>
-            <label className="text-xs text-gray-500">Max Batch Size (1-64)</label>
+            <label htmlFor="settings-max-batch-size" className="text-xs text-gray-500">Max Batch Size (1-64)</label>
             <input
+              id="settings-max-batch-size"
               type="number"
               value={maxBatchSize}
               onChange={(e) => setMaxBatchSize(e.target.value)}

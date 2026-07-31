@@ -141,6 +141,7 @@ export default function AgentChatPage() {
 
         <select
           value={store}
+          aria-label="Store"
           onChange={(e) => setStore(e.target.value)}
           className="text-sm border rounded px-2 py-1 bg-white"
         >
@@ -152,6 +153,7 @@ export default function AgentChatPage() {
         {providers.length > 1 && (
           <select
             value={provider}
+            aria-label="Provider"
             onChange={(e) => setProvider(e.target.value)}
             className="text-sm border rounded px-2 py-1 bg-white"
           >
@@ -205,6 +207,7 @@ export default function AgentChatPage() {
         <div className="flex gap-2">
           <input
             value={input}
+            aria-label="Message"
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
             disabled={streaming || noProviders === true}
@@ -213,6 +216,7 @@ export default function AgentChatPage() {
           />
           <button
             onClick={sendMessage}
+            aria-label="Send message"
             disabled={streaming || !input.trim() || noProviders === true}
             className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
           >

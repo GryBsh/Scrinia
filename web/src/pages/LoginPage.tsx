@@ -42,6 +42,7 @@ export default function LoginPage() {
           <div>
             <input
               type="password"
+              aria-label="API key"
               value={key}
               onChange={(e) => { setKey(e.target.value); setError('') }}
               placeholder="sk-..."
