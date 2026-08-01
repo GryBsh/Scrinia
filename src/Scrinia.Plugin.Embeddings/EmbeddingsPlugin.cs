@@ -298,10 +298,16 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
             // from a previous, larger chunk count) before upserting the new set — mirrors
             // EmbeddingReindexer. No-op when the name has no prior vectors, so first-time stores
             // are unaffected.
-            await _vectorStore.RemoveAsync(scope, subject, ct);
-
-            for (int i = 0; i < vectors.Length; i++)
-                await _vectorStore.UpsertAsync(scope, subject, items[i].chunkIndex, vectors[i], ct);
+            // Already detached from the write response, so a declined write can wait for the
+            // file to free up instead of deferring to the next write.
+            await VectorWriteRetry.RunAsync(
+                async () =>
+                {
+                    await _vectorStore.RemoveAsync(scope, subject, ct);
+                    for (int i = 0; i < vectors.Length; i++)
+                        await _vectorStore.UpsertAsync(scope, subject, items[i].chunkIndex, vectors[i], ct);
+                },
+                _logger, qualifiedName, ct);
         }
         catch (Exception ex)
         {
@@ -356,6 +362,11 @@ public sealed class EmbeddingsPlugin : ScriniaPluginBase,
                     await _vectorStore!.UpsertAsync(item.Scope, item.Entry.Name, null, vec, ct);
                     count++;
                 }
+            }
+            catch (VectorStoreUnavailableException ex)
+            {
+                // Not counted as reindexed, so a later run retries it once the file is readable.
+                _logger?.LogWarning("Skipped reindexing '{Name}': {Reason}", item.Entry.Name, ex.Message);
             }
             catch (Exception ex)
             {

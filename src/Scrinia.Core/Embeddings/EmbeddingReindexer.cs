@@ -117,6 +117,12 @@ public static class EmbeddingReindexer
                 embedded++;
             }
             catch (OperationCanceledException) { throw; }
+            catch (VectorStoreUnavailableException ex)
+            {
+                // Failed rather than skipped: unlike a missing artifact this is recoverable.
+                failed++;
+                logger.LogWarning("Reindex: vectors unavailable for {Name} — {Reason}", item.Entry.Name, ex.Message);
+            }
             catch (FileNotFoundException)
             {
                 // Sidecar exists but the .nmp2 artifact is missing on disk (manual deletion,
