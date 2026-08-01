@@ -8,22 +8,52 @@
 // $$__SCRI__$$ is replaced at install time with the absolute path to the scri executable
 // (the plugin runs in a child process whose PATH may not contain scrinia).
 import { spawnSync } from "node:child_process"
+import type { Plugin } from "@opencode-ai/plugin";
 
 const SCRI = "$$__SCRI__$$"
 
-function log(...args: any[]) {
-  console.log("[scrinia]", ...args)
+function log (client: any, message: string, extra: Record<string, any> = {}) {
+  client.app.log({
+    body: {
+      service: "scrinia",
+      level: "info",
+      message,
+      extra,
+    },
+  })
 }
 
-function log_debug(...args: any[]) {
-  if (process.env.SCRINIA_DEBUG) console.debug("[scrinia]", ...args)
+function log_debug (client: any, message: string, extra: Record<string, any> = {}) {
+  if (process.env.SCRINIA_DEBUG) {
+    log(client, "DEBUG: " + message, extra)
+  }
 }
 
-export const Scrinia = async () => {
-  
+
+export const Scrinia: Plugin = async ({ project, client, $, directory, worktree }) => {
+  log(client, "Plugin initialized")
   return ({
+    "session.created": async (_input: any, output: any) => {
+      try {
+        const messages = output?.messages
+        if (!Array.isArray(messages) || messages.length === 0) return
+        
+        const res = spawnSync(SCRI, ["restore", "--hook", "--client", "opencode"], {
+          encoding: "utf8",
+          timeout: 5000,
+        })
+        const restored = (res.stdout ?? "").trim()
+        if (!restored) {
+          return
+        }
+        messages.push({ info: { role: "system", time: { created: Date.now() } }, parts: [{ type: "text", text: restored }] })
+        log(client, "Restored")
+      } catch {
+        // Experimental API drift or CLI failure — never break the user's session.
+      }
+    },
     "experimental.chat.messages.transform": async (_input: any, output: any) => {
-      log("Dropping Hint")
+      //log("Dropping Hint")
       try {
         const messages = output?.messages
         if (!Array.isArray(messages) || messages.length === 0) return
@@ -50,14 +80,13 @@ export const Scrinia = async () => {
         })
         const hint = (res.stdout ?? "").trim()
         if (!hint) {
-          log("No hint generated")
-          return
+          //log("No hint generated")
+           return
         }
 
         // Inject as a trailing system message: seen by the model, not authored by the user.
-        messages.push({ info: { role: "system" }, parts: [{ type: "text", text: hint }] })
-        log("Hint Dropped")
-        log_debug("Hint:", hint)
+        messages.push({ info: { role: "system", time: { created: Date.now() } }, parts: [{ type: "text", text: hint }] })
+        log(client,"Hint Dropped")
       } catch {
         // Experimental API drift or CLI failure — never break the user's session.
       }
