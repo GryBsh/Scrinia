@@ -39,6 +39,11 @@ public sealed class ConsolidateReembedTests : IDisposable
 
     public void Dispose()
     {
+        // MemoryEventSinkContext.Default is a plain process-wide static, not AsyncLocal, and
+        // StoreScope does not reset it. Leaving the handler installed points every later test
+        // in this process at this test's VectorStore, which is disposed when the test method
+        // exits.
+        MemoryEventSinkContext.Default = null;
         try { Directory.Delete(_root, recursive: true); } catch { }
     }
 

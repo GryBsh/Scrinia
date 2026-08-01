@@ -17,12 +17,24 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
         foreach (var fact in corpus)
         {
             string name = $"/{fact.Topic}/{fact.Key}";
-            await _tools.Remember(
+            string response = await _tools.Remember(
                 [fact.Content],
                 name,
                 description: fact.Question,
                 keywords: fact.UniqueTerms);
+            ThrowIfWriteFailed(response, name);
         }
+    }
+
+    /// <summary>
+    /// Surfaces a failed write instead of letting it pass silently. A discarded error turns an
+    /// infrastructure failure (lock timeout under load) into a misleading correctness verdict —
+    /// the memory keeps its previous content and the benchmark reports it as stale data.
+    /// </summary>
+    private static void ThrowIfWriteFailed(string response, string name)
+    {
+        if (response.Contains("status: error", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Write to '{name}' failed:\n{response}");
     }
 
     public override async Task<QueryResult> QueryAsync(string query, string? targetFactKey = null)
@@ -66,6 +78,12 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
         return new QueryResult(foundContent, tokens, foundContent.Count, foundTarget, sw.Elapsed);
     }
 
+    /// <summary>Raw search output, for diagnosing an unexpected hit.</summary>
+    public Task<string> RawSearchAsync(string query) => _tools.Search(query, limit: 10);
+
+    /// <summary>Raw stored content, for checking whether a hit reflects old content.</summary>
+    public Task<string> RawRecallAsync(string name) => _tools.Recall(name);
+
     public override int GetColdStartTokens() => 0; // Nothing loaded until queried
 
     public override int GetTotalCorpusTokens()
@@ -78,11 +96,12 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     public override async Task UpdateFactAsync(BenchmarkFact updated)
     {
         string name = $"/{updated.Topic}/{updated.Key}";
-        await _tools.Remember(
+        string response = await _tools.Remember(
             [updated.Content],
             name,
             description: updated.Question,
             keywords: updated.UniqueTerms);
+        ThrowIfWriteFailed(response, name);
     }
 
     /// <summary>
