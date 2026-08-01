@@ -26,7 +26,7 @@ internal static class ConvoMemCommand
         string output = Program.Flag(args, "--output")
             ?? DefaultOutputPath("convomem", RetrieverFactory.ModeLabel(mode, args));
 
-        Console.WriteLine($"convomem: data={dataRoot}, per-cat-limit={limit}, mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
+        Console.WriteLine($"convomem: data={dataRoot}, per-cat-limit={limit} (stratified across evidence-count buckets), mode={RetrieverFactory.ModeLabel(mode, args)}, top-k={topK}");
 
         var agent = await RetrieverFactory.BuildAgentAsync(args, ct);
         var loader = new ConvoMemLoader(dataRoot, perCategoryLimit: limit);

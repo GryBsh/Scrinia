@@ -131,6 +131,57 @@ public class ConvoMemLoaderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Per_category_limit_is_split_across_evidence_count_strata()
+    {
+        // Files sort by full path, so every 1_evidence file precedes every 2_evidence file and
+        // a flat per-category cap never reaches the harder buckets. The limit is divided across
+        // the strata present in the category instead.
+        const string template = """
+        {"evidence_items": [
+          {"question": "q1", "conversations": [{"messages": [{"speaker": "u", "text": "ans1"}]}], "message_evidences": [{"text": "ans1"}]},
+          {"question": "q2", "conversations": [{"messages": [{"speaker": "u", "text": "ans2"}]}], "message_evidences": [{"text": "ans2"}]},
+          {"question": "q3", "conversations": [{"messages": [{"speaker": "u", "text": "ans3"}]}], "message_evidences": [{"text": "ans3"}]},
+          {"question": "q4", "conversations": [{"messages": [{"speaker": "u", "text": "ans4"}]}], "message_evidences": [{"text": "ans4"}]}
+        ]}
+        """;
+        foreach (string stratum in new[] { "1_evidence", "2_evidence" })
+        {
+            var dir = Directory.CreateDirectory(Path.Combine(_root, "user_evidence", stratum));
+            await File.WriteAllTextAsync(Path.Combine(dir.FullName, "persona_a.json"), template);
+        }
+
+        var loader = new ConvoMemLoader(_root, perCategoryLimit: 4);
+        var qs = new List<Core.BenchmarkQuestion>();
+        await foreach (var q in loader.LoadAsync()) qs.Add(q);
+
+        qs.Should().HaveCount(4);
+        // Ids carry only the persona filename, so stratum membership shows up in the question
+        // spread: 2 drawn from each stratum yields 2 distinct texts, not 4 from 1_evidence.
+        qs.Select(q => q.QueryText).Distinct().Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Single_stratum_category_keeps_the_flat_per_category_limit()
+    {
+        // Stratification must not change behavior when there is nothing to stratify.
+        const string template = """
+        {"evidence_items": [
+          {"question": "q1", "conversations": [{"messages": [{"speaker": "u", "text": "ans1"}]}], "message_evidences": [{"text": "ans1"}]},
+          {"question": "q2", "conversations": [{"messages": [{"speaker": "u", "text": "ans2"}]}], "message_evidences": [{"text": "ans2"}]},
+          {"question": "q3", "conversations": [{"messages": [{"speaker": "u", "text": "ans3"}]}], "message_evidences": [{"text": "ans3"}]}
+        ]}
+        """;
+        var dir = Directory.CreateDirectory(Path.Combine(_root, "changing_evidence", "3_evidence"));
+        await File.WriteAllTextAsync(Path.Combine(dir.FullName, "persona_a.json"), template);
+
+        var loader = new ConvoMemLoader(_root, perCategoryLimit: 2);
+        var qs = new List<Core.BenchmarkQuestion>();
+        await foreach (var q in loader.LoadAsync()) qs.Add(q);
+
+        qs.Should().HaveCount(2);
+    }
+
+    [Fact]
     public async Task Items_missing_evidence_or_messages_are_skipped()
     {
         const string json = """
