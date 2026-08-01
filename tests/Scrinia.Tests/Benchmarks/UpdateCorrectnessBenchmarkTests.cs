@@ -83,7 +83,17 @@ public sealed class UpdateCorrectnessBenchmarkTests(ITestOutputHelper output)
             string oldNeedle = corpus.First(f => f.Key == update.Key).UniqueTerms[0];
             await scrinia.UpdateFactAsync(update);
             var result = await scrinia.QueryAsync(oldNeedle, update.Key);
-            if (result.FoundTarget) scriniaStale++;
+
+            // Staleness means the old text is still retrievable — not that the memory ranked
+            // into the results. A ranked retriever surfaces topically-related memories even
+            // when the queried term is absent: every api-* memory shares the `mention:api`
+            // attribute, so they tie on score and which ones make the limit is arbitrary.
+            // Checking the target's stored content tests the property the name check only
+            // approximated, and does so identically for a ranked and a substring system.
+            string stored = await scrinia.RawRecallAsync($"/{update.Topic}/{update.Key}");
+            bool stale = stored.Contains(oldNeedle, StringComparison.Ordinal)
+                || result.FoundContent.Any(c => c.Contains(oldNeedle, StringComparison.Ordinal));
+            if (stale) scriniaStale++;
         }
         results.Add(["Scrinia", $"{scriniaStale}/{updates.Count}", $"{scriniaStale == 0}"]);
 
@@ -96,7 +106,7 @@ public sealed class UpdateCorrectnessBenchmarkTests(ITestOutputHelper output)
             string oldNeedle = corpus.First(f => f.Key == update.Key).UniqueTerms[0];
             await flat.UpdateFactAsync(update);
             var result = await flat.QueryAsync(oldNeedle, update.Key);
-            if (result.FoundTarget) flatStale++;
+            if (result.FoundContent.Any(c => c.Contains(oldNeedle, StringComparison.Ordinal))) flatStale++;
         }
         results.Add(["Flat-file", $"{flatStale}/{updates.Count}", $"{flatStale == 0}"]);
 
@@ -109,7 +119,7 @@ public sealed class UpdateCorrectnessBenchmarkTests(ITestOutputHelper output)
             string oldNeedle = corpus.First(f => f.Key == update.Key).UniqueTerms[0];
             await auto.UpdateFactAsync(update);
             var result = await auto.QueryAsync(oldNeedle, update.Key);
-            if (result.FoundTarget) autoStale++;
+            if (result.FoundContent.Any(c => c.Contains(oldNeedle, StringComparison.Ordinal))) autoStale++;
         }
         results.Add(["Auto", $"{autoStale}/{updates.Count}", $"{autoStale == 0}"]);
 

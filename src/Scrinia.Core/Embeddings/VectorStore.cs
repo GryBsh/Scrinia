@@ -93,9 +93,14 @@ public sealed class VectorStore : IDisposable, IVectorStore
             if (_scopeVectors.TryGetValue(scope, out cached))
                 return cached;
 
-            var loaded = LoadFromDisk(scope);
-            _scopeVectors[scope] = loaded;
-            return loaded;
+            var loaded = TryLoadFromDisk(scope);
+            // Never cache a failed load: this store is a DI singleton with no invalidation
+            // path, so a cached empty result would outlive the transient failure that caused it.
+            if (!loaded.IsAuthoritative)
+                return loaded.Vectors;
+
+            _scopeVectors[scope] = loaded.Vectors;
+            return loaded.Vectors;
         }
         finally
         {
@@ -110,7 +115,16 @@ public sealed class VectorStore : IDisposable, IVectorStore
         await lk.WaitAsync(ct);
         try
         {
-            var current = _scopeVectors.GetOrAdd(scope, _ => LoadFromDisk(scope));
+            // Load explicitly rather than via GetOrAdd: a failed read must not become the
+            // baseline this method writes back from.
+            if (!_scopeVectors.TryGetValue(scope, out var current))
+            {
+                var loaded = TryLoadFromDisk(scope);
+                if (!loaded.IsAuthoritative)
+                    throw new VectorStoreUnavailableException(scope, GetFilePath(scope));
+                current = loaded.Vectors;
+                _scopeVectors[scope] = current;
+            }
 
             // Copy-on-write: build a new list rather than mutating `current` in place, so any
             // GetVectors caller holding a reference to the old list keeps seeing a consistent
@@ -138,7 +152,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
             if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
             {
                 string path = GetFilePath(scope);
-                if (File.Exists(path) && IsAppendableSvf3(path))
+                var probe = File.Exists(path) ? ProbeAppendable(path) : AppendProbe.NotAppendable;
+                if (probe == AppendProbe.Unknown)
+                    throw new VectorStoreUnavailableException(scope, path);
+
+                if (probe == AppendProbe.Appendable)
                 {
                     // SVF3: append operations instead of full rewrite
                     if (hadExisting)
@@ -190,7 +208,11 @@ public sealed class VectorStore : IDisposable, IVectorStore
             if (!scope.Equals("ephemeral", StringComparison.OrdinalIgnoreCase))
             {
                 string path = GetFilePath(scope);
-                if (File.Exists(path) && IsAppendableSvf3(path))
+                var probe = File.Exists(path) ? ProbeAppendable(path) : AppendProbe.NotAppendable;
+                if (probe == AppendProbe.Unknown)
+                    throw new VectorStoreUnavailableException(scope, path);
+
+                if (probe == AppendProbe.Appendable)
                 {
                     foreach (var entry in removed)
                         await AppendDeleteOpAsync(path, entry.Name, entry.ChunkIndex, ct);
@@ -213,33 +235,139 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// <summary>Returns the count of vectors across all loaded scopes.</summary>
     public int Count() => _scopeVectors.Values.Sum(v => v.Count);
 
-    private string GetFilePath(string scope)
+    private string GetFilePath(string scope) => Path.Combine(_baseDir, ScopeToRelativeDir(scope), "vectors.bin");
+
+    /// <summary>
+    /// Maps a scope to its storage directory. Separators become real nested directories so
+    /// <c>'_'</c> stays a literal character — replacing every separator with <c>'_'</c> is not
+    /// injective, and collapsed <c>local:foo/bar</c> and <c>local:foo_bar</c> onto one file.
+    /// </summary>
+    private static string ScopeToRelativeDir(string scope)
     {
-        string safeScope = scope.Replace(':', '_').Replace('/', '_').Replace('\\', '_');
-        return Path.Combine(_baseDir, safeScope, "vectors.bin");
+        string[] segments = scope.Split([':', '/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
+            return SanitizeSegment(scope);
+        return Path.Combine([.. segments.Select(SanitizeSegment)]);
     }
 
-    private static bool IsAppendableSvf3(string path)
+    /// <summary>
+    /// Makes one scope segment safe as a directory name. A short hash is appended whenever
+    /// sanitization changes the segment, so <c>a*b</c> and <c>a_b</c> stay distinct.
+    /// </summary>
+    private static string SanitizeSegment(string segment)
+    {
+        string safe = string.Concat(segment.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        if (string.Equals(safe, segment, StringComparison.Ordinal))
+            return safe;
+        return $"{safe}-{StableHash(segment)}";
+    }
+
+    private static string StableHash(string value)
+    {
+        byte[] hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(hash, 0, 4).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Moves a scope's vector file from the older flat layout
+    /// (<c>{baseDir}/local_foo_bar/vectors.bin</c>) into the nested one, so upgrading does not
+    /// orphan vectors and force a re-embed. Best-effort — on failure the scope reindexes.
+    /// </summary>
+    private void MigrateLegacyScopeFileIfPresent(string scope, string newPath)
+    {
+        if (File.Exists(newPath))
+            return;
+
+        string legacyDir = Path.Combine(_baseDir, scope.Replace(':', '_').Replace('/', '_').Replace('\\', '_'));
+        string legacyPath = Path.Combine(legacyDir, "vectors.bin");
+        if (!File.Exists(legacyPath) || string.Equals(legacyPath, newPath, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+            FileRetry.Run(() => File.Move(legacyPath, newPath, overwrite: false));
+            if (!Directory.EnumerateFileSystemEntries(legacyDir).Any())
+                Directory.Delete(legacyDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(
+                $"scrinia: could not migrate legacy vector file for scope '{scope}' ({ex.Message}). " +
+                "The scope will be reindexed instead.");
+        }
+    }
+
+    /// <summary>
+    /// Whether a scope's file can be appended to. <see cref="AppendProbe.Unknown"/> (exists but
+    /// unreadable) is distinct from not-appendable, which callers answer with a full rewrite.
+    /// </summary>
+    private enum AppendProbe { Appendable, NotAppendable, Unknown }
+
+    private static AppendProbe ProbeAppendable(string path)
     {
         try
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            byte[] magic = new byte[4];
-            return fs.Read(magic, 0, 4) == 4 && magic.AsSpan().SequenceEqual(MagicSvf3);
+            return FileRetry.Run(() =>
+            {
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                byte[] magic = new byte[4];
+                return fs.Read(magic, 0, 4) == 4 && magic.AsSpan().SequenceEqual(MagicSvf3)
+                    ? AppendProbe.Appendable
+                    : AppendProbe.NotAppendable;
+            });
         }
-        catch { return false; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return AppendProbe.Unknown;
+        }
     }
 
     /// <summary>Loads vectors from SVF1/SVF2/SVF3. On SVF3 signature mismatch with
     /// <see cref="ExpectedSignature"/>, the file is quarantined to a timestamped <c>.stale</c>
-    /// path and an empty list is returned so the caller can trigger a reindex.</summary>
-    internal List<VectorEntry> LoadFromDisk(string scope)
+    /// path and an empty list is returned so the caller can trigger a reindex.
+    ///
+    /// <para>Use <see cref="TryLoadFromDisk"/> on any path that writes back — this overload
+    /// reports "no vectors" and "could not read them" as the same empty list.</para>
+    /// </summary>
+    internal List<VectorEntry> LoadFromDisk(string scope) => TryLoadFromDisk(scope).Vectors;
+
+    /// <summary>
+    /// Loads vectors for a scope, reporting whether the result is authoritative.
+    ///
+    /// <para>Retries transient failures the same way the write paths do, and reports
+    /// <see cref="VectorLoadStatus.Failed"/> only once retries are exhausted.</para>
+    /// </summary>
+    internal VectorLoadResult TryLoadFromDisk(string scope)
     {
         string path = GetFilePath(scope);
+        MigrateLegacyScopeFileIfPresent(scope, path);
         if (!File.Exists(path))
-            return [];
+            return VectorLoadResult.Missing;
 
         try
+        {
+            return FileRetry.Run(() => new VectorLoadResult(VectorLoadStatus.Loaded, LoadFromDiskUnsafe(scope, path)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or TimeoutException)
+        {
+            // Transient and still failing after the retry window, or a permission problem.
+            // Either way we do not know what is on disk, so say so rather than claiming empty.
+            Console.Error.WriteLine(
+                $"scrinia: could not read vectors for scope '{scope}' ({ex.GetType().Name}: {ex.Message}). " +
+                "Leaving the on-disk file untouched; embedding writes for this scope will fail until it is readable.");
+            return VectorLoadResult.Failed;
+        }
+        catch
+        {
+            // Malformed content (bad header, garbage body). This IS authoritative — the file
+            // is unusable and rewriting it is the intended recovery, same as before.
+            return new VectorLoadResult(VectorLoadStatus.Loaded, []);
+        }
+    }
+
+    private List<VectorEntry> LoadFromDiskUnsafe(string scope, string path)
+    {
         {
             using var fileLock = FileLock.AcquireShared(GetVectorLockPath(path));
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -300,10 +428,6 @@ public sealed class VectorStore : IDisposable, IVectorStore
                 return LoadSvf3Body(reader, dims);
             }
 
-            return [];
-        }
-        catch
-        {
             return [];
         }
     }
@@ -443,8 +567,8 @@ public sealed class VectorStore : IDisposable, IVectorStore
             }
         }, ct: ct);
 
-        // File.Move into a path Defender/OneDrive may be scanning — the prime spot for
-        // transient "file is being used by another process" failures. Retry with backoff.
+        // File.Move onto the live path — where a transient "file is being used by another
+        // process" failure is most likely. Retry with backoff.
         FileRetry.Run(() => File.Move(tmp, path, overwrite: true));
 
         _scopeDeleteCount[scope] = 0;

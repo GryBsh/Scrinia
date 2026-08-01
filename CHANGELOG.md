@@ -523,7 +523,7 @@ and all assembly attributes.
   what produced the earlier 798/816 failure mode.
 - `EmbeddingReindexer` classifies `FileNotFoundException` (sidecar without
   artifact) as Skipped rather than Failed and logs at Debug level.
-- Robustness around Synology Drive interference in `LlmConsolidator` progress
+- Robustness around transient file-access failures in `LlmConsolidator` progress
   flushes: per-N-entry batched writes, atomic `.tmp` rename with [50,100,250]ms
   retry on `IOException`/`UnauthorizedAccessException`.
 

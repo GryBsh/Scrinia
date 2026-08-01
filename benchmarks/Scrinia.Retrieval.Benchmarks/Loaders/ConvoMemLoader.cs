@@ -16,6 +16,12 @@ namespace Scrinia.Retrieval.Benchmarks.Loaders;
 /// one question per item, with the haystack built from every message in the item's
 /// conversations and the ground truth being the verbatim evidence texts (substring
 /// match handled by <see cref="BenchmarkScorer"/>).
+///
+/// <para>The published layout nests persona files by evidence count —
+/// <c>evidence_questions/&lt;evidence_type&gt;/&lt;N&gt;_evidence/&lt;persona&gt;.json</c>. A
+/// per-category limit is split evenly across the <c>N_evidence</c> strata present in each
+/// category so the sample spans the difficulty range; a flat cap would be consumed entirely
+/// inside <c>1_evidence</c>, since files sort by full path.</para>
 /// </summary>
 public sealed class ConvoMemLoader
 {
@@ -44,10 +50,21 @@ public sealed class ConvoMemLoader
         // name as category, matching the original behavior our tests assume.
         var taken = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (string file in Directory.EnumerateFiles(_dataRoot, "*.json", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal))
+        string[] allFiles = [.. Directory
+            .EnumerateFiles(_dataRoot, "*.json", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal)];
+
+        // Stratified quotas. Files sort by full path, so every `1_evidence` file precedes every
+        // `2_evidence` file and a flat per-category cap never reaches the harder buckets.
+        var quotas = BuildStratumQuotas(allFiles);
+        var takenByStratum = new Dictionary<(string Category, string Stratum), int>();
+
+        foreach (string file in allFiles)
         {
             ct.ThrowIfCancellationRequested();
             string category = DeriveCategory(file);
+            var stratumKey = (category, DeriveStratum(file));
+            if (quotas.TryGetValue(stratumKey, out int stratumCap) && takenByStratum.GetValueOrDefault(stratumKey) >= stratumCap) continue;
             if (_perCategoryLimit is { } pre && taken.GetValueOrDefault(category) >= pre) continue;
 
             ConvoMemFile? parsed;
@@ -60,6 +77,7 @@ public sealed class ConvoMemLoader
             string fileTag = Path.GetFileNameWithoutExtension(file);
             for (int idx = 0; idx < parsed.EvidenceItems.Count; idx++)
             {
+                if (quotas.TryGetValue(stratumKey, out int cap2) && takenByStratum.GetValueOrDefault(stratumKey) >= cap2) break;
                 if (_perCategoryLimit is { } cap && taken.GetValueOrDefault(category) >= cap) break;
                 var item = parsed.EvidenceItems[idx];
                 if (item is null || string.IsNullOrWhiteSpace(item.Question)) continue;
@@ -103,8 +121,94 @@ public sealed class ConvoMemLoader
                     GroundTruthTexts: groundTruthTexts,
                     Category: category);
                 taken[category] = taken.GetValueOrDefault(category) + 1;
+                takenByStratum[stratumKey] = takenByStratum.GetValueOrDefault(stratumKey) + 1;
             }
         }
+
+        ReportShortfalls(quotas, takenByStratum, taken);
+    }
+
+    /// <summary>
+    /// Splits <see cref="_perCategoryLimit"/> evenly across the evidence-count strata present in
+    /// each category, remainder to the lowest strata. Empty when no limit is set, or for a
+    /// category with a single stratum, where the flat cap already applies.
+    /// </summary>
+    private Dictionary<(string Category, string Stratum), int> BuildStratumQuotas(IReadOnlyList<string> files)
+    {
+        var quotas = new Dictionary<(string, string), int>();
+        if (_perCategoryLimit is not { } limit || limit <= 0)
+            return quotas;
+
+        var strataByCategory = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in files)
+        {
+            string category = DeriveCategory(file);
+            if (!strataByCategory.TryGetValue(category, out var strata))
+                strataByCategory[category] = strata = new SortedSet<string>(StringComparer.Ordinal);
+            strata.Add(DeriveStratum(file));
+        }
+
+        foreach (var (category, strata) in strataByCategory)
+        {
+            if (strata.Count <= 1)
+                continue;
+
+            int baseQuota = limit / strata.Count;
+            int remainder = limit % strata.Count;
+            int i = 0;
+            foreach (string stratum in strata)
+            {
+                quotas[(category, stratum)] = baseQuota + (i < remainder ? 1 : 0);
+                i++;
+            }
+        }
+
+        return quotas;
+    }
+
+    /// <summary>
+    /// Prints any stratum that could not fill its quota, so a short sample is not mistaken for
+    /// a complete one.
+    /// </summary>
+    private void ReportShortfalls(
+        Dictionary<(string Category, string Stratum), int> quotas,
+        Dictionary<(string Category, string Stratum), int> takenByStratum,
+        Dictionary<string, int> taken)
+    {
+        if (quotas.Count == 0)
+            return;
+
+        foreach (var (key, quota) in quotas.OrderBy(kvp => kvp.Key.Category, StringComparer.Ordinal).ThenBy(kvp => kvp.Key.Stratum, StringComparer.Ordinal))
+        {
+            int got = takenByStratum.GetValueOrDefault(key);
+            if (got < quota)
+            {
+                Console.Error.WriteLine(
+                    $"convomem: {key.Category}/{key.Stratum} yielded {got} of {quota} requested " +
+                    "(stratum exhausted); category sample is smaller than the limit.");
+            }
+        }
+
+        if (_perCategoryLimit is { } limit)
+        {
+            foreach (var (category, got) in taken.OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
+            {
+                if (got < limit)
+                    Console.Error.WriteLine($"convomem: category '{category}' sampled {got} of {limit}.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The evidence-count bucket a file belongs to (<c>1_evidence</c>, <c>2_evidence</c>, …) —
+    /// the segment between the category directory and the persona file. Flat layouts have no
+    /// such segment and report a single empty stratum, disabling stratification.
+    /// </summary>
+    private string DeriveStratum(string file)
+    {
+        string rel = Path.GetRelativePath(_dataRoot, file);
+        string[] segments = rel.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length >= 3 ? segments[1] : string.Empty;
     }
 
     /// <summary>

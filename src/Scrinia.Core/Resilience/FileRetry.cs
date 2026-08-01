@@ -3,15 +3,13 @@ using Microsoft.Extensions.Logging;
 namespace Scrinia.Core.Resilience;
 
 /// <summary>
-/// Retry helper for filesystem operations that race against external file holders —
-/// AV scanners (Windows Defender), cloud sync clients (OneDrive, Synology Drive,
-/// Dropbox), and indexers (Windows Search). These tools briefly grab a read handle
-/// on freshly-written files, causing <see cref="File.Move"/>/<c>FileStream</c> opens
-/// to fail with <c>"The process cannot access the file"</c>.
+/// Retry helper for filesystem operations that can fail because another process holds a
+/// handle on the file, surfacing as <c>"The process cannot access the file"</c> from
+/// <see cref="File.Move"/> or a <c>FileStream</c> open.
 ///
-/// <para>The delays (50/100/200/400/800ms, ~1.5s total) are tuned for the typical
-/// release window of these tools. Longer than that and the failure is probably real
-/// — the slot reservation gives up and surfaces the original <see cref="IOException"/>.</para>
+/// <para>The delays (50/100/200/400/800ms, ~1.5s total) bound the wait for a short-lived
+/// handle to be released. Longer than that and the failure is probably real — the retry
+/// gives up and surfaces the original <see cref="IOException"/>.</para>
 ///
 /// <para>Only <see cref="IOException"/> is retried. Permission errors
 /// (<see cref="UnauthorizedAccessException"/>) and missing-path errors

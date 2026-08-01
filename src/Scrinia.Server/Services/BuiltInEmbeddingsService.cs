@@ -159,6 +159,11 @@ public sealed class BuiltInEmbeddingsService :
                     await _vectorStore.UpsertAsync(item.Scope, item.Entry.Name, chunks[i].Index, vectors[i], ct);
                 count++;
             }
+            catch (VectorStoreUnavailableException ex)
+            {
+                // Not counted as reindexed, so a later run retries once the file is readable.
+                _logger.LogWarning("Skipped reindexing '{Name}': {Reason}", item.Entry.Name, ex.Message);
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to reindex '{Name}'", item.Entry.Name);
@@ -189,9 +194,16 @@ public sealed class BuiltInEmbeddingsService :
             var vectors = await _provider.EmbedBatchAsync(chunks.Select(c => c.Text).ToList(), ct);
             if (vectors is null || vectors.Length != chunks.Count) return;
 
-            await _vectorStore.RemoveAsync(scope, subject, ct);
-            for (int i = 0; i < chunks.Count; i++)
-                await _vectorStore.UpsertAsync(scope, subject, chunks[i].Index, vectors[i], ct);
+            // Already detached from the write response, so a declined write can wait for the
+            // file to free up instead of deferring to the next write.
+            await VectorWriteRetry.RunAsync(
+                async () =>
+                {
+                    await _vectorStore.RemoveAsync(scope, subject, ct);
+                    for (int i = 0; i < chunks.Count; i++)
+                        await _vectorStore.UpsertAsync(scope, subject, chunks[i].Index, vectors[i], ct);
+                },
+                _logger, qualifiedName, ct);
         }
         catch (Exception ex)
         {

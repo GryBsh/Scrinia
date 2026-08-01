@@ -8,7 +8,7 @@ This file is for AI coding agents (Claude Code, Cursor, Copilot, etc.). It descr
 
 ## What scrinia Does
 
-scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes eleven MCP tools — `guide()` plus one per memory operation — so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
+scrinia gives LLMs persistent, portable memory plus reusable skill prompts. It compresses text into NMP/2 (Named Memory Protocol v2) artifacts (Brotli + URL-safe Base64), stores them as named memories in a local `.scrinia/` directory, and exposes twelve MCP tools — `guide()`, one per memory operation, and the `facts` entity-query tool — so agents can remember findings, search past knowledge, recall sessions, and load specialist skill prompts.
 
 ## Project Layout
 
@@ -69,7 +69,7 @@ scrinia/
 
 ## MCP Tools
 
-Eleven tools are exposed — `guide()` plus one per memory operation:
+Twelve tools are exposed — `guide()`, one per memory operation, and `facts`:
 
 | Tool | Description |
 |------|-------------|
@@ -84,6 +84,7 @@ Eleven tools are exposed — `guide()` plus one per memory operation:
 | `link` | Bidirectional link between two memories. |
 | `restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
 | `reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
+| `facts` | Aggregate/relational entity queries over stored attributes (`entities`, `profile`, `intersect`). |
 
 Skill paths are routed transparently through `recall` and `remember`:
 - `recall({ path: '/skill/qa' })` — load a skill prompt (built-in or override).

@@ -83,9 +83,16 @@ internal sealed class CoreEmbeddingEventHandler : IMemoryEventSink
 
             // Atomic per-memory replace: drop any prior vectors (including stale higher
             // chunk indices from when this memory was longer) before writing the new set.
-            await _store.RemoveAsync(scope, subject, ct);
-            for (int i = 0; i < chunks.Count; i++)
-                await _store.UpsertAsync(scope, subject, chunks[i].Index, vectors[i], ct);
+            // Already detached from the write response, so a declined write can wait for the
+            // file to free up instead of deferring to the next write.
+            await VectorWriteRetry.RunAsync(
+                async () =>
+                {
+                    await _store.RemoveAsync(scope, subject, ct);
+                    for (int i = 0; i < chunks.Count; i++)
+                        await _store.UpsertAsync(scope, subject, chunks[i].Index, vectors[i], ct);
+                },
+                _logger, qualifiedName, ct);
         }
         catch (Exception ex)
         {

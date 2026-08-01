@@ -13,6 +13,12 @@ public class MentionSpanWiringTests
 {
     private static ScriniaMcpTools Tools() => new();
 
+    private static string Dump(IReadOnlyDictionary<string, string[]>? attrs) =>
+        attrs is null
+            ? "(none)"
+            : string.Join("; ", attrs.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .Select(kv => $"{kv.Key}=[{string.Join(",", kv.Value)}]"));
+
     [Fact]
     public async Task Store_ExtractsMentionSpans_AgentAttributeOverrides()
     {
@@ -22,8 +28,13 @@ public class MentionSpanWiringTests
             content: ["We saw Jolene and Seraphim in France."]);
 
         var entry = ScriniaArtifactStore.LoadIndex("local:findings").Single(e => e.Name == "trip");
-        entry.Attributes!["mention"].Should().Contain("jolene");
-        entry.Attributes!["mention"].Should().Contain("seraphim");
+        // Dump the whole attribute set on failure. This assertion was seen to fail once with
+        // mention={seraphim}, which the write path alone does not explain: with no agent
+        // attributes and no `key: value` prose, DropMentionsShadowedByTypedKeys has nothing to
+        // shadow jolene with. Knowing which typed key captured it identifies the cause.
+        string dump = Dump(entry.Attributes);
+        entry.Attributes!["mention"].Should().Contain("jolene", "attributes were {0}", dump);
+        entry.Attributes!["mention"].Should().Contain("seraphim", "attributes were {0}", dump);
 
         // Agent-supplied typed attribute wins: a value the agent typed is NOT duplicated under mention.
         await Tools().MemoryRemember(path: "/findings/typed",

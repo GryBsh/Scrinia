@@ -252,8 +252,8 @@ pass a signature, so older files quarantine on first contact and reindex.
 Rewrites the file with only live entries in SVF3.
 
 **Concurrency:** Per-scope `SemaphoreSlim` serializes writes. Atomic file
-operations (write to `.tmp`, then rename) with retry backoff for sync-client
-interference (Synology Drive, OneDrive, etc.).
+operations (write to `.tmp`, then rename) with retry backoff when another
+process holds the file open.
 
 ### VectorEntry
 

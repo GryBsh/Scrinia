@@ -70,7 +70,15 @@ public sealed class EmbeddingsTools(
         if (vector is null)
             return JsonSerializer.Serialize(new { error = "Embedding failed" });
 
-        await vectorStore.UpsertAsync(scope, name, chunkIndex, vector, ct);
+        try
+        {
+            await vectorStore.UpsertAsync(scope, name, chunkIndex, vector, ct);
+        }
+        catch (VectorStoreUnavailableException ex)
+        {
+            // Same error shape as a failed embed; the caller retries or falls back to BM25.
+            return JsonSerializer.Serialize(new { error = ex.Message });
+        }
         return JsonSerializer.Serialize(new { ok = true });
     }
 
@@ -81,7 +89,14 @@ public sealed class EmbeddingsTools(
         [Description("Memory name")] string name,
         CancellationToken ct = default)
     {
-        await vectorStore.RemoveAsync(scope, name, ct);
+        try
+        {
+            await vectorStore.RemoveAsync(scope, name, ct);
+        }
+        catch (VectorStoreUnavailableException ex)
+        {
+            return JsonSerializer.Serialize(new { error = ex.Message });
+        }
         return JsonSerializer.Serialize(new { ok = true });
     }
 }

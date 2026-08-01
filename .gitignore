@@ -6,9 +6,6 @@ build/
 obj/
 NUL
 
-# Scrinia runtime data
-.scrinia/
-
 # Test output
 TestResults/
 *.trx
@@ -64,3 +61,8 @@ docs/reviews/
 .superpowers/
 docs/planning/
 **/scratchpad/
+
+**/node_modules/
+**/package-lock.json
+**/pnpm-lock.yaml
+**/yarn.lock
