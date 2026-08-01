@@ -265,8 +265,16 @@ public static class MemoryOrchestrator
 
             string contentPreview = existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText);
 
+            // Captured for the rollback below: appending to an existing memory must revert to
+            // this content, not delete it. Nothing reads the versions/ archive back, so a
+            // delete here would leave the user no way to recover.
+            string? previousArtifact = null;
             if (existingEntry is not null)
+            {
+                try { previousArtifact = await store.ReadArtifactAsync(subject, scope, ct); }
+                catch (FileNotFoundException) { /* index knows the entry but the file is gone; nothing to restore */ }
                 store.ArchiveVersion(subject, scope);
+            }
 
             await store.WriteArtifactAsync(subject, scope, newArtifact, ct);
 
@@ -308,8 +316,18 @@ public static class MemoryOrchestrator
             }
             catch
             {
-                // Rollback: remove orphaned artifact
-                try { store.DeleteArtifact(subject, scope); } catch { }
+                // A brand-new memory leaves an orphaned artifact, so removing it is the revert.
+                // An existing one is restored instead — Upsert does real file I/O and can fail
+                // transiently, and deleting would make that permanent.
+                // CancellationToken.None: a cancelled append must still be rolled back.
+                try
+                {
+                    if (previousArtifact is not null)
+                        await store.WriteArtifactAsync(subject, scope, previousArtifact, CancellationToken.None);
+                    else
+                        store.DeleteArtifact(subject, scope);
+                }
+                catch { }
                 throw;
             }
         }
