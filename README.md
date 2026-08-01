@@ -183,7 +183,7 @@ All commands accept `--workspace-root` to override the workspace directory and `
 
 ## MCP tools
 
-11 tools available via `scri serve`.
+12 tools available via `scri serve`.
 
 | Tool | Description |
 |---|---|
@@ -198,6 +198,7 @@ All commands accept `--workspace-root` to override the workspace directory and `
 | `link` | Bidirectional link between two memories. |
 | `restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
 | `reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |
+| `facts` | Aggregate/relational entity queries (`entities`, `profile`, `intersect`). |
 
 ### Built-in skills
 
