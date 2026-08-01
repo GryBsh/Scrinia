@@ -62,8 +62,8 @@ internal static class EmbeddingProviderLoader
         catch (IOException ex) when (ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase))
         {
             Console.Error.WriteLine($"models: download failed: a .tmp file in {target} is locked by another process.");
-            Console.Error.WriteLine("       common causes: antivirus/sync-client scanning the in-progress download,");
-            Console.Error.WriteLine("       a stale .tmp from a prior interrupted run, or another scrinia-bench instance.");
+            Console.Error.WriteLine("       common causes: a stale .tmp from a prior interrupted run, another");
+            Console.Error.WriteLine("       scrinia-bench instance, or another process holding the file open.");
             Console.Error.WriteLine($"       fix: delete *.tmp in {target}, or pass --model-dir <other-dir>.");
             return null;
         }

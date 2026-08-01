@@ -1494,8 +1494,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // Derive topic infos directly from the candidates we already loaded above instead of
         // calling GatherTopicInfos — which would LoadIndex every topic scope a second time.
         // The cache absorbs the actual disk reads but every duplicate call still acquires a
-        // shared file-lock and copies the entry list; on Synology Drive sync setups the
-        // lock-file acquisition alone is non-trivial wear over a long daemon session.
+        // shared file-lock and copies the entry list — avoidable I/O that accumulates over a
+        // long daemon session.
         var topics = BuildTopicInfosFromCandidates(candidates);
         return searcher.SearchAll(query, candidates, topics, limit, supplementalScores, entityGraphScores);
     }
