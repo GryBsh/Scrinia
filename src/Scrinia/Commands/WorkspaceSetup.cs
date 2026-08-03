@@ -37,8 +37,8 @@ internal static class WorkspaceSetup
                      using {root}
 
             to migrate its memories:
-              scri bundle export --workspace-root "{Path.GetDirectoryName(orphan)}" --topics {topicList}
-              scri bundle import --workspace-root "{root}" --path <file>
+              scri bundle export {topicList} --workspace-root "{Path.GetDirectoryName(orphan)}"
+              scri bundle import <file> --workspace-root "{root}"
             """;
     }
 

@@ -209,6 +209,6 @@ public class WorkspaceRootTests : IDisposable
             root: @"C:\containers\proj",
             topics: ["agent", "patterns"]);
 
-        Assert.Contains(@"scri bundle export --workspace-root ""C:\containers"" --topics agent,patterns", text);
+        Assert.Contains(@"scri bundle export agent,patterns --workspace-root ""C:\containers""", text);
     }
 }

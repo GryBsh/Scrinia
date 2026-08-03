@@ -21,8 +21,8 @@ scrinia: ignoring store at C:\ancestor\.scrinia
          using C:\projects\your-project
 
 to migrate its memories:
-  scri bundle export --workspace-root "C:\ancestor" --topics <topics>
-  scri bundle import --workspace-root "C:\projects\your-project" --path <file>
+  scri bundle export <topics> --workspace-root "C:\ancestor"
+  scri bundle import <file> --workspace-root "C:\projects\your-project"
 ```
 
 **Fix:**
