@@ -1085,6 +1085,110 @@ rtk git commit -m "fix(mcp): stop Configure from materializing the store on ever
 
 ---
 
+### Task 7c: One enforced write path in `ScriniaArtifactStore`
+
+`FileMemoryStore` guarantees "writes materialise, reads do not" structurally: every write goes
+through `WithExclusiveLock`, which calls `EnsureMaterialized` before acquiring the lock. A new
+write method cannot skip materialisation without also skipping locking, which would be caught
+immediately as a correctness bug.
+
+`ScriniaArtifactStore` currently achieves the same outcome by having each write method call
+`EnsureMaterialized` and then `FileLock.AcquireExclusive` as two separate statements. That is
+two ways of doing one thing, and it holds only as long as everyone remembers both lines.
+`CopyMemory` already demonstrates the failure mode: it creates directories directly and is
+correct only because a later `Upsert` happens to close the gap.
+
+This task makes reuse enforce the invariant instead of discipline.
+
+**Files:**
+- Modify: `src/Scrinia/Mcp/ScriniaArtifactStore.cs` — add the wrapper; convert `SaveIndex`,
+  `Upsert`, `Remove`, `ImportTopicEntries`; route `CopyMemory`'s two raw directory creations
+  through `EnsureMaterialized`
+- Test: `tests/Scrinia.Tests/ScriniaArtifactStoreTests.cs`
+
+**Interfaces:**
+- Consumes: `EnsureMaterialized(string storeDir)`, already present.
+- Produces: `private static T WithMaterializedWrite<T>(string scope, Func<string, T> body)` and
+  a `private static void WithMaterializedWrite(string scope, Action<string> body)` overload. The
+  body receives the resolved `storeDir`, so callers stop recomputing it.
+
+- [ ] **Step 1: Add the wrapper**
+
+```csharp
+    /// <summary>
+    /// Runs <paramref name="body"/> under the scope's exclusive file lock, materialising the
+    /// store first and handing the body the resolved store directory. Every write goes through
+    /// here so that materialisation cannot be separated from taking the write lock.
+    ///
+    /// <para>Not reentrant: the underlying lock is exclusive, so a body must not call another
+    /// method that takes the same scope's lock.</para>
+    /// </summary>
+    private static T WithMaterializedWrite<T>(string scope, Func<string, T> body)
+    {
+        string storeDir = GetStoreDirForScope(scope);
+        EnsureMaterialized(storeDir);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        return body(storeDir);
+    }
+
+    private static void WithMaterializedWrite(string scope, Action<string> body) =>
+        WithMaterializedWrite(scope, storeDir => { body(storeDir); return true; });
+```
+
+- [ ] **Step 2: Convert the four write methods**
+
+Each currently opens with three lines — `GetStoreDirForScope`, `EnsureMaterialized`,
+`AcquireExclusive`. Replace that preamble with a `WithMaterializedWrite` call and move the
+remaining statements into the body verbatim. `SaveIndex`, `Upsert` and `ImportTopicEntries`
+return void and use the `Action` overload; `Remove` returns `bool` and uses the generic overload,
+keeping its early `return false;` as a return from the lambda. Change no statement inside any
+body.
+
+- [ ] **Step 3: Route `CopyMemory`'s raw creations through `EnsureMaterialized`**
+
+`CopyMemory` has two sites that call `Directory.CreateDirectory(Path.GetDirectoryName(destPath)!)`
+directly before writing an artifact file and then delegating to `Upsert`. Replace each bare
+`Directory.CreateDirectory(...)` with `EnsureMaterialized(Path.GetDirectoryName(destPath)!)` so
+that `EnsureMaterialized` is the only function in this file that brings a store into existence.
+
+Do NOT wrap `CopyMemory` in `WithMaterializedWrite` — it calls `Upsert`, which takes the same
+scope's exclusive lock, and the lock is not reentrant. Wrapping it would deadlock.
+
+- [ ] **Step 4: Verify no bare directory creation remains on a write path**
+
+Run: `rtk proxy grep -n "Directory.CreateDirectory" src/Scrinia/Mcp/ScriniaArtifactStore.cs`
+
+Every remaining hit must be either inside `EnsureMaterialized` itself, or a subdirectory of an
+already-materialised store (`ArchiveVersion`'s versions directory). List each hit and its
+justification in your report.
+
+- [ ] **Step 5: Test that the invariant is enforced, not just satisfied**
+
+Add to `ScriniaArtifactStoreTests`:
+
+```csharp
+    [Fact]
+    public void EveryWriteMaterializesTheGitIgnore()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+        string gitIgnore = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
+
+        ScriniaArtifactStore.Upsert(MakeEntry("write-materializes"));
+
+        Assert.True(File.Exists(gitIgnore));
+    }
+```
+
+- [ ] **Step 6: Full suite and commit**
+
+```bash
+rtk dotnet test Scrinia.sln
+rtk git add src/Scrinia/Mcp/ScriniaArtifactStore.cs tests/Scrinia.Tests/ScriniaArtifactStoreTests.cs
+rtk git commit -m "refactor(mcp): route artifact-store writes through one materializing wrapper"
+```
+
+---
+
 ### Task 8: Warn about stores that resolution passed over
 
 **Files:**
