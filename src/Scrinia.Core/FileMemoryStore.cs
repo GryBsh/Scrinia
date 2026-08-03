@@ -200,8 +200,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
-
-        EnsureGitIgnore(_workspaceRoot);
     }
 
     internal static void EnsureGitIgnore(string workspaceRoot)
@@ -744,6 +742,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public List<ArtifactEntry> LoadIndex(string scope = "local")
     {
+        if (!Directory.Exists(GetStoreDirForScope(scope)))
+            return [];
+
         using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         var lk = GetIndexLock(scope);
         lk.EnterReadLock();
