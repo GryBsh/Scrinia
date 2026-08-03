@@ -21,6 +21,9 @@ public sealed class FileLock : IDisposable
 
     private FileLock(FileStream stream) => _stream = stream;
 
+    /// <summary>A lock over nothing. Disposing it is a no-op.</summary>
+    private FileLock() { }
+
     /// <summary>
     /// Acquires an exclusive lock for write operations. Blocks all other readers and writers.
     /// Retries with exponential backoff up to <paramref name="timeout"/>.
@@ -30,9 +33,18 @@ public sealed class FileLock : IDisposable
 
     /// <summary>
     /// Acquires a shared lock for read operations. Multiple shared locks can coexist.
+    ///
+    /// <para>When the lock's directory does not exist there is nothing to read and nothing to
+    /// guard, so this returns a lock over nothing rather than creating the directory.</para>
     /// </summary>
     public static FileLock AcquireShared(string lockPath, TimeSpan? timeout = null, ILogger? logger = null)
-        => Acquire(lockPath, FileAccess.Read, FileShare.Read, timeout ?? TimeSpan.FromSeconds(5), logger);
+    {
+        string? dir = Path.GetDirectoryName(lockPath);
+        if (dir is not null && !Directory.Exists(dir))
+            return new FileLock();
+
+        return Acquire(lockPath, FileAccess.Read, FileShare.Read, timeout ?? TimeSpan.FromSeconds(5), logger);
+    }
 
     private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, TimeSpan timeout, ILogger? logger)
     {
