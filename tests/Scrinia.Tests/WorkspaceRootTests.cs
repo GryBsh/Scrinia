@@ -158,7 +158,11 @@ public class WorkspaceRootTests : IDisposable
         string repo = Mkdir("repo");
         Directory.CreateDirectory(Path.Combine(repo, ".git"));
 
-        Assert.Empty(WorkspaceRoot.FindOrphanStores(repo, repo));
+        var found = WorkspaceRoot.FindOrphanStores(repo, repo);
+
+        // Stores outside the fixture (for example one in the user's home directory) are real
+        // and correctly reported, so scope the assertion to the tree this test controls.
+        Assert.DoesNotContain(found, p => p.StartsWith(_tempDir, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
