@@ -48,10 +48,18 @@ internal static class WorkspaceSetup
     /// </summary>
     internal static void WarnOnOrphanStores()
     {
-        string root = ScriniaArtifactStore.WorkspaceRootPath;
-        string cwd = Directory.GetCurrentDirectory();
-        foreach (string orphan in WorkspaceRoot.FindOrphanStores(root, cwd))
-            Console.Error.WriteLine(FormatOrphanWarning(orphan, root, ListTopics(orphan)));
+        try
+        {
+            string root = ScriniaArtifactStore.WorkspaceRootPath;
+            string cwd = Directory.GetCurrentDirectory();
+            foreach (string orphan in WorkspaceRoot.FindOrphanStores(root, cwd))
+                Console.Error.WriteLine(FormatOrphanWarning(orphan, root, ListTopics(orphan)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Reporting an ignored store is advisory; a filesystem it cannot read must not
+            // fail the caller's write.
+        }
     }
 
     /// <summary>Topic directory names inside an orphaned store, for the migration command.</summary>
@@ -59,7 +67,14 @@ internal static class WorkspaceSetup
     {
         string topicsDir = Path.Combine(storeDir, "topics");
         if (!Directory.Exists(topicsDir)) return [];
-        return [.. Directory.EnumerateDirectories(topicsDir).Select(Path.GetFileName).OfType<string>().Order()];
+        try
+        {
+            return [.. Directory.EnumerateDirectories(topicsDir).Select(Path.GetFileName).OfType<string>().Order()];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
     }
 
     /// <summary>

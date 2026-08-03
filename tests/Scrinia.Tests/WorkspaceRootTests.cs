@@ -200,4 +200,15 @@ public class WorkspaceRootTests : IDisposable
         Assert.Contains("scri bundle import", text);
         Assert.Contains("agent,patterns", text);
     }
+
+    [Fact]
+    public void OrphanWarning_ExportCommandTargetsTheOrphansParentNotTheStoreItself()
+    {
+        string text = Scrinia.Commands.WorkspaceSetup.FormatOrphanWarning(
+            orphan: @"C:\containers\.scrinia",
+            root: @"C:\containers\proj",
+            topics: ["agent", "patterns"]);
+
+        Assert.Contains(@"scri bundle export --workspace-root ""C:\containers"" --topics agent,patterns", text);
+    }
 }
