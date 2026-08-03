@@ -615,8 +615,31 @@ public sealed class ScriniaArtifactStoreTests
             because: "namespaced entries take precedence over legacy entries");
     }
 
-    // ── Configure ─────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private static ArtifactEntry MakeEntry(
+        string name,
+        string desc = "test description",
+        string? contentPreview = null) =>
+        new(
+            Name: name,
+            Uri: $"file:///tmp/{name}.nmp2",
+            OriginalBytes: 1024,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow,
+            ContentPreview: contentPreview ?? desc);
+}
+
+/// <summary>
+/// Isolated from <see cref="ScriniaArtifactStoreTests"/> because <see cref="ScriniaArtifactStore.Configure"/>
+/// mutates the process-wide static workspace root rather than an <c>AsyncLocal</c> override, so
+/// it must run serialized against the other tests that touch the same static (see
+/// <see cref="GlobalWorkspaceConfigCollection"/>) rather than in parallel with the rest of this
+/// file's <c>StoreScope</c>-based tests.
+/// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
+public sealed class ScriniaArtifactStoreConfigureTests
+{
     [Fact]
     public void Configure_DoesNotMaterializeTheStore()
     {
@@ -633,18 +656,4 @@ public sealed class ScriniaArtifactStoreTests
             Directory.Delete(root, recursive: true);
         }
     }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private static ArtifactEntry MakeEntry(
-        string name,
-        string desc = "test description",
-        string? contentPreview = null) =>
-        new(
-            Name: name,
-            Uri: $"file:///tmp/{name}.nmp2",
-            OriginalBytes: 1024,
-            ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow,
-            ContentPreview: contentPreview ?? desc);
 }

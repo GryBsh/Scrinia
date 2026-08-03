@@ -394,7 +394,10 @@ internal static partial class ScriniaArtifactStore
         {
             entries = LoadEntriesFromLegacyIndex(storeDir);
             if (entries.Count > 0)
+            {
+                FileMemoryStore.EnsureGitIgnore(WorkspaceRoot);
                 WriteSidecars(entries, storeDir);
+            }
         }
 
         return entries;
