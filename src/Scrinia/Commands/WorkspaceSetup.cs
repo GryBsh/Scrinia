@@ -12,15 +12,24 @@ internal static class WorkspaceSetup
 {
     private static McpPluginHost? _pluginHost;
     private static IEmbeddingProvider? _embeddingProvider;
+    private static readonly AsyncLocal<string?> _rootOverride = new();
     private static string? _root;
 
     /// <summary>
     /// The resolved workspace root for this process, cached by <see cref="Configure"/>.
+    /// Respects test overrides set via <see cref="OverrideRoot"/> (checked first, via
+    /// <see cref="AsyncLocal{T}"/> so parallel test classes don't clobber each other),
+    /// falling back to the process-wide value <see cref="Configure"/> cached.
     /// Replaces the former ScriniaArtifactStore.WorkspaceRootPath static.
     /// </summary>
     internal static string Root =>
-        _root ?? throw new InvalidOperationException(
+        _rootOverride.Value ?? _root ?? throw new InvalidOperationException(
             "WorkspaceSetup.Configure must be called before reading Root.");
+
+    /// <summary>Sets an async-local override for <see cref="Root"/>, scoped to the current
+    /// async context. For tests that need root isolation under parallel execution; not
+    /// wired into any production path.</summary>
+    internal static void OverrideRoot(string? path) => _rootOverride.Value = path;
 
     internal static void Configure(string? workspaceRoot)
     {
