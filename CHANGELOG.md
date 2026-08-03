@@ -10,6 +10,15 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — workspace root resolution
+
+- Workspace root resolution is now bounded at the nearest enclosing git repository. Projects
+  without their own store no longer bind to a store in a distant ancestor directory, which
+  caused unrelated projects to share one memory pool.
+- The store is no longer created while reading. Constructing the store and running `hint`,
+  `recall`, or `search` against a workspace with no store leave no directory behind.
+- Generated `.scrinia/.gitignore` now covers suffixed lock files (`*.lock`) and vector indexes.
+
 ### Changed — CLI/MCP memory-surface parity
 - **`list` and `search` were the last two CLI commands that reimplemented their
   MCP tool counterpart instead of delegating; they now share one core.**

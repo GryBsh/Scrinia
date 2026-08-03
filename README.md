@@ -127,12 +127,16 @@ Add to your MCP client config (Claude Code, Cursor, Copilot, etc.):
   "mcpServers": {
     "scrinia": {
       "command": "scri",
-      "args": ["serve"],
+      "args": ["serve", "--workspace-root", "/path/to/your/project"],
       "transport": "stdio"
     }
   }
 }
 ```
+
+`scri serve` resolves its workspace from the nearest enclosing git repository relative to
+its working directory; passing `--workspace-root` explicitly makes the server independent
+of whatever directory the client launches it from.
 
 For HTTP transport via the API server, see [Server Administration](docs/server-admin.md).
 
