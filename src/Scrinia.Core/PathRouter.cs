@@ -151,9 +151,14 @@ public static class PathRouter
         if (scope.StartsWith("local:", StringComparison.Ordinal))
         {
             string topic = scope["local:".Length..];
+
+            // v2 path scope: topic contains "/" that isn't a v1 namespace prefix
+            // (v1 namespaces are "entity/X", "memory/X", "agent" — exactly one slash
+            // with a recognised prefix). Multi-level paths use .scrinia/memories/.
             if (IsV2PathScope(topic))
                 return Path.Combine(workspaceRoot, ".scrinia", MemoriesDir,
                     topic.Replace('/', Path.DirectorySeparatorChar));
+
             return Path.Combine(workspaceRoot, ".scrinia", "topics", topic);
         }
 

@@ -183,4 +183,27 @@ public class PathRouterTests : IDisposable
         foreach (string scope in new[] { "local", "local:findings", "local:goal/G-5", "local:agent" })
             PathRouter.ToStoreDir(scope, _root).Should().Be(store.GetStoreDirForScope(scope));
     }
+
+    [Fact]
+    public void ToStoreDir_MapsEachScopeShapeToItsLiteralDirectory()
+    {
+        PathRouter.ToStoreDir("local", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "store"));
+
+        PathRouter.ToStoreDir("local:findings", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "topics", "findings"));
+
+        PathRouter.ToStoreDir("local:goal/G-5", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories", "goal", "G-5"));
+
+        PathRouter.ToStoreDir("local:agent", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "topics", "agent"));
+    }
+
+    [Fact]
+    public void ToStoreDir_UnknownScope_Throws()
+    {
+        var act = () => PathRouter.ToStoreDir("remote:whatever", _root);
+        act.Should().Throw<ArgumentException>().WithMessage("*Unknown scope*");
+    }
 }
