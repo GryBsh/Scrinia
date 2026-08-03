@@ -90,6 +90,39 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Migrate_SourceLockedDuringMove_SurfacesActionableError_ThenResumes()
+    {
+        // Reviewer finding (Task 7 fix round): the core move loop's File.Move had no error
+        // handling at all — a real content file transiently locked by another process (Synology
+        // Drive's sync daemon, an antivirus scan, a second scrinia process) would throw a bare
+        // IOException straight out of RunMigration, and because _layoutChecked only flips after a
+        // clean completion, EVERY subsequent public store call would hit it again until the lock
+        // cleared. Proves both halves of the fix: (1) the error surfaced is actionable (names the
+        // file, explains the likely cause), not an opaque IOException; (2) once the lock clears, a
+        // later attempt resumes and completes — no data lost, nothing left behind.
+        Write("topics/findings/review.nmp2", "b");
+        string sourcePath = Path.Combine(_root, ".scrinia", "topics", "findings", "review.nmp2");
+
+        using (new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var act = () => StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+            var thrown = act.Should().Throw<IOException>().Which;
+            thrown.Message.Should().Contain("review.nmp2",
+                "the error must name the specific file that's stuck");
+            thrown.Message.Should().Contain("process is likely holding it open",
+                "the error must be actionable, not a bare IOException surfacing from LoadIndex/Upsert/etc");
+        }
+
+        // Lock released — a subsequent attempt must complete the migration from where it stopped.
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        result.Ran.Should().BeTrue();
+        Exists("memories/findings/review.nmp2").Should().BeTrue();
+        Exists("topics/findings/review.nmp2").Should().BeFalse();
+    }
+
+    [Fact]
     public void Migrate_Collision_NonNamespacedWins_LoserQuarantined()
     {
         Write("topics/api/auth.nmp2", "flat-wins");

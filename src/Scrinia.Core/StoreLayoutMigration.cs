@@ -1,3 +1,5 @@
+using Scrinia.Core.Resilience;
+
 namespace Scrinia.Core;
 
 /// <summary>
@@ -163,12 +165,12 @@ public static class StoreLayoutMigration
                     // repeatable given identical input, not an artifact of enumeration order.
                     string quarantine = Path.Combine(conflictsDir, Path.GetRelativePath(scriniaDir, source));
                     Directory.CreateDirectory(Path.GetDirectoryName(quarantine)!);
-                    File.Move(source, quarantine, overwrite: true);
+                    MoveWithRetry(source, quarantine, overwrite: true);
                     conflicts++;
                     continue;
                 }
 
-                File.Move(source, target);
+                MoveWithRetry(source, target, overwrite: false);
                 moved++;
             }
 
@@ -314,10 +316,45 @@ public static class StoreLayoutMigration
         return collisions;
     }
 
+    /// <summary>
+    /// Moves a real content file as part of the plan (either into its final <c>memories/</c>
+    /// target or into a conflict-quarantine directory), retrying transient sharing violations
+    /// via <see cref="FileRetry"/> — unlike the transient-artifact delete and the backup copy,
+    /// this must NOT silently skip-and-continue on failure: a real memory left behind un-moved
+    /// would, after Task 8 removes the legacy read-fallback, become invisible to every reader
+    /// while still sitting on disk. Loud and retryable is correct here; silent and lossy is not.
+    /// If <see cref="FileRetry.Run(Action, Microsoft.Extensions.Logging.ILogger?)"/> exhausts its
+    /// retries, the file is genuinely stuck (not just transiently busy), so this wraps the bare
+    /// <see cref="IOException"/> in one that names the file and suggests the likely cause —
+    /// actionable rather than an opaque failure surfacing from <c>LoadIndex</c>/<c>Upsert</c>/etc.
+    /// Resumable regardless: the caller's <c>if (!File.Exists(source)) continue</c> check means a
+    /// later migration attempt picks up exactly where this one stopped.
+    /// </summary>
+    private static void MoveWithRetry(string source, string target, bool overwrite)
+    {
+        try
+        {
+            FileRetry.Run(() => File.Move(source, target, overwrite));
+        }
+        catch (IOException ex)
+        {
+            throw new IOException(
+                $"Store layout migration could not move '{source}' to '{target}': the file stayed " +
+                "locked for the full retry window. Another process is likely holding it open " +
+                "(a concurrent scrinia process, an antivirus scan, or a sync client such as " +
+                "Synology Drive). Nothing has been lost — this file (and any after it in this " +
+                "run) will be retried the next time the store is accessed, once the lock clears.",
+                ex);
+        }
+    }
+
     /// <summary>Recursive file copy, used for the pre-migration backup. Best-effort per file:
     /// a file held open by a concurrent process (e.g. an in-use scope <c>.lock</c>, the same
     /// condition the backup-bounding above is guarding against) is skipped rather than aborting
-    /// the whole backup — a live lock file carries no committed data worth preserving anyway.</summary>
+    /// the whole backup — a live lock file carries no committed data worth preserving anyway.
+    /// Catches <see cref="UnauthorizedAccessException"/> alongside <see cref="IOException"/> —
+    /// on Windows a sharing violation can surface as either — matching <see cref="TryMoveVectorDir"/>'s
+    /// handling of the same class of problem.</summary>
     private static void CopyDirectory(string sourceDir, string targetDir)
     {
         Directory.CreateDirectory(targetDir);
@@ -327,6 +364,7 @@ public static class StoreLayoutMigration
             string destFile = Path.Combine(targetDir, Path.GetFileName(file));
             try { File.Copy(file, destFile, overwrite: false); }
             catch (IOException) { /* concurrently held; skip, nothing committed to preserve */ }
+            catch (UnauthorizedAccessException) { /* concurrently held; skip, nothing committed to preserve */ }
         }
 
         foreach (string dir in Directory.GetDirectories(sourceDir))
