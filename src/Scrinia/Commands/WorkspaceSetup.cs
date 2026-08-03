@@ -15,20 +15,7 @@ internal static class WorkspaceSetup
 
     internal static void Configure(string? workspaceRoot)
     {
-        string root;
-        if (!string.IsNullOrWhiteSpace(workspaceRoot))
-        {
-            root = workspaceRoot!;
-        }
-        else
-        {
-            // Walk up from cwd looking for an existing .scrinia/ directory,
-            // like git walks up looking for .git/. This makes `scri serve`
-            // work correctly regardless of which directory the MCP client
-            // (Claude Code, Copilot, Cursor, etc.) launches the process from.
-            root = FindWorkspaceRoot(Directory.GetCurrentDirectory())
-                ?? Directory.GetCurrentDirectory();
-        }
+        string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
 
         ScriniaArtifactStore.Configure(root);
         // Build ranker weights from config so a workspace can tune α_recency without
@@ -489,17 +476,5 @@ internal static class WorkspaceSetup
 
         // 2. Config file (workspace-scoped)
         return WorkspaceConfig.GetValue(ScriniaArtifactStore.WorkspaceRootPath, key);
-    }
-
-    private static string? FindWorkspaceRoot(string startDir)
-    {
-        var dir = new DirectoryInfo(startDir);
-        while (dir is not null)
-        {
-            if (Directory.Exists(Path.Combine(dir.FullName, ".scrinia")))
-                return dir.FullName;
-            dir = dir.Parent;
-        }
-        return null;
     }
 }
