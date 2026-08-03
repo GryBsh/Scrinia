@@ -93,6 +93,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        WorkspaceSetup.WarnOnOrphanStores();
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();

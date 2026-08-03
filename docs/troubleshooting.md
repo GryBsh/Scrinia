@@ -14,7 +14,7 @@ The CLI walks up from the current directory looking for the nearest enclosing gi
 
 The workspace root is the nearest enclosing git repository, found by walking up from the current directory looking for a `.git` entry and stopping at the first one. A project that isn't inside any git repository uses its own directory as the root, with no upward search. This means two unrelated projects only ever share a store if they share the same enclosing repository -- a project's memories never bind to a `.scrinia/` sitting in a distant ancestor directory just because that ancestor happens to have one.
 
-If `scri` finds a `.scrinia/` directory outside the root it resolved to, it prints a warning to stderr on writes, `setup`, and `serve` startup, naming the ignored store, the root actually in use, and a ready-to-run migration command pair, for example:
+If `scri` finds a `.scrinia/` directory outside the root it resolved to, it prints a warning to stderr on writes, `setup`, `serve` startup, and `restore` (the SessionStart hook, once per session), naming the ignored store, the root actually in use, and a ready-to-run migration command pair, for example:
 
 ```
 scrinia: ignoring store at C:\ancestor\.scrinia
@@ -29,6 +29,7 @@ to migrate its memories:
 - If memories from another project are showing up, confirm you're running `scri` (or your MCP client) from inside the intended project, and check stderr for an "ignoring store" warning naming the store actually being used.
 - If memories seem to have disappeared, look for an "ignoring store" warning pointing at the old location, then run the printed `scri bundle export` / `scri bundle import` pair to move those memories into the workspace root now in use.
 - To make resolution independent of the directory a command or MCP client happens to launch from, pass `--workspace-root /path/to/project` explicitly.
+- The warning only fires on `store`/`forget`/`append`/`compact`/`link`, `setup`, `serve` startup, and `restore` — never on read-only commands like `hint`, `recall`, `search`, `list`, or `show`. If you only ever run read commands, run `scri restore` (or any write) once to surface it.
 
 ### "Model not found" / Semantic search not working
 
