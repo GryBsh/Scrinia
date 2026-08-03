@@ -138,4 +138,58 @@ public static class PathRouter
 
         return null;
     }
+
+    /// <summary>
+    /// Maps an internal scope string ("local", "local:findings", "local:goal/G-5") to its
+    /// store directory. The single authority for scope-to-directory resolution.
+    /// </summary>
+    public static string ToStoreDir(string scope, string workspaceRoot)
+    {
+        if (scope == "local")
+            return Path.Combine(workspaceRoot, ".scrinia", "store");
+
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+        {
+            string topic = scope["local:".Length..];
+            if (IsV2PathScope(topic))
+                return Path.Combine(workspaceRoot, ".scrinia", MemoriesDir,
+                    topic.Replace('/', Path.DirectorySeparatorChar));
+            return Path.Combine(workspaceRoot, ".scrinia", "topics", topic);
+        }
+
+        throw new ArgumentException($"Unknown scope: {scope}");
+    }
+
+    /// <summary>
+    /// Determines whether a topic part from a "local:X" scope is a v2 multi-level
+    /// path (routed to .scrinia/memories/) vs a v1 namespace scope (routed to .scrinia/topics/).
+    /// v1 patterns: "agent", "entity/{topic}", "memory/{topic}" (single namespace + single topic).
+    /// v2 patterns: anything with more than 2 segments or a non-namespace first segment with slashes.
+    /// </summary>
+    internal static bool IsV2PathScope(string topicPart)
+    {
+        // No slash -> v1 flat topic (e.g. "arch", "patterns")
+        int firstSlash = topicPart.IndexOf('/');
+        if (firstSlash < 0) return false;
+
+        string prefix = topicPart[..firstSlash];
+
+        // "agent" namespace has no sub-slash in v1
+        if (prefix.Equals("agent", StringComparison.OrdinalIgnoreCase))
+        {
+            // agent/X is v1 (shouldn't normally happen since agent is flat), but
+            // agent/X/Y would be v2
+            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
+        }
+
+        // "entity/topic" or "memory/topic" with exactly one slash -> v1
+        if (MemoryNaming.ReservedNamespaceDirs.Contains(prefix))
+        {
+            // If there's another slash beyond "entity/topic", it's v2
+            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
+        }
+
+        // First segment is not a reserved namespace -> v2 (e.g. "goal/G-5/research")
+        return true;
+    }
 }

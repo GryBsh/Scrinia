@@ -173,4 +173,14 @@ public class PathRouterTests : IDisposable
         result!.Should().EndWith(Path.Combine(
             ".scrinia", "memories", "goal", "G-5", "phase", "01", "task", "fix.nmp2"));
     }
+
+    // ── ToStoreDir ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void ToStoreDir_MatchesFileMemoryStoreForEveryScopeShape()
+    {
+        var store = new FileMemoryStore(_root);
+        foreach (string scope in new[] { "local", "local:findings", "local:goal/G-5", "local:agent" })
+            PathRouter.ToStoreDir(scope, _root).Should().Be(store.GetStoreDirForScope(scope));
+    }
 }

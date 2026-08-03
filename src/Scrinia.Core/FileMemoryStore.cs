@@ -270,7 +270,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             string topicPart = scope["local:".Length..];
 
             // v2 path scope -> reconstruct as /path syntax
-            if (IsV2PathScope(topicPart))
+            if (PathRouter.IsV2PathScope(topicPart))
                 return $"/{topicPart}/{subject}";
 
             // v1 -> strip namespace prefix and output as path format
@@ -353,59 +353,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     // ── Paths ────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Determines whether a topic part from a "local:X" scope is a v2 multi-level
-    /// path (routed to .scrinia/memories/) vs a v1 namespace scope (routed to .scrinia/topics/).
-    /// v1 patterns: "agent", "entity/{topic}", "memory/{topic}" (single namespace + single topic).
-    /// v2 patterns: anything with more than 2 segments or a non-namespace first segment with slashes.
-    /// </summary>
-    private static bool IsV2PathScope(string topicPart)
-    {
-        // No slash -> v1 flat topic (e.g. "arch", "patterns")
-        int firstSlash = topicPart.IndexOf('/');
-        if (firstSlash < 0) return false;
-
-        string prefix = topicPart[..firstSlash];
-
-        // "agent" namespace has no sub-slash in v1
-        if (prefix.Equals("agent", StringComparison.OrdinalIgnoreCase))
-        {
-            // agent/X is v1 (shouldn't normally happen since agent is flat), but
-            // agent/X/Y would be v2
-            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
-        }
-
-        // "entity/topic" or "memory/topic" with exactly one slash -> v1
-        if (MemoryNaming.ReservedNamespaceDirs.Contains(prefix))
-        {
-            // If there's another slash beyond "entity/topic", it's v2
-            return topicPart.IndexOf('/', firstSlash + 1) >= 0;
-        }
-
-        // First segment is not a reserved namespace -> v2 (e.g. "goal/G-5/research")
-        return true;
-    }
-
-    public string GetStoreDirForScope(string scope)
-    {
-        if (scope == "local")
-            return Path.Combine(_workspaceRoot, ".scrinia", "store");
-
-        if (scope.StartsWith("local:", StringComparison.Ordinal))
-        {
-            string topic = scope["local:".Length..];
-
-            // v2 path scope: topic contains "/" that isn't a v1 namespace prefix
-            // (v1 namespaces are "entity/X", "memory/X", "agent" — exactly one slash
-            // with a recognised prefix). Multi-level paths use .scrinia/memories/.
-            if (IsV2PathScope(topic))
-                return Path.Combine(_workspaceRoot, ".scrinia", "memories", topic.Replace('/', Path.DirectorySeparatorChar));
-
-            return Path.Combine(_workspaceRoot, ".scrinia", "topics", topic);
-        }
-
-        throw new ArgumentException($"Unknown scope: {scope}");
-    }
+    public string GetStoreDirForScope(string scope) => PathRouter.ToStoreDir(scope, _workspaceRoot);
 
     public string ArtifactPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".nmp2");
@@ -454,7 +402,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string topicPart = scope["local:".Length..];
 
         // v2 path scopes get their own fallback chain via ResolveV2LegacyDir
-        if (IsV2PathScope(topicPart))
+        if (PathRouter.IsV2PathScope(topicPart))
             return ResolveV2LegacyDir(scope);
 
         // Only applies to namespaced scopes (containing a '/')
@@ -492,7 +440,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return null;
 
         string topicPart = scope["local:".Length..];
-        if (!IsV2PathScope(topicPart))
+        if (!PathRouter.IsV2PathScope(topicPart))
             return null;
 
         // The leaf segment of the v2 topic path is the most likely v1 topic name.
@@ -527,7 +475,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             return null;
 
         string topicPart = scope["local:".Length..];
-        if (!IsV2PathScope(topicPart))
+        if (!PathRouter.IsV2PathScope(topicPart))
             return null;
 
         // Build a full v2 path from scope + subject and let PathRouter find legacy
