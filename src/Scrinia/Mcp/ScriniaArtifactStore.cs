@@ -485,32 +485,39 @@ internal static partial class ScriniaArtifactStore
         Directory.CreateDirectory(storeDir);
     }
 
-    public static void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
+    /// <summary>
+    /// Runs <paramref name="body"/> under the scope's exclusive file lock, materialising the
+    /// store first and handing the body the resolved store directory. Every write goes through
+    /// here so that materialisation cannot be separated from taking the write lock.
+    ///
+    /// <para>Not reentrant: the underlying lock is exclusive, so a body must not call another
+    /// method that takes the same scope's lock.</para>
+    /// </summary>
+    private static T WithMaterializedWrite<T>(string scope, Func<string, T> body)
     {
         string storeDir = GetStoreDirForScope(scope);
         EnsureMaterialized(storeDir);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        WriteSidecars(entries, storeDir);
+        return body(storeDir);
     }
 
-    public static void Upsert(ArtifactEntry entry, string scope = "local")
-    {
-        string storeDir = GetStoreDirForScope(scope);
-        EnsureMaterialized(storeDir);
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        WriteSidecar(entry, storeDir);
-    }
+    private static void WithMaterializedWrite(string scope, Action<string> body) =>
+        WithMaterializedWrite(scope, storeDir => { body(storeDir); return true; });
 
-    public static bool Remove(string name, string scope = "local")
-    {
-        string storeDir = GetStoreDirForScope(scope);
-        EnsureMaterialized(storeDir);
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
-        if (!File.Exists(metaPath)) return false;
-        File.Delete(metaPath);
-        return true;
-    }
+    public static void SaveIndex(List<ArtifactEntry> entries, string scope = "local") =>
+        WithMaterializedWrite(scope, storeDir => WriteSidecars(entries, storeDir));
+
+    public static void Upsert(ArtifactEntry entry, string scope = "local") =>
+        WithMaterializedWrite(scope, storeDir => WriteSidecar(entry, storeDir));
+
+    public static bool Remove(string name, string scope = "local") =>
+        WithMaterializedWrite(scope, storeDir =>
+        {
+            string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
+            if (!File.Exists(metaPath)) return false;
+            File.Delete(metaPath);
+            return true;
+        });
 
     public static List<ScopedArtifact> ListScoped(string? scopes = null)
     {
@@ -610,7 +617,7 @@ internal static partial class ScriniaArtifactStore
                 return false;
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+            EnsureMaterialized(Path.GetDirectoryName(destPath)!);
             File.WriteAllText(destPath, entry.Artifact);
 
             var destEntry = new ArtifactEntry(
@@ -683,7 +690,7 @@ internal static partial class ScriniaArtifactStore
             return false;
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(destPathP)!);
+        EnsureMaterialized(Path.GetDirectoryName(destPathP)!);
         File.Copy(sourcePath, destPathP, overwrite);
 
         ArtifactEntry? sourceEntry = LoadIndex(srcScope).FirstOrDefault(e => e.Name == srcSubject);
@@ -1015,36 +1022,33 @@ internal static partial class ScriniaArtifactStore
 
     /// <summary>Imports entries and artifacts into a topic scope from raw data.</summary>
     public static void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite)
-    {
-        string storeDir = GetStoreDirForScope(topicScope);
-        EnsureMaterialized(storeDir);
-
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(topicScope));
-        var existingEntries = LoadIndexFrom(storeDir);
-
-        foreach (var entry in entries)
+        Dictionary<string, string> artifactContents, bool overwrite) =>
+        WithMaterializedWrite(topicScope, storeDir =>
         {
-            bool exists = existingEntries.Any(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
-            if (exists && !overwrite)
-                continue;
+            var existingEntries = LoadIndexFrom(storeDir);
 
-            // Write artifact file
-            if (artifactContents.TryGetValue(entry.Name, out string? content))
+            foreach (var entry in entries)
             {
-                string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
-                File.WriteAllText(filePath, content);
+                bool exists = existingEntries.Any(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+                if (exists && !overwrite)
+                    continue;
+
+                // Write artifact file
+                if (artifactContents.TryGetValue(entry.Name, out string? content))
+                {
+                    string filePath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".nmp2");
+                    File.WriteAllText(filePath, content);
+                }
+
+                // Update index
+                var updatedEntry = entry with
+                {
+                    Uri = ArtifactUri(entry.Name, topicScope),
+                    CreatedAt = DateTimeOffset.UtcNow
+                };
+
+                // Write sidecar metadata
+                WriteSidecar(updatedEntry, storeDir);
             }
-
-            // Update index
-            var updatedEntry = entry with
-            {
-                Uri = ArtifactUri(entry.Name, topicScope),
-                CreatedAt = DateTimeOffset.UtcNow
-            };
-
-            // Write sidecar metadata
-            WriteSidecar(updatedEntry, storeDir);
-        }
-    }
+        });
 }

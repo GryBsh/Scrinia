@@ -140,6 +140,17 @@ public sealed class ScriniaArtifactStoreTests
         loaded.Should().Contain(e => e.Name == "beta");
     }
 
+    [Fact]
+    public void EveryWriteMaterializesTheGitIgnore()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+        string gitIgnore = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
+
+        ScriniaArtifactStore.Upsert(MakeEntry("write-materializes"));
+
+        Assert.True(File.Exists(gitIgnore));
+    }
+
     // ── Remove ────────────────────────────────────────────────────────────────
 
     [Fact]
