@@ -212,7 +212,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         AtomicWriteAllText(gitIgnorePath, """
             # Lock files (runtime artifacts from cross-process file locking)
-            **/.lock
+            **/*.lock
 
             # Export bundles (generated, can be re-exported)
             exports/
@@ -222,6 +222,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             # Temporary files from interrupted writes
             **/*.tmp
+
+            # Vector indexes (derived from topic content; rebuild with `scri reindex`)
+            embeddings/
 
             # Consolidation bookkeeping (rebuilt from sidecar state on next run)
             .last-consolidation

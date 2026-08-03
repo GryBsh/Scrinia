@@ -74,4 +74,17 @@ public class LazyStoreCreationTests : IDisposable
 
         Assert.Contains(entries, e => e.Name == "first");
     }
+
+    [Fact]
+    public void GeneratedGitIgnore_CoversSuffixedLocksAndVectorIndexes()
+    {
+        var store = new FileMemoryStore(_tempDir);
+        store.Upsert(new ArtifactEntry("first", "file://first", 0, 0, DateTimeOffset.UtcNow));
+
+        string[] lines = File.ReadAllLines(Path.Combine(ScriniaDir, ".gitignore"));
+
+        Assert.Contains("**/*.lock", lines);
+        Assert.Contains("embeddings/", lines);
+        Assert.DoesNotContain("**/.lock", lines);
+    }
 }
