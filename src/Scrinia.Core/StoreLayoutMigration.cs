@@ -32,6 +32,21 @@ public static class StoreLayoutMigration
 
     public sealed record Result(int Moved, int Conflicts, bool Ran, string? BackupPath);
 
+    /// <summary>
+    /// One planned move: an absolute <paramref name="Source"/> path to an absolute
+    /// <paramref name="Target"/> path, tagged with the namespace rank used to order (and thereby
+    /// deterministically resolve collisions in) the plan — see <see cref="OrderPlan"/>.
+    /// Internal (not private) so <see cref="OrderPlan"/> is directly unit-testable: ordering
+    /// depends on <c>Directory.EnumerateFiles</c>' enumeration order for its input, which .NET
+    /// does not specify and a filesystem-driven test cannot reliably disagree with, so the
+    /// ordering logic needs to be exercised directly with deliberately adversarial input.
+    /// </summary>
+    /// <param name="Source">Absolute path of the file as it currently sits in the legacy layout.</param>
+    /// <param name="Target">Absolute path of where it will land under <c>memories/</c>.</param>
+    /// <param name="NamespaceRank">0 for non-namespaced (flat topics, <c>store/</c>,
+    /// <c>agent/</c>, <c>skills/</c>), 1 for <c>entity/</c>, 2 for <c>memory/</c>.</param>
+    internal readonly record struct PlanEntry(string Source, string Target, int NamespaceRank);
+
     /// <summary>True when any legacy root still holds files. Three-stat fast path.</summary>
     public static bool NeedsMigration(string workspaceRoot)
     {
@@ -142,22 +157,13 @@ public static class StoreLayoutMigration
 
     /// <summary>
     /// Scans every legacy root and splits what it finds into two lists: the move plan (returned
-    /// first) and known-transient artifacts to delete outright (returned second — see
-    /// <see cref="IsTransientArtifact"/>). Move-plan entries carry a namespace rank used to order
-    /// (and thereby deterministically resolve collisions in) the plan: 0 for non-namespaced
-    /// entries (flat topics, <c>store/</c>, <c>agent/</c>, <c>skills/</c>), 1 for <c>entity/</c>,
-    /// 2 for <c>memory/</c>. Lower ranks are ordered first, so when two sources map to the same
-    /// target, the higher-ranked (more-namespaced) loser sees the target already occupied and is
-    /// quarantined instead of winning by whatever order <c>Directory.EnumerateFiles</c> happens
-    /// to produce (unspecified by .NET). A final tiebreak on the full source path makes the
-    /// ordering — and therefore which entry wins — fully deterministic for identical input, even
-    /// within the same rank (e.g. two different <c>memory/</c> topics can never collide with each
-    /// other, but this keeps the sort well-defined regardless).
+    /// first, ordered by <see cref="OrderPlan"/>) and known-transient artifacts to delete outright
+    /// (returned second — see <see cref="IsTransientArtifact"/>). Each move-plan entry carries the
+    /// <see cref="PlanEntry.NamespaceRank"/> that <see cref="OrderPlan"/> sorts on.
     /// </summary>
-    private static (List<(string Source, string Target, int NamespaceRank)> Plan, List<string> TransientFiles)
-        BuildPlan(string scriniaDir)
+    private static (List<PlanEntry> Plan, List<string> TransientFiles) BuildPlan(string scriniaDir)
     {
-        var plan = new List<(string Source, string Target, int NamespaceRank)>();
+        var plan = new List<PlanEntry>();
         var transientFiles = new List<string>();
         string memoriesDir = Path.Combine(scriniaDir, "memories");
 
@@ -170,7 +176,7 @@ public static class StoreLayoutMigration
                 if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
                 string relPath = Path.GetRelativePath(storeDir, file).Replace('\\', '/');
                 string target = Path.Combine(memoriesDir, relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add((file, target, NamespaceRank: 0));
+                plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
             }
         }
 
@@ -187,7 +193,7 @@ public static class StoreLayoutMigration
                 int rank = relPath.StartsWith("entity/", StringComparison.OrdinalIgnoreCase) ? 1
                     : relPath.StartsWith("memory/", StringComparison.OrdinalIgnoreCase) ? 2
                     : 0;
-                plan.Add((file, target, rank));
+                plan.Add(new PlanEntry(file, target, rank));
             }
         }
 
@@ -200,7 +206,7 @@ public static class StoreLayoutMigration
                 if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
                 string relPath = Path.GetRelativePath(agentDir, file).Replace('\\', '/');
                 string target = Path.Combine(memoriesDir, "agent", relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add((file, target, NamespaceRank: 0));
+                plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
             }
         }
 
@@ -213,22 +219,27 @@ public static class StoreLayoutMigration
                 if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
                 string relPath = Path.GetRelativePath(skillsDir, file).Replace('\\', '/');
                 string target = Path.Combine(memoriesDir, "skill", relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add((file, target, NamespaceRank: 0));
+                plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
             }
         }
 
-        // Deterministic ordering: rank ascending (non-namespaced, then entity/, then memory/),
-        // full source path as the final tiebreak. Not just a stable sort over discovery order —
-        // Directory.EnumerateFiles order is unspecified by .NET, so without this tiebreak two
-        // namespaced entries colliding on the same target (e.g. entity/skill/x and memory/skill/x
-        // after skill's historical reclassification, see MemoryNaming.EntityTopics) would pick an
-        // arbitrary, unrepeatable winner.
-        var ordered = plan
-            .OrderBy(p => p.NamespaceRank)
-            .ThenBy(p => p.Source, StringComparer.Ordinal)
-            .ToList();
-        return (ordered, transientFiles);
+        return (OrderPlan(plan), transientFiles);
     }
+
+    /// <summary>
+    /// Deterministic ordering: <see cref="PlanEntry.NamespaceRank"/> ascending (non-namespaced,
+    /// then <c>entity/</c>, then <c>memory/</c>), full source path as the final tiebreak. Not just
+    /// a stable sort over discovery order — <c>Directory.EnumerateFiles</c>' enumeration order is
+    /// unspecified by .NET, so without this explicit tiebreak two namespaced entries colliding on
+    /// the same target (e.g. <c>entity/skill/x</c> and <c>memory/skill/x</c>, realistic after
+    /// skill's historical reclassification — see <c>MemoryNaming.EntityTopics</c>) would pick an
+    /// arbitrary, unrepeatable winner. Extracted as its own method (rather than inlined in
+    /// <see cref="BuildPlan"/>) so it can be unit-tested directly against adversarial input that
+    /// disagrees with whatever order the filesystem happens to enumerate in — see
+    /// <c>StoreLayoutMigrationOrderingTests</c> in the test project.
+    /// </summary>
+    internal static List<PlanEntry> OrderPlan(IEnumerable<PlanEntry> entries) =>
+        entries.OrderBy(e => e.NamespaceRank).ThenBy(e => e.Source, StringComparer.Ordinal).ToList();
 
     /// <summary>
     /// True for artifacts that carry no committed data and must be deleted rather than moved:
@@ -279,7 +290,7 @@ public static class StoreLayoutMigration
     /// <summary>Counts how many plan entries would lose a collision (i.e. share a target with
     /// an entry earlier in the plan). Used to report conflicts on the dry-run path without
     /// actually moving anything.</summary>
-    private static int CountCollisions(List<(string Source, string Target, int NamespaceRank)> plan)
+    private static int CountCollisions(List<PlanEntry> plan)
     {
         var seenTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int collisions = 0;

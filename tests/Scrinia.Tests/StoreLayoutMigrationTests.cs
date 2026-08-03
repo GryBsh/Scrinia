@@ -167,3 +167,70 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         StoreLayoutMigration.NeedsMigration(_root).Should().BeFalse();
     }
 }
+
+/// <summary>
+/// Unit-tests <see cref="StoreLayoutMigration.OrderPlan"/> directly against deliberately
+/// adversarial (reversed) input, constructing <see cref="StoreLayoutMigration.PlanEntry"/>
+/// instances by hand rather than driving the order through the filesystem.
+///
+/// <para>This is the regression guard the end-to-end
+/// <see cref="StoreLayoutMigrationTests.Migrate_Collision_EntityBeforeMemory_Deterministic"/>
+/// cannot be: on NTFS, <c>Directory.EnumerateFiles</c> happens to return <c>entity/...</c> before
+/// <c>memory/...</c> alphabetically regardless of creation order, so that test would pass even
+/// against the pre-fix stable sort over a single "is namespaced" boolean — the natural
+/// enumeration order coincidentally agrees with the intended rank. Supplying entries directly, in
+/// the wrong order, is the only way to prove the ordering logic itself enforces the rank rather
+/// than merely preserving whatever order happened to be handed to it.</para>
+/// </summary>
+public sealed class StoreLayoutMigrationOrderingTests
+{
+    [Fact]
+    public void OrderPlan_EntityRanksBeforeMemory_EvenWhenSuppliedInReverse()
+    {
+        // Deliberately supplied memory-first, entity-second — the wrong order — so only a real
+        // rank comparison (not a stable sort preserving input order) can produce entity first.
+        var reversed = new[]
+        {
+            new StoreLayoutMigration.PlanEntry(
+                @"C:\ws\.scrinia\topics\memory\skill\qa.nmp2",
+                @"C:\ws\.scrinia\memories\skill\qa.nmp2",
+                NamespaceRank: 2),
+            new StoreLayoutMigration.PlanEntry(
+                @"C:\ws\.scrinia\topics\entity\skill\qa.nmp2",
+                @"C:\ws\.scrinia\memories\skill\qa.nmp2",
+                NamespaceRank: 1),
+        };
+
+        var ordered = StoreLayoutMigration.OrderPlan(reversed);
+
+        ordered.Should().HaveCount(2);
+        ordered[0].NamespaceRank.Should().Be(1);
+        ordered[0].Source.Should().Contain("entity");
+        ordered[1].NamespaceRank.Should().Be(2);
+        ordered[1].Source.Should().Contain("memory");
+    }
+
+    [Fact]
+    public void OrderPlan_SameRank_BreaksTiesOnOrdinalSourcePath_EvenWhenSuppliedInReverse()
+    {
+        // Same NamespaceRank on both entries — only the ThenBy(Source) tiebreak can produce
+        // ordinal order here. Supplied 'zzz' before 'aaa', the wrong order.
+        var reversed = new[]
+        {
+            new StoreLayoutMigration.PlanEntry(
+                @"C:\ws\.scrinia\topics\zzz\file.nmp2",
+                @"C:\ws\.scrinia\memories\zzz\file.nmp2",
+                NamespaceRank: 0),
+            new StoreLayoutMigration.PlanEntry(
+                @"C:\ws\.scrinia\topics\aaa\file.nmp2",
+                @"C:\ws\.scrinia\memories\aaa\file.nmp2",
+                NamespaceRank: 0),
+        };
+
+        var ordered = StoreLayoutMigration.OrderPlan(reversed);
+
+        ordered.Should().HaveCount(2);
+        ordered[0].Source.Should().Be(@"C:\ws\.scrinia\topics\aaa\file.nmp2");
+        ordered[1].Source.Should().Be(@"C:\ws\.scrinia\topics\zzz\file.nmp2");
+    }
+}
