@@ -248,10 +248,16 @@ public class WorkspaceRootTests : IDisposable
     {
         string store = Mkdir(".scrinia");
         Directory.CreateDirectory(Path.Combine(store, "topics", "agent"));
+        Directory.CreateDirectory(Path.Combine(store, "topics", "agent", "session-log"));
+        Directory.CreateDirectory(Path.Combine(store, "topics", "entity", "skill"));
 
         var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
 
-        Assert.Contains("agent", topics);
+        // Pins two behaviours at once: "agent" is reported as itself and NOT descended into
+        // (its "session-log" child must not appear), while "entity" IS descended into (its
+        // "skill" child appears, not the namespace name itself). The old flat top-level
+        // enumeration would return ["agent", "entity"] instead and fail this.
+        Assert.Equal(["agent", "skill"], topics);
     }
 
     [Fact]
@@ -259,10 +265,13 @@ public class WorkspaceRootTests : IDisposable
     {
         string store = Mkdir(".scrinia");
         Directory.CreateDirectory(Path.Combine(store, "topics", "custom-notes"));
+        Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "api"));
 
         var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
 
-        Assert.Contains("custom-notes", topics);
+        // The old flat top-level enumeration would return ["custom-notes", "memory"] instead
+        // (reporting the namespace directory name rather than descending into it) and fail this.
+        Assert.Equal(["api", "custom-notes"], topics);
     }
 
     [Fact]
@@ -274,7 +283,10 @@ public class WorkspaceRootTests : IDisposable
 
         var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
 
-        Assert.Single(topics, t => t == "api");
+        // The old flat top-level enumeration would return ["api", "memory"] instead — asserting
+        // only that a single "api" entry is present would still pass against that; asserting
+        // the whole list catches the extra "memory" entry too.
+        Assert.Equal(["api"], topics);
     }
 
     [Fact]
