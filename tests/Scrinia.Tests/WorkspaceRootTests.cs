@@ -126,4 +126,52 @@ public class WorkspaceRootTests : IDisposable
         Assert.Equal(b, rootB);
         Assert.NotEqual(rootA, rootB);
     }
+
+    [Fact]
+    public void FindOrphanStores_ReportsAncestorStoreAboveRoot()
+    {
+        string orphan = Path.Combine(_tempDir, ".scrinia");
+        Directory.CreateDirectory(orphan);
+        string repo = Mkdir("container", "repo");
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+
+        var found = WorkspaceRoot.FindOrphanStores(repo, repo);
+
+        Assert.Contains(orphan, found);
+    }
+
+    [Fact]
+    public void FindOrphanStores_NeverReportsTheResolvedRootsOwnStore()
+    {
+        string repo = Mkdir("repo");
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+        Directory.CreateDirectory(Path.Combine(repo, ".scrinia"));
+
+        var found = WorkspaceRoot.FindOrphanStores(repo, repo);
+
+        Assert.DoesNotContain(Path.Combine(repo, ".scrinia"), found);
+    }
+
+    [Fact]
+    public void FindOrphanStores_IsEmptyForACleanNewProject()
+    {
+        string repo = Mkdir("repo");
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+
+        Assert.Empty(WorkspaceRoot.FindOrphanStores(repo, repo));
+    }
+
+    [Fact]
+    public void FindOrphanStores_ReportsCwdStoreWhenCwdIsBelowRoot()
+    {
+        string repo = Mkdir("repo");
+        Directory.CreateDirectory(Path.Combine(repo, ".git"));
+        string sub = Mkdir("repo", "src");
+        string cwdStore = Path.Combine(sub, ".scrinia");
+        Directory.CreateDirectory(cwdStore);
+
+        var found = WorkspaceRoot.FindOrphanStores(repo, sub);
+
+        Assert.Contains(cwdStore, found);
+    }
 }

@@ -47,4 +47,35 @@ public static class WorkspaceRoot
         string git = Path.Combine(dir, ".git");
         return Directory.Exists(git) || File.Exists(git);
     }
+
+    /// <summary>
+    /// Returns <c>.scrinia</c> directories that resolution passed over: every ancestor strictly
+    /// above <paramref name="root"/>, plus <paramref name="startDir"/> itself when it differs
+    /// from the root. The root's own store is excluded — it is the one being used.
+    /// </summary>
+    public static IReadOnlyList<string> FindOrphanStores(string root, string startDir)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        ArgumentException.ThrowIfNullOrWhiteSpace(startDir);
+
+        string fullRoot = Path.GetFullPath(root);
+        string fullStart = Path.GetFullPath(startDir);
+        var found = new List<string>();
+
+        if (!string.Equals(fullStart, fullRoot, StringComparison.OrdinalIgnoreCase))
+            AddIfStore(fullStart, found);
+
+        var above = new DirectoryInfo(fullRoot).Parent;
+        for (var dir = above; dir is not null; dir = dir.Parent)
+            AddIfStore(dir.FullName, found);
+
+        return found;
+    }
+
+    private static void AddIfStore(string dir, List<string> into)
+    {
+        string store = Path.Combine(dir, ".scrinia");
+        if (Directory.Exists(store) && !into.Contains(store, StringComparer.OrdinalIgnoreCase))
+            into.Add(store);
+    }
 }
