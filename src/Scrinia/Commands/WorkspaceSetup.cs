@@ -31,6 +31,13 @@ internal static class WorkspaceSetup
     /// wired into any production path.</summary>
     internal static void OverrideRoot(string? path) => _rootOverride.Value = path;
 
+    /// <summary>
+    /// The configured store for this process. Throws if <see cref="Configure"/> has not run.
+    /// </summary>
+    internal static IMemoryStore Store =>
+        MemoryStoreContext.Current ?? throw new InvalidOperationException(
+            "WorkspaceSetup.Configure must be called before reading Store.");
+
     internal static void Configure(string? workspaceRoot)
     {
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());

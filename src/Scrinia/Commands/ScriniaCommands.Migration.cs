@@ -415,7 +415,7 @@ public partial class ScriniaCommands
                 try
                 {
                     await CompactEntryToSingleChunk(item, store, cancellationToken);
-                    compacted.Add(ScriniaArtifactStore.FormatQualifiedName(item.Scope, item.Entry.Name));
+                    compacted.Add(WorkspaceSetup.Store.FormatQualifiedName(item.Scope, item.Entry.Name));
                 }
                 catch (Exception ex)
                 {
@@ -452,7 +452,7 @@ public partial class ScriniaCommands
         {
             string verb = dryRun ? "would compact" : "compacted";
             sb.AppendLine($"[green]{verb} {compactionCandidates.Count} multi-chunk session{(compactionCandidates.Count == 1 ? "" : "s")} older than {sessionAgeDays}d[/]");
-            foreach (var name in (dryRun ? compactionCandidates.Select(c => ScriniaArtifactStore.FormatQualifiedName(c.Scope, c.Entry.Name)) : compacted).Take(10))
+            foreach (var name in (dryRun ? compactionCandidates.Select(c => WorkspaceSetup.Store.FormatQualifiedName(c.Scope, c.Entry.Name)) : compacted).Take(10))
                 sb.AppendLine($"  [dim]•[/] {Markup.Escape(name)}");
             int total = dryRun ? compactionCandidates.Count : compacted.Count;
             if (total > 10)
