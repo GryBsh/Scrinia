@@ -161,6 +161,49 @@ public sealed class AgentHookSetupTests
     }
 
     [Fact]
+    public void StampWorkspaceRoot_AppendsQuotedRoot()
+    {
+        var stamped = AgentHookSetup.StampWorkspaceRoot(
+            new HookSpec("UserPromptSubmit", "scri hint"), @"C:/repos/proj");
+
+        stamped.Command.Should().Be(@"scri hint --workspace-root ""C:/repos/proj""");
+        stamped.EventName.Should().Be("UserPromptSubmit");
+    }
+
+    [Fact]
+    public void StampWorkspaceRoot_HandlesRootsContainingSpaces()
+    {
+        var stamped = AgentHookSetup.StampWorkspaceRoot(
+            new HookSpec("SessionStart", "scri restore --hook"), @"C:/Program Files/proj");
+
+        stamped.Command.Should().Contain(@"--workspace-root ""C:/Program Files/proj""");
+    }
+
+    [Fact]
+    public void StampWorkspaceRoot_TrailingBackslash_LeavesNoBackslashBeforeClosingQuote()
+    {
+        // A trailing backslash would sit directly before the closing quote in the emitted
+        // command. A shell that treats backslash as an escape character reads \" as an
+        // escaped literal quote rather than the delimiter that closes the argument, so the
+        // whole command fails to parse.
+        var stamped = AgentHookSetup.StampWorkspaceRoot(
+            new HookSpec("UserPromptSubmit", "scri hint"), @"C:\repos\proj\");
+
+        stamped.Command.Should().Be(@"scri hint --workspace-root ""C:/repos/proj""");
+    }
+
+    [Fact]
+    public void StampWorkspaceRoot_DriveRoot_StaysValid()
+    {
+        // Trimming the trailing separator off a bare drive root would leave "C:", which is
+        // not a valid root on its own, so a single trailing slash must be kept for this case.
+        var stamped = AgentHookSetup.StampWorkspaceRoot(
+            new HookSpec("UserPromptSubmit", "scri hint"), @"C:\");
+
+        stamped.Command.Should().Be(@"scri hint --workspace-root ""C:/""");
+    }
+
+    [Fact]
     public async Task UserScopeInstall_DoesNotPinAWorkspaceRoot()
     {
         // A user-scope hook applies to every project on the machine, so pinning a fixed

@@ -41,9 +41,25 @@ public static class AgentHookSetup
     /// Pins a hook command to a workspace root so the hook does not depend on the directory the
     /// agent CLI happens to launch from. Project scope only — a user-scope hook applies to every
     /// project, and a fixed root there would point all of them at one store.
+    ///
+    /// <para>The root is normalized before being embedded, the same way as
+    /// <see cref="ResolveScriExecutablePath"/>: backslashes become forward slashes, and any
+    /// trailing slash is trimmed. A path ending in a backslash — a drive root like <c>C:\</c>,
+    /// or any path assembled with a trailing separator — would otherwise sit right before the
+    /// closing quote in the emitted command; a shell that treats backslash as an escape
+    /// character reads <c>\"</c> as an escaped literal quote rather than the delimiter that
+    /// closes the argument, so the command fails to parse. A bare drive letter and colon
+    /// (<c>C:</c>) is not a valid root on its own, so that one case keeps a single trailing
+    /// slash rather than losing it entirely.</para>
     /// </summary>
-    internal static HookSpec StampWorkspaceRoot(HookSpec spec, string workspaceRoot) =>
-        spec with { Command = $"{spec.Command} --workspace-root \"{workspaceRoot}\"" };
+    internal static HookSpec StampWorkspaceRoot(HookSpec spec, string workspaceRoot)
+    {
+        string normalized = workspaceRoot.Replace('\\', '/').TrimEnd('/');
+        if (normalized.EndsWith(':'))
+            normalized += '/';
+
+        return spec with { Command = $"{spec.Command} --workspace-root \"{normalized}\"" };
+    }
 
     private static IReadOnlyList<HookSpec> BuildDefaultHookSpecs()
     {
