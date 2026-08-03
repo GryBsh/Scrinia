@@ -58,6 +58,17 @@ public sealed class ScriniaArtifactStoreTests
     }
 
     [Fact]
+    public void LoadIndex_OnAbsentStoreDirectory_ReturnsEmptyAndCreatesNothing()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+
+        var entries = ScriniaArtifactStore.LoadIndex();
+
+        Assert.Empty(entries);
+        Assert.False(Directory.Exists(scope.TempDir));
+    }
+
+    [Fact]
     public void LoadIndex_EmptyIndexFile_ReturnsEmptyList()
     {
         using var scope = new TestHelpers.StoreScope();
