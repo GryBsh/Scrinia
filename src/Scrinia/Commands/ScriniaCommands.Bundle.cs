@@ -142,6 +142,7 @@ public partial class ScriniaCommands
         // Determine output path
         string exportsDir = Path.Combine(ScriniaArtifactStore.GetStoreDirForScope("local"), "..", "exports");
         exportsDir = Path.GetFullPath(exportsDir);
+        FileMemoryStore.EnsureGitIgnore(ScriniaArtifactStore.WorkspaceRootPath);
         Directory.CreateDirectory(exportsDir);
 
         if (!TryResolveBundlePath(exportsDir, output, out string bundlePath, out string? pathError, sanitizedTopic))

@@ -279,6 +279,7 @@ public sealed partial class ScriniaMcpTools
                 return ResponseBuilder.Error(
                     "Invalid agent config name.", ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.").ToYaml();
+            FileMemoryStore.EnsureGitIgnore(Path.GetDirectoryName(baseDir)!);
             Directory.CreateDirectory(agentDir);
 
             ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
