@@ -864,8 +864,35 @@ rtk git add src/Scrinia.Core/StoreLayoutMigration.cs tests/Scrinia.Tests/StoreLa
 **Interfaces:**
 - Consumes: `StoreLayoutMigration.{NeedsMigration,MigrateIfNeeded}` (Task 6), `PathRouter.ToStoreDir` (Task 5).
 - Produces: `private string FileMemoryStore.MemoriesRoot` — the gated choke point every path computation flows through.
+- Produces: `MemoryNaming.BuildScopedTopicScope(string topic)` returning `$"local:{topic}"` for **every** topic — moved here from Task 8, see the correction below.
 
 The legacy read-fallback is still present after this task; Task 8 removes it. Keeping the two steps separate means each ends green.
+
+> **PLAN CORRECTION (applied mid-execution, after the Task 6 review).** The
+> `BuildScopedTopicScope` flattening was originally scheduled in Task 8. That was
+> backwards and would have left this task in a broken intermediate state.
+>
+> `BuildScopedTopicScope` currently returns `"local:entity/skill"` for skill topics.
+> Once this task points `ToStoreDir` at `memories/`, that scope resolves to
+> `.scrinia/memories/entity/skill/` — but `StoreLayoutMigration` maps
+> `topics/entity/skill/` to `.scrinia/memories/skill/`. The store would look where the
+> migration did not put the files. `StoreLayoutMigration.MoveRenamedVectorDirs`
+> compounds it by renaming `embeddings/local/entity/skill/` to `embeddings/local/skill/`
+> while `VectorStore.ScopeToRelativeDir` still derives the old path from the unflattened
+> scope string, silently orphaning the vectors.
+>
+> **Therefore this task must also**, before wiring the trigger:
+> - Flatten `MemoryNaming.BuildScopedTopicScope` to `=> $"local:{topic}";` for every
+>   topic, including `skill` and `agent`.
+> - Convert the two tests that pin the old namespaced behaviour —
+>   `BuildScopedTopicScope_EntityTopic_RoutesToEntityNamespace` and
+>   `BuildScopedTopicScope_UserTopic_RoutesToMemoryNamespace` — which Task 8's
+>   conversion table previously owned. Task 8's count drops from 13 to 11
+>   accordingly.
+>
+> Deleting `StripNamespacePrefix`, `ReservedNamespaceDirs`, and `FormatRoundTrip`
+> stays in Task 8: with flat scopes those become no-ops that still compile, so their
+> removal is cleanup rather than a prerequisite.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -997,7 +1024,15 @@ rtk git add -A src/ tests/ && rtk git commit -m "feat(core): route every memory 
 - Consumes: Task 7.
 - Produces: `MemoryNaming.BuildScopedTopicScope(string topic)` now returns `$"local:{topic}"` for **every** topic including `skill` and `agent`. `FormatRoundTripQualifiedName` no longer exists — callers use `FormatQualifiedName`.
 
-- [ ] **Step 1: Convert the 13 fallback tests**
+- [ ] **Step 1: Convert the 11 remaining fallback tests**
+
+> **PLAN CORRECTION (applied mid-execution, after the Task 6 review).**
+> `BuildScopedTopicScope_{Entity,User}Topic_*` moved to **Task 7**, along with the
+> `BuildScopedTopicScope` flattening they pin — that flattening is a prerequisite for
+> Task 7's `ToStoreDir` switch, not cleanup for this task. See the correction note in
+> Task 7. **This task converts 11 tests, not 13.** The `Produces` line above is
+> likewise satisfied by Task 7 for `BuildScopedTopicScope`; this task still removes
+> `FormatRoundTripQualifiedName`.
 
 In `tests/Scrinia.Tests/FileMemoryStoreTests.cs`, each of these asserts that a *read* merges legacy locations. Rewrite each to assert that *migration moved the file* and the entry is then found normally.
 
