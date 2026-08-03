@@ -185,4 +185,19 @@ public class WorkspaceRootTests : IDisposable
 
         Assert.Contains(cwdStore, found);
     }
+
+    [Fact]
+    public void OrphanWarning_NamesBothStoresAndAConcreteMigrationCommand()
+    {
+        string text = Scrinia.Commands.WorkspaceSetup.FormatOrphanWarning(
+            orphan: @"C:\.scrinia",
+            root: @"C:\repos\proj",
+            topics: ["agent", "patterns"]);
+
+        Assert.Contains(@"C:\.scrinia", text);
+        Assert.Contains(@"C:\repos\proj", text);
+        Assert.Contains("scri bundle export", text);
+        Assert.Contains("scri bundle import", text);
+        Assert.Contains("agent,patterns", text);
+    }
 }

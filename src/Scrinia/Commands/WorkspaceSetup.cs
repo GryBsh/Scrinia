@@ -26,6 +26,43 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
+    /// Builds the message shown when a store exists somewhere resolution deliberately did not
+    /// look. Separated from the write so the wording is testable without capturing the console.
+    /// </summary>
+    internal static string FormatOrphanWarning(string orphan, string root, IReadOnlyList<string> topics)
+    {
+        string topicList = topics.Count > 0 ? string.Join(",", topics) : "<topics>";
+        return $"""
+            scrinia: ignoring store at {orphan}
+                     using {root}
+
+            to migrate its memories:
+              scri bundle export --workspace-root "{Path.GetDirectoryName(orphan)}" --topics {topicList}
+              scri bundle import --workspace-root "{root}" --path <file>
+            """;
+    }
+
+    /// <summary>
+    /// Reports stores that root resolution passed over. Called only from commands that already
+    /// do real work — never from the per-prompt hint path.
+    /// </summary>
+    internal static void WarnOnOrphanStores()
+    {
+        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        string cwd = Directory.GetCurrentDirectory();
+        foreach (string orphan in WorkspaceRoot.FindOrphanStores(root, cwd))
+            Console.Error.WriteLine(FormatOrphanWarning(orphan, root, ListTopics(orphan)));
+    }
+
+    /// <summary>Topic directory names inside an orphaned store, for the migration command.</summary>
+    private static IReadOnlyList<string> ListTopics(string storeDir)
+    {
+        string topicsDir = Path.Combine(storeDir, "topics");
+        if (!Directory.Exists(topicsDir)) return [];
+        return [.. Directory.EnumerateDirectories(topicsDir).Select(Path.GetFileName).OfType<string>().Order()];
+    }
+
+    /// <summary>
     /// Initializes embeddings and loads optional plugins. Preference order: explicit HTTP
     /// provider → bundled Vulkan plugin → in-process fallback. The principle is "don't load
     /// the Vulkan rigamarole if the user already has an HTTP backend running" — Ollama /
