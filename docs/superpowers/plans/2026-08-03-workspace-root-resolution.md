@@ -652,11 +652,24 @@ rtk git commit -m "refactor(core): route store writes through one materializing 
 
 **Files:**
 - Modify: `src/Scrinia.Core/FileMemoryStore.cs:198-205` (constructor), `src/Scrinia.Core/FileMemoryStore.cs:711-724` (`LoadIndex`)
+- Modify: `src/Scrinia/Mcp/ScriniaArtifactStore.cs:365-369` (`LoadIndex`)
 - Test: `tests/Scrinia.Tests/LazyStoreCreationTests.cs`
 
 **Interfaces:**
 - Consumes: `EnsureMaterialized` / `WithExclusiveLock` from Task 4.
-- Produces: constructing a `FileMemoryStore` performs no disk I/O; `LoadIndex` on an absent store returns `[]` without locking.
+- Produces: constructing a `FileMemoryStore` performs no disk I/O; `LoadIndex` on an absent store returns `[]` without locking, in both stores.
+
+**Plan correction (found during Task 3 review).** The spec claims `ScriniaArtifactStore`
+"gets the same for free" from the Task 3 `FileLock` change. That is wrong.
+`ScriniaArtifactStore.LoadIndex` calls `Directory.CreateDirectory(storeDir)` itself at
+`src/Scrinia/Mcp/ScriniaArtifactStore.cs:368`, *before* acquiring the shared lock, so it
+materialises the store on a bare read regardless of what `FileLock` does. This is the
+MCP-facing read path, so leaving it would defeat the plan's purpose for agent traffic.
+It is fixed in this task, in Step 4b below.
+
+`VectorStore` genuinely does get it for free: its caller checks `File.Exists(path)` before
+reaching `LoadFromDiskUnsafe`, so the shared lock is only ever taken when the file — and
+therefore its directory — already exists. No change needed there.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -787,6 +800,38 @@ Replace `LoadIndex` (lines 711-724) with:
         }
     }
 ```
+
+- [ ] **Step 4b: Make `ScriniaArtifactStore.LoadIndex` stop creating the store**
+
+In `src/Scrinia/Mcp/ScriniaArtifactStore.cs`, replace the opening of `LoadIndex` (lines 365-370):
+
+```csharp
+    public static List<ArtifactEntry> LoadIndex(string scope = "local")
+    {
+        string storeDir = GetStoreDirForScope(scope);
+        Directory.CreateDirectory(storeDir);
+        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
+        var entries = LoadIndexFrom(storeDir);
+```
+
+with:
+
+```csharp
+    public static List<ArtifactEntry> LoadIndex(string scope = "local")
+    {
+        string storeDir = GetStoreDirForScope(scope);
+        if (!Directory.Exists(storeDir))
+            return [];
+
+        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
+        var entries = LoadIndexFrom(storeDir);
+```
+
+Leave the rest of the method — the legacy-directory merge and everything after it — untouched.
+
+This also closes a concurrency gap. With the directory check in front of the lock, an absent
+store returns immediately without locking, and a present store takes a real shared lock, so a
+reader is never left unsynchronised against a concurrent first writer.
 
 - [ ] **Step 5: Run the new tests**
 
