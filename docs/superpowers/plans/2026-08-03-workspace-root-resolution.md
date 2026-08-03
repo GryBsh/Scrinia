@@ -981,6 +981,110 @@ rtk git commit -m "fix(cli): bound workspace resolution at the nearest git repos
 
 ---
 
+### Task 7b: Stop `Configure` from materialising the store
+
+**Found after Task 7, by empirical test.** With Tasks 3-6 landed, running `scri hint` — a pure
+read — in an empty directory with no `.git` still created `.scrinia`. Verified by building the
+CLI and running it in a scratch directory.
+
+**Cause.** `ScriniaArtifactStore.Configure` calls `FileMemoryStore.EnsureGitIgnore(WorkspaceRoot)`
+unconditionally at `src/Scrinia/Mcp/ScriniaArtifactStore.cs:48`, and `WorkspaceSetup.Configure`
+calls that on **every** CLI command. So the store is materialised before any store method runs.
+The spec identified `FileMemoryStore`'s constructor as the eager-creation site but missed this
+second one. This is the actual mechanism that seeded `C:\.scrinia` and `C:\Users\nickd\.scrinia`.
+
+Task 5's tests pass regardless because they construct `FileMemoryStore` directly and never go
+through `WorkspaceSetup.Configure` — a test-surface gap as much as a code gap.
+
+**Files:**
+- Modify: `src/Scrinia/Mcp/ScriniaArtifactStore.cs:48` (remove the `EnsureGitIgnore` call),
+  and the four write entry points at lines 480, 488, 496, 1010
+- Test: `tests/Scrinia.Tests/ScriniaArtifactStoreTests.cs`
+
+**Interfaces:**
+- Consumes: `FileMemoryStore.EnsureGitIgnore` (unchanged).
+- Produces: `Configure` performs no disk I/O; `ScriniaArtifactStore` writes materialise the
+  `.gitignore` the way `FileMemoryStore.EnsureMaterialized` already does.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/Scrinia.Tests/ScriniaArtifactStoreTests.cs`, inside the existing class so it
+stays serialised with its `StoreScope`-mutating siblings:
+
+```csharp
+    [Fact]
+    public void Configure_DoesNotMaterializeTheStore()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia_cfg_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            ScriniaArtifactStore.Configure(root);
+
+            Assert.False(Directory.Exists(Path.Combine(root, ".scrinia")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+```
+
+- [ ] **Step 2: Run it and confirm it fails**
+
+Run: `rtk dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~Configure_DoesNotMaterializeTheStore"`
+Expected: FAIL — `.scrinia` is created by `Configure`.
+
+- [ ] **Step 3: Remove the eager call from `Configure`**
+
+Delete line 48 of `src/Scrinia/Mcp/ScriniaArtifactStore.cs`:
+
+```csharp
+        FileMemoryStore.EnsureGitIgnore(WorkspaceRoot);
+```
+
+- [ ] **Step 4: Materialise on write instead**
+
+Add a private helper next to the write methods:
+
+```csharp
+    /// <summary>
+    /// Creates the workspace store and the target scope directory. Called only from write
+    /// paths, so a workspace that is never written to leaves no directory behind.
+    /// </summary>
+    private static void EnsureMaterialized(string storeDir)
+    {
+        FileMemoryStore.EnsureGitIgnore(WorkspaceRoot);
+        Directory.CreateDirectory(storeDir);
+    }
+```
+
+Then replace `Directory.CreateDirectory(storeDir);` with `EnsureMaterialized(storeDir);` at the
+four write entry points: `SaveIndex` (line 480), `Upsert` (488), `Remove` (496), and
+`ImportTopicEntries` (1010). Leave the other `Directory.CreateDirectory` calls at lines 602,
+675 and 979 alone — they create subdirectories inside an already-materialised store.
+
+- [ ] **Step 5: Verify end to end, not just by unit test**
+
+```bash
+rtk dotnet build src/Scrinia/Scrinia.csproj -c Debug
+```
+
+Then in a fresh empty scratch directory containing no `.git`, run the built
+`src/Scrinia/bin/Debug/net10.0/scri.exe hint --plain` with a prompt piped to stdin, and confirm
+**no `.scrinia` directory appears**. This is the check that caught the defect; it is the check
+that must pass.
+
+- [ ] **Step 6: Full suite and commit**
+
+```bash
+rtk dotnet test Scrinia.sln
+rtk git add src/Scrinia/Mcp/ScriniaArtifactStore.cs tests/Scrinia.Tests/ScriniaArtifactStoreTests.cs
+rtk git commit -m "fix(mcp): stop Configure from materializing the store on every command"
+```
+
+---
+
 ### Task 8: Warn about stores that resolution passed over
 
 **Files:**
