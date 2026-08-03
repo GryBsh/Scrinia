@@ -155,14 +155,21 @@ public class WorkspaceRootTests : IDisposable
     [Fact]
     public void FindOrphanStores_IsEmptyForACleanNewProject()
     {
-        string repo = Mkdir("repo");
+        string repo = Mkdir("container", "repo");
         Directory.CreateDirectory(Path.Combine(repo, ".git"));
 
-        var found = WorkspaceRoot.FindOrphanStores(repo, repo);
+        var clean = WorkspaceRoot.FindOrphanStores(repo, repo);
 
         // Stores outside the fixture (for example one in the user's home directory) are real
-        // and correctly reported, so scope the assertion to the tree this test controls.
-        Assert.DoesNotContain(found, p => p.StartsWith(_tempDir, StringComparison.OrdinalIgnoreCase));
+        // and correctly reported, so the assertion is scoped to the tree this test controls.
+        Assert.DoesNotContain(clean, p => p.StartsWith(_tempDir, StringComparison.OrdinalIgnoreCase));
+
+        // Planting a store inside the fixture makes it appear, so the assertion above is
+        // falsifiable rather than true by construction.
+        string planted = Path.Combine(_tempDir, "container", ".scrinia");
+        Directory.CreateDirectory(planted);
+
+        Assert.Contains(planted, WorkspaceRoot.FindOrphanStores(repo, repo));
     }
 
     [Fact]
