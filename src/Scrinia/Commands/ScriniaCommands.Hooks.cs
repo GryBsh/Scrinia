@@ -29,7 +29,7 @@ public partial class ScriniaCommands
     private static async Task<int> InstallHooksFlowAsync(bool project)
     {
         var scope = project ? HookScope.Project : HookScope.User;
-        string? hookWorkspaceRoot = scope == HookScope.Project ? ScriniaArtifactStore.WorkspaceRootPath : null;
+        string? hookWorkspaceRoot = scope == HookScope.Project ? WorkspaceSetup.Root : null;
 
         AnsiConsole.MarkupLine($"[bold]Agent CLI hooks ({scope})[/]");
         AnsiConsole.MarkupLine(
@@ -41,7 +41,7 @@ public partial class ScriniaCommands
         AnsiConsole.MarkupLine("[bold]Workspace artifacts[/]");
         AnsiConsole.MarkupLine(
             "  [dim]AGENTS.md baseline, CLAUDE.md → @AGENTS.md, OpenCode plugin (workspace-rooted).[/]");
-        int artifacts = await AgentArtifactSetup.InstallAsync(ScriniaArtifactStore.WorkspaceRootPath);
+        int artifacts = await AgentArtifactSetup.InstallAsync(WorkspaceSetup.Root);
 
         if (configured == 0 && artifacts == 0)
         {
@@ -60,13 +60,13 @@ public partial class ScriniaCommands
     private static async Task<int> UninstallHooksFlowAsync(bool project)
     {
         var scope = project ? HookScope.Project : HookScope.User;
-        string? workspaceRoot = scope == HookScope.Project ? ScriniaArtifactStore.WorkspaceRootPath : null;
+        string? workspaceRoot = scope == HookScope.Project ? WorkspaceSetup.Root : null;
 
         AnsiConsole.MarkupLine($"[bold]Removing scrinia hooks ({scope})[/]");
         int removed = await AgentHookSetup.UninstallAsync(scope, workspaceRoot);
 
         AnsiConsole.MarkupLine("[bold]Removing scrinia workspace artifacts[/]");
-        int artifactsRemoved = await AgentArtifactSetup.UninstallAsync(ScriniaArtifactStore.WorkspaceRootPath);
+        int artifactsRemoved = await AgentArtifactSetup.UninstallAsync(WorkspaceSetup.Root);
 
         if (removed == 0 && artifactsRemoved == 0)
         {

@@ -12,10 +12,20 @@ internal static class WorkspaceSetup
 {
     private static McpPluginHost? _pluginHost;
     private static IEmbeddingProvider? _embeddingProvider;
+    private static string? _root;
+
+    /// <summary>
+    /// The resolved workspace root for this process, cached by <see cref="Configure"/>.
+    /// Replaces the former ScriniaArtifactStore.WorkspaceRootPath static.
+    /// </summary>
+    internal static string Root =>
+        _root ?? throw new InvalidOperationException(
+            "WorkspaceSetup.Configure must be called before reading Root.");
 
     internal static void Configure(string? workspaceRoot)
     {
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
+        _root = root;
 
         ScriniaArtifactStore.Configure(root);
         // Build ranker weights from config so a workspace can tune α_recency without
@@ -69,7 +79,7 @@ internal static class WorkspaceSetup
     {
         try
         {
-            string root = ScriniaArtifactStore.WorkspaceRootPath;
+            string root = Root;
             string cwd = Directory.GetCurrentDirectory();
             foreach (string orphan in WorkspaceRoot.FindOrphanStores(root, cwd))
                 Console.Error.WriteLine(FormatOrphanWarning(orphan, root, ListTopics(orphan)));
@@ -166,7 +176,7 @@ internal static class WorkspaceSetup
             .SetMinimumLevel(LogLevel.Warning));
         var logger = loggerFactory.CreateLogger("Scrinia.Embeddings");
 
-        string workspaceDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string workspaceDir = Path.Combine(Root, ".scrinia");
         string embeddingsDir = Path.Combine(workspaceDir, "embeddings");
         string exeDir = AppContext.BaseDirectory;
         string modelsDir = Path.Combine(exeDir, "models");
@@ -288,7 +298,7 @@ internal static class WorkspaceSetup
         if (provider is { IsAvailable: true })
         {
             var options = BuildEmbeddingOptions();
-            string embeddingsDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia", "embeddings");
+            string embeddingsDir = Path.Combine(Root, ".scrinia", "embeddings");
             try
             {
                 return await EmbeddingReindexer.ForceReindexAsync(
@@ -460,7 +470,7 @@ internal static class WorkspaceSetup
         string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
 
         // Vector data lives in the workspace-local .scrinia/ directory (per-project isolation).
-        string dataDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string dataDir = Path.Combine(Root, ".scrinia");
         string modelsDir = Path.Combine(pluginsDir, pluginName);
         Directory.CreateDirectory(modelsDir);
 
@@ -570,7 +580,7 @@ internal static class WorkspaceSetup
         if (value is not null) return value;
 
         // 2. Config file
-        value = WorkspaceConfig.GetValue(ScriniaArtifactStore.WorkspaceRootPath, key);
+        value = WorkspaceConfig.GetValue(Root, key);
         if (value is not null) return value;
 
         return defaultName;
@@ -594,6 +604,6 @@ internal static class WorkspaceSetup
         if (value is not null) return value;
 
         // 2. Config file (workspace-scoped)
-        return WorkspaceConfig.GetValue(ScriniaArtifactStore.WorkspaceRootPath, key);
+        return WorkspaceConfig.GetValue(Root, key);
     }
 }

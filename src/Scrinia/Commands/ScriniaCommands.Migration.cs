@@ -36,7 +36,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspace);
-        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        string root = WorkspaceSetup.Root;
         string scriniaDir = Path.Combine(root, ".scrinia");
 
         if (!Directory.Exists(scriniaDir))
@@ -350,7 +350,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
 
-        string scriniaDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string scriniaDir = Path.Combine(WorkspaceSetup.Root, ".scrinia");
         string debounceFile = Path.Combine(scriniaDir, ".last-consolidation");
 
         // Hook-friendly debounce: hooks may fire on every event, but consolidation only earns
@@ -554,7 +554,7 @@ public partial class ScriniaCommands
             throw new InvalidOperationException("Migrate requires a file-backed workspace store.");
 
         if (!skipBackup && !dryRun)
-            BackupScriniaDir(ScriniaArtifactStore.WorkspaceRootPath);
+            BackupScriniaDir(WorkspaceSetup.Root);
 
         int lastDone = -1;
         var summary = AttributeMigration.MigrateStore(store, dryRun, (done, total) =>
