@@ -37,6 +37,14 @@ public static class AgentHookSetup
     internal static HookSpec StampClient(HookSpec spec, string clientId) =>
         spec with { Command = $"{spec.Command} --client {clientId}" };
 
+    /// <summary>
+    /// Pins a hook command to a workspace root so the hook does not depend on the directory the
+    /// agent CLI happens to launch from. Project scope only — a user-scope hook applies to every
+    /// project, and a fixed root there would point all of them at one store.
+    /// </summary>
+    internal static HookSpec StampWorkspaceRoot(HookSpec spec, string workspaceRoot) =>
+        spec with { Command = $"{spec.Command} --workspace-root \"{workspaceRoot}\"" };
+
     private static IReadOnlyList<HookSpec> BuildDefaultHookSpecs()
     {
         string scri = ResolveScriExecutablePath();
@@ -147,7 +155,10 @@ public static class AgentHookSetup
             {
                 if (installer.SupportsEvent(spec.EventName))
                 {
-                    supportedSpecs.Add(StampClient(spec, installer.ClientId));
+                    var stamped = StampClient(spec, installer.ClientId);
+                    if (scope == HookScope.Project && !string.IsNullOrWhiteSpace(workspaceRoot))
+                        stamped = StampWorkspaceRoot(stamped, workspaceRoot!);
+                    supportedSpecs.Add(stamped);
                 }
                 else
                 {
