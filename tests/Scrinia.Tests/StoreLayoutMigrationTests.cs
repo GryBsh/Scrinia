@@ -80,6 +80,38 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Migrate_DeletesTransientLockAndTmpFiles_NotRelocated()
+    {
+        Write("topics/findings/review.nmp2", "b");
+        Write("topics/findings/.lock", "");
+        Write("topics/findings/scratch.tmp", "partial-write");
+
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        Exists("memories/findings/review.nmp2").Should().BeTrue();
+        Exists("memories/findings/.lock").Should().BeFalse();
+        Exists("memories/findings/scratch.tmp").Should().BeFalse();
+        File.Exists(Path.Combine(_root, ".scrinia", "memories", "findings", ".lock")).Should().BeFalse();
+        File.Exists(Path.Combine(_root, ".scrinia", "memories", "findings", "scratch.tmp")).Should().BeFalse();
+        result.Moved.Should().Be(1);
+        Directory.Exists(Path.Combine(_root, ".scrinia", "topics")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Migrate_Collision_EntityBeforeMemory_Deterministic()
+    {
+        Write("topics/entity/skill/qa.nmp2", "entity-wins");
+        Write("topics/memory/skill/qa.nmp2", "memory-loses");
+
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        result.Conflicts.Should().Be(1);
+        File.ReadAllText(Path.Combine(_root, ".scrinia", "memories", "skill", "qa.nmp2"))
+            .Should().Be("entity-wins");
+        Directory.EnumerateDirectories(_root, ".scrinia-conflicts-*").Should().NotBeEmpty();
+    }
+
+    [Fact]
     public void Migrate_IsIdempotent_SecondRunDoesNothing()
     {
         Write("topics/findings/review.nmp2", "b");
