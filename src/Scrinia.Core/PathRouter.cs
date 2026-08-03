@@ -141,26 +141,18 @@ public static class PathRouter
 
     /// <summary>
     /// Maps an internal scope string ("local", "local:findings", "local:goal/G-5") to its
-    /// store directory. The single authority for scope-to-directory resolution.
+    /// store directory under <c>.scrinia/memories/</c>. The single authority for
+    /// scope-to-directory resolution (v3 layout — see <see cref="StoreLayoutMigration"/>).
     /// </summary>
     public static string ToStoreDir(string scope, string workspaceRoot)
     {
+        string memories = Path.Combine(workspaceRoot, ".scrinia", MemoriesDir);
         if (scope == "local")
-            return Path.Combine(workspaceRoot, ".scrinia", "store");
+            return memories;
 
         if (scope.StartsWith("local:", StringComparison.Ordinal))
-        {
-            string topic = scope["local:".Length..];
-
-            // v2 path scope: topic contains "/" that isn't a v1 namespace prefix
-            // (v1 namespaces are "entity/X", "memory/X", "agent" — exactly one slash
-            // with a recognised prefix). Multi-level paths use .scrinia/memories/.
-            if (IsV2PathScope(topic))
-                return Path.Combine(workspaceRoot, ".scrinia", MemoriesDir,
-                    topic.Replace('/', Path.DirectorySeparatorChar));
-
-            return Path.Combine(workspaceRoot, ".scrinia", "topics", topic);
-        }
+            return Path.Combine(memories,
+                scope["local:".Length..].Replace('/', Path.DirectorySeparatorChar));
 
         throw new ArgumentException($"Unknown scope: {scope}");
     }
@@ -170,6 +162,13 @@ public static class PathRouter
     /// path (routed to .scrinia/memories/) vs a v1 namespace scope (routed to .scrinia/topics/).
     /// v1 patterns: "agent", "entity/{topic}", "memory/{topic}" (single namespace + single topic).
     /// v2 patterns: anything with more than 2 segments or a non-namespace first segment with slashes.
+    ///
+    /// <para>No longer used by <see cref="ToStoreDir"/> (v3 routes every scope to
+    /// <c>memories/</c> uniformly), but kept — NOT dead code — for
+    /// <see cref="FileMemoryStore"/>'s v1/v2 legacy read-fallback (<c>ResolveLegacyFallbackDir</c>,
+    /// <c>ResolveV2LegacyDir</c>, <c>ResolveV2LegacyFilePath</c>, <c>FormatQualifiedName</c>),
+    /// which still calls this directly and is intentionally left in place until Task 8 removes
+    /// the fallback chain entirely.</para>
     /// </summary>
     internal static bool IsV2PathScope(string topicPart)
     {

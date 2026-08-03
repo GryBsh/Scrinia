@@ -23,6 +23,21 @@ public sealed class FileMemoryStoreTests : IDisposable
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
     }
 
+    /// <summary>
+    /// Touches <see cref="_store"/> once while nothing exists on disk yet, consuming the
+    /// one-time v3 layout-migration gate (<c>FileMemoryStore.MemoriesRoot</c>) against an empty
+    /// state — nothing to migrate, so it's a no-op. Call this BEFORE seeding legacy
+    /// <c>.scrinia/topics/</c> fixtures directly on the filesystem in the tests below: the gate
+    /// only ever runs once per store instance, so content that appears afterward is exactly the
+    /// "straggler" case <c>FileMemoryStore.ResolveLegacyFallbackDir</c> (the still-present legacy
+    /// read-fallback; Task 8 removes it) exists to keep readable — e.g. a second process writing
+    /// under <c>topics/</c> after this process's first store access already ran its migration
+    /// check. Without this pre-touch, seeding legacy content BEFORE the first store call would
+    /// instead get swept into <c>memories/</c> by that same one-time check before the fallback
+    /// mechanism these tests exercise ever got a chance to look.
+    /// </summary>
+    private void TouchStoreToSkipAutoMigration() => _store.LoadIndex("local");
+
     [Fact]
     public void ParseQualifiedName_local_scope()
     {
@@ -394,7 +409,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void BuildScopedTopicScope_EntityTopic_RoutesToEntityNamespace()
     {
-        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:entity/skill");
+        // v3: flattened — skill no longer gets an "entity/" namespace segment.
+        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:skill");
     }
 
     [Fact]
@@ -485,6 +501,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public async Task ReadArtifact_FallsBackToLegacyPath()
     {
+        TouchStoreToSkipAutoMigration();
+
         // Write an artifact to the legacy flat path: topics/task/my-task.nmp2
         string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "task");
         Directory.CreateDirectory(legacyDir);
@@ -500,6 +518,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void LoadIndex_MergesEntriesFromLegacyFlatDir()
     {
+        TouchStoreToSkipAutoMigration();
+
         // Create a legacy flat dir with a sidecar meta file
         string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "task");
         Directory.CreateDirectory(legacyDir);
@@ -529,6 +549,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void LoadIndex_MergesEntriesFromLegacyFlatDir_WhenNamespacedDirDoesNotExist()
     {
+        TouchStoreToSkipAutoMigration();
+
         // Regression: the namespaced (primary) directory for this scope is never created —
         // only the legacy flat dir holds data. A prior version of LoadIndex returned an empty
         // list as soon as the primary directory was absent, before the legacy merge ran at all,
@@ -562,6 +584,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void LoadIndex_NamespacedEntries_TakePrecedenceOverLegacy()
     {
+        TouchStoreToSkipAutoMigration();
+
         // Create the legacy flat dir with a sidecar
         string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "task");
         Directory.CreateDirectory(legacyDir);
@@ -577,8 +601,13 @@ public sealed class FileMemoryStoreTests : IDisposable
         """;
         File.WriteAllText(Path.Combine(legacyDir, "shared-entry.meta.json"), legacyMeta);
 
-        // Create the namespaced dir with the same entry name
-        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "task");
+        // Create the namespaced dir with the same entry name. This is the PRIMARY location for
+        // scope "local:entity/task" — under v3, PathRouter.ToStoreDir routes every "local:X" scope
+        // literally to memories/X (here memories/entity/task), not through StoreLayoutMigration's
+        // flattening (which only rewrites content actually migrated FROM topics/entity/*, and
+        // targets the flattened memories/task instead). Pre-existing content placed directly at
+        // this scope's own real primary path is a different, still-valid scenario.
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "memories", "entity", "task");
         Directory.CreateDirectory(namespacedDir);
         string namespacedMeta = """
         {
@@ -605,6 +634,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Upsert_NamespacedScope_PreservesLegacyEntriesInCache()
     {
+        TouchStoreToSkipAutoMigration();
+
         // Create a legacy entry by writing a .meta.json directly to the flat path
         string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "concern");
         Directory.CreateDirectory(legacyDir);
@@ -645,6 +676,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void Remove_NamespacedScope_PreservesLegacyEntriesInCache()
     {
+        TouchStoreToSkipAutoMigration();
+
         // Create a legacy entry in flat path
         string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "concern");
         Directory.CreateDirectory(legacyDir);
@@ -686,6 +719,8 @@ public sealed class FileMemoryStoreTests : IDisposable
     [Fact]
     public void LoadIndex_MergesLegacyAndNamespacedEntries_WithPrecedence()
     {
+        TouchStoreToSkipAutoMigration();
+
         // Create an entry in the legacy flat path
         string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "concern");
         Directory.CreateDirectory(legacyDir);
@@ -714,8 +749,11 @@ public sealed class FileMemoryStoreTests : IDisposable
         """;
         File.WriteAllText(Path.Combine(legacyDir, "collision.meta.json"), legacyCollisionMeta);
 
-        // Create a different entry in the namespaced path
-        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "concern");
+        // Create a different entry in the namespaced path — the PRIMARY location for scope
+        // "local:entity/concern" under v3 (see the comment in
+        // LoadIndex_NamespacedEntries_TakePrecedenceOverLegacy for why this differs from where
+        // StoreLayoutMigration would flatten pre-existing topics/entity/concern content to).
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "memories", "entity", "concern");
         Directory.CreateDirectory(namespacedDir);
         string namespacedOnlyMeta = """
         {
@@ -1007,7 +1045,8 @@ public sealed class FileMemoryStoreTests : IDisposable
         // FileMemoryStore writes one sidecar per entry (not a combined index.json), each through
         // a uniquely-named "{meta}.{pid}.{guid}.tmp" temp file — so the leftover-temp-file check
         // scans the store dir for any ".tmp" file rather than a specific "index.json.tmp" name.
-        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+        // v3 layout: "local" resolves to .scrinia/memories/, not .scrinia/store/.
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "memories");
         Directory.GetFiles(storeDir, "*.tmp").Should().BeEmpty(
             because: "the temp file used for atomic sidecar writes must be renamed/removed after success");
     }
@@ -1023,7 +1062,8 @@ public sealed class FileMemoryStoreTests : IDisposable
 
         _store.ArchiveVersion("archive-test");
 
-        string versionsDir = Path.Combine(_tempDir, ".scrinia", "store", "versions");
+        // v3 layout: "local" resolves to .scrinia/memories/, not .scrinia/store/.
+        string versionsDir = Path.Combine(_tempDir, ".scrinia", "memories", "versions");
         Directory.Exists(versionsDir).Should().BeTrue();
         Directory.GetFiles(versionsDir, "archive-test_*.nmp2").Should().HaveCount(1);
     }

@@ -61,7 +61,7 @@ public class LazyStoreCreationTests : IDisposable
 
         Assert.True(Directory.Exists(ScriniaDir));
         Assert.True(File.Exists(Path.Combine(ScriniaDir, ".gitignore")));
-        Assert.True(Directory.Exists(Path.Combine(ScriniaDir, "store")));
+        Assert.True(Directory.Exists(Path.Combine(ScriniaDir, "memories")));
     }
 
     [Fact]

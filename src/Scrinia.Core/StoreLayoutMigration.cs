@@ -25,10 +25,27 @@ namespace Scrinia.Core;
 /// any <c>*.tmp</c> partial write) are deleted rather than relocated — they carry no committed
 /// data and moving them just relocates the cruft into <c>memories/</c> where nothing would ever
 /// clean it up. Everything else is moved. See <see cref="IsTransientArtifact"/>.</para>
+///
+/// <para><b>Deliberately does NOT sweep the top-level <c>.scrinia/agent/</c> or
+/// <c>.scrinia/skills/</c> directories</b>, even though an earlier revision — ported wholesale
+/// from the opt-in <c>migrate_v1</c> command — did. Those two directories hold live,
+/// hand-authored Markdown files (agent config, project skill overrides) that
+/// <c>MemoryTools.Core.cs</c>/<c>MemoryTools.Skills.cs</c>/<c>MemoryTools.Lifecycle.cs</c> read and
+/// write directly by a hardcoded path — <c>GetScriniaBaseDir</c> + <c>Path.Combine(baseDir,
+/// "agent"|"skills", name + ".md")</c> — entirely outside <see cref="PathRouter"/>/
+/// <see cref="FileMemoryStore"/> scope resolution. That was tolerable while this engine was
+/// unwired (Task 6): the sweep never actually ran. Once <see cref="MigrateIfNeeded"/> fires
+/// automatically on every store touch (Task 7), it would silently relocate a real project's
+/// committed <c>.scrinia/agent/*.md</c> / <c>.scrinia/skills/*.md</c> files into
+/// <c>memories/agent/</c> / <c>memories/skill/</c> the first time ANYTHING touched the store —
+/// and the hardcoded readers above, which know nothing about <c>memories/</c>, would never find
+/// them again. Nothing under <c>topics/agent/</c> or <c>topics/entity/skill/</c> is affected —
+/// those are FileMemoryStore's own NMP2 layout, nested under the (still-swept) <c>topics/</c>
+/// root, and migrate exactly as before.</para>
 /// </summary>
 public static class StoreLayoutMigration
 {
-    private static readonly string[] LegacyRoots = ["store", "topics", "agent", "skills"];
+    private static readonly string[] LegacyRoots = ["store", "topics"];
 
     public sealed record Result(int Moved, int Conflicts, bool Ran, string? BackupPath);
 
@@ -44,7 +61,7 @@ public static class StoreLayoutMigration
     /// <param name="Source">Absolute path of the file as it currently sits in the legacy layout.</param>
     /// <param name="Target">Absolute path of where it will land under <c>memories/</c>.</param>
     /// <param name="NamespaceRank">0 for non-namespaced (flat topics, <c>store/</c>,
-    /// <c>agent/</c>, <c>skills/</c>), 1 for <c>entity/</c>, 2 for <c>memory/</c>.</param>
+    /// <c>topics/agent/</c>), 1 for <c>entity/</c>, 2 for <c>memory/</c>.</param>
     internal readonly record struct PlanEntry(string Source, string Target, int NamespaceRank);
 
     /// <summary>True when any legacy root still holds files. Three-stat fast path.</summary>
@@ -60,7 +77,11 @@ public static class StoreLayoutMigration
         return false;
     }
 
-    /// <summary>Automatic trigger. No-op when nothing needs moving. Backup always on.</summary>
+    /// <summary>
+    /// Automatic trigger. No-op when nothing needs moving. Requests a backup, but
+    /// <see cref="RunMigration"/> skips writing one when a prior attempt already left one
+    /// behind — see the comment at its backup block for why.
+    /// </summary>
     public static Result MigrateIfNeeded(string workspaceRoot) =>
         RunMigration(workspaceRoot, dryRun: false, backup: true);
 
@@ -98,9 +119,20 @@ public static class StoreLayoutMigration
             string? backupPath = null;
             if (backup)
             {
-                backupPath = Path.Combine(workspaceRoot,
-                    $".scrinia-backup-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}");
-                CopyDirectory(scriniaDir, backupPath);
+                // Bounded: skip when a prior attempt already left a backup behind. Without this,
+                // a legacy root that never fully empties (e.g. a concurrently-held scope .lock
+                // that keeps failing to delete, so NeedsMigration keeps reporting true) would have
+                // every subsequent process — each CLI invocation is a new process — write another
+                // full timestamped .scrinia-backup-*/ copy on every store access, growing disk
+                // usage without bound. The first backup already preserved the pre-migration
+                // state, which is the only thing a backup is for; a second one adds nothing.
+                bool priorBackupExists = Directory.EnumerateDirectories(workspaceRoot, ".scrinia-backup-*").Any();
+                if (!priorBackupExists)
+                {
+                    backupPath = Path.Combine(workspaceRoot,
+                        $".scrinia-backup-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}");
+                    CopyDirectory(scriniaDir, backupPath);
+                }
             }
 
             // Known-transient artifacts are deleted, never relocated: a `.lock` is recreated
@@ -197,31 +229,11 @@ public static class StoreLayoutMigration
             }
         }
 
-        // 3. .scrinia/agent/* -> memories/agent/*
-        string agentDir = Path.Combine(scriniaDir, "agent");
-        if (Directory.Exists(agentDir))
-        {
-            foreach (string file in Directory.EnumerateFiles(agentDir, "*", SearchOption.AllDirectories))
-            {
-                if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
-                string relPath = Path.GetRelativePath(agentDir, file).Replace('\\', '/');
-                string target = Path.Combine(memoriesDir, "agent", relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
-            }
-        }
-
-        // 4. .scrinia/skills/* -> memories/skill/*
-        string skillsDir = Path.Combine(scriniaDir, "skills");
-        if (Directory.Exists(skillsDir))
-        {
-            foreach (string file in Directory.EnumerateFiles(skillsDir, "*", SearchOption.AllDirectories))
-            {
-                if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
-                string relPath = Path.GetRelativePath(skillsDir, file).Replace('\\', '/');
-                string target = Path.Combine(memoriesDir, "skill", relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
-            }
-        }
+        // NOTE: no top-level .scrinia/agent/* or .scrinia/skills/* sweep here — see the class
+        // doc comment. Those hold live hand-authored Markdown files read by a hardcoded path
+        // outside FileMemoryStore/PathRouter entirely; sweeping them would silently orphan real
+        // project overrides the moment this engine runs automatically. topics/agent/ and
+        // topics/entity/skill/ (FileMemoryStore's own NMP2 layout) still migrate via step 2 above.
 
         return (OrderPlan(plan), transientFiles);
     }
@@ -302,7 +314,10 @@ public static class StoreLayoutMigration
         return collisions;
     }
 
-    /// <summary>Recursive file copy, used for the pre-migration backup.</summary>
+    /// <summary>Recursive file copy, used for the pre-migration backup. Best-effort per file:
+    /// a file held open by a concurrent process (e.g. an in-use scope <c>.lock</c>, the same
+    /// condition the backup-bounding above is guarding against) is skipped rather than aborting
+    /// the whole backup — a live lock file carries no committed data worth preserving anyway.</summary>
     private static void CopyDirectory(string sourceDir, string targetDir)
     {
         Directory.CreateDirectory(targetDir);
@@ -310,7 +325,8 @@ public static class StoreLayoutMigration
         foreach (string file in Directory.GetFiles(sourceDir))
         {
             string destFile = Path.Combine(targetDir, Path.GetFileName(file));
-            File.Copy(file, destFile, overwrite: false);
+            try { File.Copy(file, destFile, overwrite: false); }
+            catch (IOException) { /* concurrently held; skip, nothing committed to preserve */ }
         }
 
         foreach (string dir in Directory.GetDirectories(sourceDir))

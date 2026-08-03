@@ -188,16 +188,16 @@ public class PathRouterTests : IDisposable
     public void ToStoreDir_MapsEachScopeShapeToItsLiteralDirectory()
     {
         PathRouter.ToStoreDir("local", _root)
-            .Should().Be(Path.Combine(_root, ".scrinia", "store"));
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories"));
 
         PathRouter.ToStoreDir("local:findings", _root)
-            .Should().Be(Path.Combine(_root, ".scrinia", "topics", "findings"));
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories", "findings"));
 
         PathRouter.ToStoreDir("local:goal/G-5", _root)
             .Should().Be(Path.Combine(_root, ".scrinia", "memories", "goal", "G-5"));
 
         PathRouter.ToStoreDir("local:agent", _root)
-            .Should().Be(Path.Combine(_root, ".scrinia", "topics", "agent"));
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories", "agent"));
     }
 
     [Fact]

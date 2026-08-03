@@ -1180,9 +1180,10 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["auth flow documentation"], "/api/auth");
 
-        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "api", "auth.nmp2");
+        // v3 layout: every scope routes under .scrinia/memories/, not .scrinia/topics/.
+        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", "api", "auth.nmp2");
         File.Exists(expectedPath).Should().BeTrue(
-            because: "a /topic/subject path must write to .scrinia/topics/topic/subject.nmp2 in workspace");
+            because: "a /topic/subject path must write to .scrinia/memories/topic/subject.nmp2 in workspace");
     }
 
     [Fact]

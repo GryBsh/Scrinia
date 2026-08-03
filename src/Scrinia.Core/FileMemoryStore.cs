@@ -35,6 +35,10 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     // search hot path even when nothing had changed.
     private string[]? _cachedTopics;
 
+    // Gate for the one-time v3 layout migration check — see MemoriesRoot below.
+    private volatile bool _layoutChecked;
+    private readonly object _layoutGate = new();
+
     // Merged cross-scope entity fact store. Invalidated event-driven (set to null) by
     // Upsert / Remove. Rebuilt lazily on next GetEntityFactStore() call from each scope's
     // facts.json sidecar (reused when its validity token matches the current index) or
@@ -353,7 +357,51 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     // ── Paths ────────────────────────────────────────────────────────────────
 
-    public string GetStoreDirForScope(string scope) => PathRouter.ToStoreDir(scope, _workspaceRoot);
+    /// <summary>
+    /// The root every persistent path resolves under. Runs the one-time v3 layout migration
+    /// on first use, which is why every path computation must flow through here — a method
+    /// that builds a path another way would read a store that has not been migrated yet.
+    ///
+    /// <para>Double-checked locking, not a bare <c>Interlocked.Exchange</c> flag: a flag alone
+    /// only stops a SECOND migration attempt — it does not stop a second (or 64th) concurrent
+    /// caller from reading <c>memories/</c> WHILE the winning thread's migration is still moving
+    /// files. <see cref="_layoutGate"/> makes every concurrent first-touch caller block until the
+    /// one migration attempt actually finishes, so nobody ever observes a half-migrated tree.</para>
+    /// </summary>
+    private string MemoriesRoot
+    {
+        get
+        {
+            if (!_layoutChecked)
+            {
+                lock (_layoutGate)
+                {
+                    if (!_layoutChecked)
+                    {
+                        if (StoreLayoutMigration.NeedsMigration(_workspaceRoot))
+                        {
+                            var result = StoreLayoutMigration.MigrateIfNeeded(_workspaceRoot);
+                            if (result.Ran)
+                                Console.Error.WriteLine(
+                                    $"scrinia: migrated {result.Moved} file(s) to the v3 layout" +
+                                    (result.Conflicts > 0 ? $", {result.Conflicts} conflict(s) quarantined" : "") +
+                                    (result.BackupPath is not null ? $"; backup at {result.BackupPath}" : ""));
+                            _indexCache.Clear();
+                            _cachedTopics = null;
+                        }
+                        _layoutChecked = true;
+                    }
+                }
+            }
+            return Path.Combine(_workspaceRoot, ".scrinia", "memories");
+        }
+    }
+
+    public string GetStoreDirForScope(string scope)
+    {
+        _ = MemoriesRoot;   // gate
+        return PathRouter.ToStoreDir(scope, _workspaceRoot);
+    }
 
     public string ArtifactPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".nmp2");
@@ -1791,6 +1839,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         if (_cachedTopics is not null)
             return _cachedTopics;
 
+        // Gate FIRST, before the v1 scan below: if this is the very first store access (no
+        // earlier GetStoreDirForScope call has run the migration yet) and a legacy topics/ root
+        // still holds real files, touching MemoriesRoot here migrates them into memories/ before
+        // either scan runs. Gating after the v1 scan would let it see topics/ pre-migration,
+        // then let the v2 scan below see the very same entries again post-migration under
+        // memories/ — the same "local:X" scope reported twice from one DiscoverTopics() call.
+        string memoriesRoot = MemoriesRoot;
+
         var results = new List<string>();
         var namespacedChildren = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -1834,8 +1890,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             }
         }
 
-        // ── v2: scan .scrinia/memories/ for hierarchical paths ───────────────
-        string memoriesRoot = Path.Combine(_workspaceRoot, ".scrinia", "memories");
+        // ── v2: scan .scrinia/memories/ for hierarchical paths (memoriesRoot from the gate above) ──
         if (Directory.Exists(memoriesRoot))
             DiscoverMemoriesRecursive(memoriesRoot, "", results);
 

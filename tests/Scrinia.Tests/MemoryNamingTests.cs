@@ -92,7 +92,11 @@ public class MemoryNamingTests
     [Fact]
     public void BuildScopedTopicScope_Skill_RouteToEntityNamespace()
     {
-        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:entity/skill");
+        // v3: flattened — skill no longer gets an "entity/" namespace segment. (This test
+        // duplicates FileMemoryStoreTests.BuildScopedTopicScope_EntityTopic_RoutesToEntityNamespace;
+        // the brief's Task 7 correction named only that one, but this one pins the identical
+        // pre-flattening behaviour and would otherwise fail for the same reason.)
+        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:skill");
     }
 
     [Fact]

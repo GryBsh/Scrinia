@@ -74,24 +74,27 @@ public sealed class DualModeParseTests : IDisposable
     }
 
     [Fact]
-    public async Task StoreViaLegacyScope_RecallViaV2Deep_Works()
+    public async Task LegacyFlatTopicSeededOnDisk_RecallViaV2Path_AutoMigrates()
     {
-        // Store using the legacy namespaced topic scope (the on-disk shape v1
-        // colon names used to produce) -> .scrinia/topics/memory/research/
-        string scopeV1 = MemoryNaming.BuildScopedTopicScope("research");
-        string subjectV1 = _store.SanitizeName("frontend");
-        await _store.WriteArtifactAsync(subjectV1, scopeV1, "v1 stored content");
+        // Formerly "StoreViaLegacyScope_RecallViaV2Deep_Works": wrote via the store's own
+        // WriteArtifactAsync using a legacy scope, relying on the v1/v2 coexistence fallback to
+        // find it again via a mismatched deep v2 path. Under v3 routing (this task),
+        // WriteArtifactAsync can no longer produce a topics/ layout at all — PathRouter.ToStoreDir
+        // routes every write straight to memories/ — so this now seeds the legacy file directly on
+        // disk, the way real pre-cutover data sits. FileMemoryStore.MemoriesRoot auto-migrates it
+        // to memories/research/ on the very first store touch, which is what makes it readable —
+        // not the old fallback, which only ever finds content still sitting under topics/ and can
+        // never fire once the gate has already relocated everything on this store's first access.
+        string legacyDir = Path.Combine(_root, ".scrinia", "topics", "research");
+        Directory.CreateDirectory(legacyDir);
+        await File.WriteAllTextAsync(Path.Combine(legacyDir, "frontend.nmp2"), "v1 stored content");
 
-        string v1Path = _store.ArtifactPath(subjectV1, scopeV1);
-        File.Exists(v1Path).Should().BeTrue("v1 write should create the file");
+        var (scope, subject) = _store.ParseQualifiedName("/research/frontend");
+        string content = await _store.ReadArtifactAsync(subject, scope);
 
-        // Recall using v2 deep path "/goal/G-5/research/frontend"
-        // v2 scope = "local:goal/G-5/research" -> .scrinia/memories/goal/G-5/research/
-        // Legacy fallback finds .scrinia/topics/entity/research/ (namespaced) or
-        // .scrinia/topics/research/ (flat). The ResolveV2LegacyDir uses the leaf "research".
-        var (scopeV2, subjectV2) = _store.ParseQualifiedName("/goal/G-5/research/frontend");
-        string content = await _store.ReadArtifactAsync(subjectV2, scopeV2);
         content.Should().Be("v1 stored content");
+        File.Exists(Path.Combine(_root, ".scrinia", "memories", "research", "frontend.nmp2"))
+            .Should().BeTrue("auto-migration, not the legacy fallback, is what made this readable");
     }
 
     [Fact]
@@ -127,20 +130,28 @@ public sealed class DualModeParseTests : IDisposable
     }
 
     [Fact]
-    public async Task ReadV2DeepPath_FallsBackToNamespacedLegacy()
+    public async Task NamespacedLegacySkillSeededOnDisk_RecallViaFlatV2Path_AutoMigrates()
     {
         // skill is the only remaining entity topic; place legacy data under
-        // .scrinia/topics/entity/skill/ and resolve via a v2 deep path that
-        // ends in "skill".
+        // .scrinia/topics/entity/skill/. Previously (pre-v3) this was found via the deep-path
+        // leaf-topic-guessing legacy fallback (ResolveV2LegacyDir), read through a mismatched
+        // deep path ending in "skill". Under v3, MemoriesRoot's auto-migration flattens
+        // entity/skill/ -> memories/skill/ (matching MemoryNaming.BuildScopedTopicScope("skill"),
+        // itself flattened by this task) on the very first store touch, before any read runs —
+        // so the content is found via the PRIMARY path for the flat "skill" scope, not a deep
+        // path whose leaf happens to be "skill" (nothing routes to a nested skill/ subdirectory
+        // under v3, so that deep path would no longer resolve here at all).
         string nsDir = Path.Combine(_root, ".scrinia", "topics", "entity", "skill");
         Directory.CreateDirectory(nsDir);
         string nsFile = Path.Combine(nsDir, "frontend.nmp2");
         await File.WriteAllTextAsync(nsFile, "namespaced legacy content");
 
-        var (scope, subject) = _store.ParseQualifiedName("/agent/profile/skill/frontend");
+        var (scope, subject) = _store.ParseQualifiedName("/skill/frontend");
         string content = await _store.ReadArtifactAsync(subject, scope);
 
         content.Should().Be("namespaced legacy content");
+        File.Exists(Path.Combine(_root, ".scrinia", "memories", "skill", "frontend.nmp2"))
+            .Should().BeTrue("auto-migration flattens entity/skill/ into memories/skill/");
     }
 
     [Fact]

@@ -268,27 +268,27 @@ public sealed class AttributeMigrationTests
     {
         using var tmp = new TempWorkspace();
         var seed = tmp.NewStore();
-        // Namespaced sibling so the bare flat dir is shadowed (reached only via the legacy merge).
-        // "local:memory/api" is what MemoryNaming.BuildScopedTopicScope("api") produces (verified
-        // in FileMemoryStore.GetStoreDirForScope/ResolveLegacyFallbackDir): ClassifyTopic("api") == "memory",
-        // so the namespaced dir is .scrinia/topics/memory/api and its legacy flat fallback is .scrinia/topics/api.
+        // Both land in the same "local:api" scope — MemoryNaming.BuildScopedTopicScope("api")
+        // and the "local:api" literal are the same string ("api" is an ordinary topic, flat
+        // since before this task; under v3 EVERY topic is flat, so there is no longer a separate
+        // "namespaced" directory for any topic to be shadowed by or promoted into — both entries
+        // persist under the single .scrinia/memories/api/ directory).
         seed.Upsert(MakeEntry(fields: new() { ["topic"] = ["api"] }) with { Name = "nsnote" }, MemoryNaming.BuildScopedTopicScope("api"));
-        // Legacy entry in the bare flat dir .scrinia/topics/api
         seed.Upsert(MakeEntry(codeRefs: new() { ["src/A.cs"] = "h" }) with { Name = "flatnote" }, "local:api");
         seed.Dispose();
 
         var cold = new FileMemoryStore(tmp.Root);
         var s = AttributeMigration.MigrateStore(cold);
 
-        // Exactly 1 (not >= 1): the shadowed flat entry is counted once — the (dir,name) dedup in
-        // EnumerateRawForMigration prevents a double-count if the flat dir is a fallback of >1 scope.
-        s.Migrated.Should().Be(1, "the shadowed flat entry needed migrating, counted exactly once");
-        // The FLAT sidecar is upgraded in place:
-        string flatMeta = Path.Combine(tmp.Root, ".scrinia", "topics", "api", "flatnote.meta.json");
-        File.ReadAllText(flatMeta).Should().Contain("\"attributes\"").And.Contain("\"file\"");
-        // ...and NOT promoted into the namespaced scope dir:
-        File.Exists(Path.Combine(tmp.Root, ".scrinia", "topics", "memory", "api", "flatnote.meta.json"))
-            .Should().BeFalse("the flat entry must stay in its flat dir, not be promoted");
+        // Exactly 1: only "flatnote" carries the legacy codeRefs key; "nsnote" is already current.
+        s.Migrated.Should().Be(1, "only the legacy-shaped entry needed migrating");
+        // The sidecar is upgraded in place, under the v3 flat "api" directory:
+        string metaPath = Path.Combine(tmp.Root, ".scrinia", "memories", "api", "flatnote.meta.json");
+        File.ReadAllText(metaPath).Should().Contain("\"attributes\"").And.Contain("\"file\"");
+        // ...and no separate namespaced copy is created anywhere else — there is no more
+        // "memory/api" (or any other) namespace directory under v3 for it to be promoted into.
+        Directory.Exists(Path.Combine(tmp.Root, ".scrinia", "memories", "memory"))
+            .Should().BeFalse("v3 has no namespace directories left to promote into");
         cold.Dispose();
     }
 

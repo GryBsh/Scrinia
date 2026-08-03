@@ -38,7 +38,11 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Write("topics/memory/api/auth.nmp2", "c");
         Write("topics/entity/skill/qa.nmp2", "d");
         Write("topics/agent/profile.nmp2", "e");
-        Write("agent/profile.md", "f");
+        // Top-level agent/profile.md deliberately NOT seeded here: LegacyRoots no longer
+        // includes "agent" (see the class doc comment on StoreLayoutMigration) because that
+        // top-level directory holds a live, hand-authored Markdown file MemoryTools.Core.cs
+        // reads by a hardcoded path outside this engine entirely — see
+        // AgentTopLevelDir_IsNeverSwept below for that guarantee.
 
         var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
 
@@ -49,12 +53,32 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("memories/api/auth.nmp2").Should().BeTrue();
         Exists("memories/skill/qa.nmp2").Should().BeTrue();
         Exists("memories/agent/profile.nmp2").Should().BeTrue();
-        Exists("memories/agent/profile.md").Should().BeTrue();
 
         // Moved, not copied.
         Exists("store/notes.nmp2").Should().BeFalse();
         Exists("topics/findings/review.nmp2").Should().BeFalse();
         Directory.Exists(Path.Combine(_root, ".scrinia", "topics")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void AgentAndSkillsTopLevelDirs_AreNeverSwept()
+    {
+        // .scrinia/agent/*.md and .scrinia/skills/*.md are live, hand-authored files
+        // (MemoryTools.Core.cs / MemoryTools.Skills.cs read them by a hardcoded path, entirely
+        // outside FileMemoryStore/PathRouter scope resolution) — NOT part of this engine's
+        // legacy layout. Migrating something else (so NeedsMigration is true and the pass
+        // actually runs) must leave these two directories completely untouched.
+        Write("topics/findings/review.nmp2", "b");
+        Write("agent/profile.md", "agent config");
+        Write("skills/qa.md", "qa skill override");
+
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        result.Ran.Should().BeTrue();
+        Exists("agent/profile.md").Should().BeTrue("the live agent config file must not move");
+        Exists("skills/qa.md").Should().BeTrue("the live skill override file must not move");
+        Exists("memories/agent/profile.md").Should().BeFalse();
+        Exists("memories/skill/qa.md").Should().BeFalse();
     }
 
     [Fact]
@@ -165,6 +189,73 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("memories/findings/review.nmp2").Should().BeTrue();
         Exists("memories/notes.nmp2").Should().BeTrue();
         StoreLayoutMigration.NeedsMigration(_root).Should().BeFalse();
+    }
+
+    [Fact]
+    public void DiscoverTopics_AsFirstAccess_MigratesBeforeScanning_NoDuplicateScope()
+    {
+        // DiscoverTopics scans the legacy topics/ root itself (v1) in addition to gating through
+        // MemoriesRoot (v2). If the gate ran AFTER the v1 scan, a first-ever call with real
+        // legacy content would see "local:findings" from the pre-migration v1 scan AND again
+        // from the post-migration v2 scan of memories/ — the same scope reported twice.
+        Write("topics/findings/review.nmp2", "b");
+
+        var store = new FileMemoryStore(_root);
+        var topics = store.DiscoverTopics();
+
+        topics.Should().ContainSingle(t => t == "local:findings");
+        Exists("memories/findings/review.nmp2").Should().BeTrue();
+        Exists("topics/findings/review.nmp2").Should().BeFalse();
+    }
+
+    [Fact]
+    public void FileMemoryStore_MigratesAutomatically_OnFirstAccess()
+    {
+        Write("topics/findings/review.nmp2", "body");
+        // NOTE: the brief's inline fixture omitted "Uri", which ArtifactEntry's real
+        // constructor requires as its 2nd positional parameter (no default value) — the same
+        // class of defect an earlier task hit. Included here to match the real serialized shape
+        // FileStoreJsonContext produces (PropertyNamingPolicy = CamelCase, but
+        // PropertyNameCaseInsensitive = true makes the PascalCase keys below deserialize fine).
+        Write("topics/findings/review.meta.json",
+            """{"Name":"review","Uri":"file:///review.nmp2","OriginalBytes":4,"ChunkCount":1,"CreatedAt":"2026-08-01T00:00:00+00:00","ContentPreview":"body"}""");
+
+        var store = new FileMemoryStore(_root);
+        var entries = store.LoadIndex("local:findings");
+
+        entries.Should().ContainSingle(e => e.Name == "review");
+        Exists("memories/findings/review.nmp2").Should().BeTrue();
+        Exists("topics/findings/review.nmp2").Should().BeFalse();
+    }
+
+    [Fact]
+    public void MigrateIfNeeded_SecondAttempt_WithStuckLegacyLock_DoesNotWriteSecondBackup()
+    {
+        // Reproduces the unbounded-backup bug: a held ".lock" (simulating a concurrent
+        // FileMemoryStore operation) survives the transient-artifact delete, so
+        // PruneEmptyLegacyRoots can't clear "topics/", and NeedsMigration keeps reporting
+        // true forever. Every new process (each CLI invocation is a new process) would
+        // otherwise write another full timestamped .scrinia-backup-*/ copy on every call.
+        Write("topics/findings/review.nmp2", "b");
+        string lockPath = Write("topics/findings/.lock", "");
+
+        using (var heldLock = new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var first = StoreLayoutMigration.MigrateIfNeeded(_root);
+            first.Ran.Should().BeTrue();
+            first.BackupPath.Should().NotBeNull();
+            Directory.EnumerateDirectories(_root, ".scrinia-backup-*").Should().HaveCount(1);
+
+            // The held lock kept the delete from succeeding, so the legacy root never empties
+            // out and migration is asked to run again on next access.
+            StoreLayoutMigration.NeedsMigration(_root).Should().BeTrue();
+
+            StoreLayoutMigration.MigrateIfNeeded(_root);
+
+            Directory.EnumerateDirectories(_root, ".scrinia-backup-*").Should().HaveCount(1,
+                "a backup from a prior attempt already preserves the pre-migration state; " +
+                "writing another would grow .scrinia-backup-*/ without bound");
+        }
     }
 }
 

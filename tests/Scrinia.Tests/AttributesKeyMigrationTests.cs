@@ -105,7 +105,12 @@ public sealed class AttributesKeyMigrationTests
         var summary = AttributeMigration.MigrateStore(cold);
 
         summary.Migrated.Should().BeGreaterThanOrEqualTo(1, "the legacy-key sidecar must be counted as migrated");
-        string raw = File.ReadAllText(metaPath);
+        // AttributeMigration.MigrateStore touches the store, which auto-migrates the legacy
+        // .scrinia/store/ root (v3 cutover) to .scrinia/memories/ before it ever reads the
+        // sidecar — read the rewritten sidecar back from where it actually landed.
+        string migratedPath = Path.Combine(tmp.Root, ".scrinia", "memories", "a.meta.json");
+        File.Exists(metaPath).Should().BeFalse("the legacy store/ root is migrated away, not left in place");
+        string raw = File.ReadAllText(migratedPath);
         raw.Should().Contain("\"attributes\"", "migrate must rewrite the sidecar under the current key");
         raw.Should().NotContain("\"fields\"", "migrate must not leave the legacy key on disk");
         cold.Dispose();
@@ -133,8 +138,12 @@ public sealed class AttributesKeyMigrationTests
         using var tmp = new TempWorkspace();
         string storeDir = Path.Combine(tmp.Root, ".scrinia", "store");
         Directory.CreateDirectory(storeDir);
-        string metaPath = Path.Combine(storeDir, "a.meta.json");
-        File.WriteAllText(metaPath, LegacyFieldsSidecarJson("a", "tag", "security"));
+        string seedPath = Path.Combine(storeDir, "a.meta.json");
+        File.WriteAllText(seedPath, LegacyFieldsSidecarJson("a", "tag", "security"));
+
+        // AttributeMigration.MigrateStore touches the store, which auto-migrates the legacy
+        // .scrinia/store/ root (v3 cutover) to .scrinia/memories/ before it reads the sidecar.
+        string metaPath = Path.Combine(tmp.Root, ".scrinia", "memories", "a.meta.json");
 
         var first = AttributeMigration.MigrateStore(new FileMemoryStore(tmp.Root));
         first.Migrated.Should().BeGreaterThanOrEqualTo(1);
@@ -227,7 +236,8 @@ public sealed class AttributesKeyMigrationTests
         var store = tmp.NewStore();
         store.Upsert(legacyEntry, "local");
 
-        string metaPath = Path.Combine(tmp.Root, ".scrinia", "store", "a.meta.json");
+        // "local" now resolves to .scrinia/memories/ (v3 cutover), not .scrinia/store/.
+        string metaPath = Path.Combine(tmp.Root, ".scrinia", "memories", "a.meta.json");
         string raw = File.ReadAllText(metaPath);
         raw.Should().Contain("\"attributes\"", "the write chokepoint must normalize before persisting");
         raw.Should().NotContain("\"fields\"", "the write chokepoint must never re-emit the legacy key");

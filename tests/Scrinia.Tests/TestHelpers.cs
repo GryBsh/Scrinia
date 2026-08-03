@@ -81,7 +81,9 @@ internal static class TestHelpers
     /// Builds an isolated <see cref="FileMemoryStore"/> over a fresh temp directory and installs
     /// it as <see cref="MemoryStoreContext.Current"/>, isolating tests from the real user store.
     /// Restored on dispose. <see cref="WorkspaceDir"/> is the workspace root; <see cref="TempDir"/>
-    /// is the flat local store. Local topics resolve to <c>{WorkspaceDir}/.scrinia/topics/topic/</c>.
+    /// is the flat local store — <c>.scrinia/memories/</c> under the v3 layout (PathRouter.ToStoreDir
+    /// routes the bare "local" scope there; it also doubles as the root every topic/path scope
+    /// nests under, e.g. <c>{WorkspaceDir}/.scrinia/memories/topic/</c>).
     /// </summary>
     internal sealed class StoreScope : IDisposable
     {
@@ -91,7 +93,7 @@ internal static class TestHelpers
         public StoreScope(bool createStoreDir = true)
         {
             WorkspaceDir = Path.Combine(Path.GetTempPath(), $"scrinia_test_{Guid.NewGuid():N}");
-            TempDir = Path.Combine(WorkspaceDir, ".scrinia", "store");
+            TempDir = Path.Combine(WorkspaceDir, ".scrinia", "memories");
             if (createStoreDir)
                 Directory.CreateDirectory(TempDir);
             SessionBudget.OverrideStore(

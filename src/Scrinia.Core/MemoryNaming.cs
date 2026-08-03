@@ -71,24 +71,19 @@ public static class MemoryNaming
     }
 
     /// <summary>
-    /// Builds the full internal scope string used by the storage layer. This must
-    /// match how a "/topic/subject" path resolves, so ordinary topics are flat —
-    /// only skill (entity) and agent keep a namespace:
-    /// Entity topics → "local:entity/{topic}",
-    /// Agent topic  → "local:agent",
-    /// Ordinary topics → "local:{topic}".
-    /// (The legacy "local:memory/{topic}" layout is still read via fallback.)
+    /// Builds the full internal scope string used by the storage layer. Every topic — including
+    /// the former "entity" (skill) and "agent" namespaces — is flat under the v3 layout:
+    /// "local:{topic}". ("local:agent" happens to coincide with the old agent-namespace scope,
+    /// since "agent" has no child topic to flatten away.)
+    ///
+    /// <para>Flattened as part of the v3 cutover (Task 7): once <see cref="PathRouter.ToStoreDir"/>
+    /// routes every scope to <c>.scrinia/memories/</c>, a lingering "entity/skill" segment would
+    /// resolve to <c>memories/entity/skill/</c> — a location <see cref="StoreLayoutMigration"/>
+    /// never writes to (it moves entity/skill/ content to <c>memories/skill/</c>). Keeping this
+    /// namespaced would silently orphan every skill memory (and, via
+    /// <c>StoreLayoutMigration.MoveRenamedVectorDirs</c>, its vectors too).</para>
     /// </summary>
-    public static string BuildScopedTopicScope(string topic)
-    {
-        var ns = ClassifyTopic(topic);
-        return ns switch
-        {
-            "agent" => "local:agent",
-            "entity" => $"local:entity/{topic}",
-            _ => $"local:{topic}"
-        };
-    }
+    public static string BuildScopedTopicScope(string topic) => $"local:{topic}";
 
     /// <summary>
     /// Strips the namespace prefix from an internal topic directory part.
