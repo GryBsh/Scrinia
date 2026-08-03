@@ -161,6 +161,38 @@ public sealed class AgentHookSetupTests
     }
 
     [Fact]
+    public async Task UserScopeInstall_DoesNotPinAWorkspaceRoot()
+    {
+        // A user-scope hook applies to every project on the machine, so pinning a fixed
+        // workspace root here would point every project at a single store — the same bug
+        // this stamping mechanism exists to fix, reintroduced through configuration.
+        var installer = new RecordingInstaller(supportsPredicate: _ => true, isCliInstalled: true);
+        IReadOnlyList<HookSpec> specs = [new HookSpec("UserPromptSubmit", "scri hint")];
+
+        await AgentHookSetup.InstallAsync(
+            HookScope.User, workspaceRoot: @"C:/repos/proj", nonInteractive: true,
+            installers: [installer], specs: specs);
+
+        installer.ReceivedSpecs.Should().NotBeNull();
+        installer.ReceivedSpecs!.Should().OnlyContain(s => !s.Command.Contains("--workspace-root"));
+    }
+
+    [Fact]
+    public async Task ProjectScopeInstall_PinsTheWorkspaceRoot()
+    {
+        var installer = new RecordingInstaller(supportsPredicate: _ => true, isCliInstalled: true);
+        IReadOnlyList<HookSpec> specs = [new HookSpec("UserPromptSubmit", "scri hint")];
+
+        await AgentHookSetup.InstallAsync(
+            HookScope.Project, workspaceRoot: @"C:/repos/proj", nonInteractive: true,
+            installers: [installer], specs: specs);
+
+        installer.ReceivedSpecs.Should().NotBeNull();
+        installer.ReceivedSpecs!.Should().OnlyContain(
+            s => s.Command.Contains(@"--workspace-root ""C:/repos/proj"""));
+    }
+
+    [Fact]
     public async Task InstallAsync_SkipsCliNotOnPath()
     {
         var installer = new RecordingInstaller(
