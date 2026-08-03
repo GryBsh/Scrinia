@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
@@ -24,7 +25,7 @@ public sealed class ChunkIndexingTests
 
         await Tools().Remember(chunks, "chunk-idx");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "chunk-idx").Which;
         entry.ChunkEntries.Should().NotBeNull();
         entry.ChunkEntries.Should().HaveCount(2);
@@ -41,7 +42,7 @@ public sealed class ChunkIndexingTests
 
         await Tools().Remember(["Just one chunk."], "single-idx");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "single-idx").Which;
         entry.ChunkEntries.Should().BeNull();
     }
@@ -58,7 +59,7 @@ public sealed class ChunkIndexingTests
 
         await Tools().Remember(chunks, "distinct-kw");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "distinct-kw").Which;
         entry.ChunkEntries.Should().HaveCount(2);
 
@@ -82,7 +83,7 @@ public sealed class ChunkIndexingTests
 
         await Tools().Append("Appended new chunk with unique xylophone content.", "append-ce");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "append-ce").Which;
         entry.ChunkEntries.Should().NotBeNull();
         // Append to a single-chunk creates a chunk entry for the appended chunk
@@ -100,7 +101,7 @@ public sealed class ChunkIndexingTests
 
         await Tools().Append("Chunk charlie content.", "append-multi");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "append-multi").Which;
         entry.ChunkEntries.Should().NotBeNull();
         entry.ChunkEntries.Should().HaveCount(3);
@@ -124,7 +125,7 @@ public sealed class ChunkIndexingTests
         await Tools().Remember(chunks, "search-chunk");
 
         // Search for a keyword unique to chunk 2
-        var results = ScriniaArtifactStore.SearchAll("xylophone");
+        var results = MemoryStoreContext.Current!.SearchAll("xylophone");
         results.Should().HaveCountGreaterThan(0);
 
         var chunkResult = results.OfType<ChunkEntryResult>().FirstOrDefault();
@@ -141,7 +142,7 @@ public sealed class ChunkIndexingTests
         string[] chunks = ["Alpha content here.", "Beta content here."];
         await Tools().Remember(chunks, "dedup-test", description: "alpha beta test");
 
-        var results = ScriniaArtifactStore.SearchAll("alpha");
+        var results = MemoryStoreContext.Current!.SearchAll("alpha");
         // Should only have one result for dedup-test (not both entry + chunk)
         var dedupResults = results
             .Where(r => r is EntryResult er && er.Item.Entry.Name == "dedup-test"
@@ -177,7 +178,7 @@ public sealed class ChunkIndexingTests
 
         await Tools().Copy("copy-src", "copy-dst", overwrite: true);
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var dst = entries.Should().ContainSingle(e => e.Name == "copy-dst").Which;
         dst.ChunkEntries.Should().NotBeNull();
         dst.ChunkEntries.Should().HaveCount(2);
@@ -199,7 +200,7 @@ public sealed class ChunkIndexingTests
             keywords: ["kubernetes", "docker", "infrastructure"]);
 
         // Search for "kubernetes" — chunk should inherit parent keyword score
-        var results = ScriniaArtifactStore.SearchAll("kubernetes");
+        var results = MemoryStoreContext.Current!.SearchAll("kubernetes");
         results.Should().HaveCountGreaterThan(0);
 
         // The parent-level result should have a positive score from the keyword match
@@ -223,7 +224,7 @@ public sealed class ChunkIndexingTests
             tags: ["backend", "api"]);
 
         // Search for "backend" — should find via parent tag
-        var results = ScriniaArtifactStore.SearchAll("backend");
+        var results = MemoryStoreContext.Current!.SearchAll("backend");
         results.Should().HaveCountGreaterThan(0);
     }
 

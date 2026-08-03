@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Mcp;
 using Xunit;
 
@@ -27,7 +28,7 @@ public class MentionSpanWiringTests
         await Tools().MemoryRemember(path: "/findings/trip",
             content: ["We saw Jolene and Seraphim in France."]);
 
-        var entry = ScriniaArtifactStore.LoadIndex("local:findings").Single(e => e.Name == "trip");
+        var entry = MemoryStoreContext.Current!.LoadIndex("local:findings").Single(e => e.Name == "trip");
         // Dump the whole attribute set on failure. This assertion was seen to fail once with
         // mention={seraphim}, which the write path alone does not explain: with no agent
         // attributes and no `key: value` prose, DropMentionsShadowedByTypedKeys has nothing to
@@ -41,7 +42,7 @@ public class MentionSpanWiringTests
             content: ["We saw Jolene."],
             attributes: new Dictionary<string, string[]> { ["person"] = ["jolene"] });
 
-        var typed = ScriniaArtifactStore.LoadIndex("local:findings").Single(e => e.Name == "typed");
+        var typed = MemoryStoreContext.Current!.LoadIndex("local:findings").Single(e => e.Name == "typed");
         typed.Attributes!["person"].Should().Contain("jolene");
         // mention may still contain other spans, but must not shadow the agent's person:jolene as a conflict.
         typed.Attributes.TryGetValue("mention", out var m);

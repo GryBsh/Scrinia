@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
-using Scrinia.Mcp;
 using Scrinia.Services;
 
 namespace Scrinia.Commands;
@@ -20,7 +19,7 @@ internal static class WorkspaceSetup
     /// Respects test overrides set via <see cref="OverrideRoot"/> (checked first, via
     /// <see cref="AsyncLocal{T}"/> so parallel test classes don't clobber each other),
     /// falling back to the process-wide value <see cref="Configure"/> cached.
-    /// Replaces the former ScriniaArtifactStore.WorkspaceRootPath static.
+    /// Replaces the former static workspace-root accessor.
     /// </summary>
     internal static string Root =>
         _rootOverride.Value ?? _root ?? throw new InvalidOperationException(
@@ -43,7 +42,6 @@ internal static class WorkspaceSetup
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
         _root = root;
 
-        ScriniaArtifactStore.Configure(root);
         // Build ranker weights from config so a workspace can tune α_recency without
         // recompiling. Defaults (RankerOptions.Default) match the historical composition —
         // see RankerOptions docstring for the formula and calibration notes.

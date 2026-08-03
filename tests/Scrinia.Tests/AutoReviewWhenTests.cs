@@ -22,7 +22,7 @@ public sealed class AutoReviewWhenTests
 
         await Tools().Remember(["We have 835 tests and 35 tools"], "test-counts");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-counts").Which;
         AttributeReaders.TryReadReview(entry.Attributes, out _, out var reviewCondition).Should().BeTrue();
         reviewCondition.Should().Be("when counts in this memory change");
@@ -36,7 +36,7 @@ public sealed class AutoReviewWhenTests
         await Tools().Remember(["We have 835 tests"], "test-counts-explicit",
             reviewWhen: "custom condition");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-counts-explicit").Which;
         AttributeReaders.TryReadReview(entry.Attributes, out _, out var reviewCondition).Should().BeTrue();
         reviewCondition.Should().Be("custom condition");
@@ -49,7 +49,7 @@ public sealed class AutoReviewWhenTests
 
         await Tools().Remember(["This is a normal memory"], "test-normal");
 
-        var entries = ScriniaArtifactStore.LoadIndex("local");
+        var entries = MemoryStoreContext.Current!.LoadIndex("local");
         var entry = entries.Should().ContainSingle(e => e.Name == "test-normal").Which;
         AttributeReaders.TryReadReview(entry.Attributes, out _, out var reviewCondition).Should().BeFalse();
         reviewCondition.Should().BeNull();

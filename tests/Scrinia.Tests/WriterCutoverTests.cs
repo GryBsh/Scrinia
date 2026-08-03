@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 
@@ -13,16 +14,18 @@ namespace Scrinia.Tests;
 /// on every cold load and writes the upgrade back).
 ///
 /// Write/read-time isolation: these tests read the persisted entry back via
-/// <see cref="ScriniaArtifactStore.LoadIndex"/> (src/Scrinia/Mcp/ScriniaArtifactStore.cs) — a
-/// plain "*.meta.json" sidecar deserialize with NO call to AttributeMigration anywhere in its
-/// path, and no in-memory cache. This is a completely separate code path from
-/// <c>FileMemoryStore.LoadIndex</c> (which IS where the read-time forward-fill lives) even
-/// though both ultimately point at the same directory on disk during these tests
-/// (TestHelpers.StoreScope overrides both). The tools under test persist through
-/// <c>store.Upsert(...)</c> — <c>FileMemoryStore.Upsert</c> — which just serializes the given
-/// entry straight to its sidecar; it does not call Forward either. So the only way
-/// <c>Fields</c> can already contain "tag"/"review"/"anchor"/"file" keys when read back
-/// through <c>ScriniaArtifactStore.LoadIndex()</c> is if the tool itself (Store/UpdateMeta/
+/// <see cref="ReadSidecarDirect"/>, a plain "*.meta.json" sidecar deserialize with NO call to
+/// AttributeMigration anywhere in its path, and no in-memory cache. This used to go through
+/// the now-deleted <c>ScriniaArtifactStore.LoadIndex</c> (a duplicate store implementation
+/// whose read path never called AttributeMigration); now that that class is gone, the direct
+/// sidecar read is inlined here so the write-time-vs-read-time isolation this test exists to
+/// prove is preserved. This is a completely separate code path from <c>FileMemoryStore.LoadIndex</c>
+/// (which IS where the read-time forward-fill lives) even though both ultimately point at the
+/// same directory on disk during these tests (TestHelpers.StoreScope's TempDir). The tools
+/// under test persist through <c>store.Upsert(...)</c> — <c>FileMemoryStore.Upsert</c> — which
+/// just serializes the given entry straight to its sidecar; it does not call Forward either. So
+/// the only way <c>Fields</c> can already contain "tag"/"review"/"anchor"/"file" keys when read
+/// back through <see cref="ReadSidecarDirect"/> is if the tool itself (Store/UpdateMeta/
 /// Append) called Forward on the entry before persisting it — which is exactly what this
 /// task adds. Before that change, these assertions fail because Fields lacks those
 /// param-derived keys (only keyword/ref/attribute-derived keys are present at write time).
@@ -30,6 +33,19 @@ namespace Scrinia.Tests;
 public sealed class WriterCutoverTests
 {
     private static ScriniaMcpTools Tools() => new();
+
+    /// <summary>
+    /// Deserializes a "local"-scope sidecar directly off disk, bypassing every store's
+    /// read-time forward-fill (and any in-memory cache) so the resulting entry reflects
+    /// exactly what the write path persisted. See the class doc comment for why this
+    /// isolation matters.
+    /// </summary>
+    private static ArtifactEntry ReadSidecarDirect(string storeDir, string name)
+    {
+        string path = Path.Combine(storeDir, name + ".meta.json");
+        return System.Text.Json.JsonSerializer.Deserialize(
+            File.ReadAllText(path), ScriniaMcpJsonContext.Default.ArtifactEntry)!;
+    }
 
     [Fact]
     public async Task Store_Persistent_FoldsToAttributesAtWriteTime()
@@ -49,7 +65,7 @@ public sealed class WriterCutoverTests
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Raw sidecar read — bypasses FileMemoryStore's read-time Forward entirely (see class doc).
-        var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-store");
+        var persisted = ReadSidecarDirect(scope.TempDir, "writer-cutover-store");
 
         // Fields populated AT WRITE.
         persisted.Attributes.Should().NotBeNull();
@@ -77,7 +93,7 @@ public sealed class WriterCutoverTests
             reviewAfter: "2026-09-01",
             reviewWhen: "when the widget API changes");
 
-        var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-update");
+        var persisted = ReadSidecarDirect(scope.TempDir, "writer-cutover-update");
 
         persisted.Attributes.Should().NotBeNull();
         persisted.Attributes!["review"].Should().NotBeEmpty();
@@ -103,7 +119,7 @@ public sealed class WriterCutoverTests
             tags: ["auth", "tokens"],
             anchors: ["how does login work", "what triggers a token refresh"]);
 
-        var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-append");
+        var persisted = ReadSidecarDirect(scope.TempDir, "writer-cutover-append");
 
         persisted.Attributes.Should().NotBeNull();
         persisted.Attributes!["tag"].Should().Contain("auth").And.Contain("tokens");
@@ -208,7 +224,7 @@ public sealed class WriterCutoverTests
 
         await Tools().Copy("~writer-cutover-eph-copy", "writer-cutover-copy-dest");
 
-        var persisted = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "writer-cutover-copy-dest");
+        var persisted = ReadSidecarDirect(scope.TempDir, "writer-cutover-copy-dest");
 
         persisted.Attributes.Should().NotBeNull();
         persisted.Attributes!["tag"].Should().Contain("widgets");

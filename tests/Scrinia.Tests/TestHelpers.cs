@@ -78,10 +78,10 @@ internal static class TestHelpers
     // ── Store isolation ───────────────────────────────────────────────────────
 
     /// <summary>
-    /// Temporarily redirects <see cref="ScriniaArtifactStore.StoreDir"/> to a fresh temp
-    /// directory, isolating tests from the real user store. Restored on dispose.
-    /// <see cref="WorkspaceDir"/> is the workspace root; <see cref="TempDir"/> is the flat local store.
-    /// Local topics resolve to <c>{WorkspaceDir}/.scrinia/topics/topic/</c>.
+    /// Builds an isolated <see cref="FileMemoryStore"/> over a fresh temp directory and installs
+    /// it as <see cref="MemoryStoreContext.Current"/>, isolating tests from the real user store.
+    /// Restored on dispose. <see cref="WorkspaceDir"/> is the workspace root; <see cref="TempDir"/>
+    /// is the flat local store. Local topics resolve to <c>{WorkspaceDir}/.scrinia/topics/topic/</c>.
     /// </summary>
     internal sealed class StoreScope : IDisposable
     {
@@ -94,11 +94,6 @@ internal static class TestHelpers
             TempDir = Path.Combine(WorkspaceDir, ".scrinia", "store");
             if (createStoreDir)
                 Directory.CreateDirectory(TempDir);
-            ScriniaArtifactStore.OverrideWorkspaceRoot(WorkspaceDir);
-            ScriniaArtifactStore.OverrideStoreDir(TempDir);
-            ScriniaArtifactStore.OverrideEphemeralStore(
-                new System.Collections.Concurrent.ConcurrentDictionary<string, EphemeralEntry>(
-                    StringComparer.OrdinalIgnoreCase));
             SessionBudget.OverrideStore(
                 new System.Collections.Concurrent.ConcurrentDictionary<string, long>(
                     StringComparer.OrdinalIgnoreCase));
@@ -107,9 +102,6 @@ internal static class TestHelpers
 
         public void Dispose()
         {
-            ScriniaArtifactStore.OverrideWorkspaceRoot(null);
-            ScriniaArtifactStore.OverrideStoreDir(null);
-            ScriniaArtifactStore.OverrideEphemeralStore(null);
             SessionBudget.OverrideStore(null);
             MemoryStoreContext.Current = null;
             try { Directory.Delete(WorkspaceDir, recursive: true); } catch { }

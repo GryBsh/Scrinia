@@ -860,4 +860,208 @@ public sealed class FileMemoryStoreTests : IDisposable
             because: "concurrent cold-load write-backs of the same sidecar must neither throw " +
                      "(writer-side temp/Move race) nor transiently drop the entry (reader-side replace window)");
     }
+
+    // ── Ported from ScriniaArtifactStoreTests (Task 4: store unification) ──────
+    // FileMemoryStoreTests had no equivalent coverage for these behaviors before the
+    // duplicate ScriniaArtifactStore was deleted.
+
+    // ── LoadIndex edge cases ─────────────────────────────────────────────────
+
+    [Fact]
+    public void LoadIndex_MissingFile_ReturnsEmptyList()
+    {
+        var entries = _store.LoadIndex();
+
+        entries.Should().BeEmpty(
+            because: "a missing index.json must be treated as an empty store");
+    }
+
+    [Fact]
+    public void LoadIndex_OnAbsentStoreDirectory_ReturnsEmptyAndCreatesNothing()
+    {
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+
+        var entries = _store.LoadIndex();
+
+        Assert.Empty(entries);
+        Assert.False(Directory.Exists(storeDir));
+    }
+
+    [Fact]
+    public void LoadIndex_EmptyIndexFile_ReturnsEmptyList()
+    {
+        // Write an index with zero entries
+        _store.SaveIndex([]);
+
+        var entries = _store.LoadIndex();
+
+        entries.Should().BeEmpty(
+            because: "an index with no entries must load as empty");
+    }
+
+    [Fact]
+    public void LoadIndex_CorruptFile_ReturnsEmptyList()
+    {
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.CreateDirectory(storeDir);
+        string indexPath = Path.Combine(storeDir, "index.json");
+        File.WriteAllText(indexPath, "not valid json {{{{");
+
+        var entries = _store.LoadIndex();
+
+        entries.Should().BeEmpty(
+            because: "a corrupt index.json must be treated as empty, not throw");
+    }
+
+    // ── Write materializes the workspace .gitignore ─────────────────────────
+
+    [Fact]
+    public void EveryWriteMaterializesTheGitIgnore()
+    {
+        string gitIgnore = Path.Combine(_tempDir, ".scrinia", ".gitignore");
+
+        _store.Upsert(new ArtifactEntry("write-materializes", "file:///tmp/write-materializes.nmp2", 1024, 1, DateTimeOffset.UtcNow));
+
+        Assert.True(File.Exists(gitIgnore));
+    }
+
+    // ── SanitizeName ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void SanitizeName_ValidName_Unchanged()
+    {
+        string result = _store.SanitizeName("session-notes");
+
+        result.Should().Be("session-notes",
+            because: "a name with only valid filename chars must be returned unchanged");
+    }
+
+    [Fact]
+    public void SanitizeName_InvalidChars_ReplacedWithUnderscore()
+    {
+        string result = _store.SanitizeName("foo/bar:baz*qux");
+
+        result.Should().NotContain("/").And.NotContain(":").And.NotContain("*",
+            because: "all invalid filename characters must be replaced");
+        result.Should().Contain("_",
+            because: "invalid chars must be replaced with '_'");
+    }
+
+    [Fact]
+    public void SanitizeName_SpaceAndDot_Unchanged()
+    {
+        // Spaces and dots are valid in file names on all major platforms
+        string result = _store.SanitizeName("my notes.v2");
+
+        result.Should().Be("my notes.v2",
+            because: "spaces and dots are valid filename characters and must not be replaced");
+    }
+
+    // ── NameFromUri ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public void NameFromUri_StoreUri_ReturnsBaseName()
+    {
+        string storeDir = _store.GetStoreDirForScope("local");
+        // Normalise slashes for the test assertion (Windows vs Unix)
+        string uri = $"file://{storeDir}/session-notes.nmp2".Replace('\\', '/');
+
+        string name = FileMemoryStore.NameFromUri(uri);
+
+        name.Should().Be("session-notes",
+            because: "NameFromUri must strip the .nmp2 extension and return the file base name");
+    }
+
+    [Fact]
+    public void NameFromUri_TempUri_ReturnsGuidSegment()
+    {
+        string guid = Guid.NewGuid().ToString("N");
+        string uri = $"file://{Path.GetTempPath()}scrinia_{guid}.nmp2";
+
+        string name = FileMemoryStore.NameFromUri(uri);
+
+        name.Should().Be($"scrinia_{guid}",
+            because: "NameFromUri must handle temp-dir URIs gracefully, returning the file base name");
+    }
+
+    // ── SaveIndex (atomic write) ──────────────────────────────────────────────
+
+    [Fact]
+    public void SaveIndex_AtomicWrite_IndexRoundTrips()
+    {
+        var entry = new ArtifactEntry("roundtrip", "file:///tmp/roundtrip.nmp2", 1024, 1, DateTimeOffset.UtcNow, ContentPreview: "Hello, world!");
+
+        _store.SaveIndex([entry]);
+        var loaded = _store.LoadIndex();
+
+        loaded.Should().ContainSingle(e =>
+            e.Name == "roundtrip" && e.ContentPreview == "Hello, world!",
+            because: "SaveIndex → LoadIndex must preserve all entry fields");
+    }
+
+    [Fact]
+    public void SaveIndex_NoTempFileLeft_AfterWrite()
+    {
+        _store.SaveIndex([new ArtifactEntry("x", "file:///tmp/x.nmp2", 1024, 1, DateTimeOffset.UtcNow)]);
+
+        // FileMemoryStore writes one sidecar per entry (not a combined index.json), each through
+        // a uniquely-named "{meta}.{pid}.{guid}.tmp" temp file — so the leftover-temp-file check
+        // scans the store dir for any ".tmp" file rather than a specific "index.json.tmp" name.
+        string storeDir = Path.Combine(_tempDir, ".scrinia", "store");
+        Directory.GetFiles(storeDir, "*.tmp").Should().BeEmpty(
+            because: "the temp file used for atomic sidecar writes must be renamed/removed after success");
+    }
+
+    // ── ArchiveVersion ──────────────────────────────────────────────────────
+
+    [Fact]
+    public void ArchiveVersion_ExistingFile_CreatesArchive()
+    {
+        string artifactPath = _store.ArtifactPath("archive-test");
+        Directory.CreateDirectory(Path.GetDirectoryName(artifactPath)!);
+        File.WriteAllText(artifactPath, "NMP/2 test content");
+
+        _store.ArchiveVersion("archive-test");
+
+        string versionsDir = Path.Combine(_tempDir, ".scrinia", "store", "versions");
+        Directory.Exists(versionsDir).Should().BeTrue();
+        Directory.GetFiles(versionsDir, "archive-test_*.nmp2").Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void ArchiveVersion_NoFile_NoOp()
+    {
+        // Should not throw
+        _store.ArchiveVersion("nonexistent");
+
+        string versionsDir = Path.Combine(_tempDir, ".scrinia", "store", "versions");
+        Directory.Exists(versionsDir).Should().BeFalse();
+    }
+
+    // ── ResolveReadScopes / NormalizeScopeFilters ────────────────────────────
+
+    [Fact]
+    public void ResolveReadScopes_Default_StartsWithLocal()
+    {
+        var scopes = _store.ResolveReadScopes();
+        scopes.Should().StartWith("local",
+            because: "local scope must always be first in default read order");
+    }
+
+    [Fact]
+    public void ResolveReadScopes_ExplicitFilter_ParsesCorrectly()
+    {
+        var scopes = _store.ResolveReadScopes("local,dotnet");
+        scopes.Should().Equal(["local", "local:dotnet"],
+            because: "explicit scope filter must normalize bare topic names to the flat local-topic scope");
+    }
+
+    [Fact]
+    public void NormalizeScopeFilters_BareTopicName_ReturnsLocalOnly()
+    {
+        var result = _store.NormalizeScopeFilters("api");
+
+        result.Should().Equal(["local:api"],
+            because: "bare topic names must resolve to the flat local-topic scope");
+    }
 }
