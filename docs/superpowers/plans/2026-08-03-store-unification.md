@@ -1112,16 +1112,49 @@ Expected: the converted tests FAIL on the `Directory.Exists(...topics).Should().
 
 Two call sites use it (`EmbeddingReindexer.cs:226`, `ScriniaCommands.Migration.cs:531`). Both become `FormatQualifiedName` — under v3 the two are identical, which is why the method is being removed. Delete the explanatory comment at `Migration.cs:527-530`; it describes a hazard that no longer exists.
 
-- [ ] **Step 5: Route the agent path through the store**
+- [ ] **Step 5: Route the agent path through the store — ALL FOUR readers**
 
-`MemoryTools.Core.cs:275-277` writes to a `.scrinia/agent` literal. Replace with the store's own resolution so `/agent/x` lands in `memories/agent/x.md`:
+> **PLAN CORRECTION (applied mid-execution, after the Task 7 implementation).**
+> Task 7 discovered that `StoreLayoutMigration.LegacyRoots` swept `.scrinia/agent/`
+> and `.scrinia/skills/`, both of which hold live files read by hardcoded paths that
+> no task repointed. Wiring the trigger would have silently orphaned users' agent
+> configs and broken the skills feature outright. Task 7 removed both from the sweep
+> as a conservative fix, leaving `LegacyRoots = ["store", "topics"]`.
+>
+> **Human ruling:** restore `agent` to the sweep, and repoint *all four* of its
+> readers here — the original plan covered only two.
+>
+> **`skills` stays out of the sweep permanently.** `.scrinia/skills/` was never in the
+> approved design's mapping table; this plan added it by inheriting the ported
+> `BuildMigrationPlan`'s skills case. It is read by hardcoded paths at
+> `MemoryTools.Skills.cs:219,274,392,393` and `MemoryTools.Lifecycle.cs:606`, none of
+> which any task in this workstream touches. Migrating skills belongs to its own
+> spec. Note this explicitly in the CHANGELOG entry (Step 6).
+
+`.scrinia/agent` is reached by a literal at four sites. Replace each with the store's
+own resolution so `/agent/x` lands in `memories/agent/x.md`:
 
 ```csharp
             string agentDir = store.GetStoreDirForScope("local:agent");
             string filePath = Path.Combine(agentDir, $"{agentSubject}.md");
 ```
 
-Apply the same change to the `/agent/` read branch at `MemoryTools.Core.cs:30-40`.
+| Site | What it does |
+|---|---|
+| `MemoryTools.Core.cs:39-40` | reads `/agent/x` (includes a `PathContainment.IsWithin` guard — keep it, repointed at the new dir) |
+| `MemoryTools.Core.cs:276` | writes `/agent/x` |
+| `MemoryTools.Lifecycle.cs:626` | agent directory listing |
+
+Then restore the root in `src/Scrinia.Core/StoreLayoutMigration.cs`:
+
+```csharp
+    private static readonly string[] LegacyRoots = ["store", "topics", "agent"];
+```
+
+Add a test proving an existing `.scrinia/agent/profile.md` migrates to
+`.scrinia/memories/agent/profile.md` **and is still readable through the `/agent/profile`
+tool path afterwards** — the migration and the reader must agree, which is the whole
+point of this correction.
 
 - [ ] **Step 6: Run the full suite**
 
