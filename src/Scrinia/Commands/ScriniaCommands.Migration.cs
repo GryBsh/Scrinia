@@ -380,7 +380,7 @@ public partial class ScriniaCommands
             catch { /* corrupt debounce file → proceed */ }
         }
 
-        var allEntries = ScriniaArtifactStore.ListScoped(null);
+        var allEntries = WorkspaceSetup.Store.ListScoped(null);
         long totalBytes = allEntries.Sum(e => e.Entry.OriginalBytes);
         var now = DateTimeOffset.UtcNow;
         int staleCount = allEntries.Count(e =>
@@ -403,12 +403,9 @@ public partial class ScriniaCommands
             // Wire the embedding pipeline before compacting so the merged single-chunk entry
             // can be re-embedded through the same event-sink path a normal store/append uses —
             // otherwise vectors stay keyed to the pre-compaction chunk layout (stale/orphaned).
-            IMemoryStore? store = null;
+            IMemoryStore store = WorkspaceSetup.Store;
             if (compactionCandidates.Count > 0)
-            {
                 await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
-                store = MemoryStoreContext.Current;
-            }
 
             foreach (var item in compactionCandidates)
             {
@@ -482,26 +479,26 @@ public partial class ScriniaCommands
     /// chunk count and clears per-chunk metadata (which is no longer accurate after merge).
     /// </summary>
     /// <param name="item">The multi-chunk entry to compact.</param>
-    /// <param name="store">Active memory store (wired by the caller via <c>WorkspaceSetup.LoadPluginsAsync</c>),
-    /// used to re-embed the merged entry. Null skips re-embedding (e.g. workspace not configured).</param>
+    /// <param name="store">Active memory store, used both to read/write the artifact through its
+    /// per-scope write lock and to re-embed the merged entry.</param>
     /// <param name="ct">Cancellation token for the re-embed call.</param>
     /// <remarks>Internal (rather than private) so tests can exercise the re-embed wiring directly
     /// without going through <c>WorkspaceSetup.LoadPluginsAsync</c>'s real provider discovery,
     /// which is environment-dependent (model files may or may not be present on disk).</remarks>
-    internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore? store, CancellationToken ct)
+    internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)
     {
-        string path = ScriniaArtifactStore.FindArtifactPath(item.Entry.Name, item.Scope);
+        string path = store.FindArtifactPath(item.Entry.Name, item.Scope);
         if (!File.Exists(path)) return;
 
-        string artifact = File.ReadAllText(path);
+        string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
         if (Nmp2ChunkedEncoder.GetChunkCount(artifact) <= 1) return;
 
-        ScriniaArtifactStore.ArchiveVersion(item.Entry.Name, item.Scope);
+        store.ArchiveVersion(item.Entry.Name, item.Scope);
 
         byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
         string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
         string compacted = Nmp2ChunkedEncoder.Encode(fullText);
-        File.WriteAllText(path, compacted);
+        await store.WriteArtifactAsync(item.Entry.Name, item.Scope, compacted, ct);
 
         var updated = item.Entry with
         {
@@ -510,7 +507,7 @@ public partial class ScriniaCommands
             UpdatedAt = DateTimeOffset.UtcNow,
             ChunkEntries = null,
         };
-        ScriniaArtifactStore.Upsert(updated, item.Scope);
+        store.Upsert(updated, item.Scope);
 
         // Merging chunks collapses the chunk layout (e.g. indices 0-7 -> just 0), so any
         // vectors keyed to the old per-chunk indices are now orphaned/stale. Re-embed through
@@ -520,7 +517,7 @@ public partial class ScriniaCommands
         // wired (embeddings unavailable in this process), there's nothing to clear or rebuild —
         // a subsequent `scri reindex` will repopulate.
         var sink = MemoryEventSinkContext.Current;
-        if (sink is not null && store is not null)
+        if (sink is not null)
         {
             try
             {
