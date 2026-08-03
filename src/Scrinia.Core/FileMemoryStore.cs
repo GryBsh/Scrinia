@@ -745,9 +745,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public List<ArtifactEntry> LoadIndex(string scope = "local")
     {
-        if (!Directory.Exists(GetStoreDirForScope(scope)))
-            return [];
-
         using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         var lk = GetIndexLock(scope);
         lk.EnterReadLock();

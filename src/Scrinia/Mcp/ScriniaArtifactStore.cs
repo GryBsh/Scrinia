@@ -363,8 +363,6 @@ internal static partial class ScriniaArtifactStore
     public static List<ArtifactEntry> LoadIndex(string scope = "local")
     {
         string storeDir = GetStoreDirForScope(scope);
-        if (!Directory.Exists(storeDir))
-            return [];
 
         using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         var entries = LoadIndexFrom(storeDir);

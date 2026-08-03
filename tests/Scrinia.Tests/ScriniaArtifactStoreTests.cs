@@ -626,6 +626,40 @@ public sealed class ScriniaArtifactStoreTests
             because: "namespaced entries take precedence over legacy entries");
     }
 
+    [Fact]
+    public void ScriniaArtifactStore_LoadIndex_MergesLegacyEntries_WhenNamespacedDirDoesNotExist()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // Only the legacy flat dir exists — the namespaced (primary) dir for this scope is
+        // never created. A prior version of LoadIndex returned an empty list as soon as the
+        // primary directory was absent, before the legacy merge below ran, hiding memories
+        // that were actually on disk.
+        string legacyDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "concern");
+        Directory.CreateDirectory(legacyDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-only-concern",
+          "uri": "file:///tmp/legacy-only-concern.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry with no namespaced counterpart directory"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-only-concern.meta.json"), legacyMeta);
+
+        string namespacedDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "entity", "concern");
+        Assert.False(Directory.Exists(namespacedDir), "test setup must not pre-create the primary dir");
+
+        var entries = ScriniaArtifactStore.LoadIndex("local:entity/concern");
+
+        entries.Should().Contain(e => e.Name == "legacy-only-concern",
+            because: "the legacy merge must run even when the primary directory was never created");
+        Assert.False(Directory.Exists(namespacedDir),
+            "a read must not materialize the primary directory as a side effect");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static ArtifactEntry MakeEntry(
