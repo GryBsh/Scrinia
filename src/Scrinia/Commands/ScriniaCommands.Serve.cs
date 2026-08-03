@@ -65,6 +65,7 @@ public partial class ScriniaCommands
         {
             // Local mode (default) → FileMemoryStore
             WorkspaceSetup.Configure(workspaceRoot);
+            WorkspaceSetup.WarnOnOrphanStores();
 
             // First-run convenience: if the embedding model isn't on disk yet, fetch it
             // before the MCP server starts up. Writes status to stderr only — stdout is

@@ -39,6 +39,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
+        WorkspaceSetup.WarnOnOrphanStores();
 
         // Hook-management flags short-circuit the model-download flow — they're standalone
         // operations users typically run after the regular setup is complete.

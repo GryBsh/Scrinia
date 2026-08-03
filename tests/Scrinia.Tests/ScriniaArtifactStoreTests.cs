@@ -58,6 +58,17 @@ public sealed class ScriniaArtifactStoreTests
     }
 
     [Fact]
+    public void LoadIndex_OnAbsentStoreDirectory_ReturnsEmptyAndCreatesNothing()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+
+        var entries = ScriniaArtifactStore.LoadIndex();
+
+        Assert.Empty(entries);
+        Assert.False(Directory.Exists(scope.TempDir));
+    }
+
+    [Fact]
     public void LoadIndex_EmptyIndexFile_ReturnsEmptyList()
     {
         using var scope = new TestHelpers.StoreScope();
@@ -127,6 +138,17 @@ public sealed class ScriniaArtifactStoreTests
             because: "two distinct names must produce two separate entries");
         loaded.Should().Contain(e => e.Name == "alpha");
         loaded.Should().Contain(e => e.Name == "beta");
+    }
+
+    [Fact]
+    public void EveryWriteMaterializesTheGitIgnore()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+        string gitIgnore = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
+
+        ScriniaArtifactStore.Upsert(MakeEntry("write-materializes"));
+
+        Assert.True(File.Exists(gitIgnore));
     }
 
     // ── Remove ────────────────────────────────────────────────────────────────
@@ -604,6 +626,40 @@ public sealed class ScriniaArtifactStoreTests
             because: "namespaced entries take precedence over legacy entries");
     }
 
+    [Fact]
+    public void ScriniaArtifactStore_LoadIndex_MergesLegacyEntries_WhenNamespacedDirDoesNotExist()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // Only the legacy flat dir exists — the namespaced (primary) dir for this scope is
+        // never created. A prior version of LoadIndex returned an empty list as soon as the
+        // primary directory was absent, before the legacy merge below ran, hiding memories
+        // that were actually on disk.
+        string legacyDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "concern");
+        Directory.CreateDirectory(legacyDir);
+        string legacyMeta = """
+        {
+          "name": "legacy-only-concern",
+          "uri": "file:///tmp/legacy-only-concern.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry with no namespaced counterpart directory"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-only-concern.meta.json"), legacyMeta);
+
+        string namespacedDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "entity", "concern");
+        Assert.False(Directory.Exists(namespacedDir), "test setup must not pre-create the primary dir");
+
+        var entries = ScriniaArtifactStore.LoadIndex("local:entity/concern");
+
+        entries.Should().Contain(e => e.Name == "legacy-only-concern",
+            because: "the legacy merge must run even when the primary directory was never created");
+        Assert.False(Directory.Exists(namespacedDir),
+            "a read must not materialize the primary directory as a side effect");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static ArtifactEntry MakeEntry(
@@ -617,4 +673,32 @@ public sealed class ScriniaArtifactStoreTests
             ChunkCount: 1,
             CreatedAt: DateTimeOffset.UtcNow,
             ContentPreview: contentPreview ?? desc);
+}
+
+/// <summary>
+/// Isolated from <see cref="ScriniaArtifactStoreTests"/> because <see cref="ScriniaArtifactStore.Configure"/>
+/// mutates the process-wide static workspace root rather than an <c>AsyncLocal</c> override, so
+/// it must run serialized against the other tests that touch the same static (see
+/// <see cref="GlobalWorkspaceConfigCollection"/>) rather than in parallel with the rest of this
+/// file's <c>StoreScope</c>-based tests.
+/// </summary>
+[Collection(GlobalWorkspaceConfigCollection.Name)]
+public sealed class ScriniaArtifactStoreConfigureTests
+{
+    [Fact]
+    public void Configure_DoesNotMaterializeTheStore()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia_cfg_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            ScriniaArtifactStore.Configure(root);
+
+            Assert.False(Directory.Exists(Path.Combine(root, ".scrinia")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

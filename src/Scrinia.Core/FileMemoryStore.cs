@@ -200,8 +200,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         RankerOptions = rankerOptions ?? RankerOptions.Default;
-
-        EnsureGitIgnore(_workspaceRoot);
     }
 
     internal static void EnsureGitIgnore(string workspaceRoot)
@@ -214,7 +212,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
         AtomicWriteAllText(gitIgnorePath, """
             # Lock files (runtime artifacts from cross-process file locking)
-            **/.lock
+            **/*.lock
 
             # Export bundles (generated, can be re-exported)
             exports/
@@ -224,6 +222,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
             # Temporary files from interrupted writes
             **/*.tmp
+
+            # Vector indexes (derived from topic content; rebuild with `scri reindex`)
+            embeddings/
 
             # Consolidation bookkeeping (rebuilt from sidecar state on next run)
             .last-consolidation
@@ -708,6 +709,40 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private string GetLockPath(string scope) =>
         Path.Combine(GetStoreDirForScope(scope), ".lock");
 
+    /// <summary>
+    /// Creates the workspace store and the scope's directory. Called only from write paths, so
+    /// a workspace that is never written to leaves no directory behind.
+    /// </summary>
+    private void EnsureMaterialized(string scope)
+    {
+        EnsureGitIgnore(_workspaceRoot);
+        Directory.CreateDirectory(GetStoreDirForScope(scope));
+    }
+
+    /// <summary>
+    /// Runs <paramref name="body"/> under the scope's cross-process file lock and in-process
+    /// write lock, materialising the store first. Every write goes through here so that
+    /// "writes materialize, reads do not" holds in one place.
+    /// </summary>
+    private T WithExclusiveLock<T>(string scope, Func<T> body)
+    {
+        EnsureMaterialized(scope);
+        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
+        var lk = GetIndexLock(scope);
+        lk.EnterWriteLock();
+        try
+        {
+            return body();
+        }
+        finally
+        {
+            lk.ExitWriteLock();
+        }
+    }
+
+    private void WithExclusiveLock(string scope, Action body) =>
+        WithExclusiveLock(scope, () => { body(); return true; });
+
     public List<ArtifactEntry> LoadIndex(string scope = "local")
     {
         using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
@@ -893,21 +928,14 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     internal void PersistMigratedEntry(ArtifactEntry entry, string storeDir, string scope)
     {
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        var lk = GetIndexLock(scope);
-        lk.EnterWriteLock();
-        try
+        WithExclusiveLock(scope, () =>
         {
             Directory.CreateDirectory(storeDir);
             WriteSidecar(entry, storeDir);
             _indexCache.TryRemove(scope, out _); // next read rebuilds from the now-upgraded sidecars
             if (scope.StartsWith("local:", StringComparison.Ordinal))
                 _cachedTopics = null;
-        }
-        finally
-        {
-            lk.ExitWriteLock();
-        }
+        });
     }
 
     private void WriteSidecars(List<ArtifactEntry> entries, string storeDir)
@@ -1017,17 +1045,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        var lk = GetIndexLock(scope);
-        lk.EnterWriteLock();
-        try
-        {
-            SaveIndexUnsafe(entries, scope);
-        }
-        finally
-        {
-            lk.ExitWriteLock();
-        }
+        WithExclusiveLock(scope, () => SaveIndexUnsafe(entries, scope));
     }
 
     private void SaveIndexUnsafe(List<ArtifactEntry> entries, string scope)
@@ -1057,10 +1075,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
     {
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        var lk = GetIndexLock(scope);
-        lk.EnterWriteLock();
-        try
+        WithExclusiveLock(scope, () =>
         {
             string storeDir = GetStoreDirForScope(scope);
             Directory.CreateDirectory(storeDir);
@@ -1094,19 +1109,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 _cachedTopics = null;
 
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
-        }
-        finally
-        {
-            lk.ExitWriteLock();
-        }
+        });
     }
 
     public bool Remove(string name, string scope = "local")
     {
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        var lk = GetIndexLock(scope);
-        lk.EnterWriteLock();
-        try
+        return WithExclusiveLock(scope, () =>
         {
             string storeDir = GetStoreDirForScope(scope);
             string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
@@ -1145,11 +1153,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
 
             return true;
-        }
-        finally
-        {
-            lk.ExitWriteLock();
-        }
+        });
     }
 
     /// <summary>
@@ -1162,10 +1166,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
-        using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
-        var lk = GetIndexLock(scope);
-        lk.EnterWriteLock();
-        try
+        return WithExclusiveLock(scope, () =>
         {
             string storeDir = GetStoreDirForScope(scope);
             string metaPath = Path.Combine(storeDir, SanitizeName(subject) + ".meta.json");
@@ -1202,11 +1203,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
 
             return true;
-        }
-        finally
-        {
-            lk.ExitWriteLock();
-        }
+        });
     }
 
     /// <summary>

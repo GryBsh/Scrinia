@@ -45,13 +45,17 @@ app.Run(args);
 
 `WorkspaceSetup` handles workspace initialization:
 
-1. Walk up the directory tree from `cwd` looking for `.scrinia/`
-2. If found, use that directory as the workspace root
-3. If not found, use `cwd` as the workspace root
-4. Create `.scrinia/store/` and `.scrinia/topics/` if they don't exist
+1. Walk up from `cwd` looking for the nearest enclosing git repository (a `.git` entry,
+   which may be a directory or, in worktrees and submodules, a file)
+2. If found, that repository's root is the workspace root
+3. If no enclosing repository is found, `cwd` is the workspace root and no upward search
+   happens
+4. `.scrinia/store/` and `.scrinia/topics/` are created lazily, only when something is
+   written -- not during this resolution step
 5. Discover and launch plugins
 
-This mirrors `git`'s `.git/` discovery pattern.
+This mirrors `git`'s own `.git/` discovery, bounded the same way `git` bounds it: at the
+first repository found, not the first `.scrinia/` found.
 
 ## ScriniaArtifactStore (CLI Store)
 

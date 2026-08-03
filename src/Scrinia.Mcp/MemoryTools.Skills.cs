@@ -219,6 +219,7 @@ public sealed partial class ScriniaMcpTools
                 $"Invalid skill name '{name}'.",
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/skill/my-helper', content: [...] })").ToYaml();
+        FileMemoryStore.EnsureGitIgnore(Path.GetDirectoryName(baseDir)!);
         Directory.CreateDirectory(skillsDir);
 
         ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));

@@ -2041,6 +2041,34 @@ public sealed class ScriniaMcpToolsTests
             because: "recall must use action 'recalled', not the lower-level 'shown'");
     }
 
+    // ── Skill/agent writers materialize .gitignore (no eager Configure-time write) ──
+
+    [Fact]
+    public async Task MemoryRemember_SkillPath_ProducesGitIgnore()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+
+        await Tools().MemoryRemember(path: "/skill/my-helper", content: ["skill instructions here"]);
+
+        string gitignorePath = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
+        File.Exists(gitignorePath).Should().BeTrue(
+            because: "the first write under a /skill/ path bypasses Upsert/SaveIndex via a " +
+                     "direct Directory.CreateDirectory, and must still materialize .gitignore");
+    }
+
+    [Fact]
+    public async Task MemoryRemember_AgentPath_ProducesGitIgnore()
+    {
+        using var scope = new TestHelpers.StoreScope(createStoreDir: false);
+
+        await Tools().MemoryRemember(path: "/agent/my-agent", content: ["agent config content"]);
+
+        string gitignorePath = Path.Combine(scope.WorkspaceDir, ".scrinia", ".gitignore");
+        File.Exists(gitignorePath).Should().BeTrue(
+            because: "the first write under an /agent/ path bypasses Upsert/SaveIndex via a " +
+                     "direct Directory.CreateDirectory, and must still materialize .gitignore");
+    }
+
     // ── withBuiltin parameter (skill recall) — disambiguated from reconcile ──
 
     [Fact]

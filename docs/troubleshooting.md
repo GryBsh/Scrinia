@@ -6,9 +6,30 @@ Common issues and solutions for the Scrinia CLI, server, and plugins.
 
 ### "No .scrinia/ directory found"
 
-The CLI walks up from the current directory looking for `.scrinia/`. If not found, it uses `cwd` as the workspace root and creates `.scrinia/` there.
+The CLI walks up from the current directory looking for the nearest enclosing git repository and uses that repository's root as the workspace root. If no repository encloses the current directory, `cwd` itself is the workspace root and no upward search happens. Either way, `.scrinia/` is created lazily -- only once something is written; reading commands against a workspace with no store create nothing.
 
 **Fix:** Run `scri` from within your project directory, or use `--workspace-root /path/to/project`.
+
+### Memories from another project appear, or my memories seem missing
+
+The workspace root is the nearest enclosing git repository, found by walking up from the current directory looking for a `.git` entry and stopping at the first one. A project that isn't inside any git repository uses its own directory as the root, with no upward search. This means two unrelated projects only ever share a store if they share the same enclosing repository -- a project's memories never bind to a `.scrinia/` sitting in a distant ancestor directory just because that ancestor happens to have one.
+
+If `scri` finds a `.scrinia/` directory outside the root it resolved to, it prints a warning to stderr on writes, `setup`, `serve` startup, and `restore` (the SessionStart hook, once per session), naming the ignored store, the root actually in use, and a ready-to-run migration command pair, for example:
+
+```
+scrinia: ignoring store at C:\ancestor\.scrinia
+         using C:\projects\your-project
+
+to migrate its memories:
+  scri bundle export <topics> --workspace-root "C:\ancestor"
+  scri bundle import <file> --workspace-root "C:\projects\your-project"
+```
+
+**Fix:**
+- If memories from another project are showing up, confirm you're running `scri` (or your MCP client) from inside the intended project, and check stderr for an "ignoring store" warning naming the store actually being used.
+- If memories seem to have disappeared, look for an "ignoring store" warning pointing at the old location, then run the printed `scri bundle export` / `scri bundle import` pair to move those memories into the workspace root now in use.
+- To make resolution independent of the directory a command or MCP client happens to launch from, pass `--workspace-root /path/to/project` explicitly.
+- The warning only fires on `store`/`forget`/`append`/`compact`/`link`, `setup`, `serve` startup, and `restore` — never on read-only commands like `hint`, `recall`, `search`, `list`, or `show`. If you only ever run read commands, run `scri restore` (or any write) once to surface it.
 
 ### "Model not found" / Semantic search not working
 

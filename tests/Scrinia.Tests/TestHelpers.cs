@@ -88,11 +88,12 @@ internal static class TestHelpers
         public string WorkspaceDir { get; }
         public string TempDir { get; }
 
-        public StoreScope()
+        public StoreScope(bool createStoreDir = true)
         {
             WorkspaceDir = Path.Combine(Path.GetTempPath(), $"scrinia_test_{Guid.NewGuid():N}");
             TempDir = Path.Combine(WorkspaceDir, ".scrinia", "store");
-            Directory.CreateDirectory(TempDir);
+            if (createStoreDir)
+                Directory.CreateDirectory(TempDir);
             ScriniaArtifactStore.OverrideWorkspaceRoot(WorkspaceDir);
             ScriniaArtifactStore.OverrideStoreDir(TempDir);
             ScriniaArtifactStore.OverrideEphemeralStore(

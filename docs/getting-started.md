@@ -95,12 +95,16 @@ Add to your MCP client configuration (e.g., `.mcp.json` for Claude Code):
   "mcpServers": {
     "scrinia": {
       "command": "scri",
-      "args": ["serve"],
+      "args": ["serve", "--workspace-root", "/path/to/your/project"],
       "transport": "stdio"
     }
   }
 }
 ```
+
+`scri serve` resolves its workspace from the nearest enclosing git repository relative to
+its working directory; passing `--workspace-root` explicitly makes the server independent
+of whatever directory the client launches it from.
 
 Now your AI assistant has access to Scrinia's MCP tools — `guide` plus per-verb memory tools (`remember`, `recall`, `search`, `list`, `append`, `forget`, `compact`, `link`, `restore`, `reconcile`) and the `facts` entity-query tool — for persistent memory, skills, and session recall. See [CLI Reference](cli-reference.md) for full details.
 

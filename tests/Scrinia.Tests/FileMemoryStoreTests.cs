@@ -527,6 +527,39 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void LoadIndex_MergesEntriesFromLegacyFlatDir_WhenNamespacedDirDoesNotExist()
+    {
+        // Regression: the namespaced (primary) directory for this scope is never created —
+        // only the legacy flat dir holds data. A prior version of LoadIndex returned an empty
+        // list as soon as the primary directory was absent, before the legacy merge ran at all,
+        // hiding memories that were actually on disk.
+        string legacyDir = Path.Combine(_tempDir, ".scrinia", "topics", "task");
+        Directory.CreateDirectory(legacyDir);
+
+        string metaJson = """
+        {
+          "name": "legacy-only-entry",
+          "uri": "file:///tmp/legacy-only-entry.nmp2",
+          "originalBytes": 100,
+          "chunkCount": 1,
+          "createdAt": "2026-01-01T00:00:00+00:00",
+          "description": "A legacy entry with no namespaced counterpart directory"
+        }
+        """;
+        File.WriteAllText(Path.Combine(legacyDir, "legacy-only-entry.meta.json"), metaJson);
+
+        string namespacedDir = Path.Combine(_tempDir, ".scrinia", "topics", "entity", "task");
+        Assert.False(Directory.Exists(namespacedDir), "test setup must not pre-create the primary dir");
+
+        var entries = _store.LoadIndex("local:entity/task");
+
+        entries.Should().Contain(e => e.Name == "legacy-only-entry",
+            because: "the legacy merge must run even when the primary directory was never created");
+        Assert.False(Directory.Exists(namespacedDir),
+            "a read must not materialize the primary directory as a side effect");
+    }
+
+    [Fact]
     public void LoadIndex_NamespacedEntries_TakePrecedenceOverLegacy()
     {
         // Create the legacy flat dir with a sidecar

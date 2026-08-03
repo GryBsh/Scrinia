@@ -504,7 +504,11 @@ Scrinia stores all data in a `.scrinia/` directory at the workspace root:
 
 ### Workspace Discovery
 
-When `--workspace-root` is not specified, `scri` walks up the directory tree from the current working directory looking for a `.scrinia/` directory (like git finds `.git/`). If none is found, the current directory becomes the workspace root and `.scrinia/` is created on first write.
+When `--workspace-root` is not specified, `scri` walks up from the current working directory looking for the nearest enclosing git repository, identified by a `.git` entry (a directory in a normal checkout, or a file pointing at `gitdir:` in a worktree or submodule). That repository's root becomes the workspace root. If no git repository encloses the working directory, the working directory itself is the workspace root and no upward search happens.
+
+`.scrinia/` is created lazily -- only when something is written. Reading commands (`hint`, `recall`, `search`, `show`, `list`) against a workspace with no store create nothing.
+
+If a `.scrinia/` directory exists somewhere resolution deliberately did not use (for example, in an ancestor directory outside the resolved root), writes, `setup`, and `serve` startup print a warning to stderr naming the ignored store, the root in use, and a `scri bundle export` / `scri bundle import` pair to migrate its memories into the resolved workspace.
 
 ## Configuration
 
@@ -664,26 +668,16 @@ Add to `.mcp.json` in your project root or `~/.claude/`:
   "mcpServers": {
     "scrinia": {
       "command": "scri",
-      "args": ["serve"],
+      "args": ["serve", "--workspace-root", "/path/to/your/project"],
       "transport": "stdio"
     }
   }
 }
 ```
 
-### With Custom Workspace Root
-
-```json
-{
-  "mcpServers": {
-    "scrinia": {
-      "command": "scri",
-      "args": ["serve", "--workspace-root", "/path/to/workspace"],
-      "transport": "stdio"
-    }
-  }
-}
-```
+`scri serve` resolves its workspace from the nearest enclosing git repository relative to
+its working directory; passing `--workspace-root` explicitly makes the server independent
+of whatever directory the client launches it from.
 
 ### Remote Mode (Connecting to Scrinium)
 
