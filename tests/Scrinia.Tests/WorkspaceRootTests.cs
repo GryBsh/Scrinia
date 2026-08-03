@@ -211,4 +211,82 @@ public class WorkspaceRootTests : IDisposable
 
         Assert.Contains(@"scri bundle export agent,patterns --workspace-root ""C:\containers""", text);
     }
+
+    [Fact]
+    public void OrphanWarning_WithNoTopics_PointsAtListInsteadOfGuessingAnExportCommand()
+    {
+        string text = Scrinia.Commands.WorkspaceSetup.FormatOrphanWarning(
+            orphan: @"C:\containers\.scrinia",
+            root: @"C:\containers\proj",
+            topics: []);
+
+        // The user is sent to `scri list` first, and the export line carries a placeholder
+        // rather than a fabricated topic list — the same convention as <file> on the line below.
+        Assert.Contains(@"scri list --workspace-root ""C:\containers""", text);
+        Assert.Contains(@"scri bundle export <topics> --workspace-root ""C:\containers""", text);
+    }
+
+    [Fact]
+    public void ListTopics_DescendsIntoEntityAndMemoryNamespaceDirs_InsteadOfReportingTheNamespaceItself()
+    {
+        string store = Mkdir(".scrinia");
+        Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "conventions"));
+        Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "findings"));
+        Directory.CreateDirectory(Path.Combine(store, "topics", "entity", "skill"));
+
+        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+
+        Assert.Contains("conventions", topics);
+        Assert.Contains("findings", topics);
+        Assert.Contains("skill", topics);
+        Assert.DoesNotContain("memory", topics);
+        Assert.DoesNotContain("entity", topics);
+    }
+
+    [Fact]
+    public void ListTopics_AgentNamespaceDir_ReportsAgentItself()
+    {
+        string store = Mkdir(".scrinia");
+        Directory.CreateDirectory(Path.Combine(store, "topics", "agent"));
+
+        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+
+        Assert.Contains("agent", topics);
+    }
+
+    [Fact]
+    public void ListTopics_FlatLegacyDirNotShadowed_IsStillReported()
+    {
+        string store = Mkdir(".scrinia");
+        Directory.CreateDirectory(Path.Combine(store, "topics", "custom-notes"));
+
+        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+
+        Assert.Contains("custom-notes", topics);
+    }
+
+    [Fact]
+    public void ListTopics_FlatDirShadowedByNamespacedChild_IsNotDuplicated()
+    {
+        string store = Mkdir(".scrinia");
+        Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "api"));
+        Directory.CreateDirectory(Path.Combine(store, "topics", "api"));
+
+        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+
+        Assert.Single(topics, t => t == "api");
+    }
+
+    [Fact]
+    public void ListTopics_V2MemoriesLayoutPresent_ReturnsNoTopics()
+    {
+        string store = Mkdir(".scrinia");
+        Directory.CreateDirectory(Path.Combine(store, "topics", "memory", "conventions"));
+        Directory.CreateDirectory(Path.Combine(store, "memories", "goal", "G-5"));
+        File.WriteAllText(Path.Combine(store, "memories", "goal", "G-5", "research.meta.json"), "{}");
+
+        var topics = Scrinia.Commands.WorkspaceSetup.ListTopics(store);
+
+        Assert.Empty(topics);
+    }
 }
