@@ -321,12 +321,12 @@ public sealed class MigrationTests : IDisposable
     [Fact]
     public async Task Migrate_FreshWorkspace_ReturnsZero()
     {
-        // Arrange: use a temp dir that has no .scrinia/ at all.
-        // WorkspaceSetup.Configure will create .scrinia/ automatically.
+        // Arrange: a workspace with a .scrinia/ directory but no v1 source directories.
         string freshDir = Path.Combine(Path.GetTempPath(), $"scrinia_fresh_test_{Guid.NewGuid():N}");
         try
         {
             Directory.CreateDirectory(freshDir);
+            Directory.CreateDirectory(Path.Combine(freshDir, ".scrinia"));
 
             // Act: migrate on a fresh workspace with no v1 data
             var cmd = new ScriniaCommands();

@@ -44,8 +44,6 @@ internal static partial class ScriniaArtifactStore
                 ? Directory.GetCurrentDirectory()
                 : Path.GetFullPath(workspaceRoot);
         }
-
-        FileMemoryStore.EnsureGitIgnore(WorkspaceRoot);
     }
 
     internal static void OverrideStoreDir(string? path) => _storeDirOverride.Value = path;
@@ -474,10 +472,20 @@ internal static partial class ScriniaArtifactStore
         }
     }
 
+    /// <summary>
+    /// Creates the workspace store and the target scope directory. Called only from write
+    /// paths, so a workspace that is never written to leaves no directory behind.
+    /// </summary>
+    private static void EnsureMaterialized(string storeDir)
+    {
+        FileMemoryStore.EnsureGitIgnore(WorkspaceRoot);
+        Directory.CreateDirectory(storeDir);
+    }
+
     public static void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
         string storeDir = GetStoreDirForScope(scope);
-        Directory.CreateDirectory(storeDir);
+        EnsureMaterialized(storeDir);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         WriteSidecars(entries, storeDir);
     }
@@ -485,7 +493,7 @@ internal static partial class ScriniaArtifactStore
     public static void Upsert(ArtifactEntry entry, string scope = "local")
     {
         string storeDir = GetStoreDirForScope(scope);
-        Directory.CreateDirectory(storeDir);
+        EnsureMaterialized(storeDir);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         WriteSidecar(entry, storeDir);
     }
@@ -493,7 +501,7 @@ internal static partial class ScriniaArtifactStore
     public static bool Remove(string name, string scope = "local")
     {
         string storeDir = GetStoreDirForScope(scope);
-        Directory.CreateDirectory(storeDir);
+        EnsureMaterialized(storeDir);
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(scope));
         string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
         if (!File.Exists(metaPath)) return false;
@@ -1007,7 +1015,7 @@ internal static partial class ScriniaArtifactStore
         Dictionary<string, string> artifactContents, bool overwrite)
     {
         string storeDir = GetStoreDirForScope(topicScope);
-        Directory.CreateDirectory(storeDir);
+        EnsureMaterialized(storeDir);
 
         using var fileLock = FileLock.AcquireExclusive(GetLockPath(topicScope));
         var existingEntries = LoadIndexFrom(storeDir);

@@ -615,6 +615,25 @@ public sealed class ScriniaArtifactStoreTests
             because: "namespaced entries take precedence over legacy entries");
     }
 
+    // ── Configure ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Configure_DoesNotMaterializeTheStore()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"scrinia_cfg_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            ScriniaArtifactStore.Configure(root);
+
+            Assert.False(Directory.Exists(Path.Combine(root, ".scrinia")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static ArtifactEntry MakeEntry(
