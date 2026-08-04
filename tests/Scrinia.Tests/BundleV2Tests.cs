@@ -76,15 +76,15 @@ public sealed class BundleV2Tests : IDisposable
 
     /// <summary>
     /// Creates a disk file under a file-entity category directory with the given content.
-    /// "agent" is routed through the store (<c>.scrinia/memories/agent/</c> under v3, since
-    /// Task 8 restored it to StoreLayoutMigration's sweep and repointed BundleFormatService's
-    /// agent-category handling to match) — "workflows"/"skills" keep the flat
-    /// <c>.scrinia/{category}/</c> layout, untouched by that migration.
+    /// "agent" and "skills" resolve through <see cref="PathRouter.ToFileEntityDir"/> at the
+    /// top level of <c>.scrinia/</c> — "workflows" has no file-entity kind, so files created
+    /// under it exist on disk but are never picked up by bundle export (<c>CategoryDir</c>
+    /// returns null for it).
     /// </summary>
     private void CreateDiskFile(string category, string fileName, string content)
     {
         string dir = category.Equals("agent", StringComparison.OrdinalIgnoreCase)
-            ? _store.GetStoreDirForScope("local:agent")
+            ? PathRouter.ToFileEntityDir("agent", _workspaceRoot)
             : Path.Combine(_workspaceRoot, ".scrinia", category);
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, fileName), content);
@@ -122,7 +122,8 @@ public sealed class BundleV2Tests : IDisposable
         // Arrange — seed a topic so the bundle is non-trivial
         SeedTopic("test", "entry1", "chunk content");
 
-        // Create disk files in the three v2 categories
+        // Create disk files in all three legacy categories — "workflows" has no file-entity
+        // kind and must be silently skipped rather than crash the export.
         CreateDiskFile("workflows", "deploy.json", """{"name":"deploy"}""");
         CreateDiskFile("skills", "researcher.md", "# Researcher\nDoes research.");
         CreateDiskFile("agent", "profile.md", "# Agent profile");
@@ -134,8 +135,10 @@ public sealed class BundleV2Tests : IDisposable
         using var ms = new MemoryStream(zipBytes);
         using var zip = new ZipArchive(ms, ZipArchiveMode.Read);
 
-        // Verify file entries exist under files/{category}/
-        zip.GetEntry("files/workflows/deploy.json").Should().NotBeNull();
+        // Verify file entries exist under files/{category}/ for kinds PathRouter knows about.
+        // "workflows" has no file-entity kind, so CategoryDir returns null and it is skipped.
+        zip.GetEntry("files/workflows/deploy.json").Should().BeNull(
+            because: "workflows has no PathRouter file-entity kind");
         zip.GetEntry("files/skills/researcher.md").Should().NotBeNull();
         zip.GetEntry("files/agent/profile.md").Should().NotBeNull();
 
@@ -151,8 +154,8 @@ public sealed class BundleV2Tests : IDisposable
         root.GetProperty("version").GetInt32().Should().Be(2);
         root.TryGetProperty("fileEntities", out var fe).Should().BeTrue();
 
-        fe.GetProperty("workflows").EnumerateArray().Select(e => e.GetString())
-            .Should().Contain("deploy.json");
+        fe.TryGetProperty("workflows", out _).Should().BeFalse(
+            because: "workflows is never scanned, so it never gets a manifest entry");
         fe.GetProperty("skills").EnumerateArray().Select(e => e.GetString())
             .Should().Contain("researcher.md");
         fe.GetProperty("agent").EnumerateArray().Select(e => e.GetString())
@@ -208,18 +211,18 @@ public sealed class BundleV2Tests : IDisposable
 
         ImportFromBytes(zipBytes, importStore);
 
-        // Assert — verify files written to correct locations. "agent" lands under
-        // .scrinia/memories/agent/ (routed through the store); "workflows"/"skills" keep the
-        // flat .scrinia/{category}/ layout.
+        // Assert — verify files written to correct locations. "agent" and "skills" resolve
+        // via PathRouter.ToFileEntityDir at the top level of .scrinia/. "workflows" has no
+        // file-entity kind, so CategoryDir returns null and the manifest entry is skipped
+        // entirely — nothing is written for it.
         string scriniaBase = Path.Combine(importRoot, ".scrinia");
-        string agentDir = importStore.GetStoreDirForScope("local:agent");
-        File.Exists(Path.Combine(scriniaBase, "workflows", "ci.json")).Should().BeTrue();
+        string agentDir = PathRouter.ToFileEntityDir("agent", importRoot);
+        File.Exists(Path.Combine(scriniaBase, "workflows", "ci.json")).Should().BeFalse(
+            because: "workflows has no PathRouter file-entity kind");
         File.Exists(Path.Combine(scriniaBase, "skills", "planner.md")).Should().BeTrue();
         File.Exists(Path.Combine(agentDir, "norms.md")).Should().BeTrue();
 
         // Verify content fidelity
-        File.ReadAllText(Path.Combine(scriniaBase, "workflows", "ci.json"))
-            .Should().Be("""{"steps":["build","test"]}""");
         File.ReadAllText(Path.Combine(scriniaBase, "skills", "planner.md"))
             .Should().Be("# Planner skill");
         File.ReadAllText(Path.Combine(agentDir, "norms.md"))
@@ -305,13 +308,14 @@ public sealed class BundleV2Tests : IDisposable
         topicCount.Should().Be(1);
         entryCount.Should().Be(2);
 
-        // Assert — disk files match originals. "agent" lands under .scrinia/memories/agent/
-        // (routed through the store); "workflows"/"skills" keep the flat layout.
+        // Assert — disk files match originals. "agent" and "skills" resolve via
+        // PathRouter.ToFileEntityDir at the top level of .scrinia/. "workflows" has no
+        // file-entity kind, so it never round-trips through a bundle.
         string importBase = Path.Combine(importRoot, ".scrinia");
-        string importAgentDir = importStore.GetStoreDirForScope("local:agent");
+        string importAgentDir = PathRouter.ToFileEntityDir("agent", importRoot);
 
-        File.ReadAllText(Path.Combine(importBase, "workflows", "release.json"))
-            .Should().Be("""{"name":"release","version":2}""");
+        File.Exists(Path.Combine(importBase, "workflows", "release.json")).Should().BeFalse(
+            because: "workflows has no PathRouter file-entity kind");
         File.ReadAllText(Path.Combine(importBase, "skills", "debugger.md"))
             .Should().Be("# Debugger\nRoot cause analysis.");
         File.ReadAllText(Path.Combine(importAgentDir, "execution-policy.md"))

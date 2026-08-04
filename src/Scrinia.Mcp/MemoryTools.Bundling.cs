@@ -28,9 +28,9 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "bundle('export', { topics: ['api', 'arch'] })").ToYaml());
 
-        string baseDir = GetScriniaBaseDir(store);
-        FileMemoryStore.EnsureGitIgnore(Path.GetDirectoryName(baseDir)!);
-        string exportsDir = Path.Combine(baseDir, "exports");
+        string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
+        FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
+        string exportsDir = Path.Combine(scriniaDir, "exports");
         Directory.CreateDirectory(exportsDir);
 
         string bundleName = string.IsNullOrWhiteSpace(filename)

@@ -38,10 +38,9 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Write("topics/memory/api/auth.nmp2", "c");
         Write("topics/entity/skill/qa.nmp2", "d");
         Write("topics/agent/profile.nmp2", "e");
-        // Top-level agent/*.md: Task 8 restored "agent" to LegacyRoots after repointing all
-        // four hardcoded .scrinia/agent/ readers/writers through the store (see the class doc
-        // comment) — this now migrates too, unlike topics/agent/ above (FileMemoryStore's own
-        // NMP2 layout, always swept via the topics/ root).
+        // Top-level agent/*.md is a live, hand-authored file entity resolved by
+        // PathRouter.ToFileEntityDir — it is never swept, unlike topics/agent/ above
+        // (FileMemoryStore's own NMP2 layout, always swept via the topics/ root).
         Write("agent/profile.md", "agent config");
 
         var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
@@ -53,14 +52,17 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("memories/api/auth.nmp2").Should().BeTrue();
         Exists("memories/skill/qa.nmp2").Should().BeTrue();
         Exists("memories/agent/profile.nmp2").Should().BeTrue();
-        Exists("memories/agent/profile.md").Should().BeTrue("the live agent config file now migrates too");
+        Exists("memories/agent/profile.md").Should().BeFalse(
+            "agent is a hand-authored file entity and is never swept into memories/");
 
         // Moved, not copied.
         Exists("store/notes.nmp2").Should().BeFalse();
         Exists("topics/findings/review.nmp2").Should().BeFalse();
-        Exists("agent/profile.md").Should().BeFalse();
         Directory.Exists(Path.Combine(_root, ".scrinia", "topics")).Should().BeFalse();
-        Directory.Exists(Path.Combine(_root, ".scrinia", "agent")).Should().BeFalse();
+
+        // agent/ is never swept — the live config file stays exactly where it was.
+        Exists("agent/profile.md").Should().BeTrue("agent is never swept");
+        Directory.Exists(Path.Combine(_root, ".scrinia", "agent")).Should().BeTrue();
     }
 
     [Fact]

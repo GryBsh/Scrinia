@@ -621,7 +621,7 @@ public sealed partial class ScriniaMcpTools
         // Collect agent/* names for followUp — .md files first, NMP/2 fallback
         try
         {
-            string agentDir = store.GetStoreDirForScope("local:agent");
+            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
             bool usedMdFiles = false;
 
             if (Directory.Exists(agentDir))

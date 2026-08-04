@@ -33,16 +33,12 @@ public sealed partial class ScriniaMcpTools
             if (agentStore is not null)
             {
                 string agentSubject = artifactOrName["/agent/".Length..].Trim();
-                if (FileEntityName.IsValid(agentSubject))
+                if (PathRouter.TryToFileEntityPath("agent", agentSubject, agentStore.WorkspaceRoot, out string agentFilePath)
+                    && File.Exists(agentFilePath))
                 {
-                    string agentDir = agentStore.GetStoreDirForScope("local:agent");
-                    string agentFilePath = Path.Combine(agentDir, $"{agentSubject}.md");
-                    if (PathContainment.IsWithin(agentDir, agentFilePath) && File.Exists(agentFilePath))
-                    {
-                        string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
-                        SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
-                        return ResponseBuilder.Success(mdContent).WithAction(actionLabel).ToYaml();
-                    }
+                    string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
+                    SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
+                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel).ToYaml();
                 }
             }
             // Fall through to NMP/2 resolution for legacy entries
@@ -262,24 +258,17 @@ public sealed partial class ScriniaMcpTools
                 .WithAction(actionLabel).ToYaml();
         }
 
-        // ── Agent config path (/agent/* → .scrinia/memories/agent/{name}.md) ──
+        // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──
         if (name.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
             string agentSubject = name["/agent/".Length..].Trim();
-            if (!FileEntityName.IsValid(agentSubject))
-                return ResponseBuilder.Error(
-                    "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.",
-                    ErrorCodes.InvalidParameter,
-                    "Use a path like '/agent/profile' for the agent config.").ToYaml();
 
-            string baseDir = GetScriniaBaseDir(store);
-            string agentDir = store.GetStoreDirForScope("local:agent");
-            string filePath = Path.Combine(agentDir, $"{agentSubject}.md");
-            if (!PathContainment.IsWithin(agentDir, filePath))
+            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
+            if (!PathRouter.TryToFileEntityPath("agent", agentSubject, store.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
                     "Invalid agent config name.", ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.").ToYaml();
-            FileMemoryStore.EnsureGitIgnore(Path.GetDirectoryName(baseDir)!);
+            FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);
 
             ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));

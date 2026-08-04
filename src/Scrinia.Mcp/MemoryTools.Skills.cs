@@ -80,18 +80,6 @@ public sealed partial class ScriniaMcpTools
     // ── Shared file helpers (used by skill, agent, and other markdown-on-disk paths) ─
 
     /// <summary>
-    /// Resolves the .scrinia/ base directory by walking up from the local store directory.
-    /// </summary>
-    internal static string GetScriniaBaseDir(IMemoryStore store)
-    {
-        string storeDir = store.GetStoreDirForScope("local");
-        var dir = new DirectoryInfo(storeDir);
-        while (dir is not null && dir.Name != ".scrinia")
-            dir = dir.Parent;
-        return dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
-    }
-
-    /// <summary>
     /// Archives an existing file into <paramref name="versionsDir"/> with a UTC
     /// timestamp suffix before it gets overwritten. No-op if the file does not exist.
     /// </summary>

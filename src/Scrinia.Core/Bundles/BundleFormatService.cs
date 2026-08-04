@@ -270,25 +270,24 @@ public static class BundleFormatService
     // ── File entity helpers ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Derives the .scrinia base directory from the store's scope directory.
-    /// <c>store.GetStoreDirForScope("local")</c> returns <c>{workspace}/.scrinia/memories</c>,
-    /// so the parent is the .scrinia root.
+    /// Bundle manifest category key -> PathRouter file-entity kind. The manifest has used the
+    /// plural "skills" since v2 bundles shipped; changing it would break existing bundles.
     /// </summary>
-    private static string GetScriniaBaseDir(IMemoryStore store) =>
-        Path.GetDirectoryName(store.GetStoreDirForScope("local"))!;
+    private static readonly Dictionary<string, string> CategoryToKind = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["skills"] = "skill",
+        ["agent"] = "agent",
+    };
 
     /// <summary>
-    /// Resolves the on-disk directory for a file-entity category. "agent" is routed through
-    /// the store (<c>GetStoreDirForScope("local:agent")</c> — <c>.scrinia/memories/agent/</c>
-    /// under v3) rather than the flat <c>baseDir/category</c> join every other category still
-    /// uses, because Task 8 restored <c>agent</c> to <see cref="StoreLayoutMigration"/>'s sweep:
-    /// the top-level <c>.scrinia/agent/</c> this used to read moves away on first store touch.
-    /// "workflows"/"skills" are untouched by that migration and keep the old flat layout.
+    /// Resolves a file-entity category's directory, or null when the category has no
+    /// file-entity kind. Every kind resolves the same way now — the agent special-case is
+    /// gone because agent no longer lives inside the memory store.
     /// </summary>
-    private static string CategoryDir(IMemoryStore store, string baseDir, string category) =>
-        category.Equals("agent", StringComparison.OrdinalIgnoreCase)
-            ? store.GetStoreDirForScope("local:agent")
-            : Path.Combine(baseDir, category);
+    private static string? CategoryDir(IMemoryStore store, string category) =>
+        CategoryToKind.TryGetValue(category, out string? kind)
+            ? PathRouter.ToFileEntityDir(kind, store.WorkspaceRoot)
+            : null;
 
     /// <summary>
     /// Scans each file-entity category's directory for exportable files and writes them
@@ -299,12 +298,11 @@ public static class BundleFormatService
         ZipArchive zip, IMemoryStore store)
     {
         var fileEntities = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        string baseDir = GetScriniaBaseDir(store);
 
         foreach (string category in FileEntityCategories)
         {
-            string categoryDir = CategoryDir(store, baseDir, category);
-            if (!Directory.Exists(categoryDir))
+            string? categoryDir = CategoryDir(store, category);
+            if (categoryDir is null || !Directory.Exists(categoryDir))
                 continue;
 
             var files = Directory.EnumerateFiles(categoryDir, "*.*", SearchOption.TopDirectoryOnly)
@@ -352,8 +350,6 @@ public static class BundleFormatService
             || fileEntitiesEl.ValueKind != JsonValueKind.Object)
             return;
 
-        string baseDir = GetScriniaBaseDir(store);
-
         foreach (var categoryProp in fileEntitiesEl.EnumerateObject())
         {
             string category = categoryProp.Name;
@@ -362,11 +358,9 @@ public static class BundleFormatService
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
                 continue;
 
-            string categoryDir = CategoryDir(store, baseDir, category);
-            string fullBase = Path.GetFullPath(baseDir);
-            string fullCategoryDir = Path.GetFullPath(categoryDir);
-            if (!PathContainment.IsWithin(fullBase, fullCategoryDir))
-                continue; // reject traversal in the manifest category key
+            string? categoryDir = CategoryDir(store, category);
+            if (categoryDir is null)
+                continue; // no file-entity kind for this manifest key
             Directory.CreateDirectory(categoryDir);
 
             foreach (var fileEl in categoryProp.Value.EnumerateArray())
@@ -386,7 +380,7 @@ public static class BundleFormatService
 
                 string destPath = Path.Combine(categoryDir, fileName);
                 string fullDest = Path.GetFullPath(destPath);
-                if (!PathContainment.IsWithin(fullBase, fullDest))
+                if (!PathContainment.IsWithin(categoryDir, fullDest))
                     continue;
 
                 using var inStream = zipEntry.Open();
