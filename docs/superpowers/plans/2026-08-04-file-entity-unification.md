@@ -691,25 +691,50 @@ Leave the `if (!usedMdFiles)` NMP/2 listing fallback below it intact.
 
 - [ ] **Step 6: Collapse `CategoryDir` in the bundle service**
 
-In `src/Scrinia.Core/Bundles/BundleFormatService.cs`, delete both `GetScriniaBaseDir` (lines 277-278) and `CategoryDir` (lines 288-291). Both categories now resolve identically:
+In `src/Scrinia.Core/Bundles/BundleFormatService.cs`, delete both `GetScriniaBaseDir` (lines 277-278) and `CategoryDir` (lines 288-291). Both categories now resolve identically.
+
+Note the bundle manifest keys categories in the **plural** (`"skills"`) while `PathRouter` keys on the **singular** (`"skill"`). The manifest key is on-the-wire format in already-distributed bundles, so it stays as-is and a map bridges the two. `"workflows"` is deliberately absent from the map — it is still in `FileEntityCategories` until Task 4, so `CategoryDir` must return `null` for it rather than throw:
 
 ```csharp
     /// <summary>
-    /// Resolves a file-entity category's directory. Every category resolves the same way now —
-    /// the agent special-case is gone because agent no longer lives inside the memory store.
+    /// Bundle manifest category key -> PathRouter file-entity kind. The manifest has used the
+    /// plural "skills" since v2 bundles shipped; changing it would break existing bundles.
     /// </summary>
-    private static string CategoryDir(IMemoryStore store, string category) =>
-        PathRouter.ToFileEntityDir(category, store.WorkspaceRoot);
+    private static readonly Dictionary<string, string> CategoryToKind = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["skills"] = "skill",
+        ["agent"] = "agent",
+    };
+
+    /// <summary>
+    /// Resolves a file-entity category's directory, or null when the category has no
+    /// file-entity kind. Every kind resolves the same way now — the agent special-case is
+    /// gone because agent no longer lives inside the memory store.
+    /// </summary>
+    private static string? CategoryDir(IMemoryStore store, string category) =>
+        CategoryToKind.TryGetValue(category, out string? kind)
+            ? PathRouter.ToFileEntityDir(kind, store.WorkspaceRoot)
+            : null;
 ```
 
-Update the two callers: `ExportFileEntities` (line 302 `baseDir` local and line 306) and `ImportFileEntities` (line 355 `baseDir` local and line 365). In `ImportFileEntities` the containment check at lines 366-369 compared `categoryDir` against `baseDir`; since `ToFileEntityDir` only ever returns a known literal directory and throws otherwise, replace that check with a guard on the manifest key:
+Update the two callers. `ExportFileEntities` — delete the `baseDir` local (line 302) and replace line 306:
 
 ```csharp
-            if (!PathRouter.IsFileEntity(category))
-                continue; // reject arbitrary category keys from the manifest
-            string categoryDir = CategoryDir(store, category);
+            string? categoryDir = CategoryDir(store, category);
+            if (categoryDir is null || !Directory.Exists(categoryDir))
+                continue;
+```
+
+`ImportFileEntities` — delete the `baseDir` local (line 355). The containment check at lines 366-369 compared `categoryDir` against `baseDir`; `CategoryDir` now only ever returns a known literal directory or null, so that check is replaced by the null guard:
+
+```csharp
+            string? categoryDir = CategoryDir(store, category);
+            if (categoryDir is null)
+                continue; // no file-entity kind for this manifest key
             Directory.CreateDirectory(categoryDir);
 ```
+
+Leave the `FileEntityCategories.Contains(category, ...)` allowlist check at line 360 in place — Task 4 replaces it.
 
 - [ ] **Step 7: Run the tests**
 
@@ -789,26 +814,11 @@ Expected: compile error — `SkippedCategories` does not exist on the import res
 
 Update the comment at line 85 to `// Export disk-based file entities (skills, agent)`.
 
-Note `FileEntityCategories` now uses the plural `"skills"` as its zip-manifest key while `PathRouter` keys on the singular `"skill"`. Add a mapping at the `CategoryDir` seam so the bundle format's on-the-wire names stay unchanged:
-
-```csharp
-    /// <summary>
-    /// Bundle manifest category key -> PathRouter file-entity kind. The manifest has used the
-    /// plural "skills" since v2 bundles shipped; changing it would break existing bundles.
-    /// </summary>
-    private static readonly Dictionary<string, string> CategoryToKind = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["skills"] = "skill",
-        ["agent"] = "agent",
-    };
-
-    private static string CategoryDir(IMemoryStore store, string category) =>
-        PathRouter.ToFileEntityDir(CategoryToKind[category], store.WorkspaceRoot);
-```
+`CategoryToKind` already exists from Task 3 and already omits `"workflows"` — do not redeclare it.
 
 - [ ] **Step 4: Report skipped categories**
 
-Change the import allowlist check (line 360-361) to record rather than silently `continue`:
+Replace the import allowlist check (the `FileEntityCategories.Contains(...)` guard Task 3 left in place, around line 360) so an unrecognised category is recorded rather than silently dropped:
 
 ```csharp
             if (!CategoryToKind.ContainsKey(category))
@@ -817,6 +827,8 @@ Change the import allowlist check (line 360-361) to record rather than silently 
                 continue; // deleted or unknown category — reported, never written
             }
 ```
+
+`CategoryToKind` is now the single allowlist; the separate `FileEntityCategories.Contains` check is redundant and goes away with it.
 
 Declare `var skippedCategories = new List<string>();` at the top of `ImportFileEntities`, return it, and surface it on the import result type as `SkippedCategories`. Follow the existing result record's shape — add the property with a default of `[]` so other call sites keep compiling.
 
@@ -868,14 +880,12 @@ Append to `tests/Scrinia.Tests/FileMemoryStoreTests.cs`:
         _store.Upsert(new ArtifactEntry("a", "file:///a.nmp2", 10, 1, DateTimeOffset.UtcNow), "local:skill");
         _store.Upsert(new ArtifactEntry("b", "file:///b.nmp2", 10, 1, DateTimeOffset.UtcNow), "local:findings");
 
-        var scopes = _store.ResolveScopes(null);
+        IReadOnlyList<string> scopes = _store.ResolveReadScopes(null);
 
         scopes.Should().Contain("local:skill");
         scopes.Should().Contain("local:findings");
     }
 ```
-
-Use whatever the real name of the scope-resolution method at `FileMemoryStore.cs:505` is; if it is private, assert through the public search entry point that consumes it instead.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -983,7 +993,7 @@ public class StorePurityInvariantTests
     [Theory]
     [InlineData("skill")]
     [InlineData("agent")]
-    public async Task FileEntityDirectories_SitOutsideTheStore(string kind)
+    public void FileEntityDirectories_SitOutsideTheStore(string kind)
     {
         using var scope = new TestHelpers.StoreScope();
         var store = MemoryStoreContext.Current!;
@@ -993,7 +1003,6 @@ public class StorePurityInvariantTests
 
         PathContainment.IsWithin(memories, dir).Should().BeFalse(
             because: $"{kind} is a hand-authored file entity, not store content");
-        await Task.CompletedTask;
     }
 
     [Fact]
