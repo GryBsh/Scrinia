@@ -21,8 +21,13 @@ public sealed record MemoryEntities(
     DateTimeOffset Date,
     IReadOnlyList<EntityRef> Entities)
 {
-    /// <summary>Recall-able qualified name (unchanged value vs the old stored MemoryId).</summary>
-    public string MemoryId => MemoryNaming.FormatRoundTrip(Scope, Subject);
+    /// <summary>Recall-able qualified name (unchanged value vs the old stored MemoryId). Inlines
+    /// what <c>MemoryNaming.FormatRoundTrip</c> used to compute (deleted in Task 8 — it was
+    /// identical to <c>IMemoryStore.FormatQualifiedName</c> under v3, but this type has no store
+    /// instance to call that through).</summary>
+    public string MemoryId => Scope.StartsWith("local:", StringComparison.Ordinal)
+        ? $"/{Scope["local:".Length..]}/{Subject}"
+        : Subject;
 
     /// <summary>The scorer's join key, shared with the entity-graph / path-segment / embeddings
     /// contributors and <c>WeightedAttributeScorer.GetSupplemental</c>.</summary>

@@ -28,26 +28,34 @@ namespace Scrinia.Core;
 /// data and moving them just relocates the cruft into <c>memories/</c> where nothing would ever
 /// clean it up. Everything else is moved. See <see cref="IsTransientArtifact"/>.</para>
 ///
-/// <para><b>Deliberately does NOT sweep the top-level <c>.scrinia/agent/</c> or
-/// <c>.scrinia/skills/</c> directories</b>, even though an earlier revision — ported wholesale
-/// from the opt-in <c>migrate_v1</c> command — did. Those two directories hold live,
-/// hand-authored Markdown files (agent config, project skill overrides) that
-/// <c>MemoryTools.Core.cs</c>/<c>MemoryTools.Skills.cs</c>/<c>MemoryTools.Lifecycle.cs</c> read and
-/// write directly by a hardcoded path — <c>GetScriniaBaseDir</c> + <c>Path.Combine(baseDir,
-/// "agent"|"skills", name + ".md")</c> — entirely outside <see cref="PathRouter"/>/
-/// <see cref="FileMemoryStore"/> scope resolution. That was tolerable while this engine was
-/// unwired (Task 6): the sweep never actually ran. Once <see cref="MigrateIfNeeded"/> fires
-/// automatically on every store touch (Task 7), it would silently relocate a real project's
-/// committed <c>.scrinia/agent/*.md</c> / <c>.scrinia/skills/*.md</c> files into
-/// <c>memories/agent/</c> / <c>memories/skill/</c> the first time ANYTHING touched the store —
-/// and the hardcoded readers above, which know nothing about <c>memories/</c>, would never find
-/// them again. Nothing under <c>topics/agent/</c> or <c>topics/entity/skill/</c> is affected —
-/// those are FileMemoryStore's own NMP2 layout, nested under the (still-swept) <c>topics/</c>
-/// root, and migrate exactly as before.</para>
+/// <para><b><c>agent</c> is swept; <c>skills</c> deliberately is not.</b> Task 7 found that an
+/// earlier revision — ported wholesale from the opt-in <c>migrate_v1</c> command — swept BOTH
+/// top-level <c>.scrinia/agent/</c> and <c>.scrinia/skills/</c>, even though both directories held
+/// live, hand-authored Markdown files read/written directly by a hardcoded path (<c>GetScriniaBaseDir</c>
+/// + <c>Path.Combine(baseDir, "agent"|"skills", name + ".md")</c>), entirely outside
+/// <see cref="PathRouter"/>/<see cref="FileMemoryStore"/> scope resolution. Wiring the sweep without
+/// first fixing those readers would have silently relocated real project files the moment
+/// <see cref="MigrateIfNeeded"/> started firing automatically, orphaning them from every hardcoded
+/// reader. Task 7 conservatively dropped both from the sweep to avoid shipping that regression.
+///
+/// <para>Task 8 repointed all four <c>.scrinia/agent/</c> readers/writers (<c>MemoryTools.Core.cs</c>'s
+/// Recall and Remember paths, <c>MemoryTools.Lifecycle.cs</c>'s followUp listing, and
+/// <c>BundleFormatService</c>'s file-entity export/import) through <see cref="FileMemoryStore.GetStoreDirForScope"/>
+/// (<c>"local:agent"</c> → <c>memories/agent/</c>), so <c>agent</c> is restored to the sweep below —
+/// migration and every reader now agree on one location.</para>
+///
+/// <para><c>skills</c> stays out of the sweep permanently — <c>.scrinia/skills/</c> was never part
+/// of this workstream's approved design (it was inherited from the ported <c>migrate_v1</c> plan),
+/// and none of its readers (<c>MemoryTools.Skills.cs</c>, <c>MemoryTools.Lifecycle.cs</c>'s skills
+/// listing) were repointed. Migrating skills needs its own spec.</para>
+///
+/// <para>Nothing under <c>topics/agent/</c> or <c>topics/entity/skill/</c> is affected by any of
+/// this — those are FileMemoryStore's own NMP2 layout, nested under the (already-swept)
+/// <c>topics/</c> root, and migrate exactly as before.</para>
 /// </summary>
 public static class StoreLayoutMigration
 {
-    private static readonly string[] LegacyRoots = ["store", "topics"];
+    private static readonly string[] LegacyRoots = ["store", "topics", "agent"];
 
     public sealed record Result(int Moved, int Conflicts, bool Ran, string? BackupPath);
 
@@ -231,11 +239,26 @@ public static class StoreLayoutMigration
             }
         }
 
-        // NOTE: no top-level .scrinia/agent/* or .scrinia/skills/* sweep here — see the class
-        // doc comment. Those hold live hand-authored Markdown files read by a hardcoded path
-        // outside FileMemoryStore/PathRouter entirely; sweeping them would silently orphan real
-        // project overrides the moment this engine runs automatically. topics/agent/ and
-        // topics/entity/skill/ (FileMemoryStore's own NMP2 layout) still migrate via step 2 above.
+        // 3. .scrinia/agent/* -> memories/agent/<file> (flat; no namespace stripping — "agent"
+        //    is already the v3 scope's own name). Restored in Task 8 alongside repointing all
+        //    four hardcoded .scrinia/agent/ readers/writers — see the class doc comment.
+        string agentDir = Path.Combine(scriniaDir, "agent");
+        if (Directory.Exists(agentDir))
+        {
+            foreach (string file in Directory.EnumerateFiles(agentDir, "*", SearchOption.AllDirectories))
+            {
+                if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
+                string relPath = Path.GetRelativePath(agentDir, file).Replace('\\', '/');
+                string target = Path.Combine(memoriesDir, "agent", relPath.Replace('/', Path.DirectorySeparatorChar));
+                plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
+            }
+        }
+
+        // NOTE: no .scrinia/skills/* sweep — see the class doc comment. It holds live
+        // hand-authored Markdown files read by a hardcoded path that no task in this workstream
+        // repointed; sweeping it would silently orphan real project overrides. topics/entity/skill/
+        // (FileMemoryStore's own NMP2 layout) still migrates via step 2 above — that is unrelated
+        // to the top-level .scrinia/skills/ directory this note is about.
 
         return (OrderPlan(plan), transientFiles);
     }

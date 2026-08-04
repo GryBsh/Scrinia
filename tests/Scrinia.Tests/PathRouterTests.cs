@@ -113,32 +113,6 @@ public class PathRouterTests : IDisposable
         PathRouter.IsEphemeral(P("/api/auth-flow")).Should().BeFalse();
     }
 
-    // ── ToLegacyPath ──────────────────────────────────────────────────────────
-
-    [Fact]
-    public void ToLegacyPath_WithExistingLegacyFile_ReturnsLegacyPath()
-    {
-        // Create a legacy file at .scrinia/topics/api/auth-flow.nmp2
-        var legacyDir = Path.Combine(_root, ".scrinia", "topics", "api");
-        Directory.CreateDirectory(legacyDir);
-        var legacyFile = Path.Combine(legacyDir, "auth-flow.nmp2");
-        File.WriteAllText(legacyFile, "legacy content");
-
-        var result = PathRouter.ToLegacyPath(P("/api/auth-flow"), _root);
-
-        result.Should().NotBeNull();
-        result.Should().Be(legacyFile);
-    }
-
-    [Fact]
-    public void ToLegacyPath_EntityChain_ReturnsNull()
-    {
-        // More than 2 segments — no v1 equivalent.
-        var result = PathRouter.ToLegacyPath(P("/goal/G-5/phase/01/task/fix"), _root);
-
-        result.Should().BeNull();
-    }
-
     // ── Additional coverage ───────────────────────────────────────────────────
 
     [Fact]
@@ -153,15 +127,6 @@ public class PathRouterTests : IDisposable
     {
         var act = () => PathRouter.ToMetadataPath(P("/temp/scratch"), _root);
         act.Should().Throw<InvalidOperationException>();
-    }
-
-    [Fact]
-    public void ToLegacyPath_NoLegacyFile_ReturnsNull()
-    {
-        // No legacy file exists on disk.
-        var result = PathRouter.ToLegacyPath(P("/api/auth-flow"), _root);
-
-        result.Should().BeNull();
     }
 
     [Fact]

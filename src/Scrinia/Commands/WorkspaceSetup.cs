@@ -107,6 +107,18 @@ internal static class WorkspaceSetup
     }
 
     /// <summary>
+    /// Namespace directory names used by the OLD (pre-v3) <c>.scrinia/topics/</c> layout that
+    /// <see cref="ListTopics"/> below still has to interpret. Intentionally NOT
+    /// <c>MemoryNaming</c> — that type dropped the "reserved namespace directory" concept
+    /// entirely in Task 8, since <see cref="Scrinia.Core.FileMemoryStore"/> itself no longer
+    /// reads through it. This scan targets an arbitrary ORPHANED/ignored store elsewhere on
+    /// disk that this workstream's automatic migration has never touched (it may still be
+    /// sitting in the pre-v3 layout), so the classification still needs to exist somewhere.
+    /// </summary>
+    private static readonly HashSet<string> s_legacyNamespaceDirs =
+        new(StringComparer.OrdinalIgnoreCase) { "entity", "memory", "agent" };
+
+    /// <summary>
     /// Topic names inside an orphaned store, for the migration command — the bare names
     /// <c>scri bundle export</c> actually accepts, not raw directory names. Descends into the
     /// <c>entity/</c> and <c>memory/</c> namespace directories for their real child topics
@@ -135,7 +147,7 @@ internal static class WorkspaceSetup
             foreach (string nsDir in Directory.EnumerateDirectories(topicsDir))
             {
                 string nsName = Path.GetFileName(nsDir) ?? "";
-                if (!MemoryNaming.ReservedNamespaceDirs.Contains(nsName)) continue;
+                if (!s_legacyNamespaceDirs.Contains(nsName)) continue;
 
                 if (nsName.Equals("agent", StringComparison.OrdinalIgnoreCase))
                 {
@@ -155,7 +167,7 @@ internal static class WorkspaceSetup
             foreach (string dir in Directory.EnumerateDirectories(topicsDir))
             {
                 string name = Path.GetFileName(dir) ?? "";
-                if (MemoryNaming.ReservedNamespaceDirs.Contains(name)) continue;
+                if (s_legacyNamespaceDirs.Contains(name)) continue;
                 if (namespacedChildren.Contains(name)) continue; // shadowed by a namespaced entry
                 topics.Add(name);
             }

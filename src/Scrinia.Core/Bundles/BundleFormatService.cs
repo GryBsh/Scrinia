@@ -278,7 +278,20 @@ public static class BundleFormatService
         Path.GetDirectoryName(store.GetStoreDirForScope("local"))!;
 
     /// <summary>
-    /// Scans .scrinia/{category}/ directories for exportable files and writes them
+    /// Resolves the on-disk directory for a file-entity category. "agent" is routed through
+    /// the store (<c>GetStoreDirForScope("local:agent")</c> — <c>.scrinia/memories/agent/</c>
+    /// under v3) rather than the flat <c>baseDir/category</c> join every other category still
+    /// uses, because Task 8 restored <c>agent</c> to <see cref="StoreLayoutMigration"/>'s sweep:
+    /// the top-level <c>.scrinia/agent/</c> this used to read moves away on first store touch.
+    /// "workflows"/"skills" are untouched by that migration and keep the old flat layout.
+    /// </summary>
+    private static string CategoryDir(IMemoryStore store, string baseDir, string category) =>
+        category.Equals("agent", StringComparison.OrdinalIgnoreCase)
+            ? store.GetStoreDirForScope("local:agent")
+            : Path.Combine(baseDir, category);
+
+    /// <summary>
+    /// Scans each file-entity category's directory for exportable files and writes them
     /// into the zip under <c>files/{category}/{filename}</c>.
     /// Skips the <c>versions/</c> subdirectory within each category.
     /// </summary>
@@ -290,7 +303,7 @@ public static class BundleFormatService
 
         foreach (string category in FileEntityCategories)
         {
-            string categoryDir = Path.Combine(baseDir, category);
+            string categoryDir = CategoryDir(store, baseDir, category);
             if (!Directory.Exists(categoryDir))
                 continue;
 
@@ -349,7 +362,7 @@ public static class BundleFormatService
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
                 continue;
 
-            string categoryDir = Path.Combine(baseDir, category);
+            string categoryDir = CategoryDir(store, baseDir, category);
             string fullBase = Path.GetFullPath(baseDir);
             string fullCategoryDir = Path.GetFullPath(categoryDir);
             if (!PathContainment.IsWithin(fullBase, fullCategoryDir))

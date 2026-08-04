@@ -219,11 +219,9 @@ public static class EmbeddingReindexer
                 }
 
                 // The sink re-parses this string (possibly out-of-process, over MCP, for external
-                // plugins) to decide which scope to store vectors under — it must be the
-                // round-trip-safe form, not the display-formatted one, or vectors land under the
-                // wrong scope and search (which looks up vectors by the entry's REAL scope) never
-                // finds them.
-                string qualifiedName = store.FormatRoundTripQualifiedName(item.Scope, item.Entry.Name);
+                // plugins) to decide which scope to store vectors under. Under v3
+                // FormatQualifiedName is round-trip-safe for every scope, so this is safe.
+                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
                 await sink.OnStoredAsync(qualifiedName, [decoded], store, ct);
                 embedded++;
             }

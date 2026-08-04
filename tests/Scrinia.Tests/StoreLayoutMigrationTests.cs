@@ -38,11 +38,11 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Write("topics/memory/api/auth.nmp2", "c");
         Write("topics/entity/skill/qa.nmp2", "d");
         Write("topics/agent/profile.nmp2", "e");
-        // Top-level agent/profile.md deliberately NOT seeded here: LegacyRoots no longer
-        // includes "agent" (see the class doc comment on StoreLayoutMigration) because that
-        // top-level directory holds a live, hand-authored Markdown file MemoryTools.Core.cs
-        // reads by a hardcoded path outside this engine entirely — see
-        // AgentTopLevelDir_IsNeverSwept below for that guarantee.
+        // Top-level agent/*.md: Task 8 restored "agent" to LegacyRoots after repointing all
+        // four hardcoded .scrinia/agent/ readers/writers through the store (see the class doc
+        // comment) — this now migrates too, unlike topics/agent/ above (FileMemoryStore's own
+        // NMP2 layout, always swept via the topics/ root).
+        Write("agent/profile.md", "agent config");
 
         var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
 
@@ -53,31 +53,32 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("memories/api/auth.nmp2").Should().BeTrue();
         Exists("memories/skill/qa.nmp2").Should().BeTrue();
         Exists("memories/agent/profile.nmp2").Should().BeTrue();
+        Exists("memories/agent/profile.md").Should().BeTrue("the live agent config file now migrates too");
 
         // Moved, not copied.
         Exists("store/notes.nmp2").Should().BeFalse();
         Exists("topics/findings/review.nmp2").Should().BeFalse();
+        Exists("agent/profile.md").Should().BeFalse();
         Directory.Exists(Path.Combine(_root, ".scrinia", "topics")).Should().BeFalse();
+        Directory.Exists(Path.Combine(_root, ".scrinia", "agent")).Should().BeFalse();
     }
 
     [Fact]
-    public void AgentAndSkillsTopLevelDirs_AreNeverSwept()
+    public void SkillsTopLevelDir_IsNeverSwept()
     {
-        // .scrinia/agent/*.md and .scrinia/skills/*.md are live, hand-authored files
-        // (MemoryTools.Core.cs / MemoryTools.Skills.cs read them by a hardcoded path, entirely
-        // outside FileMemoryStore/PathRouter scope resolution) — NOT part of this engine's
-        // legacy layout. Migrating something else (so NeedsMigration is true and the pass
-        // actually runs) must leave these two directories completely untouched.
+        // .scrinia/skills/*.md is a live, hand-authored file (MemoryTools.Skills.cs /
+        // MemoryTools.Lifecycle.cs read it by a hardcoded path, entirely outside
+        // FileMemoryStore/PathRouter scope resolution) that no task in this workstream
+        // repointed — it stays out of the sweep permanently (see the class doc comment).
+        // Migrating something else (so NeedsMigration is true and the pass actually runs)
+        // must leave it completely untouched.
         Write("topics/findings/review.nmp2", "b");
-        Write("agent/profile.md", "agent config");
         Write("skills/qa.md", "qa skill override");
 
         var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
 
         result.Ran.Should().BeTrue();
-        Exists("agent/profile.md").Should().BeTrue("the live agent config file must not move");
         Exists("skills/qa.md").Should().BeTrue("the live skill override file must not move");
-        Exists("memories/agent/profile.md").Should().BeFalse();
         Exists("memories/skill/qa.md").Should().BeFalse();
     }
 

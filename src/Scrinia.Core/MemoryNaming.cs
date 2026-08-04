@@ -8,26 +8,22 @@ namespace Scrinia.Core;
 public static class MemoryNaming
 {
     /// <summary>
-    /// Topic names classified as "entity" (structural). Currently only "skill"
-    /// is treated as an entity topic so legacy NMP/2 skill data under
-    /// entity/skill/ remains discoverable. Everything else lives under memory/.
+    /// Topic names still classified as "entity" under v3. The only remaining use is
+    /// <see cref="FileMemoryStore"/>'s <c>IsEntityScope</c>, which excludes "skill" from the
+    /// default (unfiltered) search/read scope set — it does NOT gate a directory namespace
+    /// anymore (the v1/v2 "entity/"/"memory/" directory split this set used to drive was
+    /// deleted with the rest of the legacy layout fallback in Task 8). Also passed to
+    /// <see cref="PathParser.Parse"/> from <see cref="FileMemoryStore.ParseQualifiedName"/> for
+    /// its <c>entityTypes</c> parameter, but that classification is inert there — only
+    /// <see cref="PathSegment.Value"/> feeds the returned scope/subject, never
+    /// <see cref="PathSegment.IsEntityType"/> — so this set's content has no effect on
+    /// <c>ParseQualifiedName</c>'s output; the parameter is kept only because the method
+    /// signature requires some set.
     /// </summary>
     public static readonly IReadOnlySet<string> EntityTopics = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "skill"
     };
-
-    private static readonly HashSet<string> AgentTopics = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "agent"
-    };
-
-    /// <summary>
-    /// Namespace directory names used in the scoped topic layout.
-    /// Useful for deduplication when discovering topics on disk.
-    /// </summary>
-    public static readonly IReadOnlySet<string> ReservedNamespaceDirs =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "entity", "memory", "agent" };
 
     /// <summary>
     /// Throws if <paramref name="name"/> uses the removed v1 "topic:subject" colon
@@ -59,18 +55,6 @@ public static class MemoryNaming
         name.Length > 0 && name[0] == '~' ? name[1..] : name;
 
     /// <summary>
-    /// Classifies a topic name into one of three namespaces:
-    /// "entity" for planning/structural topics, "agent" for agent-related topics,
-    /// or "memory" for everything else.
-    /// </summary>
-    public static string ClassifyTopic(string topic)
-    {
-        if (EntityTopics.Contains(topic)) return "entity";
-        if (AgentTopics.Contains(topic)) return "agent";
-        return "memory";
-    }
-
-    /// <summary>
     /// Builds the full internal scope string used by the storage layer. Every topic — including
     /// the former "entity" (skill) and "agent" namespaces — is flat under the v3 layout:
     /// "local:{topic}". ("local:agent" happens to coincide with the old agent-namespace scope,
@@ -86,44 +70,18 @@ public static class MemoryNaming
     public static string BuildScopedTopicScope(string topic) => $"local:{topic}";
 
     /// <summary>
-    /// Strips the namespace prefix from an internal topic directory part.
-    /// "entity/task" → "task", "memory/api" → "api", "agent" → "agent".
-    /// Passes through unchanged if no recognised namespace prefix is present.
-    /// </summary>
-    public static string StripNamespacePrefix(string topicPart)
-    {
-        var slashIndex = topicPart.IndexOf('/');
-        if (slashIndex >= 0)
-        {
-            var prefix = topicPart[..slashIndex];
-            if (ReservedNamespaceDirs.Contains(prefix))
-                return topicPart[(slashIndex + 1)..];
-        }
-        return topicPart;
-    }
-
-    /// <summary>
     /// Returns a human-friendly display label for an internal scope string.
-    /// "local" → "local", "local:entity/task" → "task",
-    /// "local:memory/api" → "api", "local:agent" → "agent",
-    /// "ephemeral" → "ephemeral".
+    /// "local" → "local", "local:api" → "api", "local:agent" → "agent",
+    /// "ephemeral" → "ephemeral". v3: every topic part is already flat, so there is no
+    /// namespace prefix left to strip (see Task 8, which removed the v1/v2 fallback this
+    /// used to interoperate with).
     /// </summary>
     public static string FormatScopeLabel(string scope)
     {
         if (scope == "local") return "local";
         if (scope == "ephemeral") return "ephemeral";
         if (scope.StartsWith("local:", StringComparison.Ordinal))
-            return StripNamespacePrefix(scope["local:".Length..]);
+            return scope["local:".Length..];
         return scope;
     }
-
-    /// <summary>
-    /// Pure form of <see cref="IMemoryStore.FormatRoundTripQualifiedName"/>: builds a qualified name
-    /// that re-parses back to <paramref name="scope"/>, keeping the internal "memory/"/"entity/"
-    /// namespace segment (lossless), without needing a store instance.
-    /// </summary>
-    public static string FormatRoundTrip(string scope, string subject) =>
-        scope.StartsWith("local:", StringComparison.Ordinal)
-            ? $"/{scope["local:".Length..]}/{subject}"
-            : subject;
 }

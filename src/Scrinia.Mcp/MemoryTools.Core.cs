@@ -35,9 +35,9 @@ public sealed partial class ScriniaMcpTools
                 string agentSubject = artifactOrName["/agent/".Length..].Trim();
                 if (FileEntityName.IsValid(agentSubject))
                 {
-                    string agentBaseDir = GetScriniaBaseDir(agentStore);
-                    string agentFilePath = Path.Combine(agentBaseDir, "agent", $"{agentSubject}.md");
-                    if (PathContainment.IsWithin(Path.Combine(agentBaseDir, "agent"), agentFilePath) && File.Exists(agentFilePath))
+                    string agentDir = agentStore.GetStoreDirForScope("local:agent");
+                    string agentFilePath = Path.Combine(agentDir, $"{agentSubject}.md");
+                    if (PathContainment.IsWithin(agentDir, agentFilePath) && File.Exists(agentFilePath))
                     {
                         string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
                         SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
@@ -262,7 +262,7 @@ public sealed partial class ScriniaMcpTools
                 .WithAction(actionLabel).ToYaml();
         }
 
-        // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──────
+        // ── Agent config path (/agent/* → .scrinia/memories/agent/{name}.md) ──
         if (name.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
             string agentSubject = name["/agent/".Length..].Trim();
@@ -273,7 +273,7 @@ public sealed partial class ScriniaMcpTools
                     "Use a path like '/agent/profile' for the agent config.").ToYaml();
 
             string baseDir = GetScriniaBaseDir(store);
-            string agentDir = Path.Combine(baseDir, "agent");
+            string agentDir = store.GetStoreDirForScope("local:agent");
             string filePath = Path.Combine(agentDir, $"{agentSubject}.md");
             if (!PathContainment.IsWithin(agentDir, filePath))
                 return ResponseBuilder.Error(
@@ -413,11 +413,10 @@ public sealed partial class ScriniaMcpTools
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
         // CancellationToken.None — see the ephemeral path above for rationale.
-        // Sink gets the round-trip-safe name (not the display-formatted `qualifiedName`): the
-        // sink re-parses this to decide which scope to embed under, and FormatQualifiedName's
-        // display form strips the "memory/"/"entity/" namespace prefix that would reparse to
-        // the wrong scope for any v1-namespaced topic.
-        string sinkQualifiedName = store.FormatRoundTripQualifiedName(scope, subject);
+        // The sink re-parses this to decide which scope to embed under; under v3
+        // FormatQualifiedName is round-trip-safe for every scope (no more namespace-prefix
+        // stripping), so this is the same value as the display `qualifiedName` above.
+        string sinkQualifiedName = store.FormatQualifiedName(scope, subject);
         FireEventSinkAsync(sink => sink.OnStoredAsync(sinkQualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
@@ -1209,10 +1208,10 @@ public sealed partial class ScriniaMcpTools
             {
                 foreach (string s in removedScopes)
                 {
-                    // Notify per scope the memory lived in, round-trip-safe, so vectors are
-                    // removed from EVERY scope's index — not just `local` (see the matching
-                    // comment on the non-file:// path below).
-                    try { await sink.OnForgottenAsync(store.FormatRoundTripQualifiedName(s, name), true, store, cancellationToken); }
+                    // Notify per scope the memory lived in, so vectors are removed from EVERY
+                    // scope's index — not just `local` (see the matching comment on the
+                    // non-file:// path below).
+                    try { await sink.OnForgottenAsync(store.FormatQualifiedName(s, name), true, store, cancellationToken); }
                     catch { /* plugin errors must not block forget */ }
                 }
             }
@@ -1222,9 +1221,9 @@ public sealed partial class ScriniaMcpTools
 
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
-        // The sink re-parses this to find which scope's vectors to remove — must be the
-        // round-trip-safe form, not the display form (see the matching comment in Remember).
-        string sinkQualifiedName = store.FormatRoundTripQualifiedName(scope, subject);
+        // The sink re-parses this to find which scope's vectors to remove. Under v3
+        // FormatQualifiedName is round-trip-safe, so this equals qualifiedName above.
+        string sinkQualifiedName = store.FormatQualifiedName(scope, subject);
 
         // Delete the artifact file
         bool deleted = store.DeleteArtifact(subject, scope);
@@ -1405,7 +1404,7 @@ public sealed partial class ScriniaMcpTools
 
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
-            sinkQualifiedName = store.FormatRoundTripQualifiedName(scope, subject);
+            sinkQualifiedName = store.FormatQualifiedName(scope, subject);
 
             // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Attributes, but
             // review/file aren't available there — they come from existingEntry, which is only a

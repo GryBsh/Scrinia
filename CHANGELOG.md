@@ -10,6 +10,20 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Removed (breaking) — legacy v1/v2 read-fallback layout
+
+- The read path now knows exactly one on-disk layout (`.scrinia/memories/`). The v1/v2
+  fallback machinery that merged reads across `.scrinia/topics/`, namespaced `entity/`/
+  `memory/` directories, and legacy per-scope index-file paths has been deleted; a
+  workspace still holding content at those legacy locations has it moved (not read
+  through) by the automatic migration on first store access.
+- `.scrinia/agent/*.md` now migrates automatically too, and all of its readers/writers
+  (recall, remember, the followUp listing, and bundle export/import) route through the
+  store's own path resolution — migration and every reader agree on one location.
+- `.scrinia/skills/*.md` deliberately stays OUT of the automatic migration for now — none
+  of its readers have been repointed to the new layout, so migrating it would silently
+  orphan project skill overrides. Migrating skills needs its own spec.
+
 ### Fixed — workspace root resolution
 
 - Workspace root resolution is now bounded at the nearest enclosing git repository. Projects
