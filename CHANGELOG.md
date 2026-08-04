@@ -10,6 +10,25 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — file-entity unification
+
+- `.scrinia/skills/` and `.scrinia/agent/` now resolve through a single authority
+  (`PathRouter.ToFileEntityDir`). The location was previously hardcoded at nine call sites
+  behind two divergent `GetScriniaBaseDir` implementations that agreed only by coincidence.
+- Agent configs move back out of `.scrinia/memories/agent/` to `.scrinia/agent/`. Keeping
+  hand-authored Markdown inside a store scope directory put `AgentFileMeta` sidecars in a
+  filename namespace shared with the store's own `ArtifactEntry` sidecars, where
+  `SaveIndex`'s orphan sweep deleted them — reachable by importing a bundle containing a
+  memory topic named `agent`. The v3 migration never shipped, so no released workspace is
+  affected and no data migration is required.
+- `.scrinia/workflows/` is deleted. Nothing ever wrote a workflow; the category could only
+  be populated by importing a bundle. Bundles containing one still import cleanly and now
+  report the skipped category rather than dropping it silently.
+- The legacy `local:skill` NMP/2 read fallback is deleted. `v0.4.0` contains no skill code
+  at all, so such entries exist only in unreleased dev builds.
+- `IMemoryStore` gains `WorkspaceRoot`. Remote stores throw `NotSupportedException`: skills
+  and agent configs are local-only, which was previously accidental rather than stated.
+
 ### Fixed — event-sink lifecycle
 
 - Detached event-sink work is now tracked by `BackgroundWork` instead of being dropped on the
