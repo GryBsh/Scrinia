@@ -75,11 +75,17 @@ public sealed class BundleV2Tests : IDisposable
     }
 
     /// <summary>
-    /// Creates a disk file under .scrinia/{category}/{fileName} with the given content.
+    /// Creates a disk file under a file-entity category directory with the given content.
+    /// "agent" is routed through the store (<c>.scrinia/memories/agent/</c> under v3, since
+    /// Task 8 restored it to StoreLayoutMigration's sweep and repointed BundleFormatService's
+    /// agent-category handling to match) — "workflows"/"skills" keep the flat
+    /// <c>.scrinia/{category}/</c> layout, untouched by that migration.
     /// </summary>
     private void CreateDiskFile(string category, string fileName, string content)
     {
-        string dir = Path.Combine(_workspaceRoot, ".scrinia", category);
+        string dir = category.Equals("agent", StringComparison.OrdinalIgnoreCase)
+            ? _store.GetStoreDirForScope("local:agent")
+            : Path.Combine(_workspaceRoot, ".scrinia", category);
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, fileName), content);
     }
@@ -202,18 +208,21 @@ public sealed class BundleV2Tests : IDisposable
 
         ImportFromBytes(zipBytes, importStore);
 
-        // Assert — verify files written to correct .scrinia/ subdirectories
+        // Assert — verify files written to correct locations. "agent" lands under
+        // .scrinia/memories/agent/ (routed through the store); "workflows"/"skills" keep the
+        // flat .scrinia/{category}/ layout.
         string scriniaBase = Path.Combine(importRoot, ".scrinia");
+        string agentDir = importStore.GetStoreDirForScope("local:agent");
         File.Exists(Path.Combine(scriniaBase, "workflows", "ci.json")).Should().BeTrue();
         File.Exists(Path.Combine(scriniaBase, "skills", "planner.md")).Should().BeTrue();
-        File.Exists(Path.Combine(scriniaBase, "agent", "norms.md")).Should().BeTrue();
+        File.Exists(Path.Combine(agentDir, "norms.md")).Should().BeTrue();
 
         // Verify content fidelity
         File.ReadAllText(Path.Combine(scriniaBase, "workflows", "ci.json"))
             .Should().Be("""{"steps":["build","test"]}""");
         File.ReadAllText(Path.Combine(scriniaBase, "skills", "planner.md"))
             .Should().Be("# Planner skill");
-        File.ReadAllText(Path.Combine(scriniaBase, "agent", "norms.md"))
+        File.ReadAllText(Path.Combine(agentDir, "norms.md"))
             .Should().Be("# Norms\nBe concise.");
     }
 
@@ -296,14 +305,16 @@ public sealed class BundleV2Tests : IDisposable
         topicCount.Should().Be(1);
         entryCount.Should().Be(2);
 
-        // Assert — disk files match originals
+        // Assert — disk files match originals. "agent" lands under .scrinia/memories/agent/
+        // (routed through the store); "workflows"/"skills" keep the flat layout.
         string importBase = Path.Combine(importRoot, ".scrinia");
+        string importAgentDir = importStore.GetStoreDirForScope("local:agent");
 
         File.ReadAllText(Path.Combine(importBase, "workflows", "release.json"))
             .Should().Be("""{"name":"release","version":2}""");
         File.ReadAllText(Path.Combine(importBase, "skills", "debugger.md"))
             .Should().Be("# Debugger\nRoot cause analysis.");
-        File.ReadAllText(Path.Combine(importBase, "agent", "execution-policy.md"))
+        File.ReadAllText(Path.Combine(importAgentDir, "execution-policy.md"))
             .Should().Be("# Execution policy\nVerify before commit.");
 
         // Verify the imported topic artifact content matches

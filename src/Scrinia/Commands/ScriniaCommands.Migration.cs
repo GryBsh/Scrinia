@@ -21,273 +21,67 @@ namespace Scrinia.Commands;
 
 public partial class ScriniaCommands
 {
-    /// <summary>v1→v2 directory-layout migration (legacy). Migrates .scrinia/ data from v1 (topic:name) to v2 (path) structure. One-shot — hidden from top-level help.</summary>
+    /// <summary>
+    /// Migrates a workspace store to the v3 layout, where every memory lives under
+    /// .scrinia/memories/. Runs automatically on first store access; this command exists
+    /// to preview the plan, migrate deliberately, or re-run after restoring a backup.
+    /// </summary>
     /// <param name="workspace">Workspace root for .scrinia store. Defaults to cwd.</param>
-    /// <param name="dryRun">Print what would be copied without actually doing it.</param>
-    /// <param name="backup">Create a timestamped backup of .scrinia/ before migrating.</param>
-    /// <param name="cleanup">Remove v1 originals after verifying migration.</param>
-    [Command("migrate_v1")]
-    [Hidden]
-    public Task<int> MigrateV1(
+    /// <param name="dryRun">Print how many files would move without moving any.</param>
+    /// <param name="backup">Copy .scrinia/ to .scrinia-backup-{timestamp}/ before migrating.</param>
+    public Task<int> Migrate(
         string? workspace = null,
         bool dryRun = false,
         bool backup = true,
-        bool cleanup = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspace);
-        string root = ScriniaArtifactStore.WorkspaceRootPath;
-        string scriniaDir = Path.Combine(root, ".scrinia");
+        string root = WorkspaceSetup.Root;
 
-        if (!Directory.Exists(scriniaDir))
+        if (!Directory.Exists(Path.Combine(root, ".scrinia")))
         {
             AnsiConsole.MarkupLine("[red]Error:[/] No .scrinia/ directory found.");
             return Task.FromResult(1);
         }
 
-        // ── Cleanup mode: remove v1 originals ───────────────────────────
-        if (cleanup)
+        var result = StoreLayoutMigration.Migrate(root, dryRun, backup);
+
+        if (!result.Ran && result.Moved == 0)
         {
-            return RunCleanup(scriniaDir, dryRun);
-        }
-
-        // ── Backup ──────────────────────────────────────────────────────
-        if (backup && !dryRun)
-            BackupScriniaDir(root);
-
-        // ── Gather migration plan ───────────────────────────────────────
-        var plan = BuildMigrationPlan(scriniaDir);
-
-        if (plan.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[yellow]Nothing to migrate — no v1 files found.[/]");
+            AnsiConsole.MarkupLine("[yellow]Nothing to migrate — the store is already v3.[/]");
             return Task.FromResult(0);
-        }
-
-        // ── Execute or report ───────────────────────────────────────────
-        int migrated = 0;
-        int skipped = 0;
-        int errors = 0;
-
-        if (dryRun)
-            AnsiConsole.MarkupLine($"[bold][DRY RUN][/] Would migrate {plan.Count} files:");
-
-        foreach (var (source, target) in plan)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            string relSource = Path.GetRelativePath(scriniaDir, source).Replace('\\', '/');
-            string relTarget = Path.GetRelativePath(scriniaDir, target).Replace('\\', '/');
-
-            if (File.Exists(target))
-            {
-                if (!dryRun)
-                    skipped++;
-                else
-                    AnsiConsole.MarkupLine($"  [dim]{Markup.Escape(relSource)} → {Markup.Escape(relTarget)} (skip, exists)[/]");
-                continue;
-            }
-
-            if (dryRun)
-            {
-                AnsiConsole.MarkupLine($"  {Markup.Escape(relSource)} → {Markup.Escape(relTarget)}");
-                continue;
-            }
-
-            try
-            {
-                string? targetDir = Path.GetDirectoryName(target);
-                if (targetDir is not null)
-                    Directory.CreateDirectory(targetDir);
-                File.Copy(source, target);
-                migrated++;
-            }
-            catch (Exception ex)
-            {
-                AnsiConsole.MarkupLine($"[red]Error copying {Markup.Escape(relSource)}: {Markup.Escape(ex.Message)}[/]");
-                errors++;
-            }
-        }
-
-        if (!dryRun)
-        {
-            AnsiConsole.MarkupLine($"[green]Migrated {migrated} files to v2 path structure.[/]");
-            if (skipped > 0)
-                AnsiConsole.MarkupLine($"[dim]Skipped {skipped} files (already exist at target).[/]");
-            if (errors > 0)
-                AnsiConsole.MarkupLine($"[red]{errors} errors during migration.[/]");
-            AnsiConsole.MarkupLine("[dim]Original files preserved in topics/ for fallback.[/]");
-            AnsiConsole.MarkupLine("[dim]Run 'scri migrate_v1 --cleanup' to remove originals after verifying.[/]");
-        }
-
-        return Task.FromResult(errors > 0 ? 1 : 0);
-    }
-
-    private static List<(string Source, string Target)> BuildMigrationPlan(string scriniaDir)
-    {
-        var plan = new List<(string Source, string Target)>();
-        string memoriesDir = Path.Combine(scriniaDir, "memories");
-
-        // 1. Scan .scrinia/topics/ for .nmp2 and .meta.json files
-        string topicsDir = Path.Combine(scriniaDir, "topics");
-        if (Directory.Exists(topicsDir))
-        {
-            foreach (string file in Directory.EnumerateFiles(topicsDir, "*", SearchOption.AllDirectories))
-            {
-                string ext = Path.GetExtension(file);
-                if (!ext.Equals(".nmp2", StringComparison.OrdinalIgnoreCase) &&
-                    !ext.Equals(".json", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                // Skip version files — they live in topic/versions/ subdirs
-                string relPath = Path.GetRelativePath(topicsDir, file).Replace('\\', '/');
-                if (relPath.Contains("/versions/", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                string target = MapTopicFileToV2(relPath, memoriesDir);
-                plan.Add((file, target));
-            }
-        }
-
-        // 2. Scan .scrinia/agent/ for markdown files → memories/agent/
-        string agentDir = Path.Combine(scriniaDir, "agent");
-        if (Directory.Exists(agentDir))
-        {
-            foreach (string file in Directory.EnumerateFiles(agentDir, "*", SearchOption.AllDirectories))
-            {
-                string relPath = Path.GetRelativePath(agentDir, file).Replace('\\', '/');
-                string target = Path.Combine(memoriesDir, "agent", relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add((file, target));
-            }
-        }
-
-        // 3. Scan .scrinia/skills/ → memories/skill/
-        string skillsDir = Path.Combine(scriniaDir, "skills");
-        if (Directory.Exists(skillsDir))
-        {
-            foreach (string file in Directory.EnumerateFiles(skillsDir, "*", SearchOption.AllDirectories))
-            {
-                string relPath = Path.GetRelativePath(skillsDir, file).Replace('\\', '/');
-                string target = Path.Combine(memoriesDir, "skill", relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add((file, target));
-            }
-        }
-
-        // 4. Scan .scrinia/workflows/ → memories/workflow/
-        string workflowsDir = Path.Combine(scriniaDir, "workflows");
-        if (Directory.Exists(workflowsDir))
-        {
-            foreach (string file in Directory.EnumerateFiles(workflowsDir, "*", SearchOption.AllDirectories))
-            {
-                string relPath = Path.GetRelativePath(workflowsDir, file).Replace('\\', '/');
-                string target = Path.Combine(memoriesDir, "workflow", relPath.Replace('/', Path.DirectorySeparatorChar));
-                plan.Add((file, target));
-            }
-        }
-
-        return plan;
-    }
-
-    /// <summary>
-    /// Maps a relative path under topics/ to its v2 target under memories/.
-    /// Handles the three v1 layouts:
-    ///   entity/{topic}/{file} → {topic}/{file}     (strip entity/ prefix)
-    ///   memory/{topic}/{file} → {topic}/{file}     (strip memory/ prefix)
-    ///   agent/{file}          → agent/{file}        (keep as-is)
-    ///   {topic}/{file}        → {topic}/{file}      (flat topic, keep as-is)
-    /// </summary>
-    private static string MapTopicFileToV2(string relPath, string memoriesDir)
-    {
-        // relPath uses forward slashes, e.g. "entity/goal/G-5.nmp2" or "arch/overview.nmp2"
-        string[] parts = relPath.Split('/');
-
-        string mappedRelPath;
-        if (parts.Length >= 3 &&
-            parts[0].Equals("entity", StringComparison.OrdinalIgnoreCase))
-        {
-            // entity/goal/G-5.nmp2 → goal/G-5.nmp2
-            mappedRelPath = string.Join(Path.DirectorySeparatorChar.ToString(), parts[1..]);
-        }
-        else if (parts.Length >= 3 &&
-                 parts[0].Equals("memory", StringComparison.OrdinalIgnoreCase))
-        {
-            // memory/api/auth-flow.nmp2 → api/auth-flow.nmp2
-            mappedRelPath = string.Join(Path.DirectorySeparatorChar.ToString(), parts[1..]);
-        }
-        else
-        {
-            // agent/profile.nmp2 → agent/profile.nmp2
-            // arch/overview.nmp2 → arch/overview.nmp2
-            mappedRelPath = relPath.Replace('/', Path.DirectorySeparatorChar);
-        }
-
-        return Path.Combine(memoriesDir, mappedRelPath);
-    }
-
-    private static Task<int> RunCleanup(string scriniaDir, bool dryRun)
-    {
-        string topicsDir = Path.Combine(scriniaDir, "topics");
-        string memoriesDir = Path.Combine(scriniaDir, "memories");
-
-        if (!Directory.Exists(memoriesDir))
-        {
-            AnsiConsole.MarkupLine("[red]Error:[/] No memories/ directory found. Run 'scri migrate_v1' first.");
-            return Task.FromResult(1);
-        }
-
-        if (!Directory.Exists(topicsDir))
-        {
-            AnsiConsole.MarkupLine("[yellow]Nothing to clean up — topics/ directory does not exist.[/]");
-            return Task.FromResult(0);
-        }
-
-        // Only remove files from topics/ that have a corresponding file in memories/
-        var plan = BuildMigrationPlan(scriniaDir);
-        int removed = 0;
-        int kept = 0;
-
-        foreach (var (source, target) in plan)
-        {
-            if (!File.Exists(target))
-            {
-                kept++;
-                continue;
-            }
-
-            string relSource = Path.GetRelativePath(scriniaDir, source).Replace('\\', '/');
-
-            if (dryRun)
-            {
-                AnsiConsole.MarkupLine($"  [red]Would remove[/] {Markup.Escape(relSource)}");
-            }
-            else
-            {
-                File.Delete(source);
-                removed++;
-            }
         }
 
         if (dryRun)
         {
-            AnsiConsole.MarkupLine($"[bold][DRY RUN][/] Would remove {plan.Count - kept} v1 files.");
-        }
-        else
-        {
-            AnsiConsole.MarkupLine($"[green]Removed {removed} v1 files.[/]");
-            if (kept > 0)
-                AnsiConsole.MarkupLine($"[dim]Kept {kept} files (no v2 counterpart found).[/]");
-
-            // Clean up empty directories in topics/
-            CleanEmptyDirectories(topicsDir);
+            AnsiConsole.MarkupLine($"[bold][[DRY RUN]][/] Would move {result.Moved} file(s).");
+            if (result.Conflicts > 0)
+                AnsiConsole.MarkupLine($"[yellow]{result.Conflicts} collision(s) would be quarantined.[/]");
+            return Task.FromResult(0);
         }
 
+        AnsiConsole.MarkupLine($"[green]Migrated {result.Moved} file(s) to the v3 layout.[/]");
+        if (result.Conflicts > 0)
+            AnsiConsole.MarkupLine(
+                $"[yellow]{result.Conflicts} collision(s) quarantined — non-namespaced entries won.[/]");
+        if (result.BackupPath is not null)
+            AnsiConsole.MarkupLine($"[dim]Backup: {Markup.Escape(result.BackupPath)}[/]");
+        else if (result.BackupSkipped)
+            AnsiConsole.MarkupLine(
+                "[yellow]No backup was written — a prior .scrinia-backup-*/ already exists at the workspace root.[/]");
         return Task.FromResult(0);
     }
 
     /// <summary>
     /// Copies .scrinia/ to a timestamped sibling backup directory before a migration writes to
-    /// it. Shared by <see cref="MigrateV1"/> (layout migration) and <see cref="Migrate"/>
-    /// (attributes migration) — no-op if .scrinia/ doesn't exist.
+    /// it. Used by <see cref="MigrateAttributes"/> — no-op if .scrinia/ doesn't exist.
+    ///
+    /// <para>Named <c>.scrinia-backup-attrs-{ts}</c> — deliberately distinct from
+    /// <see cref="StoreLayoutMigration"/>'s own <c>.scrinia-backup-{ts}</c> (no <c>attrs-</c>
+    /// segment). The two used to share the same name shape, so <c>StoreLayoutMigration</c>'s
+    /// "skip the backup if one already exists" guard would treat a backup this method wrote as
+    /// its own and silently skip writing a real one on the next store access — see
+    /// <c>StoreLayoutMigration.IsOwnBackupDirName</c>.</para>
     /// </summary>
     private static void BackupScriniaDir(string root)
     {
@@ -296,12 +90,21 @@ public partial class ScriniaCommands
             return;
 
         string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
-        string backupDir = Path.Combine(root, $".scrinia-backup-{timestamp}");
+        string backupDir = Path.Combine(root, $".scrinia-backup-attrs-{timestamp}");
         AnsiConsole.MarkupLine($"[dim]Backing up .scrinia/ to {Markup.Escape(Path.GetFileName(backupDir))}...[/]");
         CopyDirectoryRecursive(scriniaDir, backupDir);
         AnsiConsole.MarkupLine("[green]Backup complete.[/]");
     }
 
+    /// <summary>Recursive file copy for <see cref="BackupScriniaDir"/>. Best-effort per file,
+    /// matching <c>StoreLayoutMigration.CopyDirectory</c>'s handling of the same class of
+    /// problem: a file held open by a concurrent process (an in-use scope <c>.lock</c>, an
+    /// antivirus scan, a sync client such as Synology Drive) is skipped rather than aborting the
+    /// whole backup — a live lock file carries no committed data worth preserving anyway, and
+    /// <c>File.Copy</c>'s bare (unguarded) call used to let that abort
+    /// <c>scri migrate_attributes --backup</c> entirely on a single transiently-locked file.
+    /// Catches <see cref="UnauthorizedAccessException"/> alongside <see cref="IOException"/> — on
+    /// Windows a sharing violation can surface as either.</summary>
     private static void CopyDirectoryRecursive(string sourceDir, string targetDir)
     {
         Directory.CreateDirectory(targetDir);
@@ -309,26 +112,15 @@ public partial class ScriniaCommands
         foreach (string file in Directory.GetFiles(sourceDir))
         {
             string destFile = Path.Combine(targetDir, Path.GetFileName(file));
-            File.Copy(file, destFile, overwrite: false);
+            try { File.Copy(file, destFile, overwrite: false); }
+            catch (IOException) { /* concurrently held; skip, nothing committed to preserve */ }
+            catch (UnauthorizedAccessException) { /* concurrently held; skip, nothing committed to preserve */ }
         }
 
         foreach (string dir in Directory.GetDirectories(sourceDir))
         {
             string destDir = Path.Combine(targetDir, Path.GetFileName(dir));
             CopyDirectoryRecursive(dir, destDir);
-        }
-    }
-
-    private static void CleanEmptyDirectories(string dir)
-    {
-        foreach (string subDir in Directory.GetDirectories(dir))
-        {
-            CleanEmptyDirectories(subDir);
-        }
-
-        if (!Directory.EnumerateFileSystemEntries(dir).Any())
-        {
-            try { Directory.Delete(dir); } catch { /* ignore */ }
         }
     }
 
@@ -350,7 +142,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
 
-        string scriniaDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string scriniaDir = Path.Combine(WorkspaceSetup.Root, ".scrinia");
         string debounceFile = Path.Combine(scriniaDir, ".last-consolidation");
 
         // Hook-friendly debounce: hooks may fire on every event, but consolidation only earns
@@ -380,7 +172,7 @@ public partial class ScriniaCommands
             catch { /* corrupt debounce file → proceed */ }
         }
 
-        var allEntries = ScriniaArtifactStore.ListScoped(null);
+        var allEntries = WorkspaceSetup.Store.ListScoped(null);
         long totalBytes = allEntries.Sum(e => e.Entry.OriginalBytes);
         var now = DateTimeOffset.UtcNow;
         int staleCount = allEntries.Count(e =>
@@ -403,19 +195,16 @@ public partial class ScriniaCommands
             // Wire the embedding pipeline before compacting so the merged single-chunk entry
             // can be re-embedded through the same event-sink path a normal store/append uses —
             // otherwise vectors stay keyed to the pre-compaction chunk layout (stale/orphaned).
-            IMemoryStore? store = null;
+            IMemoryStore store = WorkspaceSetup.Store;
             if (compactionCandidates.Count > 0)
-            {
                 await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
-                store = MemoryStoreContext.Current;
-            }
 
             foreach (var item in compactionCandidates)
             {
                 try
                 {
                     await CompactEntryToSingleChunk(item, store, cancellationToken);
-                    compacted.Add(ScriniaArtifactStore.FormatQualifiedName(item.Scope, item.Entry.Name));
+                    compacted.Add(WorkspaceSetup.Store.FormatQualifiedName(item.Scope, item.Entry.Name));
                 }
                 catch (Exception ex)
                 {
@@ -452,7 +241,7 @@ public partial class ScriniaCommands
         {
             string verb = dryRun ? "would compact" : "compacted";
             sb.AppendLine($"[green]{verb} {compactionCandidates.Count} multi-chunk session{(compactionCandidates.Count == 1 ? "" : "s")} older than {sessionAgeDays}d[/]");
-            foreach (var name in (dryRun ? compactionCandidates.Select(c => ScriniaArtifactStore.FormatQualifiedName(c.Scope, c.Entry.Name)) : compacted).Take(10))
+            foreach (var name in (dryRun ? compactionCandidates.Select(c => WorkspaceSetup.Store.FormatQualifiedName(c.Scope, c.Entry.Name)) : compacted).Take(10))
                 sb.AppendLine($"  [dim]•[/] {Markup.Escape(name)}");
             int total = dryRun ? compactionCandidates.Count : compacted.Count;
             if (total > 10)
@@ -482,26 +271,26 @@ public partial class ScriniaCommands
     /// chunk count and clears per-chunk metadata (which is no longer accurate after merge).
     /// </summary>
     /// <param name="item">The multi-chunk entry to compact.</param>
-    /// <param name="store">Active memory store (wired by the caller via <c>WorkspaceSetup.LoadPluginsAsync</c>),
-    /// used to re-embed the merged entry. Null skips re-embedding (e.g. workspace not configured).</param>
+    /// <param name="store">Active memory store, used both to read/write the artifact through its
+    /// per-scope write lock and to re-embed the merged entry.</param>
     /// <param name="ct">Cancellation token for the re-embed call.</param>
     /// <remarks>Internal (rather than private) so tests can exercise the re-embed wiring directly
     /// without going through <c>WorkspaceSetup.LoadPluginsAsync</c>'s real provider discovery,
     /// which is environment-dependent (model files may or may not be present on disk).</remarks>
-    internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore? store, CancellationToken ct)
+    internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)
     {
-        string path = ScriniaArtifactStore.FindArtifactPath(item.Entry.Name, item.Scope);
+        string path = store.FindArtifactPath(item.Entry.Name, item.Scope);
         if (!File.Exists(path)) return;
 
-        string artifact = File.ReadAllText(path);
+        string artifact = await store.ReadArtifactAsync(item.Entry.Name, item.Scope, ct);
         if (Nmp2ChunkedEncoder.GetChunkCount(artifact) <= 1) return;
 
-        ScriniaArtifactStore.ArchiveVersion(item.Entry.Name, item.Scope);
+        store.ArchiveVersion(item.Entry.Name, item.Scope);
 
         byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
         string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
         string compacted = Nmp2ChunkedEncoder.Encode(fullText);
-        File.WriteAllText(path, compacted);
+        await store.WriteArtifactAsync(item.Entry.Name, item.Scope, compacted, ct);
 
         var updated = item.Entry with
         {
@@ -510,7 +299,7 @@ public partial class ScriniaCommands
             UpdatedAt = DateTimeOffset.UtcNow,
             ChunkEntries = null,
         };
-        ScriniaArtifactStore.Upsert(updated, item.Scope);
+        store.Upsert(updated, item.Scope);
 
         // Merging chunks collapses the chunk layout (e.g. indices 0-7 -> just 0), so any
         // vectors keyed to the old per-chunk indices are now orphaned/stale. Re-embed through
@@ -520,15 +309,11 @@ public partial class ScriniaCommands
         // wired (embeddings unavailable in this process), there's nothing to clear or rebuild —
         // a subsequent `scri reindex` will repopulate.
         var sink = MemoryEventSinkContext.Current;
-        if (sink is not null && store is not null)
+        if (sink is not null)
         {
             try
             {
-                // FormatRoundTripQualifiedName (not FormatQualifiedName) — the sink re-parses
-                // this string to decide which scope to re-embed under, and FormatQualifiedName's
-                // display form strips the "memory/"/"entity/" namespace prefix, which would
-                // reparse to the WRONG scope for any v1-namespaced topic.
-                string qualifiedName = store.FormatRoundTripQualifiedName(item.Scope, item.Entry.Name);
+                string qualifiedName = store.FormatQualifiedName(item.Scope, item.Entry.Name);
                 await sink.OnStoredAsync(qualifiedName, [fullText], store, ct);
             }
             catch (Exception ex)
@@ -540,21 +325,24 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Migrate stored memories to the attributes model (forward-fill: tags, codeRefs,
-    /// review, and anchors become attributes/keywords). Additive and idempotent — safe to re-run.</summary>
+    /// review, and anchors become attributes/keywords). Additive and idempotent — safe to re-run.
+    /// Named <c>migrate_attributes</c> on the CLI — unrelated to <see cref="Migrate"/>, which
+    /// migrates the on-disk store layout and owns the plain <c>migrate</c> command name.</summary>
     /// <param name="workspaceRoot">Workspace root. Defaults to the nearest ancestor with a .scrinia/ dir.</param>
     /// <param name="dryRun">Report what would change without writing.</param>
     /// <param name="skipBackup">Skip the timestamped .scrinia/ backup (backup runs by default).</param>
     /// <param name="json">Emit a machine-readable summary.</param>
-    public Task<int> Migrate(
+    [Command("migrate_attributes")]
+    public Task<int> MigrateAttributes(
         string? workspaceRoot = null, bool dryRun = false, bool skipBackup = false, bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         if (MemoryStoreContext.Current is not FileMemoryStore store)
-            throw new InvalidOperationException("Migrate requires a file-backed workspace store.");
+            throw new InvalidOperationException("MigrateAttributes requires a file-backed workspace store.");
 
         if (!skipBackup && !dryRun)
-            BackupScriniaDir(ScriniaArtifactStore.WorkspaceRootPath);
+            BackupScriniaDir(WorkspaceSetup.Root);
 
         int lastDone = -1;
         var summary = AttributeMigration.MigrateStore(store, dryRun, (done, total) =>
@@ -574,7 +362,7 @@ public partial class ScriniaCommands
         else
         {
             AnsiConsole.MarkupLine(
-                $"[bold]migrate{(dryRun ? " (dry-run)" : "")}[/] — {summary.Migrated} of {summary.Total} memories forward-filled ({summary.Skipped} already current).");
+                $"[bold]migrate_attributes{(dryRun ? " (dry-run)" : "")}[/] — {summary.Migrated} of {summary.Total} memories forward-filled ({summary.Skipped} already current).");
         }
 
         return Task.FromResult(0);

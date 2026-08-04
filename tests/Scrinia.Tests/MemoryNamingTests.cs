@@ -47,52 +47,16 @@ public class MemoryNamingTests
         MemoryNaming.FormatScopeLabel("custom-scope").Should().Be("custom-scope");
     }
 
-    // ── ClassifyTopic ────────────────────────────────────────────────────────
-
-    [Fact]
-    public void ClassifyTopic_Skill_ReturnsEntity()
-    {
-        MemoryNaming.ClassifyTopic("skill").Should().Be("entity",
-            because: "'skill' is the only topic that still routes to the entity namespace (legacy NMP/2 layout compat)");
-    }
-
-    [Fact]
-    public void ClassifyTopic_Agent_ReturnsAgent()
-    {
-        MemoryNaming.ClassifyTopic("agent").Should().Be("agent");
-    }
-
-    [Theory]
-    [InlineData("api")]
-    [InlineData("dotnet")]
-    [InlineData("patterns")]
-    [InlineData("sessions")]
-    [InlineData("my-custom-topic")]
-    [InlineData("project")]
-    [InlineData("task")]
-    [InlineData("concern")]
-    [InlineData("goal")]
-    [InlineData("workflow")]
-    public void ClassifyTopic_UserTopics_ReturnsMemory(string topic)
-    {
-        MemoryNaming.ClassifyTopic(topic).Should().Be("memory",
-            because: $"'{topic}' is a regular topic that belongs in the memory namespace");
-    }
-
-    [Fact]
-    public void ClassifyTopic_IsCaseInsensitive()
-    {
-        MemoryNaming.ClassifyTopic("Skill").Should().Be("entity");
-        MemoryNaming.ClassifyTopic("AGENT").Should().Be("agent");
-        MemoryNaming.ClassifyTopic("Project").Should().Be("memory");
-    }
-
     // ── BuildScopedTopicScope ────────────────────────────────────────────────
 
     [Fact]
     public void BuildScopedTopicScope_Skill_RouteToEntityNamespace()
     {
-        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:entity/skill");
+        // v3: flattened — skill no longer gets an "entity/" namespace segment. (This test
+        // duplicates FileMemoryStoreTests.BuildScopedTopicScope_EntityTopic_RoutesToEntityNamespace;
+        // the brief's Task 7 correction named only that one, but this one pins the identical
+        // pre-flattening behaviour and would otherwise fail for the same reason.)
+        MemoryNaming.BuildScopedTopicScope("skill").Should().Be("local:skill");
     }
 
     [Fact]
@@ -114,61 +78,22 @@ public class MemoryNamingTests
         MemoryNaming.BuildScopedTopicScope(topic).Should().Be(expected);
     }
 
-    // ── StripNamespacePrefix ─────────────────────────────────────────────────
+    // ── FormatScopeLabel with legacy namespace-prefixed scope literals ───────
+    // Task 8 removed MemoryNaming.StripNamespacePrefix: v3 never produces an "entity/"/"memory/"
+    // segment (BuildScopedTopicScope is fully flat), and DiscoverTopics no longer scans the old
+    // topics/ namespace directories, so FormatScopeLabel has nothing left to strip — it now
+    // returns the scope's topic part verbatim, even for one of these legacy-shaped literals.
 
     [Fact]
-    public void StripNamespacePrefix_EntityPrefix_StripsToTopicName()
+    public void FormatScopeLabel_LegacyEntityPrefixedLiteral_NoLongerStripped()
     {
-        MemoryNaming.StripNamespacePrefix("entity/task").Should().Be("task");
-        MemoryNaming.StripNamespacePrefix("entity/project").Should().Be("project");
+        MemoryNaming.FormatScopeLabel("local:entity/task").Should().Be("entity/task");
     }
 
     [Fact]
-    public void StripNamespacePrefix_MemoryPrefix_StripsToTopicName()
+    public void FormatScopeLabel_LegacyMemoryPrefixedLiteral_NoLongerStripped()
     {
-        MemoryNaming.StripNamespacePrefix("memory/api").Should().Be("api");
-        MemoryNaming.StripNamespacePrefix("memory/dotnet").Should().Be("dotnet");
-    }
-
-    [Fact]
-    public void StripNamespacePrefix_AgentPrefix_StripsToTopicName()
-    {
-        MemoryNaming.StripNamespacePrefix("agent/profile").Should().Be("profile");
-    }
-
-    [Fact]
-    public void StripNamespacePrefix_NoPrefix_PassesThrough()
-    {
-        MemoryNaming.StripNamespacePrefix("api").Should().Be("api");
-        MemoryNaming.StripNamespacePrefix("custom-topic").Should().Be("custom-topic");
-    }
-
-    [Fact]
-    public void StripNamespacePrefix_UnknownPrefix_PassesThrough()
-    {
-        MemoryNaming.StripNamespacePrefix("unknown/something").Should().Be("unknown/something");
-    }
-
-    [Fact]
-    public void StripNamespacePrefix_Agent_NoSlash_PassesThrough()
-    {
-        MemoryNaming.StripNamespacePrefix("agent").Should().Be("agent");
-    }
-
-    // ── FormatScopeLabel with namespace-prefixed scopes ──────────────────────
-
-    [Fact]
-    public void FormatScopeLabel_EntityNamespacedScope_StripsToTopicName()
-    {
-        MemoryNaming.FormatScopeLabel("local:entity/task").Should().Be("task");
-        MemoryNaming.FormatScopeLabel("local:entity/project").Should().Be("project");
-    }
-
-    [Fact]
-    public void FormatScopeLabel_MemoryNamespacedScope_StripsToTopicName()
-    {
-        MemoryNaming.FormatScopeLabel("local:memory/api").Should().Be("api");
-        MemoryNaming.FormatScopeLabel("local:memory/dotnet").Should().Be("dotnet");
+        MemoryNaming.FormatScopeLabel("local:memory/api").Should().Be("memory/api");
     }
 
     [Fact]
@@ -176,34 +101,4 @@ public class MemoryNamingTests
     {
         MemoryNaming.FormatScopeLabel("local:agent").Should().Be("agent");
     }
-
-    // ── ReservedNamespaceDirs ────────────────────────────────────────────────
-
-    [Theory]
-    [InlineData("entity")]
-    [InlineData("memory")]
-    [InlineData("agent")]
-    public void ReservedNamespaceDirs_ContainsExpected(string dir)
-    {
-        MemoryNaming.ReservedNamespaceDirs.Should().Contain(dir);
-    }
-
-    [Theory]
-    [InlineData("api")]
-    [InlineData("task")]
-    [InlineData("project")]
-    public void ReservedNamespaceDirs_DoesNotContainTopicNames(string dir)
-    {
-        MemoryNaming.ReservedNamespaceDirs.Should().NotContain(dir,
-            because: "only namespace directory names (entity, memory, agent) should be reserved");
-    }
-
-    // ── FormatRoundTrip ──────────────────────────────────────────────────────
-
-    [Theory]
-    [InlineData("local:memory/api", "auth", "/memory/api/auth")] // local: keeps the namespace segment
-    [InlineData("local", "SEC-001", "SEC-001")]                  // bare local -> subject as-is
-    [InlineData("ephemeral", "note", "note")]                    // non-local -> subject as-is
-    public void FormatRoundTrip_MatchesLegacyDefault(string scope, string subject, string expected) =>
-        MemoryNaming.FormatRoundTrip(scope, subject).Should().Be(expected);
 }

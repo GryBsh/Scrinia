@@ -13,7 +13,6 @@ using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Commands.Hooks;
-using Scrinia.Mcp;
 using Spectre.Console;
 
 namespace Scrinia.Commands;
@@ -79,7 +78,7 @@ public partial class ScriniaCommands
         // pointing at a service they're no longer using. Without this, switching off
         // Ollama leaves Provider=ollama in place and startup tries it every time before
         // falling back, which surfaces as confusing "Ollama unreachable" warnings.
-        ClearStaleOllamaConfig(ScriniaArtifactStore.WorkspaceRootPath);
+        ClearStaleOllamaConfig(WorkspaceSetup.Root);
 
         // ── Step 1: Built-in Model2Vec model (always) ──
         AnsiConsole.MarkupLine("[bold]Built-in embeddings (Model2Vec / MiniLM-L6-v2)[/]");
@@ -146,7 +145,7 @@ public partial class ScriniaCommands
         // leave the user wondering which provider is active. Plugin presence still
         // takes precedence at runtime (LoadPluginsAsync handles that branch).
         WorkspaceConfig.SetValue(
-            ScriniaArtifactStore.WorkspaceRootPath,
+            WorkspaceSetup.Root,
             "Scrinia:Embeddings:Provider",
             "model2vec");
 
@@ -192,7 +191,7 @@ public partial class ScriniaCommands
         var pulledNames = new HashSet<string>(installed.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
         var pulledEmbedding = installed.Where(m => OllamaSetup.LooksLikeEmbeddingModel(m.Name)).ToList();
 
-        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        string root = WorkspaceSetup.Root;
 
         // -- Embedding model selection --
         string? embeddingModel = await PromptForOllamaModelAsync(
@@ -328,7 +327,7 @@ public partial class ScriniaCommands
 
     private static void ConfigureMultiUser(string? resolver)
     {
-        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        string root = WorkspaceSetup.Root;
         string scriniaDir = Path.Combine(root, ".scrinia");
 
         // 1. Configure git merge drivers
@@ -531,7 +530,7 @@ public partial class ScriniaCommands
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
-        string root = ScriniaArtifactStore.WorkspaceRootPath;
+        string root = WorkspaceSetup.Root;
 
         if (key is null)
         {

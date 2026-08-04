@@ -291,7 +291,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Remember([content], "auto-desc-test"); // no description
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle(e => e.Name == "auto-desc-test");
         entries[0].ContentPreview!.Length.Should().Be(500,
             because: "the auto content preview must use exactly the first 500 chars when no description is given");
@@ -308,7 +308,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Remember([TestHelpers.Facts.Fact1], "explicit-desc-preview-test", explicitDesc);
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle(e => e.Name == "explicit-desc-preview-test");
         entries[0].ContentPreview.Should().Be(explicitDesc,
             because: "an explicit non-blank description must fold into ContentPreview at write time");
@@ -322,7 +322,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Remember(["DI patterns"], "tagged-memory", "DI notes", tags);
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle(e => e.Name == "tagged-memory");
         entries[0].Attributes!["tag"].Should().BeEquivalentTo(tags,
             because: "tags must be persisted in the index");
@@ -336,7 +336,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Remember([content], "preview-test");
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle(e => e.Name == "preview-test");
         entries[0].ContentPreview.Should().Contain("test content",
             because: "content preview must be stored in the index");
@@ -356,7 +356,7 @@ public sealed class ScriniaMcpToolsTests
                 ["status"] = ["done"],   // arbitrary key — must land too
             });
 
-        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "acme-note");
+        var entry = MemoryStoreContext.Current!.LoadIndex().First(e => e.Name == "acme-note");
         entry.Attributes.Should().ContainKey("person");
         entry.Attributes!["person"].Should().Contain("maria");
         entry.Attributes.Should().ContainKey("status");
@@ -373,7 +373,7 @@ public sealed class ScriniaMcpToolsTests
                 ["review"] = ["2026-08-01", "when the auth system changes"],
             });
 
-        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "rev-note");
+        var entry = MemoryStoreContext.Current!.LoadIndex().First(e => e.Name == "rev-note");
         AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out var reviewCondition).Should().BeTrue();
         reviewDate.Should().NotBeNull();
         reviewDate!.Value.Year.Should().Be(2026);
@@ -392,7 +392,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["depends on probe"], "file-note",
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
-        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "file-note");
+        var entry = MemoryStoreContext.Current!.LoadIndex().First(e => e.Name == "file-note");
         entry.FileHashes.Should().NotBeNull();
         entry.FileHashes!.Keys.Should().Contain(relPath);
     }
@@ -416,7 +416,7 @@ public sealed class ScriniaMcpToolsTests
             reviewWhen: "when the carrier system changes",
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
-        var entry = ScriniaArtifactStore.LoadIndex().First(e => e.Name == "carrier-note");
+        var entry = MemoryStoreContext.Current!.LoadIndex().First(e => e.Name == "carrier-note");
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["tag"].Should().BeEquivalentTo(["alpha", "beta"]);
         entry.Attributes!["anchor"].Should().Contain("how do carriers work");
@@ -436,7 +436,7 @@ public sealed class ScriniaMcpToolsTests
             keywords: ["renewed", "annual contract"]);
 
         // "/findings/acme" is a v2 path — it resolves to scope "local:findings", not "local".
-        var entry = ScriniaArtifactStore.LoadIndex("local:findings").First(e => e.Name.Contains("acme"));
+        var entry = MemoryStoreContext.Current!.LoadIndex("local:findings").First(e => e.Name.Contains("acme"));
         entry.Attributes.Should().ContainKey("org");
         entry.Attributes!["org"].Should().Contain("acme");
         entry.Keywords.Should().Contain("annual contract");
@@ -452,7 +452,7 @@ public sealed class ScriniaMcpToolsTests
             attributes: new Dictionary<string, string[]> { ["person"] = ["bob"], ["topic"] = ["standup"] });
 
         // "/sessions/s1" is a v2 path — it resolves to scope "local:sessions", not "local".
-        var entry = ScriniaArtifactStore.LoadIndex("local:sessions").First(e => e.Name == "s1");
+        var entry = MemoryStoreContext.Current!.LoadIndex("local:sessions").First(e => e.Name == "s1");
         entry.Attributes!["person"].Should().Contain("alice").And.Contain("bob");   // multi-valued union
         entry.Attributes.Should().ContainKey("topic");
     }
@@ -559,7 +559,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "forget-me");
-        string filePath = ScriniaArtifactStore.ArtifactPath("forget-me");
+        string filePath = MemoryStoreContext.Current!.ArtifactPath("forget-me");
         File.Exists(filePath).Should().BeTrue(because: "file must exist before Forget");
 
         string result = await Tools().Forget("forget-me");
@@ -570,7 +570,7 @@ public sealed class ScriniaMcpToolsTests
         parsed.Content.Should().Contain("forget-me");
         File.Exists(filePath).Should().BeFalse(
             because: "the .nmp2 file must be deleted by Forget");
-        ScriniaArtifactStore.LoadIndex().Should().BeEmpty(
+        MemoryStoreContext.Current!.LoadIndex().Should().BeEmpty(
             because: "the index entry must be removed by Forget");
     }
 
@@ -666,7 +666,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "already-deleted");
-        string filePath = ScriniaArtifactStore.ArtifactPath("already-deleted");
+        string filePath = MemoryStoreContext.Current!.ArtifactPath("already-deleted");
 
         // Manually delete the file first
         File.Delete(filePath);
@@ -787,25 +787,28 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void ParseQualifiedName_SimpleSubject_ReturnsLocal()
     {
-        var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName("session-notes");
+        using var scope = new TestHelpers.StoreScope();
+        var (parsedScope, subject) = MemoryStoreContext.Current!.ParseQualifiedName("session-notes");
 
-        scope.Should().Be("local");
+        parsedScope.Should().Be("local");
         subject.Should().Be("session-notes");
     }
 
     [Fact]
     public void ParseQualifiedName_TopicPath_ReturnsLocalTopic()
     {
-        var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName("/dotnet/di-patterns");
+        using var scope = new TestHelpers.StoreScope();
+        var (parsedScope, subject) = MemoryStoreContext.Current!.ParseQualifiedName("/dotnet/di-patterns");
 
-        scope.Should().Be("local:dotnet");
+        parsedScope.Should().Be("local:dotnet");
         subject.Should().Be("di-patterns");
     }
 
     [Fact]
     public void ParseQualifiedName_ColonName_IsRejected()
     {
-        var act = () => ScriniaArtifactStore.ParseQualifiedName("global:legacy-data");
+        using var scope = new TestHelpers.StoreScope();
+        var act = () => MemoryStoreContext.Current!.ParseQualifiedName("global:legacy-data");
 
         act.Should().Throw<ArgumentException>().WithMessage("*/global/legacy-data*");
     }
@@ -813,7 +816,8 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void ParseQualifiedName_EmptyInput_Throws()
     {
-        Action act = () => ScriniaArtifactStore.ParseQualifiedName("");
+        using var scope = new TestHelpers.StoreScope();
+        Action act = () => MemoryStoreContext.Current!.ParseQualifiedName("");
 
         act.Should().Throw<ArgumentException>(
             because: "empty name must be rejected");
@@ -822,7 +826,8 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void ParseQualifiedName_EmptySubject_Throws()
     {
-        Action act = () => ScriniaArtifactStore.ParseQualifiedName("dotnet:");
+        using var scope = new TestHelpers.StoreScope();
+        Action act = () => MemoryStoreContext.Current!.ParseQualifiedName("dotnet:");
 
         act.Should().Throw<ArgumentException>(
             because: "empty subject after colon must be rejected");
@@ -833,8 +838,9 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public async Task ResolveArtifactAsync_InlineArtifact_ReturnsAsIs()
     {
+        using var scope = new TestHelpers.StoreScope();
         string artifact = Nmp2ChunkedEncoder.Encode("hello");
-        string result = await ScriniaArtifactStore.ResolveArtifactAsync(artifact);
+        string result = await MemoryStoreContext.Current!.ResolveArtifactAsync(artifact);
 
         result.Should().Be(artifact,
             because: "inline NMP/2 artifacts must be returned unchanged");
@@ -847,7 +853,7 @@ public sealed class ScriniaMcpToolsTests
         string original = "test content for resolution";
         await Tools().Remember([original], "resolve-test");
 
-        string artifact = await ScriniaArtifactStore.ResolveArtifactAsync("resolve-test");
+        string artifact = await MemoryStoreContext.Current!.ResolveArtifactAsync("resolve-test");
 
         artifact.Should().StartWith("NMP/2 ",
             because: "resolved artifact must be a valid NMP/2 artifact");
@@ -860,7 +866,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task ResolveArtifactAsync_NonExistent_Throws()
     {
         using var scope = new TestHelpers.StoreScope();
-        Func<Task<string>> act = () => ScriniaArtifactStore.ResolveArtifactAsync("nonexistent-memory");
+        Func<Task<string>> act = () => MemoryStoreContext.Current!.ResolveArtifactAsync("nonexistent-memory");
 
         await act.Should().ThrowAsync<FileNotFoundException>(
             because: "a non-existent memory name must throw");
@@ -871,14 +877,16 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void FormatQualifiedName_Local_ReturnsSubjectOnly()
     {
-        string result = ScriniaArtifactStore.FormatQualifiedName("local", "notes");
+        using var scope = new TestHelpers.StoreScope();
+        string result = MemoryStoreContext.Current!.FormatQualifiedName("local", "notes");
         result.Should().Be("notes");
     }
 
     [Fact]
     public void FormatQualifiedName_LocalTopic_ReturnsPath()
     {
-        string result = ScriniaArtifactStore.FormatQualifiedName("local:dotnet", "di");
+        using var scope = new TestHelpers.StoreScope();
+        string result = MemoryStoreContext.Current!.FormatQualifiedName("local:dotnet", "di");
         result.Should().Be("/dotnet/di");
     }
 
@@ -887,19 +895,19 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void FormatScopeLabel_Local_ReturnsLocal()
     {
-        ScriniaArtifactStore.FormatScopeLabel("local").Should().Be("local");
+        MemoryNaming.FormatScopeLabel("local").Should().Be("local");
     }
 
     [Fact]
     public void FormatScopeLabel_LocalTopic_ReturnsTopicName()
     {
-        ScriniaArtifactStore.FormatScopeLabel("local:api").Should().Be("api");
+        MemoryNaming.FormatScopeLabel("local:api").Should().Be("api");
     }
 
     [Fact]
     public void FormatScopeLabel_Ephemeral_ReturnsEphemeral()
     {
-        ScriniaArtifactStore.FormatScopeLabel("ephemeral").Should().Be("ephemeral");
+        MemoryNaming.FormatScopeLabel("ephemeral").Should().Be("ephemeral");
     }
 
     // ── Index v2 backward compat (1 test) ────────────────────────────────────
@@ -907,7 +915,19 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void LoadIndex_V1WithoutTagsAndPreview_LoadsWithNulls()
     {
+        // Final-review CRITICAL fix (store-unification): the index.json -> sidecar upgrade moved
+        // from the read path (LoadIndexUnsafe's old "consult index.json only when the sidecar scan
+        // is empty" fallback) into StoreLayoutMigration — "Nothing reads through it" per the
+        // design. This test used to write index.json directly into the CURRENT v3 store dir
+        // (TempDir, i.e. .scrinia/memories/) and read it straight back; that path no longer exists
+        // by design. Converted (not deleted, per the design's "converted, not deleted" precedent
+        // for the other fallback tests this workstream removes) to seed the LEGACY flat store dir
+        // instead — LoadIndex's first call triggers the automatic migration gate, which expands
+        // index.json into a real sidecar before this read ever runs.
         using var scope = new TestHelpers.StoreScope();
+        string legacyStoreDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "store");
+        Directory.CreateDirectory(legacyStoreDir);
+
         // Simulate a v1 index with no Tags/ContentPreview
         string json = """
             {
@@ -924,14 +944,14 @@ public sealed class ScriniaMcpToolsTests
               ]
             }
             """;
-        string indexPath = Path.Combine(scope.TempDir, "index.json");
-        File.WriteAllText(indexPath, json);
+        File.WriteAllText(Path.Combine(legacyStoreDir, "index.json"), json);
 
-        // NOTE: this asserts null ContentPreview because ScriniaArtifactStore.LoadIndex is the v1-only
-        // static CLI facade, which does NOT run the read-time forward-fill. The real FileMemoryStore cold
-        // load (and `scri migrate`) WOULD backfill ContentPreview from Description via AttributeMigration.
-        // If this read is ever rerouted through FileMemoryStore, this assertion must flip to "desc".
-        var entries = ScriniaArtifactStore.LoadIndex();
+        // NOTE: this asserts null ContentPreview because the legacy "description" JSON key has no
+        // corresponding member on ArtifactEntry (Description was fully retired) and
+        // AttributeMigration.Forward's read-time forward-fill never touches ContentPreview — so a
+        // v1 entry with only a "description" value loads with ContentPreview null regardless of
+        // which store reads it.
+        var entries = MemoryStoreContext.Current!.LoadIndex();
 
         entries.Should().ContainSingle(e => e.Name == "old-entry");
         entries[0].Attributes.Should().BeNull(because: "v1 entries have no attributes");
@@ -1171,9 +1191,10 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["auth flow documentation"], "/api/auth");
 
-        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "topics", "api", "auth.nmp2");
+        // v3 layout: every scope routes under .scrinia/memories/, not .scrinia/topics/.
+        string expectedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", "api", "auth.nmp2");
         File.Exists(expectedPath).Should().BeTrue(
-            because: "a /topic/subject path must write to .scrinia/topics/topic/subject.nmp2 in workspace");
+            because: "a /topic/subject path must write to .scrinia/memories/topic/subject.nmp2 in workspace");
     }
 
     [Fact]
@@ -1301,7 +1322,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["auth flow with JWT tokens"], "auth-notes",
             keywords: ["oauth", "jwt", "bearer"]);
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle();
         entries[0].Keywords.Should().Contain("oauth");
         entries[0].Keywords.Should().Contain("jwt");
@@ -1314,7 +1335,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["authentication authentication authentication token token refresh"], "auto-kw-test");
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle();
         entries[0].Keywords.Should().NotBeNull();
         entries[0].Keywords.Should().Contain("authentication");
@@ -1328,7 +1349,7 @@ public sealed class ScriniaMcpToolsTests
             + " " + string.Join(" ", Enumerable.Repeat("query", 5));
         await Tools().Remember([content], "merged-kw", keywords: ["custom-kw"]);
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle();
         // Agent keyword should be first
         entries[0].Keywords![0].Should().Be("custom-kw");
@@ -1357,7 +1378,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["authentication authentication token"], "tf-test");
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle();
         entries[0].TermFrequencies.Should().NotBeNull();
         entries[0].TermFrequencies!.Should().ContainKey("authentication");
@@ -1370,7 +1391,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["token token token"], "boost-test",
             keywords: ["token"]);
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         // token appears 3 times + 5 agent keyword boost = 8
         entries[0].TermFrequencies!["token"].Should().Be(8);
     }
@@ -1400,7 +1421,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["content"], "review-test",
             reviewAfter: "2026-06-01");
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         AttributeReaders.TryReadReview(entries[0].Attributes, out var reviewDate, out _).Should().BeTrue();
         reviewDate.Should().NotBeNull();
         reviewDate!.Value.Year.Should().Be(2026);
@@ -1414,7 +1435,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["content"], "review-when-test",
             reviewWhen: "when auth system changes");
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         AttributeReaders.TryReadReview(entries[0].Attributes, out _, out var reviewCondition).Should().BeTrue();
         reviewCondition.Should().Be("when auth system changes");
     }
@@ -1455,7 +1476,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["v1 content"], "version-test");
         await Tools().Remember(["v2 content"], "version-test");
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Should().ContainSingle();
         entries[0].UpdatedAt.Should().NotBeNull(
             because: "overwriting an existing entry must set UpdatedAt");
@@ -1478,13 +1499,13 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["v1 content"], "created-test");
-        var entries1 = ScriniaArtifactStore.LoadIndex();
+        var entries1 = MemoryStoreContext.Current!.LoadIndex();
         var originalCreatedAt = entries1[0].CreatedAt;
 
         await Task.Delay(50); // ensure different timestamp
         await Tools().Remember(["v2 content"], "created-test");
 
-        var entries2 = ScriniaArtifactStore.LoadIndex();
+        var entries2 = MemoryStoreContext.Current!.LoadIndex();
         entries2[0].CreatedAt.Should().Be(originalCreatedAt,
             because: "overwriting must preserve the original CreatedAt");
     }
@@ -1766,7 +1787,7 @@ public sealed class ScriniaMcpToolsTests
             "typed-kw-test",
             keywords: ["person:Mary"]);
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "typed-kw-test");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "typed-kw-test");
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["person"].Should().BeEquivalentTo(["Mary"],
             because: "the structured typed token routes to the unified Fields store for field-score/facet/cross-link use");
@@ -1807,7 +1828,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Append("A later addition about plugin startup ordering.", "append-meta-preserve");
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-meta-preserve");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "append-meta-preserve");
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["anchor"].Should().Contain("what is the widget subsystem")
             .And.Contain("how do lifecycle hooks work");
@@ -1835,7 +1856,7 @@ public sealed class ScriniaMcpToolsTests
             keywords: ["refresh"],
             anchors: ["how does login work", "what triggers a token refresh"]); // first duplicates existing
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-meta-merge");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "append-meta-merge");
         entry.Attributes!["tag"].Should().BeEquivalentTo(["auth", "tokens"],
             because: "new tags merge with existing and dedupe case-insensitively");
         entry.Attributes!["anchor"].Should().BeEquivalentTo(["how does login work", "what triggers a token refresh"],
@@ -1864,7 +1885,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Append("a later addition", "append-carrier-note");
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-carrier-note");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "append-carrier-note");
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["review"].Should().Contain(v => v.StartsWith("2026-08-01", StringComparison.Ordinal));
         entry.Attributes!["review"].Should().Contain("when the carrier system changes");
@@ -1885,7 +1906,7 @@ public sealed class ScriniaMcpToolsTests
             "append-anchor-bridge",
             anchors: ["how do I configure zorptree"]);
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "append-anchor-bridge");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "append-anchor-bridge");
         entry.Attributes!["anchor"].Should().Contain("how do I configure zorptree");
         entry.TermFrequencies.Should().NotBeNull();
         entry.TermFrequencies!.Should().ContainKey("zorptree",
@@ -1907,7 +1928,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("status: done\nFollow-up.", "unified-append-test",
             keywords: ["person:Bob"]);
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-append-test");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "unified-append-test");
         entry.Attributes!["status"].Should().BeEquivalentTo(["done"], because: "scalar newer-wins");
         entry.Attributes["person"].Should().BeEquivalentTo(["Alice", "Bob"], because: "entities accumulate");
     }
@@ -2067,6 +2088,40 @@ public sealed class ScriniaMcpToolsTests
         File.Exists(gitignorePath).Should().BeTrue(
             because: "the first write under an /agent/ path bypasses Upsert/SaveIndex via a " +
                      "direct Directory.CreateDirectory, and must still materialize .gitignore");
+    }
+
+    // ── Task 8 human ruling: agent restored to StoreLayoutMigration's sweep ONLY after all
+    // four hardcoded .scrinia/agent/ readers/writers were repointed through the store. This
+    // proves migration and the /agent/{name} tool path agree on where the file ends up —
+    // that agreement is the entire point of the correction (see StoreLayoutMigration's class
+    // doc comment and the task-8 brief's PLAN CORRECTION #2).
+
+    [Fact]
+    public async Task MemoryRecall_AgentPath_MigratesLegacyAgentFile_ThenReadableAtNewLocation()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // Seed a pre-existing (pre-v3) .scrinia/agent/profile.md directly on disk, before any
+        // store access has run the automatic v3 migration.
+        string legacyAgentDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent");
+        Directory.CreateDirectory(legacyAgentDir);
+        string legacyPath = Path.Combine(legacyAgentDir, "profile.md");
+        await File.WriteAllTextAsync(legacyPath, "# Agent Profile\nBe concise.");
+
+        // First read through the tool path — must trigger the automatic migration AND find the
+        // file afterward via the SAME repointed reader (MemoryTools.Core.cs's Recall).
+        string result = await Tools().MemoryRecall(path: "/agent/profile");
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "the migration and the /agent/profile reader must agree on where the file now lives");
+        parsed.Content.Should().Be("# Agent Profile\nBe concise.");
+
+        string migratedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", "agent", "profile.md");
+        File.Exists(migratedPath).Should().BeTrue(
+            because: "StoreLayoutMigration must have moved the legacy agent file into the v3 layout");
+        File.Exists(legacyPath).Should().BeFalse(
+            because: "migration moves, not copies — the legacy location must be empty afterward");
     }
 
     // ── withBuiltin parameter (skill recall) — disambiguated from reconcile ──
@@ -2302,7 +2357,7 @@ public sealed class ScriniaMcpToolsTests
             anchors: anchors);
 
         // (1) + (2): Attributes["anchor"] persisted on the entry.
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         var entry = entries.Single(e => e.Name == "anchor-flow-test");
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["anchor"].Should().Contain("what is foo");
@@ -2335,7 +2390,7 @@ public sealed class ScriniaMcpToolsTests
             "unified-store-test",
             keywords: ["person:Nick", "plainword"]);
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "unified-store-test");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "unified-store-test");
 
         // Routed keyword → field; plain keyword stays.
         entry.Attributes!["person"].Should().BeEquivalentTo(["Nick"]);
@@ -2490,7 +2545,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["legacy body"], "legacy-ref", keywords: ["file:src/Foo.cs"]);
 
         var store = MemoryStoreContext.Current!;
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         var legacy = entries.Single(e => e.Name == "legacy-ref");
 
         // Pin the LEGACY shape explicitly (Fields null, Keywords carries the typed marker).
@@ -2518,13 +2573,13 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["beta body"], "um-beta");
 
         await Tools().UpdateMeta("um-alpha", keywords: ["person:Carol", "plain-extra"]);
-        var alpha = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "um-alpha");
+        var alpha = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "um-alpha");
         alpha.Attributes!["person"].Should().BeEquivalentTo(["Carol"]);
         alpha.Keywords.Should().Contain("plain-extra");
         alpha.Keywords.Should().NotContain(k => k.StartsWith("person:"));
 
         await Tools().Link("um-alpha", "um-beta");
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
         entries.Single(e => e.Name == "um-alpha").Attributes!["ref"].Should().Contain(v => v.Contains("um-beta"));
         entries.Single(e => e.Name == "um-beta").Attributes!["ref"].Should().Contain(v => v.Contains("um-alpha"));
     }
@@ -2548,7 +2603,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().UpdateMeta("hint-review-both",
             reviewAfter: "2026-08-01", reviewWhen: "when the auth system changes");
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-both");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "hint-review-both");
         entry.Attributes.Should().NotBeNull();
         var review = entry.Attributes!["review"];
         review.Should().HaveCount(2);
@@ -2567,7 +2622,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().UpdateMeta("hint-review-clear", reviewWhen: "");
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-clear");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "hint-review-clear");
         entry.Attributes.Should().NotBeNull();
         var review = entry.Attributes!["review"];
         review.Should().HaveCount(1);
@@ -2587,12 +2642,12 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["base content"], "hint-review-preserve",
             reviewAfter: "2026-08-01", reviewWhen: "when the auth system changes");
 
-        var seeded = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-preserve");
+        var seeded = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "hint-review-preserve");
         var seededReview = seeded.Attributes!["review"];
 
         await Tools().UpdateMeta("hint-review-preserve", keywords: ["extra-keyword"]);
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-review-preserve");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "hint-review-preserve");
         entry.Attributes.Should().NotBeNull();
         entry.Attributes!["review"].Should().BeEquivalentTo(seededReview,
             because: "update without reviewAfter/reviewWhen params must carry the existing review forward, not drop it");
@@ -2607,12 +2662,12 @@ public sealed class ScriniaMcpToolsTests
         // Pin ContentPreview to null directly — Store always populates it, so force the shape
         // where the entry starts with no ContentPreview at all.
         var store = MemoryStoreContext.Current!;
-        var baseline = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-null");
+        var baseline = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "hint-preview-null");
         store.Upsert(baseline with { ContentPreview = null });
 
         await Tools().UpdateMeta("hint-preview-null", description: "new");
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-null");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "hint-preview-null");
         entry.ContentPreview.Should().Be("new");
     }
 
@@ -2624,13 +2679,13 @@ public sealed class ScriniaMcpToolsTests
         // null-only backfill, which left an existing ContentPreview untouched).
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["base content"], "hint-preview-set");
-        string originalPreview = ScriniaArtifactStore.LoadIndex()
+        string originalPreview = MemoryStoreContext.Current!.LoadIndex()
             .Single(e => e.Name == "hint-preview-set").ContentPreview!;
         originalPreview.Should().NotBeNullOrEmpty();
 
         await Tools().UpdateMeta("hint-preview-set", description: "new");
 
-        var entry = ScriniaArtifactStore.LoadIndex().Single(e => e.Name == "hint-preview-set");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "hint-preview-set");
         entry.ContentPreview.Should().Be("new",
             because: "an explicit new description must overwrite ContentPreview, not preserve the prior one");
     }

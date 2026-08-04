@@ -2,8 +2,7 @@ namespace Scrinia.Core;
 
 /// <summary>
 /// Maps <see cref="ParsedPath"/> instances to their filesystem locations under
-/// <c>.scrinia/memories/</c>.  Pure and side-effect-free except for
-/// <see cref="ToLegacyPath"/> which probes the filesystem for v1 fallback reads.
+/// <c>.scrinia/memories/</c>. Pure and side-effect-free.
 /// </summary>
 public static class PathRouter
 {
@@ -95,47 +94,20 @@ public static class PathRouter
         path.Segments[0].Value.Equals("temp", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Converts a v2 path to the v1 legacy filesystem location for fallback reads.
-    /// Only simple 2-segment paths have v1 equivalents.  Probes the filesystem
-    /// to find the first existing legacy location.
+    /// Maps an internal scope string ("local", "local:findings", "local:goal/G-5") to its
+    /// store directory under <c>.scrinia/memories/</c>. The single authority for
+    /// scope-to-directory resolution (v3 layout — see <see cref="StoreLayoutMigration"/>).
     /// </summary>
-    /// <param name="path">The parsed path.</param>
-    /// <param name="workspaceRoot">Absolute path to the workspace root directory.</param>
-    /// <returns>
-    /// The first existing legacy path, or <see langword="null"/> when no v1 equivalent
-    /// exists or no file is found.
-    /// </returns>
-    public static string? ToLegacyPath(ParsedPath path, string workspaceRoot)
+    public static string ToStoreDir(string scope, string workspaceRoot)
     {
-        // v1 had flat topic:subject -> .scrinia/topics/{topic}/{subject}.nmp2
-        // Only simple 2-segment paths have v1 equivalents.
-        if (path.Segments.Count != 2) return null;
+        string memories = Path.Combine(workspaceRoot, ".scrinia", MemoriesDir);
+        if (scope == "local")
+            return memories;
 
-        string topic = path.Segments[0].Value;
-        string subject = path.Segments[1].Value;
+        if (scope.StartsWith("local:", StringComparison.Ordinal))
+            return Path.Combine(memories,
+                scope["local:".Length..].Replace('/', Path.DirectorySeparatorChar));
 
-        // Check both legacy flat and G-53 namespaced paths.
-        string flatPath = Path.Combine(workspaceRoot, ".scrinia", "topics", topic, subject + ".nmp2");
-        if (File.Exists(flatPath)) return flatPath;
-
-        // G-53 namespaced: entity topics went to topics/entity/{topic}/
-        string namespacedPath = Path.Combine(workspaceRoot, ".scrinia", "topics", "entity", topic, subject + ".nmp2");
-        if (File.Exists(namespacedPath)) return namespacedPath;
-
-        // Memory namespace: topics/memory/{topic}/
-        string memoryPath = Path.Combine(workspaceRoot, ".scrinia", "topics", "memory", topic, subject + ".nmp2");
-        if (File.Exists(memoryPath)) return memoryPath;
-
-        // Agent namespace: topics/agent/
-        if (topic.Equals("agent", StringComparison.OrdinalIgnoreCase))
-        {
-            string agentMdPath = Path.Combine(workspaceRoot, ".scrinia", "agent", subject + ".md");
-            if (File.Exists(agentMdPath)) return agentMdPath;
-
-            string agentNmpPath = Path.Combine(workspaceRoot, ".scrinia", "topics", "agent", subject + ".nmp2");
-            if (File.Exists(agentNmpPath)) return agentNmpPath;
-        }
-
-        return null;
+        throw new ArgumentException($"Unknown scope: {scope}");
     }
 }

@@ -119,7 +119,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
 
-        string sanitizedTopic = ScriniaArtifactStore.SanitizeName(topic.Trim());
+        string sanitizedTopic = WorkspaceSetup.Store.SanitizeName(topic.Trim());
         if (string.IsNullOrWhiteSpace(sanitizedTopic))
         {
             if (json) { WriteJsonError("Topic name is required."); return Task.FromResult(1); }
@@ -140,9 +140,9 @@ public partial class ScriniaCommands
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         // Determine output path
-        string exportsDir = Path.Combine(ScriniaArtifactStore.GetStoreDirForScope("local"), "..", "exports");
+        string exportsDir = Path.Combine(WorkspaceSetup.Store.GetStoreDirForScope("local"), "..", "exports");
         exportsDir = Path.GetFullPath(exportsDir);
-        FileMemoryStore.EnsureGitIgnore(ScriniaArtifactStore.WorkspaceRootPath);
+        FileMemoryStore.EnsureGitIgnore(WorkspaceSetup.Root);
         Directory.CreateDirectory(exportsDir);
 
         if (!TryResolveBundlePath(exportsDir, output, out string bundlePath, out string? pathError, sanitizedTopic))
@@ -160,7 +160,7 @@ public partial class ScriniaCommands
             cancellationToken.ThrowIfCancellationRequested();
 
             string content = File.ReadAllText(filePath);
-            string entryName = ScriniaArtifactStore.SanitizeName(Path.GetFileNameWithoutExtension(filePath));
+            string entryName = WorkspaceSetup.Store.SanitizeName(Path.GetFileNameWithoutExtension(filePath));
 
             // Handle duplicate names by appending a suffix
             string uniqueName = entryName;
@@ -175,7 +175,7 @@ public partial class ScriniaCommands
             string artifact = Nmp2ChunkedEncoder.Encode(content);
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
             long originalBytes = System.Text.Encoding.UTF8.GetByteCount(content);
-            string preview = ScriniaArtifactStore.GenerateContentPreview(content);
+            string preview = WorkspaceSetup.Store.GenerateContentPreview(content);
 
             string desc = !string.IsNullOrWhiteSpace(description)
                 ? description
@@ -216,7 +216,7 @@ public partial class ScriniaCommands
             // Write artifact files
             foreach (var (name, artifactContent) in artifactContents)
             {
-                string zipEntryName = $"topics/{sanitizedTopic}/{ScriniaArtifactStore.SanitizeName(name)}.nmp2";
+                string zipEntryName = $"topics/{sanitizedTopic}/{WorkspaceSetup.Store.SanitizeName(name)}.nmp2";
                 var zipEntry = zip.CreateEntry(zipEntryName);
                 using var writer = new StreamWriter(zipEntry.Open());
                 writer.Write(artifactContent);

@@ -4,7 +4,6 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
-using Scrinia.Mcp;
 using Xunit;
 
 namespace Scrinia.Tests;
@@ -12,10 +11,11 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Covers the legacy <c>"fields"</c>-key sidecar coalesce (Task 2 of the Fields→Attributes
 /// rename): a sidecar written before the rename stores its dict under JSON key "fields"
-/// instead of "attributes". These tests prove that (1) both stores load such a sidecar with
-/// <see cref="ArtifactEntry.Attributes"/> populated, (2) <c>scri migrate</c> rewrites the
-/// on-disk key from "fields" to "attributes" and is idempotent, and (3) neither store's
-/// WriteSidecar chokepoint ever re-emits a "fields" key once an entry passes through it.
+/// instead of "attributes". These tests prove that (1) <see cref="FileMemoryStore"/> loads such
+/// a sidecar (whether constructed directly or reached via <see cref="MemoryStoreContext.Current"/>)
+/// with <see cref="ArtifactEntry.Attributes"/> populated, (2) <c>scri migrate</c> rewrites the
+/// on-disk key from "fields" to "attributes" and is idempotent, and (3) its WriteSidecar
+/// chokepoint never re-emits a "fields" key once an entry passes through it.
 ///
 /// Uses the cold-cache contract: seed the sidecar directly on disk, then load/migrate through
 /// a FRESH store instance so the read-time forward-fill hook actually fires (a warm in-process
@@ -105,7 +105,12 @@ public sealed class AttributesKeyMigrationTests
         var summary = AttributeMigration.MigrateStore(cold);
 
         summary.Migrated.Should().BeGreaterThanOrEqualTo(1, "the legacy-key sidecar must be counted as migrated");
-        string raw = File.ReadAllText(metaPath);
+        // AttributeMigration.MigrateStore touches the store, which auto-migrates the legacy
+        // .scrinia/store/ root (v3 cutover) to .scrinia/memories/ before it ever reads the
+        // sidecar — read the rewritten sidecar back from where it actually landed.
+        string migratedPath = Path.Combine(tmp.Root, ".scrinia", "memories", "a.meta.json");
+        File.Exists(metaPath).Should().BeFalse("the legacy store/ root is migrated away, not left in place");
+        string raw = File.ReadAllText(migratedPath);
         raw.Should().Contain("\"attributes\"", "migrate must rewrite the sidecar under the current key");
         raw.Should().NotContain("\"fields\"", "migrate must not leave the legacy key on disk");
         cold.Dispose();
@@ -133,8 +138,12 @@ public sealed class AttributesKeyMigrationTests
         using var tmp = new TempWorkspace();
         string storeDir = Path.Combine(tmp.Root, ".scrinia", "store");
         Directory.CreateDirectory(storeDir);
-        string metaPath = Path.Combine(storeDir, "a.meta.json");
-        File.WriteAllText(metaPath, LegacyFieldsSidecarJson("a", "tag", "security"));
+        string seedPath = Path.Combine(storeDir, "a.meta.json");
+        File.WriteAllText(seedPath, LegacyFieldsSidecarJson("a", "tag", "security"));
+
+        // AttributeMigration.MigrateStore touches the store, which auto-migrates the legacy
+        // .scrinia/store/ root (v3 cutover) to .scrinia/memories/ before it reads the sidecar.
+        string metaPath = Path.Combine(tmp.Root, ".scrinia", "memories", "a.meta.json");
 
         var first = AttributeMigration.MigrateStore(new FileMemoryStore(tmp.Root));
         first.Migrated.Should().BeGreaterThanOrEqualTo(1);
@@ -147,16 +156,16 @@ public sealed class AttributesKeyMigrationTests
     }
 
     [Fact]
-    public void ScriniaArtifactStore_LegacyFieldsSidecar_LoadsWithAttributesPopulated()
+    public void StoreScope_LegacyFieldsSidecar_LoadsWithAttributesPopulated()
     {
         using var scope = new TestHelpers.StoreScope();
         File.WriteAllText(Path.Combine(scope.TempDir, "a.meta.json"), LegacyFieldsSidecarJson("a", "tag", "security"));
 
-        var entries = ScriniaArtifactStore.LoadIndex();
+        var entries = MemoryStoreContext.Current!.LoadIndex();
 
         var entry = entries.Single(e => e.Name == "a");
         entry.Attributes.Should().NotBeNull(
-            "ScriniaArtifactStore's read path has no forward-fill hook, so it must coalesce at load time itself");
+            "the store's read path must coalesce a legacy 'fields' sidecar into Attributes at load time");
         entry.Attributes!["tag"].Should().BeEquivalentTo("security");
     }
 
@@ -227,7 +236,8 @@ public sealed class AttributesKeyMigrationTests
         var store = tmp.NewStore();
         store.Upsert(legacyEntry, "local");
 
-        string metaPath = Path.Combine(tmp.Root, ".scrinia", "store", "a.meta.json");
+        // "local" now resolves to .scrinia/memories/ (v3 cutover), not .scrinia/store/.
+        string metaPath = Path.Combine(tmp.Root, ".scrinia", "memories", "a.meta.json");
         string raw = File.ReadAllText(metaPath);
         raw.Should().Contain("\"attributes\"", "the write chokepoint must normalize before persisting");
         raw.Should().NotContain("\"fields\"", "the write chokepoint must never re-emit the legacy key");

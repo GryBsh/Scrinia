@@ -32,7 +32,7 @@ public partial class ScriniaCommands
     {
         WorkspaceSetup.Configure(workspaceRoot);
 
-        var entries = ScriniaArtifactStore.ListScoped(scopes);
+        var entries = WorkspaceSetup.Store.ListScoped(scopes);
         if (entries.Count == 0)
         {
             if (json)
@@ -87,7 +87,7 @@ public partial class ScriniaCommands
             var e = item.Entry;
             string name = item.Scope == "ephemeral"
                 ? $"~{e.Name}"
-                : ScriniaArtifactStore.FormatQualifiedName(item.Scope, e.Name);
+                : WorkspaceSetup.Store.FormatQualifiedName(item.Scope, e.Name);
 
             int estTokens = (int)(e.OriginalBytes / 4);
 
@@ -121,7 +121,7 @@ public partial class ScriniaCommands
         var e = item.Entry;
         string name = item.Scope == "ephemeral"
             ? $"~{e.Name}"
-            : ScriniaArtifactStore.FormatQualifiedName(item.Scope, e.Name);
+            : WorkspaceSetup.Store.FormatQualifiedName(item.Scope, e.Name);
         var st = AttributeReaders.GetReviewStatus(e.Attributes, now);
         return new CliMemoryEntry(
             name, e.ChunkCount, e.OriginalBytes, (int)(e.OriginalBytes / 4),
@@ -279,7 +279,7 @@ public partial class ScriniaCommands
     internal static CliSearchResult BuildCliSearchResult(SearchResult match) => match switch
     {
         ChunkEntryResult cr => new CliSearchResult("chunk",
-            cr.ParentItem.Scope == "ephemeral" ? $"~{cr.ParentItem.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
+            cr.ParentItem.Scope == "ephemeral" ? $"~{cr.ParentItem.Entry.Name}" : WorkspaceSetup.Store.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
             cr.Score, (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4),
             cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
             cr.Chunk.ChunkIndex, cr.TotalChunks,
@@ -287,7 +287,7 @@ public partial class ScriniaCommands
             cr.ParentItem.Entry.CreatedAt.ToString("o"), cr.ParentItem.Entry.UpdatedAt?.ToString("o"),
             DisplayAnchorsOrNull(cr.ParentItem.Entry.Attributes)),
         EntryResult er => new CliSearchResult("entry",
-            er.Item.Scope == "ephemeral" ? $"~{er.Item.Entry.Name}" : ScriniaArtifactStore.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
+            er.Item.Scope == "ephemeral" ? $"~{er.Item.Entry.Name}" : WorkspaceSetup.Store.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
             er.Score, (int)(er.Item.Entry.OriginalBytes / 4),
             AttributeReaders.PreviewText(er.Item.Entry.ContentPreview), null, null,
             er.Item.Entry.Attributes,
@@ -373,8 +373,8 @@ public partial class ScriniaCommands
 
         if (json)
         {
-            var (scope, subject) = ScriniaArtifactStore.ParseQualifiedName(name);
-            string qualifiedName = ScriniaArtifactStore.FormatQualifiedName(scope, subject);
+            var (scope, subject) = WorkspaceSetup.Store.ParseQualifiedName(name);
+            string qualifiedName = WorkspaceSetup.Store.FormatQualifiedName(scope, subject);
             long bytes = System.Text.Encoding.UTF8.GetByteCount(content);
             WriteJson(new CliStoreOutput(qualifiedName, 1, bytes, result),
                 CliJsonContext.Default.CliStoreOutput);

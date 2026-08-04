@@ -10,6 +10,77 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — event-sink lifecycle
+
+- Detached event-sink work is now tracked by `BackgroundWork` instead of being dropped on the
+  floor by a bare `_ = Task.Run(...)`. Writes still return without waiting for embedding
+  latency, but the work is owned: the CLI and `Scrinia.Server` both drain outstanding sinks
+  before exiting, so a short-lived command — or a request that lands just before shutdown —
+  no longer ends with a vector file half-written. If the drain exceeds 10s the work is
+  cancelled and a warning names `scri reindex` as the recovery.
+- A faulting embeddings-plugin shutdown no longer kills the process. The `ProcessExit`
+  handler registered by `WorkspaceSetup` called `DisposeAsync().AsTask().Wait(3000)`
+  unguarded — and an exception escaping a `ProcessExit` handler terminates the process.
+  Since the plugin child has usually already exited by then (making disposal throw over a
+  broken pipe), this could take down `scri` on a normal exit. Both the handler and
+  `McpPluginHost.DisposeAsync` now contain their own failures.
+- Concurrent writes to a fresh workspace no longer fail with `UnauthorizedAccessException:
+  Access to the path is denied`. `EnsureMaterialized` calls `EnsureGitIgnore` from *outside*
+  the scope's file lock and write lock, and its `File.Exists` guard is check-then-act — so two
+  writers to a new workspace both wrote `.scrinia/.gitignore`, and on Windows the losing
+  `File.Move` got `ERROR_ACCESS_DENIED`, which `FileRetry` treats as permanent. The content is
+  a fixed constant, so the race is benign and is now tolerated (rethrowing only if the file is
+  genuinely absent) — the same treatment the sidecar write-back already documented. In
+  practice this surfaced whenever a background sink's write raced a foreground write.
+- `FileLockTests.ConcurrentUpsert_NoDataLoss` could hang the whole test host indefinitely,
+  which the runner reports as an aborted run. Its two workers ran on thread-pool threads and
+  blocked on each other at a `Barrier` (deadlock-prone under xunit's parallel load), and a
+  worker that threw stopped signalling, parking its partner on `SignalAndWait()` forever —
+  hiding the `.gitignore` race above as a hang instead of reporting it. Workers now get
+  dedicated threads, a bailing worker removes itself as a participant, and the test surfaces
+  the workers' actual exceptions. It fails in ~150ms where it used to hang.
+- Test isolation: `TestHelpers.StoreScope` now clears `MemoryEventSinkContext.Default` and
+  drains background work before deleting its temp directory. `Default` is a process-wide
+  static — correct for the CLI's single session, wrong for a shared test host — so any test
+  reaching a `ScriniaCommands` entry point left the real embed/entity-typing/maintenance
+  pipeline installed for every later test, whose writes it then rewrote mid-assertion. This
+  was the cause of the intermittent `MentionSpanWiringTests` failure and of the
+  `UnauthorizedAccessException`/`FileLockTimeoutException` noise against deleted temp stores.
+
+### Removed (breaking) — legacy v1/v2 read-fallback layout
+
+- The read path now knows exactly one on-disk layout (`.scrinia/memories/`). The v1/v2
+  fallback machinery that merged reads across `.scrinia/topics/`, namespaced `entity/`/
+  `memory/` directories, and legacy per-scope index-file paths has been deleted; a
+  workspace still holding content at those legacy locations has it moved (not read
+  through) by the automatic migration on first store access.
+- `.scrinia/agent/*.md` now migrates automatically too, and all of its readers/writers
+  (recall, remember, the followUp listing, and bundle export/import) route through the
+  store's own path resolution — migration and every reader agree on one location.
+- `.scrinia/skills/*.md` deliberately stays OUT of the automatic migration for now — none
+  of its readers have been repointed to the new layout, so migrating it would silently
+  orphan project skill overrides. Migrating skills needs its own spec. The manual `scri
+  migrate` command (below) doesn't touch it either — both triggers share the same engine.
+
+### Changed — store unification and the v3 memory layout
+
+- `ScriniaArtifactStore` is deleted. `FileMemoryStore` is the only filesystem store, and
+  `PathRouter` is the only authority on where a memory lives.
+- Every memory now lives under `.scrinia/memories/`. The `store/`, `topics/`, and `agent/`
+  roots are gone, along with the `entity/` and `memory/` namespace prefixes.
+- Existing workspaces migrate automatically on first store access, with a backup written to
+  `.scrinia-backup-{timestamp}/`. `scri migrate` runs the same migration manually and gains
+  `--dry-run`; it replaces the hidden `scri migrate_v1`, whose `--cleanup` step is no longer
+  needed because files are moved rather than copied.
+- `scri consolidate` no longer reads through one store and writes through another, which
+  could leave the in-memory index stale for the rest of the process.
+- **The unrelated attributes-model forward-fill command, previously `scri migrate`, is
+  renamed to `scri migrate_attributes`** to free the `migrate` name for the store-layout
+  migration above — the two commands do unrelated things and would otherwise collide (this
+  repo did the same swap once before, in the other direction, when the attributes command
+  was first added — see `docs/planning/plans/2026-07-10-attributes-plan-5-migrate.md`).
+  Behavior and flags are unchanged; only the CLI-facing command name moved.
+
 ### Fixed — workspace root resolution
 
 - Workspace root resolution is now bounded at the nearest enclosing git repository. Projects

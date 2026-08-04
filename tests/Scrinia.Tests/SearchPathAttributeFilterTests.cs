@@ -38,14 +38,13 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
     [Fact]
     public void SearchAll_WithPathPrefix_FillsUpToLimit_NotThePostLimitRemnant()
     {
-        // 5 matching entries under local:memory/keep + 5 decoys under local:memory/drop.
-        for (int i = 0; i < 5; i++) Seed("local:memory/keep", $"k{i}", "alpha note");
-        for (int i = 0; i < 5; i++) Seed("local:memory/drop", $"d{i}", "alpha note");
+        // 5 matching entries under local:keep + 5 decoys under local:drop. v3: every topic scope
+        // is flat (MemoryNaming.BuildScopedTopicScope never adds a "memory/" segment), and
+        // FormatQualifiedName no longer strips a namespace prefix — it round-trips the topic part
+        // verbatim, so "local:keep" formats as "/keep/{name}", matching pathPrefix "/keep" directly.
+        for (int i = 0; i < 5; i++) Seed("local:keep", $"k{i}", "alpha note");
+        for (int i = 0; i < 5; i++) Seed("local:drop", $"d{i}", "alpha note");
 
-        // FormatQualifiedName strips the "memory/" v1-namespace segment for display (a single
-        // reserved-namespace + single-topic scope, e.g. "local:memory/keep", formats as
-        // "/keep/{name}" — see FileMemoryStore.FormatQualifiedName/IsV2PathScope), so the prefix
-        // that actually matches these labels is "/keep", not "/memory/keep".
         var results = _store.SearchAll(
             query: "alpha", scopes: null, limit: 3, excludeTopics: null,
             supplementalScores: null, entityGraphScores: null,
@@ -55,7 +54,7 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
         // Correct behavior: 3 keep-entries returned, every one under the prefix.
         results.Should().HaveCount(3);
         results.OfType<EntryResult>()
-            .Should().OnlyContain(r => r.Item.Scope == "local:memory/keep");
+            .Should().OnlyContain(r => r.Item.Scope == "local:keep");
     }
 
     [Fact]

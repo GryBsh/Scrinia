@@ -65,13 +65,13 @@ public sealed class PluginPipeline
     /// <summary>
     /// Hooks (e.g. the built-in/Vulkan embedding services) re-parse the after-store/append
     /// qualified name via <see cref="IMemoryStore.ParseQualifiedName"/> to decide which scope to
-    /// route vectors under. <c>MemoryOrchestrator</c>'s <c>result.QualifiedName</c>/<c>result.Name</c>
-    /// is built with <see cref="IMemoryStore.FormatQualifiedName"/>, which intentionally strips the
-    /// "memory/"/"entity/" namespace prefix for human-friendly REST responses — re-parsing that
-    /// stripped string reconstructs the WRONG scope for any v1-namespaced topic, so vectors get
-    /// misfiled and search (which looks up vectors by the entry's real scope) never finds them.
-    /// Rebuild a round-trip-safe name here (same fix as MemoryTools.Core.cs's Store/Append sink
-    /// dispatch) without touching the display value returned to REST callers. Ephemeral names
+    /// route vectors under. Historically <see cref="IMemoryStore.FormatQualifiedName"/> stripped
+    /// the v1 "memory/"/"entity/" namespace prefix for human-friendly REST responses, which made
+    /// the display string lossy to re-parse — under v3 (Task 8) that stripping is gone and
+    /// <c>FormatQualifiedName</c> is round-trip-safe for every scope, so this rebuild is now a
+    /// no-op in practice. Kept as an explicit seam (rather than inlining
+    /// <c>MemoryOrchestrator</c>'s already-built display string) so a future re-introduction of a
+    /// lossy display transform can't silently regress vector routing again. Ephemeral names
     /// ("~key") already round-trip safely as-is.
     /// </summary>
     private static string BuildRoutingQualifiedName(IMemoryStore store, string requestedName, string displayQualifiedName)
@@ -80,7 +80,7 @@ public sealed class PluginPipeline
             return displayQualifiedName;
 
         var (scope, subject) = store.ParseQualifiedName(requestedName);
-        return store.FormatRoundTripQualifiedName(scope, subject);
+        return store.FormatQualifiedName(scope, subject);
     }
 
     public async Task<AppendResponse> AppendAsync(

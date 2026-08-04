@@ -34,6 +34,10 @@ public record AgentFileMeta(
 // MCP tool params attributes/attributeFilter are Dictionary<string,string[]>; registered here so the
 // trimmed `scri serve` publish can marshal them source-gen (no reflection fallback). See CreateToolSerializerOptions.
 [JsonSerializable(typeof(Dictionary<string, string[]>))]
+// Registered so tests can deserialize a persisted ".meta.json" sidecar directly (bypassing
+// FileMemoryStore's read-time forward-fill) without a contextless JsonSerializer call — see
+// WriterCutoverTests.ReadSidecarDirect.
+[JsonSerializable(typeof(ArtifactEntry))]
 public partial class ScriniaMcpJsonContext : JsonSerializerContext;
 
 public sealed partial class ScriniaMcpTools

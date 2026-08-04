@@ -15,24 +15,6 @@ public interface IMemoryStore
     bool IsEphemeral(string name);
     string SanitizeName(string name);
 
-    /// <summary>
-    /// Formats a qualified name that is guaranteed to re-parse (via <see cref="ParseQualifiedName"/>)
-    /// back to the same <paramref name="scope"/> it was built from. Unlike <see
-    /// cref="FormatQualifiedName"/> — which intentionally strips the internal "memory/"/"entity/"
-    /// namespace prefix from v1 "topic:subject" scopes for human-friendly display (so
-    /// "local:memory/api" displays as "/api/subject" rather than "/memory/api/subject") —
-    /// this keeps the namespace segment, so the string stays lossless.
-    ///
-    /// <para>Use this (not <see cref="FormatQualifiedName"/>) anywhere the resulting string is
-    /// handed to something that will <see cref="ParseQualifiedName"/> it back to resolve a scope
-    /// for storage/routing — e.g. dispatching an <see cref="IMemoryEventSink"/> event. Passing the
-    /// display-formatted name there silently misfiles the event under the wrong scope for every
-    /// v1-namespaced topic (i.e. any named topic other than the "skill" entity topic or the
-    /// "agent" topic).</para>
-    /// </summary>
-    string FormatRoundTripQualifiedName(string scope, string subject) =>
-        MemoryNaming.FormatRoundTrip(scope, subject);
-
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
     List<ArtifactEntry> LoadIndex(string scope = "local");

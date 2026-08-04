@@ -45,6 +45,7 @@ public sealed class CliDisplayCutoverTests
     [Fact]
     public void BuildCliMemoryEntry_FieldsOnlyEntry_IsStaleTagsFromFields_DescriptionFromContentPreview()
     {
+        using var scope = new TestHelpers.StoreScope();
         var entry = FieldsOnlyEntry("fields-only", DateTimeOffset.UtcNow.AddDays(-1));
         var scoped = new ScopedArtifact("local", entry);
 
@@ -61,6 +62,7 @@ public sealed class CliDisplayCutoverTests
     [Fact]
     public void BuildCliMemoryEntry_Json_SurfacesAttributes_DropsTagsAndReviewFields()
     {
+        using var scope = new TestHelpers.StoreScope();
         var entry = FieldsOnlyEntry("fields-only", DateTimeOffset.UtcNow.AddDays(-1));
         var scoped = new ScopedArtifact("local", entry);
 

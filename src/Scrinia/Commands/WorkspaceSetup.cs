@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
 using Scrinia.Core.Search;
-using Scrinia.Mcp;
 using Scrinia.Services;
 
 namespace Scrinia.Commands;
@@ -12,12 +11,37 @@ internal static class WorkspaceSetup
 {
     private static McpPluginHost? _pluginHost;
     private static IEmbeddingProvider? _embeddingProvider;
+    private static readonly AsyncLocal<string?> _rootOverride = new();
+    private static string? _root;
+
+    /// <summary>
+    /// The resolved workspace root for this process, cached by <see cref="Configure"/>.
+    /// Respects test overrides set via <see cref="OverrideRoot"/> (checked first, via
+    /// <see cref="AsyncLocal{T}"/> so parallel test classes don't clobber each other),
+    /// falling back to the process-wide value <see cref="Configure"/> cached.
+    /// Replaces the former static workspace-root accessor.
+    /// </summary>
+    internal static string Root =>
+        _rootOverride.Value ?? _root ?? throw new InvalidOperationException(
+            "WorkspaceSetup.Configure must be called before reading Root.");
+
+    /// <summary>Sets an async-local override for <see cref="Root"/>, scoped to the current
+    /// async context. For tests that need root isolation under parallel execution; not
+    /// wired into any production path.</summary>
+    internal static void OverrideRoot(string? path) => _rootOverride.Value = path;
+
+    /// <summary>
+    /// The configured store for this process. Throws if <see cref="Configure"/> has not run.
+    /// </summary>
+    internal static IMemoryStore Store =>
+        MemoryStoreContext.Current ?? throw new InvalidOperationException(
+            "WorkspaceSetup.Configure must be called before reading Store.");
 
     internal static void Configure(string? workspaceRoot)
     {
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
+        _root = root;
 
-        ScriniaArtifactStore.Configure(root);
         // Build ranker weights from config so a workspace can tune α_recency without
         // recompiling. Defaults (RankerOptions.Default) match the historical composition —
         // see RankerOptions docstring for the formula and calibration notes.
@@ -69,7 +93,7 @@ internal static class WorkspaceSetup
     {
         try
         {
-            string root = ScriniaArtifactStore.WorkspaceRootPath;
+            string root = Root;
             string cwd = Directory.GetCurrentDirectory();
             foreach (string orphan in WorkspaceRoot.FindOrphanStores(root, cwd))
                 Console.Error.WriteLine(FormatOrphanWarning(orphan, root, ListTopics(orphan)));
@@ -81,6 +105,18 @@ internal static class WorkspaceSetup
             // must not fail the caller's write.
         }
     }
+
+    /// <summary>
+    /// Namespace directory names used by the OLD (pre-v3) <c>.scrinia/topics/</c> layout that
+    /// <see cref="ListTopics"/> below still has to interpret. Intentionally NOT
+    /// <c>MemoryNaming</c> — that type dropped the "reserved namespace directory" concept
+    /// entirely in Task 8, since <see cref="Scrinia.Core.FileMemoryStore"/> itself no longer
+    /// reads through it. This scan targets an arbitrary ORPHANED/ignored store elsewhere on
+    /// disk that this workstream's automatic migration has never touched (it may still be
+    /// sitting in the pre-v3 layout), so the classification still needs to exist somewhere.
+    /// </summary>
+    private static readonly HashSet<string> s_legacyNamespaceDirs =
+        new(StringComparer.OrdinalIgnoreCase) { "entity", "memory", "agent" };
 
     /// <summary>
     /// Topic names inside an orphaned store, for the migration command — the bare names
@@ -111,7 +147,7 @@ internal static class WorkspaceSetup
             foreach (string nsDir in Directory.EnumerateDirectories(topicsDir))
             {
                 string nsName = Path.GetFileName(nsDir) ?? "";
-                if (!MemoryNaming.ReservedNamespaceDirs.Contains(nsName)) continue;
+                if (!s_legacyNamespaceDirs.Contains(nsName)) continue;
 
                 if (nsName.Equals("agent", StringComparison.OrdinalIgnoreCase))
                 {
@@ -131,7 +167,7 @@ internal static class WorkspaceSetup
             foreach (string dir in Directory.EnumerateDirectories(topicsDir))
             {
                 string name = Path.GetFileName(dir) ?? "";
-                if (MemoryNaming.ReservedNamespaceDirs.Contains(name)) continue;
+                if (s_legacyNamespaceDirs.Contains(name)) continue;
                 if (namespacedChildren.Contains(name)) continue; // shadowed by a namespaced entry
                 topics.Add(name);
             }
@@ -166,7 +202,7 @@ internal static class WorkspaceSetup
             .SetMinimumLevel(LogLevel.Warning));
         var logger = loggerFactory.CreateLogger("Scrinia.Embeddings");
 
-        string workspaceDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string workspaceDir = Path.Combine(Root, ".scrinia");
         string embeddingsDir = Path.Combine(workspaceDir, "embeddings");
         string exeDir = AppContext.BaseDirectory;
         string modelsDir = Path.Combine(exeDir, "models");
@@ -288,7 +324,7 @@ internal static class WorkspaceSetup
         if (provider is { IsAvailable: true })
         {
             var options = BuildEmbeddingOptions();
-            string embeddingsDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia", "embeddings");
+            string embeddingsDir = Path.Combine(Root, ".scrinia", "embeddings");
             try
             {
                 return await EmbeddingReindexer.ForceReindexAsync(
@@ -460,7 +496,7 @@ internal static class WorkspaceSetup
         string pluginName = GetPluginName("plugins:embeddings", "scri-plugin-embeddings");
 
         // Vector data lives in the workspace-local .scrinia/ directory (per-project isolation).
-        string dataDir = Path.Combine(ScriniaArtifactStore.WorkspaceRootPath, ".scrinia");
+        string dataDir = Path.Combine(Root, ".scrinia");
         string modelsDir = Path.Combine(pluginsDir, pluginName);
         Directory.CreateDirectory(modelsDir);
 
@@ -484,9 +520,22 @@ internal static class WorkspaceSetup
 
             _pluginHost = host;
 
-            // Ensure plugin shuts down when the CLI exits
+            // Ensure plugin shuts down when the CLI exits.
+            // An exception escaping a ProcessExit handler terminates the process, and the plugin
+            // child is often already gone by this point (making disposal throw), so the wait is
+            // guarded. Nothing useful remains to salvage at exit — log and let the process end.
             AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-                host.DisposeAsync().AsTask().Wait(3000);
+            {
+                try
+                {
+                    host.DisposeAsync().AsTask().Wait(3000);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"[scrinia:warn] Embeddings plugin shutdown failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            };
         }
         catch (Exception ex)
         {
@@ -570,7 +619,7 @@ internal static class WorkspaceSetup
         if (value is not null) return value;
 
         // 2. Config file
-        value = WorkspaceConfig.GetValue(ScriniaArtifactStore.WorkspaceRootPath, key);
+        value = WorkspaceConfig.GetValue(Root, key);
         if (value is not null) return value;
 
         return defaultName;
@@ -594,6 +643,6 @@ internal static class WorkspaceSetup
         if (value is not null) return value;
 
         // 2. Config file (workspace-scoped)
-        return WorkspaceConfig.GetValue(ScriniaArtifactStore.WorkspaceRootPath, key);
+        return WorkspaceConfig.GetValue(Root, key);
     }
 }

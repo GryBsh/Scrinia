@@ -113,32 +113,6 @@ public class PathRouterTests : IDisposable
         PathRouter.IsEphemeral(P("/api/auth-flow")).Should().BeFalse();
     }
 
-    // ── ToLegacyPath ──────────────────────────────────────────────────────────
-
-    [Fact]
-    public void ToLegacyPath_WithExistingLegacyFile_ReturnsLegacyPath()
-    {
-        // Create a legacy file at .scrinia/topics/api/auth-flow.nmp2
-        var legacyDir = Path.Combine(_root, ".scrinia", "topics", "api");
-        Directory.CreateDirectory(legacyDir);
-        var legacyFile = Path.Combine(legacyDir, "auth-flow.nmp2");
-        File.WriteAllText(legacyFile, "legacy content");
-
-        var result = PathRouter.ToLegacyPath(P("/api/auth-flow"), _root);
-
-        result.Should().NotBeNull();
-        result.Should().Be(legacyFile);
-    }
-
-    [Fact]
-    public void ToLegacyPath_EntityChain_ReturnsNull()
-    {
-        // More than 2 segments — no v1 equivalent.
-        var result = PathRouter.ToLegacyPath(P("/goal/G-5/phase/01/task/fix"), _root);
-
-        result.Should().BeNull();
-    }
-
     // ── Additional coverage ───────────────────────────────────────────────────
 
     [Fact]
@@ -156,15 +130,6 @@ public class PathRouterTests : IDisposable
     }
 
     [Fact]
-    public void ToLegacyPath_NoLegacyFile_ReturnsNull()
-    {
-        // No legacy file exists on disk.
-        var result = PathRouter.ToLegacyPath(P("/api/auth-flow"), _root);
-
-        result.Should().BeNull();
-    }
-
-    [Fact]
     public void ToFilesystemPath_DeepEntityPath_IncludesAllSegments()
     {
         var result = PathRouter.ToFilesystemPath(P("/goal/G-5/phase/01/task/fix"), _root);
@@ -172,5 +137,38 @@ public class PathRouterTests : IDisposable
         result.Should().NotBeNull();
         result!.Should().EndWith(Path.Combine(
             ".scrinia", "memories", "goal", "G-5", "phase", "01", "task", "fix.nmp2"));
+    }
+
+    // ── ToStoreDir ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void ToStoreDir_MatchesFileMemoryStoreForEveryScopeShape()
+    {
+        var store = new FileMemoryStore(_root);
+        foreach (string scope in new[] { "local", "local:findings", "local:goal/G-5", "local:agent" })
+            PathRouter.ToStoreDir(scope, _root).Should().Be(store.GetStoreDirForScope(scope));
+    }
+
+    [Fact]
+    public void ToStoreDir_MapsEachScopeShapeToItsLiteralDirectory()
+    {
+        PathRouter.ToStoreDir("local", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories"));
+
+        PathRouter.ToStoreDir("local:findings", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories", "findings"));
+
+        PathRouter.ToStoreDir("local:goal/G-5", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories", "goal", "G-5"));
+
+        PathRouter.ToStoreDir("local:agent", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "memories", "agent"));
+    }
+
+    [Fact]
+    public void ToStoreDir_UnknownScope_Throws()
+    {
+        var act = () => PathRouter.ToStoreDir("remote:whatever", _root);
+        act.Should().Throw<ArgumentException>().WithMessage("*Unknown scope*");
     }
 }
