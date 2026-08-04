@@ -8,24 +8,6 @@ namespace Scrinia.Core;
 public static class MemoryNaming
 {
     /// <summary>
-    /// Topic names still classified as "entity" under v3. The only remaining use is
-    /// <see cref="FileMemoryStore"/>'s <c>IsEntityScope</c>, which excludes "skill" from the
-    /// default (unfiltered) search/read scope set — it does NOT gate a directory namespace
-    /// anymore (the v1/v2 "entity/"/"memory/" directory split this set used to drive was
-    /// deleted with the rest of the legacy layout fallback in Task 8). Also passed to
-    /// <see cref="PathParser.Parse"/> from <see cref="FileMemoryStore.ParseQualifiedName"/> for
-    /// its <c>entityTypes</c> parameter, but that classification is inert there — only
-    /// <see cref="PathSegment.Value"/> feeds the returned scope/subject, never
-    /// <see cref="PathSegment.IsEntityType"/> — so this set's content has no effect on
-    /// <c>ParseQualifiedName</c>'s output; the parameter is kept only because the method
-    /// signature requires some set.
-    /// </summary>
-    public static readonly IReadOnlySet<string> EntityTopics = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "skill"
-    };
-
-    /// <summary>
     /// Throws if <paramref name="name"/> uses the removed v1 "topic:subject" colon
     /// syntax. Memory names are paths now ("/topic/subject"); rejecting a bare colon
     /// (rather than letting <c>SanitizeName</c> silently fold it into a mangled local

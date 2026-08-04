@@ -1093,6 +1093,23 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void DefaultScopes_IncludeEveryDiscoveredTopic()
+    {
+        // IsEntityScope excluded "skill" (and any local:entity/* scope) from unfiltered
+        // searches. Both branches are dead under v3: the migration leaves no entity/
+        // directories, and skills are file entities rather than store entries. A
+        // memories/skill/ topic is only reachable from an unreleased dev build's
+        // migration, so including it costs nothing and removes a half-dead predicate.
+        _store.Upsert(new ArtifactEntry("a", "file:///a.nmp2", 10, 1, DateTimeOffset.UtcNow), "local:skill");
+        _store.Upsert(new ArtifactEntry("b", "file:///b.nmp2", 10, 1, DateTimeOffset.UtcNow), "local:findings");
+
+        IReadOnlyList<string> scopes = _store.ResolveReadScopes(null);
+
+        scopes.Should().Contain("local:skill");
+        scopes.Should().Contain("local:findings");
+    }
+
+    [Fact]
     public void NormalizeScopeFilters_BareTopicName_ReturnsLocalOnly()
     {
         var result = _store.NormalizeScopeFilters("api");

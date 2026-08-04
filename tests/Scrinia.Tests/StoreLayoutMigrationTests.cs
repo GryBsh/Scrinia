@@ -401,8 +401,8 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     public void Migrate_MovesVectorDirs_ForBothRenamingScopeFamilies_IncludingNonSkillEntityTopic()
     {
         // Both renaming families: entity/<topic> (NOT just "skill" — "task" is a real historical
-        // entity topic per FileMemoryStore.IsEntityScope's own comment, and this is exactly the
-        // case IMPORTANT 2 fixes) and memory/<topic>. Something must also need migrating for
+        // entity topic, and this is exactly the case IMPORTANT 2 fixes) and memory/<topic>.
+        // Something must also need migrating for
         // NeedsMigration to be true and the pass to actually run.
         Write("topics/findings/review.nmp2", "b");
         Write("embeddings/local/entity/skill/vectors.bin", "skill-vectors");

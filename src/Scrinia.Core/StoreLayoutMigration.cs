@@ -407,8 +407,8 @@ public static class StoreLayoutMigration
     /// then <c>entity/</c>, then <c>memory/</c>), full source path as the final tiebreak. Not just
     /// a stable sort over discovery order — <c>Directory.EnumerateFiles</c>' enumeration order is
     /// unspecified by .NET, so without this explicit tiebreak two namespaced entries colliding on
-    /// the same target (e.g. <c>entity/skill/x</c> and <c>memory/skill/x</c>, realistic after
-    /// skill's historical reclassification — see <c>MemoryNaming.EntityTopics</c>) would pick an
+    /// the same target (e.g. <c>entity/skill/x</c> and <c>memory/skill/x</c>, realistic because
+    /// "skill" was historically classified as an entity topic) would pick an
     /// arbitrary, unrepeatable winner. Extracted as its own method (rather than inlined in
     /// <see cref="BuildPlan"/>) so it can be unit-tested directly against adversarial input that
     /// disagrees with whatever order the filesystem happens to enumerate in — see
@@ -585,8 +585,8 @@ public static class StoreLayoutMigration
     /// <para><b>Final-review fix (IMPORTANT 2):</b> the original version special-cased
     /// <c>entity/skill</c> only, matching <see cref="MapTopicFileToV2"/>'s move for the memories
     /// themselves — but <see cref="MapTopicFileToV2"/> strips <c>entity/</c> for ANY child topic,
-    /// not just <c>skill</c>. Any other historical entity topic (<c>task</c>, <c>concern</c> — see
-    /// <c>FileMemoryStore.IsEntityScope</c>'s own comment) had its memories relocated correctly by
+    /// not just <c>skill</c>. Any other historical entity topic (<c>task</c>, <c>concern</c> —
+    /// historical entity topics included) had its memories relocated correctly by
     /// the main plan while its embeddings sat orphaned at <c>embeddings/local/entity/&lt;topic&gt;/</c>,
     /// silently, with no pointer to <c>scri reindex</c>. Now iterated the same way as the
     /// <c>memory/</c> family below, instead of a single hardcoded <c>entity/skill</c> path.</para>
@@ -600,7 +600,7 @@ public static class StoreLayoutMigration
         // entity/<topic> -> <topic> for EVERY historical entity topic, not just "skill".
         // VectorStore.ScopeToRelativeDir derives the embedding directory purely from splitting
         // the scope string on separators, so any v2 "local:entity/<topic>" scope (skill was never
-        // the only one — FileMemoryStore.IsEntityScope's own comment names "task" and "concern" as
+        // the only one — historical entity topics included "task" and "concern" as
         // legacy flat entity topics, and MapTopicFileToV2 strips entity/ for any child, not just
         // skill) has its vectors at embeddings/local/entity/<topic>/ before this migration and
         // needs them at embeddings/local/<topic>/ after — matching where the memories themselves
