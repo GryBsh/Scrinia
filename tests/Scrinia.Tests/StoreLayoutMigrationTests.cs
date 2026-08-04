@@ -232,6 +232,28 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Migrate_DryRun_WithBackupRequested_WritesNoBackupAndMovesNothing()
+    {
+        // The realistic CLI default shape is dryRun: true, backup: true — `scri migrate
+        // --dry-run` doesn't pass --backup=false. The only other dry-run test above pins
+        // backup: false, same as the one dry-run case in the CLI-level MigrationTests, so
+        // nothing pinned the "dry run never writes a backup even when asked" invariant. It
+        // holds today because RunMigration's dry-run branch returns before the lock/backup
+        // block runs at all — this test guards against a future reordering silently starting
+        // to write backups on --dry-run.
+        Write("topics/findings/review.nmp2", "b");
+
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: true, backup: true);
+
+        result.Moved.Should().BeGreaterThan(0);
+        result.Ran.Should().BeFalse();
+        result.BackupPath.Should().BeNull();
+        Directory.EnumerateDirectories(_root, ".scrinia-backup-*").Should().BeEmpty();
+        Exists("topics/findings/review.nmp2").Should().BeTrue();
+        Exists("memories/findings/review.nmp2").Should().BeFalse();
+    }
+
+    [Fact]
     public void Migrate_Resumes_AfterPartialMigration()
     {
         Write("memories/findings/already.nmp2", "done");   // simulates interrupted run

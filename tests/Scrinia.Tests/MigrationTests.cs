@@ -6,8 +6,8 @@ using Scrinia.Core.Models;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Tests for the <c>scri migrate</c> CLI command (<see cref="ScriniaCommands.Migrate(string?, bool, bool, CancellationToken)"/>,
-/// a thin wrapper over <see cref="StoreLayoutMigration.Migrate"/> — see
+/// Tests for the <c>scri migrate</c> CLI command (<see cref="ScriniaCommands.Migrate"/>, a thin
+/// wrapper over <see cref="StoreLayoutMigration.Migrate"/> — see
 /// <c>StoreLayoutMigrationTests</c> for engine-level coverage) and the v2 path structure
 /// (<see cref="PathRouter"/>).
 /// </summary>
@@ -122,11 +122,11 @@ public sealed class MigrationTests : IDisposable
 
     // ═══════════════════════════════════════════════════════════════════════════
     //  ATTRIBUTES MIGRATION COMMAND (`scri migrate_attributes` —
-    //  Scrinia.Commands.ScriniaCommands.Migrate, instance overload)
+    //  Scrinia.Commands.ScriniaCommands.MigrateAttributes)
     // ═══════════════════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task Migrate_ForwardFillsLegacyEntry_FileHashesBecomeFieldsFile()
+    public async Task MigrateAttributes_ForwardFillsLegacyEntry_FileHashesBecomeFieldsFile()
     {
         // Arrange: seed one legacy entry (FileHashes only, no Fields) directly via a FileMemoryStore
         // against the temp workspace — mirrors AttributeMigrationTests' seeding pattern. FileHashes
@@ -143,7 +143,7 @@ public sealed class MigrationTests : IDisposable
 
         // Act
         var cmd = new ScriniaCommands();
-        int exitCode = await cmd.Migrate(workspaceRoot: _tempDir, skipBackup: true, json: false);
+        int exitCode = await cmd.MigrateAttributes(workspaceRoot: _tempDir, skipBackup: true, json: false);
 
         // Assert: exit 0, and a fresh store reload shows the entry gained Fields["file"]
         exitCode.Should().Be(0);

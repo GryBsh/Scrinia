@@ -71,8 +71,7 @@ public partial class ScriniaCommands
 
     /// <summary>
     /// Copies .scrinia/ to a timestamped sibling backup directory before a migration writes to
-    /// it. Used by <see cref="Migrate(string?, bool, bool, bool, CancellationToken)"/> (the
-    /// attributes migration) — no-op if .scrinia/ doesn't exist.
+    /// it. Used by <see cref="MigrateAttributes"/> — no-op if .scrinia/ doesn't exist.
     /// </summary>
     private static void BackupScriniaDir(string root)
     {
@@ -306,20 +305,20 @@ public partial class ScriniaCommands
 
     /// <summary>Migrate stored memories to the attributes model (forward-fill: tags, codeRefs,
     /// review, and anchors become attributes/keywords). Additive and idempotent — safe to re-run.
-    /// Named <c>migrate_attributes</c> on the CLI — unrelated to <see cref="Migrate(string?, bool, bool, CancellationToken)"/>,
-    /// which migrates the on-disk store layout and owns the plain <c>migrate</c> command name.</summary>
+    /// Named <c>migrate_attributes</c> on the CLI — unrelated to <see cref="Migrate"/>, which
+    /// migrates the on-disk store layout and owns the plain <c>migrate</c> command name.</summary>
     /// <param name="workspaceRoot">Workspace root. Defaults to the nearest ancestor with a .scrinia/ dir.</param>
     /// <param name="dryRun">Report what would change without writing.</param>
     /// <param name="skipBackup">Skip the timestamped .scrinia/ backup (backup runs by default).</param>
     /// <param name="json">Emit a machine-readable summary.</param>
     [Command("migrate_attributes")]
-    public Task<int> Migrate(
+    public Task<int> MigrateAttributes(
         string? workspaceRoot = null, bool dryRun = false, bool skipBackup = false, bool json = false,
         CancellationToken cancellationToken = default)
     {
         WorkspaceSetup.Configure(workspaceRoot);
         if (MemoryStoreContext.Current is not FileMemoryStore store)
-            throw new InvalidOperationException("Migrate requires a file-backed workspace store.");
+            throw new InvalidOperationException("MigrateAttributes requires a file-backed workspace store.");
 
         if (!skipBackup && !dryRun)
             BackupScriniaDir(WorkspaceSetup.Root);
