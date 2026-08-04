@@ -31,9 +31,6 @@ public partial class BundleJsonContext : JsonSerializerContext;
 /// </summary>
 public static class BundleFormatService
 {
-    /// <summary>Disk-based meta-entity categories to include in bundles.</summary>
-    private static readonly string[] FileEntityCategories = ["skills", "agent"];
-
     public static readonly JsonSerializerOptions DefaultJsonOptions = new()
     {
         WriteIndented = true,
@@ -303,7 +300,7 @@ public static class BundleFormatService
     {
         var fileEntities = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
-        foreach (string category in FileEntityCategories)
+        foreach (string category in CategoryToKind.Keys)
         {
             string? categoryDir = CategoryDir(store, category);
             if (categoryDir is null || !Directory.Exists(categoryDir))
@@ -377,9 +374,9 @@ public static class BundleFormatService
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
                 continue;
 
-            string? categoryDir = CategoryDir(store, category);
-            if (categoryDir is null)
-                continue; // no file-entity kind for this manifest key
+            // CategoryToKind.ContainsKey(category) already returned true above, so CategoryDir
+            // always resolves here — the "no kind" branch that used to guard this is unreachable.
+            string categoryDir = CategoryDir(store, category)!;
             Directory.CreateDirectory(categoryDir);
 
             foreach (var fileEl in categoryProp.Value.EnumerateArray())
@@ -388,8 +385,14 @@ public static class BundleFormatService
                 if (string.IsNullOrWhiteSpace(fileName))
                     continue;
 
-                // Guard against path traversal
-                if (fileName.Contains("..") || Path.IsPathRooted(fileName))
+                // Guard against path traversal and directory nesting: a crafted manifest entry
+                // like "sub/x.md" would pass both the ".." and rooted-path checks, then
+                // File.Create(destPath) would throw DirectoryNotFoundException for a
+                // subdirectory that doesn't exist — uncaught, aborting the import after topics
+                // were already written. Export only ever emits Path.GetFileName(filePath), so a
+                // legitimate manifest entry never contains a separator.
+                if (fileName.Contains("..") || Path.IsPathRooted(fileName)
+                    || fileName.IndexOfAny(['/', '\\']) >= 0)
                     continue;
 
                 string zipEntryName = $"files/{category}/{fileName}";
@@ -399,6 +402,11 @@ public static class BundleFormatService
 
                 string destPath = Path.Combine(categoryDir, fileName);
                 string fullDest = Path.GetFullPath(destPath);
+                // Anchored to categoryDir (not the outer .scrinia base): stricter against
+                // traversal, but permits a symlinked .scrinia/agent pointing outside .scrinia,
+                // where an outer-anchored check would deny it. Deliberate — consistent with the
+                // write path (SkillCreate/Remember's agent branch), which never had that outer
+                // check either.
                 if (!PathContainment.IsWithin(categoryDir, fullDest))
                     continue;
 

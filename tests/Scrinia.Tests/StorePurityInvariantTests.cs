@@ -67,7 +67,7 @@ public class StorePurityInvariantTests
         File.Exists(authoritative).Should().BeTrue();
 
         string listing = await Tools().MemoryRecall(path: "/skill/");
-        listing.Should().Contain("qa");
+        listing.Should().Contain("/skill/qa [file]");
 
         string loaded = await Tools().MemoryRecall(path: "/skill/qa");
         loaded.Should().Contain("skill body");

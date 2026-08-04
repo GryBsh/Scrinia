@@ -6,7 +6,6 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using ModelContextProtocol;
 using Scrinia.Core;
-using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
@@ -249,15 +248,8 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            string scope = MemoryNaming.BuildScopedTopicScope("skill");
-            IReadOnlyList<ArtifactEntry> entries;
-            try { entries = store.LoadIndex(scope); }
-            catch { entries = []; }
-            var nmpNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
-
             var allNames = new HashSet<string>(BuiltInSkills.Keys, StringComparer.OrdinalIgnoreCase);
             allNames.UnionWith(diskNames);
-            allNames.UnionWith(nmpNames);
 
             if (allNames.Count == 0)
                 return Task.FromResult(ResponseBuilder.Success("No skills available.").WithAction("listed").ToYaml());
@@ -280,24 +272,6 @@ public sealed partial class ScriniaMcpTools
                     }
                     sb.AppendLine($"- /skill/{skillKey} [{tag}]");
                 }
-                else if (nmpNames.Contains(skillKey))
-                {
-                    var overrideEntry = entries.FirstOrDefault(e => e.Name.Equals(skillKey, StringComparison.OrdinalIgnoreCase));
-                    string tag = "override";
-                    if (overrideEntry?.Keywords is not null)
-                    {
-                        var basedOnKw = overrideEntry.Keywords.FirstOrDefault(k => k.StartsWith("basedOn:", StringComparison.Ordinal));
-                        if (basedOnKw is not null)
-                        {
-                            string storedHash = basedOnKw["basedOn:".Length..];
-                            string currentHash = Convert.ToHexStringLower(
-                                SHA256.HashData(Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
-                            if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
-                                tag = "stale base";
-                        }
-                    }
-                    sb.AppendLine($"- /skill/{skillKey} [{tag}]");
-                }
                 else
                 {
                     sb.AppendLine($"- /skill/{skillKey} [built-in]");
@@ -313,24 +287,6 @@ public sealed partial class ScriniaMcpTools
                     ? $"role:{fileMeta.Role}"
                     : "role:unknown";
                 sb.AppendLine($"- /skill/{diskName} [file] [{roleTag}]");
-
-                if (sb.Length > SkillResponseLimit - 200)
-                {
-                    sb.AppendLine("[... truncated to 8KB limit]");
-                    break;
-                }
-            }
-
-            foreach (var entry in entries)
-            {
-                if (BuiltInSkills.ContainsKey(entry.Name) || diskNames.Contains(entry.Name))
-                    continue;
-
-                string roleKw = entry.Keywords?
-                    .FirstOrDefault(k => k.StartsWith("role:", StringComparison.OrdinalIgnoreCase))
-                    ?? "role:unknown";
-
-                sb.AppendLine($"- /skill/{entry.Name} [override] [{roleKw}]");
 
                 if (sb.Length > SkillResponseLimit - 200)
                 {

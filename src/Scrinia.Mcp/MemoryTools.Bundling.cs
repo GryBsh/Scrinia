@@ -111,7 +111,13 @@ public sealed partial class ScriniaMcpTools
             if (topicCount == 0 && skippedCategories.Count == 0)
                 return Task.FromResult(ResponseBuilder.Warning("No topics were imported (empty bundle or all filtered out).").ToYaml());
 
-            var response = ResponseBuilder.Success($"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}")
+            // A workflows-only (or otherwise topic-free) bundle still reaches here via the
+            // skippedCategories > 0 branch above — suppress the "Imported 0 topic(s) (0 entries):"
+            // clause in that case so the response states only what actually happened.
+            string message = topicCount > 0
+                ? $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}"
+                : "No topics imported.";
+            var response = ResponseBuilder.Success(message)
                 .WithAction("imported");
             if (skippedCategories.Count > 0)
                 response = response.WithActionNeeded(

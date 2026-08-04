@@ -68,10 +68,11 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     [Fact]
     public void SkillsTopLevelDir_IsNeverSwept()
     {
-        // .scrinia/skills/*.md is a live, hand-authored file (MemoryTools.Skills.cs /
-        // MemoryTools.Lifecycle.cs read it by a hardcoded path, entirely outside
-        // FileMemoryStore/PathRouter scope resolution) that no task in this workstream
-        // repointed — it stays out of the sweep permanently (see the class doc comment).
+        // .scrinia/skills/*.md is a hand-authored file entity resolved by
+        // PathRouter.ToFileEntityDir at the top level of .scrinia/ — it stays out of the sweep
+        // permanently (see the class doc comment) because keeping it out of a store scope
+        // directory is what makes the .meta.json filename collision with the store's own
+        // ArtifactEntry sidecars impossible by construction.
         // Migrating something else (so NeedsMigration is true and the pass actually runs)
         // must leave it completely untouched.
         Write("topics/findings/review.nmp2", "b");

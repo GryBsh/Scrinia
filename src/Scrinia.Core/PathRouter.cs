@@ -1,8 +1,9 @@
 namespace Scrinia.Core;
 
 /// <summary>
-/// Maps <see cref="ParsedPath"/> instances to their filesystem locations under
-/// <c>.scrinia/memories/</c>. Pure and side-effect-free.
+/// Maps <see cref="ParsedPath"/> instances to their filesystem locations under <c>.scrinia/</c>:
+/// hand-authored file entities (skills, agent configs) resolve to a top-level directory,
+/// everything else resolves under <c>.scrinia/memories/</c>. Pure and side-effect-free.
 /// </summary>
 public static class PathRouter
 {

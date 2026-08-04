@@ -266,7 +266,7 @@ public sealed partial class ScriniaMcpTools
             string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
             if (!PathRouter.TryToFileEntityPath("agent", agentSubject, store.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
-                    "Invalid agent config name.", ErrorCodes.InvalidParameter,
+                    "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.", ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.").ToYaml();
             FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);

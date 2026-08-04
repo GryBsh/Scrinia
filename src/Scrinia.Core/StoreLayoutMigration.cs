@@ -585,11 +585,12 @@ public static class StoreLayoutMigration
     /// <para><b>Final-review fix (IMPORTANT 2):</b> the original version special-cased
     /// <c>entity/skill</c> only, matching <see cref="MapTopicFileToV2"/>'s move for the memories
     /// themselves — but <see cref="MapTopicFileToV2"/> strips <c>entity/</c> for ANY child topic,
-    /// not just <c>skill</c>. Any other historical entity topic (<c>task</c>, <c>concern</c> —
-    /// historical entity topics included) had its memories relocated correctly by
-    /// the main plan while its embeddings sat orphaned at <c>embeddings/local/entity/&lt;topic&gt;/</c>,
-    /// silently, with no pointer to <c>scri reindex</c>. Now iterated the same way as the
-    /// <c>memory/</c> family below, instead of a single hardcoded <c>entity/skill</c> path.</para>
+    /// not just <c>skill</c>. Any other historical entity topic — e.g. <c>task</c> or
+    /// <c>concern</c>, both classified as entity topics in the pre-flattening v2 layout — had its
+    /// memories relocated correctly by the main plan while its embeddings sat orphaned at
+    /// <c>embeddings/local/entity/&lt;topic&gt;/</c>, silently, with no pointer to
+    /// <c>scri reindex</c>. Now iterated the same way as the <c>memory/</c> family below, instead
+    /// of a single hardcoded <c>entity/skill</c> path.</para>
     /// </summary>
     private static void MoveRenamedVectorDirs(string scriniaDir)
     {
