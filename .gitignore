@@ -66,3 +66,9 @@ docs/planning/
 **/package-lock.json
 **/pnpm-lock.yaml
 **/yarn.lock
+
+# --- scrinia: migration artifacts (auto-added) ---
+.scrinia-backup-*/
+.scrinia-conflicts-*/
+.scrinia-migration.lock
+# --- end scrinia ---
