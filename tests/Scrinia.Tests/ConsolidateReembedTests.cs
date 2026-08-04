@@ -121,7 +121,7 @@ public sealed class ConsolidateReembedTests : IDisposable
 /// cref="AsyncLocal{T}"/>) static config — specifically its cached configured workspace root
 /// (<c>WorkspaceSetup._root</c>), set via <c>WorkspaceSetup.Configure</c> (directly, or
 /// transitively through <see cref="ScriniaCommands"/> entry points like <c>Consolidate</c>/
-/// <c>MigrateV1</c>/<c>Migrate</c>). Unlike <c>TestHelpers.StoreScope</c> (which uses AsyncLocal
+/// <c>Migrate</c>). Unlike <c>TestHelpers.StoreScope</c> (which uses AsyncLocal
 /// overrides and is therefore already safe under parallel execution), this state is a plain
 /// static field guarded only by a lock for writes — concurrent tests on different threads can
 /// clobber each other's configured root. See Task G code-review followups.

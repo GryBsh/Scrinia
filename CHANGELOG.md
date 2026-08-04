@@ -22,7 +22,27 @@ and all assembly attributes.
   store's own path resolution — migration and every reader agree on one location.
 - `.scrinia/skills/*.md` deliberately stays OUT of the automatic migration for now — none
   of its readers have been repointed to the new layout, so migrating it would silently
-  orphan project skill overrides. Migrating skills needs its own spec.
+  orphan project skill overrides. Migrating skills needs its own spec. The manual `scri
+  migrate` command (below) doesn't touch it either — both triggers share the same engine.
+
+### Changed — store unification and the v3 memory layout
+
+- `ScriniaArtifactStore` is deleted. `FileMemoryStore` is the only filesystem store, and
+  `PathRouter` is the only authority on where a memory lives.
+- Every memory now lives under `.scrinia/memories/`. The `store/`, `topics/`, and `agent/`
+  roots are gone, along with the `entity/` and `memory/` namespace prefixes.
+- Existing workspaces migrate automatically on first store access, with a backup written to
+  `.scrinia-backup-{timestamp}/`. `scri migrate` runs the same migration manually and gains
+  `--dry-run`; it replaces the hidden `scri migrate_v1`, whose `--cleanup` step is no longer
+  needed because files are moved rather than copied.
+- `scri consolidate` no longer reads through one store and writes through another, which
+  could leave the in-memory index stale for the rest of the process.
+- **The unrelated attributes-model forward-fill command, previously `scri migrate`, is
+  renamed to `scri migrate_attributes`** to free the `migrate` name for the store-layout
+  migration above — the two commands do unrelated things and would otherwise collide (this
+  repo did the same swap once before, in the other direction, when the attributes command
+  was first added — see `docs/planning/plans/2026-07-10-attributes-plan-5-migrate.md`).
+  Behavior and flags are unchanged; only the CLI-facing command name moved.
 
 ### Fixed — workspace root resolution
 

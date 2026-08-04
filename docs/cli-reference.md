@@ -9,11 +9,14 @@ The top-level surface is organized by purpose:
 | Group | Commands |
 |---|---|
 | Infrastructure | `serve`, `setup`, `config`, `reindex` |
-| Lifecycle | `guide`, `restore`, `reconcile`, `consolidate`, `hint` |
+| Lifecycle | `guide`, `restore`, `reconcile`, `consolidate`, `hint`, `migrate` |
 | Memory operations | `list / search / show / store / forget / append / compact / link` |
 | Bundle files | `bundle export / import / pack` |
 
-`scri migrate_v1` is still callable for one-shot v1→v2 store migration but is hidden from `--help` (see [scri migrate_v1](#scri-migrate_v1)).
+`scri migrate` (store-layout migration, see [scri migrate](#scri-migrate)) also runs
+automatically on first store access — the command exists for previewing and deliberate
+timing, not as a required step. `scri migrate_attributes` is a separate, unrelated command
+that forward-fills older entries onto the attributes model.
 
 ## Commands
 
@@ -449,33 +452,34 @@ The `plugins:embeddings` key overrides the executable name used to launch the
 embeddings plugin process — only useful for custom builds. Scrinia ships no
 server-side LLM plugin; the historical `plugins:llm` key has been removed.
 
-### scri migrate_v1
+### scri migrate
 
-v1→v2 directory-layout migration (legacy). One-shot utility to migrate a `.scrinia/` store from the v1 (`topic:name`) layout to the v2 (path-based) layout.
-Use this only when upgrading a workspace created by an older Scrinia release; new workspaces are already v2. Hidden from `scri --help` because it's one-time-use, but the command is still callable.
+Migrates a workspace store to the v3 layout, where every memory lives under
+`.scrinia/memories/`. Migration also runs **automatically** on first store access, so this
+command is only needed to preview the plan, migrate deliberately before a large operation,
+or re-run after restoring a backup.
 
 ```bash
-scri migrate_v1 [--workspace <path>] [--dry-run] [--backup=true|false] [--cleanup]
+scri migrate [--workspace <path>] [--dry-run] [--backup=true|false]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--workspace` | cwd | Workspace root containing the `.scrinia/` directory. |
-| `--dry-run` | false | Print the migration plan without copying any files. |
+| `--dry-run` | false | Print how many files would move without moving any. |
 | `--backup` | true | Copy `.scrinia/` to `.scrinia-backup-{timestamp}/` before migrating. |
-| `--cleanup` | false | Remove the v1 originals after verifying the v2 copies. Run as a separate step after the initial migration. |
 
-Recommended workflow:
+Files are **moved**, not copied — exactly one copy of each memory exists at all times. Where
+two legacy locations map to the same target (for example `topics/api/x` and
+`topics/memory/api/x`), the non-namespaced entry wins and the other is moved to
+`.scrinia-conflicts-{timestamp}/` rather than being discarded.
 
-```bash
-scri migrate_v1 --dry-run         # preview what would be moved
-scri migrate_v1                   # run the migration (backup created automatically)
-# verify your memories are accessible via scri list / scri show
-scri migrate_v1 --cleanup         # remove the v1 originals
-```
+To roll back, stop any running Scrinia process and replace `.scrinia/` with the backup
+directory.
 
-If the migration reports errors, the v1 originals are preserved under `topics/` and the backup directory contains
-the pre-migration state.
+Unrelated command with a similar name: `scri migrate_attributes` forward-fills older entries
+onto the attributes model (tags/codeRefs/review/anchors → `attributes`/`keywords`) — it does
+not touch the on-disk layout.
 
 ## JSON Output
 
