@@ -355,7 +355,7 @@ public static class MemoryEndpoints
         try
         {
             var (topicCount, entryCount, names, skippedCategories) = BundleService.ImportFromStream(ctx.Store!, stream, topics, overwrite);
-            if (topicCount == 0)
+            if (topicCount == 0 && skippedCategories.Count == 0)
                 return Results.Ok(new { message = "No topics were imported." });
             return Results.Ok(new
             {
