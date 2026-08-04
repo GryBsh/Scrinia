@@ -45,12 +45,18 @@ public class StorePurityInvariantTests
     }
 
     [Fact]
-    public async Task EveryReaderResolvesToThePathRouterDirectory()
+    public async Task SkillWriteAndRecallResolveToThePathRouterDirectory()
     {
-        // The DRY guarantee made executable: ".scrinia/skills/" was previously named at five
-        // sites behind two divergent GetScriniaBaseDir implementations that agreed only by
-        // coincidence. Writing through the MCP surface and finding the file where PathRouter
-        // says it should be proves writer and authority agree; the listing proves the reader does.
+        // The DRY guarantee made executable for the skill kind: ".scrinia/skills/" was
+        // previously named at five sites behind two divergent GetScriniaBaseDir
+        // implementations that agreed only by coincidence. Writing through the MCP surface
+        // and finding the file where PathRouter says it should be proves writer and
+        // authority agree; the listing and the load prove the two read paths agree too.
+        //
+        // Named for the skill kind specifically (not "every reader"): the agent kind's
+        // write/recall round-trip is already covered by AgentFileEntityTests, which also
+        // exercises the orphan-sweep regression agent's move was made to prevent — adding it
+        // here would duplicate that coverage rather than extend it.
         using var scope = new TestHelpers.StoreScope();
         var store = MemoryStoreContext.Current!;
 
