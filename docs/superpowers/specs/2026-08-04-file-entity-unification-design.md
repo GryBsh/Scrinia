@@ -162,10 +162,30 @@ public static bool TryToFileEntityPath(string kind, string name, string workspac
 - `"agent"` from `StoreLayoutMigration.LegacyRoots`, leaving `["store", "topics"]`, plus
   the class-doc paragraphs describing agent's sweep.
 - Both `GetScriniaBaseDir` implementations.
-- `MemoryNaming.EntityTopics` and `FileMemoryStore.IsEntityScope`'s use of it. The set
-  exists only to exclude `skill` from the default search scope, which is moot once skills
-  are not store entries. Its other use — the `entityTypes` parameter of `PathParser.Parse`
-  — is already documented as inert.
+- `MemoryNaming.EntityTopics` **and `FileMemoryStore.IsEntityScope` entirely** — not just
+  the `EntityTopics` lookup inside it. `IsEntityScope` has two branches: a namespaced
+  `local:entity/*` test and a bare-topic `EntityTopics` test. Both are dead under v3 —
+  the migration leaves no `entity/` directories, and skills are no longer store entries.
+  Deleting only the set would leave a half-dead predicate behind.
+
+  Its single caller is the default-scope loop at `FileMemoryStore.cs:523-531`, which skips
+  entity-classified topics so unfiltered searches focus on user content. That loop
+  simplifies to `ordered.AddRange(DiscoverTopics())`.
+
+  `EntityTopics`' other use — the `entityTypes` parameter of `PathParser.Parse` at
+  `FileMemoryStore.cs:268` — is already documented as inert (only `PathSegment.Value`
+  feeds the result, never `IsEntityType`). The parameter still requires *some* set;
+  pass an empty one.
+
+  **Behaviour change, accepted:** a workspace holding a `memories/skill/` topic would
+  newly appear in default search results. That state is only reachable if an unreleased
+  dev build migrated a v2 `topics/entity/skill/` directory, the same population as the
+  `local:skill` fallback deletion — so this costs nothing in practice.
+
+  Three doc comments in `StoreLayoutMigration.cs` (lines 440, 618, 632) name
+  `MemoryNaming.EntityTopics` and `FileMemoryStore.IsEntityScope` as explanatory
+  references. They are `<c>` tags, not `<see cref>`, so deletion does not break the
+  build — but they must be reworded rather than left pointing at removed symbols.
 
 ### 5. One new interface member
 
