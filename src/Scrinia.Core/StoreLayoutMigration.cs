@@ -323,27 +323,46 @@ public static class StoreLayoutMigration
     /// this must NOT silently skip-and-continue on failure: a real memory left behind un-moved
     /// would, after Task 8 removes the legacy read-fallback, become invisible to every reader
     /// while still sitting on disk. Loud and retryable is correct here; silent and lossy is not.
-    /// If <see cref="FileRetry.Run(Action, Microsoft.Extensions.Logging.ILogger?)"/> exhausts its
-    /// retries, the file is genuinely stuck (not just transiently busy), so this wraps the bare
-    /// <see cref="IOException"/> in one that names the file and suggests the likely cause —
-    /// actionable rather than an opaque failure surfacing from <c>LoadIndex</c>/<c>Upsert</c>/etc.
-    /// Resumable regardless: the caller's <c>if (!File.Exists(source)) continue</c> check means a
-    /// later migration attempt picks up exactly where this one stopped.
+    ///
+    /// <para>Catches <see cref="UnauthorizedAccessException"/> alongside <see cref="IOException"/>:
+    /// <c>File.Move(source, target, overwrite: true)</c> — the quarantine call site — can throw
+    /// either when <paramref name="target"/> already exists and is locked, depending on exactly how
+    /// the sharing violation surfaces on Windows (empirically confirmed in review). Deliberately NOT
+    /// widening <see cref="FileRetry"/> itself for this: its contract treats
+    /// <see cref="UnauthorizedAccessException"/> as a genuine configuration mistake to surface
+    /// immediately elsewhere in the codebase, so the extra tolerance is local to this call site,
+    /// not retried again here — wrapping it immediately (rather than silently skipping) is what
+    /// this method exists for.</para>
+    ///
+    /// <para>If <see cref="FileRetry.Run(Action, Microsoft.Extensions.Logging.ILogger?)"/> exhausts
+    /// its retries, or an <see cref="UnauthorizedAccessException"/> reaches here, the file is
+    /// genuinely stuck (not just transiently busy), so this wraps the bare exception in one that
+    /// names both paths and states the most likely cause — actionable rather than an opaque failure
+    /// surfacing from <c>LoadIndex</c>/<c>Upsert</c>/etc. Resumable regardless: the caller's
+    /// <c>if (!File.Exists(source)) continue</c> check means a later migration attempt picks up
+    /// exactly where this one stopped.</para>
+    ///
+    /// <para>Internal (not private), matching this file's <see cref="OrderPlan"/> precedent: the
+    /// <see cref="UnauthorizedAccessException"/> branch needs a pre-existing LOCKED target file to
+    /// exercise, and the real quarantine call site's target lives under a timestamped
+    /// <c>.scrinia-conflicts-*/</c> directory computed at runtime inside <see cref="RunMigration"/>
+    /// — there is no way to pre-lock that exact path from outside a single end-to-end
+    /// <see cref="Migrate"/> call, so the adversarial input is constructed directly instead.</para>
     /// </summary>
-    private static void MoveWithRetry(string source, string target, bool overwrite)
+    internal static void MoveWithRetry(string source, string target, bool overwrite)
     {
         try
         {
             FileRetry.Run(() => File.Move(source, target, overwrite));
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             throw new IOException(
-                $"Store layout migration could not move '{source}' to '{target}': the file stayed " +
-                "locked for the full retry window. Another process is likely holding it open " +
-                "(a concurrent scrinia process, an antivirus scan, or a sync client such as " +
-                "Synology Drive). Nothing has been lost — this file (and any after it in this " +
-                "run) will be retried the next time the store is accessed, once the lock clears.",
+                $"Store layout migration could not move '{source}' to '{target}'. A concurrent " +
+                "process holding the file open — another scrinia process, an antivirus scan, or " +
+                "a sync client such as Synology Drive — is the most common cause. Nothing has " +
+                "been lost — this file (and any after it in this run) will be retried the next " +
+                "time the store is accessed.",
                 ex);
         }
     }

@@ -110,7 +110,7 @@ public sealed class StoreLayoutMigrationTests : IDisposable
             var thrown = act.Should().Throw<IOException>().Which;
             thrown.Message.Should().Contain("review.nmp2",
                 "the error must name the specific file that's stuck");
-            thrown.Message.Should().Contain("process is likely holding it open",
+            thrown.Message.Should().Contain("most common cause",
                 "the error must be actionable, not a bare IOException surfacing from LoadIndex/Upsert/etc");
         }
 
@@ -120,6 +120,43 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         result.Ran.Should().BeTrue();
         Exists("memories/findings/review.nmp2").Should().BeTrue();
         Exists("topics/findings/review.nmp2").Should().BeFalse();
+    }
+
+    [Fact]
+    public void MoveWithRetry_LockedTargetOverwrite_SurfacesActionableError_ThenResumes()
+    {
+        // Re-review finding: File.Move(source, target, overwrite: true) — the conflict-quarantine
+        // call site's shape — can throw UnauthorizedAccessException (not IOException) when TARGET
+        // already exists and is locked (empirically confirmed in review). FileRetry.Run's catch
+        // filter only matches IOException, so that exception type reached MoveWithRetry's own
+        // (previously IOException-only) catch unhandled and propagated raw, reproducing exactly the
+        // opaque-exception failure this fix round exists to close.
+        //
+        // Tested directly against the internal MoveWithRetry rather than end-to-end through
+        // Migrate(...): the real quarantine target lives under a ".scrinia-conflicts-{timestamp}/"
+        // directory computed at runtime inside RunMigration, so there is no way to pre-lock that
+        // exact path from outside a single Migrate call. See the MoveWithRetry doc comment.
+        string source = Path.Combine(_root, "source.nmp2");
+        string target = Path.Combine(_root, "target.nmp2");
+        File.WriteAllText(source, "moved content");
+        File.WriteAllText(target, "pre-existing, locked content");
+
+        using (new FileStream(target, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var act = () => StoreLayoutMigration.MoveWithRetry(source, target, overwrite: true);
+
+            var thrown = act.Should().Throw<IOException>().Which;
+            thrown.Message.Should().Contain(source, "the error must name the source path");
+            thrown.Message.Should().Contain(target, "the error must name the target path");
+            thrown.Message.Should().Contain("most common cause",
+                "the error must be actionable, not a bare IOException/UnauthorizedAccessException");
+        }
+
+        // Lock released — the same move must now resume and complete cleanly.
+        StoreLayoutMigration.MoveWithRetry(source, target, overwrite: true);
+
+        File.Exists(source).Should().BeFalse();
+        File.ReadAllText(target).Should().Be("moved content");
     }
 
     [Fact]
