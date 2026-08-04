@@ -77,6 +77,33 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
             "the empty category key is not in the FileEntityCategories allowlist");
     }
 
+    [Fact]
+    public void ImportingABundleWithWorkflows_SucceedsAndReportsTheSkip()
+    {
+        // Workflows are deleted: nothing ever wrote one, so the category could only be
+        // populated by importing a bundle. Old bundles must still import cleanly, and the
+        // user must be told what was dropped rather than silently losing it.
+        using var scope = new TestHelpers.StoreScope();
+        var store = MemoryStoreContext.Current!;
+
+        string bundlePath = Path.Combine(scope.WorkspaceDir, "legacy.scrinia-bundle");
+        using (var zip = ZipFile.Open(bundlePath, ZipArchiveMode.Create))
+        {
+            WriteZipText(zip, "manifest.json", """
+                {"version":2,"topics":[],"fileEntities":{"workflows":["ci.json"]}}
+                """);
+            WriteZipText(zip, "files/workflows/ci.json", """{"steps":["build"]}""");
+        }
+
+        using var readStream = new FileStream(bundlePath, FileMode.Open, FileAccess.Read);
+        using var zipRead = new ZipArchive(readStream, ZipArchiveMode.Read);
+        var result = BundleFormatService.ImportTopicsFromZip(zipRead, store, filterTopics: null, overwrite: false);
+
+        result.SkippedCategories.Should().Contain("workflows");
+        Directory.Exists(Path.Combine(store.WorkspaceRoot, ".scrinia", "workflows"))
+            .Should().BeFalse(because: "the category is deleted, not merely unwritten");
+    }
+
     private static void WriteZipText(ZipArchive zip, string entryName, string text)
     {
         var entry = zip.CreateEntry(entryName);

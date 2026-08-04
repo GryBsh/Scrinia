@@ -105,15 +105,19 @@ public sealed partial class ScriniaMcpTools
             using var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read);
             using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
 
-            var (topicCount, entryCount, names) =
+            var (topicCount, entryCount, names, skippedCategories) =
                 Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZip(zip, store, topics, overwrite);
 
-            if (topicCount == 0)
+            if (topicCount == 0 && skippedCategories.Count == 0)
                 return Task.FromResult(ResponseBuilder.Warning("No topics were imported (empty bundle or all filtered out).").ToYaml());
 
-            return Task.FromResult(
-                ResponseBuilder.Success($"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}")
-                    .WithAction("imported").ToYaml());
+            var response = ResponseBuilder.Success($"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}")
+                .WithAction("imported");
+            if (skippedCategories.Count > 0)
+                response = response.WithActionNeeded(
+                    $"Skipped unrecognized file-entity categories (not imported): {string.Join(", ", skippedCategories)}.");
+
+            return Task.FromResult(response.ToYaml());
         }
         catch (InvalidOperationException ex)
         {

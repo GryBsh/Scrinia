@@ -354,10 +354,14 @@ public static class MemoryEndpoints
 
         try
         {
-            var (topicCount, entryCount, names) = BundleService.ImportFromStream(ctx.Store!, stream, topics, overwrite);
+            var (topicCount, entryCount, names, skippedCategories) = BundleService.ImportFromStream(ctx.Store!, stream, topics, overwrite);
             if (topicCount == 0)
                 return Results.Ok(new { message = "No topics were imported." });
-            return Results.Ok(new { message = $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}" });
+            return Results.Ok(new
+            {
+                message = $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}",
+                skippedCategories,
+            });
         }
         catch (InvalidOperationException ex)
         {

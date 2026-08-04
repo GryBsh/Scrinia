@@ -20,7 +20,7 @@ public static class BundleService
         return ms;
     }
 
-    public static (int TopicCount, int EntryCount, List<string> Names) ImportFromStream(
+    public static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportFromStream(
         IMemoryStore store, Stream bundle, string[]? topics, bool overwrite)
     {
         using var zip = new ZipArchive(bundle, ZipArchiveMode.Read);

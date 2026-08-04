@@ -32,7 +32,7 @@ public partial class BundleJsonContext : JsonSerializerContext;
 public static class BundleFormatService
 {
     /// <summary>Disk-based meta-entity categories to include in bundles.</summary>
-    private static readonly string[] FileEntityCategories = ["workflows", "skills", "agent"];
+    private static readonly string[] FileEntityCategories = ["skills", "agent"];
 
     public static readonly JsonSerializerOptions DefaultJsonOptions = new()
     {
@@ -82,7 +82,7 @@ public static class BundleFormatService
             }
         }
 
-        // Export disk-based file entities (workflows, skills, agent)
+        // Export disk-based file entities (skills, agent)
         var fileEntities = ExportFileEntities(zip, store);
 
         // Write manifest — use v2 when file entities are present
@@ -104,9 +104,13 @@ public static class BundleFormatService
     /// <summary>
     /// Read and import topics from a zip archive into the store.
     /// </summary>
-    /// <returns>Tuple of (imported topic count, imported entry count, topic names).</returns>
+    /// <returns>
+    /// Tuple of (imported topic count, imported entry count, topic names, skipped file-entity
+    /// categories — manifest categories with no <see cref="CategoryToKind"/> entry, reported
+    /// rather than silently dropped).
+    /// </returns>
     /// <exception cref="InvalidOperationException">If bundle is malformed.</exception>
-    public static (int TopicCount, int EntryCount, List<string> Names) ImportTopicsFromZip(
+    public static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportTopicsFromZip(
         ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite)
     {
         // Read manifest
@@ -262,9 +266,9 @@ public static class BundleFormatService
         }
 
         // Import disk-based file entities (v2 bundles; v1 bundles skip this)
-        ImportFileEntities(zip, root, store);
+        var skippedCategories = ImportFileEntities(zip, root, store);
 
-        return (importedTopics, importedEntries, importedTopicNames);
+        return (importedTopics, importedEntries, importedTopicNames, skippedCategories);
     }
 
     // ── File entity helpers ─────────────────────────────────────────────────
@@ -343,18 +347,33 @@ public static class BundleFormatService
     /// Imports disk-based file entities from a v2 bundle.
     /// If the manifest has no <c>fileEntities</c> property (v1 bundles), this is a no-op.
     /// </summary>
-    private static void ImportFileEntities(
+    /// <returns>
+    /// Manifest category keys that were skipped because <see cref="CategoryToKind"/> has no
+    /// entry for them (deleted categories like the former "workflows", or unrecognised/crafted
+    /// keys) — reported so a bundle never silently loses content on import.
+    /// </returns>
+    private static List<string> ImportFileEntities(
         ZipArchive zip, JsonElement manifestRoot, IMemoryStore store)
     {
+        var skippedCategories = new List<string>();
+
         if (!manifestRoot.TryGetProperty("fileEntities", out var fileEntitiesEl)
             || fileEntitiesEl.ValueKind != JsonValueKind.Object)
-            return;
+            return skippedCategories;
 
         foreach (var categoryProp in fileEntitiesEl.EnumerateObject())
         {
             string category = categoryProp.Name;
-            if (!FileEntityCategories.Contains(category, StringComparer.OrdinalIgnoreCase))
-                continue; // only workflows/skills/agent may be imported — reject arbitrary category keys
+
+            // CategoryToKind is the single allowlist: it doubles as both "is this category
+            // recognised" and "where does it live on disk". A category with no kind (deleted,
+            // like "workflows", or an unrecognised/crafted key) is reported, never written.
+            if (!CategoryToKind.ContainsKey(category))
+            {
+                skippedCategories.Add(category);
+                continue; // deleted or unknown category — reported, never written
+            }
+
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
                 continue;
 
@@ -388,5 +407,7 @@ public static class BundleFormatService
                 inStream.CopyTo(outStream);
             }
         }
+
+        return skippedCategories;
     }
 }
