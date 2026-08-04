@@ -279,7 +279,12 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private static readonly HashSet<char> s_portableInvalid =
         [.. Path.GetInvalidFileNameChars(), ':', '*', '?', '<', '>', '|', '"'];
 
-    public string SanitizeName(string name)
+    public string SanitizeName(string name) => SanitizeNameCore(name);
+
+    /// <summary>Static core of <see cref="SanitizeName"/> — no instance state, so it is also
+    /// usable from <see cref="WriteSidecarCore"/>/<see cref="ExpandLegacyIndexEntries"/>, which
+    /// run without a <see cref="FileMemoryStore"/> instance (migration time).</summary>
+    private static string SanitizeNameCore(string name)
     {
         // Strip directory separators and path traversal sequences first
         string safe = name.Replace("..", "").Replace('/', '_').Replace('\\', '_');
@@ -373,7 +378,9 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                                 Console.Error.WriteLine(
                                     $"scrinia: migrated {result.Moved} file(s) to the v3 layout" +
                                     (result.Conflicts > 0 ? $", {result.Conflicts} conflict(s) quarantined" : "") +
-                                    (result.BackupPath is not null ? $"; backup at {result.BackupPath}" : ""));
+                                    (result.BackupPath is not null ? $"; backup at {result.BackupPath}"
+                                        : result.BackupSkipped ? "; no backup written (a prior one already exists)"
+                                        : ""));
                             _indexCache.Clear();
                             _cachedTopics = null;
                         }
@@ -594,14 +601,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string storeDir = GetStoreDirForScope(scope);
         var entries = LoadEntriesFromSidecars(storeDir);
 
-        // Fallback: migrate from legacy index.json if no sidecars found
-        if (entries.Count == 0)
-        {
-            entries = LoadEntriesFromLegacyIndex(storeDir);
-            if (entries.Count > 0)
-                WriteSidecars(entries, storeDir);
-        }
-
         // Read-time forward-fill: upgrade legacy carriers (tags/codeRefs/review/anchors/
         // recognized-key keywords) into the attributes model (Fields/Keywords) so every
         // reader sees Fields without a prior `scri migrate`. Primary-scope sidecars whose
@@ -665,7 +664,18 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return entries;
     }
 
-    private static List<ArtifactEntry> LoadEntriesFromLegacyIndex(string storeDir)
+    /// <summary>
+    /// Reads a legacy v1 <c>index.json</c>'s entries raw (no forward-fill, no write-back).
+    /// Internal (not private): the read path's own fallback use of this was removed when the
+    /// index.json → sidecar upgrade moved into <see cref="StoreLayoutMigration"/> (which calls
+    /// this directly — see <c>ExpandLegacyIndexEntries</c>'s call site), but
+    /// <see cref="EnumerateRawForMigration"/> still uses it as a belt-and-braces fallback for
+    /// <see cref="Migration.AttributeMigration.MigrateStore"/>. In practice that fallback is
+    /// unreachable once the workspace has gone through migration once, because every
+    /// <see cref="GetStoreDirForScope"/> call gates on <see cref="MemoriesRoot"/> first — but it
+    /// is still real, compiled, exercised code, not dead code eligible for deletion.
+    /// </summary>
+    internal static List<ArtifactEntry> LoadEntriesFromLegacyIndex(string storeDir)
     {
         string indexPath = Path.Combine(storeDir, "index.json");
         if (!File.Exists(indexPath)) return [];
@@ -732,15 +742,25 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
             WriteSidecar(entry, storeDir);
     }
 
-    private void WriteSidecar(ArtifactEntry entry, string storeDir)
+    private void WriteSidecar(ArtifactEntry entry, string storeDir) => WriteSidecarCore(entry, storeDir);
+
+    /// <summary>
+    /// Static core of sidecar writing: normalize, sort for stable diffs, serialize via
+    /// <see cref="FileStoreJsonContext"/>, atomic temp+move. No instance state, so it is also
+    /// used directly by <see cref="ExpandLegacyIndexEntries"/>, which runs from
+    /// <see cref="StoreLayoutMigration"/> before any <see cref="FileMemoryStore"/> instance
+    /// exists — that call site depends on this producing byte-identical sidecars to a normal
+    /// store write.
+    /// </summary>
+    private static void WriteSidecarCore(ArtifactEntry entry, string storeDir)
     {
         // Write chokepoint: guarantees the on-disk sidecar is always keyed "attributes", never
         // the pre-rename "fields", regardless of which caller reached here (read-time forward-fill,
-        // PersistMigratedEntry, the legacy-index bootstrap, or a plain Upsert of an entry that still
+        // PersistMigratedEntry, the legacy-index expansion, or a plain Upsert of an entry that still
         // carries a legacy value). No-op for an already-normalized or freshly-constructed entry.
         entry = entry.NormalizeAttributesKey();
 
-        string metaPath = Path.Combine(storeDir, SanitizeName(entry.Name) + ".meta.json");
+        string metaPath = Path.Combine(storeDir, SanitizeNameCore(entry.Name) + ".meta.json");
 
         // Sort metadata for stable git diffs (G-29: multi-user merge safety)
         var sorted = entry with
@@ -779,7 +799,39 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    private static void AtomicWriteAllText(string path, string content)
+    /// <summary>
+    /// Expands a legacy v1 <c>index.json</c>'s entries into individual <c>.meta.json</c> sidecars
+    /// written to <paramref name="targetDir"/>, reusing <see cref="WriteSidecarCore"/> so the
+    /// output is byte-identical to what this store writes normally. Called by
+    /// <see cref="StoreLayoutMigration"/> after it has moved every real content file into place,
+    /// so this is what makes an <c>index.json</c>-only legacy directory's entries visible again
+    /// after the merge — see the migration's class doc comment.
+    ///
+    /// <para>Skips an entry whose sidecar already exists at the target: a real
+    /// <c>.meta.json</c> merged in from a sibling legacy directory (e.g. the flat and
+    /// <c>memory/</c>-namespaced forms of the same topic) describes the same artifact more
+    /// currently than a legacy index.json snapshot ever can, so it wins rather than being
+    /// clobbered.</para>
+    /// </summary>
+    internal static void ExpandLegacyIndexEntries(List<ArtifactEntry> entries, string targetDir)
+    {
+        if (entries.Count == 0) return;
+
+        Directory.CreateDirectory(targetDir);
+        foreach (var entry in entries)
+        {
+            string metaPath = Path.Combine(targetDir, SanitizeNameCore(entry.Name) + ".meta.json");
+            if (File.Exists(metaPath)) continue;
+            WriteSidecarCore(entry, targetDir);
+        }
+    }
+
+    /// <summary>Internal (not private): also used by <see cref="StoreLayoutMigration"/> to update
+    /// the WORKSPACE-level <c>.gitignore</c> (a different file from the <c>.scrinia/.gitignore</c>
+    /// this class's own <see cref="EnsureGitIgnore"/> writes), so that write goes through the same
+    /// atomic-temp-then-move convention as every other artifact write in this codebase rather than
+    /// a bare <c>File.WriteAllText</c>.</summary>
+    internal static void AtomicWriteAllText(string path, string content)
     {
         string tmp = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try

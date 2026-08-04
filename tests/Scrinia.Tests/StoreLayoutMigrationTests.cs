@@ -322,6 +322,46 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Migrate_IndexJsonOnlyDirectory_EntriesSurviveMergeWithSidecarDirectory()
+    {
+        // CRITICAL final-review finding: topics/api/ is pre-sidecar era (index.json only);
+        // topics/memory/api/ is post-sidecar (per-entry .meta.json). Both merge into
+        // memories/api/ — no name collision between "a" and "b". Before the fix, index.json was
+        // relocated as an ordinary file, and LoadIndexUnsafe only ever consulted it when the
+        // sidecar scan returned ZERO entries — since the merged directory has "b"'s sidecar, that
+        // scan returns 1, so "a" (whose .nmp2 moved to the right place) became permanently
+        // invisible to every reader despite sitting on disk exactly where it should be.
+        Write("topics/api/index.json", """
+            {"v":3,"entries":[{"Name":"a","Uri":"file:///a.nmp2","OriginalBytes":9,"ChunkCount":1,"CreatedAt":"2026-08-01T00:00:00+00:00","ContentPreview":"a-content"}]}
+            """);
+        Write("topics/api/a.nmp2", "a-content");
+        Write("topics/memory/api/b.meta.json", """
+            {"Name":"b","Uri":"file:///b.nmp2","OriginalBytes":9,"ChunkCount":1,"CreatedAt":"2026-08-01T00:00:00+00:00","ContentPreview":"b-content"}
+            """);
+        Write("topics/memory/api/b.nmp2", "b-content");
+
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        result.Ran.Should().BeTrue();
+
+        // Both real content files moved to the merged directory...
+        Exists("memories/api/a.nmp2").Should().BeTrue();
+        Exists("memories/api/b.nmp2").Should().BeTrue();
+
+        // ...and BOTH must be visible through the real read path, not just present on disk.
+        var store = new FileMemoryStore(_root);
+        var entries = store.LoadIndex("local:api");
+        entries.Select(e => e.Name).Should().BeEquivalentTo(["a", "b"],
+            "index.json's entries must be expanded into sidecars during migration, not silently " +
+            "shadowed by the merged directory's other (sidecar-based) legacy source");
+
+        // The legacy index.json itself must not survive the merge as a stray file under memories/.
+        Directory.EnumerateFiles(Path.Combine(_root, ".scrinia", "memories"), "index.json", SearchOption.AllDirectories)
+            .Should().BeEmpty();
+        Exists("memories/api/a.meta.json").Should().BeTrue("index.json's entry must be expanded into a real sidecar");
+    }
+
+    [Fact]
     public void MigrateIfNeeded_SecondAttempt_WithStuckLegacyLock_DoesNotWriteSecondBackup()
     {
         // Reproduces the unbounded-backup bug: a held ".lock" (simulating a concurrent
@@ -349,6 +389,169 @@ public sealed class StoreLayoutMigrationTests : IDisposable
                 "a backup from a prior attempt already preserves the pre-migration state; " +
                 "writing another would grow .scrinia-backup-*/ without bound");
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  IMPORTANT 3 — vector directory moves (previously zero coverage; IMPORTANT 2 lives here)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void Migrate_MovesVectorDirs_ForBothRenamingScopeFamilies_IncludingNonSkillEntityTopic()
+    {
+        // Both renaming families: entity/<topic> (NOT just "skill" — "task" is a real historical
+        // entity topic per FileMemoryStore.IsEntityScope's own comment, and this is exactly the
+        // case IMPORTANT 2 fixes) and memory/<topic>. Something must also need migrating for
+        // NeedsMigration to be true and the pass to actually run.
+        Write("topics/findings/review.nmp2", "b");
+        Write("embeddings/local/entity/skill/vectors.bin", "skill-vectors");
+        Write("embeddings/local/entity/task/vectors.bin", "task-vectors");
+        Write("embeddings/local/memory/api/vectors.bin", "api-vectors");
+
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        result.Ran.Should().BeTrue();
+
+        // Renamed to the flattened v3 location...
+        Exists("embeddings/local/skill/vectors.bin").Should().BeTrue();
+        Exists("embeddings/local/task/vectors.bin").Should().BeTrue("entity/task, not just entity/skill, must be renamed");
+        Exists("embeddings/local/api/vectors.bin").Should().BeTrue();
+
+        // ...and the old locations, including the now-empty entity/ and memory/ parents, are gone.
+        Exists("embeddings/local/entity/skill/vectors.bin").Should().BeFalse();
+        Exists("embeddings/local/entity/task/vectors.bin").Should().BeFalse();
+        Exists("embeddings/local/memory/api/vectors.bin").Should().BeFalse();
+        Directory.Exists(Path.Combine(_root, ".scrinia", "embeddings", "local", "entity")).Should().BeFalse(
+            "the now-empty entity/ parent should be pruned, matching PruneEmptyLegacyRoots's treatment of the memory-side roots");
+        Directory.Exists(Path.Combine(_root, ".scrinia", "embeddings", "local", "memory")).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Migrate_VectorDirTargetAlreadyExists_LeavesSourceInPlace()
+    {
+        // Best-effort per TryMoveVectorDir's own contract: a pre-existing target directory (e.g.
+        // from a prior partial run, or a reindex that already ran against the new scope name)
+        // must not be clobbered — the stale source is left for `scri reindex` to reconcile.
+        Write("topics/findings/review.nmp2", "b");
+        Write("embeddings/local/entity/task/vectors.bin", "old-task-vectors");
+        Write("embeddings/local/task/vectors.bin", "already-reindexed");
+
+        StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        Exists("embeddings/local/task/vectors.bin").Should().BeTrue();
+        File.ReadAllText(Path.Combine(_root, ".scrinia", "embeddings", "local", "task", "vectors.bin"))
+            .Should().Be("already-reindexed", "an existing target must win; the source is left for `scri reindex`");
+        Exists("embeddings/local/entity/task/vectors.bin").Should().BeTrue("the source is left in place, not deleted, when the target already exists");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  IMPORTANT 1 — backup-skip guard no longer matches an unrelated backup
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void MigrateIfNeeded_UnrelatedBackupDirAlreadyExists_StillWritesItsOwnBackup()
+    {
+        // Reproduces the exact collision the finding describes: a directory that merely SHARES
+        // the ".scrinia-backup-" prefix (scri migrate_attributes's own BackupScriniaDir writes
+        // ".scrinia-backup-attrs-{ts}", or a user could have any other suffix from a manual
+        // restore) must not suppress this engine's own pre-migration backup.
+        Write("topics/findings/review.nmp2", "b");
+        Directory.CreateDirectory(Path.Combine(_root, ".scrinia-backup-attrs-20260101-000000"));
+
+        var result = StoreLayoutMigration.MigrateIfNeeded(_root);
+
+        result.BackupPath.Should().NotBeNull("an unrelated same-prefix directory must not suppress this engine's own backup");
+        result.BackupSkipped.Should().BeFalse();
+        Directory.EnumerateDirectories(_root, ".scrinia-backup-????????-??????").Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void MigrateIfNeeded_OwnPriorBackupAlreadyExists_SkipsAndReportsBackupSkipped()
+    {
+        // The bound this guard exists for is still intact: an exact-shape ".scrinia-backup-{ts}"
+        // (this engine's own naming) already present means Result.BackupSkipped surfaces that no
+        // new backup was written, rather than the caller silently getting BackupPath: null with no
+        // way to distinguish "skipped" from "never asked for one".
+        Write("topics/findings/review.nmp2", "b");
+        string lockPath = Write("topics/findings/.lock", "");
+
+        using (new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var first = StoreLayoutMigration.MigrateIfNeeded(_root);
+            first.BackupPath.Should().NotBeNull();
+            first.BackupSkipped.Should().BeFalse();
+
+            var second = StoreLayoutMigration.MigrateIfNeeded(_root);
+
+            second.BackupPath.Should().BeNull();
+            second.BackupSkipped.Should().BeTrue("a prior backup from this engine already exists; the caller must be told none was written this time");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  "Also fix" — dry-run Moved/Conflicts must match what a real run would do
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void Migrate_DryRun_CountsCollisionAgainstPreExistingTargetFile_TheResumptionCase()
+    {
+        // Pre-fix, CountCollisions only caught duplicate targets WITHIN the plan — it never
+        // checked whether the target already existed on disk (the resumption case: a prior
+        // partial run already placed a file there). A dry-run report right after an interrupted
+        // migration therefore underclaimed both Moved (counted the collision loser as if it
+        // would move) and Conflicts (missed it entirely) relative to what a real run does.
+        Write("memories/api/auth.nmp2", "already-migrated");
+        Write("topics/api/auth.nmp2", "pending-duplicate");
+        Write("topics/api/other.nmp2", "pending-unique");
+
+        var result = StoreLayoutMigration.Migrate(_root, dryRun: true, backup: false);
+
+        result.Conflicts.Should().Be(1, "topics/api/auth.nmp2 targets a file that already exists under memories/");
+        result.Moved.Should().Be(1, "only other.nmp2 would actually move; auth.nmp2 would be quarantined");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  IMPORTANT 4 — workspace-root .gitignore covers this engine's own artifacts
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void Migrate_AddsWorkspaceGitIgnoreEntries_ForMigrationArtifacts_AdditiveAndIdempotent()
+    {
+        // .scrinia/.gitignore (FileMemoryStore.EnsureGitIgnore) cannot ignore its own siblings —
+        // .scrinia-backup-*/, .scrinia-conflicts-*/, and .scrinia-migration.lock all land at the
+        // WORKSPACE root by an automatic, unprompted migration, and this project deliberately
+        // commits .scrinia/, so a `git add -A` right after first store access would otherwise
+        // commit a full duplicate copy of the user's store.
+        string workspaceGitIgnore = Path.Combine(_root, ".gitignore");
+        File.WriteAllText(workspaceGitIgnore, "node_modules/\n");
+        Write("topics/findings/review.nmp2", "b");
+
+        StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        string content = File.ReadAllText(workspaceGitIgnore);
+        content.Should().Contain("node_modules/", "pre-existing content must not be clobbered");
+        content.Should().Contain(".scrinia-backup-*/");
+        content.Should().Contain(".scrinia-conflicts-*/");
+        content.Should().Contain(".scrinia-migration.lock");
+
+        // Idempotent: a second migration attempt must not duplicate the block.
+        Write("topics/other/thing.nmp2", "c");
+        StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        string secondContent = File.ReadAllText(workspaceGitIgnore);
+        System.Text.RegularExpressions.Regex.Matches(secondContent, System.Text.RegularExpressions.Regex.Escape(".scrinia-migration.lock"))
+            .Count.Should().Be(1, "a re-run must not grow the workspace .gitignore without bound");
+    }
+
+    [Fact]
+    public void Migrate_WorkspaceGitIgnoreDidNotExist_CreatesIt()
+    {
+        Write("topics/findings/review.nmp2", "b");
+
+        StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
+
+        string workspaceGitIgnore = Path.Combine(_root, ".gitignore");
+        File.Exists(workspaceGitIgnore).Should().BeTrue();
+        File.ReadAllText(workspaceGitIgnore).Should().Contain(".scrinia-migration.lock");
     }
 }
 

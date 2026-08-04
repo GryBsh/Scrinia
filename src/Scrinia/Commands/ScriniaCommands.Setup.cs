@@ -13,7 +13,6 @@ using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Commands.Hooks;
-using Scrinia.Mcp;
 using Spectre.Console;
 
 namespace Scrinia.Commands;

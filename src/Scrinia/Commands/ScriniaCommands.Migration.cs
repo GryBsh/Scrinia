@@ -66,12 +66,22 @@ public partial class ScriniaCommands
                 $"[yellow]{result.Conflicts} collision(s) quarantined — non-namespaced entries won.[/]");
         if (result.BackupPath is not null)
             AnsiConsole.MarkupLine($"[dim]Backup: {Markup.Escape(result.BackupPath)}[/]");
+        else if (result.BackupSkipped)
+            AnsiConsole.MarkupLine(
+                "[yellow]No backup was written — a prior .scrinia-backup-*/ already exists at the workspace root.[/]");
         return Task.FromResult(0);
     }
 
     /// <summary>
     /// Copies .scrinia/ to a timestamped sibling backup directory before a migration writes to
     /// it. Used by <see cref="MigrateAttributes"/> — no-op if .scrinia/ doesn't exist.
+    ///
+    /// <para>Named <c>.scrinia-backup-attrs-{ts}</c> — deliberately distinct from
+    /// <see cref="StoreLayoutMigration"/>'s own <c>.scrinia-backup-{ts}</c> (no <c>attrs-</c>
+    /// segment). The two used to share the same name shape, so <c>StoreLayoutMigration</c>'s
+    /// "skip the backup if one already exists" guard would treat a backup this method wrote as
+    /// its own and silently skip writing a real one on the next store access — see
+    /// <c>StoreLayoutMigration.IsOwnBackupDirName</c>.</para>
     /// </summary>
     private static void BackupScriniaDir(string root)
     {
@@ -80,12 +90,21 @@ public partial class ScriniaCommands
             return;
 
         string timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
-        string backupDir = Path.Combine(root, $".scrinia-backup-{timestamp}");
+        string backupDir = Path.Combine(root, $".scrinia-backup-attrs-{timestamp}");
         AnsiConsole.MarkupLine($"[dim]Backing up .scrinia/ to {Markup.Escape(Path.GetFileName(backupDir))}...[/]");
         CopyDirectoryRecursive(scriniaDir, backupDir);
         AnsiConsole.MarkupLine("[green]Backup complete.[/]");
     }
 
+    /// <summary>Recursive file copy for <see cref="BackupScriniaDir"/>. Best-effort per file,
+    /// matching <c>StoreLayoutMigration.CopyDirectory</c>'s handling of the same class of
+    /// problem: a file held open by a concurrent process (an in-use scope <c>.lock</c>, an
+    /// antivirus scan, a sync client such as Synology Drive) is skipped rather than aborting the
+    /// whole backup — a live lock file carries no committed data worth preserving anyway, and
+    /// <c>File.Copy</c>'s bare (unguarded) call used to let that abort
+    /// <c>scri migrate_attributes --backup</c> entirely on a single transiently-locked file.
+    /// Catches <see cref="UnauthorizedAccessException"/> alongside <see cref="IOException"/> — on
+    /// Windows a sharing violation can surface as either.</summary>
     private static void CopyDirectoryRecursive(string sourceDir, string targetDir)
     {
         Directory.CreateDirectory(targetDir);
@@ -93,7 +112,9 @@ public partial class ScriniaCommands
         foreach (string file in Directory.GetFiles(sourceDir))
         {
             string destFile = Path.Combine(targetDir, Path.GetFileName(file));
-            File.Copy(file, destFile, overwrite: false);
+            try { File.Copy(file, destFile, overwrite: false); }
+            catch (IOException) { /* concurrently held; skip, nothing committed to preserve */ }
+            catch (UnauthorizedAccessException) { /* concurrently held; skip, nothing committed to preserve */ }
         }
 
         foreach (string dir in Directory.GetDirectories(sourceDir))

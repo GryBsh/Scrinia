@@ -52,12 +52,43 @@ namespace Scrinia.Core;
 /// <para>Nothing under <c>topics/agent/</c> or <c>topics/entity/skill/</c> is affected by any of
 /// this — those are FileMemoryStore's own NMP2 layout, nested under the (already-swept)
 /// <c>topics/</c> root, and migrate exactly as before.</para>
+///
+/// <para><b>Final-review fix: <c>index.json</c>-only directories are expanded, not moved.</b> A
+/// legacy directory whose entries still live in a v1 <c>index.json</c> (rather than per-entry
+/// <c>.meta.json</c> sidecars) used to have that file relocated as an ordinary file. Merged
+/// against a sidecar-based sibling directory targeting the same <c>memories/&lt;topic&gt;/</c>
+/// (the common case — <c>entity/</c>/<c>memory/</c> and the <c>index.json</c> format are both the
+/// oldest on-disk shapes), <see cref="FileMemoryStore.LoadIndexUnsafe"/>'s old "consult
+/// <c>index.json</c> only when the sidecar scan returns zero entries" fallback meant the
+/// non-empty sidecar scan always won and the <c>index.json</c> side's entries — describing real
+/// files that moved to the right place — became permanently invisible. <see cref="BuildPlan"/>
+/// now recognises <c>index.json</c> (<see cref="IsLegacyIndexFile"/>) and routes it to
+/// <see cref="IndexFileEntry"/> instead of a normal <see cref="PlanEntry"/>; <see cref="RunMigration"/>
+/// expands its entries into real sidecars via <see cref="FileMemoryStore.ExpandLegacyIndexEntries"/>
+/// (after the main move loop, so a real sidecar from the sibling directory already occupies its
+/// spot and wins) and then deletes the now-redundant <c>index.json</c>. This is what
+/// <c>LoadEntriesFromLegacyIndex</c>'s read-time upgrade used to do lazily on the read path — moved
+/// into the migration per the design's deletion list, since the read path no longer has a
+/// fallback to fall into.</para>
 /// </summary>
 public static class StoreLayoutMigration
 {
     private static readonly string[] LegacyRoots = ["store", "topics", "agent"];
 
-    public sealed record Result(int Moved, int Conflicts, bool Ran, string? BackupPath);
+    /// <param name="Moved">Files actually relocated into <c>memories/</c> (a dry run reports
+    /// <c>plan.Count - Conflicts</c> — collision losers are quarantined, not moved).</param>
+    /// <param name="Conflicts">Plan entries that lost a target collision — either to another plan
+    /// entry or to a file already sitting at the target (the resumption case).</param>
+    /// <param name="Ran">Whether a migration pass actually executed (false for a no-op or a dry
+    /// run).</param>
+    /// <param name="BackupPath">Where the pre-migration backup was written, or null if none was
+    /// requested — or if one was requested but skipped; see <see cref="BackupSkipped"/>.</param>
+    /// <param name="BackupSkipped">True when <c>backup: true</c> was requested but no backup was
+    /// written because a <c>.scrinia-backup-*/</c> directory already existed at the workspace
+    /// root — see the comment at the backup block in <see cref="RunMigration"/>. Distinct from
+    /// simply not requesting one (<c>BackupPath is null &amp;&amp; !BackupSkipped</c>), so a caller
+    /// can tell "no backup was asked for" apart from "one was asked for and silently withheld".</param>
+    public sealed record Result(int Moved, int Conflicts, bool Ran, string? BackupPath, bool BackupSkipped = false);
 
     /// <summary>
     /// One planned move: an absolute <paramref name="Source"/> path to an absolute
@@ -73,6 +104,67 @@ public static class StoreLayoutMigration
     /// <param name="NamespaceRank">0 for non-namespaced (flat topics, <c>store/</c>,
     /// <c>topics/agent/</c>), 1 for <c>entity/</c>, 2 for <c>memory/</c>.</param>
     internal readonly record struct PlanEntry(string Source, string Target, int NamespaceRank);
+
+    /// <summary>
+    /// One legacy <c>index.json</c> found during the scan, paired with the directory its
+    /// sibling files land in under <c>memories/</c>. Never moved as a file — see
+    /// <see cref="IsLegacyIndexFile"/> and the class doc comment's CRITICAL fix note. Processed
+    /// after the main move loop so <see cref="TargetDir"/> already reflects every sidecar that
+    /// won its collision, and expansion (<see cref="FileMemoryStore.ExpandLegacyIndexEntries"/>)
+    /// can correctly skip an entry a real sidecar already describes.
+    /// </summary>
+    internal readonly record struct IndexFileEntry(string IndexPath, string TargetDir);
+
+    /// <summary>
+    /// Marker delimiting the block <see cref="EnsureWorkspaceGitIgnoreForMigrationArtifacts"/>
+    /// appends, so a re-run can detect it's already there without re-parsing or duplicating rules.
+    /// </summary>
+    private const string WorkspaceGitIgnoreMarker = "# --- scrinia: migration artifacts (auto-added) ---";
+
+    /// <summary>
+    /// Idempotently appends ignore rules for this engine's own workspace-root artifacts
+    /// (<c>.scrinia-backup-*/</c>, <c>.scrinia-conflicts-*/</c>, <c>.scrinia-migration.lock</c>) to
+    /// the WORKSPACE <c>.gitignore</c> — a different file from <c>.scrinia/.gitignore</c>
+    /// (<see cref="FileMemoryStore.EnsureGitIgnore"/>), which lives INSIDE <c>.scrinia/</c> and
+    /// therefore cannot ignore its own siblings at the workspace root.
+    ///
+    /// <para>Additive only: reads any existing workspace <c>.gitignore</c> and appends the marked
+    /// block after it, never truncating or reordering existing content. Skips entirely if
+    /// <see cref="WorkspaceGitIgnoreMarker"/> is already present, so repeated migration attempts
+    /// (the stuck-legacy-lock retry case elsewhere in this file) don't grow the file. Deliberately
+    /// does NOT move <c>.scrinia-migration.lock</c> itself into <c>.scrinia/</c> to be covered by
+    /// the existing <c>**/*.lock</c> rule there — its sibling placement is required to avoid the
+    /// backup self-deadlock described at the lock-acquisition comment in <see cref="RunMigration"/>.
+    /// </para>
+    ///
+    /// <para>Best-effort: a failure to read or write the workspace <c>.gitignore</c> (permissions,
+    /// a concurrent editor holding it open) must not abort the migration itself — an un-ignored
+    /// artifact is a git-hygiene issue, not a data-loss one.</para>
+    /// </summary>
+    private static void EnsureWorkspaceGitIgnoreForMigrationArtifacts(string workspaceRoot)
+    {
+        try
+        {
+            string gitIgnorePath = Path.Combine(workspaceRoot, ".gitignore");
+            string existing = File.Exists(gitIgnorePath) ? File.ReadAllText(gitIgnorePath) : "";
+            if (existing.Contains(WorkspaceGitIgnoreMarker, StringComparison.Ordinal))
+                return;
+
+            string block =
+                WorkspaceGitIgnoreMarker + "\n" +
+                ".scrinia-backup-*/\n" +
+                ".scrinia-conflicts-*/\n" +
+                ".scrinia-migration.lock\n" +
+                "# --- end scrinia ---\n";
+
+            string updated = existing.Length == 0 ? block
+                : existing.EndsWith('\n') ? existing + "\n" + block
+                : existing + "\n\n" + block;
+
+            FileMemoryStore.AtomicWriteAllText(gitIgnorePath, updated);
+        }
+        catch { /* best-effort; must not abort the migration itself */ }
+    }
 
     /// <summary>True when any legacy root still holds files. Three-stat fast path.</summary>
     public static bool NeedsMigration(string workspaceRoot)
@@ -110,38 +202,72 @@ public static class StoreLayoutMigration
             return new Result(0, 0, Ran: false, BackupPath: null);
 
         string scriniaDir = Path.Combine(workspaceRoot, ".scrinia");
-        var (plan, transientFiles) = BuildPlan(scriniaDir);
-        if (plan.Count == 0 && transientFiles.Count == 0)
+        var (plan, transientFiles, indexFiles) = BuildPlan(scriniaDir);
+        if (plan.Count == 0 && transientFiles.Count == 0 && indexFiles.Count == 0)
             return new Result(0, 0, Ran: false, BackupPath: null);
 
         if (dryRun)
-            return new Result(plan.Count, CountCollisions(plan), Ran: false, BackupPath: null);
+        {
+            // Moved excludes collision losers (quarantined, not moved) — CountCollisions checks
+            // both in-plan duplicates AND a target that already exists on disk (the resumption
+            // case), matching exactly what the real move loop below checks via File.Exists.
+            int dryRunCollisions = CountCollisions(plan);
+            return new Result(plan.Count - dryRunCollisions, dryRunCollisions, Ran: false, BackupPath: null);
+        }
+
+        // Every artifact this engine creates below (.scrinia-migration.lock, .scrinia-backup-*/,
+        // .scrinia-conflicts-*/) lands at the WORKSPACE ROOT, sibling to .scrinia/ — see the lock
+        // path comment just below for why. This project deliberately commits .scrinia/, and an
+        // automatic, unprompted migration can fire on a plain read (any first GetStoreDirForScope
+        // call), so a `git add -A` moments later could otherwise commit a full duplicate backup
+        // copy of the user's store before anyone thought to update .gitignore. Ensuring the
+        // ignore rule exists BEFORE creating any of these artifacts closes that window; see
+        // EnsureWorkspaceGitIgnoreForMigrationArtifacts's own doc comment for why this is a
+        // separate file from FileMemoryStore.EnsureGitIgnore (.scrinia/.gitignore).
+        EnsureWorkspaceGitIgnoreForMigrationArtifacts(workspaceRoot);
 
         // The lock file must live OUTSIDE .scrinia/, not inside it: the backup below does a
         // recursive copy of scriniaDir, and FileLock.AcquireExclusive opens with FileShare.None,
         // so a lock file placed under scriniaDir would make File.Copy throw IOException on its
         // own lock the moment a backup ran (self-deadlock-on-read, not a race with another
-        // process). Sibling to .scrinia/ avoids the conflict entirely.
+        // process). Sibling to .scrinia/ avoids the conflict entirely — deliberately NOT moved by
+        // this fix; see the comment there for the deadlock this placement avoids.
         string lockPath = Path.Combine(workspaceRoot, ".scrinia-migration.lock");
         var fileLock = FileLock.AcquireExclusive(lockPath);
         try
         {
             string? backupPath = null;
+            bool backupSkipped = false;
             if (backup)
             {
-                // Bounded: skip when a prior attempt already left a backup behind. Without this,
-                // a legacy root that never fully empties (e.g. a concurrently-held scope .lock
-                // that keeps failing to delete, so NeedsMigration keeps reporting true) would have
-                // every subsequent process — each CLI invocation is a new process — write another
-                // full timestamped .scrinia-backup-*/ copy on every store access, growing disk
-                // usage without bound. The first backup already preserved the pre-migration
-                // state, which is the only thing a backup is for; a second one adds nothing.
-                bool priorBackupExists = Directory.EnumerateDirectories(workspaceRoot, ".scrinia-backup-*").Any();
+                // Bounded: skip when a prior backup FROM THIS ENGINE already exists — not any
+                // ".scrinia-backup-*" directory at the workspace root. The broader glob used to
+                // also match ".scrinia-backup-attrs-{ts}" (scri migrate_attributes's own
+                // BackupScriniaDir — renamed below specifically to stop colliding here) and any
+                // directory a user copied back while following the documented "re-run after
+                // restoring a backup" workflow (docs/cli-reference.md). Either one would silently
+                // suppress the pre-migration backup THIS run is about to need, and the CLI only
+                // prints a backup line when BackupPath is non-null — so the user would see
+                // "Migrated N files" with no hint that nothing was actually backed up this time.
+                // IsOwnBackupDirName's exact-shape check keeps the original bound intact (a
+                // legacy root that never fully empties, e.g. a stuck scope .lock, still must not
+                // grow .scrinia-backup-{ts}/ without bound across repeated automatic-trigger
+                // invocations) while no longer matching another tool's differently-named backup.
+                // A directory that happens to be an exact-shape ".scrinia-backup-{ts}" left behind
+                // by a manual restore is not distinguishable from this engine's own — that residual
+                // gap is exactly why Result.BackupSkipped exists: whenever the guard does skip,
+                // the caller (and therefore the user) is told, rather than finding out never.
+                bool priorBackupExists = Directory.EnumerateDirectories(workspaceRoot, ".scrinia-backup-*")
+                    .Any(dir => IsOwnBackupDirName(Path.GetFileName(dir)));
                 if (!priorBackupExists)
                 {
                     backupPath = Path.Combine(workspaceRoot,
                         $".scrinia-backup-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}");
                     CopyDirectory(scriniaDir, backupPath);
+                }
+                else
+                {
+                    backupSkipped = true;
                 }
             }
 
@@ -182,9 +308,23 @@ public static class StoreLayoutMigration
                 moved++;
             }
 
+            // Legacy index.json → sidecar expansion runs AFTER the main move loop above, so by
+            // the time an index.json's entries are considered, every real .meta.json sidecar that
+            // won its collision already sits in its target directory — ExpandLegacyIndexEntries
+            // skips an entry a real sidecar already describes, so a merged sibling directory's
+            // sidecar always wins over stale index.json-derived data for the same name. See the
+            // class doc comment's CRITICAL fix note.
+            foreach (var (indexPath, targetDir) in indexFiles)
+            {
+                if (!File.Exists(indexPath)) continue; // resumption: already expanded and deleted
+                var entries = FileMemoryStore.LoadEntriesFromLegacyIndex(Path.GetDirectoryName(indexPath)!);
+                FileMemoryStore.ExpandLegacyIndexEntries(entries, targetDir);
+                try { File.Delete(indexPath); } catch { /* leave it; next run retries */ }
+            }
+
             MoveRenamedVectorDirs(scriniaDir);
             PruneEmptyLegacyRoots(scriniaDir);
-            return new Result(moved, conflicts, Ran: true, backupPath);
+            return new Result(moved, conflicts, Ran: true, backupPath, backupSkipped);
         }
         finally
         {
@@ -198,15 +338,29 @@ public static class StoreLayoutMigration
     }
 
     /// <summary>
-    /// Scans every legacy root and splits what it finds into two lists: the move plan (returned
-    /// first, ordered by <see cref="OrderPlan"/>) and known-transient artifacts to delete outright
-    /// (returned second — see <see cref="IsTransientArtifact"/>). Each move-plan entry carries the
+    /// True for exactly this engine's own backup directory name shape — <c>.scrinia-backup-</c>
+    /// followed by an 8-digit date and a 6-digit time (<c>RunMigration</c>'s
+    /// <c>DateTimeOffset.UtcNow:yyyyMMdd-HHmmss</c> format), nothing else. Deliberately excludes
+    /// <c>.scrinia-backup-attrs-{ts}</c> (<c>ScriniaCommands.BackupScriniaDir</c>, used by
+    /// <c>scri migrate_attributes --backup</c>) — see the backup-guard comment in
+    /// <see cref="RunMigration"/> for why the two must not collide.
+    /// </summary>
+    private static bool IsOwnBackupDirName(string dirName) =>
+        System.Text.RegularExpressions.Regex.IsMatch(dirName, @"^\.scrinia-backup-\d{8}-\d{6}$");
+
+    /// <summary>
+    /// Scans every legacy root and splits what it finds into three lists: the move plan (ordered
+    /// by <see cref="OrderPlan"/>), known-transient artifacts to delete outright (see
+    /// <see cref="IsTransientArtifact"/>), and legacy <c>index.json</c> files to expand into
+    /// sidecars and then delete (see <see cref="IsLegacyIndexFile"/> and
+    /// <see cref="IndexFileEntry"/>). Each move-plan entry carries the
     /// <see cref="PlanEntry.NamespaceRank"/> that <see cref="OrderPlan"/> sorts on.
     /// </summary>
-    private static (List<PlanEntry> Plan, List<string> TransientFiles) BuildPlan(string scriniaDir)
+    private static (List<PlanEntry> Plan, List<string> TransientFiles, List<IndexFileEntry> IndexFiles) BuildPlan(string scriniaDir)
     {
         var plan = new List<PlanEntry>();
         var transientFiles = new List<string>();
+        var indexFiles = new List<IndexFileEntry>();
         string memoriesDir = Path.Combine(scriniaDir, "memories");
 
         // 1. .scrinia/store/* -> memories/<file> (flat root store, never namespaced).
@@ -218,6 +372,7 @@ public static class StoreLayoutMigration
                 if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
                 string relPath = Path.GetRelativePath(storeDir, file).Replace('\\', '/');
                 string target = Path.Combine(memoriesDir, relPath.Replace('/', Path.DirectorySeparatorChar));
+                if (IsLegacyIndexFile(file)) { indexFiles.Add(new IndexFileEntry(file, Path.GetDirectoryName(target)!)); continue; }
                 plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
             }
         }
@@ -232,6 +387,7 @@ public static class StoreLayoutMigration
                 if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
                 string relPath = Path.GetRelativePath(topicsDir, file).Replace('\\', '/');
                 string target = MapTopicFileToV2(relPath, memoriesDir);
+                if (IsLegacyIndexFile(file)) { indexFiles.Add(new IndexFileEntry(file, Path.GetDirectoryName(target)!)); continue; }
                 int rank = relPath.StartsWith("entity/", StringComparison.OrdinalIgnoreCase) ? 1
                     : relPath.StartsWith("memory/", StringComparison.OrdinalIgnoreCase) ? 2
                     : 0;
@@ -250,6 +406,7 @@ public static class StoreLayoutMigration
                 if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
                 string relPath = Path.GetRelativePath(agentDir, file).Replace('\\', '/');
                 string target = Path.Combine(memoriesDir, "agent", relPath.Replace('/', Path.DirectorySeparatorChar));
+                if (IsLegacyIndexFile(file)) { indexFiles.Add(new IndexFileEntry(file, Path.GetDirectoryName(target)!)); continue; }
                 plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
             }
         }
@@ -260,8 +417,19 @@ public static class StoreLayoutMigration
         // (FileMemoryStore's own NMP2 layout) still migrates via step 2 above — that is unrelated
         // to the top-level .scrinia/skills/ directory this note is about.
 
-        return (OrderPlan(plan), transientFiles);
+        return (OrderPlan(plan), transientFiles, indexFiles);
     }
+
+    /// <summary>
+    /// True for a legacy v1 <c>index.json</c> — the pre-sidecar era's single per-directory entry
+    /// list. Never moved as an ordinary file (that was the CRITICAL bug this fix round closes —
+    /// see the class doc comment): it is expanded into per-entry sidecars via
+    /// <see cref="FileMemoryStore.ExpandLegacyIndexEntries"/> and then deleted, so the entries it
+    /// describes stay reachable after the merge instead of silently shadowed by a sidecar scan
+    /// that stops looking once it finds ANY sidecar in the merged target directory.
+    /// </summary>
+    private static bool IsLegacyIndexFile(string filePath) =>
+        Path.GetFileName(filePath).Equals("index.json", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Deterministic ordering: <see cref="PlanEntry.NamespaceRank"/> ascending (non-namespaced,
@@ -327,13 +495,24 @@ public static class StoreLayoutMigration
     /// <summary>Counts how many plan entries would lose a collision (i.e. share a target with
     /// an entry earlier in the plan). Used to report conflicts on the dry-run path without
     /// actually moving anything.</summary>
+    /// <summary>
+    /// Predicts how many plan entries the real move loop above would quarantine, WITHOUT moving
+    /// anything — used by the dry-run path. Two ways an entry collides, both mirrored here exactly
+    /// as the real loop checks them: (a) <c>File.Exists(target)</c> — a file already sits at the
+    /// target, the resumption case (a prior partial run already placed something there); (b) the
+    /// target was already claimed by an earlier entry IN THIS PLAN. (a) is checked first and, on a
+    /// hit, is deliberately NOT also added to <paramref name="plan"/>'s seen-targets set: a second
+    /// plan entry aimed at the same already-occupied target hits (a) again and is independently
+    /// counted, matching the real loop (which quarantines both, since the pre-existing occupant
+    /// never moves either time).
+    /// </summary>
     private static int CountCollisions(List<PlanEntry> plan)
     {
         var seenTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int collisions = 0;
         foreach (var (_, target, _) in plan)
         {
-            if (!seenTargets.Add(target))
+            if (File.Exists(target) || !seenTargets.Add(target))
                 collisions++;
         }
         return collisions;
@@ -417,9 +596,10 @@ public static class StoreLayoutMigration
     }
 
     /// <summary>
-    /// Renames the two vector-store scope directories whose on-disk path changes under v3, per
-    /// <c>VectorStore.ScopeToRelativeDir</c>: <c>embeddings/local/entity/skill</c> →
-    /// <c>embeddings/local/skill</c>, and each <c>embeddings/local/memory/&lt;topic&gt;</c> →
+    /// Renames the two vector-store scope FAMILIES whose on-disk path changes under v3, per
+    /// <c>VectorStore.ScopeToRelativeDir</c>: every <c>embeddings/local/entity/&lt;topic&gt;</c> →
+    /// <c>embeddings/local/&lt;topic&gt;</c> (not just <c>skill</c> — see the IMPORTANT-2
+    /// final-review fix note below), and each <c>embeddings/local/memory/&lt;topic&gt;</c> →
     /// <c>embeddings/local/&lt;topic&gt;</c>. These are the only two scope families whose
     /// directory string changes — everything else is already flat. Best-effort: on failure
     /// (e.g. target already exists) the source directory is left in place and the pass
@@ -430,6 +610,15 @@ public static class StoreLayoutMigration
     /// <c>"local:entity/skill"</c> (Task 8's flattening moved earlier in the plan) — otherwise
     /// this rename would orphan vectors under a path nothing looks up anymore. That ordering is a
     /// plan-level concern, not an engine one; this method needs no change for it.</para>
+    ///
+    /// <para><b>Final-review fix (IMPORTANT 2):</b> the original version special-cased
+    /// <c>entity/skill</c> only, matching <see cref="MapTopicFileToV2"/>'s move for the memories
+    /// themselves — but <see cref="MapTopicFileToV2"/> strips <c>entity/</c> for ANY child topic,
+    /// not just <c>skill</c>. Any other historical entity topic (<c>task</c>, <c>concern</c> — see
+    /// <c>FileMemoryStore.IsEntityScope</c>'s own comment) had its memories relocated correctly by
+    /// the main plan while its embeddings sat orphaned at <c>embeddings/local/entity/&lt;topic&gt;/</c>,
+    /// silently, with no pointer to <c>scri reindex</c>. Now iterated the same way as the
+    /// <c>memory/</c> family below, instead of a single hardcoded <c>entity/skill</c> path.</para>
     /// </summary>
     private static void MoveRenamedVectorDirs(string scriniaDir)
     {
@@ -437,9 +626,25 @@ public static class StoreLayoutMigration
         if (!Directory.Exists(embeddingsLocal))
             return;
 
-        string entitySkillDir = Path.Combine(embeddingsLocal, "entity", "skill");
-        if (Directory.Exists(entitySkillDir))
-            TryMoveVectorDir(entitySkillDir, Path.Combine(embeddingsLocal, "skill"));
+        // entity/<topic> -> <topic> for EVERY historical entity topic, not just "skill".
+        // VectorStore.ScopeToRelativeDir derives the embedding directory purely from splitting
+        // the scope string on separators, so any v2 "local:entity/<topic>" scope (skill was never
+        // the only one — FileMemoryStore.IsEntityScope's own comment names "task" and "concern" as
+        // legacy flat entity topics, and MapTopicFileToV2 strips entity/ for any child, not just
+        // skill) has its vectors at embeddings/local/entity/<topic>/ before this migration and
+        // needs them at embeddings/local/<topic>/ after — matching where the memories themselves
+        // land. A skill-only special case here left every other entity topic's vectors orphaned,
+        // silently, with no pointer to `scri reindex`.
+        string entityDir = Path.Combine(embeddingsLocal, "entity");
+        if (Directory.Exists(entityDir))
+        {
+            foreach (string topicDir in Directory.GetDirectories(entityDir))
+            {
+                string topic = Path.GetFileName(topicDir);
+                TryMoveVectorDir(topicDir, Path.Combine(embeddingsLocal, topic));
+            }
+            PruneIfEmpty(entityDir);
+        }
 
         string memoryDir = Path.Combine(embeddingsLocal, "memory");
         if (Directory.Exists(memoryDir))
@@ -449,6 +654,7 @@ public static class StoreLayoutMigration
                 string topic = Path.GetFileName(topicDir);
                 TryMoveVectorDir(topicDir, Path.Combine(embeddingsLocal, topic));
             }
+            PruneIfEmpty(memoryDir);
         }
     }
 
@@ -470,6 +676,22 @@ public static class StoreLayoutMigration
         {
             // Leave the directory and continue — scri reindex rebuilds.
         }
+    }
+
+    /// <summary>Deletes <paramref name="dir"/> if every child moved out of it, mirroring
+    /// <see cref="PruneEmptyLegacyRoots"/>'s treatment of the memory-side legacy roots — the
+    /// now-empty <c>embeddings/local/entity/</c>/<c>embeddings/local/memory/</c> parents deserve
+    /// the same cleanup, not an inert empty directory left behind forever. Best-effort: a
+    /// directory that didn't fully empty (a move above was left in place after a failure) or a
+    /// benign concurrent-access race just means this is retried on the next migration pass.</summary>
+    private static void PruneIfEmpty(string dir)
+    {
+        try
+        {
+            if (!Directory.EnumerateFileSystemEntries(dir).Any())
+                Directory.Delete(dir);
+        }
+        catch { /* benign race, e.g. concurrent access; retried next pass */ }
     }
 
     /// <summary>Deletes each legacy root that is now empty (recursively pruning empty

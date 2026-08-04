@@ -915,7 +915,19 @@ public sealed class ScriniaMcpToolsTests
     [Fact]
     public void LoadIndex_V1WithoutTagsAndPreview_LoadsWithNulls()
     {
+        // Final-review CRITICAL fix (store-unification): the index.json -> sidecar upgrade moved
+        // from the read path (LoadIndexUnsafe's old "consult index.json only when the sidecar scan
+        // is empty" fallback) into StoreLayoutMigration — "Nothing reads through it" per the
+        // design. This test used to write index.json directly into the CURRENT v3 store dir
+        // (TempDir, i.e. .scrinia/memories/) and read it straight back; that path no longer exists
+        // by design. Converted (not deleted, per the design's "converted, not deleted" precedent
+        // for the other fallback tests this workstream removes) to seed the LEGACY flat store dir
+        // instead — LoadIndex's first call triggers the automatic migration gate, which expands
+        // index.json into a real sidecar before this read ever runs.
         using var scope = new TestHelpers.StoreScope();
+        string legacyStoreDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "store");
+        Directory.CreateDirectory(legacyStoreDir);
+
         // Simulate a v1 index with no Tags/ContentPreview
         string json = """
             {
@@ -932,8 +944,7 @@ public sealed class ScriniaMcpToolsTests
               ]
             }
             """;
-        string indexPath = Path.Combine(scope.TempDir, "index.json");
-        File.WriteAllText(indexPath, json);
+        File.WriteAllText(Path.Combine(legacyStoreDir, "index.json"), json);
 
         // NOTE: this asserts null ContentPreview because the legacy "description" JSON key has no
         // corresponding member on ArtifactEntry (Description was fully retired) and

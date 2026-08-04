@@ -271,7 +271,7 @@ public static class BundleFormatService
 
     /// <summary>
     /// Derives the .scrinia base directory from the store's scope directory.
-    /// <c>store.GetStoreDirForScope("local")</c> returns <c>{workspace}/.scrinia/store</c>,
+    /// <c>store.GetStoreDirForScope("local")</c> returns <c>{workspace}/.scrinia/memories</c>,
     /// so the parent is the .scrinia root.
     /// </summary>
     private static string GetScriniaBaseDir(IMemoryStore store) =>
