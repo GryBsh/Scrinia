@@ -602,8 +602,7 @@ public sealed partial class ScriniaMcpTools
         // Available skills (built-in + disk overrides)
         try
         {
-            string skillsBaseDir = GetScriniaBaseDir(store);
-            string skillsDir = Path.Combine(skillsBaseDir, "skills");
+            string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
             var diskSkills = Directory.Exists(skillsDir)
                 ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
                 : [];
