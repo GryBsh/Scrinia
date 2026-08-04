@@ -689,6 +689,17 @@ Keep the `// Fall through to NMP/2 resolution for legacy entries` comment and be
 
 Leave the `if (!usedMdFiles)` NMP/2 listing fallback below it intact.
 
+**Then finish off `MemoryTools.Skills.GetScriniaBaseDir`.** Task 2 could not delete it: besides the agent site above, it has one more caller that has nothing to do with file entities — `MemoryTools.Bundling.cs:31`, which uses it to locate `.scrinia/exports`. Repoint that too, so the walk-up helper has no callers left:
+
+```csharp
+        string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
+        FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
+        string exportsDir = Path.Combine(scriniaDir, "exports");
+        Directory.CreateDirectory(exportsDir);
+```
+
+Now delete `GetScriniaBaseDir` from `src/Scrinia.Mcp/MemoryTools.Skills.cs:85-92`. Verify with `rtk git grep -n GetScriniaBaseDir -- src` that the only remaining hit is the `<c>GetScriniaBaseDir</c>` mention in `StoreLayoutMigration.cs:34`'s doc comment, which Step 4 above already rewrites.
+
 - [ ] **Step 6: Collapse `CategoryDir` in the bundle service**
 
 In `src/Scrinia.Core/Bundles/BundleFormatService.cs`, delete both `GetScriniaBaseDir` (lines 277-278) and `CategoryDir` (lines 288-291). Both categories now resolve identically.
