@@ -10,6 +10,43 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — event-sink lifecycle
+
+- Detached event-sink work is now tracked by `BackgroundWork` instead of being dropped on the
+  floor by a bare `_ = Task.Run(...)`. Writes still return without waiting for embedding
+  latency, but the work is owned: the CLI and `Scrinia.Server` both drain outstanding sinks
+  before exiting, so a short-lived command — or a request that lands just before shutdown —
+  no longer ends with a vector file half-written. If the drain exceeds 10s the work is
+  cancelled and a warning names `scri reindex` as the recovery.
+- A faulting embeddings-plugin shutdown no longer kills the process. The `ProcessExit`
+  handler registered by `WorkspaceSetup` called `DisposeAsync().AsTask().Wait(3000)`
+  unguarded — and an exception escaping a `ProcessExit` handler terminates the process.
+  Since the plugin child has usually already exited by then (making disposal throw over a
+  broken pipe), this could take down `scri` on a normal exit. Both the handler and
+  `McpPluginHost.DisposeAsync` now contain their own failures.
+- Concurrent writes to a fresh workspace no longer fail with `UnauthorizedAccessException:
+  Access to the path is denied`. `EnsureMaterialized` calls `EnsureGitIgnore` from *outside*
+  the scope's file lock and write lock, and its `File.Exists` guard is check-then-act — so two
+  writers to a new workspace both wrote `.scrinia/.gitignore`, and on Windows the losing
+  `File.Move` got `ERROR_ACCESS_DENIED`, which `FileRetry` treats as permanent. The content is
+  a fixed constant, so the race is benign and is now tolerated (rethrowing only if the file is
+  genuinely absent) — the same treatment the sidecar write-back already documented. In
+  practice this surfaced whenever a background sink's write raced a foreground write.
+- `FileLockTests.ConcurrentUpsert_NoDataLoss` could hang the whole test host indefinitely,
+  which the runner reports as an aborted run. Its two workers ran on thread-pool threads and
+  blocked on each other at a `Barrier` (deadlock-prone under xunit's parallel load), and a
+  worker that threw stopped signalling, parking its partner on `SignalAndWait()` forever —
+  hiding the `.gitignore` race above as a hang instead of reporting it. Workers now get
+  dedicated threads, a bailing worker removes itself as a participant, and the test surfaces
+  the workers' actual exceptions. It fails in ~150ms where it used to hang.
+- Test isolation: `TestHelpers.StoreScope` now clears `MemoryEventSinkContext.Default` and
+  drains background work before deleting its temp directory. `Default` is a process-wide
+  static — correct for the CLI's single session, wrong for a shared test host — so any test
+  reaching a `ScriniaCommands` entry point left the real embed/entity-typing/maintenance
+  pipeline installed for every later test, whose writes it then rewrote mid-assertion. This
+  was the cause of the intermittent `MentionSpanWiringTests` failure and of the
+  `UnauthorizedAccessException`/`FileLockTimeoutException` noise against deleted temp stores.
+
 ### Removed (breaking) — legacy v1/v2 read-fallback layout
 
 - The read path now knows exactly one on-disk layout (`.scrinia/memories/`). The v1/v2

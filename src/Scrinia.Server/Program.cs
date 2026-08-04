@@ -533,5 +533,15 @@ app.Lifetime.ApplicationStopping.Register(() =>
 
 await app.RunAsync();
 
+// The MCP endpoint writes through the same MemoryTools path as the CLI, so sinks dispatched by
+// a request near shutdown can still be indexing. Finish them before the process ends rather
+// than leaving a vector file half-written.
+if (!await BackgroundWork.DrainAsync(TimeSpan.FromSeconds(10)))
+{
+    app.Logger.LogWarning(
+        "Background indexing did not finish within 10s and was cancelled. Some memories may not " +
+        "appear in semantic search until the next write or a reindex.");
+}
+
 // Required for WebApplicationFactory<Program> in tests
 public partial class Program { }

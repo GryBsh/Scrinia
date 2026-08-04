@@ -214,6 +214,25 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         string gitIgnorePath = Path.Combine(scriniaDir, ".gitignore");
         if (File.Exists(gitIgnorePath)) return;
 
+        try
+        {
+            WriteDefaultGitIgnore(gitIgnorePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Benign first-write race. EnsureMaterialized calls this from OUTSIDE the scope's
+            // file lock and write lock, so two concurrent writers to a fresh workspace both pass
+            // the File.Exists check above and both File.Move onto the same destination. On
+            // Windows the loser gets ERROR_ACCESS_DENIED (UnauthorizedAccessException), which
+            // FileRetry classifies as permanent and will not retry — the same collision the
+            // sidecar write-back documents in LoadIndexUnsafe. The content is a fixed constant,
+            // so whichever move landed left the file correct. Rethrow only if it really is absent.
+            if (!File.Exists(gitIgnorePath)) throw;
+        }
+    }
+
+    private static void WriteDefaultGitIgnore(string gitIgnorePath)
+    {
         AtomicWriteAllText(gitIgnorePath, """
             # Lock files (runtime artifacts from cross-process file locking)
             **/*.lock

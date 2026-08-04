@@ -520,9 +520,22 @@ internal static class WorkspaceSetup
 
             _pluginHost = host;
 
-            // Ensure plugin shuts down when the CLI exits
+            // Ensure plugin shuts down when the CLI exits.
+            // An exception escaping a ProcessExit handler terminates the process, and the plugin
+            // child is often already gone by this point (making disposal throw), so the wait is
+            // guarded. Nothing useful remains to salvage at exit — log and let the process end.
             AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-                host.DisposeAsync().AsTask().Wait(3000);
+            {
+                try
+                {
+                    host.DisposeAsync().AsTask().Wait(3000);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine(
+                        $"[scrinia:warn] Embeddings plugin shutdown failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            };
         }
         catch (Exception ex)
         {

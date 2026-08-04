@@ -157,31 +157,56 @@ public class FileLockTests : IDisposable
         var store = new FileMemoryStore(storeDir);
 
         const int iterations = 20;
-        var barrier = new Barrier(2);
+        using var barrier = new Barrier(2);
+        var barrierTimeout = TimeSpan.FromSeconds(30);
 
-        var task1 = Task.Run(() =>
+        // This test used to hang the entire test host indefinitely, which the runner reports as
+        // an aborted run. Two causes, both fixed here:
+        //
+        //  1. The workers ran on Task.Run (thread-pool) threads and blocked on each other at the
+        //     barrier. Under xunit's parallel load that can deadlock the pool. LongRunning gives
+        //     each worker a dedicated thread.
+        //  2. A worker that threw simply stopped signalling, parking its partner on
+        //     SignalAndWait() forever. A bailing worker now removes itself as a participant, so
+        //     the survivor is released and the real exception surfaces instead of a hang.
+        Task RunWorker(string tag) => Task.Factory.StartNew(() =>
         {
-            for (int i = 0; i < iterations; i++)
+            bool participating = true;
+            try
             {
-                barrier.SignalAndWait();
-                store.Upsert(new ArtifactEntry(
-                    $"entry-a-{i}", $"file://a-{i}", 100, 1,
-                    DateTimeOffset.UtcNow), "local");
-            }
-        });
+                for (int i = 0; i < iterations; i++)
+                {
+                    if (!barrier.SignalAndWait(barrierTimeout))
+                        throw new TimeoutException($"worker '{tag}' timed out at barrier phase {i}");
 
-        var task2 = Task.Run(() =>
-        {
-            for (int i = 0; i < iterations; i++)
+                    store.Upsert(new ArtifactEntry(
+                        $"entry-{tag}-{i}", $"file://{tag}-{i}", 100, 1,
+                        DateTimeOffset.UtcNow), "local");
+                }
+
+                barrier.RemoveParticipant();
+                participating = false;
+            }
+            finally
             {
-                barrier.SignalAndWait();
-                store.Upsert(new ArtifactEntry(
-                    $"entry-b-{i}", $"file://b-{i}", 100, 1,
-                    DateTimeOffset.UtcNow), "local");
+                if (participating) barrier.RemoveParticipant();
             }
-        });
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-        Task.WaitAll(task1, task2);
+        var task1 = RunWorker("a");
+        var task2 = RunWorker("b");
+
+        Task.WaitAll([task1, task2], TimeSpan.FromSeconds(60))
+            .Should().BeTrue("both writers must finish; a hang here would otherwise stall the whole suite");
+
+        // Surfaces whatever the workers actually threw, rather than only the count mismatch.
+        var faults = new[] { task1, task2 }
+            .Where(t => t.IsFaulted)
+            .SelectMany(t => t.Exception!.InnerExceptions)
+            .ToList();
+        faults.Should().BeEmpty(
+            "concurrent upserts to one store must not throw; got: {0}",
+            string.Join(" | ", faults.Select(e => $"{e.GetType().Name}: {e.Message}")));
 
         var entries = store.LoadIndex("local");
         entries.Should().HaveCount(iterations * 2,

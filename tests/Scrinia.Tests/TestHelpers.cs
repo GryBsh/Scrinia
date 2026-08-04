@@ -99,12 +99,29 @@ internal static class TestHelpers
             SessionBudget.OverrideStore(
                 new System.Collections.Concurrent.ConcurrentDictionary<string, long>(
                     StringComparer.OrdinalIgnoreCase));
+
+            // Clean room. MemoryEventSinkContext.Default is a plain process-wide static (correct
+            // for the CLI's single session, wrong for a shared test host): any test that reaches a
+            // ScriniaCommands entry point runs WorkspaceSetup.LoadPluginsAsync, which installs the
+            // real embed/entity-typing/maintenance pipeline there and never removes it. Left
+            // installed, it fires on every later test's writes and rewrites their entries
+            // mid-assertion — this is what made MentionSpanWiringTests flaky. Tests that want a
+            // sink set MemoryEventSinkContext.Current, which takes precedence over Default.
+            MemoryEventSinkContext.Default = null;
             MemoryStoreContext.Current = new FileMemoryStore(WorkspaceDir);
         }
 
         public void Dispose()
         {
+            // Deliberately does NOT drain BackgroundWork. The registry is process-wide, so a
+            // per-test drain makes every disposal wait on every other test's in-flight sinks —
+            // and CoreEmbeddingEventHandler's VectorWriteRetry backs off up to 42s. Blocking on
+            // that from hundreds of parallel disposals starves the thread pool and takes the
+            // suite from ~52s to over 10 minutes (measured). Clearing the sink context in the
+            // constructor is what actually prevents the leak; TestHostLifetime drains once at
+            // the end of the run.
             SessionBudget.OverrideStore(null);
+            MemoryEventSinkContext.Default = null;
             MemoryStoreContext.Current = null;
             try { Directory.Delete(WorkspaceDir, recursive: true); } catch { }
         }

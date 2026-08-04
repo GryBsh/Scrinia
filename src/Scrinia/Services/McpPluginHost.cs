@@ -309,7 +309,19 @@ internal sealed class McpPluginHost : ISearchScoreContributor, IMemoryEventSink,
 
     public async ValueTask DisposeAsync()
     {
-        if (_client is not null)
+        if (_client is null) return;
+
+        // Disposal talks to the plugin child over stdio. If it already exited (crash, or a
+        // shutdown race where it goes first), that write fails — a broken pipe is not a reason
+        // to fault the caller, which is usually a process-exit path.
+        try
+        {
             await _client.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[scrinia:warn] Embeddings plugin did not shut down cleanly: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 }

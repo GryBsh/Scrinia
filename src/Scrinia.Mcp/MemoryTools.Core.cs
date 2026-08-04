@@ -1728,15 +1728,15 @@ public sealed partial class ScriniaMcpTools
     /// The sink is resolved at fire-time so a concurrent context switch won't bind us to a stale sink.
     /// Errors are logged to stderr; the on-disk artifact is already durable by the time this runs,
     /// so a missed embedding only means the entry won't show in semantic search until the next write.
+    ///
+    /// <para>Registered with <see cref="BackgroundWork"/> rather than dropped on the floor: the
+    /// CLI drains outstanding sinks before exiting (so indexing isn't lost when the process ends
+    /// right after a write), and tests can wait for a write's side effects instead of racing them.</para>
     /// </summary>
     private static void FireEventSinkAsync(Func<IMemoryEventSink, Task> action)
     {
         var sink = MemoryEventSinkContext.Current;
         if (sink is null) return;
-        _ = Task.Run(async () =>
-        {
-            try { await action(sink); }
-            catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink error: {ex.GetType().Name}: {ex.Message}"); }
-        });
+        BackgroundWork.Fire(_ => action(sink), "event sink");
     }
 }
