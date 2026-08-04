@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;

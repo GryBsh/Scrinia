@@ -417,6 +417,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return PathRouter.ToStoreDir(scope, _workspaceRoot);
     }
 
+    public string WorkspaceRoot => _workspaceRoot;
+
     public string ArtifactPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".nmp2");
 
