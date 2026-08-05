@@ -5,9 +5,10 @@ using Scrinia.Mcp;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// A conflicted .nmp2 in the working tree holds two interleaved base64 halves, which do not
-/// reliably decode. The merge driver also writes whole valid copies to conflict/current and
-/// conflict/incoming; reconcile must resolve from those.
+/// Pins that reconcile() resolves an .nmp2 conflict from the whole conflict/current and
+/// conflict/incoming copies even when the working-tree marker body is not a decodable artifact
+/// on its own — here, the marker sections hold truncated fragments (header line plus a partial
+/// data line, missing ##PAD and NMP/END) rather than complete encoded content.
 /// </summary>
 public sealed class ReconcileConflictCopyTests
 {
@@ -25,10 +26,13 @@ public sealed class ReconcileConflictCopyTests
         string oursWhole = Nmp2ChunkedEncoder.Encode("the ours version");
         string theirsWhole = Nmp2ChunkedEncoder.Encode("the theirs version");
 
-        // Working-tree file: markers wrapping halves that will not decode on their own.
+        // Working-tree file: markers wrapping truncated fragments (header + partial data line,
+        // missing ##PAD/NMP/END) that do not decode on their own.
+        string oursFragment = TruncatedFragment(oursWhole);
+        string theirsFragment = TruncatedFragment(theirsWhole);
         await File.WriteAllTextAsync(artifact,
-            "<<<<<<< ours:auth-flow.nmp2\n" + oursWhole +
-            "\n=======\n" + theirsWhole +
+            "<<<<<<< ours:auth-flow.nmp2\n" + oursFragment +
+            "\n=======\n" + theirsFragment +
             "\n>>>>>>> theirs:auth-flow.nmp2\n");
 
         Directory.CreateDirectory(Path.Combine(dir, "conflict", "current"));
@@ -45,6 +49,15 @@ public sealed class ReconcileConflictCopyTests
         resolved.Should().NotContain("<<<<<<<");
         System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(resolved))
             .Should().Be("the theirs version",
-                because: "the whole incoming copy is decodable where the marker half is not");
+                because: "the whole incoming copy is decodable where the marker fragment is not");
+    }
+
+    /// <summary>Header line plus half of the first data line — missing ##PAD/NMP/END, so this
+    /// alone is not a decodable NMP/2 artifact.</summary>
+    private static string TruncatedFragment(string wholeArtifact)
+    {
+        string[] lines = wholeArtifact.Split('\n');
+        string firstDataLine = lines[1];
+        return lines[0] + "\n" + firstDataLine[..(firstDataLine.Length / 2)];
     }
 }
