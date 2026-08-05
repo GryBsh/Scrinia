@@ -118,6 +118,30 @@ public sealed class GitMergeIntegrationTests
     }
 
     [Fact]
+    public void LegacyFourArgumentConfig_IsRepairedAndTheMergeStops()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("nmp2", passPathname: false);   // pre-%P registration
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.WriteFile(Sidecar, "{\"name\":\"auth-flow\"}\n");
+        repo.SeedThreeWay(Artifact, Nmp2("YmFzZQ"), Nmp2("b3Vycw"), Nmp2("dGhlaXJz"));
+
+        var first = repo.Merge("other");
+
+        first.ExitCode.Should().NotBe(0,
+            because: "without %P the driver cannot identify the artifact, so it must not guess");
+        string configured = repo.Git("config merge.scrinia-nmp2.driver").StdOut;
+        configured.Should().Contain("%P", because: "the driver repairs its own registration");
+
+        repo.Git("merge --abort", throwOnFailure: false);
+        var second = repo.Merge("other");
+
+        second.ExitCode.Should().NotBe(0, because: "the conflict is real; it still stops the merge");
+        repo.FileExists(".scrinia/memories/local/conflict/current/auth-flow.nmp2").Should().BeTrue(
+            because: "the repaired registration produces the full conflict payload");
+    }
+
+    [Fact]
     public void ConflictDirFromMergeConfig_IsHonoured()
     {
         using var repo = new GitMergeHarness();

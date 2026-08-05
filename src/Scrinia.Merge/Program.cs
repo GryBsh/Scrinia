@@ -4,9 +4,22 @@ using Scrinia.Merge;
 //        scri-merge nmp2 %O %A %B %P
 // Exit 0 = merge resolved, Exit 1 = conflict
 
-if (args.Length < 5)
+if (args.Length < 4)
 {
     Console.Error.WriteLine("Usage: scri-merge <meta|nmp2> <ancestor> <ours> <theirs> <pathname>");
+    return 1;
+}
+
+if (args.Length < 5)
+{
+    // Registered before %P was passed. Without the pathname the artifact cannot be
+    // identified, so repair the registration and stop rather than guess.
+    string kind = args[0];
+    bool repaired = GitConfigRepair.TryAppendPathname(kind, out string repairMessage);
+    Console.Error.WriteLine(repaired
+        ? $"[scrinia] {repairMessage}; re-run your merge"
+        : $"[scrinia:error] merge driver invoked without %P and {repairMessage}. " +
+          "Re-run: scri setup --multi-user");
     return 1;
 }
 
