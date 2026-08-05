@@ -45,7 +45,7 @@ public sealed class GitMergeIntegrationTests
     public void MetaDriver_WithSimilarKeywords_AutoResolves()
     {
         using var repo = new GitMergeHarness();
-        repo.RegisterDriver("meta", passPathname: false);
+        repo.RegisterDriver("meta");
         repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
         repo.SeedThreeWay(
             Sidecar,
@@ -68,5 +68,46 @@ public sealed class GitMergeIntegrationTests
         string kw = string.Join(",", keywords.Select(k => $"\"{k}\""));
         return $"{{\"name\":\"auth-flow\",\"keywords\":[{kw}],\"originalBytes\":10," +
                $"\"chunkCount\":1,\"updatedAt\":\"{updatedAt}\"}}\n";
+    }
+
+    [Fact]
+    public void BothSidesChanged_WritesCopiesNamedAfterTheArtifact()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("nmp2");
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.WriteFile(Sidecar, "{\"name\":\"auth-flow\"}\n");
+        repo.SeedThreeWay(Artifact, Nmp2("YmFzZQ"), Nmp2("b3Vycw"), Nmp2("dGhlaXJz"));
+
+        var result = repo.Merge("other");
+
+        result.StdErr.Should().NotContain("Unhandled exception",
+            because: "the driver must not crash on the path shape git actually sends");
+        repo.FileExists(".scrinia/memories/local/conflict/current/auth-flow.nmp2").Should().BeTrue(
+            because: "copies are named after the artifact, not after git's temp file");
+        repo.FileExists(".scrinia/memories/local/conflict/incoming/auth-flow.nmp2").Should().BeTrue();
+        repo.ReadFile(".scrinia/memories/local/conflict/current/auth-flow.nmp2").Should().Contain("b3Vycw");
+        repo.ReadFile(".scrinia/memories/local/conflict/incoming/auth-flow.nmp2").Should().Contain("dGhlaXJz");
+        repo.ReadFile(Sidecar).Should().Contain("\"conflicted\": true",
+            because: "the real sidecar is marked, not a stray .meta.json in the repo root");
+        repo.FileExists(".meta.json").Should().BeFalse(
+            because: "ChangeExtension on an extensionless temp file used to produce exactly this");
+    }
+
+    [Fact]
+    public void ConflictDirFromMergeConfig_IsHonoured()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("nmp2");
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.WriteFile(".scrinia/merge.config",
+            "{\"jaccardThreshold\":0.7,\"resolver\":\"none\",\"conflictDir\":\"disputes\"}\n");
+        repo.WriteFile(Sidecar, "{\"name\":\"auth-flow\"}\n");
+        repo.SeedThreeWay(Artifact, Nmp2("YmFzZQ"), Nmp2("b3Vycw"), Nmp2("dGhlaXJz"));
+
+        repo.Merge("other");
+
+        repo.FileExists(".scrinia/memories/local/disputes/current/auth-flow.nmp2").Should().BeTrue(
+            because: "MergeConfig must be loaded and its ConflictDir honoured");
     }
 }

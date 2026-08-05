@@ -45,7 +45,7 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
         string oursPath = WriteFile("ours.nmp2", "original content");
         string theirsPath = WriteFile("theirs.nmp2", "updated by theirs");
 
-        int result = Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, _config);
+        int result = Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, oursPath, _config);
 
         result.Should().Be(0);
         File.ReadAllText(oursPath).Should().Be("updated by theirs",
@@ -60,7 +60,7 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
         string oursPath = WriteFile("ours.nmp2", "updated by ours");
         string theirsPath = WriteFile("theirs.nmp2", "original content");
 
-        int result = Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, _config);
+        int result = Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, oursPath, _config);
 
         result.Should().Be(0);
         File.ReadAllText(oursPath).Should().Be("updated by ours",
@@ -79,7 +79,7 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
         File.WriteAllText(Path.ChangeExtension(oursPath, ".meta.json"),
             "{\n  \"name\": \"test\"\n}");
 
-        int result = Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, _config);
+        int result = Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, oursPath, _config);
 
         result.Should().Be(0, because: "conflict is tracked as data, not a git failure");
 
@@ -107,7 +107,7 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
         string metaPath = Path.ChangeExtension(oursPath, ".meta.json");
         File.WriteAllText(metaPath, "{\n  \"name\": \"test\"\n}");
 
-        Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, _config);
+        Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, oursPath, _config);
 
         string metaContent = File.ReadAllText(metaPath);
         metaContent.Should().Contain("\"conflicted\": true",
@@ -126,7 +126,7 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
         string theirsMeta = Path.ChangeExtension(theirsPath, ".meta.json");
         File.WriteAllText(theirsMeta, "{\n  \"name\": \"theirs-version\"\n}");
 
-        Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, _config);
+        Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, oursPath, _config);
 
         string oursMeta = Path.ChangeExtension(oursPath, ".meta.json");
         File.Exists(oursMeta).Should().BeTrue();

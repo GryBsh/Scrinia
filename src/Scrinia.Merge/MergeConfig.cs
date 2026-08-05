@@ -31,5 +31,8 @@ public sealed record MergeConfig(
     }
 }
 
+// merge.config on disk uses camelCase keys (e.g. "conflictDir"). Without this policy,
+// property names mismatch on read and Load silently falls back to every default value.
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(MergeConfig))]
 internal sealed partial class MergeConfigJsonContext : JsonSerializerContext { }

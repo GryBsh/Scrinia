@@ -22,8 +22,9 @@ public sealed class MergeConfigTests : IDisposable
     [Fact]
     public void Config_ValidFile_Loads()
     {
-        // Write config JSON manually to avoid using internal MergeConfigJsonContext
-        string configContent = """{"JaccardThreshold":0.85,"Resolver":"none","ResolverCommand":null,"ConflictDir":"my-conflicts"}""";
+        // Write config JSON manually to avoid using internal MergeConfigJsonContext. merge.config
+        // on disk uses camelCase keys.
+        string configContent = """{"jaccardThreshold":0.85,"resolver":"none","resolverCommand":null,"conflictDir":"my-conflicts"}""";
         File.WriteAllText(Path.Combine(_tempDir, "merge.config"), configContent);
 
         var config = MergeConfig.Load(_tempDir);

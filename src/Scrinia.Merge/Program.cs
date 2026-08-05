@@ -1,12 +1,12 @@
 using Scrinia.Merge;
 
-// Usage: scri-merge meta %O %A %B
-//        scri-merge nmp2 %O %A %B
+// Usage: scri-merge meta %O %A %B %P
+//        scri-merge nmp2 %O %A %B %P
 // Exit 0 = merge resolved, Exit 1 = conflict
 
-if (args.Length < 4)
+if (args.Length < 5)
 {
-    Console.Error.WriteLine("Usage: scri-merge <meta|nmp2> <ancestor> <ours> <theirs>");
+    Console.Error.WriteLine("Usage: scri-merge <meta|nmp2> <ancestor> <ours> <theirs> <pathname>");
     return 1;
 }
 
@@ -14,8 +14,9 @@ string command = args[0];
 string ancestor = args[1];
 string ours = args[2];
 string theirs = args[3];
+string mergedPath = Path.GetFullPath(args[4]);
 
-var config = MergeConfig.Load(FindScriniaDir(ours));
+var config = MergeConfig.Load(FindScriniaDir(mergedPath));
 
 return command switch
 {
@@ -25,7 +26,7 @@ return command switch
         MetaJsonMerger.MergeResult.Conflict => 1,
         _ => 1
     },
-    "nmp2" => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, config),
+    "nmp2" => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, mergedPath, config),
     _ => Error($"Unknown command: {command}")
 };
 

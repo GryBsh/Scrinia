@@ -2,28 +2,30 @@ namespace Scrinia.Merge;
 
 public static class Nmp2ConflictHandler
 {
-    public static int Handle(string ancestorPath, string oursPath, string theirsPath, MergeConfig config)
+    /// <param name="mergedPath">
+    /// Git's %P — the pathname the merged result will be stored under. %A is an extensionless
+    /// temp file in the repo root, so every path derived from it loses the artifact's identity.
+    /// </param>
+    public static int Handle(string ancestorPath, string oursPath, string theirsPath,
+        string mergedPath, MergeConfig config)
     {
-        // 1. Trivial merge: if one side is unchanged from ancestor, take the other
+        // 1. Trivial merge: if one side is unchanged from ancestor, take the other.
+        // Not reached when git drives a two-branch merge — git resolves an unchanged side by
+        // blob OID before consulting a driver. Retained for callers that do reach it.
         if (FilesAreIdentical(ancestorPath, oursPath))
         {
-            // Ours unchanged, take theirs
             File.Copy(theirsPath, oursPath, overwrite: true);
             CopySidecar(theirsPath, oursPath);
             return 0;
         }
 
         if (FilesAreIdentical(ancestorPath, theirsPath))
-        {
-            // Theirs unchanged, keep ours — already resolved
             return 0;
-        }
 
         // 2. Both changed: conflict-as-data
-        // %A path is something like .scrinia/topics/api/auth-flow.nmp2
-        string dir = Path.GetDirectoryName(oursPath)!;
+        string dir = Path.GetDirectoryName(mergedPath)!;
         string dirFull = Path.GetFullPath(dir);
-        string conflictDir = Path.GetFullPath(Path.Combine(dir, config.ConflictDir));
+        string conflictDir = Path.GetFullPath(Path.Combine(dirFull, config.ConflictDir));
         if (Path.IsPathRooted(config.ConflictDir) || !IsWithin(dirFull, conflictDir))
             throw new InvalidOperationException(
                 $"merge.config ConflictDir '{config.ConflictDir}' escapes the artifact directory.");
@@ -33,24 +35,13 @@ public static class Nmp2ConflictHandler
         Directory.CreateDirectory(currentDir);
         Directory.CreateDirectory(incomingDir);
 
-        string fileName = Path.GetFileName(oursPath);
+        string fileName = Path.GetFileName(mergedPath);
 
-        // Copy our version to conflict/current/
         File.Copy(oursPath, Path.Combine(currentDir, fileName), overwrite: true);
-        CopySidecar(oursPath, Path.Combine(currentDir, fileName));
-
-        // Copy their version to conflict/incoming/
         File.Copy(theirsPath, Path.Combine(incomingDir, fileName), overwrite: true);
-        CopySidecar(theirsPath, Path.Combine(incomingDir, fileName));
 
-        // Keep ours as the "current" version in the original location
-        // (git will use %A as the merge result)
+        MarkMetaConflicted(Path.GetFullPath(mergedPath));
 
-        // Write a conflict marker in the meta.json
-        MarkMetaConflicted(oursPath);
-
-        // Exit 0 so git sees a clean merge — conflict is tracked as data,
-        // discovered by reconcile() on next agent session
         return 0;
     }
 
