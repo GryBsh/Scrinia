@@ -148,6 +148,8 @@ public sealed partial class ScriniaMcpTools
                 // then re-encode on write below.
                 if (type == "nmp2")
                 {
+                    string side = normalisedChoice == "ours" ? "current" : "incoming";
+                    extracted = TryReadConflictCopy(absolutePath, side) ?? extracted;
                     try { extracted = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(extracted!)); }
                     catch { /* fall through: write extracted as-is */ }
                 }
@@ -232,8 +234,8 @@ public sealed partial class ScriniaMcpTools
                 }
                 TryExtractConflictSide(fileContent, "theirs", out string? theirsRaw, out _);
 
-                string oursDecoded = TryDecodeNmp2(oursRaw!);
-                string theirsDecoded = TryDecodeNmp2(theirsRaw ?? "");
+                string oursDecoded = TryDecodeNmp2(TryReadConflictCopy(filePath, "current") ?? oursRaw!);
+                string theirsDecoded = TryDecodeNmp2(TryReadConflictCopy(filePath, "incoming") ?? theirsRaw ?? "");
 
                 int afterFirstConflict = fileContent.IndexOf(">>>>>>>", StringComparison.Ordinal) + ">>>>>>>".Length;
                 bool hasMore = afterFirstConflict < fileContent.Length
@@ -354,6 +356,38 @@ public sealed partial class ScriniaMcpTools
         if (string.IsNullOrEmpty(raw)) return "";
         try { return System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(raw)); }
         catch { return raw; }
+    }
+
+    /// <summary>
+    /// Whole conflict copy the merge driver wrote beside the artifact, or null when absent.
+    /// The marker body holds two partial base64 streams; these copies are complete artifacts.
+    /// </summary>
+    private static string? TryReadConflictCopy(string artifactPath, string side)
+    {
+        string dir = Path.GetDirectoryName(artifactPath)!;
+        string candidate = Path.Combine(dir, ReadConflictDirName(dir), side, Path.GetFileName(artifactPath));
+        if (!File.Exists(candidate)) return null;
+        try { return File.ReadAllText(candidate); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    /// <summary>ConflictDir from .scrinia/merge.config, defaulting to "conflict".</summary>
+    private static string ReadConflictDirName(string artifactDir)
+    {
+        var dir = new DirectoryInfo(artifactDir);
+        while (dir is not null && !string.Equals(dir.Name, ".scrinia", StringComparison.OrdinalIgnoreCase))
+            dir = dir.Parent;
+        if (dir is null) return "conflict";
+
+        string configPath = Path.Combine(dir.FullName, "merge.config");
+        if (!File.Exists(configPath)) return "conflict";
+        try
+        {
+            var node = JsonNode.Parse(File.ReadAllText(configPath));
+            string? configured = node?["conflictDir"]?.GetValue<string>();
+            return string.IsNullOrWhiteSpace(configured) ? "conflict" : configured;
+        }
+        catch { return "conflict"; }
     }
 
     private static string Indent(string? text, string prefix = "      ")

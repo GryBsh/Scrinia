@@ -45,7 +45,8 @@ public static class Nmp2ConflictHandler
         MarkMetaConflicted(Path.GetFullPath(mergedPath));
 
         // Git adds no markers of its own for a custom driver — whatever the driver
-        // leaves in %A becomes the working-tree file.
+        // leaves in %A becomes the working-tree file. The markers are the detection
+        // signal reconcile() scans for; the decodable content lives in the conflict/ copies.
         WriteConflictMarkers(oursPath, theirsPath, fileName);
 
         return 1;
