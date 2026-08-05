@@ -2090,38 +2090,34 @@ public sealed class ScriniaMcpToolsTests
                      "direct Directory.CreateDirectory, and must still materialize .gitignore");
     }
 
-    // ── Task 8 human ruling: agent restored to StoreLayoutMigration's sweep ONLY after all
-    // four hardcoded .scrinia/agent/ readers/writers were repointed through the store. This
-    // proves migration and the /agent/{name} tool path agree on where the file ends up —
-    // that agreement is the entire point of the correction (see StoreLayoutMigration's class
-    // doc comment and the task-8 brief's PLAN CORRECTION #2).
+    // ── agent is a hand-authored file entity and is never swept by StoreLayoutMigration.
+    // .scrinia/agent/ is both where PathRouter.ToFileEntityDir resolves it AND the original,
+    // pre-migration location — a file placed there directly is readable as-is, with no
+    // migration step in between (see StoreLayoutMigration's class doc comment).
 
     [Fact]
-    public async Task MemoryRecall_AgentPath_MigratesLegacyAgentFile_ThenReadableAtNewLocation()
+    public async Task MemoryRecall_AgentPath_ReadsDirectlyFromTopLevelAgentDir_NoMigration()
     {
         using var scope = new TestHelpers.StoreScope();
 
-        // Seed a pre-existing (pre-v3) .scrinia/agent/profile.md directly on disk, before any
-        // store access has run the automatic v3 migration.
-        string legacyAgentDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent");
-        Directory.CreateDirectory(legacyAgentDir);
-        string legacyPath = Path.Combine(legacyAgentDir, "profile.md");
-        await File.WriteAllTextAsync(legacyPath, "# Agent Profile\nBe concise.");
+        // Seed .scrinia/agent/profile.md directly on disk — this IS the file's permanent
+        // location, not a legacy one migration needs to move.
+        string agentDir = Path.Combine(scope.WorkspaceDir, ".scrinia", "agent");
+        Directory.CreateDirectory(agentDir);
+        string agentPath = Path.Combine(agentDir, "profile.md");
+        await File.WriteAllTextAsync(agentPath, "# Agent Profile\nBe concise.");
 
-        // First read through the tool path — must trigger the automatic migration AND find the
-        // file afterward via the SAME repointed reader (MemoryTools.Core.cs's Recall).
         string result = await Tools().MemoryRecall(path: "/agent/profile");
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success",
-            because: "the migration and the /agent/profile reader must agree on where the file now lives");
+            because: "the /agent/profile reader must find the file at its permanent top-level location");
         parsed.Content.Should().Be("# Agent Profile\nBe concise.");
 
-        string migratedPath = Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", "agent", "profile.md");
-        File.Exists(migratedPath).Should().BeTrue(
-            because: "StoreLayoutMigration must have moved the legacy agent file into the v3 layout");
-        File.Exists(legacyPath).Should().BeFalse(
-            because: "migration moves, not copies — the legacy location must be empty afterward");
+        File.Exists(agentPath).Should().BeTrue(
+            because: "agent is never swept — the file must stay exactly where it was placed");
+        Directory.Exists(Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", "agent")).Should().BeFalse(
+            because: "reading an agent config must not create a memories/agent/ scope directory");
     }
 
     // ── withBuiltin parameter (skill recall) — disambiguated from reconcile ──

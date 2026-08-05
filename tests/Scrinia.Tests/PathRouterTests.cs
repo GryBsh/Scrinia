@@ -36,33 +36,6 @@ public class PathRouterTests : IDisposable
     }
 
     [Fact]
-    public void ToFilesystemPath_AgentTopic_ReturnsMd()
-    {
-        var result = PathRouter.ToFilesystemPath(P("/agent/profile"), _root);
-
-        result.Should().NotBeNull();
-        result!.Should().EndWith(Path.Combine(".scrinia", "memories", "agent", "profile.md"));
-    }
-
-    [Fact]
-    public void ToFilesystemPath_SkillTopic_ReturnsMd()
-    {
-        var result = PathRouter.ToFilesystemPath(P("/skill/qa"), _root);
-
-        result.Should().NotBeNull();
-        result!.Should().EndWith(Path.Combine(".scrinia", "memories", "skill", "qa.md"));
-    }
-
-    [Fact]
-    public void ToFilesystemPath_WorkflowTopic_ReturnsJson()
-    {
-        var result = PathRouter.ToFilesystemPath(P("/workflow/goal-execution"), _root);
-
-        result.Should().NotBeNull();
-        result!.Should().EndWith(Path.Combine(".scrinia", "memories", "workflow", "goal-execution.json"));
-    }
-
-    [Fact]
     public void ToFilesystemPath_EntityPrefixedPath_ReturnsNmp2()
     {
         var result = PathRouter.ToFilesystemPath(P("/goal/G-5/research/frontend"), _root);
@@ -170,5 +143,91 @@ public class PathRouterTests : IDisposable
     {
         var act = () => PathRouter.ToStoreDir("remote:whatever", _root);
         act.Should().Throw<ArgumentException>().WithMessage("*Unknown scope*");
+    }
+
+    // ── File entities ─────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("skill", "skills")]
+    [InlineData("agent", "agent")]
+    public void ToFileEntityDir_MapsKindToItsLiteralDirectory(string kind, string dirName)
+    {
+        PathRouter.ToFileEntityDir(kind, _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", dirName),
+                because: "the singular segment name and the on-disk directory name differ for " +
+                         "'skill'; this table is the only place that mapping exists");
+    }
+
+    [Fact]
+    public void ToFileEntityDir_IsCaseInsensitive()
+    {
+        PathRouter.ToFileEntityDir("SKILL", _root)
+            .Should().Be(Path.Combine(_root, ".scrinia", "skills"));
+    }
+
+    [Fact]
+    public void ToFileEntityDir_UnknownKind_Throws()
+    {
+        var act = () => PathRouter.ToFileEntityDir("workflow", _root);
+        act.Should().Throw<ArgumentException>(
+            because: "workflows are deleted; an unknown kind is a programming error, " +
+                     "matching ToStoreDir's contract");
+    }
+
+    [Theory]
+    [InlineData("skill")]
+    [InlineData("agent")]
+    public void IsFileEntity_TrueForKnownKinds(string kind) =>
+        PathRouter.IsFileEntity(kind).Should().BeTrue();
+
+    [Theory]
+    [InlineData("findings")]
+    [InlineData("workflow")]
+    [InlineData("")]
+    public void IsFileEntity_FalseOtherwise(string segment) =>
+        PathRouter.IsFileEntity(segment).Should().BeFalse();
+
+    [Fact]
+    public void TryToFileEntityPath_ValidName_ResolvesUnderTheKindDirectory()
+    {
+        PathRouter.TryToFileEntityPath("skill", "qa", _root, out string path)
+            .Should().BeTrue();
+        path.Should().Be(Path.Combine(_root, ".scrinia", "skills", "qa.md"));
+    }
+
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("sub/dir")]
+    [InlineData("sub\\dir")]
+    [InlineData("")]
+    [InlineData("  ")]
+    public void TryToFileEntityPath_RejectsUnsafeNames(string name)
+    {
+        PathRouter.TryToFileEntityPath("skill", name, _root, out string path)
+            .Should().BeFalse(because: "the resolver enforces containment so no caller can forget it");
+        path.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ToFilesystemPath_SkillTopic_ResolvesToTopLevelSkillsDir()
+    {
+        var result = PathRouter.ToFilesystemPath(P("/skill/qa"), _root);
+        result.Should().Be(Path.Combine(_root, ".scrinia", "skills", "qa.md"),
+            because: "hand-authored file entities live at the top level of .scrinia/, " +
+                     "never inside the memory store");
+    }
+
+    [Fact]
+    public void ToFilesystemPath_AgentTopic_ResolvesToTopLevelAgentDir()
+    {
+        var result = PathRouter.ToFilesystemPath(P("/agent/profile"), _root);
+        result.Should().Be(Path.Combine(_root, ".scrinia", "agent", "profile.md"));
+    }
+
+    [Fact]
+    public void ToFilesystemPath_FileEntityWithExtraSegments_ReturnsNull()
+    {
+        PathRouter.ToFilesystemPath(P("/skill/a/b"), _root)
+            .Should().BeNull(because: "file entities are flat; a nested path has no location");
     }
 }

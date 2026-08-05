@@ -28,26 +28,12 @@ namespace Scrinia.Core;
 /// data and moving them just relocates the cruft into <c>memories/</c> where nothing would ever
 /// clean it up. Everything else is moved. See <see cref="IsTransientArtifact"/>.</para>
 ///
-/// <para><b><c>agent</c> is swept; <c>skills</c> deliberately is not.</b> Task 7 found that an
-/// earlier revision — ported wholesale from the opt-in <c>migrate_v1</c> command — swept BOTH
-/// top-level <c>.scrinia/agent/</c> and <c>.scrinia/skills/</c>, even though both directories held
-/// live, hand-authored Markdown files read/written directly by a hardcoded path (<c>GetScriniaBaseDir</c>
-/// + <c>Path.Combine(baseDir, "agent"|"skills", name + ".md")</c>), entirely outside
-/// <see cref="PathRouter"/>/<see cref="FileMemoryStore"/> scope resolution. Wiring the sweep without
-/// first fixing those readers would have silently relocated real project files the moment
-/// <see cref="MigrateIfNeeded"/> started firing automatically, orphaning them from every hardcoded
-/// reader. Task 7 conservatively dropped both from the sweep to avoid shipping that regression.
-///
-/// <para>Task 8 repointed all four <c>.scrinia/agent/</c> readers/writers (<c>MemoryTools.Core.cs</c>'s
-/// Recall and Remember paths, <c>MemoryTools.Lifecycle.cs</c>'s followUp listing, and
-/// <c>BundleFormatService</c>'s file-entity export/import) through <see cref="FileMemoryStore.GetStoreDirForScope"/>
-/// (<c>"local:agent"</c> → <c>memories/agent/</c>), so <c>agent</c> is restored to the sweep below —
-/// migration and every reader now agree on one location.</para>
-///
-/// <para><c>skills</c> stays out of the sweep permanently — <c>.scrinia/skills/</c> was never part
-/// of this workstream's approved design (it was inherited from the ported <c>migrate_v1</c> plan),
-/// and none of its readers (<c>MemoryTools.Skills.cs</c>, <c>MemoryTools.Lifecycle.cs</c>'s skills
-/// listing) were repointed. Migrating skills needs its own spec.</para>
+/// <para><b>Neither <c>agent</c> nor <c>skills</c> is swept.</b> Both top-level directories hold
+/// live, hand-authored Markdown resolved by <see cref="PathRouter.ToFileEntityDir"/>. An earlier
+/// revision swept <c>agent</c> into <c>memories/agent/</c>; that put <c>AgentFileMeta</c> sidecars
+/// in a directory <see cref="FileMemoryStore"/> enumerates, where
+/// <see cref="FileMemoryStore.SaveIndex"/>'s orphan sweep deleted them. Keeping file entities out
+/// of every scope directory makes that impossible by construction.</para>
 ///
 /// <para>Nothing under <c>topics/agent/</c> or <c>topics/entity/skill/</c> is affected by any of
 /// this — those are FileMemoryStore's own NMP2 layout, nested under the (already-swept)
@@ -73,7 +59,7 @@ namespace Scrinia.Core;
 /// </summary>
 public static class StoreLayoutMigration
 {
-    private static readonly string[] LegacyRoots = ["store", "topics", "agent"];
+    private static readonly string[] LegacyRoots = ["store", "topics"];
 
     /// <param name="Moved">Files actually relocated into <c>memories/</c> (a dry run reports
     /// <c>plan.Count - Conflicts</c> — collision losers are quarantined, not moved).</param>
@@ -395,27 +381,12 @@ public static class StoreLayoutMigration
             }
         }
 
-        // 3. .scrinia/agent/* -> memories/agent/<file> (flat; no namespace stripping — "agent"
-        //    is already the v3 scope's own name). Restored in Task 8 alongside repointing all
-        //    four hardcoded .scrinia/agent/ readers/writers — see the class doc comment.
-        string agentDir = Path.Combine(scriniaDir, "agent");
-        if (Directory.Exists(agentDir))
-        {
-            foreach (string file in Directory.EnumerateFiles(agentDir, "*", SearchOption.AllDirectories))
-            {
-                if (IsTransientArtifact(file)) { transientFiles.Add(file); continue; }
-                string relPath = Path.GetRelativePath(agentDir, file).Replace('\\', '/');
-                string target = Path.Combine(memoriesDir, "agent", relPath.Replace('/', Path.DirectorySeparatorChar));
-                if (IsLegacyIndexFile(file)) { indexFiles.Add(new IndexFileEntry(file, Path.GetDirectoryName(target)!)); continue; }
-                plan.Add(new PlanEntry(file, target, NamespaceRank: 0));
-            }
-        }
-
-        // NOTE: no .scrinia/skills/* sweep — see the class doc comment. It holds live
-        // hand-authored Markdown files read by a hardcoded path that no task in this workstream
-        // repointed; sweeping it would silently orphan real project overrides. topics/entity/skill/
-        // (FileMemoryStore's own NMP2 layout) still migrates via step 2 above — that is unrelated
-        // to the top-level .scrinia/skills/ directory this note is about.
+        // NOTE: no .scrinia/skills/* or .scrinia/agent/* sweep. Both hold live, hand-authored
+        // Markdown that PathRouter.ToFileEntityDir resolves at the top level of .scrinia/.
+        // They deliberately stay OUT of memories/: their .meta.json sidecars share a filename
+        // namespace with the store's own ArtifactEntry sidecars, so a file entity inside a scope
+        // directory is deleted by SaveIndex's orphan sweep. topics/entity/skill/ (FileMemoryStore's
+        // own NMP2 layout) still migrates via step 2 — unrelated to the top-level directories.
 
         return (OrderPlan(plan), transientFiles, indexFiles);
     }
@@ -436,8 +407,8 @@ public static class StoreLayoutMigration
     /// then <c>entity/</c>, then <c>memory/</c>), full source path as the final tiebreak. Not just
     /// a stable sort over discovery order — <c>Directory.EnumerateFiles</c>' enumeration order is
     /// unspecified by .NET, so without this explicit tiebreak two namespaced entries colliding on
-    /// the same target (e.g. <c>entity/skill/x</c> and <c>memory/skill/x</c>, realistic after
-    /// skill's historical reclassification — see <c>MemoryNaming.EntityTopics</c>) would pick an
+    /// the same target (e.g. <c>entity/skill/x</c> and <c>memory/skill/x</c>, realistic because
+    /// "skill" was historically classified as an entity topic) would pick an
     /// arbitrary, unrepeatable winner. Extracted as its own method (rather than inlined in
     /// <see cref="BuildPlan"/>) so it can be unit-tested directly against adversarial input that
     /// disagrees with whatever order the filesystem happens to enumerate in — see
@@ -614,11 +585,12 @@ public static class StoreLayoutMigration
     /// <para><b>Final-review fix (IMPORTANT 2):</b> the original version special-cased
     /// <c>entity/skill</c> only, matching <see cref="MapTopicFileToV2"/>'s move for the memories
     /// themselves — but <see cref="MapTopicFileToV2"/> strips <c>entity/</c> for ANY child topic,
-    /// not just <c>skill</c>. Any other historical entity topic (<c>task</c>, <c>concern</c> — see
-    /// <c>FileMemoryStore.IsEntityScope</c>'s own comment) had its memories relocated correctly by
-    /// the main plan while its embeddings sat orphaned at <c>embeddings/local/entity/&lt;topic&gt;/</c>,
-    /// silently, with no pointer to <c>scri reindex</c>. Now iterated the same way as the
-    /// <c>memory/</c> family below, instead of a single hardcoded <c>entity/skill</c> path.</para>
+    /// not just <c>skill</c>. Any other historical entity topic — e.g. <c>task</c> or
+    /// <c>concern</c>, both classified as entity topics in the pre-flattening v2 layout — had its
+    /// memories relocated correctly by the main plan while its embeddings sat orphaned at
+    /// <c>embeddings/local/entity/&lt;topic&gt;/</c>, silently, with no pointer to
+    /// <c>scri reindex</c>. Now iterated the same way as the <c>memory/</c> family below, instead
+    /// of a single hardcoded <c>entity/skill</c> path.</para>
     /// </summary>
     private static void MoveRenamedVectorDirs(string scriniaDir)
     {
@@ -629,7 +601,7 @@ public static class StoreLayoutMigration
         // entity/<topic> -> <topic> for EVERY historical entity topic, not just "skill".
         // VectorStore.ScopeToRelativeDir derives the embedding directory purely from splitting
         // the scope string on separators, so any v2 "local:entity/<topic>" scope (skill was never
-        // the only one — FileMemoryStore.IsEntityScope's own comment names "task" and "concern" as
+        // the only one — historical entity topics included "task" and "concern" as
         // legacy flat entity topics, and MapTopicFileToV2 strips entity/ for any child, not just
         // skill) has its vectors at embeddings/local/entity/<topic>/ before this migration and
         // needs them at embeddings/local/<topic>/ after — matching where the memories themselves

@@ -602,8 +602,7 @@ public sealed partial class ScriniaMcpTools
         // Available skills (built-in + disk overrides)
         try
         {
-            string skillsBaseDir = GetScriniaBaseDir(store);
-            string skillsDir = Path.Combine(skillsBaseDir, "skills");
+            string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
             var diskSkills = Directory.Exists(skillsDir)
                 ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
                 : [];
@@ -622,7 +621,7 @@ public sealed partial class ScriniaMcpTools
         // Collect agent/* names for followUp — .md files first, NMP/2 fallback
         try
         {
-            string agentDir = store.GetStoreDirForScope("local:agent");
+            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
             bool usedMdFiles = false;
 
             if (Directory.Exists(agentDir))

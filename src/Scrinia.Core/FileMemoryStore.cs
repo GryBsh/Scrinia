@@ -265,7 +265,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // v2 path syntax: starts with "/"
         if (name.StartsWith('/'))
         {
-            var parsed = PathParser.Parse(name, MemoryNaming.EntityTopics);
+            var parsed = PathParser.Parse(name, new HashSet<string>());
 
             var segments = parsed.Segments;
             if (segments.Count == 0)
@@ -417,6 +417,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         return PathRouter.ToStoreDir(scope, _workspaceRoot);
     }
 
+    public string WorkspaceRoot => _workspaceRoot;
+
     public string ArtifactPath(string name, string scope = "local") =>
         Path.Combine(GetStoreDirForScope(scope), SanitizeName(name) + ".nmp2");
 
@@ -520,38 +522,11 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
                 .ToArray();
         }
 
-        // Default (null): exclude entity-classified scopes so searches focus on user content
+        // Default (null): every discovered topic. There is no longer an "entity-classified"
+        // category to exclude — see the commit that deleted IsEntityScope.
         var ordered = new List<string> { "local" };
-        foreach (var topic in DiscoverTopics())
-        {
-            if (IsEntityScope(topic))
-                continue;
-            ordered.Add(topic);
-        }
+        ordered.AddRange(DiscoverTopics());
         return ordered.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    }
-
-    /// <summary>
-    /// Returns true if the scope is classified as an entity scope — either
-    /// namespaced ("local:entity/*") or legacy flat ("local:{topic}"
-    /// where topic is in <see cref="MemoryNaming.EntityTopics"/>).
-    /// </summary>
-    private static bool IsEntityScope(string scope)
-    {
-        if (!scope.StartsWith("local:", StringComparison.Ordinal))
-            return false;
-
-        string topicPart = scope["local:".Length..];
-
-        // Namespaced: "entity/task", "entity/concern", etc.
-        if (topicPart.StartsWith("entity/", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Legacy flat: "task", "concern", etc. (no slash → bare topic name)
-        if (!topicPart.Contains('/') && MemoryNaming.EntityTopics.Contains(topicPart))
-            return true;
-
-        return false;
     }
 
     // ── CRUD ─────────────────────────────────────────────────────────────────

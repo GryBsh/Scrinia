@@ -10,11 +10,14 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Regression coverage for bundle-import category allowlisting: a manifest whose
 /// <c>fileEntities</c> key is NOT one of the allowlisted categories
-/// (<c>workflows</c>/<c>skills</c>/<c>agent</c>) must not be imported — in particular
-/// an empty ("") category key, which resolves <c>categoryDir</c> to the store's
-/// <c>.scrinia</c> base dir itself (passing the existing containment check) and would
-/// otherwise let a crafted bundle write arbitrary files (e.g. <c>merge.config</c>)
-/// directly under <c>.scrinia</c>.
+/// (<c>skills</c>/<c>agent</c> — the sole entries in <c>CategoryToKind</c>, the single
+/// allowlist) must not be imported — in particular an empty ("") category key, which
+/// resolves <c>categoryDir</c> to the store's <c>.scrinia</c> base dir itself (passing
+/// the existing containment check) and would otherwise let a crafted bundle write
+/// arbitrary files (e.g. <c>merge.config</c>) directly under <c>.scrinia</c>. Deleted
+/// categories (the former <c>workflows</c>) fall under the same gate: no
+/// <c>CategoryToKind</c> entry, so nothing is written, and the caller is told via
+/// <c>SkippedCategories</c> — see <see cref="ImportingABundleWithWorkflows_SucceedsAndReportsTheSkip"/>.
 /// </summary>
 public sealed class BundleImportCategoryAllowlistTests : IDisposable
 {
@@ -40,8 +43,8 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
     public void ImportBundle_WithNonAllowlistedCategory_DoesNotWriteFile()
     {
         // Arrange — a v2 bundle whose fileEntities manifest declares an empty ("")
-        // category holding merge.config. "" is not in the FileEntityCategories
-        // allowlist, but categoryDir == baseDir passes the existing IsWithin check.
+        // category holding merge.config. "" has no CategoryToKind entry (the single
+        // allowlist), but categoryDir == baseDir passes the existing IsWithin check.
         byte[] zipBytes;
         using (var ms = new MemoryStream())
         {
@@ -74,7 +77,34 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
         // Assert — the malicious file was NOT written under .scrinia.
         string scriniaBase = Path.Combine(_workspaceRoot, ".scrinia");
         File.Exists(Path.Combine(scriniaBase, "merge.config")).Should().BeFalse(
-            "the empty category key is not in the FileEntityCategories allowlist");
+            "the empty category key has no CategoryToKind entry, the single allowlist");
+    }
+
+    [Fact]
+    public void ImportingABundleWithWorkflows_SucceedsAndReportsTheSkip()
+    {
+        // Workflows are deleted: nothing ever wrote one, so the category could only be
+        // populated by importing a bundle. Old bundles must still import cleanly, and the
+        // user must be told what was dropped rather than silently losing it.
+        using var scope = new TestHelpers.StoreScope();
+        var store = MemoryStoreContext.Current!;
+
+        string bundlePath = Path.Combine(scope.WorkspaceDir, "legacy.scrinia-bundle");
+        using (var zip = ZipFile.Open(bundlePath, ZipArchiveMode.Create))
+        {
+            WriteZipText(zip, "manifest.json", """
+                {"version":2,"topics":[],"fileEntities":{"workflows":["ci.json"]}}
+                """);
+            WriteZipText(zip, "files/workflows/ci.json", """{"steps":["build"]}""");
+        }
+
+        using var readStream = new FileStream(bundlePath, FileMode.Open, FileAccess.Read);
+        using var zipRead = new ZipArchive(readStream, ZipArchiveMode.Read);
+        var result = BundleFormatService.ImportTopicsFromZip(zipRead, store, filterTopics: null, overwrite: false);
+
+        result.SkippedCategories.Should().Contain("workflows");
+        Directory.Exists(Path.Combine(store.WorkspaceRoot, ".scrinia", "workflows"))
+            .Should().BeFalse(because: "the category is deleted, not merely unwritten");
     }
 
     private static void WriteZipText(ZipArchive zip, string entryName, string text)

@@ -10,6 +10,25 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — file-entity unification
+
+- `.scrinia/skills/` and `.scrinia/agent/` now resolve through a single authority
+  (`PathRouter.ToFileEntityDir`). The location was previously hardcoded at nine call sites
+  behind two divergent `GetScriniaBaseDir` implementations that agreed only by coincidence.
+- Agent configs move back out of `.scrinia/memories/agent/` to `.scrinia/agent/`. Keeping
+  hand-authored Markdown inside a store scope directory put `AgentFileMeta` sidecars in a
+  filename namespace shared with the store's own `ArtifactEntry` sidecars, where
+  `SaveIndex`'s orphan sweep deleted them — reachable by importing a bundle containing a
+  memory topic named `agent`. The v3 migration never shipped, so no released workspace is
+  affected and no data migration is required.
+- `.scrinia/workflows/` is deleted. Nothing ever wrote a workflow; the category could only
+  be populated by importing a bundle. Bundles containing one still import cleanly and now
+  report the skipped category rather than dropping it silently.
+- The legacy `local:skill` NMP/2 read fallback is deleted. `v0.4.0` contains no skill code
+  at all, so such entries exist only in unreleased dev builds.
+- `IMemoryStore` gains `WorkspaceRoot`. Remote stores throw `NotSupportedException`: skills
+  and agent configs are local-only, which was previously accidental rather than stated.
+
 ### Fixed — event-sink lifecycle
 
 - Detached event-sink work is now tracked by `BackgroundWork` instead of being dropped on the
@@ -54,20 +73,28 @@ and all assembly attributes.
   `memory/` directories, and legacy per-scope index-file paths has been deleted; a
   workspace still holding content at those legacy locations has it moved (not read
   through) by the automatic migration on first store access.
-- `.scrinia/agent/*.md` now migrates automatically too, and all of its readers/writers
-  (recall, remember, the followUp listing, and bundle export/import) route through the
-  store's own path resolution — migration and every reader agree on one location.
-- `.scrinia/skills/*.md` deliberately stays OUT of the automatic migration for now — none
-  of its readers have been repointed to the new layout, so migrating it would silently
-  orphan project skill overrides. Migrating skills needs its own spec. The manual `scri
+- `.scrinia/agent/*.md`, like skills below, deliberately stays OUT of the automatic
+  migration. An earlier revision swept it into `.scrinia/memories/agent/`, which put its
+  `AgentFileMeta` sidecars in a filename namespace shared with the store's own
+  `ArtifactEntry` sidecars, where `SaveIndex`'s orphan sweep deleted them (see
+  "file-entity unification" above). All of its readers/writers (recall, remember, the
+  followUp listing, and bundle export/import) route through `PathRouter.ToFileEntityDir`,
+  deliberately outside the store's own path resolution — that is what keeps it out of the
+  sweep for good.
+- `.scrinia/skills/*.md` deliberately stays OUT of the automatic migration too, for the
+  same reason as agent. All of its readers (`MemoryTools.Skills.cs`,
+  `MemoryTools.Lifecycle.cs`'s followUp listing, and bundle export/import) route through
+  `PathRouter.ToFileEntityDir` rather than the migrated store layout. The manual `scri
   migrate` command (below) doesn't touch it either — both triggers share the same engine.
 
 ### Changed — store unification and the v3 memory layout
 
 - `ScriniaArtifactStore` is deleted. `FileMemoryStore` is the only filesystem store, and
   `PathRouter` is the only authority on where a memory lives.
-- Every memory now lives under `.scrinia/memories/`. The `store/`, `topics/`, and `agent/`
-  roots are gone, along with the `entity/` and `memory/` namespace prefixes.
+- Every memory now lives under `.scrinia/memories/`. The `store/` and `topics/` roots are
+  gone, along with the `entity/` and `memory/` namespace prefixes. (`agent/` is also gone
+  from under `memories/` — but it lives on as a top-level `.scrinia/agent/` directory
+  alongside `.scrinia/skills/`; see "file-entity unification" above.)
 - Existing workspaces migrate automatically on first store access, with a backup written to
   `.scrinia-backup-{timestamp}/`. `scri migrate` runs the same migration manually and gains
   `--dry-run`; it replaces the hidden `scri migrate_v1`, whose `--cleanup` step is no longer

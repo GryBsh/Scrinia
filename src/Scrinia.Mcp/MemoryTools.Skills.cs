@@ -6,7 +6,6 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using ModelContextProtocol;
 using Scrinia.Core;
-using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
@@ -80,18 +79,6 @@ public sealed partial class ScriniaMcpTools
     // ── Shared file helpers (used by skill, agent, and other markdown-on-disk paths) ─
 
     /// <summary>
-    /// Resolves the .scrinia/ base directory by walking up from the local store directory.
-    /// </summary>
-    internal static string GetScriniaBaseDir(IMemoryStore store)
-    {
-        string storeDir = store.GetStoreDirForScope("local");
-        var dir = new DirectoryInfo(storeDir);
-        while (dir is not null && dir.Name != ".scrinia")
-            dir = dir.Parent;
-        return dir?.FullName ?? Path.GetDirectoryName(storeDir) ?? storeDir;
-    }
-
-    /// <summary>
     /// Archives an existing file into <paramref name="versionsDir"/> with a UTC
     /// timestamp suffix before it gets overwritten. No-op if the file does not exist.
     /// </summary>
@@ -127,16 +114,6 @@ public sealed partial class ScriniaMcpTools
         string metaPath = Path.ChangeExtension(filePath, ".meta.json");
         string json = JsonSerializer.Serialize(meta, typeInfo);
         File.WriteAllText(metaPath, json);
-    }
-
-    private static async Task<string> ReadLegacySkillNmpAsync(IMemoryStore store, string skillName, CancellationToken ct)
-    {
-        // Legacy skill nmp artifacts live under the entity/skill scope (never the flat
-        // /skill path scope), so read them by explicit scope rather than a qualified name.
-        string artifact = await store.ReadArtifactAsync(
-            store.SanitizeName(skillName), MemoryNaming.BuildScopedTopicScope("skill"), ct);
-        byte[] decoded = Nmp2Strategy.Instance.Decode(artifact);
-        return Encoding.UTF8.GetString(decoded);
     }
 
     /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
@@ -215,15 +192,13 @@ public sealed partial class ScriniaMcpTools
                 SHA256.HashData(Encoding.UTF8.GetBytes(builtInText)));
         }
 
-        string baseDir = GetScriniaBaseDir(store);
-        string skillsDir = Path.Combine(baseDir, "skills");
-        string filePath = Path.Combine(skillsDir, $"{name}.md");
-        if (!PathContainment.IsWithin(skillsDir, filePath))
+        string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
+        if (!PathRouter.TryToFileEntityPath("skill", name, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error(
                 $"Invalid skill name '{name}'.",
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/skill/my-helper', content: [...] })").ToYaml();
-        FileMemoryStore.EnsureGitIgnore(Path.GetDirectoryName(baseDir)!);
+        FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
         Directory.CreateDirectory(skillsDir);
 
         ArchiveFileVersion(filePath, Path.Combine(skillsDir, "versions"));
@@ -243,20 +218,10 @@ public sealed partial class ScriniaMcpTools
             UpdatedAt: now);
         WriteSidecarMeta(filePath, meta, ScriniaMcpJsonContext.Default.SkillFileMeta);
 
-        string migrationNote = "";
-        try
-        {
-            await ReadLegacySkillNmpAsync(store, name, cancellationToken);
-            migrationNote = $"Note: a legacy NMP/2 entry for skill:{name} still exists — disk file takes precedence.";
-        }
-        catch { /* no legacy entry */ }
-
         var response = ResponseBuilder.Success($"Stored as .scrinia/skills/{name}.md.")
             .WithFileChanges()
             .WithPath($"/skill/{name}")
             .WithAction("created");
-        if (migrationNote.Length > 0)
-            response = response.WithInfo(migrationNote);
         return response.ToYaml();
     }
 
@@ -270,8 +235,7 @@ public sealed partial class ScriniaMcpTools
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            string baseDir = GetScriniaBaseDir(store);
-            string skillsDir = Path.Combine(baseDir, "skills");
+            string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
             var diskNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var diskMetas = new Dictionary<string, SkillFileMeta?>(StringComparer.OrdinalIgnoreCase);
             if (Directory.Exists(skillsDir))
@@ -284,15 +248,8 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            string scope = MemoryNaming.BuildScopedTopicScope("skill");
-            IReadOnlyList<ArtifactEntry> entries;
-            try { entries = store.LoadIndex(scope); }
-            catch { entries = []; }
-            var nmpNames = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
-
             var allNames = new HashSet<string>(BuiltInSkills.Keys, StringComparer.OrdinalIgnoreCase);
             allNames.UnionWith(diskNames);
-            allNames.UnionWith(nmpNames);
 
             if (allNames.Count == 0)
                 return Task.FromResult(ResponseBuilder.Success("No skills available.").WithAction("listed").ToYaml());
@@ -312,24 +269,6 @@ public sealed partial class ScriniaMcpTools
                             SHA256.HashData(Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
                         if (!meta.BasedOn.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
                             tag = "stale base";
-                    }
-                    sb.AppendLine($"- /skill/{skillKey} [{tag}]");
-                }
-                else if (nmpNames.Contains(skillKey))
-                {
-                    var overrideEntry = entries.FirstOrDefault(e => e.Name.Equals(skillKey, StringComparison.OrdinalIgnoreCase));
-                    string tag = "override";
-                    if (overrideEntry?.Keywords is not null)
-                    {
-                        var basedOnKw = overrideEntry.Keywords.FirstOrDefault(k => k.StartsWith("basedOn:", StringComparison.Ordinal));
-                        if (basedOnKw is not null)
-                        {
-                            string storedHash = basedOnKw["basedOn:".Length..];
-                            string currentHash = Convert.ToHexStringLower(
-                                SHA256.HashData(Encoding.UTF8.GetBytes(BuiltInSkills[skillKey])));
-                            if (!storedHash.Equals(currentHash, StringComparison.OrdinalIgnoreCase))
-                                tag = "stale base";
-                        }
                     }
                     sb.AppendLine($"- /skill/{skillKey} [{tag}]");
                 }
@@ -356,24 +295,6 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            foreach (var entry in entries)
-            {
-                if (BuiltInSkills.ContainsKey(entry.Name) || diskNames.Contains(entry.Name))
-                    continue;
-
-                string roleKw = entry.Keywords?
-                    .FirstOrDefault(k => k.StartsWith("role:", StringComparison.OrdinalIgnoreCase))
-                    ?? "role:unknown";
-
-                sb.AppendLine($"- /skill/{entry.Name} [override] [{roleKw}]");
-
-                if (sb.Length > SkillResponseLimit - 200)
-                {
-                    sb.AppendLine("[... truncated to 8KB limit]");
-                    break;
-                }
-            }
-
             return Task.FromResult(ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml());
         }
 
@@ -383,14 +304,7 @@ public sealed partial class ScriniaMcpTools
     private static async Task<string> LoadSkillAsync(
         IMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
     {
-        if (!FileEntityName.IsValid(skillName))
-            return ResponseBuilder.Error(
-                $"Invalid skill name '{skillName}'.", ErrorCodes.NotFound,
-                "recall({ path: '/skill/' }) to list available skills").ToYaml();
-
-        string baseDir = GetScriniaBaseDir(store);
-        string filePath = Path.Combine(baseDir, "skills", $"{skillName}.md");
-        if (!PathContainment.IsWithin(Path.Combine(baseDir, "skills"), filePath))
+        if (!PathRouter.TryToFileEntityPath("skill", skillName, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error(
                 $"Invalid skill name '{skillName}'.", ErrorCodes.NotFound,
                 "recall({ path: '/skill/' }) to list available skills").ToYaml();
@@ -400,15 +314,8 @@ public sealed partial class ScriniaMcpTools
             diskContent = await File.ReadAllTextAsync(filePath, ct);
         }
 
-        string? nmpContent = null;
-        if (diskContent is null)
-        {
-            try { nmpContent = await ReadLegacySkillNmpAsync(store, skillName, ct); }
-            catch (FileNotFoundException) { /* no legacy entry */ }
-        }
-
-        string? overrideContent = diskContent ?? nmpContent;
-        string sourceLabel = diskContent is not null ? "file" : "project override";
+        string? overrideContent = diskContent;
+        string sourceLabel = "file";
 
         if (withBuiltin && overrideContent is not null && BuiltInSkills.TryGetValue(skillName, out string? reconBuiltIn))
         {
@@ -441,19 +348,6 @@ public sealed partial class ScriniaMcpTools
             {
                 var meta = ReadSidecarMeta(filePath, ScriniaMcpJsonContext.Default.SkillFileMeta);
                 storedHash = meta?.BasedOn;
-            }
-            else if (nmpContent is not null)
-            {
-                string scope = MemoryNaming.BuildScopedTopicScope("skill");
-                string subject = store.SanitizeName(skillName);
-                var entries = store.LoadIndex(scope);
-                var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-                if (entry?.Keywords is not null)
-                {
-                    var basedOnKw = entry.Keywords.FirstOrDefault(k => k.StartsWith("basedOn:", StringComparison.Ordinal));
-                    if (basedOnKw is not null)
-                        storedHash = basedOnKw["basedOn:".Length..];
-                }
             }
 
             if (storedHash is not null)

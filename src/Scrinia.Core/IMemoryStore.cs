@@ -214,6 +214,15 @@ public interface IMemoryStore
     string FindArtifactPath(string subject, string normalizedScope);
     string GetStoreDirForScope(string scope);
 
+    /// <summary>
+    /// Absolute path to the workspace root — the directory that contains <c>.scrinia/</c>.
+    /// Needed to resolve hand-authored file entities via <see cref="PathRouter.ToFileEntityDir"/>.
+    /// <para>Callers previously reverse-engineered this from <c>GetStoreDirForScope("local")</c>
+    /// using two different algorithms that agreed only by coincidence.</para>
+    /// </summary>
+    /// <exception cref="NotSupportedException">The store is remote. File entities are local-only.</exception>
+    string WorkspaceRoot { get; }
+
     // Content utility
     string GenerateContentPreview(string content, int maxLength = 500);
 

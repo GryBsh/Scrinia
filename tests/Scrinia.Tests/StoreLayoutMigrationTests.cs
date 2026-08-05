@@ -38,10 +38,9 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Write("topics/memory/api/auth.nmp2", "c");
         Write("topics/entity/skill/qa.nmp2", "d");
         Write("topics/agent/profile.nmp2", "e");
-        // Top-level agent/*.md: Task 8 restored "agent" to LegacyRoots after repointing all
-        // four hardcoded .scrinia/agent/ readers/writers through the store (see the class doc
-        // comment) — this now migrates too, unlike topics/agent/ above (FileMemoryStore's own
-        // NMP2 layout, always swept via the topics/ root).
+        // Top-level agent/*.md is a live, hand-authored file entity resolved by
+        // PathRouter.ToFileEntityDir — it is never swept, unlike topics/agent/ above
+        // (FileMemoryStore's own NMP2 layout, always swept via the topics/ root).
         Write("agent/profile.md", "agent config");
 
         var result = StoreLayoutMigration.Migrate(_root, dryRun: false, backup: false);
@@ -53,23 +52,27 @@ public sealed class StoreLayoutMigrationTests : IDisposable
         Exists("memories/api/auth.nmp2").Should().BeTrue();
         Exists("memories/skill/qa.nmp2").Should().BeTrue();
         Exists("memories/agent/profile.nmp2").Should().BeTrue();
-        Exists("memories/agent/profile.md").Should().BeTrue("the live agent config file now migrates too");
+        Exists("memories/agent/profile.md").Should().BeFalse(
+            "agent is a hand-authored file entity and is never swept into memories/");
 
         // Moved, not copied.
         Exists("store/notes.nmp2").Should().BeFalse();
         Exists("topics/findings/review.nmp2").Should().BeFalse();
-        Exists("agent/profile.md").Should().BeFalse();
         Directory.Exists(Path.Combine(_root, ".scrinia", "topics")).Should().BeFalse();
-        Directory.Exists(Path.Combine(_root, ".scrinia", "agent")).Should().BeFalse();
+
+        // agent/ is never swept — the live config file stays exactly where it was.
+        Exists("agent/profile.md").Should().BeTrue("agent is never swept");
+        Directory.Exists(Path.Combine(_root, ".scrinia", "agent")).Should().BeTrue();
     }
 
     [Fact]
     public void SkillsTopLevelDir_IsNeverSwept()
     {
-        // .scrinia/skills/*.md is a live, hand-authored file (MemoryTools.Skills.cs /
-        // MemoryTools.Lifecycle.cs read it by a hardcoded path, entirely outside
-        // FileMemoryStore/PathRouter scope resolution) that no task in this workstream
-        // repointed — it stays out of the sweep permanently (see the class doc comment).
+        // .scrinia/skills/*.md is a hand-authored file entity resolved by
+        // PathRouter.ToFileEntityDir at the top level of .scrinia/ — it stays out of the sweep
+        // permanently (see the class doc comment) because keeping it out of a store scope
+        // directory is what makes the .meta.json filename collision with the store's own
+        // ArtifactEntry sidecars impossible by construction.
         // Migrating something else (so NeedsMigration is true and the pass actually runs)
         // must leave it completely untouched.
         Write("topics/findings/review.nmp2", "b");
@@ -399,8 +402,8 @@ public sealed class StoreLayoutMigrationTests : IDisposable
     public void Migrate_MovesVectorDirs_ForBothRenamingScopeFamilies_IncludingNonSkillEntityTopic()
     {
         // Both renaming families: entity/<topic> (NOT just "skill" — "task" is a real historical
-        // entity topic per FileMemoryStore.IsEntityScope's own comment, and this is exactly the
-        // case IMPORTANT 2 fixes) and memory/<topic>. Something must also need migrating for
+        // entity topic, and this is exactly the case IMPORTANT 2 fixes) and memory/<topic>.
+        // Something must also need migrating for
         // NeedsMigration to be true and the pass to actually run.
         Write("topics/findings/review.nmp2", "b");
         Write("embeddings/local/entity/skill/vectors.bin", "skill-vectors");

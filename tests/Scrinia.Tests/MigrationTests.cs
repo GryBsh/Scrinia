@@ -52,11 +52,12 @@ public sealed class MigrationTests : IDisposable
     [Fact]
     public void V2Path_AgentWritesMd()
     {
-        // store via /agent/profile → verify file at .scrinia/memories/agent/profile.md
+        // Hand-authored file entities (skill, agent) live at the top level of .scrinia/,
+        // never under memories/ — see PathRouterTests for the dedicated coverage of this.
         var result = PathRouter.ToFilesystemPath(P("/agent/profile"), _tempDir);
 
         result.Should().NotBeNull();
-        result!.Should().Be(Path.Combine(_tempDir, ".scrinia", "memories", "agent", "profile.md"));
+        result!.Should().Be(Path.Combine(_tempDir, ".scrinia", "agent", "profile.md"));
     }
 
     [Fact]

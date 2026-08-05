@@ -76,15 +76,13 @@ public sealed class BundleV2Tests : IDisposable
 
     /// <summary>
     /// Creates a disk file under a file-entity category directory with the given content.
-    /// "agent" is routed through the store (<c>.scrinia/memories/agent/</c> under v3, since
-    /// Task 8 restored it to StoreLayoutMigration's sweep and repointed BundleFormatService's
-    /// agent-category handling to match) — "workflows"/"skills" keep the flat
-    /// <c>.scrinia/{category}/</c> layout, untouched by that migration.
+    /// "agent" and "skills" resolve through <see cref="PathRouter.ToFileEntityDir"/> at the
+    /// top level of <c>.scrinia/</c>.
     /// </summary>
     private void CreateDiskFile(string category, string fileName, string content)
     {
         string dir = category.Equals("agent", StringComparison.OrdinalIgnoreCase)
-            ? _store.GetStoreDirForScope("local:agent")
+            ? PathRouter.ToFileEntityDir("agent", _workspaceRoot)
             : Path.Combine(_workspaceRoot, ".scrinia", category);
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, fileName), content);
@@ -106,7 +104,7 @@ public sealed class BundleV2Tests : IDisposable
     /// <summary>
     /// Imports a zip from raw bytes into the given store.
     /// </summary>
-    private static (int TopicCount, int EntryCount, List<string> Names) ImportFromBytes(
+    private static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportFromBytes(
         byte[] zipBytes, IMemoryStore store, bool overwrite = true)
     {
         using var ms = new MemoryStream(zipBytes);
@@ -122,8 +120,7 @@ public sealed class BundleV2Tests : IDisposable
         // Arrange — seed a topic so the bundle is non-trivial
         SeedTopic("test", "entry1", "chunk content");
 
-        // Create disk files in the three v2 categories
-        CreateDiskFile("workflows", "deploy.json", """{"name":"deploy"}""");
+        // Create disk files in the two file-entity categories.
         CreateDiskFile("skills", "researcher.md", "# Researcher\nDoes research.");
         CreateDiskFile("agent", "profile.md", "# Agent profile");
 
@@ -134,8 +131,7 @@ public sealed class BundleV2Tests : IDisposable
         using var ms = new MemoryStream(zipBytes);
         using var zip = new ZipArchive(ms, ZipArchiveMode.Read);
 
-        // Verify file entries exist under files/{category}/
-        zip.GetEntry("files/workflows/deploy.json").Should().NotBeNull();
+        // Verify file entries exist under files/{category}/ for kinds PathRouter knows about.
         zip.GetEntry("files/skills/researcher.md").Should().NotBeNull();
         zip.GetEntry("files/agent/profile.md").Should().NotBeNull();
 
@@ -151,8 +147,6 @@ public sealed class BundleV2Tests : IDisposable
         root.GetProperty("version").GetInt32().Should().Be(2);
         root.TryGetProperty("fileEntities", out var fe).Should().BeTrue();
 
-        fe.GetProperty("workflows").EnumerateArray().Select(e => e.GetString())
-            .Should().Contain("deploy.json");
         fe.GetProperty("skills").EnumerateArray().Select(e => e.GetString())
             .Should().Contain("researcher.md");
         fe.GetProperty("agent").EnumerateArray().Select(e => e.GetString())
@@ -179,7 +173,6 @@ public sealed class BundleV2Tests : IDisposable
                 WriteZipText(zip, "topics/test/note.nmp2", "hello");
 
                 // File entities
-                WriteZipText(zip, "files/workflows/ci.json", """{"steps":["build","test"]}""");
                 WriteZipText(zip, "files/skills/planner.md", "# Planner skill");
                 WriteZipText(zip, "files/agent/norms.md", "# Norms\nBe concise.");
 
@@ -191,7 +184,6 @@ public sealed class BundleV2Tests : IDisposable
                     TotalEntries: 1,
                     FileEntities: new Dictionary<string, List<string>>
                     {
-                        ["workflows"] = ["ci.json"],
                         ["skills"] = ["planner.md"],
                         ["agent"] = ["norms.md"]
                     });
@@ -208,18 +200,14 @@ public sealed class BundleV2Tests : IDisposable
 
         ImportFromBytes(zipBytes, importStore);
 
-        // Assert — verify files written to correct locations. "agent" lands under
-        // .scrinia/memories/agent/ (routed through the store); "workflows"/"skills" keep the
-        // flat .scrinia/{category}/ layout.
+        // Assert — verify files written to correct locations. "agent" and "skills" resolve
+        // via PathRouter.ToFileEntityDir at the top level of .scrinia/.
         string scriniaBase = Path.Combine(importRoot, ".scrinia");
-        string agentDir = importStore.GetStoreDirForScope("local:agent");
-        File.Exists(Path.Combine(scriniaBase, "workflows", "ci.json")).Should().BeTrue();
+        string agentDir = PathRouter.ToFileEntityDir("agent", importRoot);
         File.Exists(Path.Combine(scriniaBase, "skills", "planner.md")).Should().BeTrue();
         File.Exists(Path.Combine(agentDir, "norms.md")).Should().BeTrue();
 
         // Verify content fidelity
-        File.ReadAllText(Path.Combine(scriniaBase, "workflows", "ci.json"))
-            .Should().Be("""{"steps":["build","test"]}""");
         File.ReadAllText(Path.Combine(scriniaBase, "skills", "planner.md"))
             .Should().Be("# Planner skill");
         File.ReadAllText(Path.Combine(agentDir, "norms.md"))
@@ -261,12 +249,13 @@ public sealed class BundleV2Tests : IDisposable
         Directory.CreateDirectory(importRoot);
         using var importStore = new FileMemoryStore(importRoot);
 
-        var (topicCount, entryCount, names) = ImportFromBytes(zipBytes, importStore);
+        var (topicCount, entryCount, names, skippedCategories) = ImportFromBytes(zipBytes, importStore);
 
         // Assert — NMP/2 topics imported successfully
         topicCount.Should().Be(1);
         entryCount.Should().Be(1);
         names.Should().Contain("docs");
+        skippedCategories.Should().BeEmpty();
 
         // Verify no file-entity directories were created
         string scriniaBase = Path.Combine(importRoot, ".scrinia");
@@ -288,7 +277,6 @@ public sealed class BundleV2Tests : IDisposable
         SeedTopic("patterns", "retry", "## Retry pattern\nExponential backoff.");
         SeedTopic("patterns", "circuit-breaker", "## Circuit breaker\nFail fast.");
 
-        CreateDiskFile("workflows", "release.json", """{"name":"release","version":2}""");
         CreateDiskFile("skills", "debugger.md", "# Debugger\nRoot cause analysis.");
         CreateDiskFile("agent", "execution-policy.md", "# Execution policy\nVerify before commit.");
 
@@ -299,19 +287,17 @@ public sealed class BundleV2Tests : IDisposable
         Directory.CreateDirectory(importRoot);
         using var importStore = new FileMemoryStore(importRoot);
 
-        var (topicCount, entryCount, _) = ImportFromBytes(zipBytes, importStore);
+        var (topicCount, entryCount, _, _) = ImportFromBytes(zipBytes, importStore);
 
         // Assert — topic data round-tripped
         topicCount.Should().Be(1);
         entryCount.Should().Be(2);
 
-        // Assert — disk files match originals. "agent" lands under .scrinia/memories/agent/
-        // (routed through the store); "workflows"/"skills" keep the flat layout.
+        // Assert — disk files match originals. "agent" and "skills" resolve via
+        // PathRouter.ToFileEntityDir at the top level of .scrinia/.
         string importBase = Path.Combine(importRoot, ".scrinia");
-        string importAgentDir = importStore.GetStoreDirForScope("local:agent");
+        string importAgentDir = PathRouter.ToFileEntityDir("agent", importRoot);
 
-        File.ReadAllText(Path.Combine(importBase, "workflows", "release.json"))
-            .Should().Be("""{"name":"release","version":2}""");
         File.ReadAllText(Path.Combine(importBase, "skills", "debugger.md"))
             .Should().Be("# Debugger\nRoot cause analysis.");
         File.ReadAllText(Path.Combine(importAgentDir, "execution-policy.md"))

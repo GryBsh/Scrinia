@@ -31,9 +31,6 @@ public partial class BundleJsonContext : JsonSerializerContext;
 /// </summary>
 public static class BundleFormatService
 {
-    /// <summary>Disk-based meta-entity categories to include in bundles.</summary>
-    private static readonly string[] FileEntityCategories = ["workflows", "skills", "agent"];
-
     public static readonly JsonSerializerOptions DefaultJsonOptions = new()
     {
         WriteIndented = true,
@@ -82,7 +79,7 @@ public static class BundleFormatService
             }
         }
 
-        // Export disk-based file entities (workflows, skills, agent)
+        // Export disk-based file entities (skills, agent)
         var fileEntities = ExportFileEntities(zip, store);
 
         // Write manifest — use v2 when file entities are present
@@ -104,9 +101,13 @@ public static class BundleFormatService
     /// <summary>
     /// Read and import topics from a zip archive into the store.
     /// </summary>
-    /// <returns>Tuple of (imported topic count, imported entry count, topic names).</returns>
+    /// <returns>
+    /// Tuple of (imported topic count, imported entry count, topic names, skipped file-entity
+    /// categories — manifest categories with no <see cref="CategoryToKind"/> entry, reported
+    /// rather than silently dropped).
+    /// </returns>
     /// <exception cref="InvalidOperationException">If bundle is malformed.</exception>
-    public static (int TopicCount, int EntryCount, List<string> Names) ImportTopicsFromZip(
+    public static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportTopicsFromZip(
         ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite)
     {
         // Read manifest
@@ -262,33 +263,32 @@ public static class BundleFormatService
         }
 
         // Import disk-based file entities (v2 bundles; v1 bundles skip this)
-        ImportFileEntities(zip, root, store);
+        var skippedCategories = ImportFileEntities(zip, root, store);
 
-        return (importedTopics, importedEntries, importedTopicNames);
+        return (importedTopics, importedEntries, importedTopicNames, skippedCategories);
     }
 
     // ── File entity helpers ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Derives the .scrinia base directory from the store's scope directory.
-    /// <c>store.GetStoreDirForScope("local")</c> returns <c>{workspace}/.scrinia/memories</c>,
-    /// so the parent is the .scrinia root.
+    /// Bundle manifest category key -> PathRouter file-entity kind. The manifest has used the
+    /// plural "skills" since v2 bundles shipped; changing it would break existing bundles.
     /// </summary>
-    private static string GetScriniaBaseDir(IMemoryStore store) =>
-        Path.GetDirectoryName(store.GetStoreDirForScope("local"))!;
+    private static readonly Dictionary<string, string> CategoryToKind = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["skills"] = "skill",
+        ["agent"] = "agent",
+    };
 
     /// <summary>
-    /// Resolves the on-disk directory for a file-entity category. "agent" is routed through
-    /// the store (<c>GetStoreDirForScope("local:agent")</c> — <c>.scrinia/memories/agent/</c>
-    /// under v3) rather than the flat <c>baseDir/category</c> join every other category still
-    /// uses, because Task 8 restored <c>agent</c> to <see cref="StoreLayoutMigration"/>'s sweep:
-    /// the top-level <c>.scrinia/agent/</c> this used to read moves away on first store touch.
-    /// "workflows"/"skills" are untouched by that migration and keep the old flat layout.
+    /// Resolves a file-entity category's directory, or null when the category has no
+    /// file-entity kind. Every kind resolves the same way now — the agent special-case is
+    /// gone because agent no longer lives inside the memory store.
     /// </summary>
-    private static string CategoryDir(IMemoryStore store, string baseDir, string category) =>
-        category.Equals("agent", StringComparison.OrdinalIgnoreCase)
-            ? store.GetStoreDirForScope("local:agent")
-            : Path.Combine(baseDir, category);
+    private static string? CategoryDir(IMemoryStore store, string category) =>
+        CategoryToKind.TryGetValue(category, out string? kind)
+            ? PathRouter.ToFileEntityDir(kind, store.WorkspaceRoot)
+            : null;
 
     /// <summary>
     /// Scans each file-entity category's directory for exportable files and writes them
@@ -299,12 +299,11 @@ public static class BundleFormatService
         ZipArchive zip, IMemoryStore store)
     {
         var fileEntities = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        string baseDir = GetScriniaBaseDir(store);
 
-        foreach (string category in FileEntityCategories)
+        foreach (string category in CategoryToKind.Keys)
         {
-            string categoryDir = CategoryDir(store, baseDir, category);
-            if (!Directory.Exists(categoryDir))
+            string? categoryDir = CategoryDir(store, category);
+            if (categoryDir is null || !Directory.Exists(categoryDir))
                 continue;
 
             var files = Directory.EnumerateFiles(categoryDir, "*.*", SearchOption.TopDirectoryOnly)
@@ -345,28 +344,39 @@ public static class BundleFormatService
     /// Imports disk-based file entities from a v2 bundle.
     /// If the manifest has no <c>fileEntities</c> property (v1 bundles), this is a no-op.
     /// </summary>
-    private static void ImportFileEntities(
+    /// <returns>
+    /// Manifest category keys that were skipped because <see cref="CategoryToKind"/> has no
+    /// entry for them (deleted categories like the former "workflows", or unrecognised/crafted
+    /// keys) — reported so a bundle never silently loses content on import.
+    /// </returns>
+    private static List<string> ImportFileEntities(
         ZipArchive zip, JsonElement manifestRoot, IMemoryStore store)
     {
+        var skippedCategories = new List<string>();
+
         if (!manifestRoot.TryGetProperty("fileEntities", out var fileEntitiesEl)
             || fileEntitiesEl.ValueKind != JsonValueKind.Object)
-            return;
-
-        string baseDir = GetScriniaBaseDir(store);
+            return skippedCategories;
 
         foreach (var categoryProp in fileEntitiesEl.EnumerateObject())
         {
             string category = categoryProp.Name;
-            if (!FileEntityCategories.Contains(category, StringComparer.OrdinalIgnoreCase))
-                continue; // only workflows/skills/agent may be imported — reject arbitrary category keys
+
+            // CategoryToKind is the single allowlist: it doubles as both "is this category
+            // recognised" and "where does it live on disk". A category with no kind (deleted,
+            // like "workflows", or an unrecognised/crafted key) is reported, never written.
+            if (!CategoryToKind.ContainsKey(category))
+            {
+                skippedCategories.Add(category);
+                continue; // deleted or unknown category — reported, never written
+            }
+
             if (categoryProp.Value.ValueKind != JsonValueKind.Array)
                 continue;
 
-            string categoryDir = CategoryDir(store, baseDir, category);
-            string fullBase = Path.GetFullPath(baseDir);
-            string fullCategoryDir = Path.GetFullPath(categoryDir);
-            if (!PathContainment.IsWithin(fullBase, fullCategoryDir))
-                continue; // reject traversal in the manifest category key
+            // CategoryToKind.ContainsKey(category) already returned true above, so CategoryDir
+            // always resolves here — the "no kind" branch that used to guard this is unreachable.
+            string categoryDir = CategoryDir(store, category)!;
             Directory.CreateDirectory(categoryDir);
 
             foreach (var fileEl in categoryProp.Value.EnumerateArray())
@@ -375,8 +385,14 @@ public static class BundleFormatService
                 if (string.IsNullOrWhiteSpace(fileName))
                     continue;
 
-                // Guard against path traversal
-                if (fileName.Contains("..") || Path.IsPathRooted(fileName))
+                // Guard against path traversal and directory nesting: a crafted manifest entry
+                // like "sub/x.md" would pass both the ".." and rooted-path checks, then
+                // File.Create(destPath) would throw DirectoryNotFoundException for a
+                // subdirectory that doesn't exist — uncaught, aborting the import after topics
+                // were already written. Export only ever emits Path.GetFileName(filePath), so a
+                // legitimate manifest entry never contains a separator.
+                if (fileName.Contains("..") || Path.IsPathRooted(fileName)
+                    || fileName.IndexOfAny(['/', '\\']) >= 0)
                     continue;
 
                 string zipEntryName = $"files/{category}/{fileName}";
@@ -386,7 +402,12 @@ public static class BundleFormatService
 
                 string destPath = Path.Combine(categoryDir, fileName);
                 string fullDest = Path.GetFullPath(destPath);
-                if (!PathContainment.IsWithin(fullBase, fullDest))
+                // Anchored to categoryDir (not the outer .scrinia base): stricter against
+                // traversal, but permits a symlinked .scrinia/agent pointing outside .scrinia,
+                // where an outer-anchored check would deny it. Deliberate — consistent with the
+                // write path (SkillCreate/Remember's agent branch), which never had that outer
+                // check either.
+                if (!PathContainment.IsWithin(categoryDir, fullDest))
                     continue;
 
                 using var inStream = zipEntry.Open();
@@ -394,5 +415,7 @@ public static class BundleFormatService
                 inStream.CopyTo(outStream);
             }
         }
+
+        return skippedCategories;
     }
 }

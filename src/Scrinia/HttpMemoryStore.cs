@@ -458,6 +458,10 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     public string GetStoreDirForScope(string scope) =>
         throw new NotSupportedException("GetStoreDirForScope is not supported in remote mode.");
 
+    public string WorkspaceRoot =>
+        throw new NotSupportedException(
+            "WorkspaceRoot is not supported in remote mode. Skills and agent configs are local-only.");
+
     // ── Content utility ─────────────────────────────────────────────────────
 
     public string GenerateContentPreview(string content, int maxLength = 500)
