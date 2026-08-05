@@ -8,9 +8,10 @@
 
 ## Why two branches
 
-The findings split along one line: can this silently lose or corrupt data, or is it
-merely untidy. C2 and C1 both make the system return wrong results without saying so;
-they need real tests and deserve review in isolation. C4–C6 cannot break a merge.
+The findings split along one line: is the feature broken, or is it merely untidy. C2 is
+a driver that crashes on every real conflict and leaves no resolvable trail; C1 silently
+serves stale results. Both need real tests and deserve review in isolation. C4–C6 cannot
+break a merge.
 
 C3 is merge documentation, and branch 1 changes what merges do, so C3 travels with
 branch 1 — docs land with the behaviour they document.
@@ -33,29 +34,54 @@ Against real git (2.54.0.windows.1), scratch repos, probe merge drivers:
    conflict markers of its own** for custom drivers. If markers are wanted, the driver
    writes them.
 
+Against the **shipped `scri-merge` binary**, not a probe driver:
+
+5. Every production invocation of the `nmp2` driver **crashes**. `%A` is
+   `.merge_file_X`, so `Path.GetDirectoryName` returns `""` and
+   `Path.GetFullPath("")` throws at `Nmp2ConflictHandler.cs:25`:
+
+   ```
+   System.ArgumentException: The path is empty. (Parameter 'path')
+      at Scrinia.Merge.Nmp2ConflictHandler.Handle(...) Nmp2ConflictHandler.cs:line 25
+   ```
+
+   Execution never reaches the `return 0` at `:54`. The merge halts with a .NET stack
+   trace and `CONFLICT`; git leaves the file `UU`, the working tree keeps ours, no
+   markers are written, no sidecar is marked, and no `conflict/` directory is created.
+   **This is not silent data loss** — an earlier characterisation of it as such came
+   from reading `:54` and testing with probe drivers that returned 0 by construction.
+
+6. The `meta` driver **works correctly**. Verified end-to-end: exit 0, keywords unioned,
+   latest `updatedAt` wins. A conflict return on dissimilar keywords is the
+   `JaccardThreshold` gate at `MetaJsonMerger.cs:23-25` behaving as designed, not a bug.
+
 In .NET:
 
-5. `Path.ChangeExtension(".merge_file_wyknvk", ".meta.json")` returns `".meta.json"` —
+7. `Path.ChangeExtension(".merge_file_wyknvk", ".meta.json")` returns `".meta.json"` —
    a dotfile's whole name counts as its extension, so the artifact identity is lost.
 
 In the tree:
 
-6. `MetaJsonMerger` writes only on the resolved path (`MetaJsonMerger.cs:60`); its
+8. `MetaJsonMerger` writes only on the resolved path (`MetaJsonMerger.cs:60`); its
    conflict path leaves `%A` untouched.
-7. `.nmp2` is ASCII text — an `NMP/2 <bytes>B CRC32:<hex> BR+B64 C:<n>` header followed
+9. `.nmp2` is ASCII text — an `NMP/2 <bytes>B CRC32:<hex> BR+B64 C:<n>` header followed
    by base64 chunks. Markers can be inserted, at the cost of an invalid header CRC.
-8. `HttpMemoryStore.GetStoreDirForScope` throws `NotSupportedException`
-   (`HttpMemoryStore.cs:459`).
+10. `HttpMemoryStore.GetStoreDirForScope` throws `NotSupportedException`
+    (`HttpMemoryStore.cs:459`).
 
 ## Branch 1 — `merge-driver-correctness`
 
-### C2. `.nmp2` conflicts silently resolve to "ours"
+### C2. The `nmp2` driver crashes on every real conflict
 
-Today, when both sides change a memory, the driver keeps ours, returns 0, and git
-records a clean merge. Theirs is discarded. `reconcile()` detects conflicts only by
-scanning for `<<<<<<<` (`MemoryTools.Lifecycle.cs:99, :211, :592`), finds nothing, and
-reports zero conflicts. The sidecar work that was supposed to leave a trail no-ops
-because of fact 5.
+Per fact 5, when both sides change a memory the driver throws an unhandled
+`ArgumentException` and dies. Git reports `CONFLICT`, leaves the file `UU`, and the user
+sees a .NET stack trace. None of the conflict-as-data payload is produced: no copies, no
+`"conflicted": true`, no markers. `reconcile()` detects conflicts only by scanning for
+`<<<<<<<` (`MemoryTools.Lifecycle.cs:99, :211, :592`), so it reports zero conflicts and
+the user is left to resolve a binary-ish artifact by hand.
+
+Even had the crash not occurred, the sidecar and copy work would have no-opped on
+fact 7, and `return 0` at `:54` would have discarded theirs.
 
 **Driver signature.** Both commands take the pathname:
 `scri-merge <meta|nmp2> %O %A %B %P`.
@@ -159,13 +185,15 @@ from `PATH`. Living in the existing project means CI needs no pipeline change.
 
 | # | Case | Asserts |
 |---|---|---|
-| 1 | Both sides changed | `git merge` exits non-zero; index `UU`; `conflict/current/auth-flow.nmp2` and `conflict/incoming/auth-flow.nmp2` exist under the artifact's name; real sidecar has `"conflicted": true` |
+| 1 | Both sides changed | `git merge` exits non-zero; index `UU`; `conflict/current/auth-flow.nmp2` and `conflict/incoming/auth-flow.nmp2` exist under the artifact's name; real sidecar has `"conflicted": true`; **driver stderr contains no `Unhandled exception`** |
 | 2 | One side unchanged | Driver never invoked; theirs wins. Pins fact 3 so a future git change fails a test rather than a comment |
 | 3 | Legacy 4-arg config | Both config keys rewritten; change printed; exit 1; a second `git merge` succeeds |
 | 4 | Run off the repo root | `MergeConfig.Load` resolves via `%P`, not the `GetCurrentDirectory()` fallback |
 | 5 | `meta` driver | Still auto-resolves: union merge, exit 0. No regression from the added parameter |
 
-Case 1 fails today on every assertion.
+Case 1 fails today on every assertion — the driver crashes before producing any of it.
+Case 5 is a regression guard, not a fix: the `meta` driver already works (fact 6), and
+must keep working once it takes `%P`.
 
 **The existing 18 unit tests stay.** They pin the pure logic correctly; their only fault
 was being mistaken for coverage of integrated behaviour (they call `Handle()` with
@@ -175,7 +203,10 @@ never sends). They gain the new parameter and nothing else.
 **C1 gets one test** in the store suite: build the fact store, import a bundle carrying
 attributes, assert the imported entry's facts are present. Fails on today's code.
 
-**CHANGELOG:** a breaking-change entry. Merges that used to complete silently now stop.
+**CHANGELOG:** a Fixed entry, not a breaking change. Conflicted `.nmp2` merges already
+stopped — with an unhandled `ArgumentException` and no way to resolve them through
+`reconcile()`. They now stop with a usable conflict instead. The only behaviour a
+multi-user workspace loses is the crash.
 
 ## Branch 2 — `internal-consistency`
 
