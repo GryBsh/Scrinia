@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Scrinia.Merge;
 
 public static class Nmp2ConflictHandler
@@ -42,7 +44,29 @@ public static class Nmp2ConflictHandler
 
         MarkMetaConflicted(Path.GetFullPath(mergedPath));
 
-        return 0;
+        // Git adds no markers of its own for a custom driver — whatever the driver leaves in
+        // %A becomes the working-tree file. The markers are the detection signal reconcile()
+        // scans for; the decodable content lives in the conflict/ copies.
+        WriteConflictMarkers(oursPath, theirsPath, fileName);
+
+        return 1;
+    }
+
+    private static void WriteConflictMarkers(string oursPath, string theirsPath, string fileName)
+    {
+        string ours = File.ReadAllText(oursPath);
+        string theirs = File.ReadAllText(theirsPath);
+
+        var sb = new StringBuilder();
+        sb.Append("<<<<<<< ours:").Append(fileName).Append('\n');
+        sb.Append(ours);
+        if (!ours.EndsWith('\n')) sb.Append('\n');
+        sb.Append("=======\n");
+        sb.Append(theirs);
+        if (!theirs.EndsWith('\n')) sb.Append('\n');
+        sb.Append(">>>>>>> theirs:").Append(fileName).Append('\n');
+
+        File.WriteAllText(oursPath, sb.ToString());
     }
 
     private static bool FilesAreIdentical(string a, string b)

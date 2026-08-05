@@ -81,7 +81,7 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
 
         int result = Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, oursPath, _config);
 
-        result.Should().Be(0, because: "conflict is tracked as data, not a git failure");
+        result.Should().Be(1, because: "a conflicted artifact must stop the merge");
 
         string conflictDir = Path.Combine(_tempDir, _config.ConflictDir);
         string currentDir = Path.Combine(conflictDir, "current");

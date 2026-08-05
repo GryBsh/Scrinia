@@ -95,6 +95,29 @@ public sealed class GitMergeIntegrationTests
     }
 
     [Fact]
+    public void BothSidesChanged_HaltsTheMergeAndLeavesResolvableMarkers()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("nmp2");
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.WriteFile(Sidecar, "{\"name\":\"auth-flow\"}\n");
+        repo.SeedThreeWay(Artifact, Nmp2("YmFzZQ"), Nmp2("b3Vycw"), Nmp2("dGhlaXJz"));
+
+        var result = repo.Merge("other");
+
+        result.ExitCode.Should().NotBe(0,
+            because: "a conflicted memory must stop the merge rather than discard one side");
+        repo.StatusCode(Artifact).Should().Be("UU",
+            because: "git records the path as unmerged so it cannot be committed by accident");
+
+        string body = repo.ReadFile(Artifact);
+        body.Should().Contain("<<<<<<<").And.Contain("=======").And.Contain(">>>>>>>",
+            because: "reconcile() detects conflicts by scanning for markers");
+        body.Should().Contain("b3Vycw").And.Contain("dGhlaXJz",
+            because: "both sides remain present in the marker body");
+    }
+
+    [Fact]
     public void ConflictDirFromMergeConfig_IsHonoured()
     {
         using var repo = new GitMergeHarness();
