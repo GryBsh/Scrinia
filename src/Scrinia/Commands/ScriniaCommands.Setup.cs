@@ -376,8 +376,7 @@ public partial class ScriniaCommands
         // 5. Print instructions
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine(
-            "[bold]Multi-user merge driver configured.[/] " +
-            "Copy scri-merge binary to [blue].scrinia/hooks/[/] for your platform.");
+            $"[bold]Multi-user merge driver configured.[/] Git will invoke [blue]{Markup.Escape(driver)}[/].");
     }
 
     /// <summary>
