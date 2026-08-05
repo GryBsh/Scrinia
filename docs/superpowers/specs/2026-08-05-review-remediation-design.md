@@ -188,7 +188,7 @@ from `PATH`. Living in the existing project means CI needs no pipeline change.
 | 1 | Both sides changed | `git merge` exits non-zero; index `UU`; `conflict/current/auth-flow.nmp2` and `conflict/incoming/auth-flow.nmp2` exist under the artifact's name; real sidecar has `"conflicted": true`; **driver stderr contains no `Unhandled exception`** |
 | 2 | One side unchanged | Driver never invoked; theirs wins. Pins fact 3 so a future git change fails a test rather than a comment |
 | 3 | Legacy 4-arg config | Both config keys rewritten; change printed; exit 1; a second `git merge` succeeds |
-| 4 | Run off the repo root | `MergeConfig.Load` resolves via `%P`, not the `GetCurrentDirectory()` fallback |
+| 4 | Custom `conflictDir` in `merge.config` | Copies land in the configured directory — a regression guard on config loading. It does **not** distinguish the `GetCurrentDirectory()` fallback: git always runs drivers from the worktree root, so the fallback resolved to the same `.scrinia` the `%P` walk finds. The fix removes a coincidence, not an observable defect |
 | 5 | `meta` driver | Still auto-resolves: union merge, exit 0. No regression from the added parameter |
 
 Case 1 fails today on every assertion — the driver crashes before producing any of it.
