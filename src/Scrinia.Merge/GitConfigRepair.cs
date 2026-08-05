@@ -16,7 +16,7 @@ public static class GitConfigRepair
     {
         string key = $"merge.scrinia-{kind}.driver";
 
-        if (!TryGit($"config --local --get {key}", out string current) ||
+        if (!TryGit(out string current, "config", "--local", "--get", key) ||
             string.IsNullOrWhiteSpace(current))
         {
             message = $"could not read {key} from local git config";
@@ -31,7 +31,7 @@ public static class GitConfigRepair
         }
 
         string repaired = current + " %P";
-        if (!TryGit($"config --local {key} \"{repaired}\"", out _))
+        if (!TryGit(out _, "config", "--local", key, repaired))
         {
             message = $"could not write {key} to local git config";
             return false;
@@ -41,17 +41,19 @@ public static class GitConfigRepair
         return true;
     }
 
-    private static bool TryGit(string arguments, out string stdout)
+    private static bool TryGit(out string stdout, params string[] arguments)
     {
         stdout = "";
         try
         {
-            var psi = new ProcessStartInfo("git", arguments)
+            var psi = new ProcessStartInfo("git")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
+            foreach (string arg in arguments)
+                psi.ArgumentList.Add(arg);
             using var proc = Process.Start(psi);
             if (proc is null) return false;
             stdout = proc.StandardOutput.ReadToEnd();
