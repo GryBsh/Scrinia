@@ -171,6 +171,24 @@ Specific corrections:
   written that file. A now-failing merge plus `reconcile()` cover what it claimed.
 - Describe the new behaviour: a conflicted memory stops the merge.
 
+### C7. `scri-merge` is never published
+
+Found while planning, not in the review. `release.yml` publishes the CLI (lines 70-79,
+archived as `publish/scri` alone), the embeddings plugin, and the server. It never
+publishes `Scrinia.Merge`. No release archive contains `scri-merge`, so
+`scri setup --multi-user` registers a driver path that does not exist on an installed
+machine, then prints an instruction to copy a binary the user was never given.
+
+**Fix:** publish `Scrinia.Merge` into the same `publish/` directory as the CLI and include
+it in both CLI archives. `scri-merge` then ships alongside `scri`, which is the arrangement
+the driver registration assumes.
+
+**Consequence for registration:** setup resolves the driver as a sibling of
+`Environment.ProcessPath` rather than `.scrinia/hooks/scri-merge`, falling back to the bare
+name for installs that expose it on `PATH` only. The `.scrinia/hooks/scri-merge*` gitignore
+entry and the "copy the binary" instruction are deleted — nothing is copied into the
+workspace any more.
+
 ### Testing branch 1
 
 **A real-git integration harness** in `tests/Scrinia.Merge.Tests`. Each case builds a

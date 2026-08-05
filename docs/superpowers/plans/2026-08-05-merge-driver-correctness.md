@@ -41,6 +41,7 @@
 - `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs` — reconcile prefers `conflict/` copies.
 - `src/Scrinia.Core/FileMemoryStore.cs:885-908` — fact-store invalidation.
 - `docs/multi-user-setup.md`, `src/Scrinia.Mcp/skills/merge-safety.md`, `CHANGELOG.md`.
+- `.github/workflows/release.yml:70-112` — publish `scri-merge` beside `scri`.
 
 ---
 
@@ -480,15 +481,41 @@ and the `nmp2` dispatch arm:
 
 `FindScriniaDir` is unchanged, but now receives a path inside the workspace, so it finds `.scrinia` by walking up instead of falling through to its `Directory.GetCurrentDirectory()` fallback.
 
-- [ ] **Step 5: Register `%P` in setup**
+- [ ] **Step 5: Register `%P` in setup, pointing at the shipped binary**
+
+`scri-merge` ships alongside `scri`, so setup resolves it as a sibling of the running
+executable rather than the `.scrinia/hooks/` copy the old registration assumed.
 
 In `src/Scrinia/Commands/ScriniaCommands.Setup.cs`, replace lines 334-337:
 
 ```csharp
+        string driver = ResolveMergeDriverPath();
         RunGit(root, "config", "merge.scrinia-meta.driver",
-            $".scrinia/hooks/scri-merge meta %O %A %B %P");
+            $"\"{driver}\" meta %O %A %B %P");
         RunGit(root, "config", "merge.scrinia-nmp2.driver",
-            $".scrinia/hooks/scri-merge nmp2 %O %A %B %P");
+            $"\"{driver}\" nmp2 %O %A %B %P");
+```
+
+and add this method to the same class:
+
+```csharp
+    /// <summary>
+    /// Path git should invoke for the merge driver. scri-merge is published beside scri, so
+    /// prefer the sibling of the running executable; fall back to the bare name for installs
+    /// that expose it on PATH only.
+    /// </summary>
+    private static string ResolveMergeDriverPath()
+    {
+        string exeName = OperatingSystem.IsWindows() ? "scri-merge.exe" : "scri-merge";
+        string? installDir = Path.GetDirectoryName(Environment.ProcessPath ?? "");
+        if (!string.IsNullOrEmpty(installDir))
+        {
+            string sibling = Path.Combine(installDir, exeName);
+            if (File.Exists(sibling))
+                return sibling.Replace('\\', '/');   // git runs driver commands through sh
+        }
+        return "scri-merge";
+    }
 ```
 
 - [ ] **Step 6: Update the existing unit tests for the new parameter**
@@ -1086,7 +1113,100 @@ rtk git commit -m "fix(core): invalidate the fact-store cache on bundle import"
 
 ---
 
-### Task 7: Correct the merge documentation and the shipped skill
+### Task 7: Ship `scri-merge` alongside `scri`
+
+`release.yml` publishes the CLI, the embeddings plugin and the server. It never publishes
+`Scrinia.Merge`, so no release archive contains `scri-merge` and the driver Task 2 registers
+would not exist on an installed machine. This task makes the arrangement Task 2 assumes true.
+
+**Files:**
+- Modify: `.github/workflows/release.yml:70-112`
+- Modify: `src/Scrinia/Commands/ScriniaCommands.Setup.cs:356-379`
+
+- [ ] **Step 1: Publish the merge driver into the CLI output**
+
+In `.github/workflows/release.yml`, immediately after the "Publish CLI" step (which ends at
+line 79 with `--output publish`), insert:
+
+```yaml
+      - name: Publish merge driver
+        run: >
+          dotnet publish src/Scrinia.Merge/Scrinia.Merge.csproj
+          --runtime ${{ matrix.rid }}
+          --self-contained
+          --configuration Release
+          -p:PublishSingleFile=true
+          --output publish
+```
+
+`Scrinia.Merge` already sets `PublishAot`, `PublishTrimmed` and `SelfContained` in its
+csproj; the RID and single-file flags here match how the CLI is published so both land in
+`publish/` as siblings.
+
+- [ ] **Step 2: Include it in both archives**
+
+Replace the two CLI archive steps (lines 81-88) with:
+
+```yaml
+      - name: Archive CLI (zip)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/scri-merge${{ matrix.ext }} -DestinationPath scri-${{ matrix.rid }}.zip
+
+      - name: Archive CLI (tar)
+        if: matrix.rid != 'win-x64'
+        run: tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.ext }} scri-merge${{ matrix.ext }}
+```
+
+Replace the two CLI+embeddings archive steps (lines 105-112) with:
+
+```yaml
+      - name: Archive CLI+embeddings (zip)
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/scri-merge${{ matrix.ext }},publish/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
+
+      - name: Archive CLI+embeddings (tar)
+        if: matrix.rid != 'win-x64'
+        run: tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish scri${{ matrix.ext }} scri-merge${{ matrix.ext }} plugins
+```
+
+- [ ] **Step 3: Drop the obsolete hooks copy from setup**
+
+The binary is no longer copied into the workspace, so the gitignore entry and the closing
+instruction are stale. In `src/Scrinia/Commands/ScriniaCommands.Setup.cs`, delete the
+gitignore block (lines 356-373, from `// 4. Add .scrinia/hooks/scri-merge*` through the
+closing brace of `if (needsEntry)`) and replace the instruction block (lines 375-379) with:
+
+```csharp
+        // 4. Print instructions
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine(
+            "[bold]Multi-user merge driver configured.[/] " +
+            "Conflicted memories now stop the merge — resolve them with [blue]reconcile[/].");
+```
+
+Renumber the remaining comment markers in the method so they read 1-4 in order.
+
+- [ ] **Step 4: Verify the workflow parses and the build is clean**
+
+```bash
+rtk dotnet build Scrinia.sln -c Debug
+rtk gh workflow view release.yml >/dev/null 2>&1 || echo "gh unavailable — check YAML by eye"
+```
+
+Expected: build clean. The publish steps themselves only run in CI on a release tag.
+
+- [ ] **Step 5: Commit**
+
+```bash
+rtk git add .github/workflows/release.yml src/Scrinia/Commands/ScriniaCommands.Setup.cs
+rtk git commit -m "build(release): publish scri-merge alongside scri"
+```
+
+---
+
+### Task 8: Correct the merge documentation and the shipped skill
 
 No code changes, so no test cycle — the deliverable is prose that matches the code.
 
@@ -1119,8 +1239,8 @@ scri setup --multi-user
 
 It registers both merge drivers in the repository's local git config, writes
 `.scrinia/.gitattributes` mapping `*.meta.json` and `*.nmp2` to them, and creates
-`.scrinia/merge.config`. Copy the `scri-merge` binary for your platform into
-`.scrinia/hooks/` — it is gitignored, because it is platform-specific.
+`.scrinia/merge.config`. The `scri-merge` binary it points at ships alongside `scri`, so
+there is nothing to copy.
 ```
 
 Delete the "Post-Merge Hook" section entirely (lines 43-56); no such hook exists.
@@ -1136,8 +1256,8 @@ In "Structural Prevention", delete the "Binary marking" bullet (line 75) — `.g
 In "Troubleshooting", delete the `jq` entry (line 81) and replace the "merge driver not found" entry (line 79) with:
 
 ```markdown
-**"merge driver not found"** — Run `scri setup --multi-user`, then confirm the `scri-merge`
-binary is present in `.scrinia/hooks/`.
+**"merge driver not found"** — Run `scri setup --multi-user`, then confirm `scri-merge` sits
+in the same directory as `scri`.
 ```
 
 Update the example path on line 65 from `local/skills/qa.nmp2` to `memories/local/auth-flow.nmp2`.
@@ -1151,7 +1271,7 @@ In `src/Scrinia.Mcp/skills/merge-safety.md`, replace the "Team setup" section (l
 For new team members:
 - Run `scri setup --multi-user` in the clone — it registers both merge drivers, writes
   `.scrinia/.gitattributes`, and creates `.scrinia/merge.config`
-- Copy the `scri-merge` binary for the platform into `.scrinia/hooks/`
+- Nothing to copy: the `scri-merge` binary it points at ships alongside `scri`
 - See docs/multi-user-setup.md for full instructions
 ```
 
@@ -1186,6 +1306,9 @@ In `CHANGELOG.md`, directly under `## [Unreleased]` (line 11), insert:
   from the whole copies rather than the partial base64 in the marker body.
 - A driver registered before `%P` repairs its own local git config and stops, rather than
   proceeding without knowing which artifact it is merging.
+- `scri-merge` is published alongside `scri` and included in the CLI release archives. No
+  release previously contained it, so `scri setup --multi-user` registered a driver that was
+  not present and asked the user to copy a binary they had never been given.
 - Bundle import left the cached entity-fact store stale, so `facts()` and entity-fact
   surfacing in search omitted every imported memory for the life of the process.
 ```
