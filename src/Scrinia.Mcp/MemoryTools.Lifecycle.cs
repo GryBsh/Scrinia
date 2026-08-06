@@ -53,7 +53,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Scan for merge conflicts or resolve a specific conflict.</summary>
     /// <remarks>
-    /// Conflict identifiers are workspace-relative paths under .scrinia/ (e.g. "local/skills/qa.nmp2"),
+    /// Conflict identifiers are workspace-relative paths under .scrinia/ (e.g. "memories/local/auth-flow.nmp2"),
     /// so the two-step scan → resolve workflow survives across processes. Each resolve re-reads the
     /// conflict markers from disk; there is no in-memory state shared between scan and resolve.
     /// </remarks>

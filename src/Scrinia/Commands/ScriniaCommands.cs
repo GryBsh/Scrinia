@@ -112,7 +112,7 @@ public partial class ScriniaCommands
     }
 
     /// <summary>Scan for merge conflicts in .scrinia/ or resolve a specific conflict.</summary>
-    /// <param name="conflictId">Workspace-relative path under .scrinia/ to the conflicted file (e.g. "local/skills/qa.nmp2"). Omit to scan.</param>
+    /// <param name="conflictId">Workspace-relative path under .scrinia/ to the conflicted file (e.g. "memories/local/auth-flow.nmp2"). Omit to scan.</param>
     /// <param name="choice">Resolution when resolving: 'ours', 'theirs', or 'merged'.</param>
     /// <param name="mergedContent">Content for 'merged' resolution. Use '-' for stdin.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>

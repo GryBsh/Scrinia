@@ -247,10 +247,10 @@ scri reconcile [--conflict-id <relative-path>] [--choice ours|theirs|merged] \
 scri reconcile
 
 # Resolve a conflict by taking the incoming side
-scri reconcile --conflict-id local/skills/qa.nmp2 --choice theirs
+scri reconcile --conflict-id memories/local/auth-flow.nmp2 --choice theirs
 
 # Resolve by providing merged content from a file
-cat resolved.md | scri reconcile --conflict-id local/notes/api.nmp2 --choice merged --merged-content -
+cat resolved.md | scri reconcile --conflict-id memories/local/api-design.nmp2 --choice merged --merged-content -
 ```
 
 ### scri bundle export
