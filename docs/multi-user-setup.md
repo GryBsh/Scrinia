@@ -28,6 +28,15 @@ It registers both merge drivers in the repository's local git config, writes
 `.scrinia/merge.config`. The `scri-merge` binary it points at ships alongside `scri`, so
 there is nothing to copy.
 
+### Upgrading an existing workspace
+
+**Workspaces configured before this release must re-run `scri setup --multi-user`.** The
+older registration points at `.scrinia/hooks/scri-merge`, a path no release ever shipped.
+Git cannot run it, so the driver never executes and cannot repair its own registration:
+the merge leaves the path unmerged with `ours`' content and no conflict markers, and
+`reconcile()` finds nothing to resolve. Re-running the command re-points both drivers at
+the installed binary. Do it once per clone.
+
 ## Workflow After Merge
 
 When pulling or merging a branch that touches `.scrinia/`:
@@ -38,9 +47,10 @@ When pulling or merging a branch that touches `.scrinia/`:
 4. **`reconcile({ conflictId, choice })`** — resolve each conflict by its workspace-relative path (e.g. `memories/local/auth-flow.nmp2`): `"ours"`, `"theirs"`, or `"merged"` with custom content
 5. **`reconcile()`** again — verify 0 conflicts remaining
 6. **Stage the resolved paths** — `reconcile()` only rewrites the working-tree file; git's
-   index still shows the path unmerged until you stage it. Delete the `conflict/current` /
-   `conflict/incoming` directories beside each resolved artifact first — they are merge
-   scratch, not something to commit — then run `git add <path>` (or `git add .scrinia/`)
+   index still shows the path unmerged until you stage it. Run `git add <path>` (or
+   `git add .scrinia/`). The driver writes a `.gitignore` into each conflict directory as it
+   creates it, so the `conflict/current` and `conflict/incoming` copies stay out of the
+   commit; delete those directories once you are done to keep the workspace tidy
 7. **Commit** — commit the resolved `.scrinia/` files
 
 ## Structural Prevention
@@ -52,8 +62,10 @@ Scrinia's architecture minimizes conflicts by design:
 
 ## Troubleshooting
 
-**"merge driver not found"** — Run `scri setup --multi-user`, then confirm `scri-merge` sits
-in the same directory as `scri`.
+**`error: cannot run <path>: No such file or directory`** — git could not launch the
+registered driver. Run `scri setup --multi-user`, then confirm `scri-merge` sits in the same
+directory as `scri`. If the path in the message is `.scrinia/hooks/scri-merge`, this is the
+pre-release registration described under [Upgrading an existing workspace](#upgrading-an-existing-workspace).
 
 **`.meta.json` conflict with nothing for `reconcile` to find** — the meta driver conflicts
 when keyword similarity scores below `jaccardThreshold` in `.scrinia/merge.config`, or when

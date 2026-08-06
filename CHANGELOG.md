@@ -29,6 +29,16 @@ and all assembly attributes.
 - `scri-merge` is published alongside `scri` and included in the CLI release archives. No
   release previously contained it, so `scri setup --multi-user` registered a driver that was
   not present and asked the user to copy a binary they had never been given.
+- Conflict copies are no longer committable: the driver writes a `.gitignore` containing `*`
+  into the conflict directory as it creates it. Committed copies persisted after
+  `git merge --abort` and were preferred by `reconcile()` on every later conflict, resolving
+  from stale bytes instead of the actual merge.
+
+**Upgrade action for existing workspaces.** A workspace configured before this release has
+`merge.scrinia-nmp2.driver` pointing at `.scrinia/hooks/scri-merge`, a path no release ever
+shipped. Git cannot run it, so the driver never executes and cannot repair itself: the merge
+leaves the path unmerged with `ours`' content and no conflict markers. Re-run
+`scri setup --multi-user` once per clone to re-point both drivers at the installed binary.
 
 ### Fixed — bundle import
 
