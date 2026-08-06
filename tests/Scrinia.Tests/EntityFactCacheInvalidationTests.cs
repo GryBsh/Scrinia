@@ -8,9 +8,10 @@ using Scrinia.Core.Search;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// SaveIndexUnsafe is the only index-mutation path that does not invalidate the cached
-/// EntityFactStore, and bundle import reaches it. A store whose cache was warmed before an
-/// import would serve facts that omit every imported memory for the rest of the process.
+/// Bundle import reaches the store through SaveIndexUnsafe, which must invalidate the cached
+/// EntityFactStore like its sibling mutation paths do — otherwise a process that queried facts
+/// before an import keeps serving a cache that omits every imported memory for the rest of its
+/// lifetime.
 /// </summary>
 public sealed class EntityFactCacheInvalidationTests : IDisposable
 {
