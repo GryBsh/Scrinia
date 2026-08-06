@@ -37,6 +37,12 @@ public static class Nmp2ConflictHandler
         Directory.CreateDirectory(currentDir);
         Directory.CreateDirectory(incomingDir);
 
+        // The copies are merge scratch. Committing them would leave stale ours/theirs bytes on
+        // disk that reconcile() prefers over the actual conflict on any later merge the driver
+        // did not handle. Writing the ignore file here — rather than into .scrinia/.gitignore —
+        // covers every ConflictDir name and every workspace, however old.
+        File.WriteAllText(Path.Combine(conflictDir, ".gitignore"), "*\n");
+
         string fileName = Path.GetFileName(mergedPath);
 
         File.Copy(oursPath, Path.Combine(currentDir, fileName), overwrite: true);
@@ -46,7 +52,8 @@ public static class Nmp2ConflictHandler
 
         // Git adds no markers of its own for a custom driver — whatever the driver
         // leaves in %A becomes the working-tree file. The markers are the detection
-        // signal reconcile() scans for; the decodable content lives in the conflict/ copies.
+        // signal reconcile() scans for; the decodable content normally lives in the conflict/
+        // copies, and both callers fall back to the marker body when a copy is absent.
         WriteConflictMarkers(oursPath, theirsPath, fileName);
 
         return 1;
