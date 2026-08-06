@@ -16,10 +16,12 @@ public static class GitConfigRepair
     {
         string key = $"merge.scrinia-{kind}.driver";
 
-        if (!TryGit(out string current, "config", "--local", "--get", key) ||
+        if (!TryGit(out string current, out string readError, "config", "--local", "--get", key) ||
             string.IsNullOrWhiteSpace(current))
         {
-            message = $"could not read {key} from local git config";
+            // "git absent", "not a repository" and "config locked" are indistinguishable from
+            // the exit code alone, so pass git's own words through.
+            message = $"could not read {key} from local git config{Detail(readError)}";
             return false;
         }
 
@@ -31,9 +33,9 @@ public static class GitConfigRepair
         }
 
         string repaired = current + " %P";
-        if (!TryGit(out _, "config", "--local", key, repaired))
+        if (!TryGit(out _, out string writeError, "config", "--local", key, repaired))
         {
-            message = $"could not write {key} to local git config";
+            message = $"could not write {key} to local git config{Detail(writeError)}";
             return false;
         }
 
@@ -41,9 +43,16 @@ public static class GitConfigRepair
         return true;
     }
 
-    private static bool TryGit(out string stdout, params string[] arguments)
+    private static string Detail(string stderr)
+    {
+        string trimmed = stderr.Trim().ReplaceLineEndings(" ");
+        return trimmed.Length == 0 ? "" : $": {trimmed}";
+    }
+
+    private static bool TryGit(out string stdout, out string stderr, params string[] arguments)
     {
         stdout = "";
+        stderr = "";
         try
         {
             var psi = new ProcessStartInfo("git")
@@ -57,12 +66,13 @@ public static class GitConfigRepair
             using var proc = Process.Start(psi);
             if (proc is null) return false;
             stdout = proc.StandardOutput.ReadToEnd();
-            proc.StandardError.ReadToEnd();
+            stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit();
             return proc.ExitCode == 0;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
+            stderr = ex.Message;
             return false;
         }
     }

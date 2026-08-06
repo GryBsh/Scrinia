@@ -13,35 +13,58 @@ if (args.Length < 4)
 if (args.Length < 5)
 {
     // Registered before %P was passed. Without the pathname the artifact cannot be
-    // identified, so repair the registration and stop rather than guess.
+    // identified, so repair the registration and stop rather than guess. Both keys are
+    // repaired, not just the invoked one: a legacy workspace registered both at four
+    // arguments, and leaving the other behind only defers the same failure to the next merge.
     string kind = args[0];
-    bool repaired = GitConfigRepair.TryAppendPathname(kind, out string repairMessage);
-    Console.Error.WriteLine(repaired
-        ? $"[scrinia] {repairMessage}; re-run your merge"
-        : $"[scrinia:error] merge driver invoked without %P and {repairMessage}. " +
+    bool metaRepaired = GitConfigRepair.TryAppendPathname("meta", out string metaMessage);
+    bool nmp2Repaired = GitConfigRepair.TryAppendPathname("nmp2", out string nmp2Message);
+    bool invokedRepaired = kind switch
+    {
+        "meta" => metaRepaired,
+        "nmp2" => nmp2Repaired,
+        _ => false
+    };
+
+    string outcomes = $"meta: {metaMessage}; nmp2: {nmp2Message}";
+    Console.Error.WriteLine(invokedRepaired
+        ? $"[scrinia] merge driver invoked without %P — {outcomes}; re-run your merge"
+        : $"[scrinia:error] merge driver invoked without %P — {outcomes}. " +
           "Re-run: scri setup --multi-user");
     return 1;
 }
 
-string command = args[0];
-string ancestor = args[1];
-string ours = args[2];
-string theirs = args[3];
-string mergedPath = Path.GetFullPath(args[4]);
-
-var config = MergeConfig.Load(FindScriniaDir(mergedPath));
-
-return command switch
+try
 {
-    "meta" => MetaJsonMerger.Merge(ancestor, ours, theirs, config) switch
+    string command = args[0];
+    string ancestor = args[1];
+    string ours = args[2];
+    string theirs = args[3];
+    string mergedPath = Path.GetFullPath(args[4]);
+
+    var config = MergeConfig.Load(FindScriniaDir(mergedPath));
+
+    return command switch
     {
-        MetaJsonMerger.MergeResult.Resolved => 0,
-        MetaJsonMerger.MergeResult.Conflict => 1,
-        _ => 1
-    },
-    "nmp2" => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, mergedPath, config),
-    _ => Error($"Unknown command: {command}")
-};
+        "meta" => MetaJsonMerger.Merge(ancestor, ours, theirs, config) switch
+        {
+            MetaJsonMerger.MergeResult.Resolved => 0,
+            MetaJsonMerger.MergeResult.Conflict => 1,
+            _ => 1
+        },
+        "nmp2" => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, mergedPath, config),
+        _ => Error($"Unknown command: {command}")
+    };
+}
+catch (Exception ex)
+{
+    // Git prints whatever the driver writes to stderr inside its merge output, and reads a
+    // non-zero exit as a conflict. A raw stack trace there is unreadable and the resulting
+    // state — ours' content, no markers, no copies — is the one this driver exists to avoid,
+    // so report the message and let git mark the path unmerged.
+    Console.Error.WriteLine($"[scrinia:error] {ex.Message}");
+    return 1;
+}
 
 static int Error(string message)
 {
