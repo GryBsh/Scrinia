@@ -142,6 +142,81 @@ public sealed class GitMergeIntegrationTests
     }
 
     [Fact]
+    public void LegacyFourArgumentConfig_RepairsBothDriverKeys_NotOnlyTheInvokedOne()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("meta", passPathname: false);
+        repo.RegisterDriver("nmp2", passPathname: false);
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.WriteFile(Sidecar, "{\"name\":\"auth-flow\"}\n");
+        // Only the artifact diverges, so this merge invokes the nmp2 driver and never the meta one.
+        repo.SeedThreeWay(Artifact, Nmp2("YmFzZQ"), Nmp2("b3Vycw"), Nmp2("dGhlaXJz"));
+
+        repo.Merge("other");
+
+        repo.Git("config merge.scrinia-nmp2.driver").StdOut.Should().Contain("%P");
+        repo.Git("config merge.scrinia-meta.driver").StdOut.Should().Contain("%P",
+            because: "leaving the uninvoked key at four arguments only defers the same failure "
+                     + "to the next merge that touches a sidecar");
+    }
+
+    [Fact]
+    public void ConflictCopies_AreIgnoredByGitSoTheyCannotBeCommitted()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("nmp2");
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.WriteFile(Sidecar, "{\"name\":\"auth-flow\"}\n");
+        repo.SeedThreeWay(Artifact, Nmp2("YmFzZQ"), Nmp2("b3Vycw"), Nmp2("dGhlaXJz"));
+
+        repo.Merge("other");
+
+        repo.FileExists(".scrinia/memories/local/conflict/.gitignore").Should().BeTrue(
+            because: "the driver ignores its own scratch as it creates it, whatever the dir is named");
+
+        string status = repo.Git("status --porcelain", throwOnFailure: false).StdOut;
+        status.Should().NotContain("conflict/",
+            because: "a committed copy would silently override every later conflict resolution");
+    }
+
+    [Fact]
+    public void SidecarAndArtifactConflictingTogether_LeavesTheSidecarMarkedConflicted()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("meta");
+        repo.RegisterDriver("nmp2");
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+
+        // Both paths diverge on both branches, so git invokes both drivers in one merge.
+        repo.WriteFile(Artifact, Nmp2("YmFzZQ"));
+        repo.WriteFile(Sidecar, Meta(["base-kw"], "2026-01-01T00:00:00+00:00"));
+        repo.CommitAll("base");
+        string defaultBranch = repo.Git("rev-parse --abbrev-ref HEAD").StdOut.Trim();
+
+        repo.Git("checkout -q -b other");
+        repo.WriteFile(Artifact, Nmp2("dGhlaXJz"));
+        repo.WriteFile(Sidecar, Meta(["theirs-kw"], "2026-03-01T00:00:00+00:00"));
+        repo.CommitAll("theirs");
+
+        repo.Git($"checkout -q {defaultBranch}");
+        repo.WriteFile(Artifact, Nmp2("b3Vycw"));
+        repo.WriteFile(Sidecar, Meta(["ours-kw"], "2026-02-01T00:00:00+00:00"));
+        repo.CommitAll("ours");
+
+        var result = repo.Merge("other");
+
+        result.ExitCode.Should().NotBe(0,
+            because: "disjoint keywords fall below the Jaccard threshold and the artifact diverged too");
+
+        string sidecar = repo.ReadFile(Sidecar);
+        sidecar.Should().NotContain("theirs-kw",
+            because: "the meta driver must genuinely conflict here — an auto-merge would union the keywords "
+                     + "and the ordering this test pins would go unexercised");
+        sidecar.Should().Contain("\"conflicted\": true",
+            because: "the nmp2 driver's sidecar mark must survive the meta driver running in the same merge");
+    }
+
+    [Fact]
     public void ConflictDirFromMergeConfig_IsHonoured()
     {
         using var repo = new GitMergeHarness();
