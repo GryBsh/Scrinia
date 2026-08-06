@@ -78,14 +78,23 @@ jobs:
           -p:PublishTrimmed=true
           --output publish
 
+      - name: Publish merge driver
+        run: >
+          dotnet publish src/Scrinia.Merge/Scrinia.Merge.csproj
+          --runtime ${{ matrix.rid }}
+          --self-contained
+          --configuration Release
+          -p:PublishSingleFile=true
+          --output publish
+
       - name: Archive CLI (zip)
         if: matrix.rid == 'win-x64'
         shell: pwsh
-        run: Compress-Archive -Path publish/scri${{ matrix.ext }} -DestinationPath scri-${{ matrix.rid }}.zip
+        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/scri-merge${{ matrix.ext }} -DestinationPath scri-${{ matrix.rid }}.zip
 
       - name: Archive CLI (tar)
         if: matrix.rid != 'win-x64'
-        run: tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.ext }}
+        run: tar czf scri-${{ matrix.rid }}.tar.gz -C publish scri${{ matrix.ext }} scri-merge${{ matrix.ext }}
 
       # ── CLI + embeddings plugin ───────────────────────────────
       - name: Publish embeddings plugin
@@ -105,11 +114,11 @@ jobs:
       - name: Archive CLI+embeddings (zip)
         if: matrix.rid == 'win-x64'
         shell: pwsh
-        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
+        run: Compress-Archive -Path publish/scri${{ matrix.ext }},publish/scri-merge${{ matrix.ext }},publish/plugins -DestinationPath scri-${{ matrix.rid }}-embeddings.zip
 
       - name: Archive CLI+embeddings (tar)
         if: matrix.rid != 'win-x64'
-        run: tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish scri${{ matrix.ext }} plugins
+        run: tar czf scri-${{ matrix.rid }}-embeddings.tar.gz -C publish scri${{ matrix.ext }} scri-merge${{ matrix.ext }} plugins
 
       # ── Upload both archives ──────────────────────────────────
       - name: Upload release assets

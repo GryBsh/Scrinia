@@ -354,26 +354,7 @@ public partial class ScriniaCommands
         File.WriteAllText(mergeConfigPath, mergeConfigJson + "\n");
         AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(mergeConfigPath)}");
 
-        // 4. Add .scrinia/hooks/scri-merge* to .gitignore if not already there
-        string gitignorePath = Path.Combine(root, ".gitignore");
-        const string hookEntry = ".scrinia/hooks/scri-merge*";
-        bool needsEntry = true;
-        if (File.Exists(gitignorePath))
-        {
-            string content = File.ReadAllText(gitignorePath);
-            if (content.Contains(hookEntry, StringComparison.Ordinal))
-                needsEntry = false;
-        }
-        if (needsEntry)
-        {
-            using var writer = File.AppendText(gitignorePath);
-            writer.WriteLine();
-            writer.WriteLine("# Scrinia merge driver binary (platform-specific)");
-            writer.WriteLine(hookEntry);
-            AnsiConsole.MarkupLine($"[green]  Updated:[/] {Markup.Escape(gitignorePath)}");
-        }
-
-        // 5. Print instructions
+        // 4. Print instructions
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine(
             $"[bold]Multi-user merge driver configured.[/] Git will invoke [blue]{Markup.Escape(driver)}[/].");
