@@ -360,7 +360,9 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Whole conflict copy the merge driver wrote beside the artifact, or null when absent.
-    /// The marker body holds two partial base64 streams; these copies are complete artifacts.
+    /// The marker body is not guaranteed to be independently decodable — multi-chunk artifacts,
+    /// extra conflict regions, or markers the driver did not write can leave it so; these copies
+    /// always are.
     /// </summary>
     private static string? TryReadConflictCopy(string artifactPath, string side)
     {

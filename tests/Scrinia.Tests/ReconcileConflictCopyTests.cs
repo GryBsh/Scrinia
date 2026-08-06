@@ -60,4 +60,46 @@ public sealed class ReconcileConflictCopyTests
         string firstDataLine = lines[1];
         return lines[0] + "\n" + firstDataLine[..(firstDataLine.Length / 2)];
     }
+
+    [Fact]
+    public async Task Reconcile_Nmp2WithNonDefaultConflictDir_ResolvesFromTheConfiguredDir()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        // merge.config uses camelCase keys on disk (as the CLI writes it); "disputes" here is
+        // deliberately not the "conflict" default, so this only passes if ReadConflictDirName
+        // actually reads conflictDir rather than falling back.
+        await File.WriteAllTextAsync(
+            Path.Combine(scope.WorkspaceDir, ".scrinia", "merge.config"),
+            "{\"conflictDir\":\"disputes\"}");
+
+        string dir = Path.Combine(scope.WorkspaceDir, ".scrinia", "memories", "local");
+        Directory.CreateDirectory(dir);
+        string artifact = Path.Combine(dir, "auth-flow.nmp2");
+
+        string oursWhole = Nmp2ChunkedEncoder.Encode("the ours version");
+        string theirsWhole = Nmp2ChunkedEncoder.Encode("the theirs version");
+
+        string oursFragment = TruncatedFragment(oursWhole);
+        string theirsFragment = TruncatedFragment(theirsWhole);
+        await File.WriteAllTextAsync(artifact,
+            "<<<<<<< ours:auth-flow.nmp2\n" + oursFragment +
+            "\n=======\n" + theirsFragment +
+            "\n>>>>>>> theirs:auth-flow.nmp2\n");
+
+        Directory.CreateDirectory(Path.Combine(dir, "disputes", "current"));
+        Directory.CreateDirectory(Path.Combine(dir, "disputes", "incoming"));
+        await File.WriteAllTextAsync(Path.Combine(dir, "disputes", "current", "auth-flow.nmp2"), oursWhole);
+        await File.WriteAllTextAsync(Path.Combine(dir, "disputes", "incoming", "auth-flow.nmp2"), theirsWhole);
+
+        string result = await Tools().MemoryReconcile(
+            conflictId: "memories/local/auth-flow.nmp2", choice: "theirs");
+
+        ResponseParser.Parse(result).Status.Should().Be("success");
+
+        string resolved = await File.ReadAllTextAsync(artifact);
+        System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(resolved))
+            .Should().Be("the theirs version",
+                because: "ReadConflictDirName must read the configured conflictDir, not the \"conflict\" default");
+    }
 }
