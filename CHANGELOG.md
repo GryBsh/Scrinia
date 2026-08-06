@@ -10,6 +10,27 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — git merge driver
+
+- The `.nmp2` merge driver crashed on every real conflict. Git passes extensionless temp
+  files, so `Path.GetDirectoryName` returned an empty string and `Path.GetFullPath` threw;
+  the merge halted with an unhandled `ArgumentException` and no way to resolve it through
+  `reconcile()`. Both drivers now receive git's `%P` pathname and resolve the artifact,
+  its sidecar, and the conflict directory from it.
+- A conflicted `.nmp2` now stops the merge with git's path marked unmerged, writes whole
+  `conflict/current` and `conflict/incoming` copies beside the artifact, marks the sidecar
+  `"conflicted": true`, and leaves markers for `reconcile()` to find. `reconcile()` prefers
+  the whole `conflict/current` and `conflict/incoming` copies when resolving a conflicted
+  `.nmp2`, falling back to the marker body when a copy is absent — so a marker body that is
+  not independently decodable no longer blocks resolution.
+- A driver registered before `%P` repairs its own local git config and stops, rather than
+  proceeding without knowing which artifact it is merging.
+- `scri-merge` is published alongside `scri` and included in the CLI release archives. No
+  release previously contained it, so `scri setup --multi-user` registered a driver that was
+  not present and asked the user to copy a binary they had never been given.
+- Bundle import left the cached entity-fact store stale, so `facts()` and entity-fact
+  surfacing in search omitted every imported memory for the life of the process.
+
 ### Changed — file-entity unification
 
 - `.scrinia/skills/` and `.scrinia/agent/` now resolve through a single authority

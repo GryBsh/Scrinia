@@ -5,8 +5,7 @@ When multiple developers use scrinia on the same repository, memory files in `.s
 ## Prerequisites
 
 - Git 2.x or later
-- `jq` command-line tool (for the bash merge driver) — install via your package manager
-- PowerShell 7+ (for the PowerShell merge driver on Windows)
+- Scrinia installed and on your PATH
 
 ## What Can Conflict
 
@@ -18,51 +17,25 @@ When multiple developers use scrinia on the same repository, memory files in `.s
 
 ## Merge Driver Setup
 
-The merge driver auto-resolves `.meta.json` conflicts by unioning keywords and taking the latest timestamps.
-
-### Bash (Linux/macOS)
+Run this once per clone:
 
 ```bash
-# Configure git to use the scrinia merge driver
-git config merge.scrinia-meta.driver ".scrinia/hooks/scrinia-merge-meta.sh %O %A %B"
+scri setup --multi-user
 ```
 
-### PowerShell (Windows)
-
-```powershell
-# Configure git to use the PowerShell merge driver
-git config merge.scrinia-meta.driver "pwsh .scrinia/hooks/scrinia-merge-meta.ps1 %O %A %B"
-```
-
-### Verify
-
-The `.scrinia/.gitattributes` file (tracked in the repo) tells git which files use the driver:
-- `*.nmp2 binary` — prevents text merge on compressed artifacts
-- `*.meta.json merge=scrinia-meta` — routes to the custom driver
-
-## Post-Merge Hook
-
-The post-merge hook warns you when conflicts remain after a merge.
-
-### Installation
-
-```bash
-# Option 1: Copy (manual updates needed)
-cp .scrinia/hooks/post-merge .git/hooks/post-merge
-chmod +x .git/hooks/post-merge
-
-# Option 2: Symlink (auto-updates)
-ln -s ../../.scrinia/hooks/post-merge .git/hooks/post-merge
-```
+It registers both merge drivers in the repository's local git config, writes
+`.scrinia/.gitattributes` mapping `*.meta.json` and `*.nmp2` to them, and creates
+`.scrinia/merge.config`. The `scri-merge` binary it points at ships alongside `scri`, so
+there is nothing to copy.
 
 ## Workflow After Merge
 
 When pulling or merging a branch that touches `.scrinia/`:
 
 1. **Pull/merge** — git applies the merge driver for `.meta.json` files automatically
-2. **Check for warnings** — the post-merge hook reports any remaining conflicts
+2. **Read the conflict report** — a conflicted `.nmp2` stops the merge and git marks the file unmerged
 3. **`reconcile()`** — run in your agent session to scan for and resolve remaining conflicts
-4. **`reconcile({ conflictId, choice })`** — resolve each conflict by its workspace-relative path (e.g. `local/skills/qa.nmp2`): `"ours"`, `"theirs"`, or `"merged"` with custom content
+4. **`reconcile({ conflictId, choice })`** — resolve each conflict by its workspace-relative path (e.g. `memories/local/auth-flow.nmp2`): `"ours"`, `"theirs"`, or `"merged"` with custom content
 5. **`reconcile()`** again — verify 0 conflicts remaining
 6. **Commit** — commit the resolved `.scrinia/` files
 
@@ -72,13 +45,11 @@ Scrinia's architecture minimizes conflicts by design:
 - **Per-file sidecars** — each memory has its own `.meta.json`, so different memories modified by different developers never conflict
 - **Per-phase retrospectives** — `learn:retro-gN-phaseId` instead of one growing monolith
 - **Sorted metadata** — keywords and term frequencies sorted alphabetically for deterministic diffs
-- **Binary marking** — `.nmp2` files marked as binary to prevent garbled text merge
 
 ## Troubleshooting
 
-**"merge driver not found"** — Run the `git config` command from the Merge Driver Setup section. The driver path is relative to the repo root.
-
-**"jq not found"** — Install jq: `brew install jq` (macOS), `apt install jq` (Ubuntu), `choco install jq` (Windows).
+**"merge driver not found"** — Run `scri setup --multi-user`, then confirm `scri-merge` sits
+in the same directory as `scri`.
 
 **Conflicts after driver runs** — The merge driver handles single-conflict .meta.json files. Multiple conflict regions in one file (rare) fall through to manual resolution via `reconcile`.
 
