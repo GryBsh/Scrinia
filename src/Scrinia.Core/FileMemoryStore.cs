@@ -905,6 +905,8 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         // Invalidate topic discovery cache when saving a topic scope
         if (scope.StartsWith("local:", StringComparison.Ordinal))
             _cachedTopics = null;
+
+        lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
     }
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
