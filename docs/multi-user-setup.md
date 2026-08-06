@@ -11,7 +11,7 @@ When multiple developers use scrinia on the same repository, memory files in `.s
 
 | File type | Conflict risk | Resolution |
 |-----------|--------------|------------|
-| `.meta.json` | Medium — keywords/timestamps may diverge | Auto-resolved by merge driver (keyword union) |
+| `.meta.json` | Medium — keywords/timestamps may diverge | Auto-resolved by merge driver (keyword union) when keyword similarity is at or above `jaccardThreshold` (default 0.7) and no scalar field changed on both sides; otherwise conflicts |
 | `.nmp2` | Low — per-file sidecars mean different memories don't conflict | Manual via `reconcile({ conflictId, choice })` |
 | `versions/` | None — timestamped archives never collide | N/A |
 
@@ -37,7 +37,11 @@ When pulling or merging a branch that touches `.scrinia/`:
 3. **`reconcile()`** — run in your agent session to scan for and resolve remaining conflicts
 4. **`reconcile({ conflictId, choice })`** — resolve each conflict by its workspace-relative path (e.g. `memories/local/auth-flow.nmp2`): `"ours"`, `"theirs"`, or `"merged"` with custom content
 5. **`reconcile()`** again — verify 0 conflicts remaining
-6. **Commit** — commit the resolved `.scrinia/` files
+6. **Stage the resolved paths** — `reconcile()` only rewrites the working-tree file; git's
+   index still shows the path unmerged until you stage it. Delete the `conflict/current` /
+   `conflict/incoming` directories beside each resolved artifact first — they are merge
+   scratch, not something to commit — then run `git add <path>` (or `git add .scrinia/`)
+7. **Commit** — commit the resolved `.scrinia/` files
 
 ## Structural Prevention
 
@@ -51,6 +55,11 @@ Scrinia's architecture minimizes conflicts by design:
 **"merge driver not found"** — Run `scri setup --multi-user`, then confirm `scri-merge` sits
 in the same directory as `scri`.
 
-**Conflicts after driver runs** — The merge driver handles single-conflict .meta.json files. Multiple conflict regions in one file (rare) fall through to manual resolution via `reconcile`.
+**`.meta.json` conflict with nothing for `reconcile` to find** — the meta driver conflicts
+when keyword similarity scores below `jaccardThreshold` in `.scrinia/merge.config`, or when
+`name`, `uri`, `description`, `originalBytes`, or `chunkCount` changed on both sides. It writes
+nothing, so the path is left unmerged in git's index with `ours`' content and no conflict
+markers — `reconcile()` has nothing to scan for. Resolve it with git directly:
+`git checkout --ours -- <path>` or `--theirs`, or edit the file by hand, then `git add <path>`.
 
 **Stale memories after merge** — Run `list({ mode: "drift" })` to detect memories referencing files that changed on the other branch.
