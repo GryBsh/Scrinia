@@ -143,7 +143,7 @@ curl -X POST http://localhost:5000/api/v1/stores/default/memories \
   -d '{"name": "notes", "content": ["My project notes..."], "description": "Project notes"}'
 
 # Search
-curl "http://localhost:5000/api/v1/stores/default/search?query=project" \
+curl "http://localhost:5000/api/v1/stores/default/search?q=project" \
   -H "Authorization: Bearer $KEY"
 ```
 

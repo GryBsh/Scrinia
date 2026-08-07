@@ -817,9 +817,21 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
-        var outcome = await ExecuteSearchAsync(
-            store, query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter,
-            cancellationToken, surfaceEntityFacts: true);
+        var outcome = await SearchPipeline.ExecuteAsync(
+            store,
+            new SearchQuery(query)
+            {
+                Scopes = scopes,
+                Limit = limit,
+                ExcludeTopics = excludeTopics,
+                PathPrefix = pathPrefix,
+                AttributeFilter = attributeFilter,
+            },
+            SearchContributorContext.Current,
+            EntityGraphScoreContext.Current,
+            context,
+            surfaceEntityFacts: true,
+            cancellationToken);
         var matches = outcome.Matches;
 
         if (matches.Count == 0)
@@ -827,100 +839,6 @@ public sealed partial class ScriniaMcpTools
 
         string body = SearchResultRenderer.FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
         return ResponseBuilder.Success(body).WithAction("searched");
-    }
-
-    /// <summary>The result of a scoring-pipeline run: the ranked matches plus the (possibly empty)
-    /// entity fact summaries for entities the query named. EntityFacts is always empty unless the
-    /// caller passes surfaceEntityFacts: true.</summary>
-    internal readonly record struct SearchOutcome(
-        IReadOnlyList<SearchResult> Matches,
-        IReadOnlyList<EntityFactSummary> EntityFacts);
-
-    /// <summary>
-    /// The single scoring pipeline behind BOTH the MCP <c>search</c> tool and the <c>scri search</c>
-    /// CLI command — the two used to diverge (the CLI ran BM25-only, ignoring the embeddings and
-    /// entity-graph contributors it had already loaded). Computes the effective query, folds in
-    /// supplemental (embeddings) and entity-graph scores from the ambient contexts, runs the
-    /// weighted BM25+attribute scorer, and applies path-prefix / attribute post-filters. Callers
-    /// format the returned <see cref="SearchResult"/>s for their own surface (YAML / table / JSON).
-    /// When <paramref name="surfaceEntityFacts"/> is set, also derives entity fact summaries from
-    /// the same candidate set for the entities the query named (MCP search only; CLI leaves it off).
-    /// </summary>
-    internal static async Task<SearchOutcome> ExecuteSearchAsync(
-        IMemoryStore store,
-        string query,
-        string? scopes,
-        int limit,
-        string? excludeTopics,
-        string? context,
-        string? pathPrefix,
-        IReadOnlyDictionary<string, string[]>? attributeFilter,
-        CancellationToken cancellationToken,
-        bool surfaceEntityFacts = false)
-    {
-        // Augment the query with caller-supplied context for scoring. The bare query is preserved
-        // for any user-facing echo; the effective query feeds BM25, attribute scoring, and embeddings
-        // alike so a single signal carries through all three.
-        string effectiveQuery = string.IsNullOrWhiteSpace(context) ? query : $"{query} {context}";
-
-        // Compute supplemental (e.g. embeddings) and entity-graph scores from plugins if available.
-        // Both run over the same excludeTopics-filtered candidates so excluded topics don't
-        // influence scoring. The entity-graph signal is a separate fusion source, not summed
-        // into supplemental — see EntityGraphScoreContributor.
-        var contributor = SearchContributorContext.Current;
-        var entityContributor = EntityGraphScoreContext.Current;
-        IReadOnlyList<ScopedArtifact>? candidates = null;
-        if (contributor is not null || entityContributor is not null || surfaceEntityFacts)
-            candidates = store.ListScoped(scopes, excludeTopics);
-
-        IReadOnlyDictionary<string, double>? supplemental = null;
-        IReadOnlyDictionary<string, double>? entityScores = null;
-        if (candidates is not null)
-        {
-            if (contributor is not null)
-                supplemental = await contributor.ComputeScoresAsync(effectiveQuery, candidates, store, cancellationToken);
-            if (entityContributor is not null)
-            {
-                var factStore = string.IsNullOrWhiteSpace(scopes) && string.IsNullOrWhiteSpace(excludeTopics)
-                    ? store.GetEntityFactStore()                       // cached, no rebuild
-                    : EntityFactDerivation.BuildStore(candidates);     // scoped / topic-excluded
-                entityScores = entityContributor.Score(factStore, query: effectiveQuery);
-            }
-        }
-
-        // pathPrefix / attributeFilter are pushed into SearchAll so they apply BEFORE the top-K cut
-        // (symmetric with excludeTopics). A filtered search fills to `limit` instead of returning the
-        // post-limit remnant. Empty supplemental is normalized to null so the scorer skips it.
-        var supp = supplemental is { Count: > 0 } ? supplemental : null;
-        IReadOnlyList<SearchResult> filtered = store.SearchAll(
-            effectiveQuery, scopes, limit, excludeTopics, supp, entityScores, pathPrefix, attributeFilter);
-
-        IReadOnlyList<EntityFactSummary> entityFacts = [];
-        if (surfaceEntityFacts && candidates is { Count: > 0 })
-            entityFacts = BuildEntityFacts(store, effectiveQuery, candidates);
-
-        return new SearchOutcome(filtered, entityFacts);
-    }
-
-    /// <summary>Builds up to 3 entity fact summaries from the same scope+excludeTopics-filtered
-    /// candidate set the scorer used — never a separate store read, never a hidden scope. Derives a
-    /// scoped EntityFactStore, detects the entities the query names via the shared seeder, and
-    /// projects them. Empty when the query names no known entity.</summary>
-    private static IReadOnlyList<EntityFactSummary> BuildEntityFacts(
-        IMemoryStore store, string effectiveQuery, IReadOnlyList<ScopedArtifact> candidates)
-    {
-        var factStore = EntityFactDerivation.BuildStore(candidates);
-
-        // Map "type:value" -> EntityRef so we round-trip named keys without re-parsing colons.
-        var refByKey = new Dictionary<string, EntityRef>(StringComparer.Ordinal);
-        foreach (var e in factStore.Entities())
-            refByKey[$"{e.Key}:{e.Value}"] = e;
-        if (refByKey.Count == 0) return [];
-
-        var named = EntityQuerySeeder.Seed(effectiveQuery, refByKey.Keys)
-            .Select(k => refByKey[k]);
-
-        return EntityFactSummarizer.Summarize(factStore, named);
     }
 
     /// <summary>Copies a memory artifact from one scope to another.</summary>

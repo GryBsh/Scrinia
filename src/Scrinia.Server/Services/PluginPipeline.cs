@@ -160,31 +160,30 @@ public sealed class PluginPipeline
         return deleted;
     }
 
+    /// <summary>Delegates to the shared <see cref="SearchPipeline"/>. This method used to carry its
+    /// own copy of the scoring sequence and had drifted: no excludeTopics, no pathPrefix, no
+    /// attributeFilter, no context augmentation. The copy is gone; only the hook-free forwarding
+    /// remains.</summary>
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(
-        IMemoryStore store, string query, string? scopes, int limit, CancellationToken ct = default)
+        IMemoryStore store, string query, string? scopes, int limit,
+        string? excludeTopics = null,
+        string? pathPrefix = null,
+        IReadOnlyDictionary<string, string[]>? attributeFilter = null,
+        CancellationToken ct = default)
     {
-        var contributor = SearchContributorContext.Current;
-        var entityContributor = EntityGraphScoreContext.Current;
-
-        IReadOnlyDictionary<string, double>? supplemental = null;
-        IReadOnlyDictionary<string, double>? entityScores = null;
-        if (contributor is not null || entityContributor is not null)
-        {
-            var candidates = store.ListScoped(scopes);
-            if (contributor is not null)
-                supplemental = await contributor.ComputeScoresAsync(query, candidates, store, ct);
-            if (entityContributor is not null)
+        var outcome = await SearchPipeline.ExecuteAsync(
+            store,
+            new SearchQuery(query)
             {
-                var factStore = string.IsNullOrWhiteSpace(scopes)
-                    ? store.GetEntityFactStore()                       // cached, no rebuild
-                    : EntityFactDerivation.BuildStore(candidates);     // scoped
-                entityScores = entityContributor.Score(factStore, query);
-            }
-        }
-
-        // Entity-graph scores are a separate fusion source (not summed into supplemental).
-        return supplemental is { Count: > 0 } || entityScores is { Count: > 0 }
-            ? store.SearchAll(query, scopes, limit, supplemental, entityScores)
-            : store.SearchAll(query, scopes, limit);
+                Scopes = scopes,
+                Limit = limit,
+                ExcludeTopics = excludeTopics,
+                PathPrefix = pathPrefix,
+                AttributeFilter = attributeFilter,
+            },
+            SearchContributorContext.Current,
+            EntityGraphScoreContext.Current,
+            ct: ct);
+        return outcome.Matches;
     }
 }

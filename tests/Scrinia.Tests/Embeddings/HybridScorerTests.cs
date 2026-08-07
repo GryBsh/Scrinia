@@ -42,7 +42,7 @@ public class HybridScorerTests : IDisposable
         AddEntry("cats", "A document about cats");
         AddEntry("semantically-similar", "unrelated description xyz");
 
-        var resultsWithout = _store.SearchAll("cats", "local", 10);
+        var resultsWithout = _store.SearchAll(new SearchQuery("cats") { Scopes = "local", Limit = 10 });
         resultsWithout.Should().HaveCountGreaterOrEqualTo(1);
         (resultsWithout[0] as EntryResult)!.Item.Entry.Name.Should().Be("cats");
 
@@ -51,24 +51,34 @@ public class HybridScorerTests : IDisposable
             ["local|semantically-similar"] = 200.0,
         };
 
-        var resultsWith = _store.SearchAll("cats", "local", 10, supplemental);
+        var resultsWith = _store.SearchAll(new SearchQuery("cats")
+        {
+            Scopes = "local",
+            Limit = 10,
+            SupplementalScores = supplemental,
+        });
         resultsWith.Should().HaveCount(2);
         (resultsWith[0] as EntryResult)!.Item.Entry.Name.Should().Be("semantically-similar");
     }
 
     [Fact]
-    public void SearchAll_WithNullSupplemental_BehavesLikeLegacy()
+    public void SearchAll_WithEmptySupplemental_BehavesLikeLegacy()
     {
         AddEntry("test-memory", "test description about testing");
 
-        var legacy = _store.SearchAll("test", "local", 10);
-        var withNull = _store.SearchAll("test", "local", 10, supplementalScores: null);
+        var legacy = _store.SearchAll(new SearchQuery("test") { Scopes = "local", Limit = 10 });
+        var withEmpty = _store.SearchAll(new SearchQuery("test")
+        {
+            Scopes = "local",
+            Limit = 10,
+            SupplementalScores = new Dictionary<string, double>(),
+        });
 
-        legacy.Should().HaveCount(withNull.Count);
+        legacy.Should().HaveCount(withEmpty.Count);
         // The recency multiplier reads DateTimeOffset.UtcNow at scoring time, so two sequential
         // calls can differ at the ~1e-10 level from the milliseconds elapsed between them.
         // Strict double equality would be brittle without telling us anything useful.
-        legacy[0].Score.Should().BeApproximately(withNull[0].Score, 0.001);
+        legacy[0].Score.Should().BeApproximately(withEmpty[0].Score, 0.001);
     }
 
     [Fact]
@@ -81,7 +91,12 @@ public class HybridScorerTests : IDisposable
             ["local|xyz-unrelated"] = 100.0,
         };
 
-        var results = _store.SearchAll("completely-different-query", "local", 10, supplemental);
+        var results = _store.SearchAll(new SearchQuery("completely-different-query")
+        {
+            Scopes = "local",
+            Limit = 10,
+            SupplementalScores = supplemental,
+        });
         results.Should().HaveCount(1);
         (results[0] as EntryResult)!.Item.Entry.Name.Should().Be("xyz-unrelated");
     }
@@ -250,7 +265,7 @@ public class HybridRerankerTests : IDisposable
         public void Upsert(ArtifactEntry entry, string scope = "local") { }
         public bool Remove(string name, string scope = "local") => false;
         public List<ScopedArtifact> ListScoped(string? scopes = null) => [];
-        public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20) => [];
+        public IReadOnlyList<SearchResult> SearchAll(SearchQuery query) => [];
         public void RememberEphemeral(string key, EphemeralEntry entry) { }
         public bool ForgetEphemeral(string key) => false;
         public EphemeralEntry? GetEphemeral(string key) => null;

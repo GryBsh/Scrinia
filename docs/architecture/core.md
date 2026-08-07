@@ -302,25 +302,48 @@ This is a **forward-only migration**: `Attributes` is `null` for entries written
 
 ### IMemoryStore
 
-27-method interface covering all memory operations, plus default interface methods for `excludeTopics` filtering:
+29 abstract methods plus the abstract `WorkspaceRoot` property (30 members a conforming store
+must implement with no default), plus 4 members with default bodies a store may override for
+efficiency, covering all memory operations:
 
 **Naming:** `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName`
 
 **CRUD:** `LoadIndex`, `SaveIndex`, `Upsert`, `Remove`, `ResolveArtifactAsync`
 
-**Search:** `SearchAll` (two overloads: with and without supplemental scores)
+**Listing:** `ListScoped(scopes)`
+
+**Search:** `SearchAll(SearchQuery query)` — one method, no overloads, no default body. Every
+overload it replaced (with/without supplemental scores, with/without `excludeTopics`) carried a
+default body that post-filtered after the scorer's top-K cut, so a store that didn't override it
+silently returned fewer than `Limit` results for a selective filter — the top-K cut had already
+thinned the candidate set before the filter ever ran. Collapsing every filter dimension
+(`PathPrefix`, `ExcludeTopics`, `AttributeFilter`, `Scopes`, `Limit`, `Candidates`,
+`SupplementalScores`, `EntityGraphScores`) onto one `SearchQuery` record and removing the default
+body means a store that cannot pre-filter now fails to compile instead of silently under-filling —
+the contract moved from "correct if you remembered to override it" to "correct or it doesn't
+build."
 
 **Ephemeral:** `RememberEphemeral`, `ForgetEphemeral`, `GetEphemeral`
 
-**File I/O:** `WriteArtifactAsync`, `ReadArtifactAsync`, `DeleteArtifact`, `ArtifactPath`, `ArtifactUri`
+**File I/O:** `GenerateContentPreview`, `WriteArtifactAsync`, `ReadArtifactAsync`, `DeleteArtifact`, `ArtifactPath`, `ArtifactUri`
 
 **Copy/Archive:** `CopyMemory`, `ArchiveVersion`
 
 **Topics:** `DiscoverTopics`, `GatherTopicInfos`, `ListTopicArtifacts`, `ImportTopicEntries`
 
-**Scope resolution:** `ResolveReadScopes`, `GetStoreDirForScope`, `FindArtifactPath`
+**Scope resolution:** `ResolveReadScopes(scopes)`, `GetStoreDirForScope`, `FindArtifactPath`,
+`WorkspaceRoot` (property; throws `NotSupportedException` on a remote store)
 
-**Scope filtering (default interface methods):** `ListScoped(scope, excludeTopics)` and `SearchAll(..., excludeTopics)` overloads filter out entries belonging to specified topics. `FileMemoryStore` provides efficient overrides. The MCP `list` and `search` actions accept `excludeTopics` so agents can scope queries to specific topic subsets.
+**Default-bodied members (a store may override for efficiency):** `TryUpdateEntry` (non-atomic
+load→mutate→Upsert unless overridden), `GetEntityFactStore` (rebuilds fresh from `ListScoped`
+unless overridden), `ListScoped(scopes, excludeTopics)`, and `ResolveReadScopes(scopes,
+excludeTopics)` — the last two post-filter `ListScoped`/`ResolveReadScopes` by scope, which is
+cheap and correct even unoverridden because scope exclusion is a set-membership check, not a
+top-K-sensitive filter the way `pathPrefix`/`attributeFilter` were. `FileMemoryStore` overrides
+both for efficient scope-level filtering. There is no `SearchAll(..., excludeTopics)` default
+overload anymore: `excludeTopics` for search travels as `SearchQuery.ExcludeTopics`, one field
+among several on the single `SearchAll` method above, not a separate overload. The MCP `list` and
+`search` actions accept `excludeTopics` so agents can scope queries to specific topic subsets.
 
 ### FileMemoryStore
 

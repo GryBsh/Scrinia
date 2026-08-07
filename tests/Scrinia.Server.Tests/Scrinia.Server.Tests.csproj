@@ -24,5 +24,6 @@
     <ProjectReference Include="..\..\src\Scrinia.Server\Scrinia.Server.csproj" />
     <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
     <ProjectReference Include="..\..\src\Scrinia.Plugin.Abstractions\Scrinia.Plugin.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Scrinia\Scrinia.csproj" />
   </ItemGroup>
 </Project>

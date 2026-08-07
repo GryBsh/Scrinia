@@ -24,6 +24,7 @@ internal static class Program
                 "longmemeval" => await LongMemEvalCommand.RunAsync(rest, CancellationToken.None),
                 "membench" => await MemBenchCommand.RunAsync(rest, CancellationToken.None),
                 "locomo" => await LoCoMoCommand.RunAsync(rest, CancellationToken.None),
+                "searchcost" => await SearchCostCommand.RunAsync(rest, CancellationToken.None),
                 "judge-replay" => await JudgeReplayCommand.RunAsync(rest, CancellationToken.None),
                 "rank" => await RankCommand.RunAsync(rest, CancellationToken.None),
                 _ => UnknownCommand(subcommand),
@@ -53,6 +54,7 @@ internal static class Program
               scrinia-bench longmemeval --data <file> [--split full|dev|held_out] [--granularity session|turn] [common-flags]
               scrinia-bench membench    --data <dir> [--limit <N>] [common-flags]
               scrinia-bench locomo      --data <file> [--granularity session|dialog] [common-flags]
+              scrinia-bench searchcost  --data <file> [--conversations <N>] [--queries <N>] [--warmup <N>]
               scrinia-bench judge-replay --input <result.json> --judge --judge-provider <p> [judge flags]
               scrinia-bench rank         [--dir <results-dir>]
 
@@ -61,6 +63,9 @@ internal static class Program
               longmemeval   Run LongMemEval (xiaowu0162/longmemeval-cleaned), the headline benchmark
               membench      Run MemBench (ACL 2025) — 8500 items, 10 categories
               locomo        Run LoCoMo (snap-research/locomo) — 10 convs, 1986 QA pairs
+              searchcost    Measure FileMemoryStore.SearchAll cost with a pre-materialized
+                            SearchQuery.Candidates list vs Candidates = null. Store-level
+                            micro-benchmark against a LoCoMo-seeded corpus — no retriever, no judge.
               judge-replay  Re-run ONLY the LLM judge over a prior run's persisted JudgeContext —
                             no dataset, no retriever, exact live/replay parity. Writes <input>.judged.json.
               rank          Rank scrinia_locomo*.json / *.judged.json result files under --dir by the

@@ -9,7 +9,7 @@ namespace Scrinia.Tests;
 
 /// <summary>
 /// Asserts the two read-amplification fixes in FileMemoryStore:
-/// 1) <see cref="FileMemoryStore.SearchAll(string, string?, int)"/> derives topic infos
+/// 1) <see cref="FileMemoryStore.SearchAll(SearchQuery)"/> derives topic infos
 ///    from already-loaded candidates instead of re-calling LoadIndex per topic scope.
 /// 2) <see cref="FileMemoryStore.DiscoverTopics"/> uses event-driven invalidation
 ///    (no TTL) — repeated calls between mutations are O(1) cache hits.
@@ -98,7 +98,7 @@ public class FileMemoryStoreCacheTests : IDisposable
         Add("memory/foo", "alpha-doc-foo", "content");
         Add("memory/bar", "alpha-doc-bar", "content");
 
-        var results = _store.SearchAll("alpha", scopes: null, limit: 20);
+        var results = _store.SearchAll(new SearchQuery("alpha") { Limit = 20 });
         results.Should().NotBeEmpty();
 
         var resultNames = results
@@ -108,5 +108,24 @@ public class FileMemoryStoreCacheTests : IDisposable
         resultNames.Should().Contain("alpha-doc-local");
         resultNames.Should().Contain("alpha-doc-foo");
         resultNames.Should().Contain("alpha-doc-bar");
+    }
+
+    /// <summary>F5: when the caller has already materialized candidates, the store must use them
+    /// rather than calling ListScoped a second time. Asserted behaviourally — a candidate list
+    /// narrowed to one entry must produce a result set of at most that one entry, which is only
+    /// possible if the store honoured it.</summary>
+    [Fact]
+    public void SearchAll_WithPreMaterializedCandidates_DoesNotReListScope()
+    {
+        Add("", "alpha-one", "alpha content one");
+        Add("", "alpha-two", "alpha content two");
+
+        var all = _store.ListScoped(null);
+        var narrowed = all.Where(c => c.Entry.Name == "alpha-one").ToList();
+
+        var results = _store.SearchAll(new SearchQuery("alpha") { Limit = 20, Candidates = narrowed });
+
+        results.OfType<EntryResult>().Select(r => r.Item.Entry.Name)
+            .Should().BeEquivalentTo(["alpha-one"]);
     }
 }

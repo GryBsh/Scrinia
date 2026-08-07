@@ -227,9 +227,20 @@ public partial class ScriniaCommands
         // the same per-hit attributes/dates/anchors the tool does. MemoryStoreContext.Current is
         // set by WorkspaceSetup.Configure above.
         var store = MemoryStoreContext.Current!;
-        var matches = (await ScriniaMcpTools.ExecuteSearchAsync(
-            store, query, scopes, limit, excludeTopics, context, pathPrefix,
-            attributeFilter: null, cancellationToken)).Matches;
+        var matches = (await SearchPipeline.ExecuteAsync(
+            store,
+            new SearchQuery(query)
+            {
+                Scopes = scopes,
+                Limit = limit,
+                ExcludeTopics = excludeTopics,
+                PathPrefix = pathPrefix,
+            },
+            SearchContributorContext.Current,
+            EntityGraphScoreContext.Current,
+            context,
+            surfaceEntityFacts: false,
+            cancellationToken)).Matches;
         if (matches.Count == 0)
         {
             if (json)

@@ -7,7 +7,7 @@ namespace Scrinia.Tests;
 
 /// <summary>
 /// Exercises the entity-graph score channel end-to-end through the public
-/// <see cref="FileMemoryStore.SearchAll(string, string?, int, IReadOnlyDictionary{string, double}?, IReadOnlyDictionary{string, double}?)"/>
+/// <see cref="FileMemoryStore.SearchAll(SearchQuery)"/>
 /// (WeightedAttributeScorer is internal). Confirms the entity source is a distinct fusion source
 /// under both Sum and RRF, and that an empty/null entity dict is inert (no-regression guard).
 /// </summary>
@@ -44,8 +44,7 @@ public sealed class EntityGraphSourceSearchTests : IDisposable
         var entity = new Dictionary<string, double> { ["local|lonely"] = 50.0 };
 
         // Query matches NO content — only the entity source can surface anything.
-        var results = _store.SearchAll("zzqqxx", scopes: null, limit: 10,
-            supplementalScores: null, entityGraphScores: entity);
+        var results = _store.SearchAll(new SearchQuery("zzqqxx") { Limit = 10, EntityGraphScores = entity });
 
         var names = results.Select(GetName).ToList();
         names.Should().Contain("lonely");
@@ -70,8 +69,7 @@ public sealed class EntityGraphSourceSearchTests : IDisposable
                 ContentPreview: "also unrelated content"));
             var entity = new Dictionary<string, double> { ["local|lonely"] = 50.0 };
 
-            var results = store.SearchAll("zzqqxx", scopes: null, limit: 10,
-                supplementalScores: null, entityGraphScores: entity);
+            var results = store.SearchAll(new SearchQuery("zzqqxx") { Limit = 10, EntityGraphScores = entity });
 
             results.Select(GetName).Should().Contain("lonely");
         }
@@ -89,11 +87,13 @@ public sealed class EntityGraphSourceSearchTests : IDisposable
         _store.Upsert(new ArtifactEntry("beta", "test://beta", 0, 0, DateTimeOffset.UtcNow,
             ContentPreview: "beta content about widgets"));
 
-        var withNull = _store.SearchAll("widgets", null, 10, supplementalScores: null, entityGraphScores: null)
+        var withNull = _store.SearchAll(new SearchQuery("widgets") { Limit = 10 })
             .Select(GetName).ToList();
-        var withEmpty = _store.SearchAll("widgets", null, 10, supplementalScores: null,
-            entityGraphScores: new Dictionary<string, double>())
-            .Select(GetName).ToList();
+        var withEmpty = _store.SearchAll(new SearchQuery("widgets")
+        {
+            Limit = 10,
+            EntityGraphScores = new Dictionary<string, double>(),
+        }).Select(GetName).ToList();
 
         withEmpty.Should().Equal(withNull);
         withNull.Should().Contain("alpha").And.Contain("beta");

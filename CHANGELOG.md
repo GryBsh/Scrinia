@@ -34,6 +34,60 @@ and all assembly attributes.
   output only; the JSON `error` field stays a single clean message. Scripts parsing
   `.content` from a not-found `scri show --json` must switch to checking the exit code.
 
+### Changed — search reuses the pipeline's materialized candidates
+
+- `SearchPipeline.ExecuteAsync` now passes its already-materialized candidate list through
+  `SearchQuery.Candidates` so `FileMemoryStore.SearchAll` skips a second `ListScoped` call.
+  Measured against a LoCoMo-seeded corpus (70–272 memories, 200–500 queries, `scrinia-bench
+  searchcost`): consistently faster (~0.2–0.3ms lower median `SearchAll` cost, roughly 20–25%
+  at these corpus sizes) but sub-millisecond in absolute terms — real, not noise, but not the
+  point of the change. **The behavior change that matters**: candidates are captured before
+  the `await` on the score contributor (which for an embedding provider can run for seconds),
+  so a memory written during that window no longer appears in the same search's results —
+  previously the store's own re-list would have picked it up. Search was never transactional
+  with concurrent writes, and the contributor already scored against the earlier snapshot, so
+  this makes the two halves of one search consistent with each other rather than half-fresh.
+
+### Changed — remote-mode search filters server-side
+
+- `HttpMemoryStore.SearchAll` sent only `q`, `scopes`, and `limit` to `GET /search`;
+  `excludeTopics`, `pathPrefix`, and `attributeFilter` were applied by post-filtering the
+  results after they came back over the wire — filtering an already-truncated top-K. A
+  remote search scoped to a `pathPrefix` that most of the corpus falls outside of could
+  return far fewer than `limit` matches, or none, even when enough matching memories
+  existed. All three filters are now sent to the server, so a filtered search against a
+  remote store returns up to `limit` matching results.
+- New `POST /api/v1/stores/{store}/search`, taking a `SearchRequest` body — needed
+  because `attributeFilter` is a dictionary of arrays, which does not fit a query string.
+  `GET /search` additively gained `excludeTopics` and `pathPrefix`. Both are
+  backward-compatible: existing `GET /search` callers are unaffected, and
+  `HttpMemoryStore` only POSTs when an attribute filter is present, GETting otherwise.
+  **That compatibility only runs one direction.** An old client against a new server is
+  fine. A new client (this branch's `HttpMemoryStore`) against an *older* server is not:
+  `excludeTopics` and `pathPrefix` now travel only as additive query parameters, and an
+  older v1 server ignores query parameters it doesn't recognize rather than rejecting the
+  request. So `scri search "x" --path-prefix /findings/` against an older server silently
+  returns memories from every path, and `--exclude-topics goal` silently returns memories
+  from the topic the caller asked to exclude — this branch trades a recall bug (results
+  under-filled by post-limit filtering) for a silent precision bug (filters not applied at
+  all) whenever the server on the other end predates this change. `attributeFilter` is the
+  one exception, and only by luck, not by design: it requires `POST /search`, which an
+  older server doesn't expose, so the 404/405 hits `HttpMemoryStore`'s
+  `!resp.IsSuccessStatusCode` guard and the search returns empty instead of unfiltered.
+  There is no version handshake in `HttpMemoryStore` — the mismatch is undetected on both
+  ends. A capability probe (client asks the server what it supports before relying on it)
+  is the right fix and is deferred to the `store-boundaries` branch.
+
+### Fixed — remote search results reported every entry, chunk, and topic as scope "local"
+
+- `HttpMemoryStore.SearchAll` recovered a result's scope only when its wire name
+  contained `':'`. An entry or chunk's wire name is a v3 path (e.g.
+  `/goal/G-1/widget-0`) and a topic's is a `FormatScopeLabel` display string — neither
+  ever contains `':'` — so every remote search result reported `scope: "local"`
+  regardless of where it actually lived. Entry and chunk names now parse
+  unconditionally via `ParseQualifiedName`; topic names via the new
+  `MemoryNaming.ParseScopeLabel`, the inverse of `FormatScopeLabel`.
+
 ### Fixed — response envelope can no longer be impersonated by memory content
 
 - The twenty internal handlers in `Scrinia.Mcp` returned already-rendered YAML, so consumers

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Scrinia.Core.Search;
 using Scrinia.Server.Models;
 using Xunit;
 
@@ -207,4 +208,46 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
         item.Tags.Should().Contain("alpha");
     }
 
+    private async Task SeedAsync(string name, string body, string[]? tags = null)
+    {
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories",
+            new StoreRequest([body], name, body, Tags: tags));
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task Search_Get_WithPathPrefix_ExcludesOtherSubtrees()
+    {
+        await SeedAsync("/api/alpha-note", "alpha content");
+        await SeedAsync("/goal/G-9/alpha-note", "alpha content");
+
+        var resp = await _client.GetFromJsonAsync<SearchResponse>(
+            $"{_base}/search?q=alpha&limit=50&pathPrefix=/api/");
+
+        resp!.Results.Select(r => r.Name).Should().Contain(n => n.Contains("/api/alpha-note"));
+        resp.Results.Select(r => r.Name).Should().NotContain(n => n.Contains("/goal/"));
+    }
+
+    [Fact]
+    public async Task Search_Post_WithAttributeFilter_ReturnsOnlyMatchingEntries()
+    {
+        await SeedAsync("/api/tagged-note", "beta content", tags: ["urgent"]);
+        await SeedAsync("/api/untagged-note", "beta content");
+
+        var resp = await _client.PostAsJsonAsync($"{_base}/search",
+            new SearchRequest("beta", Limit: 50,
+                AttributeFilter: new Dictionary<string, string[]> { [KnownAttributes.TagKey] = ["urgent"] }));
+        var body = await resp.Content.ReadFromJsonAsync<SearchResponse>();
+
+        body!.Results.Select(r => r.Name).Should().Contain(n => n.Contains("tagged-note"));
+        body.Results.Select(r => r.Name).Should().NotContain(n => n.Contains("untagged-note"));
+    }
+
+    [Fact]
+    public async Task Search_Post_MissingQuery_ReturnsBadRequest()
+    {
+        var resp = await _client.PostAsJsonAsync($"{_base}/search", new SearchRequest("", Limit: 10));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
 }

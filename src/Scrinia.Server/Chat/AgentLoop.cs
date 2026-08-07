@@ -165,7 +165,7 @@ public static class AgentLoop
             return "Error: query is required.";
 
         limit = Math.Clamp(limit, 1, 50);
-        var results = store.SearchAll(query, null, limit);
+        var results = store.SearchAll(new SearchQuery(query) { Limit = limit });
 
         if (results.Count == 0)
             return "No matching memories found.";
