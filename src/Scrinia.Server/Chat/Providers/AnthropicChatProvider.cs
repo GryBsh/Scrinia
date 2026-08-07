@@ -45,57 +45,27 @@ public sealed class AnthropicChatProvider : IChatProvider, IDisposable
 
         var jsonBody = JsonSerializer.Serialize(request, AnthropicChatJsonContext.Default.AnthropicRequest);
 
-        HttpResponseMessage response;
-        string? circuitError = null;
-        try
-        {
-            _circuitBreaker.EnsureClosed();
-            response = await RetryPolicy.ExecuteAsync(
-                async () =>
-                {
-                    var httpReq = new HttpRequestMessage(HttpMethod.Post, "v1/messages");
-                    httpReq.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-                    return await _http.SendAsync(httpReq, HttpCompletionOption.ResponseHeadersRead, ct);
-                },
-                resp => TransientDetector.IsTransient(resp),
-                _retryOptions,
-                logger: null,
-                ct);
-        }
-        catch (CircuitBreakerOpenException ex)
-        {
-            circuitError = ex.Message;
-            response = null!;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw; // client disconnect / caller cancel — not a provider health signal
-        }
-        catch (Exception)
-        {
-            _circuitBreaker.RecordFailure();
-            throw; // Let it propagate to ChatEndpoints catch-all
-        }
+        var (response, error) = await ChatProviderHttp.SendAsync(
+            _http,
+            () =>
+            {
+                var httpReq = new HttpRequestMessage(HttpMethod.Post, "v1/messages");
+                httpReq.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                return httpReq;
+            },
+            _circuitBreaker, _retryOptions, ct);
 
-        if (circuitError is not null)
+        if (error is not null)
         {
-            yield return new ChatEvent("error", Error: circuitError);
+            yield return new ChatEvent("error", Error: error);
             yield break;
         }
+        if (response is null)
+            throw new InvalidOperationException(
+                "ChatProviderHttp.SendAsync returned neither a response nor an error.");
 
         using (response)
         {
-            if (!response.IsSuccessStatusCode)
-            {
-                if (TransientDetector.IsTransient(response))
-                    _circuitBreaker.RecordFailure();
-                string body = "";
-                try { body = await response.Content.ReadAsStringAsync(ct); } catch { }
-                var detail = body.Length > 500 ? body[..500] + "..." : body;
-                yield return new ChatEvent("error", Error: $"Provider returned {(int)response.StatusCode}: {detail}");
-                yield break;
-            }
-
             using var stream = await response.Content.ReadAsStreamAsync(ct);
             using var reader = new StreamReader(stream);
 

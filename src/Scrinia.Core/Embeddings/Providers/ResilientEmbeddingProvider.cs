@@ -67,7 +67,7 @@ public abstract class ResilientEmbeddingProvider : IEmbeddingProvider
             {
                 var errorBody = await response.Content.ReadAsStringAsync(ct);
                 Logger.LogWarning("{Provider} embedding request failed: HTTP {StatusCode} — {Body}",
-                    ProviderName, (int)response.StatusCode, errorBody.Length > 500 ? errorBody[..500] : errorBody);
+                    ProviderName, (int)response.StatusCode, HttpErrorBody.Truncate(errorBody));
                 // 4xx is a per-input client error (e.g. "input length exceeds context length")
                 // bad payload, not provider health. Do NOT trip the circuit breaker: that would
                 // cascade-fail every subsequent embed in a reindex even when the provider is
