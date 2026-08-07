@@ -160,16 +160,12 @@ public sealed class PluginPipeline
         return deleted;
     }
 
-    // CA1068: ct is kept in its existing position (not last) to preserve the call site at
-    // MemoryEndpoints.RunSearch and the signature Task 5 (HttpMemoryStore) is built against;
-    // reordering would be a breaking change to an interface pinned across this branch.
-#pragma warning disable CA1068
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(
-        IMemoryStore store, string query, string? scopes, int limit, CancellationToken ct = default,
+        IMemoryStore store, string query, string? scopes, int limit,
         string? excludeTopics = null,
         string? pathPrefix = null,
-        IReadOnlyDictionary<string, string[]>? attributeFilter = null)
-#pragma warning restore CA1068
+        IReadOnlyDictionary<string, string[]>? attributeFilter = null,
+        CancellationToken ct = default)
     {
         var contributor = SearchContributorContext.Current;
         var entityContributor = EntityGraphScoreContext.Current;

@@ -383,7 +383,9 @@ git commit -m "test(store): pin local/remote search parity with a conformance su
 
 **Interfaces:**
 - Produces, for Task 3: `POST /api/v1/stores/{store}/search` accepting `SearchRequest`, and `GET /api/v1/stores/{store}/search` additionally accepting `excludeTopics` and `pathPrefix`. Both return the existing `SearchResponse` shape unchanged.
-- Produces, for Task 5: `PluginPipeline.SearchAsync(IMemoryStore, string, string?, int, CancellationToken, string?, string?, IReadOnlyDictionary<string,string[]>?)`.
+- Produces, for Task 5: `PluginPipeline.SearchAsync(IMemoryStore, string, string?, int, string?, string?, IReadOnlyDictionary<string,string[]>?, CancellationToken)`.
+
+**Corrected during Task 2.** An earlier draft kept `CancellationToken ct = default` in its original 5th position and appended the filter parameters after it, which trips `CA1068` ("CancellationToken must be the last parameter") — and `Directory.Build.props:45` sets `TreatWarningsAsErrors=true`, so it is a hard build failure. The first implementer suppressed it with a `#pragma`. Suppressing a correct analyzer to preserve a parameter order that nothing depends on is the wrong trade: this method has exactly one caller in the repo (`MemoryEndpoints.cs:304`), which this same task edits. **`ct` goes last.**
 
 - [ ] **Step 1: Add the request DTO**
 
@@ -413,10 +415,11 @@ Replace `src/Scrinia.Server/Services/PluginPipeline.cs:163-189` with:
 
 ```csharp
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(
-        IMemoryStore store, string query, string? scopes, int limit, CancellationToken ct = default,
+        IMemoryStore store, string query, string? scopes, int limit,
         string? excludeTopics = null,
         string? pathPrefix = null,
-        IReadOnlyDictionary<string, string[]>? attributeFilter = null)
+        IReadOnlyDictionary<string, string[]>? attributeFilter = null,
+        CancellationToken ct = default)
     {
         var contributor = SearchContributorContext.Current;
         var entityContributor = EntityGraphScoreContext.Current;
@@ -514,8 +517,8 @@ Replace the body of `SearchMemories` (`:249-299`) with a parameter-widened signa
             return Results.BadRequest(new ErrorResponse("attributeFilter may not exceed 64 keys."));
         limit = Math.Clamp(limit, 1, 1000);
 
-        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit, ct,
-            excludeTopics, pathPrefix, attributeFilter);
+        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit,
+            excludeTopics, pathPrefix, attributeFilter, ct);
         var mapped = results.Select<SearchResult, SearchResultItem>(r => r switch
         {
             EntryResult er => new SearchResultItem(
@@ -1292,10 +1295,11 @@ Replace the whole body of `PluginPipeline.SearchAsync` with a delegation:
     /// attributeFilter, no context augmentation. The copy is gone; only the hook-free forwarding
     /// remains.</summary>
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(
-        IMemoryStore store, string query, string? scopes, int limit, CancellationToken ct = default,
+        IMemoryStore store, string query, string? scopes, int limit,
         string? excludeTopics = null,
         string? pathPrefix = null,
-        IReadOnlyDictionary<string, string[]>? attributeFilter = null)
+        IReadOnlyDictionary<string, string[]>? attributeFilter = null,
+        CancellationToken ct = default)
     {
         var outcome = await SearchPipeline.ExecuteAsync(
             store,
@@ -1332,7 +1336,7 @@ Append to `tests/Scrinia.Server.Tests/Conformance/StoreConformanceTests.cs`, and
     public async Task ServerPipeline_AndSharedPipeline_AgreeUnderAFilter()
     {
         var pipeline = new PluginPipeline([]);
-        var viaServer = await pipeline.SearchAsync(fx.Local, "widget", null, 100, default, null, "/api/", null);
+        var viaServer = await pipeline.SearchAsync(fx.Local, "widget", null, 100, null, "/api/", null);
         var viaShared = (await SearchPipeline.ExecuteAsync(
             fx.Local, new SearchQuery("widget") { Limit = 100, PathPrefix = "/api/" },
             null, null)).Matches;

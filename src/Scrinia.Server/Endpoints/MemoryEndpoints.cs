@@ -301,8 +301,8 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse("attributeFilter may not exceed 64 keys."));
         limit = Math.Clamp(limit, 1, 1000);
 
-        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit, ct,
-            excludeTopics, pathPrefix, attributeFilter);
+        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit,
+            excludeTopics, pathPrefix, attributeFilter, ct);
         var mapped = results.Select<SearchResult, SearchResultItem>(r => r switch
         {
             EntryResult er => new SearchResultItem(
