@@ -12,6 +12,7 @@ namespace Scrinia.Server.Models;
 [JsonSerializable(typeof(ListResponse))]
 [JsonSerializable(typeof(MemoryListItem))]
 [JsonSerializable(typeof(ShowResponse))]
+[JsonSerializable(typeof(SearchRequest))]
 [JsonSerializable(typeof(SearchResponse))]
 [JsonSerializable(typeof(SearchResultItem))]
 [JsonSerializable(typeof(ChunkResponse))]

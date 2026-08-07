@@ -160,8 +160,16 @@ public sealed class PluginPipeline
         return deleted;
     }
 
+    // CA1068: ct is kept in its existing position (not last) to preserve the call site at
+    // MemoryEndpoints.RunSearch and the signature Task 5 (HttpMemoryStore) is built against;
+    // reordering would be a breaking change to an interface pinned across this branch.
+#pragma warning disable CA1068
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(
-        IMemoryStore store, string query, string? scopes, int limit, CancellationToken ct = default)
+        IMemoryStore store, string query, string? scopes, int limit, CancellationToken ct = default,
+        string? excludeTopics = null,
+        string? pathPrefix = null,
+        IReadOnlyDictionary<string, string[]>? attributeFilter = null)
+#pragma warning restore CA1068
     {
         var contributor = SearchContributorContext.Current;
         var entityContributor = EntityGraphScoreContext.Current;
@@ -170,21 +178,24 @@ public sealed class PluginPipeline
         IReadOnlyDictionary<string, double>? entityScores = null;
         if (contributor is not null || entityContributor is not null)
         {
-            var candidates = store.ListScoped(scopes);
+            // Contributors must see the same excludeTopics-filtered pool the scorer will, so an
+            // excluded topic cannot influence scoring.
+            var candidates = store.ListScoped(scopes, excludeTopics);
             if (contributor is not null)
                 supplemental = await contributor.ComputeScoresAsync(query, candidates, store, ct);
             if (entityContributor is not null)
             {
-                var factStore = string.IsNullOrWhiteSpace(scopes)
+                var factStore = string.IsNullOrWhiteSpace(scopes) && string.IsNullOrWhiteSpace(excludeTopics)
                     ? store.GetEntityFactStore()                       // cached, no rebuild
-                    : EntityFactDerivation.BuildStore(candidates);     // scoped
+                    : EntityFactDerivation.BuildStore(candidates);     // scoped / topic-excluded
                 entityScores = entityContributor.Score(factStore, query);
             }
         }
 
-        // Entity-graph scores are a separate fusion source (not summed into supplemental).
-        return supplemental is { Count: > 0 } || entityScores is { Count: > 0 }
-            ? store.SearchAll(query, scopes, limit, supplemental, entityScores)
-            : store.SearchAll(query, scopes, limit);
+        // Every filter is pushed into SearchAll so it applies BEFORE the top-K cut. Empty
+        // supplemental is normalized to null so the scorer skips the fusion source entirely.
+        var supp = supplemental is { Count: > 0 } ? supplemental : null;
+        return store.SearchAll(query, scopes, limit, excludeTopics, supp, entityScores,
+            pathPrefix, attributeFilter);
     }
 }

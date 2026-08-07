@@ -45,6 +45,16 @@ public sealed record ShowResponse(
     int ChunkCount,
     long OriginalBytes);
 
+/// <summary>Body of POST /search. Exists because attributeFilter is a dictionary of arrays and
+/// does not belong in a query string. Mirrors the GET parameters exactly otherwise.</summary>
+public sealed record SearchRequest(
+    string Q,
+    string? Scopes = null,
+    int Limit = 20,
+    string? ExcludeTopics = null,
+    string? PathPrefix = null,
+    Dictionary<string, string[]>? AttributeFilter = null);
+
 public sealed record SearchResponse(SearchResultItem[] Results);
 
 public sealed record SearchResultItem(

@@ -27,6 +27,7 @@ public static class MemoryEndpoints
         group.MapPost("/memories/{name}/copy", CopyMemory);
         group.MapGet("/memories/{name}/chunks/{i:int}", GetChunk);
         group.MapGet("/search", SearchMemories);
+        group.MapPost("/search", SearchMemoriesPost);
         group.MapPost("/export", ExportTopics);
         group.MapPost("/import", ImportBundle);
     }
@@ -246,14 +247,40 @@ public static class MemoryEndpoints
         return Results.Ok(new ChunkResponse(content, i, totalChunks));
     }
 
-    private static async Task<IResult> SearchMemories(
+    private static Task<IResult> SearchMemories(
         string store,
         RequestContext ctx,
         PluginPipeline pipeline,
         CancellationToken ct,
         string? q = null,
         string? scopes = null,
-        int limit = 20)
+        int limit = 20,
+        string? excludeTopics = null,
+        string? pathPrefix = null)
+        => RunSearch(ctx, pipeline, q, scopes, limit, excludeTopics, pathPrefix, null, ct);
+
+    private static Task<IResult> SearchMemoriesPost(
+        string store,
+        SearchRequest req,
+        RequestContext ctx,
+        PluginPipeline pipeline,
+        CancellationToken ct)
+        => RunSearch(ctx, pipeline, req.Q, req.Scopes, req.Limit, req.ExcludeTopics, req.PathPrefix,
+            req.AttributeFilter, ct);
+
+    /// <summary>The one search implementation behind both GET and POST. GET carries the plain-string
+    /// filters; POST additionally carries attributeFilter, which is a dictionary of arrays and does
+    /// not belong in a query string.</summary>
+    private static async Task<IResult> RunSearch(
+        RequestContext ctx,
+        PluginPipeline pipeline,
+        string? q,
+        string? scopes,
+        int limit,
+        string? excludeTopics,
+        string? pathPrefix,
+        Dictionary<string, string[]>? attributeFilter,
+        CancellationToken ct)
     {
         if (!ctx.HasPermission("search"))
             return Results.Json(new ErrorResponse("Permission 'search' required."), statusCode: 403);
@@ -266,9 +293,16 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse("Query too long (max 10KB)."));
         if (scopes is { Length: > 1024 })
             return Results.BadRequest(new ErrorResponse("Scopes parameter too long (max 1KB)."));
+        if (excludeTopics is { Length: > 1024 })
+            return Results.BadRequest(new ErrorResponse("excludeTopics parameter too long (max 1KB)."));
+        if (pathPrefix is { Length: > 1024 })
+            return Results.BadRequest(new ErrorResponse("pathPrefix parameter too long (max 1KB)."));
+        if (attributeFilter is { Count: > 64 })
+            return Results.BadRequest(new ErrorResponse("attributeFilter may not exceed 64 keys."));
         limit = Math.Clamp(limit, 1, 1000);
 
-        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit, ct);
+        var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit, ct,
+            excludeTopics, pathPrefix, attributeFilter);
         var mapped = results.Select<SearchResult, SearchResultItem>(r => r switch
         {
             EntryResult er => new SearchResultItem(
