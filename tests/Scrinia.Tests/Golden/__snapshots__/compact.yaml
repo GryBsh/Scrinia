@@ -1,0 +1,4 @@
+status: success
+action: compacted
+content: |
+  Already a single chunk, nothing to compact.

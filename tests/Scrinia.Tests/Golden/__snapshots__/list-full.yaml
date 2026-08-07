@@ -1,0 +1,9 @@
+status: success
+action: listed
+content: |
+  Showing 1-2 of 2 memories.
+  
+  name                  chunks       bytes   ~tokens            created  description
+  -------------------------------------------------------------------------------
+  /findings/auth-flow        1      2.0 KB       512  <DATE> 00:00   How session rotation works.
+  /patterns/retry            1      1.0 KB       256  <DATE> 00:00   Exponential backoff with jitter.

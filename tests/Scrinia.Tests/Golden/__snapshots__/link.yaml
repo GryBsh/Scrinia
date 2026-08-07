@@ -1,0 +1,4 @@
+status: success
+action: linked
+content: |
+  Linked '/findings/auth-flow' <-> '/patterns/retry'.
