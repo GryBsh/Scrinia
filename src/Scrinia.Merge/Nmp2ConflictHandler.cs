@@ -1,29 +1,33 @@
+using System.Text;
+
 namespace Scrinia.Merge;
 
 public static class Nmp2ConflictHandler
 {
-    public static int Handle(string ancestorPath, string oursPath, string theirsPath, MergeConfig config)
+    /// <param name="mergedPath">
+    /// Git's %P — the pathname the merged result will be stored under. %A is an extensionless
+    /// temp file in the repo root, so every path derived from it loses the artifact's identity.
+    /// </param>
+    public static int Handle(string ancestorPath, string oursPath, string theirsPath,
+        string mergedPath, MergeConfig config)
     {
-        // 1. Trivial merge: if one side is unchanged from ancestor, take the other
+        // 1. Trivial merge: if one side is unchanged from ancestor, take the other.
+        // Not reached when git drives a two-branch merge — git resolves an unchanged side by
+        // blob OID before consulting a driver. Retained for callers that do reach it.
         if (FilesAreIdentical(ancestorPath, oursPath))
         {
-            // Ours unchanged, take theirs
             File.Copy(theirsPath, oursPath, overwrite: true);
             CopySidecar(theirsPath, oursPath);
             return 0;
         }
 
         if (FilesAreIdentical(ancestorPath, theirsPath))
-        {
-            // Theirs unchanged, keep ours — already resolved
             return 0;
-        }
 
         // 2. Both changed: conflict-as-data
-        // %A path is something like .scrinia/topics/api/auth-flow.nmp2
-        string dir = Path.GetDirectoryName(oursPath)!;
+        string dir = Path.GetDirectoryName(mergedPath)!;
         string dirFull = Path.GetFullPath(dir);
-        string conflictDir = Path.GetFullPath(Path.Combine(dir, config.ConflictDir));
+        string conflictDir = Path.GetFullPath(Path.Combine(dirFull, config.ConflictDir));
         if (Path.IsPathRooted(config.ConflictDir) || !IsWithin(dirFull, conflictDir))
             throw new InvalidOperationException(
                 $"merge.config ConflictDir '{config.ConflictDir}' escapes the artifact directory.");
@@ -33,25 +37,43 @@ public static class Nmp2ConflictHandler
         Directory.CreateDirectory(currentDir);
         Directory.CreateDirectory(incomingDir);
 
-        string fileName = Path.GetFileName(oursPath);
+        // The copies are merge scratch. Committing them would leave stale ours/theirs bytes on
+        // disk that reconcile() prefers over the actual conflict on any later merge the driver
+        // did not handle. Writing the ignore file here — rather than into .scrinia/.gitignore —
+        // covers every ConflictDir name and every workspace, however old.
+        File.WriteAllText(Path.Combine(conflictDir, ".gitignore"), "*\n");
 
-        // Copy our version to conflict/current/
+        string fileName = Path.GetFileName(mergedPath);
+
         File.Copy(oursPath, Path.Combine(currentDir, fileName), overwrite: true);
-        CopySidecar(oursPath, Path.Combine(currentDir, fileName));
-
-        // Copy their version to conflict/incoming/
         File.Copy(theirsPath, Path.Combine(incomingDir, fileName), overwrite: true);
-        CopySidecar(theirsPath, Path.Combine(incomingDir, fileName));
 
-        // Keep ours as the "current" version in the original location
-        // (git will use %A as the merge result)
+        MarkMetaConflicted(Path.GetFullPath(mergedPath));
 
-        // Write a conflict marker in the meta.json
-        MarkMetaConflicted(oursPath);
+        // Git adds no markers of its own for a custom driver — whatever the driver
+        // leaves in %A becomes the working-tree file. The markers are the detection
+        // signal reconcile() scans for; the decodable content normally lives in the conflict/
+        // copies, and both callers fall back to the marker body when a copy is absent.
+        WriteConflictMarkers(oursPath, theirsPath, fileName);
 
-        // Exit 0 so git sees a clean merge — conflict is tracked as data,
-        // discovered by reconcile() on next agent session
-        return 0;
+        return 1;
+    }
+
+    private static void WriteConflictMarkers(string oursPath, string theirsPath, string fileName)
+    {
+        string ours = File.ReadAllText(oursPath);
+        string theirs = File.ReadAllText(theirsPath);
+
+        var sb = new StringBuilder();
+        sb.Append("<<<<<<< ours:").Append(fileName).Append('\n');
+        sb.Append(ours);
+        if (!ours.EndsWith('\n')) sb.Append('\n');
+        sb.Append("=======\n");
+        sb.Append(theirs);
+        if (!theirs.EndsWith('\n')) sb.Append('\n');
+        sb.Append(">>>>>>> theirs:").Append(fileName).Append('\n');
+
+        File.WriteAllText(oursPath, sb.ToString());
     }
 
     private static bool FilesAreIdentical(string a, string b)

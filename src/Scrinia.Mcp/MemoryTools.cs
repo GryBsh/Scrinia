@@ -299,7 +299,7 @@ public sealed partial class ScriniaMcpTools
         "Without args: scan and report — read-only, never writes to disk. " +
         "With conflictId + choice: resolve manually ('ours', 'theirs', or 'merged'). " +
         "With conflictId only (no choice) on an auto-resolvable .meta.json conflict: apply the automatic merge. " +
-        "Example: reconcile({ conflictId: 'local/skills/qa.nmp2', choice: 'ours' }).")]
+        "Example: reconcile({ conflictId: 'memories/local/auth-flow.nmp2', choice: 'ours' }).")]
     public Task<string> MemoryReconcile(
         [Description("Workspace-relative path under .scrinia/ to the conflicted file. Omit to scan.")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged'. Required when conflictId is provided.")] string? choice = null,

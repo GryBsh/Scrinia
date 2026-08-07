@@ -53,7 +53,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Scan for merge conflicts or resolve a specific conflict.</summary>
     /// <remarks>
-    /// Conflict identifiers are workspace-relative paths under .scrinia/ (e.g. "local/skills/qa.nmp2"),
+    /// Conflict identifiers are workspace-relative paths under .scrinia/ (e.g. "memories/local/auth-flow.nmp2"),
     /// so the two-step scan → resolve workflow survives across processes. Each resolve re-reads the
     /// conflict markers from disk; there is no in-memory state shared between scan and resolve.
     /// </remarks>
@@ -148,6 +148,8 @@ public sealed partial class ScriniaMcpTools
                 // then re-encode on write below.
                 if (type == "nmp2")
                 {
+                    string side = normalisedChoice == "ours" ? "current" : "incoming";
+                    extracted = TryReadConflictCopy(absolutePath, side) ?? extracted;
                     try { extracted = System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(extracted!)); }
                     catch { /* fall through: write extracted as-is */ }
                 }
@@ -232,8 +234,8 @@ public sealed partial class ScriniaMcpTools
                 }
                 TryExtractConflictSide(fileContent, "theirs", out string? theirsRaw, out _);
 
-                string oursDecoded = TryDecodeNmp2(oursRaw!);
-                string theirsDecoded = TryDecodeNmp2(theirsRaw ?? "");
+                string oursDecoded = TryDecodeNmp2(TryReadConflictCopy(filePath, "current") ?? oursRaw!);
+                string theirsDecoded = TryDecodeNmp2(TryReadConflictCopy(filePath, "incoming") ?? theirsRaw ?? "");
 
                 int afterFirstConflict = fileContent.IndexOf(">>>>>>>", StringComparison.Ordinal) + ">>>>>>>".Length;
                 bool hasMore = afterFirstConflict < fileContent.Length
@@ -354,6 +356,40 @@ public sealed partial class ScriniaMcpTools
         if (string.IsNullOrEmpty(raw)) return "";
         try { return System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(raw)); }
         catch { return raw; }
+    }
+
+    /// <summary>
+    /// Whole conflict copy the merge driver wrote beside the artifact, or null when absent.
+    /// The marker body is not guaranteed to be independently decodable — multi-chunk artifacts,
+    /// extra conflict regions, or markers the driver did not write can leave it so; these copies
+    /// always are.
+    /// </summary>
+    private static string? TryReadConflictCopy(string artifactPath, string side)
+    {
+        string dir = Path.GetDirectoryName(artifactPath)!;
+        string candidate = Path.Combine(dir, ReadConflictDirName(dir), side, Path.GetFileName(artifactPath));
+        if (!File.Exists(candidate)) return null;
+        try { return File.ReadAllText(candidate); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    /// <summary>ConflictDir from .scrinia/merge.config, defaulting to "conflict".</summary>
+    private static string ReadConflictDirName(string artifactDir)
+    {
+        var dir = new DirectoryInfo(artifactDir);
+        while (dir is not null && !string.Equals(dir.Name, ".scrinia", StringComparison.OrdinalIgnoreCase))
+            dir = dir.Parent;
+        if (dir is null) return "conflict";
+
+        string configPath = Path.Combine(dir.FullName, "merge.config");
+        if (!File.Exists(configPath)) return "conflict";
+        try
+        {
+            var node = JsonNode.Parse(File.ReadAllText(configPath));
+            string? configured = node?["conflictDir"]?.GetValue<string>();
+            return string.IsNullOrWhiteSpace(configured) ? "conflict" : configured;
+        }
+        catch { return "conflict"; }
     }
 
     private static string Indent(string? text, string prefix = "      ")

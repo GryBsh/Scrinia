@@ -331,10 +331,11 @@ public partial class ScriniaCommands
         string scriniaDir = Path.Combine(root, ".scrinia");
 
         // 1. Configure git merge drivers
+        string driver = ResolveMergeDriverPath();
         RunGit(root, "config", "merge.scrinia-meta.driver",
-            $".scrinia/hooks/scri-merge meta %O %A %B");
+            $"\"{driver}\" meta %O %A %B %P");
         RunGit(root, "config", "merge.scrinia-nmp2.driver",
-            $".scrinia/hooks/scri-merge nmp2 %O %A %B");
+            $"\"{driver}\" nmp2 %O %A %B %P");
         AnsiConsole.MarkupLine("[green]  Git merge drivers configured.[/]");
 
         // 2. Create/update .scrinia/.gitattributes
@@ -353,30 +354,28 @@ public partial class ScriniaCommands
         File.WriteAllText(mergeConfigPath, mergeConfigJson + "\n");
         AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(mergeConfigPath)}");
 
-        // 4. Add .scrinia/hooks/scri-merge* to .gitignore if not already there
-        string gitignorePath = Path.Combine(root, ".gitignore");
-        const string hookEntry = ".scrinia/hooks/scri-merge*";
-        bool needsEntry = true;
-        if (File.Exists(gitignorePath))
-        {
-            string content = File.ReadAllText(gitignorePath);
-            if (content.Contains(hookEntry, StringComparison.Ordinal))
-                needsEntry = false;
-        }
-        if (needsEntry)
-        {
-            using var writer = File.AppendText(gitignorePath);
-            writer.WriteLine();
-            writer.WriteLine("# Scrinia merge driver binary (platform-specific)");
-            writer.WriteLine(hookEntry);
-            AnsiConsole.MarkupLine($"[green]  Updated:[/] {Markup.Escape(gitignorePath)}");
-        }
-
-        // 5. Print instructions
+        // 4. Print instructions
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine(
-            "[bold]Multi-user merge driver configured.[/] " +
-            "Copy scri-merge binary to [blue].scrinia/hooks/[/] for your platform.");
+            $"[bold]Multi-user merge driver configured.[/] Git will invoke [blue]{Markup.Escape(driver)}[/].");
+    }
+
+    /// <summary>
+    /// Path git should invoke for the merge driver. scri-merge is published beside scri, so
+    /// prefer the sibling of the running executable; fall back to the bare name for installs
+    /// that expose it on PATH only.
+    /// </summary>
+    private static string ResolveMergeDriverPath()
+    {
+        string exeName = OperatingSystem.IsWindows() ? "scri-merge.exe" : "scri-merge";
+        string? installDir = Path.GetDirectoryName(Environment.ProcessPath ?? "");
+        if (!string.IsNullOrEmpty(installDir))
+        {
+            string sibling = Path.Combine(installDir, exeName);
+            if (File.Exists(sibling))
+                return sibling.Replace('\\', '/');   // git runs driver commands through sh
+        }
+        return "scri-merge";
     }
 
     private static void RunGit(string workingDir, params string[] args)

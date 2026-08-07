@@ -19,7 +19,7 @@ public sealed class ConflictDirContainmentTests
         string theirs = Path.Combine(dir, "theirs.nmp2"); File.WriteAllText(theirs, "THEIRS");
         var config = new MergeConfig(ConflictDir: conflictDir);
 
-        Action act = () => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, config);
+        Action act = () => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, ours, config);
         act.Should().Throw<InvalidOperationException>();
     }
 
@@ -33,7 +33,7 @@ public sealed class ConflictDirContainmentTests
         string theirs = Path.Combine(dir, "theirs.nmp2"); File.WriteAllText(theirs, "THEIRS");
         var config = new MergeConfig(); // default ConflictDir = "conflict"
 
-        Nmp2ConflictHandler.Handle(ancestor, ours, theirs, config);
+        Nmp2ConflictHandler.Handle(ancestor, ours, theirs, ours, config);
         Directory.Exists(Path.Combine(dir, "conflict", "current")).Should().BeTrue();
     }
 }

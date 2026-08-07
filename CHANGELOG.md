@@ -10,6 +10,41 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — git merge driver
+
+- The `.nmp2` merge driver crashed on every real conflict. Git passes extensionless temp
+  files, so `Path.GetDirectoryName` returned an empty string and `Path.GetFullPath` threw;
+  the merge halted with an unhandled `ArgumentException` and no way to resolve it through
+  `reconcile()`. Both drivers now receive git's `%P` pathname and resolve `merge.config`
+  from it; the `.nmp2` driver additionally resolves the artifact, its sidecar, and the
+  conflict directory from the same path.
+- A conflicted `.nmp2` now stops the merge with git's path marked unmerged, writes whole
+  `conflict/current` and `conflict/incoming` copies beside the artifact, marks the sidecar
+  `"conflicted": true`, and leaves markers for `reconcile()` to find. `reconcile()` prefers
+  the whole `conflict/current` and `conflict/incoming` copies when resolving a conflicted
+  `.nmp2`, falling back to the marker body when a copy is absent — so a marker body that is
+  not independently decodable no longer blocks resolution.
+- A driver registered before `%P` repairs its own local git config and stops, rather than
+  proceeding without knowing which artifact it is merging.
+- `scri-merge` is published alongside `scri` and included in the CLI release archives. No
+  release previously contained it, so `scri setup --multi-user` registered a driver that was
+  not present and asked the user to copy a binary they had never been given.
+- Conflict copies are no longer committable: the driver writes a `.gitignore` containing `*`
+  into the conflict directory as it creates it. Committed copies persisted after
+  `git merge --abort` and were preferred by `reconcile()` on every later conflict, resolving
+  from stale bytes instead of the actual merge.
+
+**Upgrade action for existing workspaces.** A workspace configured before this release has
+`merge.scrinia-nmp2.driver` pointing at `.scrinia/hooks/scri-merge`, a path no release ever
+shipped. Git cannot run it, so the driver never executes and cannot repair itself: the merge
+leaves the path unmerged with `ours`' content and no conflict markers. Re-run
+`scri setup --multi-user` once per clone to re-point both drivers at the installed binary.
+
+### Fixed — bundle import
+
+- Bundle import left the cached entity-fact store stale, so `facts()` and entity-fact
+  surfacing in search omitted every imported memory for the life of the process.
+
 ### Changed — file-entity unification
 
 - `.scrinia/skills/` and `.scrinia/agent/` now resolve through a single authority
