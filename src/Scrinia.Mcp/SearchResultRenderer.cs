@@ -1,4 +1,3 @@
-using System.Text;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;

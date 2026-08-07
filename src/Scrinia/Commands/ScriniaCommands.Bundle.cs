@@ -52,8 +52,8 @@ public partial class ScriniaCommands
         // `scri bundle export` exits 0 on a failed export. Left as-is deliberately: the
         // response-shape branch sanctions exactly one exit-code change (`scri show` /
         // `scri forget`), and widening it here would ship an unannounced third.
-        // Not tracked in an issue — see the response-shape branch report (task-3-report.md,
-        // "Other deliberate decisions") for the reasoning and the recommended follow-up.
+        // Recorded as a residual — see Scrinia memory /findings/mcp-response-shape-deferred-followups
+        // for the reasoning and the recommended follow-up.
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {
             if (json) { WriteJsonError(result); return 1; }
@@ -93,7 +93,8 @@ public partial class ScriniaCommands
         string result = response.ToYaml();
 
         // NOTE: dead guard, same as Export above — neither "Error:" nor "No topics" can be a
-        // prefix of a rendered envelope. Deliberately preserved; see the note in Export.
+        // prefix of a rendered envelope. Deliberately preserved; see the note in Export and
+        // Scrinia memory /findings/mcp-response-shape-deferred-followups.
         // (The ToYaml() above is not wasted: `result` is also the text printed on success.)
         if (result.StartsWith("Error:", StringComparison.Ordinal) ||
             result.StartsWith("No topics", StringComparison.Ordinal))

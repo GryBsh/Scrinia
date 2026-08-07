@@ -30,6 +30,13 @@ public class ResponseStatusIsolationTests
         yaml.Should().StartWith("status: success");
     }
 
+    /// <summary>
+    /// Green both before and after this branch, not a regression guard. <c>Restore</c> never folds
+    /// a memory body into <c>ContentSections</c> (see <see cref="CliLink_WithPoisonedReason_ExitsZero"/>
+    /// below for the reachable case) — <c>ContentSections</c> only ever carries the "Skills available"
+    /// line or the empty-state fallback, so no poisoned memory body can reach this envelope. Kept as
+    /// documentation that the substring-coupling defect does not apply to <c>scri restore</c>.
+    /// </summary>
     [Fact]
     public async Task CliRestore_WithPoisonedMemory_ExitsZero()
     {

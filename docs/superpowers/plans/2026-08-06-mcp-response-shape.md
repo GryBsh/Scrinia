@@ -352,7 +352,11 @@ Expected: **two** failures.
 
 `Recall_OfBodyContainingStatusError_IsStillSuccess` is expected to PASS already — `MemoryRecall` returns the envelope directly and nothing greps it. It is included because it is the property the whole branch preserves, and it must keep passing through Task 3.
 
-If the CLI test passes unexpectedly, the poisoned body did not reach the restore envelope. Confirm `Restore` folds memory content into `ContentSections` (`MemoryTools.Lifecycle.cs:589`) and that `/patterns/` is one of the scopes it gathers; adjust the memory path until the body is present in the response, then re-run.
+If the CLI test passes unexpectedly, the poisoned body did not reach the restore envelope.
+
+**CORRECTED 2026-08-07 during implementation — the original claim was WRONG.** It read: "Confirm `Restore` folds memory content into `ContentSections` (`MemoryTools.Lifecycle.cs:589`) and that `/patterns/` is one of the scopes it gathers; adjust the memory path until the body is present in the response, then re-run."
+
+`Restore` does join `ctx.ContentSections` into the envelope, but `contentSections` is populated at exactly two sites — `MemoryTools.Lifecycle.cs:655` (a `Skills available (N): ...` line) and `:721` (the empty-state fallback). **No memory body ever reaches the restore envelope**, so this instruction could never have been satisfied by adjusting the memory path — `scri restore` cannot exhibit the defect at all. The reachable set is `scri link`, `scri reconcile`, and `scri facts`; this is why the test that actually pins the reachable defect is `CliLink_WithPoisonedReason_ExitsZero`, not a restore test.
 
 - [ ] **Step 3: ~~Commit the failing test~~ — SUPERSEDED**
 
@@ -787,7 +791,9 @@ git commit -m "chore(mcp): fix MatchesRefAttribute typo and reconcile the YamlDo
 ## Branch close
 
 - [ ] **Add the CHANGELOG entry** under `[Unreleased]` in `CHANGELOG.md`, covering both user-visible fixes:
-  - **Fixed:** `scri restore`, `scri reconcile`, `scri facts`, `scri append`, `scri compact` and `scri link` returned exit code 1 on a successful run whenever the response body contained the text `status: error`.
+  - **CORRECTED 2026-08-07 during implementation — the original claim was WRONG.** It read: "**Fixed:** `scri restore`, `scri reconcile`, `scri facts`, `scri append`, `scri compact` and `scri link` returned exit code 1 on a successful run whenever the response body contained the text `status: error`."
+
+    Three of those six commands cannot exhibit the defect. `scri restore` never folds a memory body into `ContentSections` (see the correction at Step 2 above). `scri append` and `scri compact` are unreachable for a different reason: their success text interpolates only a memory *name*, and `':'` sits in the explicit `s_portableInvalid` set (`FileMemoryStore.cs:298-299`) — not the platform-dependent `GetInvalidFileNameChars()` — so a name can never carry `status: error` on any platform. **Fixed:** `scri link`, `scri reconcile`, and `scri facts` returned exit code 1 on a successful run whenever the response body contained the text `status: error`.
   - **Fixed:** `scri show` and `scri forget` returned exit code 0 when the memory did not exist. They now return 1. Scripts that relied on the old always-zero behaviour will start seeing failures — which is the point, but it is a behaviour change and belongs under a `Changed` note as well as `Fixed`.
 
 - [ ] **Record residuals** to `.scrinia` under `/findings/mcp-response-shape-deferred-followups` if any finding was consciously shipped, matching how the last three branches closed. If nothing was deferred, skip — do not write an empty finding.

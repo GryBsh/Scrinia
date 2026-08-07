@@ -34,12 +34,12 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal Task<McpResponse> FactsResponse(
         string op,
-        string? entity = null,
-        string[]? entities = null,
-        string? key = null,
-        string? scopes = null,
-        string? excludeTopics = null,
-        int limit = 50,
+        string? entity,
+        string[]? entities,
+        string? key,
+        string? scopes,
+        string? excludeTopics,
+        int limit,
         CancellationToken cancellationToken = default)
     {
         var facts = SelectFactStore(CurrentStore, scopes, excludeTopics);
