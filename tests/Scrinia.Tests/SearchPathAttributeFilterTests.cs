@@ -79,21 +79,40 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
     }
 
     [Fact]
-    public void SearchAll_NoFilter_MatchesUnfilteredOverload()
+    public void SearchAll_EmptyFilters_MatchNoFilter()
     {
-        for (int i = 0; i < 4; i++) Seed("local:notes", $"m{i}", "alpha");
+        // Topic name is literally "alpha" (not just entry content) so it scores a topic-name-exact
+        // match (100) against the query below and survives the relevance gate — this is what makes
+        // the topic-dropping regression below observable, not just the entry-side filter.
+        for (int i = 0; i < 4; i++) Seed("local:alpha", $"m{i}", "alpha note");
 
-        var filtered = _store.SearchAll(new SearchQuery("alpha") { Limit = 10 });
-        var plain = _store.SearchAll(new SearchQuery("alpha") { Limit = 10 });
+        // The collapsed body decides via `hasAttr = query.AttributeFilter is { Count: > 0 }`, so
+        // an empty (non-null) AttributeFilter dictionary must take the same no-filter path as
+        // omitting it entirely. A regression to a plain `!= null` check would treat an empty
+        // dictionary as an active filter — and since topics carry no attributes, `hasAttr` being
+        // wrongly true drops every topic result via `topics = []`, which the entry-only assertions
+        // in the other tests in this file cannot catch. The "local:alpha" topic above is seeded
+        // specifically so it scores > 0 against the query and would appear in `none` but vanish
+        // from `empty` under that regression.
+        var empty = _store.SearchAll(new SearchQuery("alpha")
+        {
+            Limit = 10,
+            PathPrefix = "",
+            AttributeFilter = new Dictionary<string, string[]>(),
+        });
+        var none = _store.SearchAll(new SearchQuery("alpha") { Limit = 10 });
 
         // Approximate, not exact: the recency term decays against DateTimeOffset.UtcNow captured
         // independently in each SearchAll call, so two sequential calls a few ticks apart produce
         // scores that agree to ~1e-8 but not bit-for-bit. That jitter is expected wall-clock noise,
-        // not a sign the no-filter branch diverged from the base overload it delegates to.
-        var filteredScores = filtered.Select(r => r.Score).ToList();
-        var plainScores = plain.Select(r => r.Score).ToList();
-        filteredScores.Should().HaveCount(plainScores.Count);
-        for (int i = 0; i < filteredScores.Count; i++)
-            filteredScores[i].Should().BeApproximately(plainScores[i], 1e-3);
+        // not a sign the empty-filter branch diverged from the no-filter path.
+        var emptyScores = empty.Select(r => r.Score).ToList();
+        var noneScores = none.Select(r => r.Score).ToList();
+        emptyScores.Should().HaveCount(noneScores.Count);
+        for (int i = 0; i < emptyScores.Count; i++)
+            emptyScores[i].Should().BeApproximately(noneScores[i], 1e-3);
+
+        none.OfType<TopicResult>().Should().Contain(tr => tr.TopicName == "alpha",
+            because: "the seeded topic must actually be present in the unfiltered baseline for this test to mean anything");
     }
 }

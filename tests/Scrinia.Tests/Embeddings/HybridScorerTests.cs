@@ -62,18 +62,23 @@ public class HybridScorerTests : IDisposable
     }
 
     [Fact]
-    public void SearchAll_WithNullSupplemental_BehavesLikeLegacy()
+    public void SearchAll_WithEmptySupplemental_BehavesLikeLegacy()
     {
         AddEntry("test-memory", "test description about testing");
 
         var legacy = _store.SearchAll(new SearchQuery("test") { Scopes = "local", Limit = 10 });
-        var withNull = _store.SearchAll(new SearchQuery("test") { Scopes = "local", Limit = 10, SupplementalScores = null });
+        var withEmpty = _store.SearchAll(new SearchQuery("test")
+        {
+            Scopes = "local",
+            Limit = 10,
+            SupplementalScores = new Dictionary<string, double>(),
+        });
 
-        legacy.Should().HaveCount(withNull.Count);
+        legacy.Should().HaveCount(withEmpty.Count);
         // The recency multiplier reads DateTimeOffset.UtcNow at scoring time, so two sequential
         // calls can differ at the ~1e-10 level from the milliseconds elapsed between them.
         // Strict double equality would be brittle without telling us anything useful.
-        legacy[0].Score.Should().BeApproximately(withNull[0].Score, 0.001);
+        legacy[0].Score.Should().BeApproximately(withEmpty[0].Score, 0.001);
     }
 
     [Fact]
