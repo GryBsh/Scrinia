@@ -351,9 +351,7 @@ public sealed partial class ScriniaMcpTools
         // Compute code-reference hashes from the `file` attribute values (drift detection). File
         // dependencies flow in exclusively via attributes.file now — the legacy codeRefs parameter
         // was retired.
-        string storeDir = store.GetStoreDirForScope("local");
-        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
-        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+        string workspaceRoot = store.WorkspaceRoot;
 
         var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
                 ? fileRefs : [])
@@ -725,11 +723,7 @@ public sealed partial class ScriniaMcpTools
         string? workspaceRoot = null;
         bool anyCodeRefs = page.Any(p => p.Entry.FileHashes is { Count: > 0 });
         if (anyCodeRefs)
-        {
-            string sd = store.GetStoreDirForScope("local");
-            string sd2 = Path.GetDirectoryName(sd) ?? sd;
-            workspaceRoot = Path.GetDirectoryName(sd2) ?? sd2;
-        }
+            workspaceRoot = store.WorkspaceRoot;
 
         // Build qualified names first to compute dynamic column width (never truncate names)
         var rows = new List<(string Name, ArtifactEntry Entry)>(page.Count);
@@ -1424,9 +1418,7 @@ public sealed partial class ScriniaMcpTools
 
     private static Task<McpResponse> BuildDriftList(IMemoryStore store)
     {
-        string storeDir = store.GetStoreDirForScope("local");
-        string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
-        string workspaceRoot = Path.GetDirectoryName(scriniaDir) ?? scriniaDir;
+        string workspaceRoot = store.WorkspaceRoot;
 
         var allEntries = store.ListScoped(null);
         var results = new List<string>();
