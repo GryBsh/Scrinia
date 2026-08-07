@@ -301,15 +301,35 @@ uses them instead of calling `ListScoped` a second time.
 Related: narrow `LoadIndex` to return `IReadOnlyList<ArtifactEntry>` so
 `LoadIndexUnsafe:593` can return the cached list directly instead of `.ToList()`.
 
-**CORRECTED 2026-08-07 during Task 7 — this proposal was NOT implemented.** Narrowing
-the return type does not remove the copy above it; it relocates it. `LoadIndex` has
-roughly ten mutating callers (`Upsert`, `Remove`, migration helpers, and similar) that
-need a mutable list back — narrowing to `IReadOnlyList<ArtifactEntry>` would push an
-explicit `.ToList()` into each of them, the same number of copies for more churn — while
-every read-only caller would receive a live alias into the index cache's own backing
-list, an aliasing hazard the current `.ToList()` exists to prevent. `LoadIndex` stays
-`List<ArtifactEntry>`, returning a fresh copy. Recorded rather than silently dropped
-because the proposal reads as free in this section and is not.
+**CORRECTED 2026-08-07 during Task 7, then CORRECTED AGAIN 2026-08-07 during Task 7
+review — the first correction's mutating-caller count was itself wrong, and it
+inverted the trade-off it was arguing.**
+
+It read: "Narrowing the return type does not remove the copy above it; it relocates
+it. `LoadIndex` has roughly ten mutating callers (`Upsert`, `Remove`, migration
+helpers, and similar) that need a mutable list back... `LoadIndex` stays
+`List<ArtifactEntry>`, returning a fresh copy." That count was asserted from the
+variable name `existingEntries` at a few call sites, not traced. Traced, of the 20
+production `LoadIndex` call sites: `Upsert` and `Remove` do not call `LoadIndex` at
+all — they write sidecars directly via `GetStoreDirForScope`/`WriteSidecar`/
+`File.Delete` and invalidate the cache, bypassing it entirely. Exactly **one** site
+mutates the returned list: `FileMemoryStore.ImportTopicEntries` (`:1603-1630`), which
+does `existingEntries[idx] = updatedEntry` / `existingEntries.Add(updatedEntry)`
+before `SaveIndex`. The other 19 call sites use `FirstOrDefault`, `foreach`, `.Count`,
+`.Any`, or `.Select` — all of which compile unchanged against
+`IReadOnlyList<ArtifactEntry>`.
+
+On the real count the trade is **favourable**, not against: narrowing costs one
+explicit `.ToList()` (in `ImportTopicEntries`) and saves the other 19 callers a
+defensive copy per call, each of which currently also pays `LoadIndex`'s unconditional
+`FileLock.AcquireShared` (see the measurement section below) even on a cache hit. What
+survives as a reason to defer, not reject: it is a public change to an `IMemoryStore`
+member unrelated to search, made inside a branch scoped to the search contract; and it
+needs its own analysis of whether handing 19 read-only callers a live alias into
+`_indexCache`'s backing list is safe under that cache's invalidation strategy — nobody
+has done that analysis. **Status: not implemented here, deferred to the residuals spec
+for proper evaluation** — not rejected. See
+`/findings/search-contract-deferred-followups`.
 
 **4. Server-side filtering.** Once `PluginPipeline.SearchAsync` delegates to
 `SearchPipeline`, it supports every filter. The remaining work is transport:
@@ -349,6 +369,12 @@ the second `ListScoped` call removes one lock-acquire-then-cache-hit round trip,
 is why the saving is roughly constant per call rather than growing with corpus size.
 This supports the original conclusion better than the cited mechanism did; the
 conclusion is unchanged.
+
+**This strengthens after the Task 7 review correction to the `LoadIndex` narrowing
+discussion above:** of `LoadIndex`'s 20 production call sites, 19 are read-only. Each
+of those 19 currently pays both `LoadIndex`'s unconditional file-handle open and a
+defensive `.ToList()` copy on every call, including a pure cache hit — the lock cost
+this section measures, plus a second, distinct cost this section doesn't measure.
 
 272 memories is a small corpus. Whether this delta holds at thousands of entries in one
 scope is inference, not measurement.
