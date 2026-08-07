@@ -192,7 +192,7 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     private partial class FileStoreJsonContext : JsonSerializerContext;
 
     /// <summary>
-    /// Tunable ranker weights — read by <see cref="SearchAll(string, string?, int)"/>
+    /// Tunable ranker weights — read by <see cref="SearchAll(SearchQuery)"/>
     /// when constructing the underlying <see cref="WeightedAttributeScorer"/>. Set at
     /// construction; <c>WorkspaceSetup.Configure</c> passes the workspace's
     /// <c>Scrinia:Search:*</c> config-derived values.
@@ -1213,27 +1213,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         try { File.WriteAllText(path, content); } catch { /* in-memory store is still correct */ }
     }
 
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20)
-        => SearchAll(query, scopes, limit, supplementalScores: null);
-
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-            return [];
-
-        var searcher = new WeightedAttributeScorer(RankerOptions);
-        var candidates = ListScoped(scopes);
-        // Derive topic infos directly from the candidates we already loaded above instead of
-        // calling GatherTopicInfos — which would LoadIndex every topic scope a second time.
-        // The cache absorbs the actual disk reads but every duplicate call still acquires a
-        // shared file-lock and copies the entry list — avoidable I/O that accumulates over a
-        // long daemon session.
-        var topics = BuildTopicInfosFromCandidates(candidates);
-        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores, entityGraphScores);
-    }
-
     private static List<TopicInfo> BuildTopicInfosFromCandidates(IReadOnlyList<ScopedArtifact> candidates)
     {
         var topics = new List<TopicInfo>();
@@ -1286,88 +1265,46 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
-    /// Efficient override of the default interface method: filters candidates and topics
-    /// at scope-resolution level before searching.
+    /// Filters candidates and topics BEFORE the scorer's top-K cut, so a selective filter fills to
+    /// <c>Limit</c> instead of returning the post-limit remnant. Every filter dimension is a
+    /// property of the parent candidate (path/attributes) or the topic (scope label); chunk results
+    /// inherit their parent's, so filtering parents covers them.
     /// </summary>
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
+    public IReadOnlyList<SearchResult> SearchAll(SearchQuery query)
     {
-        if (string.IsNullOrWhiteSpace(excludeTopics))
-            return SearchAll(query, scopes, limit, supplementalScores: null, entityGraphScores);
-
-        if (string.IsNullOrWhiteSpace(query))
+        if (string.IsNullOrWhiteSpace(query.Query))
             return [];
 
-        var searcher = new WeightedAttributeScorer(RankerOptions);
-        var candidates = ListScoped(scopes, excludeTopics);
-        // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
-        // candidates, so building topic infos from this filtered set automatically gives us
-        // the same shape as GatherTopicInfos+filter without re-LoadIndex-ing.
-        var topics = BuildTopicInfosFromCandidates(candidates);
-        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores: null, entityGraphScores);
-    }
+        bool hasPath = !string.IsNullOrWhiteSpace(query.PathPrefix);
+        bool hasAttr = query.AttributeFilter is { Count: > 0 };
 
-    /// <summary>
-    /// Efficient override of the default interface method: filters candidates at scope-resolution
-    /// level (via <see cref="ListScoped(string?, string?)"/>) BEFORE scoring/limit, so excluded
-    /// topics never occupy result slots even when a supplemental score source (e.g. embeddings) is
-    /// active. Mirrors the excludeTopics-only overload above.
-    /// </summary>
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
-    {
-        if (string.IsNullOrWhiteSpace(excludeTopics))
-            return SearchAll(query, scopes, limit, supplementalScores, entityGraphScores);
+        // Candidates set means the caller (SearchPipeline) already materialized this exact
+        // scope+excludeTopics slice for the contributors — skip the second ListScoped.
+        IReadOnlyList<ScopedArtifact> allCandidates =
+            query.Candidates ?? ListScoped(query.Scopes, query.ExcludeTopics);
 
-        if (string.IsNullOrWhiteSpace(query))
-            return [];
+        IReadOnlyList<ScopedArtifact> entryCandidates = hasPath || hasAttr
+            ? allCandidates
+                .Where(c => SearchResultFilter.CandidateMatches(this, c, query.PathPrefix, query.AttributeFilter))
+                .ToList()
+            : allCandidates;
 
-        var searcher = new WeightedAttributeScorer(RankerOptions);
-        var candidates = ListScoped(scopes, excludeTopics);
-        // ListScoped(scopes, excludeTopics) already excluded the unwanted topic scopes from
-        // candidates, so building topic infos from this filtered set automatically gives us
-        // the same shape as GatherTopicInfos+filter without re-LoadIndex-ing.
-        var topics = BuildTopicInfosFromCandidates(candidates);
-        return searcher.SearchAll(query, candidates, topics, limit, supplementalScores, entityGraphScores);
-    }
-
-    /// <summary>
-    /// Pre-limit path/attribute filtering: filters the candidate and topic lists BEFORE the scorer
-    /// applies the top-K cut, so a selective filter fills to <paramref name="limit"/> instead of
-    /// returning the post-limit remnant. Every filter dimension is a property of the parent
-    /// candidate (path/attributes) or the topic (scope label); chunk results inherit their parent's,
-    /// so filtering parents covers them.
-    /// </summary>
-    public IReadOnlyList<SearchResult> SearchAll(
-        string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores,
-        string? pathPrefix,
-        IReadOnlyDictionary<string, string[]>? attributeFilter)
-    {
-        bool hasPath = !string.IsNullOrWhiteSpace(pathPrefix);
-        bool hasAttr = attributeFilter is { Count: > 0 };
-        if (!hasPath && !hasAttr)
-            return SearchAll(query, scopes, limit, excludeTopics, supplementalScores, entityGraphScores);
-
-        if (string.IsNullOrWhiteSpace(query))
-            return [];
-
-        var searcher = new WeightedAttributeScorer(RankerOptions);
-        var allCandidates = ListScoped(scopes, excludeTopics);
-        var entryCandidates = allCandidates
-            .Where(c => SearchResultFilter.CandidateMatches(this, c, pathPrefix, attributeFilter))
-            .ToList();
         // Topics carry no attributes: an active attribute filter drops them all. Otherwise filter
         // topics by their own scope label, derived from the UNFILTERED candidate set (a topic can
         // match even when its entries are filtered out by a longer path prefix, and vice versa).
-        var topics = hasAttr
-            ? new List<TopicInfo>()
-            : BuildTopicInfosFromCandidates(allCandidates)
-                .Where(t => SearchResultFilter.TopicMatches(t, pathPrefix))
+        List<TopicInfo> topics;
+        if (hasAttr)
+            topics = [];
+        else if (hasPath)
+            topics = BuildTopicInfosFromCandidates(allCandidates)
+                .Where(t => SearchResultFilter.TopicMatches(t, query.PathPrefix))
                 .ToList();
-        return searcher.SearchAll(query, entryCandidates, topics, limit, supplementalScores, entityGraphScores);
+        else
+            topics = BuildTopicInfosFromCandidates(allCandidates);
+
+        var searcher = new WeightedAttributeScorer(RankerOptions);
+        return searcher.SearchAll(query.Query, entryCandidates, topics, query.Limit,
+            query.SupplementalScores, query.EntityGraphScores);
     }
 
     /// <summary>

@@ -58,18 +58,15 @@ public interface IMemoryStore
 
     // Listing & Search
     List<ScopedArtifact> ListScoped(string? scopes = null);
-    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20);
 
     /// <summary>
-    /// Searches with optional supplemental scores from plugins (e.g. embeddings) and an
-    /// optional entity-graph score channel scored as its own fusion source.
-    /// Default implementation falls back to the standard SearchAll (stores without a scorer
-    /// ignore both supplemental and entity-graph scores).
+    /// The one search member. Takes a <see cref="SearchQuery"/> and has no default implementation
+    /// on purpose: the five overloads this replaced carried four default bodies that post-filtered
+    /// after the top-K cut, so any store that did not override them silently returned fewer than
+    /// <c>Limit</c> results for a selective filter. A store that cannot filter must now say so at
+    /// compile time.
     /// </summary>
-    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
-        => SearchAll(query, scopes, limit);
+    IReadOnlyList<SearchResult> SearchAll(SearchQuery query);
 
     // Listing & Search with topic exclusion
 
@@ -86,62 +83,6 @@ public interface IMemoryStore
             : ListScoped(scopes)
                 .Where(e => !ShouldExcludeScope(e.Scope, excludeTopics))
                 .ToList();
-
-    /// <summary>
-    /// Searches memories, excluding results from the specified topics.
-    /// Default implementation post-filters after calling <see cref="SearchAll(string, string?, int)"/>.
-    /// FileMemoryStore overrides with efficient scope-level filtering.
-    /// </summary>
-    /// <param name="query">Search query.</param>
-    /// <param name="scopes">Optional comma-separated scope filter.</param>
-    /// <param name="limit">Maximum results to return.</param>
-    /// <param name="excludeTopics">Optional comma-separated topic names to exclude (e.g. "plan,task,project,learn").</param>
-    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
-        => string.IsNullOrWhiteSpace(excludeTopics)
-            ? SearchAll(query, scopes, limit, supplementalScores: null, entityGraphScores)
-            : SearchAll(query, scopes, limit, supplementalScores: null, entityGraphScores)
-                .Where(r => !ShouldExcludeScope(GetResultScope(r), excludeTopics))
-                .ToList();
-
-    /// <summary>
-    /// Searches with both topic exclusion and optional supplemental/entity-graph scores.
-    /// Excluded topics must be removed from the candidate pool BEFORE the top-K <paramref
-    /// name="limit"/> cut, not after — otherwise excluded hits can consume every result slot
-    /// and the caller silently gets fewer than <paramref name="limit"/> results.
-    /// Default implementation post-filters after calling the supplemental overload (fallback
-    /// for stores without an efficient scope-level filter). FileMemoryStore overrides with
-    /// pre-filtering via <see cref="ListScoped(string?, string?)"/>.
-    /// </summary>
-    IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
-        => string.IsNullOrWhiteSpace(excludeTopics)
-            ? SearchAll(query, scopes, limit, supplementalScores, entityGraphScores)
-            : SearchAll(query, scopes, limit, supplementalScores, entityGraphScores)
-                .Where(r => !ShouldExcludeScope(GetResultScope(r), excludeTopics))
-                .ToList();
-
-    /// <summary>
-    /// Searches with supplemental + entity-graph scores, then keeps only results matching the
-    /// path-prefix / attribute filter. The default implementation post-filters after the base
-    /// SearchAll (correct filtering, but it cannot guarantee fill-to-limit for stores without a
-    /// scorer). <see cref="FileMemoryStore"/> overrides this to filter candidates BEFORE the top-K
-    /// cut so a filtered search returns up to <paramref name="limit"/> matching results.
-    /// </summary>
-    IReadOnlyList<SearchResult> SearchAll(
-        string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores,
-        string? pathPrefix,
-        IReadOnlyDictionary<string, string[]>? attributeFilter)
-    {
-        var results = SearchAll(query, scopes, limit, excludeTopics, supplementalScores, entityGraphScores);
-        bool hasPath = !string.IsNullOrWhiteSpace(pathPrefix);
-        bool hasAttr = attributeFilter is { Count: > 0 };
-        if (!hasPath && !hasAttr) return results;
-        return results.Where(r => SearchResultFilter.Matches(this, r, pathPrefix, attributeFilter)).ToList();
-    }
 
     /// <summary>
     /// Resolves read scopes, excluding the specified topic scopes.

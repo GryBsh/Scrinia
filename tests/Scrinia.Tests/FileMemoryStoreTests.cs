@@ -2,6 +2,7 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
+using Scrinia.Core.Search;
 
 namespace Scrinia.Tests;
 
@@ -218,7 +219,7 @@ public sealed class FileMemoryStoreTests : IDisposable
             Keywords: ["kubernetes", "deploy"]);
         _store.Upsert(entry);
 
-        var results = _store.SearchAll("kubernetes");
+        var results = _store.SearchAll(new SearchQuery("kubernetes"));
         results.Should().NotBeEmpty();
     }
 

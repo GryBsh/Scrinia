@@ -329,25 +329,10 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         return result;
     }
 
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20)
-        => SearchRemote(query, scopes, limit, null, null, null);
-
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
-        => SearchRemote(query, scopes, limit, excludeTopics, null, null);
-
-    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores = null)
-        => SearchRemote(query, scopes, limit, excludeTopics, null, null);
-
-    public IReadOnlyList<SearchResult> SearchAll(
-        string query, string? scopes, int limit, string? excludeTopics,
-        IReadOnlyDictionary<string, double>? supplementalScores,
-        IReadOnlyDictionary<string, double>? entityGraphScores,
-        string? pathPrefix,
-        IReadOnlyDictionary<string, string[]>? attributeFilter)
-        => SearchRemote(query, scopes, limit, excludeTopics, pathPrefix, attributeFilter);
+    // query.Candidates is ignored — the server materializes its own candidates remotely.
+    public IReadOnlyList<SearchResult> SearchAll(SearchQuery query)
+        => SearchRemote(query.Query, query.Scopes, query.Limit, query.ExcludeTopics,
+            query.PathPrefix, query.AttributeFilter);
 
     /// <summary>
     /// The one remote search path. GETs when every filter fits a query string; POSTs when an

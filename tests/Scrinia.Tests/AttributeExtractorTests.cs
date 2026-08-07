@@ -150,7 +150,7 @@ public sealed class AttributeExtractorTests
             new Dictionary<string, string[]> { ["verdict"] = ["quiescent"] }), "local");
         store.Upsert(MakeEntry("without-field"), "local");
 
-        var results = store.SearchAll("quiescent", scopes: null, limit: 10);
+        var results = store.SearchAll(new SearchQuery("quiescent") { Limit = 10 });
         results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
             .Should().Be("with-field");
     }
@@ -165,7 +165,7 @@ public sealed class AttributeExtractorTests
         store.Upsert(MakeEntry("wrong-key",
             new Dictionary<string, string[]> { ["mood"] = ["quiescent"] }), "local");
 
-        var results = store.SearchAll("verdict:quiescent", scopes: null, limit: 10);
+        var results = store.SearchAll(new SearchQuery("verdict:quiescent") { Limit = 10 });
         results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
             .Should().Be("right-key", because: "pair exact (50) outranks value-only exact (40)");
     }
@@ -179,7 +179,7 @@ public sealed class AttributeExtractorTests
         store.Upsert(MakeEntry("legacy", keywords: ["person:maria"]), "local");
         store.Upsert(MakeEntry("bystander"), "local");
 
-        var results = store.SearchAll("person:maria", scopes: null, limit: 10);
+        var results = store.SearchAll(new SearchQuery("person:maria") { Limit = 10 });
         results.OfType<Scrinia.Core.Search.EntryResult>().First().Item.Entry.Name
             .Should().Be("legacy",
             because: "read-time forward-fill (AttributeMigration) promotes key:value-shaped legacy " +

@@ -209,17 +209,26 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
             var candidates = _store.ListScoped(scopes: null);
             var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
             var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
-            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: entityScores);
+            results = _store.SearchAll(new SearchQuery(query)
+            {
+                Limit = searchLimit,
+                SupplementalScores = supplemental,
+                EntityGraphScores = entityScores,
+            });
         }
         else if (_entityGraphContributor is not null)
         {
             var candidates = _store.ListScoped(scopes: null);
             var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
-            results = _store.SearchAll(query, scopes: null, searchLimit, supplementalScores: null, entityGraphScores: entityScores);
+            results = _store.SearchAll(new SearchQuery(query)
+            {
+                Limit = searchLimit,
+                EntityGraphScores = entityScores,
+            });
         }
         else
         {
-            results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+            results = _store.SearchAll(new SearchQuery(query) { Limit = searchLimit });
         }
 
         var hits = new List<RetrievalHit>(topK);
@@ -283,17 +292,26 @@ public sealed class AgenticScriniaRetriever : IRetriever, ISurfacedContentProvid
             var candidates = _store.ListScoped(scopes: null);
             var supplemental = await _searchContributor.ComputeScoresAsync(query, candidates, _store, ct);
             var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
-            results = _store.SearchAll(query, scopes: null, searchLimit, supplemental, entityGraphScores: entityScores);
+            results = _store.SearchAll(new SearchQuery(query)
+            {
+                Limit = searchLimit,
+                SupplementalScores = supplemental,
+                EntityGraphScores = entityScores,
+            });
         }
         else if (_entityGraphContributor is not null)
         {
             var candidates = _store.ListScoped(scopes: null);
             var entityScores = await ComputeEntityScoresAsync(query, candidates, ct);
-            results = _store.SearchAll(query, scopes: null, searchLimit, supplementalScores: null, entityGraphScores: entityScores);
+            results = _store.SearchAll(new SearchQuery(query)
+            {
+                Limit = searchLimit,
+                EntityGraphScores = entityScores,
+            });
         }
         else
         {
-            results = _store.SearchAll(query, scopes: null, limit: searchLimit);
+            results = _store.SearchAll(new SearchQuery(query) { Limit = searchLimit });
         }
 
         var seen = new HashSet<string>(StringComparer.Ordinal);

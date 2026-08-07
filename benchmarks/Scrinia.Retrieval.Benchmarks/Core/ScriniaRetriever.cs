@@ -20,7 +20,7 @@ namespace Scrinia.Retrieval.Benchmarks.Core;
 /// additionally embeds every ingested doc, caches the vector in memory, and at query
 /// time embeds the query, computes cosine similarity against every cached vector, and
 /// passes the result as supplemental scores to
-/// <see cref="FileMemoryStore.SearchAll(string, string?, int, IReadOnlyDictionary{string, double}?)"/>.
+/// <see cref="FileMemoryStore.SearchAll(SearchQuery)"/>.
 /// Mirrors the production <see cref="HybridReranker"/> pattern (similarity × weight, default
 /// weight = 50.0) but with an in-memory vector cache rather than a SQLite-backed
 /// <see cref="VectorStore"/>, since each benchmark question's haystack is small and
@@ -323,8 +323,12 @@ public sealed class ScriniaRetriever : IRetriever
         if (_chunked) searchLimit = Math.Max(searchLimit, topK * 10);
 
         IReadOnlyList<SearchResult> results =
-            _store.SearchAll(query, scopes: null, limit: searchLimit,
-                supplementalScores: supplemental, entityGraphScores: entityScores);
+            _store.SearchAll(new SearchQuery(query)
+            {
+                Limit = searchLimit,
+                SupplementalScores = supplemental,
+                EntityGraphScores = entityScores,
+            });
 
         // Second-stage reranker runs BEFORE MMR so diversity sees reranker-ordered
         // scores, and before chunk dedup so per-chunk MaxSim scores are independent.

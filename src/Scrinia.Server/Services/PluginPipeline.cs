@@ -191,7 +191,15 @@ public sealed class PluginPipeline
         // Every filter is pushed into SearchAll so it applies BEFORE the top-K cut. Empty
         // supplemental is normalized to null so the scorer skips the fusion source entirely.
         var supp = supplemental is { Count: > 0 } ? supplemental : null;
-        return store.SearchAll(query, scopes, limit, excludeTopics, supp, entityScores,
-            pathPrefix, attributeFilter);
+        return store.SearchAll(new SearchQuery(query)
+        {
+            Scopes = scopes,
+            Limit = limit,
+            ExcludeTopics = excludeTopics,
+            SupplementalScores = supp,
+            EntityGraphScores = entityScores,
+            PathPrefix = pathPrefix,
+            AttributeFilter = attributeFilter,
+        });
     }
 }

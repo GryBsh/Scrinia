@@ -467,7 +467,7 @@ public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, Embeddi
                 supplemental = _reranker.ComputeScoresAsync(query, candidates, _store, CancellationToken.None)
                     .GetAwaiter().GetResult();
             }
-            return _store.SearchAll(query, null, limit, supplemental);
+            return _store.SearchAll(new SearchQuery(query) { Limit = limit, SupplementalScores = supplemental });
         }
 
         public List<string> SearchNames(string query, int limit = 10)

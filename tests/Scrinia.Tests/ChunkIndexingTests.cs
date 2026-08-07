@@ -125,7 +125,7 @@ public sealed class ChunkIndexingTests
         await Tools().Remember(chunks, "search-chunk");
 
         // Search for a keyword unique to chunk 2
-        var results = MemoryStoreContext.Current!.SearchAll("xylophone");
+        var results = MemoryStoreContext.Current!.SearchAll(new SearchQuery("xylophone"));
         results.Should().HaveCountGreaterThan(0);
 
         var chunkResult = results.OfType<ChunkEntryResult>().FirstOrDefault();
@@ -142,7 +142,7 @@ public sealed class ChunkIndexingTests
         string[] chunks = ["Alpha content here.", "Beta content here."];
         await Tools().Remember(chunks, "dedup-test", description: "alpha beta test");
 
-        var results = MemoryStoreContext.Current!.SearchAll("alpha");
+        var results = MemoryStoreContext.Current!.SearchAll(new SearchQuery("alpha"));
         // Should only have one result for dedup-test (not both entry + chunk)
         var dedupResults = results
             .Where(r => r is EntryResult er && er.Item.Entry.Name == "dedup-test"
@@ -200,7 +200,7 @@ public sealed class ChunkIndexingTests
             keywords: ["kubernetes", "docker", "infrastructure"]);
 
         // Search for "kubernetes" — chunk should inherit parent keyword score
-        var results = MemoryStoreContext.Current!.SearchAll("kubernetes");
+        var results = MemoryStoreContext.Current!.SearchAll(new SearchQuery("kubernetes"));
         results.Should().HaveCountGreaterThan(0);
 
         // The parent-level result should have a positive score from the keyword match
@@ -224,7 +224,7 @@ public sealed class ChunkIndexingTests
             tags: ["backend", "api"]);
 
         // Search for "backend" — should find via parent tag
-        var results = MemoryStoreContext.Current!.SearchAll("backend");
+        var results = MemoryStoreContext.Current!.SearchAll(new SearchQuery("backend"));
         results.Should().HaveCountGreaterThan(0);
     }
 

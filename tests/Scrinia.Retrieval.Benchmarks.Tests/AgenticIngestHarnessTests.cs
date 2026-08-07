@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.Retrieval.Benchmarks.Agent;
 using Scrinia.Retrieval.Benchmarks.Core;
@@ -42,7 +43,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
 
             result.Succeeded.Should().BeTrue();
             result.ToolCalls.Should().ContainSingle(c => c.ToolName == "remember");
-            store.SearchAll("Lisbon", null, 10).Should().NotBeEmpty();
+            store.SearchAll(new SearchQuery("Lisbon") { Limit = 10 }).Should().NotBeEmpty();
         }
         finally { MemoryStoreContext.Current = null; }
     }
@@ -115,7 +116,7 @@ public sealed class AgenticIngestHarnessTests : IDisposable
                 new("remember", """{"path":"/f/x","content":["hello world\nref: d1"]}"""),
             };
             await AgenticIngestHarness.ReplayAsync(calls, CancellationToken.None);
-            ((FileMemoryStore)MemoryStoreContext.Current).SearchAll("hello", null, 10)
+            ((FileMemoryStore)MemoryStoreContext.Current).SearchAll(new SearchQuery("hello") { Limit = 10 })
                 .Should().NotBeEmpty();
         }
         finally { MemoryStoreContext.Current = null; }

@@ -77,7 +77,7 @@ public sealed class HintCommand
         // for that memory), and dropping ChunkEntryResult would silently lose memories whose
         // best signal came from a chunk match.
         int searchLimit = Math.Max(topK, innerLimit);
-        var raw = _store.SearchAll(prompt, scopes: null, limit: searchLimit);
+        var raw = _store.SearchAll(new SearchQuery(prompt) { Limit = searchLimit });
         var pool = raw
             .Where(r => r is EntryResult or ChunkEntryResult)
             .Where(r => r.Score >= minScore)

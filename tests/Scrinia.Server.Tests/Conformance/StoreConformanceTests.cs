@@ -18,7 +18,7 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     [Fact]
     public void Remote_SynchronousSend_Works()
     {
-        var results = fx.Remote.SearchAll("widget", scopes: null, limit: 50);
+        var results = fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 50 });
 
         results.Should().NotBeEmpty(because: "the fixture seeded 25 entries all containing 'widget'");
     }
@@ -33,8 +33,8 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     [InlineData("planning")]
     public void Unfiltered_BothStores_ReturnSameEntries(string query)
     {
-        var localResults = fx.Local.SearchAll(query, scopes: null, limit: 100);
-        var remoteResults = fx.Remote.SearchAll(query, scopes: null, limit: 100);
+        var localResults = fx.Local.SearchAll(new SearchQuery(query) { Limit = 100 });
+        var remoteResults = fx.Remote.SearchAll(new SearchQuery(query) { Limit = 100 });
 
         StoreConformanceFixture.Names(fx.Remote, remoteResults).Should()
             .BeEquivalentTo(StoreConformanceFixture.Names(fx.Local, localResults));
@@ -52,8 +52,8 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     [Fact]
     public void NoMatches_BothStores_ReturnEmpty()
     {
-        fx.Local.SearchAll("nonexistentterm", scopes: null, limit: 100).Should().BeEmpty();
-        fx.Remote.SearchAll("nonexistentterm", scopes: null, limit: 100).Should().BeEmpty();
+        fx.Local.SearchAll(new SearchQuery("nonexistentterm") { Limit = 100 }).Should().BeEmpty();
+        fx.Remote.SearchAll(new SearchQuery("nonexistentterm") { Limit = 100 }).Should().BeEmpty();
     }
 
     /// <summary>All 25 seeded entries match "widget", so a limit of 5 must fill exactly — under-filling
@@ -62,8 +62,8 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     [Fact]
     public void Unfiltered_LimitIsHonoured_ByBothStores()
     {
-        fx.Local.SearchAll("widget", scopes: null, limit: 5).Should().HaveCount(5);
-        fx.Remote.SearchAll("widget", scopes: null, limit: 5).Should().HaveCount(5);
+        fx.Local.SearchAll(new SearchQuery("widget") { Limit = 5 }).Should().HaveCount(5);
+        fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 5 }).Should().HaveCount(5);
     }
 
     /// <summary>A limit of 12 is tight enough that push-down filtering and post-hoc filtering are
@@ -76,9 +76,9 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     public void PathPrefix_BothStores_ReturnSameEntries()
     {
         var local = StoreConformanceFixture.Names(fx.Local,
-            fx.Local.SearchAll("widget", null, 12, null, null, null, "/api/", null));
+            fx.Local.SearchAll(new SearchQuery("widget") { Limit = 12, PathPrefix = "/api/" }));
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll("widget", null, 12, null, null, null, "/api/", null));
+            fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 12, PathPrefix = "/api/" }));
 
         remote.Should().BeEquivalentTo(local);
         remote.Should().OnlyContain(n => n.StartsWith("/api/"));
@@ -96,9 +96,9 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     public void ExcludeTopics_BothStores_ReturnSameEntries()
     {
         var local = StoreConformanceFixture.Names(fx.Local,
-            fx.Local.SearchAll("widget", null, 100, "goal/G-1"));
+            fx.Local.SearchAll(new SearchQuery("widget") { Limit = 100, ExcludeTopics = "goal/G-1" }));
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll("widget", null, 100, "goal/G-1"));
+            fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 100, ExcludeTopics = "goal/G-1" }));
 
         remote.Should().BeEquivalentTo(local);
         local.Should().HaveCount(16);
@@ -116,7 +116,7 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     public void PathPrefix_FillsToLimit_NotThePostLimitRemnant()
     {
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll("widget", null, 12, null, null, null, "/api/", null));
+            fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 12, PathPrefix = "/api/" }));
 
         remote.Should().HaveCount(10);
     }
@@ -133,9 +133,9 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
         var filter = new Dictionary<string, string[]> { [KnownAttributes.TagKey] = ["priority"] };
 
         var local = StoreConformanceFixture.Names(fx.Local,
-            fx.Local.SearchAll("gizmo", null, 100, null, null, null, null, filter));
+            fx.Local.SearchAll(new SearchQuery("gizmo") { Limit = 100, AttributeFilter = filter }));
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll("gizmo", null, 100, null, null, null, null, filter));
+            fx.Remote.SearchAll(new SearchQuery("gizmo") { Limit = 100, AttributeFilter = filter }));
 
         remote.Should().BeEquivalentTo(local);
         remote.Should().Equal("/attr/tagged-gizmo");

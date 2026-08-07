@@ -892,8 +892,16 @@ public sealed partial class ScriniaMcpTools
         // (symmetric with excludeTopics). A filtered search fills to `limit` instead of returning the
         // post-limit remnant. Empty supplemental is normalized to null so the scorer skips it.
         var supp = supplemental is { Count: > 0 } ? supplemental : null;
-        IReadOnlyList<SearchResult> filtered = store.SearchAll(
-            effectiveQuery, scopes, limit, excludeTopics, supp, entityScores, pathPrefix, attributeFilter);
+        IReadOnlyList<SearchResult> filtered = store.SearchAll(new SearchQuery(effectiveQuery)
+        {
+            Scopes = scopes,
+            Limit = limit,
+            ExcludeTopics = excludeTopics,
+            SupplementalScores = supp,
+            EntityGraphScores = entityScores,
+            PathPrefix = pathPrefix,
+            AttributeFilter = attributeFilter,
+        });
 
         IReadOnlyList<EntityFactSummary> entityFacts = [];
         if (surfaceEntityFacts && candidates is { Count: > 0 })

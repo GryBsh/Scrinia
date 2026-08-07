@@ -45,10 +45,7 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
         for (int i = 0; i < 5; i++) Seed("local:keep", $"k{i}", "alpha note");
         for (int i = 0; i < 5; i++) Seed("local:drop", $"d{i}", "alpha note");
 
-        var results = _store.SearchAll(
-            query: "alpha", scopes: null, limit: 3, excludeTopics: null,
-            supplementalScores: null, entityGraphScores: null,
-            pathPrefix: "/keep", attributeFilter: null);
+        var results = _store.SearchAll(new SearchQuery("alpha") { Limit = 3, PathPrefix = "/keep" });
 
         // Old behavior: top-3 by score are cut FIRST, then path-filtered -> often < 3 kept.
         // Correct behavior: 3 keep-entries returned, every one under the prefix.
@@ -72,11 +69,11 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
         _store.Upsert(tagged, "local:notes");
         Seed("local:notes", "u1", "alpha"); // no attributes
 
-        var results = _store.SearchAll(
-            query: "alpha", scopes: null, limit: 10, excludeTopics: null,
-            supplementalScores: null, entityGraphScores: null,
-            pathPrefix: null,
-            attributeFilter: new Dictionary<string, string[]> { ["kind"] = new[] { "spec" } });
+        var results = _store.SearchAll(new SearchQuery("alpha")
+        {
+            Limit = 10,
+            AttributeFilter = new Dictionary<string, string[]> { ["kind"] = new[] { "spec" } },
+        });
 
         results.OfType<EntryResult>().Should().OnlyContain(r => r.Item.Entry.Name == "t1");
     }
@@ -86,9 +83,8 @@ public sealed class SearchPathAttributeFilterTests : IDisposable
     {
         for (int i = 0; i < 4; i++) Seed("local:notes", $"m{i}", "alpha");
 
-        var filtered = _store.SearchAll(
-            "alpha", null, 10, null, null, null, pathPrefix: null, attributeFilter: null);
-        var plain = _store.SearchAll("alpha", null, 10, excludeTopics: null);
+        var filtered = _store.SearchAll(new SearchQuery("alpha") { Limit = 10 });
+        var plain = _store.SearchAll(new SearchQuery("alpha") { Limit = 10 });
 
         // Approximate, not exact: the recency term decays against DateTimeOffset.UtcNow captured
         // independently in each SearchAll call, so two sequential calls a few ticks apart produce
