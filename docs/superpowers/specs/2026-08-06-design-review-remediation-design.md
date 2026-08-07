@@ -301,6 +301,16 @@ uses them instead of calling `ListScoped` a second time.
 Related: narrow `LoadIndex` to return `IReadOnlyList<ArtifactEntry>` so
 `LoadIndexUnsafe:593` can return the cached list directly instead of `.ToList()`.
 
+**CORRECTED 2026-08-07 during Task 7 — this proposal was NOT implemented.** Narrowing
+the return type does not remove the copy above it; it relocates it. `LoadIndex` has
+roughly ten mutating callers (`Upsert`, `Remove`, migration helpers, and similar) that
+need a mutable list back — narrowing to `IReadOnlyList<ArtifactEntry>` would push an
+explicit `.ToList()` into each of them, the same number of copies for more churn — while
+every read-only caller would receive a live alias into the index cache's own backing
+list, an aliasing hazard the current `.ToList()` exists to prevent. `LoadIndex` stays
+`List<ArtifactEntry>`, returning a fresh copy. Recorded rather than silently dropped
+because the proposal reads as free in this section and is not.
+
 **4. Server-side filtering.** Once `PluginPipeline.SearchAsync` delegates to
 `SearchPipeline`, it supports every filter. The remaining work is transport:
 
@@ -320,6 +330,29 @@ this document** — including if the delta is noise. The change stands on removi
 duplicated call at a boundary that could not express the alternative; it will not be
 described as a speedup it is not.
 
+**MEASURED 2026-08-07, Task 6, via the new `scrinia-bench searchcost` subcommand
+against a LoCoMo-seeded corpus, 3 runs.** Median `FileMemoryStore.SearchAll` cost with
+`SearchQuery.Candidates` pre-materialized vs `Candidates = null`: ~0.87–0.91ms vs
+~1.09–1.14ms at a 70-memory corpus; 2.16ms vs 2.45ms at 272 memories. The delta is real
+and reproducible across runs, but sub-millisecond in absolute terms — corpus size grew
+3.9× (70→272) while the delta grew only 1.3×, so the saving is dominated by a fixed
+per-call cost, not the removed `O(n)` list copy scaling with corpus size.
+
+**CORRECTED 2026-08-07 during Task 7 — the mechanism behind that fixed cost was
+misreported.** Task 6's own report attributed the flat scaling to "`ListScoped` doesn't
+re-touch the filesystem after the first call." That is false. `FileMemoryStore.LoadIndex`
+(`:576`) calls `FileLock.AcquireShared` — an OS file-handle open — on **every** call,
+before `LoadIndexUnsafe` (`:592`) ever consults the in-memory cache (`:593`). The
+cache hit is real, but it is reached only after paying a lock-acquire on each call.
+That per-call file-handle open is the fixed cost the flat delta is measuring: removing
+the second `ListScoped` call removes one lock-acquire-then-cache-hit round trip, which
+is why the saving is roughly constant per call rather than growing with corpus size.
+This supports the original conclusion better than the cited mechanism did; the
+conclusion is unchanged.
+
+272 memories is a small corpus. Whether this delta holds at thousands of entries in one
+scope is inference, not measurement.
+
 ### Error handling
 
 Removing the default implementations is the point: a store that cannot filter now fails
@@ -338,6 +371,14 @@ choose deliberately.
   same ranking for the same corpus. Regression guard on fact 13.
 - `SearchExcludeTopicsTests` and `HybridScorerTests` are rewritten to the new signature —
   mechanical, and they are the behavioural pin while the overloads collapse.
+
+  **CORRECTED 2026-08-07 during Task 7 — half of this claim was WRONG.**
+  `HybridScorerTests` was rewritten to the new `SearchQuery` signature, as described.
+  `SearchExcludeTopicsTests` never called `SearchAll` at all — per F13 (Task 4's
+  call-site audit) it drives `ScriniaMcpTools.MemorySearch` through the MCP tool
+  surface, which does not change shape when `IMemoryStore.SearchAll` collapses to one
+  overload — so it needed no change and none was made. Recorded because the claim was
+  stated as fact, not an estimate, and was half wrong.
 
 ## Branch A3 — `store-boundaries`
 

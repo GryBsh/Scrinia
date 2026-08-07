@@ -64,7 +64,7 @@ internal static class Program
               membench      Run MemBench (ACL 2025) — 8500 items, 10 categories
               locomo        Run LoCoMo (snap-research/locomo) — 10 convs, 1986 QA pairs
               searchcost    Measure FileMemoryStore.SearchAll cost with a pre-materialized
-                            SearchQuery.Candidates list vs Candidates = null (F5). Store-level
+                            SearchQuery.Candidates list vs Candidates = null. Store-level
                             micro-benchmark against a LoCoMo-seeded corpus — no retriever, no judge.
               judge-replay  Re-run ONLY the LLM judge over a prior run's persisted JudgeContext —
                             no dataset, no retriever, exact live/replay parity. Writes <input>.judged.json.

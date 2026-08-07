@@ -48,6 +48,31 @@ and all assembly attributes.
   with concurrent writes, and the contributor already scored against the earlier snapshot, so
   this makes the two halves of one search consistent with each other rather than half-fresh.
 
+### Changed — remote-mode search filters server-side
+
+- `HttpMemoryStore.SearchAll` sent only `q`, `scopes`, and `limit` to `GET /search`;
+  `excludeTopics`, `pathPrefix`, and `attributeFilter` were applied by post-filtering the
+  results after they came back over the wire — filtering an already-truncated top-K. A
+  remote search scoped to a `pathPrefix` that most of the corpus falls outside of could
+  return far fewer than `limit` matches, or none, even when enough matching memories
+  existed. All three filters are now sent to the server, so a filtered search against a
+  remote store returns up to `limit` matching results.
+- New `POST /api/v1/stores/{store}/search`, taking a `SearchRequest` body — needed
+  because `attributeFilter` is a dictionary of arrays, which does not fit a query string.
+  `GET /search` additively gained `excludeTopics` and `pathPrefix`. Both are
+  backward-compatible: existing `GET /search` callers are unaffected, and
+  `HttpMemoryStore` only POSTs when an attribute filter is present, GETting otherwise.
+
+### Fixed — remote search results reported every entry, chunk, and topic as scope "local"
+
+- `HttpMemoryStore.SearchAll` recovered a result's scope only when its wire name
+  contained `':'`. An entry or chunk's wire name is a v3 path (e.g.
+  `/goal/G-1/widget-0`) and a topic's is a `FormatScopeLabel` display string — neither
+  ever contains `':'` — so every remote search result reported `scope: "local"`
+  regardless of where it actually lived. Entry and chunk names now parse
+  unconditionally via `ParseQualifiedName`; topic names via the new
+  `MemoryNaming.ParseScopeLabel`, the inverse of `FormatScopeLabel`.
+
 ### Fixed — response envelope can no longer be impersonated by memory content
 
 - The twenty internal handlers in `Scrinia.Mcp` returned already-rendered YAML, so consumers
