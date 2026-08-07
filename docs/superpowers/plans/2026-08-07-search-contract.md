@@ -647,7 +647,9 @@ Then in `SearchRemote`'s topic branch, replace `new TopicResult(scope, item.Name
 Finally, **remove the `TopicResult` exclusion Task 1 added** to `Unfiltered_BothStores_ReturnSameEntries`, and delete the paragraph of the class doc comment that explains it. Topics must now compare equal across stores; if they do not, the fix is incomplete.
 
 **Interfaces:**
-- Produces, for Task 4: `private IReadOnlyList<SearchResult> SearchRemote(string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix, IReadOnlyDictionary<string,string[]>? attributeFilter)` — the single wire implementation. Task 4 deletes the thin overloads around it and calls it from `SearchAll(SearchQuery)`.
+- Produces, for Task 4: `private List<SearchResult> SearchRemote(string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix, IReadOnlyDictionary<string,string[]>? attributeFilter)` — the single wire implementation. Task 4 deletes the thin overloads around it and calls it from `SearchAll(SearchQuery)`.
+
+**Return type corrected during Task 3.** An earlier draft declared `IReadOnlyList<SearchResult>`, which trips `CA1859` (use the concrete type for a private member) — a hard failure under `TreatWarningsAsErrors`. It is `List<SearchResult>`. Do not widen it back in Task 4.
 
 - [ ] **Step 1: Add the request DTO to the client's JSON context**
 
@@ -1093,15 +1095,18 @@ Do **not** touch `tests/Scrinia.Tests/SearchExcludeTopicsTests.cs` — per F13 i
 
 - [ ] **Step 7: Retarget the conformance suite**
 
-In `tests/Scrinia.Server.Tests/Conformance/StoreConformanceTests.cs`, rewrite each call to the new shape. The three filtered cases become, respectively:
+In `tests/Scrinia.Server.Tests/Conformance/StoreConformanceTests.cs`, rewrite each call to the new shape. **Read the file and preserve every argument value exactly as it stands there** — every query string, limit, `pathPrefix`, and `excludeTopics`. Tasks 1 and 3 tuned those values against measured pre-fix/post-fix counts so each test is provably red when the defect is present; a changed limit silently un-pins the branch's safety net. This is a syntax migration, nothing else. The shape is:
 
 ```csharp
-        fx.Local.SearchAll(new SearchQuery("widget") { Limit = 100, PathPrefix = "/api/" })
-        fx.Local.SearchAll(new SearchQuery("widget") { Limit = 100, ExcludeTopics = "G-1" })
-        fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 20, PathPrefix = "/api/" })
+        // before
+        fx.Local.SearchAll("widget", null, 12, null, null, null, "/api/", null)
+        // after — same values, new carrier
+        fx.Local.SearchAll(new SearchQuery("widget") { Limit = 12, PathPrefix = "/api/" })
 ```
 
-**The assertions must not change.** If an assertion has to be weakened to make this compile or pass, that is a behaviour change and this task has gone wrong — stop and report.
+**The assertions must not change either.** If an assertion or a value has to be weakened to make this compile or pass, that is a behaviour change and this task has gone wrong — stop and report.
+
+The suite is 10 tests, including an `AttributeFilter_...` case that exercises the POST wire path and a `Scopes()` comparison alongside `Names()`. Both must survive the migration.
 
 - [ ] **Step 8: Build and run everything**
 
