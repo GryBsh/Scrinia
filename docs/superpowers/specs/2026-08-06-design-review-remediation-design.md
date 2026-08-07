@@ -144,6 +144,22 @@ the leak cut the suite from ~52s to ~31s. Two constraints follow:
 | 2 | `mcp-response-shape` | F1, F8, Mcp nits | golden YAML committed first |
 | 3 | `search-contract` | F2, F5, F4-scorer, pipeline unification, server filtering | conformance suite green both stores |
 | 4 | `store-boundaries` | F3, F4-sink-install, F6 | exactly 1 `NotSupportedException` left |
+| 5 | `residuals` (own spec, to be written) | every deferral recorded during branches 2–4 | see below |
+
+**Branch 5 — residuals.** Each branch in this sequence defers findings deliberately, recording
+them to Scrinia under `/findings/<branch>-deferred-followups`. Those accumulate into their own
+spec at the end of the sequence rather than being smuggled into a branch whose scope was set
+for something else. As of 2026-08-07 the list from `mcp-response-shape` is nine items, the
+highest-value being that `scri bundle export` / `scri bundle import` still exit 0 on genuine
+failure via the same dead `StartsWith("Error:")` guard that branch fixed for `show`/`forget`.
+
+**Process change adopted 2026-08-07.** Every plan written from this spec gets a **subagent
+verification pass before execution**: a subagent whose only job is to falsify the plan's
+factual claims, reporting each as VERIFIED (with the command or `file:line` that proves it) or
+WRONG (with the truth). Adopted because four of the `mcp-response-shape` plan's assertions were
+false and all four were caught downstream by implementers and reviewers rather than up front.
+Established Facts should carry the command that produced them so a later reader can re-run
+rather than re-trust.
 
 A2 and A3 both touch `IMemoryStore` on **disjoint members** — A2 replaces the search
 member, A3 removes layout members. Rebasing A3 onto a merged A2 is clean.
