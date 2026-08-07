@@ -14,6 +14,13 @@ public static class AgentLoop
 {
     private const int MaxToolRounds = 5;
 
+    /// <summary>
+    /// Cap on a single tool result folded back into the agent's context. Chosen to keep one
+    /// oversized recall from crowding out the conversation; it bounds context, not the MCP
+    /// response, so it is deliberately unrelated to ResponseBuilder's own response cap.
+    /// </summary>
+    private const int MaxRecallCharsPerTool = 8000;
+
     private const string SystemPrompt = """
         You are an AI assistant with access to a knowledge base. Your answers should be grounded
         in the stored memories. Always search before answering a question — don't guess.
@@ -199,8 +206,8 @@ public static class AgentLoop
 
         // Truncate very large memories to avoid overwhelming the LLM context
         string content = result.Content;
-        if (content.Length > 8000)
-            content = content[..8000] + "\n[... truncated]";
+        if (content.Length > MaxRecallCharsPerTool)
+            content = content[..MaxRecallCharsPerTool] + "\n[... truncated]";
 
         return $"## {name}\n{content}";
     }
