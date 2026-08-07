@@ -66,4 +66,15 @@ public static class MemoryNaming
             return scope["local:".Length..];
         return scope;
     }
+
+    /// <summary>Inverse of <see cref="FormatScopeLabel"/>: recovers a scope from its display
+    /// label. Needed by remote clients, which receive topic results labelled rather than scoped.
+    /// Round-trips every scope this system produces — "local", "ephemeral", and "local:{topic}".
+    /// </summary>
+    public static string ParseScopeLabel(string label) => label switch
+    {
+        "local" => "local",
+        "ephemeral" => "ephemeral",
+        _ => $"local:{label}",
+    };
 }

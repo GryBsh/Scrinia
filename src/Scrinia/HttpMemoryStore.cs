@@ -95,6 +95,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     [JsonSerializable(typeof(ListApiItem))]
     [JsonSerializable(typeof(SearchApiResponse))]
     [JsonSerializable(typeof(SearchApiItem))]
+    [JsonSerializable(typeof(SearchApiRequest))]
     [JsonSerializable(typeof(AppendApiRequest))]
     [JsonSerializable(typeof(AppendApiResponse))]
     [JsonSerializable(typeof(CopyApiRequest))]
@@ -112,6 +113,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     internal sealed record SearchApiResponse(SearchApiItem[] Results);
     internal sealed record SearchApiItem(string Type, string Name, double Score, string? Description,
         int? ChunkIndex = null, int? TotalChunks = null);
+    internal sealed record SearchApiRequest(string Q, string? Scopes, int Limit, string? ExcludeTopics,
+        string? PathPrefix, Dictionary<string, string[]>? AttributeFilter);
     internal sealed record AppendApiRequest(string Content);
     internal sealed record AppendApiResponse(string Name, int ChunkCount, long OriginalBytes, string Message);
     internal sealed record CopyApiRequest(string Destination, bool Overwrite = false);
@@ -327,16 +330,46 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     }
 
     public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes = null, int limit = 20)
+        => SearchRemote(query, scopes, limit, null, null, null);
+
+    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
+        => SearchRemote(query, scopes, limit, excludeTopics, null, null);
+
+    public IReadOnlyList<SearchResult> SearchAll(string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores = null)
+        => SearchRemote(query, scopes, limit, excludeTopics, null, null);
+
+    public IReadOnlyList<SearchResult> SearchAll(
+        string query, string? scopes, int limit, string? excludeTopics,
+        IReadOnlyDictionary<string, double>? supplementalScores,
+        IReadOnlyDictionary<string, double>? entityGraphScores,
+        string? pathPrefix,
+        IReadOnlyDictionary<string, string[]>? attributeFilter)
+        => SearchRemote(query, scopes, limit, excludeTopics, pathPrefix, attributeFilter);
+
+    /// <summary>
+    /// The one remote search path. GETs when every filter fits a query string; POSTs when an
+    /// attribute filter is present, because that is a dictionary of arrays.
+    /// <para><b>Supplemental and entity-graph scores are deliberately ignored.</b> They are keyed
+    /// by local scope+name and computed by client-side plugins, while a remote store scores
+    /// server-side. Passing them over the wire would require the server to trust client scores.
+    /// Whether the pipeline should skip computing them for a remote store is a store-capability
+    /// question and belongs to the F3 interface split.</para>
+    /// </summary>
+    private List<SearchResult> SearchRemote(
+        string query, string? scopes, int limit, string? excludeTopics,
+        string? pathPrefix, IReadOnlyDictionary<string, string[]>? attributeFilter)
     {
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        string url = $"{BaseUrl}/search?q={Uri.EscapeDataString(query)}&limit={limit}";
-        if (scopes is not null)
-            url += $"&scopes={Uri.EscapeDataString(scopes)}";
+        using var request = attributeFilter is { Count: > 0 }
+            ? BuildSearchPost(query, scopes, limit, excludeTopics, pathPrefix, attributeFilter)
+            : BuildSearchGet(query, scopes, limit, excludeTopics, pathPrefix);
 
-        using var req2 = new HttpRequestMessage(HttpMethod.Get, url);
-        using var resp = SendSync(req2);
+        using var resp = SendSync(request);
         if (!resp.IsSuccessStatusCode)
             return [];
 
@@ -381,7 +414,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             }
             else if (item.Type == "topic")
             {
-                results.Add(new TopicResult(scope, item.Name, item.Description ?? "", 0, null, item.Score));
+                results.Add(new TopicResult(MemoryNaming.ParseScopeLabel(item.Name), item.Name, item.Description ?? "", 0, null, item.Score));
             }
             else
             {
@@ -392,6 +425,33 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         }
 
         return results;
+    }
+
+    private HttpRequestMessage BuildSearchGet(
+        string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix)
+    {
+        string url = $"{BaseUrl}/search?q={Uri.EscapeDataString(query)}&limit={limit}";
+        if (scopes is not null)
+            url += $"&scopes={Uri.EscapeDataString(scopes)}";
+        if (!string.IsNullOrWhiteSpace(excludeTopics))
+            url += $"&excludeTopics={Uri.EscapeDataString(excludeTopics)}";
+        if (!string.IsNullOrWhiteSpace(pathPrefix))
+            url += $"&pathPrefix={Uri.EscapeDataString(pathPrefix)}";
+        return new HttpRequestMessage(HttpMethod.Get, url);
+    }
+
+    private HttpRequestMessage BuildSearchPost(
+        string query, string? scopes, int limit, string? excludeTopics,
+        string? pathPrefix, IReadOnlyDictionary<string, string[]> attributeFilter)
+    {
+        var body = new SearchApiRequest(
+            query, scopes, limit, excludeTopics, pathPrefix,
+            attributeFilter.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase));
+        string json = JsonSerializer.Serialize(body, HttpStoreJsonContext.Default.SearchApiRequest);
+        return new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/search")
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+        };
     }
 
     // ── Copy & Archive ──────────────────────────────────────────────────────
