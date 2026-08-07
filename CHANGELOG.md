@@ -62,6 +62,21 @@ and all assembly attributes.
   `GET /search` additively gained `excludeTopics` and `pathPrefix`. Both are
   backward-compatible: existing `GET /search` callers are unaffected, and
   `HttpMemoryStore` only POSTs when an attribute filter is present, GETting otherwise.
+  **That compatibility only runs one direction.** An old client against a new server is
+  fine. A new client (this branch's `HttpMemoryStore`) against an *older* server is not:
+  `excludeTopics` and `pathPrefix` now travel only as additive query parameters, and an
+  older v1 server ignores query parameters it doesn't recognize rather than rejecting the
+  request. So `scri search "x" --path-prefix /findings/` against an older server silently
+  returns memories from every path, and `--exclude-topics goal` silently returns memories
+  from the topic the caller asked to exclude — this branch trades a recall bug (results
+  under-filled by post-limit filtering) for a silent precision bug (filters not applied at
+  all) whenever the server on the other end predates this change. `attributeFilter` is the
+  one exception, and only by luck, not by design: it requires `POST /search`, which an
+  older server doesn't expose, so the 404/405 hits `HttpMemoryStore`'s
+  `!resp.IsSuccessStatusCode` guard and the search returns empty instead of unfiltered.
+  There is no version handshake in `HttpMemoryStore` — the mismatch is undetected on both
+  ends. A capability probe (client asks the server what it supports before relying on it)
+  is the right fix and is deferred to the `store-boundaries` branch.
 
 ### Fixed — remote search results reported every entry, chunk, and topic as scope "local"
 

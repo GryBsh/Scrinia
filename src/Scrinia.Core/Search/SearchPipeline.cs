@@ -17,6 +17,13 @@ public readonly record struct SearchOutcome(
 /// <c>PluginPipeline.SearchAsync</c> which had drifted to support no filters at all.
 /// <para>Contributors are parameters, not ambient lookups: callers resolve them at the edge. That
 /// keeps the pipeline callable from a test without installing AsyncLocal state.</para>
+/// <para><b>The pipeline owns <see cref="SearchQuery.SupplementalScores"/>,
+/// <see cref="SearchQuery.EntityGraphScores"/>, and <see cref="SearchQuery.Candidates"/>.</b>
+/// <see cref="ExecuteAsync"/> unconditionally overwrites all three on the query it passes to
+/// <c>IMemoryStore.SearchAll</c> with what it computed (or <see langword="null"/>, when no
+/// contributor ran) — a caller-supplied value on the incoming <see cref="SearchQuery"/> is
+/// replaced, never merged with or deferred to. No current caller sets any of the three before
+/// calling in, so this is a documented constraint rather than an observed bug.</para>
 /// </summary>
 public static class SearchPipeline
 {

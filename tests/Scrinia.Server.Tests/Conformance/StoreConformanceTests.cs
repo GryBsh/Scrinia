@@ -21,7 +21,7 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     {
         var results = fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 50 });
 
-        results.Should().NotBeEmpty(because: "the fixture seeded 25 entries all containing 'widget'");
+        results.Should().NotBeEmpty(because: "25 of the fixture's 27 seeded entries contain 'widget'");
     }
 
     /// <summary>Every InlineData query here must legitimately match something in the seeded
@@ -57,9 +57,10 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
         fx.Remote.SearchAll(new SearchQuery("nonexistentterm") { Limit = 100 }).Should().BeEmpty();
     }
 
-    /// <summary>All 25 seeded entries match "widget", so a limit of 5 must fill exactly — under-filling
-    /// is the exact defect class this branch exists to fix, so this assertion must be exact, not an
-    /// upper bound.</summary>
+    /// <summary>25 of the 27 seeded entries match "widget" (the two /attr/ entries use "gizmo"
+    /// instead — see the fixture), so a limit of 5 must fill exactly — under-filling is the exact
+    /// defect class this branch exists to fix, so this assertion must be exact, not an upper
+    /// bound.</summary>
     [Fact]
     public void Unfiltered_LimitIsHonoured_ByBothStores()
     {
@@ -107,19 +108,44 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
         remote.Should().NotContain(n => n.StartsWith("/goal/", StringComparison.Ordinal) || n == "goal/G-1");
     }
 
-    /// <summary>The fill-to-limit case the interface's own doc comment describes and its default
-    /// implementation broke: only 10 of the 27 "widget" matches sit under /api/, and the ten
-    /// /goal/G-1/ entries deterministically outrank them (see the fixture). A pre-fix remote
-    /// fetches an unfiltered top-12 — entirely /goal/G-1/ entries plus at most a sliver of /api/ —
-    /// and filters after, so it is starved well below 10. A limit of 12 must still return all 10
-    /// /api/ matches when filtering happens server-side, before the top-K cut.</summary>
+    /// <summary>Limit exceeds the match count (12 &gt; 10), so this asserts that a selective
+    /// filter returns every matching entry rather than the post-limit remnant — it does NOT
+    /// exercise fill-to-limit (that's <see cref="PathPrefix_FillsToLimit_BothStores"/> below, at
+    /// Limit=5). Only 10 of the 27 "widget" matches sit under /api/, and the ten /goal/G-1/
+    /// entries deterministically outrank them (see the fixture). A pre-fix remote fetches an
+    /// unfiltered top-12 — entirely /goal/G-1/ entries plus at most a sliver of /api/ — and
+    /// filters after, so it is starved well below 10. A limit of 12 must still return all 10
+    /// /api/ matches, on both stores, when filtering happens server-side, before the top-K
+    /// cut.</summary>
     [Fact]
-    public void PathPrefix_FillsToLimit_NotThePostLimitRemnant()
+    public void PathPrefix_ReturnsAllMatches_NotThePostLimitRemnant()
     {
+        var local = StoreConformanceFixture.Names(fx.Local,
+            fx.Local.SearchAll(new SearchQuery("widget") { Limit = 12, PathPrefix = "/api/" }));
         var remote = StoreConformanceFixture.Names(fx.Remote,
             fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 12, PathPrefix = "/api/" }));
 
+        local.Should().HaveCount(10);
         remote.Should().HaveCount(10);
+    }
+
+    /// <summary>The genuine fill-to-limit case: Limit (5) is strictly less than the match count
+    /// (10 /api/ entries), so a correct implementation must fill exactly to the limit, not
+    /// return fewer. This is the case <see cref="PathPrefix_ReturnsAllMatches_NotThePostLimitRemnant"/>
+    /// above cannot exercise, because its limit (12) never binds. A pre-fix remote fetches an
+    /// unfiltered top-5 — entirely /goal/G-1/ entries, which strictly outrank /api/ on this query
+    /// (see the fixture) — and filters after, so it returns 0. Both stores must return exactly 5
+    /// when filtering happens before the top-K cut.</summary>
+    [Fact]
+    public void PathPrefix_FillsToLimit_BothStores()
+    {
+        var local = StoreConformanceFixture.Names(fx.Local,
+            fx.Local.SearchAll(new SearchQuery("widget") { Limit = 5, PathPrefix = "/api/" }));
+        var remote = StoreConformanceFixture.Names(fx.Remote,
+            fx.Remote.SearchAll(new SearchQuery("widget") { Limit = 5, PathPrefix = "/api/" }));
+
+        local.Should().HaveCount(5).And.OnlyContain(n => n.StartsWith("/api/"));
+        remote.Should().HaveCount(5).And.OnlyContain(n => n.StartsWith("/api/"));
     }
 
     /// <summary>The POST /search attributeFilter path has no other coverage: it's a distinct wire

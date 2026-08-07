@@ -424,9 +424,15 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         string query, string? scopes, int limit, string? excludeTopics,
         string? pathPrefix, IReadOnlyDictionary<string, string[]> attributeFilter)
     {
+        // No comparer here: JSON serialization never consults a dictionary's comparer, and
+        // an OrdinalIgnoreCase comparer throws ArgumentException on a caller-supplied filter
+        // carrying both "Topic" and "topic" (e.g. from case-variant callers or a merged
+        // filter). Local mode tolerates that fine — SearchResultFilter.MatchesAttributes
+        // lowercases each filter key as it iterates — so a comparer here only introduces a
+        // local-crashes-vs-remote-works divergence for no benefit.
         var body = new SearchApiRequest(
             query, scopes, limit, excludeTopics, pathPrefix,
-            attributeFilter.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase));
+            attributeFilter.ToDictionary(kv => kv.Key, kv => kv.Value));
         string json = JsonSerializer.Serialize(body, HttpStoreJsonContext.Default.SearchApiRequest);
         return new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/search")
         {

@@ -175,6 +175,7 @@ All memory endpoints require store resolution and appropriate permissions. They 
 | POST | `/memories/{name}/copy` | `copy` |
 | GET | `/memories/{name}/chunks/{i}` | `read` |
 | GET | `/search` | `search` |
+| POST | `/search` | `search` |
 | POST | `/export` | `export` |
 | POST | `/import` | `import` |
 

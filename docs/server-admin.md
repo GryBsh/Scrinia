@@ -309,10 +309,18 @@ POST /api/v1/stores/{store}/memories/{name}/copy
 ### Search
 
 ```
-GET /api/v1/stores/{store}/search?query=authentication[&scopes=local,api][&limit=20]
+GET /api/v1/stores/{store}/search?q=authentication[&scopes=local,api][&limit=20][&excludeTopics=goal,task][&pathPrefix=/api/]
 ```
 
 **Permission:** `search`
+
+- `q` (required) — the search query.
+- `scopes` — optional comma-separated scope filter.
+- `limit` — max results, clamped to `[1, 1000]`, default 20.
+- `excludeTopics` — optional comma-separated topic names to exclude from candidates and
+  results, applied before the top-K cut.
+- `pathPrefix` — optional case-insensitive prefix match on each result's qualified name,
+  also applied before the top-K cut.
 
 **Response (200):**
 
@@ -330,6 +338,34 @@ GET /api/v1/stores/{store}/search?query=authentication[&scopes=local,api][&limit
 ```
 
 Result types: `entry`, `chunk`, `topic`.
+
+#### POST form (attribute filtering)
+
+`attributeFilter` is a dictionary of arrays, which does not fit a query string, so it is
+only available via `POST /search`:
+
+```
+POST /api/v1/stores/{store}/search
+```
+
+**Permission:** `search`
+
+**Request:**
+
+```json
+{
+  "q": "authentication",
+  "scopes": "local,api",
+  "limit": 20,
+  "excludeTopics": "goal,task",
+  "pathPrefix": "/api/",
+  "attributeFilter": { "tag": ["priority"] }
+}
+```
+
+`attributeFilter` matching is AND across keys, OR within each key's values,
+case-insensitive; it excludes topics, which carry no attributes. `attributeFilter` may
+not exceed 64 keys. Response shape is identical to `GET /search`.
 
 ### Export Topics
 

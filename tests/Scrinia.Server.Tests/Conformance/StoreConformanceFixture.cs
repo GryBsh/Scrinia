@@ -33,9 +33,6 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
     public IMemoryStore Local { get; private set; } = null!;
     public IMemoryStore Remote { get; private set; } = null!;
 
-    /// <summary>Every memory name seeded, in insertion order.</summary>
-    public IReadOnlyList<string> SeededNames { get; private set; } = [];
-
     public async Task InitializeAsync()
     {
         // Order is load-bearing: UseKestrel must run before the host is materialized, which the
@@ -49,8 +46,6 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
         // already issued a request — so construct it before the first SeedAsync.
         Remote = new HttpMemoryStore(_client, _factory.PrimaryStore);
 
-        var names = new List<string>();
-
         // Ten entries under /api/, ten under /goal/, five ephemeral-free plain names. The path
         // split is what pathPrefix cases filter on; the counts are what fill-to-limit asserts.
         // The /goal/G-1/ bodies repeat "widget" so those ten strictly outrank the ten /api/
@@ -58,19 +53,17 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
         // /api/ entries out by score, not by tie-break order, and this stays true if the corpus
         // grows later. alpha/planning stay present since other tests query them.
         for (int i = 0; i < 10; i++)
-            names.Add(await SeedAsync($"/api/widget-{i}", $"widget alpha handling number {i}"));
+            await SeedAsync($"/api/widget-{i}", $"widget alpha handling number {i}");
         for (int i = 0; i < 10; i++)
-            names.Add(await SeedAsync($"/goal/G-1/widget-{i}", $"widget widget widget widget alpha planning number {i}"));
+            await SeedAsync($"/goal/G-1/widget-{i}", $"widget widget widget widget alpha planning number {i}");
         for (int i = 0; i < 5; i++)
-            names.Add(await SeedAsync($"note-{i}", $"widget alpha loose note number {i}"));
+            await SeedAsync($"note-{i}", $"widget alpha loose note number {i}");
 
         // Two entries, same query term ("gizmo", distinct from "widget"/"alpha"/"planning" so
         // they don't perturb any other case's counts), differing only by tag — coverage for the
         // POST /search attributeFilter wire path, which nothing else here exercises.
-        names.Add(await SeedAsync("/attr/tagged-gizmo", "gizmo attribute filter probe", tags: ["priority"]));
-        names.Add(await SeedAsync("/attr/untagged-gizmo", "gizmo attribute filter probe"));
-
-        SeededNames = names;
+        await SeedAsync("/attr/tagged-gizmo", "gizmo attribute filter probe", tags: ["priority"]);
+        await SeedAsync("/attr/untagged-gizmo", "gizmo attribute filter probe");
     }
 
     private async Task<string> SeedAsync(string name, string body, string[]? tags = null)
