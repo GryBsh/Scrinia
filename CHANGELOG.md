@@ -34,6 +34,20 @@ and all assembly attributes.
   output only; the JSON `error` field stays a single clean message. Scripts parsing
   `.content` from a not-found `scri show --json` must switch to checking the exit code.
 
+### Changed — search reuses the pipeline's materialized candidates
+
+- `SearchPipeline.ExecuteAsync` now passes its already-materialized candidate list through
+  `SearchQuery.Candidates` so `FileMemoryStore.SearchAll` skips a second `ListScoped` call.
+  Measured against a LoCoMo-seeded corpus (70–272 memories, 200–500 queries, `scrinia-bench
+  searchcost`): consistently faster (~0.2–0.3ms lower median `SearchAll` cost, roughly 20–25%
+  at these corpus sizes) but sub-millisecond in absolute terms — real, not noise, but not the
+  point of the change. **The behavior change that matters**: candidates are captured before
+  the `await` on the score contributor (which for an embedding provider can run for seconds),
+  so a memory written during that window no longer appears in the same search's results —
+  previously the store's own re-list would have picked it up. Search was never transactional
+  with concurrent writes, and the contributor already scored against the earlier snapshot, so
+  this makes the two halves of one search consistent with each other rather than half-fresh.
+
 ### Fixed — response envelope can no longer be impersonated by memory content
 
 - The twenty internal handlers in `Scrinia.Mcp` returned already-rendered YAML, so consumers

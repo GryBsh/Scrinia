@@ -63,6 +63,10 @@ public static class SearchPipeline
             Query = effectiveQuery,
             SupplementalScores = supplemental is { Count: > 0 } ? supplemental : null,
             EntityGraphScores = entityScores,
+            // Built from this query's own Scopes/ExcludeTopics a few lines above, which is the
+            // contract SearchQuery.Candidates documents. Null when no contributor ran, in which
+            // case the store materializes them itself.
+            Candidates = candidates,
         };
 
         var filtered = store.SearchAll(effective);
