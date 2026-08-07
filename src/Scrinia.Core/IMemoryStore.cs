@@ -216,11 +216,15 @@ public interface IMemoryStore
 
     /// <summary>
     /// Absolute path to the workspace root — the directory that contains <c>.scrinia/</c>.
-    /// Needed to resolve hand-authored file entities via <see cref="PathRouter.ToFileEntityDir"/>.
+    /// The authority for the workspace's filesystem layout: hand-authored file entities
+    /// (via <see cref="PathRouter.ToFileEntityDir"/>), bundle export/import, conflict
+    /// scanning, and drift detection all resolve their on-disk location from this one
+    /// property.
     /// <para>Callers previously reverse-engineered this from <c>GetStoreDirForScope("local")</c>
     /// using two different algorithms that agreed only by coincidence.</para>
     /// </summary>
-    /// <exception cref="NotSupportedException">The store is remote. File entities are local-only.</exception>
+    /// <exception cref="NotSupportedException">The store is remote; <see cref="WorkspaceRoot"/>
+    /// is local-only because a remote store has no local filesystem.</exception>
     string WorkspaceRoot { get; }
 
     // Content utility

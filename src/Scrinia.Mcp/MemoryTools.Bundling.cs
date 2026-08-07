@@ -79,8 +79,7 @@ public sealed partial class ScriniaMcpTools
         var store = CurrentStore;
 
         // Resolve path relative to workspace root if not absolute
-        string storeDir = store.GetStoreDirForScope("local");
-        string workspaceRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(storeDir)!, ".."));
+        string workspaceRoot = store.WorkspaceRoot;
 
         string resolvedPath = Path.IsPathRooted(bundlePath)
             ? bundlePath

@@ -460,7 +460,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     public string WorkspaceRoot =>
         throw new NotSupportedException(
-            "WorkspaceRoot is not supported in remote mode. Skills and agent configs are local-only.");
+            "WorkspaceRoot is not supported in remote mode: it is the authority for the " +
+            "workspace's filesystem layout, and a remote store has no local filesystem.");
 
     // ── Content utility ─────────────────────────────────────────────────────
 

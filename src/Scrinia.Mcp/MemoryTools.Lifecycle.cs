@@ -71,8 +71,7 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
-        string storeDir = store.GetStoreDirForScope("local");
-        string scriniaDir = Path.GetDirectoryName(storeDir)!; // .scrinia/
+        string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
 
         return conflictId is not null
             ? Task.FromResult(ResolveConflictByPath(scriniaDir, conflictId, choice, content))
@@ -618,8 +617,7 @@ public sealed partial class ScriniaMcpTools
         // Check for unresolved merge conflicts in .scrinia/
         try
         {
-            string resumeStoreDir = store.GetStoreDirForScope("local");
-            string resumeScriniaDir = Path.GetDirectoryName(resumeStoreDir)!;
+            string resumeScriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
             if (Directory.Exists(resumeScriniaDir))
             {
                 bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
