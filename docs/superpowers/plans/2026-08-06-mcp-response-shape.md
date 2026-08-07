@@ -255,7 +255,16 @@ state into the body."
 
 ### Task 2: Pin the defect — body text must not be read as envelope status
 
-The bug is that `ToYaml` writes content as an unescaped `content: |` block indented two spaces, and `string.Contains` ignores the indent. This test fails on `main` today. It is the reason the branch exists, so it goes in before the fix.
+> **Amendment (2026-08-07, human ruling during execution):** Task 2 does **not** get its own
+> commit. Its tests and Task 3's fix land in a **single commit**, so no commit on this branch is
+> ever red and `git bisect` never lands on a failing tree.
+>
+> The red step is still performed and still evidenced — the implementer writes these tests
+> first, runs them, and records the failing output in its report — but the commit happens only
+> after Task 3's fix makes them green. Tasks 2 and 3 are therefore dispatched together to one
+> implementer, and the "Commit the failing test" step below is superseded by Task 3's commit.
+
+The bug is that `ToYaml` writes content as an unescaped `content: |` block indented two spaces, and `string.Contains` ignores the indent. These tests fail on `main` today. They are the reason the branch exists, so they are written and run red before the fix.
 
 **Files:**
 - Create: `tests/Scrinia.Tests/ResponseStatusIsolationTests.cs`
@@ -345,7 +354,13 @@ Expected: **two** failures.
 
 If the CLI test passes unexpectedly, the poisoned body did not reach the restore envelope. Confirm `Restore` folds memory content into `ContentSections` (`MemoryTools.Lifecycle.cs:589`) and that `/patterns/` is one of the scopes it gathers; adjust the memory path until the body is present in the response, then re-run.
 
-- [ ] **Step 3: Commit the failing test**
+- [ ] **Step 3: ~~Commit the failing test~~ — SUPERSEDED**
+
+Per the amendment at the top of this task, do **not** commit here. Record the red output in the
+report and carry straight on into Task 3; the tests are committed together with the fix, using
+Task 3's commit message extended with the paragraph below.
+
+<details><summary>Superseded original step (kept for the record)</summary>
 
 ```bash
 git add tests/Scrinia.Tests/ResponseStatusIsolationTests.cs
@@ -361,9 +376,21 @@ a shape ToYaml has never emitted, so both report success on a real not-found.
 Both red until the response-shape refactor."
 ```
 
+</details>
+
 ---
 
 ### Task 3: Flip `Scrinia.Mcp` and the CLI to `McpResponse`
+
+> **Amendment (2026-08-07):** this task also carries Task 2's tests, in the same commit. Its
+> commit message gains this paragraph:
+>
+> ```
+> The two exit-code regression tests land in this commit rather than red ahead of
+> it: scri restore exited 1 on success whenever a restored memory contained the
+> text 'status: error', and scri show / scri forget exited 0 on a real not-found
+> because their guards tested StartsWith("Error:"), a shape ToYaml never emits.
+> ```
 
 **This task is irreducibly atomic and that is a deliberate choice.** The CLI calls the internal handlers directly through `InternalsVisibleTo("scri")` — `tools.Recall`, `tools.Remember`, `tools.Forget`, `tools.Link`, `tools.Compact`, `tools.Restore`, `tools.Reconcile`, `tools.Export`, `tools.Import`. Retyping a handler breaks its public method *and* its CLI caller in the same compile. Splitting this into smaller commits requires adding string-returning shims and then deleting them, which is more churn and more risk than one mechanical commit with two green gates in front of it.
 
