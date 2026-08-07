@@ -53,21 +53,31 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
 
         // Ten entries under /api/, ten under /goal/, five ephemeral-free plain names. The path
         // split is what pathPrefix cases filter on; the counts are what fill-to-limit asserts.
+        // The /goal/G-1/ bodies repeat "widget" so those ten strictly outrank the ten /api/
+        // entries on the "widget" query — an unfiltered top-20 of 27 candidates provably pushes
+        // /api/ entries out by score, not by tie-break order, and this stays true if the corpus
+        // grows later. alpha/planning stay present since other tests query them.
         for (int i = 0; i < 10; i++)
             names.Add(await SeedAsync($"/api/widget-{i}", $"widget alpha handling number {i}"));
         for (int i = 0; i < 10; i++)
-            names.Add(await SeedAsync($"/goal/G-1/widget-{i}", $"widget alpha planning number {i}"));
+            names.Add(await SeedAsync($"/goal/G-1/widget-{i}", $"widget widget widget widget alpha planning number {i}"));
         for (int i = 0; i < 5; i++)
             names.Add(await SeedAsync($"note-{i}", $"widget alpha loose note number {i}"));
+
+        // Two entries, same query term ("gizmo", distinct from "widget"/"alpha"/"planning" so
+        // they don't perturb any other case's counts), differing only by tag — coverage for the
+        // POST /search attributeFilter wire path, which nothing else here exercises.
+        names.Add(await SeedAsync("/attr/tagged-gizmo", "gizmo attribute filter probe", tags: ["priority"]));
+        names.Add(await SeedAsync("/attr/untagged-gizmo", "gizmo attribute filter probe"));
 
         SeededNames = names;
     }
 
-    private async Task<string> SeedAsync(string name, string body)
+    private async Task<string> SeedAsync(string name, string body, string[]? tags = null)
     {
         var resp = await _client.PostAsJsonAsync(
             $"/api/v1/stores/{_factory.PrimaryStore}/memories",
-            new StoreRequest([body], name, body));
+            new StoreRequest([body], name, body, tags));
         resp.EnsureSuccessStatusCode();
         return name;
     }
@@ -91,6 +101,20 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
             EntryResult er => store.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
             ChunkEntryResult cr => store.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name),
             TopicResult tr => MemoryNaming.FormatScopeLabel(tr.Scope),
+            _ => "",
+        }).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToArray();
+
+    /// <summary>The raw internal scope of each result (e.g. "local", "local:goal/G-1") — unlike
+    /// <see cref="Names"/>, this is NOT blind to a client that mis-recovers scope from the wire
+    /// name: FormatQualifiedName reassembles the same qualified label whether or not the scope was
+    /// parsed correctly, so a scope-only defect can hide behind identical Names() output. Compare
+    /// this set too whenever cross-store parity is being asserted.</summary>
+    public static string[] Scopes(IEnumerable<SearchResult> results) =>
+        results.Select(r => r switch
+        {
+            EntryResult er => er.Item.Scope,
+            ChunkEntryResult cr => cr.ParentItem.Scope,
+            TopicResult tr => tr.Scope,
             _ => "",
         }).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToArray();
 }

@@ -33,12 +33,17 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     [InlineData("planning")]
     public void Unfiltered_BothStores_ReturnSameEntries(string query)
     {
-        var local = StoreConformanceFixture.Names(fx.Local,
-            fx.Local.SearchAll(query, scopes: null, limit: 100));
-        var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll(query, scopes: null, limit: 100));
+        var localResults = fx.Local.SearchAll(query, scopes: null, limit: 100);
+        var remoteResults = fx.Remote.SearchAll(query, scopes: null, limit: 100);
 
-        remote.Should().BeEquivalentTo(local);
+        StoreConformanceFixture.Names(fx.Remote, remoteResults).Should()
+            .BeEquivalentTo(StoreConformanceFixture.Names(fx.Local, localResults));
+
+        // Names() alone is blind to a scope-only defect: FormatQualifiedName reassembles the
+        // same qualified label whether or not the client recovered the scope correctly from the
+        // wire name, so compare the raw scope sets directly too.
+        StoreConformanceFixture.Scopes(remoteResults).Should()
+            .BeEquivalentTo(StoreConformanceFixture.Scopes(localResults));
     }
 
     /// <summary>A query matching nothing must come back empty from both stores — not "empty from
@@ -61,39 +66,78 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
         fx.Remote.SearchAll("widget", scopes: null, limit: 5).Should().HaveCount(5);
     }
 
+    /// <summary>A limit of 12 is tight enough that push-down filtering and post-hoc filtering are
+    /// not mathematically forced to agree (unlike a limit of 100, which never truncates the
+    /// 27-candidate corpus and makes the two approaches indistinguishable). The ten /goal/G-1/
+    /// entries deterministically outrank the ten /api/ ones (see the fixture), so a pre-fix
+    /// remote — which fetches an unfiltered top-12 and filters after — is starved down to
+    /// whatever /api/ entries survive that cut, not all 10.</summary>
     [Fact]
     public void PathPrefix_BothStores_ReturnSameEntries()
     {
         var local = StoreConformanceFixture.Names(fx.Local,
-            fx.Local.SearchAll("widget", null, 100, null, null, null, "/api/", null));
+            fx.Local.SearchAll("widget", null, 12, null, null, null, "/api/", null));
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll("widget", null, 100, null, null, null, "/api/", null));
+            fx.Remote.SearchAll("widget", null, 12, null, null, null, "/api/", null));
 
         remote.Should().BeEquivalentTo(local);
         remote.Should().OnlyContain(n => n.StartsWith("/api/"));
+        local.Should().HaveCount(10);
+        remote.Should().HaveCount(10);
     }
 
+    /// <summary>"goal/G-1" (with the '/') passes through <c>BuildScopedTopicScope</c> unchanged to
+    /// the real corpus scope "local:goal/G-1". ("G-1" without the slash is a decoy — it routes to
+    /// "local:g-1", a scope nothing occupies, and excludes nothing on either store.) Standalone
+    /// count/containment assertions cover the case where both stores regress together, which
+    /// BeEquivalentTo alone cannot catch: 27 "widget" matches minus the ten /goal/G-1/ entries and
+    /// the "goal/G-1" topic itself leaves 16.</summary>
     [Fact]
     public void ExcludeTopics_BothStores_ReturnSameEntries()
     {
         var local = StoreConformanceFixture.Names(fx.Local,
-            fx.Local.SearchAll("widget", null, 100, "G-1"));
+            fx.Local.SearchAll("widget", null, 100, "goal/G-1"));
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll("widget", null, 100, "G-1"));
+            fx.Remote.SearchAll("widget", null, 100, "goal/G-1"));
 
         remote.Should().BeEquivalentTo(local);
+        local.Should().HaveCount(16);
+        remote.Should().HaveCount(16);
+        remote.Should().NotContain(n => n.StartsWith("/goal/", StringComparison.Ordinal) || n == "goal/G-1");
     }
 
     /// <summary>The fill-to-limit case the interface's own doc comment describes and its default
-    /// implementation broke: 25 seeded entries all match "widget", only 10 sit under /api/. A
-    /// limit of 20 must return all 10 matching entries, not the /api/ remnant of an unfiltered
-    /// top-20. Ranking-independent: 10 &lt; 20, so every match fits regardless of order.</summary>
+    /// implementation broke: only 10 of the 27 "widget" matches sit under /api/, and the ten
+    /// /goal/G-1/ entries deterministically outrank them (see the fixture). A pre-fix remote
+    /// fetches an unfiltered top-12 — entirely /goal/G-1/ entries plus at most a sliver of /api/ —
+    /// and filters after, so it is starved well below 10. A limit of 12 must still return all 10
+    /// /api/ matches when filtering happens server-side, before the top-K cut.</summary>
     [Fact]
     public void PathPrefix_FillsToLimit_NotThePostLimitRemnant()
     {
         var remote = StoreConformanceFixture.Names(fx.Remote,
-            fx.Remote.SearchAll("widget", null, 20, null, null, null, "/api/", null));
+            fx.Remote.SearchAll("widget", null, 12, null, null, null, "/api/", null));
 
         remote.Should().HaveCount(10);
+    }
+
+    /// <summary>The POST /search attributeFilter path has no other coverage: it's a distinct wire
+    /// method (BuildSearchPost/SearchApiRequest) from the GET path every other case here exercises,
+    /// so a break in the JSON round-trip, the camelCase mapping, or SendSync's content buffering in
+    /// the retry loop would pass every other test in this file. Two seeded entries share the query
+    /// term "gizmo" and differ only by a "priority" tag; only the tagged one may survive the
+    /// filter.</summary>
+    [Fact]
+    public void AttributeFilter_BothStores_ReturnSameEntries()
+    {
+        var filter = new Dictionary<string, string[]> { [KnownAttributes.TagKey] = ["priority"] };
+
+        var local = StoreConformanceFixture.Names(fx.Local,
+            fx.Local.SearchAll("gizmo", null, 100, null, null, null, null, filter));
+        var remote = StoreConformanceFixture.Names(fx.Remote,
+            fx.Remote.SearchAll("gizmo", null, 100, null, null, null, null, filter));
+
+        remote.Should().BeEquivalentTo(local);
+        remote.Should().Equal("/attr/tagged-gizmo");
     }
 }

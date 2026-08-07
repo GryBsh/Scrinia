@@ -69,7 +69,11 @@ public static class MemoryNaming
 
     /// <summary>Inverse of <see cref="FormatScopeLabel"/>: recovers a scope from its display
     /// label. Needed by remote clients, which receive topic results labelled rather than scoped.
-    /// Round-trips every scope this system produces — "local", "ephemeral", and "local:{topic}".
+    /// Round-trips "local", "ephemeral", and "local:{topic}" where topic is neither "local" nor
+    /// "ephemeral". <see cref="FormatScopeLabel"/> is not injective — a memory scoped
+    /// "local:local" or "local:ephemeral" (e.g. a topic literally named "local" or "ephemeral")
+    /// formats to the same label as the bare "local"/"ephemeral" scope, so labels in that
+    /// collision zone do not round-trip back to their original scope.
     /// </summary>
     public static string ParseScopeLabel(string label) => label switch
     {

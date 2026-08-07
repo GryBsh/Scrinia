@@ -381,16 +381,11 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         var results = new List<SearchResult>();
         foreach (var item in search.Results)
         {
-            // Reconstruct the result type
-            string scope = "local";
-            string subject = item.Name;
-
-            if (item.Name.Contains(':'))
-            {
-                var (s, subj) = ParseQualifiedName(item.Name);
-                scope = s;
-                subject = subj;
-            }
+            // Reconstruct the result type. An entry/chunk's wire name is always a v3 path
+            // (FormatQualifiedName's output, e.g. "/goal/G-1/widget-0") — it never contains
+            // ':', so a Contains(':') guard here is dead code that silently hardcodes every
+            // remote result's scope to "local". ParseQualifiedName must run unconditionally.
+            var (scope, subject) = ParseQualifiedName(item.Name);
 
             var artifactEntry = new ArtifactEntry(
                 Name: subject,
