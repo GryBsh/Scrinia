@@ -90,7 +90,7 @@ public sealed class McpDisplayCutoverTests : IDisposable
         var result = new EntryResult(scoped, 42.0);
         var sb = new StringBuilder();
 
-        ScriniaMcpTools.AppendResultBlock(sb, _store, result, 1);
+        SearchResultRenderer.AppendResultBlock(sb, _store, result, 1);
         string output = sb.ToString();
 
         output.Should().Contain("search preview text", because: "ContentPreview is the surviving display carrier");
