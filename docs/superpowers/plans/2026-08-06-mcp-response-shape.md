@@ -225,13 +225,13 @@ Expected: succeeds with 0 errors.
 - [ ] **Step 4: Generate the goldens**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases). First run writes `__snapshots__/*.yaml` because the files do not exist yet.
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1). First run writes `__snapshots__/*.yaml` because the files do not exist yet.
 
 - [ ] **Step 5: Verify the goldens are stable, not just written**
 
 Run the same command a second time:
 `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases), this time *comparing* against the files written in step 4.
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1), this time *comparing* against the files written in step 4.
 
 If any case fails on the second run, a volatile field escaped `GoldenNormalizer`. Read the FluentAssertions diff, add a pattern, delete `__snapshots__/`, and repeat steps 4–5. Do not proceed with a case that only passes on the write path.
 
@@ -597,7 +597,7 @@ Expect a long error list on the first attempt — that is the type system enumer
 - [ ] **Step 9: Run the golden gate**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases).
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1).
 
 A failure here means the refactor changed output. **Do not set `SCRINIA_UPDATE_GOLDEN`.** Read the diff and find what moved.
 
@@ -710,7 +710,7 @@ Expected: succeeds with 0 errors.
 - [ ] **Step 5: Run the golden gate**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases). The `search` and `search-filtered` goldens are the ones that matter — a pure move must not change a byte.
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1). The `search` and `search-filtered` goldens are the ones that matter — a pure move must not change a byte.
 
 - [ ] **Step 6: Run the full suite**
 

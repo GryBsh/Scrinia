@@ -34,9 +34,28 @@ contradicting.
 3. `McpResponseExtensions.ToYaml` emits content as `content: |` with each line indented
    two spaces and **no escaping**. `string.Contains` ignores that indent, so a body line
    reading `status: error` is indistinguishable from an envelope error.
-4. `MemoryTools.Lifecycle.cs:589` — `Restore` joins `ctx.ContentSections` (memory content)
-   into `ResponseBuilder.Success(...)`. Memory text therefore reaches the envelope
-   verbatim, and `scri restore` exit code is a substring match over it.
+4. **CORRECTED 2026-08-07 during implementation — the original claim was WRONG.**
+   It read: "`MemoryTools.Lifecycle.cs:589` — `Restore` joins `ctx.ContentSections` (memory
+   content) into `ResponseBuilder.Success(...)`. Memory text therefore reaches the envelope
+   verbatim, and `scri restore` exit code is a substring match over it."
+
+   `Restore` does join `ctx.ContentSections` into the envelope, but `contentSections` is
+   populated at exactly two sites — `:655` (a `Skills available (N): ...` line) and `:721`
+   (the empty-state fallback). **No memory body ever reaches the restore envelope**, so
+   `scri restore` could not exhibit the defect and was the wrong exemplar throughout the
+   review, this spec, and the plan.
+
+   The defect is real; the reachable set is `scri link` (echoes `--reason` into its success
+   message), `scri reconcile` (embeds decoded conflict bodies in its scan report), and
+   `scri facts` (renders entity values verbatim from unsanitised attribute text).
+   `scri append` and `scri compact` are also unreachable: their success text interpolates
+   only a memory *name*, and `':'` sits in the explicit `s_portableInvalid` set at
+   `FileMemoryStore.cs:298-299` — not the platform-dependent `GetInvalidFileNameChars()` —
+   so a name can never carry `status: error` on any platform.
+
+   Recorded rather than silently rewritten because the error is instructive: the review
+   asserted a data-flow it had not traced to its source, which is the same
+   overstatement-from-a-plausible-reading that the branch exists to eliminate.
 5. `IMemoryStore` declares **five `SearchAll` overloads**; four carry default
    implementations that post-filter after the top-K cut. `IMemoryStore.cs:109-111`
    documents that post-filtering is wrong; `:119-123` then does it.
