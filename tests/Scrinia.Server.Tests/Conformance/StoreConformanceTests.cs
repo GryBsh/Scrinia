@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core.Search;
+using Scrinia.Server.Services;
 using Xunit;
 
 namespace Scrinia.Server.Tests.Conformance;
@@ -139,5 +140,21 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
 
         remote.Should().BeEquivalentTo(local);
         remote.Should().Equal("/attr/tagged-gizmo");
+    }
+
+    /// <summary>Regression guard on the drifted duplicate: the server's PluginPipeline and the
+    /// shared SearchPipeline must agree, filters included. Before unification the pipeline copy
+    /// silently ignored pathPrefix.</summary>
+    [Fact]
+    public async Task ServerPipeline_AndSharedPipeline_AgreeUnderAFilter()
+    {
+        var pipeline = new PluginPipeline([]);
+        var viaServer = await pipeline.SearchAsync(fx.Local, "widget", null, 100, null, "/api/", null);
+        var viaShared = (await SearchPipeline.ExecuteAsync(
+            fx.Local, new SearchQuery("widget") { Limit = 100, PathPrefix = "/api/" },
+            null, null)).Matches;
+
+        StoreConformanceFixture.Names(fx.Local, viaServer)
+            .Should().BeEquivalentTo(StoreConformanceFixture.Names(fx.Local, viaShared));
     }
 }
