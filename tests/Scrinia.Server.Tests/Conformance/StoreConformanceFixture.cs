@@ -74,8 +74,9 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
 
     public Task DisposeAsync()
     {
+        // HttpMemoryStore owns _client's disposal (its Dispose() disposes the HttpClient it was
+        // constructed with), so no separate _client.Dispose() here.
         (Remote as IDisposable)?.Dispose();
-        _client.Dispose();
         _factory.Dispose();
         return Task.CompletedTask;
     }

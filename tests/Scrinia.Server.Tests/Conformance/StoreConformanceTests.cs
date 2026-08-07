@@ -38,12 +38,14 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
     }
 
     /// <summary>Entries and chunks only — see the class remarks for why TopicResult is excluded
-    /// from this comparison.</summary>
+    /// from this comparison. Every InlineData query here must legitimately match something in the
+    /// seeded corpus — a query that matches nothing compares an empty set to an empty set and
+    /// cannot catch a cross-store parity regression; see <see cref="NoMatches_BothStores_ReturnEmpty"/>
+    /// for that case, tested honestly on its own terms.</summary>
     [Theory]
     [InlineData("widget")]
     [InlineData("alpha")]
     [InlineData("planning")]
-    [InlineData("nonexistentterm")]
     public void Unfiltered_BothStores_ReturnSameEntries(string query)
     {
         var local = StoreConformanceFixture.Names(fx.Local,
@@ -54,10 +56,23 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
         remote.Should().BeEquivalentTo(local);
     }
 
+    /// <summary>A query matching nothing must come back empty from both stores — not "empty from
+    /// one and junk from the other". Split out of the parity theory, where it could only ever have
+    /// compared an empty set to an empty set.</summary>
+    [Fact]
+    public void NoMatches_BothStores_ReturnEmpty()
+    {
+        fx.Local.SearchAll("nonexistentterm", scopes: null, limit: 100).Should().BeEmpty();
+        fx.Remote.SearchAll("nonexistentterm", scopes: null, limit: 100).Should().BeEmpty();
+    }
+
+    /// <summary>All 25 seeded entries match "widget", so a limit of 5 must fill exactly — under-filling
+    /// is the exact defect class this branch exists to fix, so this assertion must be exact, not an
+    /// upper bound.</summary>
     [Fact]
     public void Unfiltered_LimitIsHonoured_ByBothStores()
     {
-        fx.Local.SearchAll("widget", scopes: null, limit: 5).Should().HaveCountLessThanOrEqualTo(5);
-        fx.Remote.SearchAll("widget", scopes: null, limit: 5).Should().HaveCountLessThanOrEqualTo(5);
+        fx.Local.SearchAll("widget", scopes: null, limit: 5).Should().HaveCount(5);
+        fx.Remote.SearchAll("widget", scopes: null, limit: 5).Should().HaveCount(5);
     }
 }
