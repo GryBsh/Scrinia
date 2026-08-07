@@ -1363,8 +1363,8 @@ public sealed partial class ScriniaMcpTools
                      k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
                 ||
                 (sa.Entry.Attributes is not null &&
-                 (MatchesRefAttributeb(sa.Entry.Attributes, "file", target) ||
-                  MatchesRefAttributeb(sa.Entry.Attributes, "ref", target))))
+                 (MatchesRefAttribute(sa.Entry.Attributes, "file", target) ||
+                  MatchesRefAttribute(sa.Entry.Attributes, "ref", target))))
             .Select(sa => store.FormatQualifiedName(sa.Scope, sa.Entry.Name))
             .Distinct()
             .ToList();
@@ -1379,7 +1379,7 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Reference-attribute match: exact value or path-suffix ("/{target}") — the attributes-side
     /// twin of the legacy file:/ref: keyword predicate in References.</summary>
-    private static bool MatchesRefAttributeb(Dictionary<string, string[]> attributes, string key, string target)
+    private static bool MatchesRefAttribute(Dictionary<string, string[]> attributes, string key, string target)
     {
         foreach (var kv in attributes)
         {

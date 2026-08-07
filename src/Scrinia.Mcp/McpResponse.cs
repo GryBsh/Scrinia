@@ -140,7 +140,7 @@ public static class ResponseBuilder
 
 /// <summary>
 /// Hand-built YAML serialiser for <see cref="McpResponse"/>.
-/// No YamlDotNet dependency — AOT-safe, zero reflection.
+/// AOT-safe, zero reflection.
 /// </summary>
 public static class McpResponseExtensions
 {
