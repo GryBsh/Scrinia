@@ -34,6 +34,7 @@ public class ChatProviderHttpTests
         error.Should().BeNull();
         response.Should().NotBeNull();
         response!.StatusCode.Should().Be(HttpStatusCode.OK);
+        handler.Calls.Should().Be(1, "a successful send must not retry");
         response.Dispose();
     }
 

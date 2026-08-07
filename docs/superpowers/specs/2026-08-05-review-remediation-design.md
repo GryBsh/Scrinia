@@ -248,6 +248,26 @@ Per fact 8 this is **behaviour-preserving in remote mode**: every one of those s
 already throws `NotSupportedException` there, so switching to a property that also
 throws changes nothing.
 
+**CORRECTED 2026-08-07 during implementation — two claims above were WRONG.**
+
+It read: "`ScriniaCommands.Bundle.cs:143` — `Combine(storeDir, "..", "exports")`,
+unnormalized." `ScriniaCommands.Bundle.cs` already normalized the combined path on the
+following line via `Path.GetFullPath`, before this branch touched the file. "Unnormalized"
+never applied to this site.
+
+It also read: "**Fix:** all seven move to `store.WorkspaceRoot`, making the comment true" —
+read naturally as the seven sites converging on one value. They do not. The seven split
+**4 / 2 / 1**: four resolve to the workspace root itself (`MemoryTools.Core.cs:354-356`,
+`:729-731`, `:1631-1633`, `MemoryTools.Bundling.cs:82-83`), two resolve to `.scrinia/`, one
+directory deeper (`MemoryTools.Lifecycle.cs:67`, `:580-581`), and one resolves to
+`.scrinia/exports` (`ScriniaCommands.Bundle.cs:143`). Every site does call
+`store.WorkspaceRoot` as the single authority — that part of the fix held — but the further
+`Path.Combine` after it differs by site, so the resolved directory does not.
+
+Recorded rather than silently rewritten because branches 3 and 4 (`mcp-response-shape` →
+`search-contract` → `store-boundaries`, per the 2026-08-06 design) are cut from this same
+spec. Leaving either claim in place would propagate it forward.
+
 ### C5. Chat provider retry block duplicated verbatim
 
 `OpenAiChatProvider`, `AnthropicChatProvider` and `GeminiChatProvider` each carry a

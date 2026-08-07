@@ -99,6 +99,13 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 - `IMemoryStore` gains `WorkspaceRoot`. Remote stores throw `NotSupportedException`: skills
   and agent configs are local-only, which was previously accidental rather than stated.
 
+### Changed — embedding provider error truncation now matches the chat providers
+
+- A truncated provider error body in the embedding provider's warning log now ends with
+  `...`, matching the three chat providers. The four call sites carried the same 500-character
+  truncation rule copied by hand, and only the embedding provider's copy had drifted to omit
+  the ellipsis. All four now go through one shared `HttpErrorBody.Truncate` helper.
+
 ### Fixed — event-sink lifecycle
 
 - Detached event-sink work is now tracked by `BackgroundWork` instead of being dropped on the
