@@ -619,7 +619,29 @@ git commit -m "feat(server): filter search server-side, with POST /search for at
 
 **Files:**
 - Modify: `src/Scrinia/HttpMemoryStore.cs:329-395`
+- Modify: `src/Scrinia.Core/MemoryNaming.cs`
 - Modify: `tests/Scrinia.Server.Tests/Conformance/StoreConformanceTests.cs`
+
+**Added after Task 1 — a real remote defect the conformance suite surfaced.** Task 1 had to exclude `TopicResult` from its cross-store comparison because every remote topic result comes back with `scope` hardcoded to `"local"`. The server sends a topic's name as `MemoryNaming.FormatScopeLabel(tr.Scope)` — a display label like `"api"` — and the client only recovers a scope when the name contains `':'` (`HttpMemoryStore.cs:355`), which a label never does. Two distinct topics collapse to one wrong label.
+
+This branch exists to make remote search correct, and this task rewrites those exact lines, so it is fixed here rather than deferred. `FormatScopeLabel` (`src/Scrinia.Core/MemoryNaming.cs:61-68`) is invertible over the real scope set (`local`, `ephemeral`, `local:<topic>`), so the fix is its inverse, living beside it:
+
+```csharp
+    /// <summary>Inverse of <see cref="FormatScopeLabel"/>: recovers a scope from its display
+    /// label. Needed by remote clients, which receive topic results labelled rather than scoped.
+    /// Round-trips every scope this system produces — "local", "ephemeral", and "local:{topic}".
+    /// </summary>
+    public static string ParseScopeLabel(string label) => label switch
+    {
+        "local" => "local",
+        "ephemeral" => "ephemeral",
+        _ => $"local:{label}",
+    };
+```
+
+Then in `SearchRemote`'s topic branch, replace `new TopicResult(scope, item.Name, ...)` with `new TopicResult(MemoryNaming.ParseScopeLabel(item.Name), item.Name, ...)` — the `scope` local computed from the `':'` test is for entry and chunk names and does not apply to topics.
+
+Finally, **remove the `TopicResult` exclusion Task 1 added** to `Unfiltered_BothStores_ReturnSameEntries`, and delete the paragraph of the class doc comment that explains it. Topics must now compare equal across stores; if they do not, the fix is incomplete.
 
 **Interfaces:**
 - Produces, for Task 4: `private IReadOnlyList<SearchResult> SearchRemote(string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix, IReadOnlyDictionary<string,string[]>? attributeFilter)` — the single wire implementation. Task 4 deletes the thin overloads around it and calls it from `SearchAll(SearchQuery)`.
