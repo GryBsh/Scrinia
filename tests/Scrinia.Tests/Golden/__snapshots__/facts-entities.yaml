@@ -1,0 +1,8 @@
+status: success
+action: facts
+content: |
+  entities: showing 4 of 4
+    person:jolene (1)
+    topic:auth (1)
+    topic:resilience (1)
+    topic:security (1)

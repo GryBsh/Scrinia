@@ -28,7 +28,7 @@ public sealed class SearchResultDateDisplayTests
             ContentPreview: "notes about pottery glazing techniques"));
 
         var tools = new ScriniaMcpTools();
-        string body = await tools.Search(query: "pottery");
+        string body = (await tools.Search(query: "pottery")).ToYaml();
 
         body.Should().MatchRegex(@"created: \d{4}-\d{2}-\d{2}");
         body.Should().NotContain("\"created\"", because: "the date is display-only, never a stored attribute key");
@@ -50,7 +50,7 @@ public sealed class SearchResultDateDisplayTests
             UpdatedAt: new DateTimeOffset(2024, 1, 9, 0, 0, 0, TimeSpan.Zero)));
 
         var tools = new ScriniaMcpTools();
-        string body = await tools.Search(query: "kiln");
+        string body = (await tools.Search(query: "kiln")).ToYaml();
 
         body.Should().MatchRegex(@"created: 2023-05-03");
         body.Should().MatchRegex(@"updated: 2024-01-09");
@@ -72,7 +72,7 @@ public sealed class SearchResultDateDisplayTests
             UpdatedAt: null));
 
         var tools = new ScriniaMcpTools();
-        string body = await tools.Search(query: "glaze");
+        string body = (await tools.Search(query: "glaze")).ToYaml();
 
         body.Should().Contain("created: 2023-05-03");
         body.Should().NotContain("updated:");
@@ -99,7 +99,7 @@ public sealed class SearchResultDateDisplayTests
             ContentPreview: "a note with no date mentioned anywhere in its text"));
 
         var tools = new ScriniaMcpTools();
-        string body = await tools.Search(query: createdAt.ToString("yyyy-MM-dd"));
+        string body = (await tools.Search(query: createdAt.ToString("yyyy-MM-dd"))).ToYaml();
 
         body.Should().Contain("No matching memories found.");
     }

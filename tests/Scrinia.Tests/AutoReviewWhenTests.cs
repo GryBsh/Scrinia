@@ -62,7 +62,7 @@ public sealed class AutoReviewWhenTests
 
         // Ephemeral memories take a different code path and don't have ReviewWhen.
         // This test verifies the ephemeral path doesn't error on content with count patterns.
-        string result = await Tools().Remember(["We have 835 tests"], "~scratch");
+        string result = (await Tools().Remember(["We have 835 tests"], "~scratch")).ToYaml();
 
         result.Should().Contain("ephemeral");
     }

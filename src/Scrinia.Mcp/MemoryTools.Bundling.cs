@@ -16,7 +16,7 @@ namespace Scrinia.Mcp;
 public sealed partial class ScriniaMcpTools
 {
     /// <summary>Export one or more local topics into a portable .scrinia-bundle file.</summary>
-    internal Task<string> Export(
+    internal Task<McpResponse> Export(
         [Description("Topic names to export (e.g. [\"api\", \"arch\"]).")] string[] topics,
         [Description("Output filename (saved to .scrinia/exports/). Defaults to auto-generated name.")] string? filename = null,
         CancellationToken cancellationToken = default)
@@ -26,7 +26,7 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult(ResponseBuilder.Error(
                 "At least one topic name is required.",
                 ErrorCodes.InvalidParameter,
-                "bundle('export', { topics: ['api', 'arch'] })").ToYaml());
+                "bundle('export', { topics: ['api', 'arch'] })"));
 
         string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
         FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
@@ -59,18 +59,18 @@ public sealed partial class ScriniaMcpTools
                 return Task.FromResult(ResponseBuilder.Error(
                     "No entries found in the specified topics.",
                     ErrorCodes.NotFound,
-                    "list() to see available topics with entry counts").ToYaml());
+                    "list() to see available topics with entry counts"));
             }
         }
 
         long fileSize = new FileInfo(bundlePath).Length;
         return Task.FromResult(
             ResponseBuilder.Success($"Exported {exportedTopics.Count} topic(s) ({totalEntries} entries, {FormatBytes(fileSize)}) to {bundlePath}")
-                .WithAction("exported").ToYaml());
+                .WithAction("exported"));
     }
 
     /// <summary>Import topics from a .scrinia-bundle file into the local workspace.</summary>
-    internal Task<string> Import(
+    internal Task<McpResponse> Import(
         [Description("Path to the .scrinia-bundle file (relative to workspace or absolute).")] string bundlePath,
         [Description("Optional topic names to import. If empty, imports all topics in the bundle.")] string[]? topics = null,
         [Description("When true, replaces existing entries if they conflict.")] bool overwrite = false,
@@ -92,13 +92,13 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult(ResponseBuilder.Error(
                 "Bundle path must be within the workspace.",
                 ErrorCodes.InvalidPath,
-                "Move the bundle file under the workspace root and retry.").ToYaml());
+                "Move the bundle file under the workspace root and retry."));
 
         if (!File.Exists(resolvedPath))
             return Task.FromResult(ResponseBuilder.Error(
                 $"Bundle file not found: {resolvedPath}",
                 ErrorCodes.NotFound,
-                "Verify the bundle path is correct and the file exists.").ToYaml());
+                "Verify the bundle path is correct and the file exists."));
 
         try
         {
@@ -109,7 +109,7 @@ public sealed partial class ScriniaMcpTools
                 Scrinia.Core.Bundles.BundleFormatService.ImportTopicsFromZip(zip, store, topics, overwrite);
 
             if (topicCount == 0 && skippedCategories.Count == 0)
-                return Task.FromResult(ResponseBuilder.Warning("No topics were imported (empty bundle or all filtered out).").ToYaml());
+                return Task.FromResult(ResponseBuilder.Warning("No topics were imported (empty bundle or all filtered out)."));
 
             // A workflows-only (or otherwise topic-free) bundle still reaches here via the
             // skippedCategories > 0 branch above — suppress the "Imported 0 topic(s) (0 entries):"
@@ -123,14 +123,14 @@ public sealed partial class ScriniaMcpTools
                 response = response.WithActionNeeded(
                     $"Skipped unrecognized file-entity categories (not imported): {string.Join(", ", skippedCategories)}.");
 
-            return Task.FromResult(response.ToYaml());
+            return Task.FromResult(response);
         }
         catch (InvalidOperationException ex)
         {
             return Task.FromResult(ResponseBuilder.Error(
                 ex.Message,
                 ErrorCodes.Internal,
-                "Verify the bundle file is a valid .scrinia-bundle archive.").ToYaml());
+                "Verify the bundle file is a valid .scrinia-bundle archive."));
         }
     }
 

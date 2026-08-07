@@ -19,7 +19,7 @@ public sealed partial class ScriniaMcpTools
 {
     /// <summary>Recall: unpack an NMP/2 artifact (or a memory resolved by name) back to its
     /// original text content. Backs the MCP <c>recall</c> tool and <c>scri show</c>.</summary>
-    internal async Task<string> Recall(
+    internal async Task<McpResponse> Recall(
         [Description("The NMP/2 artifact text, or a memory name to resolve. " +
                      "Use the exact name shown by list (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] string artifactOrName,
         [Description("Optional 1-based chunk index to retrieve a specific chunk.")] int? chunk = null,
@@ -38,7 +38,7 @@ public sealed partial class ScriniaMcpTools
                 {
                     string mdContent = await File.ReadAllTextAsync(agentFilePath, cancellationToken);
                     SessionBudget.RecordAccess(artifactOrName, mdContent.Length);
-                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel).ToYaml();
+                    return ResponseBuilder.Success(mdContent).WithAction(actionLabel);
                 }
             }
             // Fall through to NMP/2 resolution for legacy entries
@@ -61,7 +61,7 @@ public sealed partial class ScriniaMcpTools
                     $"Memory '{artifactOrName}' not found.",
                     ErrorCodes.NotFound,
                     "list() to see available memories",
-                    "search({ query: '...' }) to find by keyword").ToYaml();
+                    "search({ query: '...' }) to find by keyword");
 
             try
             {
@@ -73,7 +73,7 @@ public sealed partial class ScriniaMcpTools
                     $"Memory '{artifactOrName}' not found.",
                     ErrorCodes.NotFound,
                     "list() to see available memories",
-                    "search({ query: '...' }) to find by keyword").ToYaml();
+                    "search({ query: '...' }) to find by keyword");
             }
         }
 
@@ -81,7 +81,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 "Only NMP/2 artifacts are supported by this tool.",
                 ErrorCodes.InvalidParameter,
-                "Provide a memory name or an artifact whose header begins with 'NMP/2 '.").ToYaml();
+                "Provide a memory name or an artifact whose header begins with 'NMP/2 '.");
 
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
@@ -89,7 +89,7 @@ public sealed partial class ScriniaMcpTools
         {
             string chunkContent = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunk.Value);
             SessionBudget.RecordAccess(artifactOrName, chunkContent.Length);
-            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel).ToYaml();
+            return ResponseBuilder.Success($"Chunk {chunk}/{chunkCount}\n\n{chunkContent}").WithAction(actionLabel);
         }
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
@@ -97,16 +97,16 @@ public sealed partial class ScriniaMcpTools
         SessionBudget.RecordAccess(artifactOrName, decoded.Length);
 
         if (chunkCount > 1)
-            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel).ToYaml();
+            return ResponseBuilder.Success($"({chunkCount} chunks)\n\n{decoded}").WithAction(actionLabel);
 
-        return ResponseBuilder.Success(decoded).WithAction(actionLabel).ToYaml();
+        return ResponseBuilder.Success(decoded).WithAction(actionLabel);
     }
 
     // ── Persistent memory tools ───────────────────────────────────────────────
 
     /// <summary>Remember: compress text and persist it as a named artifact in a memory scope.
     /// Backs the MCP <c>remember</c> tool and <c>scri store</c>.</summary>
-    internal async Task<string> Remember(
+    internal async Task<McpResponse> Remember(
         [Description("The text content to compress and store. " +
                      "Pass a single element for a single-chunk artifact, or multiple elements to control " +
                      "chunk boundaries — each element becomes one independently retrievable chunk.")] string[] content,
@@ -255,7 +255,7 @@ public sealed partial class ScriniaMcpTools
             FireEventSinkAsync(sink => sink.OnStoredAsync($"~{key}", content, store, CancellationToken.None));
 
             return ResponseBuilder.Success($"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]")
-                .WithAction(actionLabel).ToYaml();
+                .WithAction(actionLabel);
         }
 
         // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──
@@ -267,7 +267,7 @@ public sealed partial class ScriniaMcpTools
             if (!PathRouter.TryToFileEntityPath("agent", agentSubject, store.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
                     "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.", ErrorCodes.InvalidParameter,
-                    "Use a path like '/agent/profile' for the agent config.").ToYaml();
+                    "Use a path like '/agent/profile' for the agent config.");
             FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);
 
@@ -285,7 +285,7 @@ public sealed partial class ScriniaMcpTools
 
             long agentBytes = System.Text.Encoding.UTF8.GetByteCount(agentContent);
             return ResponseBuilder.Success($"Remembered: agent:{agentSubject} ({FormatBytes(agentBytes)}).")
-                .WithFileChanges().WithAction(actionLabel).ToYaml();
+                .WithFileChanges().WithAction(actionLabel);
         }
 
         // ── Persistent path ──────────────────────────────────────────────
@@ -409,11 +409,11 @@ public sealed partial class ScriniaMcpTools
         FireEventSinkAsync(sink => sink.OnStoredAsync(sinkQualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
-            .WithFileChanges().WithAction(actionLabel).ToYaml();
+            .WithFileChanges().WithAction(actionLabel);
     }
 
     /// <summary>Update metadata on an existing memory without re-encoding its content.</summary>
-    internal Task<string> UpdateMeta(
+    internal Task<McpResponse> UpdateMeta(
         [Description("Memory name (e.g. '/api/auth-flow', 'session-notes').")] string name,
         [Description("Keywords to add (merged with existing, not replaced).")] string[]? keywords = null,
         [Description("New description (replaces existing if provided).")] string? description = null,
@@ -427,7 +427,7 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult(ResponseBuilder.Error(
                 "Update does not support ephemeral memories. Use remember instead.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '...', content: [...] }) — overwrites an existing ephemeral entry").ToYaml());
+                "remember({ path: '...', content: [...] }) — overwrites an existing ephemeral entry"));
 
         var (scope, subject) = store.ParseQualifiedName(name);
 
@@ -440,7 +440,7 @@ public sealed partial class ScriniaMcpTools
                 $"Memory '{qualName}' not found.",
                 ErrorCodes.NotFound,
                 "list() to see available memories",
-                "remember({ path: '...', content: [...] }) to create it").ToYaml());
+                "remember({ path: '...', content: [...] }) to create it"));
         }
 
         // Track what changed for the response message
@@ -501,7 +501,7 @@ public sealed partial class ScriniaMcpTools
         }
 
         if (changes.Count == 0)
-            return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen.").ToYaml());
+            return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen."));
 
         // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
         // members below + the Forward call at the end of this method). ADD/REPLACE ONLY — no
@@ -573,11 +573,11 @@ public sealed partial class ScriniaMcpTools
         string qualifiedName = store.FormatQualifiedName(scope, subject);
         return Task.FromResult(
             ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.")
-                .WithFileChanges().WithAction("updated").ToYaml());
+                .WithFileChanges().WithAction("updated"));
     }
 
     /// <summary>Returns a summary or full listing of persisted memories.</summary>
-    internal Task<string> List(
+    internal Task<McpResponse> List(
         [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
                      "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
         [Description("'summary' (default), 'full' for paginated table, 'drift' for code reference drift check.")] string mode = "summary",
@@ -594,14 +594,14 @@ public sealed partial class ScriniaMcpTools
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
-            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed").ToYaml());
+            return Task.FromResult(ResponseBuilder.Success("No memories stored.").WithAction("listed"));
 
         entries.Sort((a, b) => b.Entry.CreatedAt.CompareTo(a.Entry.CreatedAt));
 
         if (!string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase))
-            return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed").ToYaml());
+            return Task.FromResult(ResponseBuilder.Success(BuildSummary(entries, store)).WithAction("listed"));
 
-        return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed").ToYaml());
+        return Task.FromResult(ResponseBuilder.Success(BuildFullList(entries, store, offset, limit)).WithAction("listed"));
     }
 
     internal static string BuildSummary(List<ScopedArtifact> entries, IMemoryStore store)
@@ -810,7 +810,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>Search memories across local and topic scopes using a query.</summary>
-    internal async Task<string> Search(
+    internal async Task<McpResponse> Search(
         [Description("Search term matched against memory names and descriptions.")] string query,
         [Description("Optional comma-separated scope order, e.g. local,api,ephemeral. " +
                      "Topic names filter to local topics (e.g. 'api' shows api topic entries).")] string? scopes = null,
@@ -829,10 +829,10 @@ public sealed partial class ScriniaMcpTools
         var matches = outcome.Matches;
 
         if (matches.Count == 0)
-            return ResponseBuilder.Success("No matching memories found.").WithAction("searched").ToYaml();
+            return ResponseBuilder.Success("No matching memories found.").WithAction("searched");
 
-        string body = FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
-        return ResponseBuilder.Success(body).WithAction("searched").ToYaml();
+        string body = SearchResultRenderer.FormatRichSearchResults(store, outcome.Matches, outcome.EntityFacts);
+        return ResponseBuilder.Success(body).WithAction("searched");
     }
 
     /// <summary>The result of a scoring-pipeline run: the ranked matches plus the (possibly empty)
@@ -929,212 +929,8 @@ public sealed partial class ScriniaMcpTools
         return EntityFactSummarizer.Summarize(factStore, named);
     }
 
-    /// <summary>
-    /// Renders one block per match with the persisted entry attributes surfaced. The agent
-    /// gets enough decision-making context per hit — description, tags, retrieval
-    /// anchors — to either answer directly or pick which hits warrant a recall,
-    /// without a second round trip per candidate.
-    /// </summary>
-    /// <remarks>
-    /// Block layout (inside the YAML envelope's <c>content: |</c> body):
-    /// <code>
-    /// [1] entry  /findings/auth-refactor  score=47  ~380 tokens
-    ///     tags: security, refactor
-    ///     description: Multi-line description verbatim.
-    ///     anchors:
-    ///       - what is the auth refactor?
-    ///       - how does session rotation work?
-    /// </code>
-    /// Description is sanity-capped at <see cref="MaxDescriptionChars"/> chars to bound
-    /// response size; anchors is capped at <see cref="MaxAnchorsPerResult"/>. Tags omitted
-    /// when empty; anchors section omitted when null/empty.
-    /// </remarks>
-    private static string FormatRichSearchResults(
-        IMemoryStore store, IReadOnlyList<SearchResult> matches, IReadOnlyList<EntityFactSummary> entityFacts)
-    {
-        var sb = new System.Text.StringBuilder();
-        AppendEntityFactsBlock(sb, entityFacts);
-        sb.Append("results: ").Append(matches.Count).Append('\n');
-
-        for (int i = 0; i < matches.Count; i++)
-        {
-            sb.Append('\n');
-            AppendResultBlock(sb, store, matches[i], i + 1);
-        }
-
-        return sb.ToString().TrimEnd();
-    }
-
-    /// <summary>
-    /// Renders the compact entity-facts preamble that precedes the <c>results:</c> section
-    /// when the query named a known entity. One line per summary: mention count (singular
-    /// "memory" for 1), an optional first→last date span, and an optional "; with ..." clause
-    /// listing the top co-occurring entities. Absent entirely when there are no summaries.
-    /// </summary>
-    private static void AppendEntityFactsBlock(
-        System.Text.StringBuilder sb, IReadOnlyList<EntityFactSummary> facts)
-    {
-        if (facts.Count == 0) return;
-        var ci = System.Globalization.CultureInfo.InvariantCulture;
-        sb.Append("entity_facts:\n");
-        foreach (var f in facts)
-        {
-            sb.Append("  ").Append(f.Entity.Key).Append(':').Append(f.Entity.Value)
-              .Append(" — ").Append(f.MentionCount).Append(f.MentionCount == 1 ? " memory" : " memories");
-            if (f.First is { } first && f.Last is { } last)
-                sb.Append(", ")
-                  .Append(first.ToString("yyyy-MM-dd", ci)).Append('→').Append(last.ToString("yyyy-MM-dd", ci));
-            if (f.TopCoOccurring.Count > 0)
-            {
-                sb.Append("; with ");
-                for (int i = 0; i < f.TopCoOccurring.Count; i++)
-                {
-                    if (i > 0) sb.Append(", ");
-                    var c = f.TopCoOccurring[i];
-                    sb.Append(c.Entity.Key).Append(':').Append(c.Entity.Value)
-                      .Append(" (").Append(c.Count).Append(')');
-                }
-            }
-            sb.Append('\n');
-        }
-        sb.Append('\n'); // blank line between the block and results:
-    }
-
-    private const int MaxDescriptionChars = 1500;
-    private const int MaxAnchorsPerResult = 7;
-
-    internal static void AppendResultBlock(System.Text.StringBuilder sb, IMemoryStore store, SearchResult match, int index)
-    {
-        switch (match)
-        {
-            case EntryResult er:
-                {
-                    string label = er.Item.Scope == "ephemeral"
-                        ? $"~{er.Item.Entry.Name}"
-                        : store.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name);
-                    int estTokens = (int)(er.Item.Entry.OriginalBytes / 4);
-                    sb.Append('[').Append(index).Append("] entry  ").Append(label)
-                      .Append("  score=").Append(er.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
-                      .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendDatesLine(sb, er.Item.Entry.CreatedAt, er.Item.Entry.UpdatedAt);
-                    AppendAttributesLine(sb, er.Item.Entry.Attributes);
-                    AppendDescription(sb, AttributeReaders.PreviewText(er.Item.Entry.ContentPreview));
-                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(er.Item.Entry.Attributes));
-                    break;
-                }
-            case ChunkEntryResult cr:
-                {
-                    string parentLabel = cr.ParentItem.Scope == "ephemeral"
-                        ? $"~{cr.ParentItem.Entry.Name}"
-                        : store.FormatQualifiedName(cr.ParentItem.Scope, cr.ParentItem.Entry.Name);
-                    int estTokens = cr.TotalChunks > 0
-                        ? (int)(cr.ParentItem.Entry.OriginalBytes / cr.TotalChunks / 4)
-                        : 0;
-                    sb.Append('[').Append(index).Append("] chunk  ").Append(parentLabel)
-                      .Append(" [chunk ").Append(cr.Chunk.ChunkIndex).Append('/').Append(cr.TotalChunks).Append(']')
-                      .Append("  score=").Append(cr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
-                      .Append("  ~").Append(estTokens).Append(" tokens\n");
-                    AppendDatesLine(sb, cr.ParentItem.Entry.CreatedAt, cr.ParentItem.Entry.UpdatedAt);
-                    AppendAttributesLine(sb, cr.ParentItem.Entry.Attributes);
-                    AppendDescription(sb, cr.Chunk.ContentPreview
-                        ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview));
-                    AppendAnchors(sb, AttributeReaders.DisplayAnchors(cr.ParentItem.Entry.Attributes));
-                    break;
-                }
-            case TopicResult tr:
-                {
-                    string label = MemoryNaming.FormatScopeLabel(tr.Scope);
-                    sb.Append('[').Append(index).Append("] topic  ").Append(label)
-                      .Append("  score=").Append(tr.Score.ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
-                      .Append("  (").Append(tr.EntryCount).Append(" entries)\n");
-                    AppendTagsLine(sb, tr.Tags);
-                    AppendDescription(sb, tr.Description);
-                    break;
-                }
-        }
-    }
-
-    private static void AppendTagsLine(System.Text.StringBuilder sb, string[]? tags)
-    {
-        if (tags is null || tags.Length == 0) return;
-        sb.Append("    tags: ");
-        for (int i = 0; i < tags.Length; i++)
-        {
-            if (i > 0) sb.Append(", ");
-            sb.Append(tags[i]);
-        }
-        sb.Append('\n');
-    }
-
-    /// <summary>Render record dates as display-only pseudo-attributes from the entry's structural
-    /// CreatedAt/UpdatedAt — never stored in Attributes, never agent-writable. Date-only, ISO.</summary>
-    private static void AppendDatesLine(System.Text.StringBuilder sb, DateTimeOffset createdAt, DateTimeOffset? updatedAt)
-    {
-        sb.Append("    created: ").Append(createdAt.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
-        if (updatedAt is { } u)
-            sb.Append("    updated: ").Append(u.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
-    }
-
-    private static void AppendAttributesLine(System.Text.StringBuilder sb, Dictionary<string, string[]>? attributes)
-    {
-        if (attributes is null || attributes.Count == 0) return;
-        sb.Append("    attributes:\n");
-        foreach (var kv in attributes)
-        {
-            sb.Append("      ").Append(kv.Key).Append(": ");
-            sb.Append(string.Join(", ", kv.Value)).Append('\n');
-        }
-    }
-
-    private static void AppendDescription(System.Text.StringBuilder sb, string? description)
-    {
-        if (string.IsNullOrWhiteSpace(description)) return;
-
-        string text = description;
-        bool truncated = false;
-        if (text.Length > MaxDescriptionChars)
-        {
-            text = text[..MaxDescriptionChars];
-            truncated = true;
-        }
-
-        // Inline form when the description fits on one line — easier to scan. Multi-line
-        // descriptions fall back to an indented block whose continuation lines stay aligned
-        // under the block header so visual grouping survives the outer YAML's content: |
-        // re-indentation.
-        if (!text.Contains('\n') && !text.Contains('\r'))
-        {
-            sb.Append("    description: ").Append(text);
-            if (truncated) sb.Append(" (truncated)");
-            sb.Append('\n');
-            return;
-        }
-
-        sb.Append("    description: |\n");
-        foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
-        {
-            sb.Append("      ").Append(line).Append('\n');
-        }
-        if (truncated) sb.Append("      (truncated)\n");
-    }
-
-    internal static void AppendAnchors(System.Text.StringBuilder sb, IReadOnlyList<string> anchors)
-    {
-        if (anchors.Count == 0) return;
-        sb.Append("    anchors:\n");
-        int emit = Math.Min(anchors.Count, MaxAnchorsPerResult);
-        for (int i = 0; i < emit; i++)
-        {
-            sb.Append("      - ").Append(anchors[i].Replace('\n', ' ').Replace('\r', ' ')).Append('\n');
-        }
-        if (anchors.Count > emit)
-        {
-            sb.Append("      - (+").Append(anchors.Count - emit).Append(" more)\n");
-        }
-    }
-
     /// <summary>Copies a memory artifact from one scope to another.</summary>
-    internal Task<string> Copy(
+    internal Task<McpResponse> Copy(
         [Description("Memory name or file:// URI to copy.")] string nameOrUri,
         [Description("Destination as qualified name (e.g. '/api/auth-flow' or 'my-notes'). " +
                      "Use '~name' for ephemeral destination.")] string destination,
@@ -1142,12 +938,12 @@ public sealed partial class ScriniaMcpTools
         CancellationToken cancellationToken = default)
     {
         bool ok = CurrentStore.CopyMemory(nameOrUri, destination, overwrite, out string msg);
-        if (!ok) return Task.FromResult(ResponseBuilder.Error(msg, ErrorCodes.Internal).ToYaml());
-        return Task.FromResult(ResponseBuilder.Success(msg).WithAction("copied").ToYaml());
+        if (!ok) return Task.FromResult(ResponseBuilder.Error(msg, ErrorCodes.Internal));
+        return Task.FromResult(ResponseBuilder.Success(msg).WithAction("copied"));
     }
 
     /// <summary>Removes a stored artifact and its index entry.</summary>
-    internal async Task<string> Forget(
+    internal async Task<McpResponse> Forget(
         [Description("The artifact name (e.g. \"session-notes\", \"/api/auth\", \"/temp/scratch\") or its file:// URI.")] string nameOrUri,
         CancellationToken cancellationToken = default)
     {
@@ -1161,12 +957,12 @@ public sealed partial class ScriniaMcpTools
                 return ResponseBuilder.Error(
                     $"No ephemeral memory found with name '~{key}'.",
                     ErrorCodes.NotFound,
-                    "list() to see ephemeral memories currently held in process").ToYaml();
+                    "list() to see ephemeral memories currently held in process");
 
             try { await (MemoryEventSinkContext.Current?.OnForgottenAsync($"~{key}", true, store, cancellationToken) ?? Task.CompletedTask); }
             catch { /* plugin errors must not block forget */ }
 
-            return ResponseBuilder.Success($"Forgot: ~{key}").WithAction("forgotten").ToYaml();
+            return ResponseBuilder.Success($"Forgot: ~{key}").WithAction("forgotten");
         }
 
         // Backward compat: resolve file:// URIs to their memory name, then delete by name
@@ -1190,7 +986,7 @@ public sealed partial class ScriniaMcpTools
                 return ResponseBuilder.Error(
                     $"No artifact found with name or URI '{nameOrUri}'.",
                     ErrorCodes.NotFound,
-                    "list() to see available memories").ToYaml();
+                    "list() to see available memories");
 
             var sink = MemoryEventSinkContext.Current;
             if (sink is not null)
@@ -1205,7 +1001,7 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            return ResponseBuilder.Success($"Forgot: {name}.").WithFileChanges().WithAction("forgotten").ToYaml();
+            return ResponseBuilder.Success($"Forgot: {name}.").WithFileChanges().WithAction("forgotten");
         }
 
         var (scope, subject) = store.ParseQualifiedName(nameOrUri);
@@ -1223,12 +1019,12 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"No artifact found with name '{nameOrUri}'.",
                 ErrorCodes.NotFound,
-                "list() to see available memories").ToYaml();
+                "list() to see available memories");
 
         try { await (MemoryEventSinkContext.Current?.OnForgottenAsync(sinkQualifiedName, deleted || removed, store, cancellationToken) ?? Task.CompletedTask); }
         catch { /* plugin errors must not block forget */ }
 
-        return ResponseBuilder.Success($"Forgot: {qualifiedName}.").WithFileChanges().WithAction("forgotten").ToYaml();
+        return ResponseBuilder.Success($"Forgot: {qualifiedName}.").WithFileChanges().WithAction("forgotten");
     }
 
     // ── Append/Reflect/Budget tools ─────────────────────────────────────────
@@ -1240,7 +1036,7 @@ public sealed partial class ScriniaMcpTools
     /// <paramref name="anchors"/> into it — appended content can introduce new concepts users will
     /// query for, and the metadata `remember` set must not be silently discarded on append.
     /// </summary>
-    internal async Task<string> Append(
+    internal async Task<McpResponse> Append(
         [Description("The text content to append.")] string content,
         [Description("Memory name to append to (e.g. 'session-notes', '/api/auth-flow', '~scratch').")] string name,
         [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
@@ -1430,7 +1226,7 @@ public sealed partial class ScriniaMcpTools
         FireEventSinkAsync(sink => sink.OnAppendedAsync(sinkQualifiedName, content, store, CancellationToken.None));
 
         return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
-            .WithFileChanges().WithAction("appended").ToYaml();
+            .WithFileChanges().WithAction("appended");
     }
 
     /// <summary>
@@ -1548,7 +1344,7 @@ public sealed partial class ScriniaMcpTools
     // The agent should treat "produce KT documents" as a goal, execute it, retrospect, and save a skill.
 
     /// <summary>Find all memories that reference a file path or memory name.</summary>
-    internal Task<string> References(
+    internal Task<McpResponse> References(
         [Description("Target to search for — a file path (e.g. 'FileMemoryStore.cs') or memory name (e.g. 'api:auth-flow').")] string target,
         CancellationToken cancellationToken = default)
     {
@@ -1567,23 +1363,23 @@ public sealed partial class ScriniaMcpTools
                      k.EndsWith($"/{target}", StringComparison.OrdinalIgnoreCase)))
                 ||
                 (sa.Entry.Attributes is not null &&
-                 (MatchesRefAttributeb(sa.Entry.Attributes, "file", target) ||
-                  MatchesRefAttributeb(sa.Entry.Attributes, "ref", target))))
+                 (MatchesRefAttribute(sa.Entry.Attributes, "file", target) ||
+                  MatchesRefAttribute(sa.Entry.Attributes, "ref", target))))
             .Select(sa => store.FormatQualifiedName(sa.Scope, sa.Entry.Name))
             .Distinct()
             .ToList();
 
         if (matches.Count == 0)
-            return Task.FromResult(ResponseBuilder.Success($"No memories reference '{target}'.").WithAction("searched").ToYaml());
+            return Task.FromResult(ResponseBuilder.Success($"No memories reference '{target}'.").WithAction("searched"));
 
         string result = $"Found {matches.Count} memory(s) referencing '{target}':\n" +
             string.Join("\n", matches.Select(m => $"- {m}"));
-        return Task.FromResult(ResponseBuilder.Success(result).WithAction("searched").ToYaml());
+        return Task.FromResult(ResponseBuilder.Success(result).WithAction("searched"));
     }
 
     /// <summary>Reference-attribute match: exact value or path-suffix ("/{target}") — the attributes-side
     /// twin of the legacy file:/ref: keyword predicate in References.</summary>
-    private static bool MatchesRefAttributeb(Dictionary<string, string[]> attributes, string key, string target)
+    private static bool MatchesRefAttribute(Dictionary<string, string[]> attributes, string key, string target)
     {
         foreach (var kv in attributes)
         {
@@ -1603,30 +1399,30 @@ public sealed partial class ScriniaMcpTools
     /// <c>ref</c> attribute on each side (via <see cref="UpdateMeta"/>, which routes the
     /// <c>ref:{name}</c>-shaped keyword into <c>Attributes["ref"]</c> instead of a legacy keyword).
     /// </summary>
-    internal async Task<string> Link(
+    internal async Task<McpResponse> Link(
         [Description("Source memory name.")] string from,
         [Description("Target memory name.")] string to,
         [Description("Reason for the connection.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
         // Add ref:{to} attribute to {from} (UpdateMeta routes the ref:-shaped keyword into Attributes)
-        string result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
+        McpResponse result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
         // Add ref:{from} attribute to {to}
-        string result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
+        McpResponse result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
 
-        if (result1.Contains("status: error") || result2.Contains("status: error"))
+        if (result1.Status == "error" || result2.Status == "error")
             return ResponseBuilder.Error(
-                $"Partial link failure:\n  {from}: {result1}\n  {to}: {result2}",
+                $"Partial link failure:\n  {from}: {result1.Error ?? result1.Content}\n  {to}: {result2.Error ?? result2.Content}",
                 ErrorCodes.Internal,
-                $"Verify both '{from}' and '{to}' exist via recall.").ToYaml();
+                $"Verify both '{from}' and '{to}' exist via recall.");
 
         string linkMsg = $"Linked '{from}' <-> '{to}'.";
         if (!string.IsNullOrWhiteSpace(reason))
             linkMsg += $" Reason: {reason}";
-        return ResponseBuilder.Success(linkMsg).WithAction("linked").ToYaml();
+        return ResponseBuilder.Success(linkMsg).WithAction("linked");
     }
 
-    private static Task<string> BuildDriftList(IMemoryStore store)
+    private static Task<McpResponse> BuildDriftList(IMemoryStore store)
     {
         string storeDir = store.GetStoreDirForScope("local");
         string scriniaDir = Path.GetDirectoryName(storeDir) ?? storeDir;
@@ -1671,7 +1467,7 @@ public sealed partial class ScriniaMcpTools
             string msg = okCount > 0
                 ? $"All {okCount} code references are current. No drift detected."
                 : "No memories have code references. Add a file attribute on remember (attributes: { file: ['path'] }) to track file dependencies.";
-            return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed").ToYaml());
+            return Task.FromResult(ResponseBuilder.Success(msg).WithAction("listed"));
         }
 
         string driftResponse = $"Code reference drift detected ({driftCount} drifted, {missingCount} missing, {okCount} ok):\n" +
@@ -1680,7 +1476,7 @@ public sealed partial class ScriniaMcpTools
         if (driftCount > 0) driftWarnings.Add($"{driftCount} code reference(s) have drifted (files changed since stored).");
         if (missingCount > 0) driftWarnings.Add($"{missingCount} code reference(s) point to missing files.");
         return Task.FromResult(
-            ResponseBuilder.Success(driftResponse).WithAction("listed").WithActionNeeded(driftWarnings.ToArray()).ToYaml());
+            ResponseBuilder.Success(driftResponse).WithAction("listed").WithActionNeeded(driftWarnings.ToArray()));
     }
 
     private static string? ResolveWorkspacePath(string workspaceRoot, string relativePath)

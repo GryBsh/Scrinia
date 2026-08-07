@@ -1,0 +1,15 @@
+status: success
+action: listed
+content: |
+  ## Memory Summary
+  **2 memories** — 3.0 KB (~768 tokens)
+  2 topics
+  
+  ### Scopes
+  - **/findings** — 1 memory, 2.0 KB
+  - **/patterns** — 1 memory, 1.0 KB
+  
+  ### Top attributes
+  topic (2), person (1)
+  
+  Use `list({ mode: 'full' })` to see all entries, or `search({ query: '...' })` to find specific memories.

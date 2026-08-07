@@ -1,0 +1,5 @@
+status: success
+action: appended
+content: |
+  Appended chunk 2 to /findings/auth-flow (2 chunks, 44 B).
+  Files in .scrinia/ were updated — these are your changes.

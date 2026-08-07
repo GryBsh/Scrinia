@@ -35,8 +35,8 @@ public partial class ScriniaCommands
             ? (target ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             : null;
 
-        string yaml = await new ScriniaMcpTools().Facts(
+        McpResponse response = await new ScriniaMcpTools().FactsResponse(
             op, entity, entities, key, scopes, excludeTopics, limit, cancellationToken);
-        return EmitMcpResult(yaml, json, "facts");
+        return EmitMcpResult(response, json, "facts");
     }
 }

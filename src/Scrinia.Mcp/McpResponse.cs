@@ -201,45 +201,6 @@ public static class McpResponseExtensions
         return sb.ToString().TrimEnd();
     }
 
-    /// <summary>
-    /// Inject an additional info-bullet into an already-serialised success/warning YAML
-    /// response. Used by the <c>memory()</c> dispatcher to surface advisory hints
-    /// (e.g. reserved-prefix typo suggestions) without re-running the handler.
-    /// No-op on error responses — error has its own actionNeeded channel.
-    /// </summary>
-    public static string InjectInfoHint(string yaml, string hint)
-    {
-        if (string.IsNullOrEmpty(hint)) return yaml;
-        if (yaml.Contains("status: error", StringComparison.Ordinal)) return yaml;
-
-        string escaped = YamlEscape(hint);
-        string newBullet = $"  - {escaped}";
-
-        // Extend an existing info: section if present.
-        int infoIdx = yaml.IndexOf("\ninfo:\n", StringComparison.Ordinal);
-        if (infoIdx == 0 || (infoIdx < 0 && yaml.StartsWith("info:\n", StringComparison.Ordinal)))
-            infoIdx = 0;
-        if (infoIdx >= 0 || yaml.StartsWith("info:\n", StringComparison.Ordinal))
-        {
-            int headerStart = yaml.StartsWith("info:\n", StringComparison.Ordinal) ? 0 : infoIdx + 1;
-            int afterHeader = yaml.IndexOf('\n', headerStart) + 1;
-            return yaml[..afterHeader] + newBullet + "\n" + yaml[afterHeader..];
-        }
-
-        // Otherwise create a new info section ahead of followUp/content (whichever comes first).
-        int anchor = -1;
-        foreach (var token in new[] { "\nfollowUp:\n", "\ncontent:" })
-        {
-            int idx = yaml.IndexOf(token, StringComparison.Ordinal);
-            if (idx >= 0 && (anchor < 0 || idx < anchor)) anchor = idx;
-        }
-        string section = $"info:\n{newBullet}\n";
-        if (anchor >= 0)
-            return yaml[..(anchor + 1)] + section + yaml[(anchor + 1)..];
-
-        return yaml.TrimEnd('\n', '\r') + "\n" + section.TrimEnd('\n');
-    }
-
     private static string YamlEscape(string value)
     {
         if (value.Contains(':') || value.Contains('#') || value.Contains('"') ||

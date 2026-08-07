@@ -225,13 +225,13 @@ Expected: succeeds with 0 errors.
 - [ ] **Step 4: Generate the goldens**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases). First run writes `__snapshots__/*.yaml` because the files do not exist yet.
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1). First run writes `__snapshots__/*.yaml` because the files do not exist yet.
 
 - [ ] **Step 5: Verify the goldens are stable, not just written**
 
 Run the same command a second time:
 `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases), this time *comparing* against the files written in step 4.
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1), this time *comparing* against the files written in step 4.
 
 If any case fails on the second run, a volatile field escaped `GoldenNormalizer`. Read the FluentAssertions diff, add a pattern, delete `__snapshots__/`, and repeat steps 4–5. Do not proceed with a case that only passes on the write path.
 
@@ -255,7 +255,16 @@ state into the body."
 
 ### Task 2: Pin the defect — body text must not be read as envelope status
 
-The bug is that `ToYaml` writes content as an unescaped `content: |` block indented two spaces, and `string.Contains` ignores the indent. This test fails on `main` today. It is the reason the branch exists, so it goes in before the fix.
+> **Amendment (2026-08-07, human ruling during execution):** Task 2 does **not** get its own
+> commit. Its tests and Task 3's fix land in a **single commit**, so no commit on this branch is
+> ever red and `git bisect` never lands on a failing tree.
+>
+> The red step is still performed and still evidenced — the implementer writes these tests
+> first, runs them, and records the failing output in its report — but the commit happens only
+> after Task 3's fix makes them green. Tasks 2 and 3 are therefore dispatched together to one
+> implementer, and the "Commit the failing test" step below is superseded by Task 3's commit.
+
+The bug is that `ToYaml` writes content as an unescaped `content: |` block indented two spaces, and `string.Contains` ignores the indent. These tests fail on `main` today. They are the reason the branch exists, so they are written and run red before the fix.
 
 **Files:**
 - Create: `tests/Scrinia.Tests/ResponseStatusIsolationTests.cs`
@@ -343,9 +352,19 @@ Expected: **two** failures.
 
 `Recall_OfBodyContainingStatusError_IsStillSuccess` is expected to PASS already — `MemoryRecall` returns the envelope directly and nothing greps it. It is included because it is the property the whole branch preserves, and it must keep passing through Task 3.
 
-If the CLI test passes unexpectedly, the poisoned body did not reach the restore envelope. Confirm `Restore` folds memory content into `ContentSections` (`MemoryTools.Lifecycle.cs:589`) and that `/patterns/` is one of the scopes it gathers; adjust the memory path until the body is present in the response, then re-run.
+If the CLI test passes unexpectedly, the poisoned body did not reach the restore envelope.
 
-- [ ] **Step 3: Commit the failing test**
+**CORRECTED 2026-08-07 during implementation — the original claim was WRONG.** It read: "Confirm `Restore` folds memory content into `ContentSections` (`MemoryTools.Lifecycle.cs:589`) and that `/patterns/` is one of the scopes it gathers; adjust the memory path until the body is present in the response, then re-run."
+
+`Restore` does join `ctx.ContentSections` into the envelope, but `contentSections` is populated at exactly two sites — `MemoryTools.Lifecycle.cs:655` (a `Skills available (N): ...` line) and `:721` (the empty-state fallback). **No memory body ever reaches the restore envelope**, so this instruction could never have been satisfied by adjusting the memory path — `scri restore` cannot exhibit the defect at all. The reachable set is `scri link`, `scri reconcile`, and `scri facts`; this is why the test that actually pins the reachable defect is `CliLink_WithPoisonedReason_ExitsZero`, not a restore test.
+
+- [ ] **Step 3: ~~Commit the failing test~~ — SUPERSEDED**
+
+Per the amendment at the top of this task, do **not** commit here. Record the red output in the
+report and carry straight on into Task 3; the tests are committed together with the fix, using
+Task 3's commit message extended with the paragraph below.
+
+<details><summary>Superseded original step (kept for the record)</summary>
 
 ```bash
 git add tests/Scrinia.Tests/ResponseStatusIsolationTests.cs
@@ -361,9 +380,21 @@ a shape ToYaml has never emitted, so both report success on a real not-found.
 Both red until the response-shape refactor."
 ```
 
+</details>
+
 ---
 
 ### Task 3: Flip `Scrinia.Mcp` and the CLI to `McpResponse`
+
+> **Amendment (2026-08-07):** this task also carries Task 2's tests, in the same commit. Its
+> commit message gains this paragraph:
+>
+> ```
+> The two exit-code regression tests land in this commit rather than red ahead of
+> it: scri restore exited 1 on success whenever a restored memory contained the
+> text 'status: error', and scri show / scri forget exited 0 on a real not-found
+> because their guards tested StartsWith("Error:"), a shape ToYaml never emits.
+> ```
 
 **This task is irreducibly atomic and that is a deliberate choice.** The CLI calls the internal handlers directly through `InternalsVisibleTo("scri")` — `tools.Recall`, `tools.Remember`, `tools.Forget`, `tools.Link`, `tools.Compact`, `tools.Restore`, `tools.Reconcile`, `tools.Export`, `tools.Import`. Retyping a handler breaks its public method *and* its CLI caller in the same compile. Splitting this into smaller commits requires adding string-returning shims and then deleting them, which is more churn and more risk than one mechanical commit with two green gates in front of it.
 
@@ -570,7 +601,7 @@ Expect a long error list on the first attempt — that is the type system enumer
 - [ ] **Step 9: Run the golden gate**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases).
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1).
 
 A failure here means the refactor changed output. **Do not set `SCRINIA_UPDATE_GOLDEN`.** Read the diff and find what moved.
 
@@ -683,7 +714,7 @@ Expected: succeeds with 0 errors.
 - [ ] **Step 5: Run the golden gate**
 
 Run: `dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~ResponseGoldenTests"`
-Expected: PASS (14 cases). The `search` and `search-filtered` goldens are the ones that matter — a pure move must not change a byte.
+Expected: PASS (15 cases — 14 theory cases plus the SearchAndSearchFiltered_ProduceDifferentOutput guard added in Task 1 fix round 1). The `search` and `search-filtered` goldens are the ones that matter — a pure move must not change a byte.
 
 - [ ] **Step 6: Run the full suite**
 
@@ -760,7 +791,9 @@ git commit -m "chore(mcp): fix MatchesRefAttribute typo and reconcile the YamlDo
 ## Branch close
 
 - [ ] **Add the CHANGELOG entry** under `[Unreleased]` in `CHANGELOG.md`, covering both user-visible fixes:
-  - **Fixed:** `scri restore`, `scri reconcile`, `scri facts`, `scri append`, `scri compact` and `scri link` returned exit code 1 on a successful run whenever the response body contained the text `status: error`.
+  - **CORRECTED 2026-08-07 during implementation — the original claim was WRONG.** It read: "**Fixed:** `scri restore`, `scri reconcile`, `scri facts`, `scri append`, `scri compact` and `scri link` returned exit code 1 on a successful run whenever the response body contained the text `status: error`."
+
+    Three of those six commands cannot exhibit the defect. `scri restore` never folds a memory body into `ContentSections` (see the correction at Step 2 above). `scri append` and `scri compact` are unreachable for a different reason: their success text interpolates only a memory *name*, and `':'` sits in the explicit `s_portableInvalid` set (`FileMemoryStore.cs:298-299`) — not the platform-dependent `GetInvalidFileNameChars()` — so a name can never carry `status: error` on any platform. **Fixed:** `scri link`, `scri reconcile`, and `scri facts` returned exit code 1 on a successful run whenever the response body contained the text `status: error`.
   - **Fixed:** `scri show` and `scri forget` returned exit code 0 when the memory did not exist. They now return 1. Scripts that relied on the old always-zero behaviour will start seeing failures — which is the point, but it is a behaviour change and belongs under a `Changed` note as well as `Fixed`.
 
 - [ ] **Record residuals** to `.scrinia` under `/findings/mcp-response-shape-deferred-followups` if any finding was consciously shipped, matching how the last three branches closed. If nothing was deferred, skip — do not write an empty finding.

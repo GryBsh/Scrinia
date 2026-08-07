@@ -1,0 +1,6 @@
+status: error
+error: "recall requires 'path'."
+errorCode: INVALID_PARAMETER
+actionNeeded:
+  - "recall({ path: '...' })"
+  - list() to discover available paths

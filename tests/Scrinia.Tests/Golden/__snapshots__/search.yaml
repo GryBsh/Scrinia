@@ -1,0 +1,17 @@
+status: success
+action: searched
+content: |
+  results: 2
+  
+  [1] entry  /ops/log-rotation  score=<SCORE>  ~128 tokens
+      created: <DATE>
+      attributes:
+        topic: ops
+      description: Session rotation logs are archived nightly.
+  
+  [2] entry  /findings/auth-flow  score=<SCORE>  ~512 tokens
+      created: <DATE>
+      attributes:
+        topic: auth, security
+        person: jolene
+      description: How session rotation works.

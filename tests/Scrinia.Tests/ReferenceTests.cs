@@ -119,7 +119,7 @@ public sealed class ReferenceTests : IDisposable
             "ref-bar-test");
 
         // Act — call references with the file name
-        string result = await _tools.References("Bar.cs");
+        string result = (await _tools.References("Bar.cs")).ToYaml();
 
         // Assert — the memory should appear in the results
         result.Should().Contain("ref-bar-test",
@@ -134,7 +134,7 @@ public sealed class ReferenceTests : IDisposable
         await _tools.Remember(["Memory B content"], "link-test-b");
 
         // Act — link them
-        string result = await _tools.Link("link-test-a", "link-test-b", "test reason");
+        string result = (await _tools.Link("link-test-a", "link-test-b", "test reason")).ToYaml();
 
         // Assert — response confirms the link
         result.Should().Contain("Linked");
@@ -171,7 +171,7 @@ public sealed class ReferenceTests : IDisposable
         await _tools.Link("linked-alpha", "linked-beta");
 
         // Act — search references for alpha
-        string result = await _tools.References("linked-alpha");
+        string result = (await _tools.References("linked-alpha")).ToYaml();
 
         // Assert — beta should appear because it has ref:linked-alpha keyword
         result.Should().Contain("linked-beta",
@@ -246,7 +246,7 @@ public sealed class ReferenceTests : IDisposable
             attributes: new Dictionary<string, string[]> { ["file"] = [relPath] });
 
         // Act — check drift via list(mode: "drift")
-        string result = await _tools.List(mode: "drift");
+        string result = (await _tools.List(mode: "drift")).ToYaml();
 
         // Assert — should report all references are current with no drift
         result.Should().Contain("current",
@@ -273,7 +273,7 @@ public sealed class ReferenceTests : IDisposable
         await File.WriteAllTextAsync(fullPath, "// modified content — different hash");
 
         // Act — check drift via list(mode: "drift")
-        string result = await _tools.List(mode: "drift");
+        string result = (await _tools.List(mode: "drift")).ToYaml();
 
         // Assert — should detect drift
         result.Should().Contain("DRIFT",
@@ -298,7 +298,7 @@ public sealed class ReferenceTests : IDisposable
         File.Delete(fullPath);
 
         // Act — check drift via list(mode: "drift")
-        string result = await _tools.List(mode: "drift");
+        string result = (await _tools.List(mode: "drift")).ToYaml();
 
         // Assert — should detect the file as missing
         result.Should().Contain("MISSING",
@@ -323,7 +323,7 @@ public sealed class ReferenceTests : IDisposable
         await File.WriteAllTextAsync(fullPath, "// changed");
 
         // Act — list in full mode
-        string result = await _tools.List(mode: "full");
+        string result = (await _tools.List(mode: "full")).ToYaml();
 
         // Assert — the listing should contain a [drift] marker
         result.Should().Contain("[drift]",

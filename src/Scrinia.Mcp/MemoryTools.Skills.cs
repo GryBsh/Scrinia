@@ -117,7 +117,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>Create a reusable specialist skill prompt and persist as .scrinia/skills/{name}.md.</summary>
-    internal static async Task<string> SkillCreate(
+    internal static async Task<McpResponse> SkillCreate(
         [Description("Skill name slug (e.g. 'api-reviewer', 'auth-researcher').")] string name,
         [Description("Built-in scaffold: researcher, reviewer, domain-expert, or custom.")] string scaffold,
         [Description("Additional context or instructions to embed in the prompt.")] string? instructions = null,
@@ -130,7 +130,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Invalid skill name '{name}'. Use letters, digits, '-', '_' or '.' only.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/my-helper', content: [...] })").ToYaml();
+                "remember({ path: '/skill/my-helper', content: [...] })");
 
         string promptContent;
         string role;
@@ -197,7 +197,7 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Invalid skill name '{name}'.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/my-helper', content: [...] })").ToYaml();
+                "remember({ path: '/skill/my-helper', content: [...] })");
         FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
         Directory.CreateDirectory(skillsDir);
 
@@ -222,11 +222,11 @@ public sealed partial class ScriniaMcpTools
             .WithFileChanges()
             .WithPath($"/skill/{name}")
             .WithAction("created");
-        return response.ToYaml();
+        return response;
     }
 
     /// <summary>List or load stored specialist skills.</summary>
-    internal static Task<string> SkillLoad(
+    internal static Task<McpResponse> SkillLoad(
         [Description("Skill name to load (e.g. 'api-reviewer'). Omit to list all skills.")] string? name = null,
         [Description("Set to true to show both built-in and override side-by-side for merging.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
@@ -252,7 +252,7 @@ public sealed partial class ScriniaMcpTools
             allNames.UnionWith(diskNames);
 
             if (allNames.Count == 0)
-                return Task.FromResult(ResponseBuilder.Success("No skills available.").WithAction("listed").ToYaml());
+                return Task.FromResult(ResponseBuilder.Success("No skills available.").WithAction("listed"));
 
             var sb = new StringBuilder();
             sb.AppendLine($"Available skills ({allNames.Count}):");
@@ -295,19 +295,19 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            return Task.FromResult(ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed").ToYaml());
+            return Task.FromResult(ResponseBuilder.Success(sb.ToString().TrimEnd()).WithAction("listed"));
         }
 
         return LoadSkillAsync(store, name, withBuiltin, cancellationToken);
     }
 
-    private static async Task<string> LoadSkillAsync(
+    private static async Task<McpResponse> LoadSkillAsync(
         IMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
     {
         if (!PathRouter.TryToFileEntityPath("skill", skillName, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error(
                 $"Invalid skill name '{skillName}'.", ErrorCodes.NotFound,
-                "recall({ path: '/skill/' }) to list available skills").ToYaml();
+                "recall({ path: '/skill/' }) to list available skills");
         string? diskContent = null;
         if (File.Exists(filePath))
         {
@@ -324,18 +324,17 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Success(reconContent)
                 .WithPath($"/skill/{skillName}")
                 .WithAction("loaded")
-                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...' }) to save the merged version.")
-                .ToYaml();
+                .WithInstruction("Merge your project-specific additions with the updated built-in base, then call remember({ path: '/skill/...' }) to save the merged version.");
         }
 
         if (overrideContent is null)
         {
             if (BuiltInSkills.TryGetValue(skillName, out string? builtIn))
-                return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in").ToYaml();
+                return ResponseBuilder.Success(builtIn).WithPath($"/skill/{skillName}").WithAction("loaded").WithInfo("Loaded from built-in");
             return ResponseBuilder.Error(
                 $"Skill '{skillName}' not found.",
                 ErrorCodes.NotFound,
-                "recall({ path: '/skill/' }) to list available skills").ToYaml();
+                "recall({ path: '/skill/' }) to list available skills");
         }
 
         var warnings = new List<string>();
@@ -367,6 +366,6 @@ public sealed partial class ScriniaMcpTools
             .WithInfo($"Loaded from {sourceLabel}");
         if (warnings.Count > 0)
             response = response.WithActionNeeded([.. warnings]);
-        return response.ToYaml();
+        return response;
     }
 }

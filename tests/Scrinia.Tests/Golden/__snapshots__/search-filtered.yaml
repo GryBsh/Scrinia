@@ -1,0 +1,11 @@
+status: success
+action: searched
+content: |
+  results: 1
+  
+  [1] entry  /findings/auth-flow  score=<SCORE>  ~512 tokens
+      created: <DATE>
+      attributes:
+        topic: auth, security
+        person: jolene
+      description: How session rotation works.

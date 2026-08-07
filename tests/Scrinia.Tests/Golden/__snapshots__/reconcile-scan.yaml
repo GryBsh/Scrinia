@@ -1,0 +1,4 @@
+status: success
+action: reconciled
+content: |
+  No merge conflicts found in .scrinia/.

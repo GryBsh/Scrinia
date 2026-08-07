@@ -151,7 +151,7 @@ public sealed class UpdateCorrectnessBenchmarkTests(ITestOutputHelper output)
             reviewAfter: "2020-01-01");
 
         // List should show stale marker
-        string listOutput = await tools.List();
+        string listOutput = (await tools.List()).ToYaml();
         output.WriteLine("List output with stale marker:");
         output.WriteLine(listOutput);
 
