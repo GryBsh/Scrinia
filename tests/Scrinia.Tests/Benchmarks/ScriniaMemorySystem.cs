@@ -17,7 +17,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
         foreach (var fact in corpus)
         {
             string name = $"/{fact.Topic}/{fact.Key}";
-            string response = await _tools.Remember(
+            McpResponse response = await _tools.Remember(
                 [fact.Content],
                 name,
                 description: fact.Question,
@@ -31,10 +31,10 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     /// infrastructure failure (lock timeout under load) into a misleading correctness verdict —
     /// the memory keeps its previous content and the benchmark reports it as stale data.
     /// </summary>
-    private static void ThrowIfWriteFailed(string response, string name)
+    private static void ThrowIfWriteFailed(McpResponse response, string name)
     {
-        if (response.Contains("status: error", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Write to '{name}' failed:\n{response}");
+        if (response.Status == "error")
+            throw new InvalidOperationException($"Write to '{name}' failed:\n{response.Error}");
     }
 
     public override async Task<QueryResult> QueryAsync(string query, string? targetFactKey = null)
@@ -43,7 +43,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
         int charsConsumed = 0;
 
         // Search
-        string searchResult = await _tools.Search(query, limit: 10);
+        string searchResult = (await _tools.Search(query, limit: 10)).ToYaml();
         charsConsumed += searchResult.Length;
 
         var foundContent = new List<string>();
@@ -57,9 +57,10 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
             // Show the top result to simulate actual retrieval
             if (names.Count > 0)
             {
-                string showResult = await _tools.Recall(names[0]);
+                McpResponse recalled = await _tools.Recall(names[0]);
+                string showResult = recalled.ToYaml();
                 charsConsumed += showResult.Length;
-                if (!showResult.StartsWith("Error:"))
+                if (recalled.Status != "error")
                     foundContent.Add(showResult);
 
                 // Check if target is in the results
@@ -79,10 +80,10 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     }
 
     /// <summary>Raw search output, for diagnosing an unexpected hit.</summary>
-    public Task<string> RawSearchAsync(string query) => _tools.Search(query, limit: 10);
+    public async Task<string> RawSearchAsync(string query) => (await _tools.Search(query, limit: 10)).ToYaml();
 
     /// <summary>Raw stored content, for checking whether a hit reflects old content.</summary>
-    public Task<string> RawRecallAsync(string name) => _tools.Recall(name);
+    public async Task<string> RawRecallAsync(string name) => (await _tools.Recall(name)).ToYaml();
 
     public override int GetColdStartTokens() => 0; // Nothing loaded until queried
 
@@ -96,7 +97,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     public override async Task UpdateFactAsync(BenchmarkFact updated)
     {
         string name = $"/{updated.Topic}/{updated.Key}";
-        string response = await _tools.Remember(
+        McpResponse response = await _tools.Remember(
             [updated.Content],
             name,
             description: updated.Question,

@@ -32,7 +32,7 @@ public sealed class FileEntityNameTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await new ScriniaMcpTools().Remember(["malicious content"], "/agent/../../evil");
+        string result = (await new ScriniaMcpTools().Remember(["malicious content"], "/agent/../../evil")).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("error",

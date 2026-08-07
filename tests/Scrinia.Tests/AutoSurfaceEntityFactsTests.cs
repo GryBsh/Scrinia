@@ -87,7 +87,7 @@ public class AutoSurfaceEntityFactsTests
         store.Upsert(Note("m1", ("person", ["jolene"]), ("place", ["france"])), "local:findings");
         store.Upsert(Note("m2", ("person", ["jolene"]), ("place", ["france"])), "local:findings");
 
-        string yaml = await new ScriniaMcpTools().Search("jolene", cancellationToken: default);
+        string yaml = (await new ScriniaMcpTools().Search("jolene", cancellationToken: default)).ToYaml();
 
         yaml.Should().Contain("entity_facts:");
         yaml.Should().Contain("person:jolene");
@@ -104,7 +104,7 @@ public class AutoSurfaceEntityFactsTests
         var store = MemoryStoreContext.Current!;
         store.Upsert(Note("solo", ("person", ["jolene"])), "local:findings");
 
-        string yaml = await new ScriniaMcpTools().Search("jolene", cancellationToken: default);
+        string yaml = (await new ScriniaMcpTools().Search("jolene", cancellationToken: default)).ToYaml();
 
         yaml.Should().Contain("1 memory");
         yaml.Should().NotContain("; with ");
@@ -119,7 +119,7 @@ public class AutoSurfaceEntityFactsTests
 
         // "seraphim" is only in ContentPreview (so it matches for a results list) but is NOT an
         // entity attribute on any memory, so the seeder names no entity -> no block.
-        string yaml = await new ScriniaMcpTools().Search("seraphim", cancellationToken: default);
+        string yaml = (await new ScriniaMcpTools().Search("seraphim", cancellationToken: default)).ToYaml();
 
         yaml.Should().NotContain("entity_facts:");
         yaml.Should().Contain("results:");
@@ -192,7 +192,7 @@ public class AutoSurfaceEntityFactsTests
                 ["person"] = ["jolene"],
             }), "local:findings");
 
-        string yaml = await new ScriniaMcpTools().Search("jolene", cancellationToken: default);
+        string yaml = (await new ScriniaMcpTools().Search("jolene", cancellationToken: default)).ToYaml();
 
         yaml.Should().Contain("entity_facts:");
         yaml.Should().MatchRegex(@"\d{4}-\d{2}-\d{2}→\d{4}-\d{2}-\d{2}",
@@ -216,7 +216,7 @@ public class AutoSurfaceEntityFactsTests
 
         outcome.EntityFacts.Should().Contain(f => f.Entity.Key == "mention" && f.Entity.Value == "jolene");
 
-        string yaml = await new ScriniaMcpTools().Search("jolene", cancellationToken: default);
+        string yaml = (await new ScriniaMcpTools().Search("jolene", cancellationToken: default)).ToYaml();
         yaml.Should().Contain("mention:jolene");
     }
 }

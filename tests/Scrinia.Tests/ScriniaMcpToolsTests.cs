@@ -44,7 +44,7 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Fact1;
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string result = await Tools().Recall(artifact);
+        string result = (await Tools().Recall(artifact)).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("success");
@@ -61,7 +61,7 @@ public sealed class ScriniaMcpToolsTests
         Nmp2Strategy.IsMultiChunk(artifact).Should().BeFalse(
             because: "Encode() always produces single-chunk artifacts");
 
-        string result = await Tools().Recall(artifact);
+        string result = (await Tools().Recall(artifact)).ToYaml();
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
         // Content may be truncated by the 8KB YAML response cap — verify it starts correctly
@@ -78,7 +78,7 @@ public sealed class ScriniaMcpToolsTests
         Nmp2Strategy.IsMultiChunk(artifact).Should().BeTrue(
             because: "two-element EncodeChunks produces multi-chunk artifact");
 
-        string result = await Tools().Recall(artifact);
+        string result = (await Tools().Recall(artifact)).ToYaml();
         var parsed = ResponseParser.Parse(result);
         // Multi-chunk Show prepends "(N chunks)\n\n" header
         string expected = string.Concat(parts);
@@ -97,7 +97,7 @@ public sealed class ScriniaMcpToolsTests
         string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
         await File.WriteAllTextAsync(path, artifact);
 
-        string result = await Tools().Recall($"file://{path}");
+        string result = (await Tools().Recall($"file://{path}")).ToYaml();
         ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show must read and decode a file:// URI within workspace .scrinia/ directory");
     }
@@ -111,7 +111,7 @@ public sealed class ScriniaMcpToolsTests
         string path = Path.Combine(scope.TempDir, $"fileuri_test_{Guid.NewGuid():N}.nmp2");
         await File.WriteAllTextAsync(path, artifact);
 
-        string result = await Tools().Recall($"file://{path}");
+        string result = (await Tools().Recall($"file://{path}")).ToYaml();
         // Multi-chunk Show prepends "(N chunks)\n\n" header
         string expected = string.Concat(parts);
         ResponseParser.Parse(result).Content.Should().Contain(expected,
@@ -124,7 +124,7 @@ public sealed class ScriniaMcpToolsTests
         string original = "Emoji: 🎉🚀🌍\nCJK: 日本語 中文 한국어\nRTL: مرحبا بالعالم\nMath: ∑∫√π\n";
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string result = await Tools().Recall(artifact);
+        string result = (await Tools().Recall(artifact)).ToYaml();
 
         // YAML block scalars may add a trailing newline; trim to compare
         ResponseParser.Parse(result).Content!.TrimEnd().Should().Be(original.TrimEnd(),
@@ -137,7 +137,7 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.LoadHumanEvalText()[..2_000];
         string artifact = Nmp2ChunkedEncoder.Encode(original);
 
-        string result = await Tools().Recall(artifact);
+        string result = (await Tools().Recall(artifact)).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("success");
@@ -157,7 +157,7 @@ public sealed class ScriniaMcpToolsTests
         // A TAMIS/2 artifact header — not an NMP/2 artifact
         string fakeArtifact = "TAMIS/2 42B CRC32:DEADBEEF K:3\nsome body\nTAMIS/END";
 
-        string result = await Tools().Recall(fakeArtifact);
+        string result = (await Tools().Recall(fakeArtifact)).ToYaml();
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "non-NMP/2 artifacts must return an error status");
@@ -169,7 +169,7 @@ public sealed class ScriniaMcpToolsTests
         // MNDE/1 artifacts are no longer supported by Show
         string fakeArtifact = "MNDE/1 42B CRC32:DEADBEEF V:1\nsome body\nMNDE/END";
 
-        string result = await Tools().Recall(fakeArtifact);
+        string result = (await Tools().Recall(fakeArtifact)).ToYaml();
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "MNDE/1 artifacts are not supported by the trimmed Show tool");
@@ -184,7 +184,7 @@ public sealed class ScriniaMcpToolsTests
         // file:// URI outside workspace is blocked by sandbox — returns error or throws
         try
         {
-            string result = await Tools().Recall(badUri);
+            string result = (await Tools().Recall(badUri)).ToYaml();
             ResponseParser.Parse(result).Status.Should().Be("error",
                 because: "file:// URI outside workspace must return an error");
         }
@@ -203,7 +203,7 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Excerpt;
         await Tools().Remember([original], "unpack-name-test");
 
-        string result = await Tools().Recall("unpack-name-test");
+        string result = (await Tools().Recall("unpack-name-test")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show must resolve a memory name to its artifact and decode");
@@ -214,7 +214,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Recall("nonexistent-memory");
+        string result = (await Tools().Recall("nonexistent-memory")).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("error",
@@ -231,7 +231,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task Store_SmallContent_ReturnsConfirmationString()
     {
         using var scope = new TestHelpers.StoreScope();
-        string result = await Tools().Remember([TestHelpers.Facts.Fact1], "test-memory");
+        string result = (await Tools().Remember([TestHelpers.Facts.Fact1], "test-memory")).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Status.Should().Be("success",
@@ -250,7 +250,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "appear-test");
 
-        string memories = await Tools().List(mode: "full");
+        string memories = (await Tools().List(mode: "full")).ToYaml();
 
         ResponseParser.Parse(memories).Content.Should().Contain("appear-test",
             because: "a stored artifact must be listed in List()");
@@ -266,7 +266,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["first content"], "overwrite-test");
         await Tools().Remember(["second content"], "overwrite-test");
 
-        string memories = await Tools().List(mode: "full");
+        string memories = (await Tools().List(mode: "full")).ToYaml();
         var content = ResponseParser.Parse(memories).Content!;
 
         content.Should().Contain("overwrite-test",
@@ -464,7 +464,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().List();
+        string result = (await Tools().List()).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Be("No memories stored.",
             because: "List() must return a specific message when the store is empty");
@@ -478,7 +478,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["arch notes"], "/arch/decisions", keywords: ["architecture"]);
         await Tools().Remember(["local note"], "quick-ref");
 
-        string result = await Tools().List(); // default = summary
+        string result = (await Tools().List()).ToYaml(); // default = summary
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("Memory Summary");
@@ -500,7 +500,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["persistent"], "some-note");
         await Tools().Remember(["temp"], "~scratch");
 
-        string result = await Tools().List();
+        string result = (await Tools().List()).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("2 memories");
@@ -514,7 +514,7 @@ public sealed class ScriniaMcpToolsTests
         for (int i = 0; i < 5; i++)
             await Tools().Remember([$"content {i}"], $"page-test-{i}");
 
-        string result = await Tools().List(mode: "full", offset: 2, limit: 2);
+        string result = (await Tools().List(mode: "full", offset: 2, limit: 2)).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("Showing 3-4 of 5");
     }
@@ -525,7 +525,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact50], "marie-curie");
 
-        string result = await Tools().List(mode: "full");
+        string result = (await Tools().List(mode: "full")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("marie-curie",
             because: "the stored artifact name must appear in List(mode='full') output");
@@ -540,7 +540,7 @@ public sealed class ScriniaMcpToolsTests
         await Task.Delay(10);
         await Tools().Remember(["beta content"], "beta-entry");
 
-        string result = await Tools().List(mode: "full");
+        string result = (await Tools().List(mode: "full")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         int alphaPos = content.IndexOf("alpha-entry", StringComparison.Ordinal);
@@ -562,7 +562,7 @@ public sealed class ScriniaMcpToolsTests
         string filePath = MemoryStoreContext.Current!.ArtifactPath("forget-me");
         File.Exists(filePath).Should().BeTrue(because: "file must exist before Forget");
 
-        string result = await Tools().Forget("forget-me");
+        string result = (await Tools().Forget("forget-me")).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Content.Should().Contain("Forgot",
@@ -579,15 +579,15 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         // Store a memory, then forget it by its file:// URI
-        string storeResult = await Tools().Remember(["hello world"], "uri-test",
-            description: "test", tags: null, keywords: null);
+        string storeResult = (await Tools().Remember(["hello world"], "uri-test",
+            description: "test", tags: null, keywords: null)).ToYaml();
         ResponseParser.Parse(storeResult).Content.Should().Contain("uri-test");
 
         // Build the file:// URI for the stored artifact
         string artifactPath = Path.Combine(scope.TempDir, "uri-test.nmp2");
         string uri = $"file://{artifactPath}";
 
-        string result = await Tools().Forget(uri);
+        string result = (await Tools().Forget(uri)).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("Forgot",
             because: "Forget by URI must succeed for indexed memories");
@@ -615,7 +615,7 @@ public sealed class ScriniaMcpToolsTests
         Scrinia.Core.MemoryEventSinkContext.Current = capturingSink;
         try
         {
-            string result = await Tools().Forget(uri);
+            string result = (await Tools().Forget(uri)).ToYaml();
             ResponseParser.Parse(result).Content.Should().Contain("Forgot",
                 because: "Forget by file:// URI must succeed for namespaced-scope memories");
         }
@@ -655,7 +655,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Forget("does-not-exist");
+        string result = (await Tools().Forget("does-not-exist")).ToYaml();
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "Forget with an unknown name must return an error status, not throw");
@@ -672,7 +672,7 @@ public sealed class ScriniaMcpToolsTests
         File.Delete(filePath);
 
         // Forget should still work — removes the index entry even if file is gone
-        string result = await Tools().Forget("already-deleted");
+        string result = (await Tools().Forget("already-deleted")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("Forgot",
             because: "Forget must succeed even if the artifact file was already deleted");
@@ -687,19 +687,19 @@ public sealed class ScriniaMcpToolsTests
         string content = TestHelpers.Facts.Excerpt;
 
         // Store
-        string result = await Tools().Remember([content], "cycle-test", "Cycle E2E test");
+        string result = (await Tools().Remember([content], "cycle-test", "Cycle E2E test")).ToYaml();
         ResponseParser.Parse(result).Content.Should().Contain("Remembered:");
 
         // List shows it
-        string memoriesAfterRemember = await Tools().List(mode: "full");
+        string memoriesAfterRemember = (await Tools().List(mode: "full")).ToYaml();
         ResponseParser.Parse(memoriesAfterRemember).Content.Should().Contain("cycle-test");
 
         // Forget it
-        string forgetResult = await Tools().Forget("cycle-test");
+        string forgetResult = (await Tools().Forget("cycle-test")).ToYaml();
         ResponseParser.Parse(forgetResult).Content.Should().Contain("Forgot");
 
         // List no longer shows it
-        string memoriesAfterForget = await Tools().List(mode: "full");
+        string memoriesAfterForget = (await Tools().List(mode: "full")).ToYaml();
         ResponseParser.Parse(memoriesAfterForget).Content.Should().Be("No memories stored.",
             because: "after forgetting the only artifact the store must be empty");
     }
@@ -713,7 +713,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(originals, "chunked-memory");
 
         // Use Show(chunk: N) to retrieve individual chunks
-        string chunk1Result = await Tools().Recall("chunked-memory", chunk: 1);
+        string chunk1Result = (await Tools().Recall("chunked-memory", chunk: 1)).ToYaml();
         var chunk1Content = ResponseParser.Parse(chunk1Result).Content!;
         chunk1Content.Should().Contain("Chunk 1/3",
             because: "Show(chunk: 1) must report chunk 1 of 3 for a three-element artifact");
@@ -721,7 +721,7 @@ public sealed class ScriniaMcpToolsTests
         var parts = new List<string>();
         for (int i = 1; i <= 3; i++)
         {
-            string chunkResult = await Tools().Recall("chunked-memory", chunk: i);
+            string chunkResult = (await Tools().Recall("chunked-memory", chunk: i)).ToYaml();
             var chunkText = ResponseParser.Parse(chunkResult).Content!;
             // Extract chunk content after the "Chunk N/M\n\n" header
             string chunkContent = chunkText[(chunkText.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
@@ -740,7 +740,7 @@ public sealed class ScriniaMcpToolsTests
         string original = TestHelpers.Facts.Excerpt;
 
         await Tools().Remember([original], "unpack-memory");
-        string result = await Tools().Recall("unpack-memory");
+        string result = (await Tools().Recall("unpack-memory")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show on a stored artifact's name must restore the exact original text");
@@ -755,7 +755,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["DI patterns in .NET"], "di-patterns", "Dependency injection notes");
         await Tools().Remember(["Various design info"], "design-info", "Including DI");
 
-        string result = await Tools().Search("di-patterns");
+        string result = (await Tools().Search("di-patterns")).ToYaml();
         var found = ResponseParser.Parse(result).Content!;
 
         // "di-patterns" should rank first due to exact name match (score 100)
@@ -777,7 +777,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["DI lifecycle notes"], "dotnet-di");
         await Tools().Remember(["local build tips"], "build-notes");
 
-        string result = await Tools().Search("di", scopes: "local");
+        string result = (await Tools().Search("di", scopes: "local")).ToYaml();
         ResponseParser.Parse(result).Content.Should().Contain("dotnet-di",
             because: "Search should search across local scope");
     }
@@ -858,7 +858,7 @@ public sealed class ScriniaMcpToolsTests
         artifact.Should().StartWith("NMP/2 ",
             because: "resolved artifact must be a valid NMP/2 artifact");
 
-        string decoded = await Tools().Recall(artifact);
+        string decoded = (await Tools().Recall(artifact)).ToYaml();
         ResponseParser.Parse(decoded).Content.Should().Be(original);
     }
 
@@ -964,7 +964,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task Store_Ephemeral_ReturnsConfirmationWithTag()
     {
         using var scope = new TestHelpers.StoreScope();
-        string result = await Tools().Remember(["scratch data"], "~scratch");
+        string result = (await Tools().Remember(["scratch data"], "~scratch")).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Content.Should().Contain("Remembered: ~scratch",
@@ -979,7 +979,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["temp notes"], "~temp");
 
-        string memories = await Tools().List(mode: "full");
+        string memories = (await Tools().List(mode: "full")).ToYaml();
 
         ResponseParser.Parse(memories).Content.Should().Contain("~temp",
             because: "ephemeral memories must appear in List(mode='full') output with ~ prefix");
@@ -992,7 +992,7 @@ public sealed class ScriniaMcpToolsTests
         string original = "ephemeral content for unpack test";
         await Tools().Remember([original], "~unpack-eph");
 
-        string result = await Tools().Recall("~unpack-eph");
+        string result = (await Tools().Recall("~unpack-eph")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Be(original,
             because: "Show on an ephemeral memory must restore exact original text");
@@ -1004,7 +1004,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["ephemeral chunk test"], "~chunk-eph");
 
-        string result = await Tools().Recall("~chunk-eph", chunk: 1);
+        string result = (await Tools().Recall("~chunk-eph", chunk: 1)).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("Chunk 1/1",
@@ -1019,14 +1019,14 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["to be forgotten"], "~forget-me");
 
-        string result = await Tools().Forget("~forget-me");
+        string result = (await Tools().Forget("~forget-me")).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Content.Should().Contain("Forgot",
             because: "Forget must confirm ephemeral removal");
         parsed.Content.Should().Contain("~forget-me");
 
-        string memories = await Tools().List();
+        string memories = (await Tools().List()).ToYaml();
         ResponseParser.Parse(memories).Content.Should().NotContain("~forget-me",
             because: "a forgotten ephemeral memory must not appear in List()");
     }
@@ -1036,7 +1036,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Forget("~does-not-exist");
+        string result = (await Tools().Forget("~does-not-exist")).ToYaml();
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "Forget on a non-existent ephemeral name must return an error");
@@ -1049,18 +1049,18 @@ public sealed class ScriniaMcpToolsTests
         string original = "promote this content";
         await Tools().Remember([original], "~promote-me");
 
-        string result = await Tools().Copy("~promote-me", "promoted");
+        string result = (await Tools().Copy("~promote-me", "promoted")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("Copied",
             because: "Copy must confirm ephemeral → persistent promotion");
 
         // Verify the promoted memory exists and is correct
-        string restored = await Tools().Recall("promoted");
+        string restored = (await Tools().Recall("promoted")).ToYaml();
         ResponseParser.Parse(restored).Content.Should().Be(original,
             because: "promoted memory must contain the same content");
 
         // Original ephemeral still exists (non-destructive copy)
-        string ephResult = await Tools().Recall("~promote-me");
+        string ephResult = (await Tools().Recall("~promote-me")).ToYaml();
         ResponseParser.Parse(ephResult).Content.Should().Be(original,
             because: "Copy must be non-destructive — source still exists");
     }
@@ -1072,12 +1072,12 @@ public sealed class ScriniaMcpToolsTests
         string original = "load into ephemeral";
         await Tools().Remember([original], "persistent-src");
 
-        string result = await Tools().Copy("persistent-src", "~fast-ref");
+        string result = (await Tools().Copy("persistent-src", "~fast-ref")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("Copied",
             because: "Copy must confirm persistent → ephemeral load");
 
-        string restored = await Tools().Recall("~fast-ref");
+        string restored = (await Tools().Recall("~fast-ref")).ToYaml();
         ResponseParser.Parse(restored).Content.Should().Be(original,
             because: "ephemeral copy must contain the same content");
     }
@@ -1089,25 +1089,25 @@ public sealed class ScriniaMcpToolsTests
         string original = "ephemeral lifecycle test content";
 
         // Store as ephemeral
-        string remResult = await Tools().Remember([original], "~lifecycle");
+        string remResult = (await Tools().Remember([original], "~lifecycle")).ToYaml();
         ResponseParser.Parse(remResult).Content.Should().Contain("[ephemeral]");
 
         // Appears in List
-        string memories = await Tools().List(mode: "full");
+        string memories = (await Tools().List(mode: "full")).ToYaml();
         ResponseParser.Parse(memories).Content.Should().Contain("~lifecycle");
 
         // Show works
-        string restored = await Tools().Recall("~lifecycle");
+        string restored = (await Tools().Recall("~lifecycle")).ToYaml();
         ResponseParser.Parse(restored).Content.Should().Be(original);
 
         // Promote to persistent
         await Tools().Copy("~lifecycle", "lifecycle-saved");
-        string persistedCheck = await Tools().Recall("lifecycle-saved");
+        string persistedCheck = (await Tools().Recall("lifecycle-saved")).ToYaml();
         ResponseParser.Parse(persistedCheck).Content.Should().Be(original);
 
         // Forget ephemeral
         await Tools().Forget("~lifecycle");
-        string afterForget = await Tools().List(mode: "full");
+        string afterForget = (await Tools().List(mode: "full")).ToYaml();
         var afterForgetContent = ResponseParser.Parse(afterForget).Content!;
         afterForgetContent.Should().NotContain("~lifecycle");
         afterForgetContent.Should().Contain("lifecycle-saved",
@@ -1125,7 +1125,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["Design info"], "design-info", "Various design patterns including DI");
 
         // Multi-term query: "DI patterns" should rank "di-patterns" highest
-        string result = await Tools().Search("DI patterns");
+        string result = (await Tools().Search("DI patterns")).ToYaml();
         var found = ResponseParser.Parse(result).Content!;
 
         int diPatternsPos = found.IndexOf("di-patterns", StringComparison.Ordinal);
@@ -1147,7 +1147,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["test content"], "exact-match", "some description");
 
-        string result = await Tools().Search("exact-match");
+        string result = (await Tools().Search("exact-match")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("exact-match",
             because: "single-term queries must still find exact name matches");
@@ -1160,7 +1160,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["searchable ephemeral"], "~search-eph", "ephemeral search test");
         await Tools().Remember(["persistent entry"], "persistent-entry", "not ephemeral");
 
-        string result = await Tools().Search("search");
+        string result = (await Tools().Search("search")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("~search-eph",
             because: "ephemeral memories must be searchable via Search");
@@ -1174,7 +1174,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["test content"], "type-col-test", "testing type column");
 
-        string result = await Tools().Search("type-col-test");
+        string result = (await Tools().Search("type-col-test")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("type",
@@ -1203,7 +1203,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["auth notes"], "/api/auth-flow");
 
-        string memories = await Tools().List(mode: "full");
+        string memories = (await Tools().List(mode: "full")).ToYaml();
         var content = ResponseParser.Parse(memories).Content!;
 
         content.Should().Contain("api",
@@ -1222,7 +1222,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["error handling"], "/api/errors");
         await Tools().Remember(["db choice"], "/arch/database");
 
-        string result = await Tools().Export(["api", "arch"]);
+        string result = (await Tools().Export(["api", "arch"])).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("Exported",
@@ -1246,7 +1246,7 @@ public sealed class ScriniaMcpToolsTests
         // Create and export topics
         await Tools().Remember(["auth flow doc"], "/api/auth");
         await Tools().Remember(["db choice"], "/arch/database");
-        string exportResult = await Tools().Export(["api", "arch"]);
+        string exportResult = (await Tools().Export(["api", "arch"])).ToYaml();
         var exportContent = ResponseParser.Parse(exportResult).Content!;
 
         // Extract bundle path from result
@@ -1257,7 +1257,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Forget("/arch/database");
 
         // Import from bundle
-        string importResult = await Tools().Import(bundlePath);
+        string importResult = (await Tools().Import(bundlePath)).ToYaml();
         var importContent = ResponseParser.Parse(importResult).Content!;
 
         importContent.Should().Contain("Imported",
@@ -1266,7 +1266,7 @@ public sealed class ScriniaMcpToolsTests
             because: "two topics were imported");
 
         // Verify entries are restored
-        string restored = await Tools().Recall("/api/auth");
+        string restored = (await Tools().Recall("/api/auth")).ToYaml();
         ResponseParser.Parse(restored).Content.Should().Be("auth flow doc",
             because: "imported entries must be decodable");
     }
@@ -1277,7 +1277,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["auth flow doc"], "/api/auth");
         await Tools().Remember(["db choice"], "/arch/database");
-        string exportResult = await Tools().Export(["api", "arch"]);
+        string exportResult = (await Tools().Export(["api", "arch"])).ToYaml();
         var exportContent = ResponseParser.Parse(exportResult).Content!;
         string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
 
@@ -1286,7 +1286,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Forget("/arch/database");
 
         // Import only "api" topic
-        string importResult = await Tools().Import(bundlePath, ["api"]);
+        string importResult = (await Tools().Import(bundlePath, ["api"])).ToYaml();
         var importContent = ResponseParser.Parse(importResult).Content!;
 
         importContent.Should().Contain("1 topic(s)",
@@ -1294,10 +1294,10 @@ public sealed class ScriniaMcpToolsTests
         importContent.Should().Contain("api");
 
         // api:auth should exist, arch:database should not
-        string restored = await Tools().Recall("/api/auth");
+        string restored = (await Tools().Recall("/api/auth")).ToYaml();
         ResponseParser.Parse(restored).Content.Should().Be("auth flow doc");
 
-        string archResult = await Tools().Recall("/arch/database");
+        string archResult = (await Tools().Recall("/arch/database")).ToYaml();
         ResponseParser.Parse(archResult).Error.Should().Contain("not found",
             because: "arch topic was not imported");
     }
@@ -1307,7 +1307,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Export(["nonexistent-topic"]);
+        string result = (await Tools().Export(["nonexistent-topic"])).ToYaml();
 
         ResponseParser.Parse(result).Status.Should().Be("error",
             because: "exporting a topic with no entries must return an error");
@@ -1364,7 +1364,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["some generic content about services"], "my-entry",
             keywords: ["microservices", "kubernetes"]);
 
-        string result = await Tools().Search("kubernetes");
+        string result = (await Tools().Search("kubernetes")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("my-entry",
             because: "keyword match should surface the entry in search results");
@@ -1406,7 +1406,7 @@ public sealed class ScriniaMcpToolsTests
             + " " + string.Join(" ", Enumerable.Repeat("scaling", 5));
         await Tools().Remember([content], "infra-notes", "infrastructure documentation");
 
-        string result = await Tools().Search("kubernetes deployment");
+        string result = (await Tools().Search("kubernetes deployment")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("infra-notes",
             because: "BM25 should find entries via content terms even when name/description doesn't match");
@@ -1448,7 +1448,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["content"], "stale-test",
             reviewAfter: "2020-01-01");
 
-        string list = await Tools().List(mode: "full");
+        string list = (await Tools().List(mode: "full")).ToYaml();
 
         ResponseParser.Parse(list).Content.Should().Contain("[stale]",
             because: "entries past their review date should show [stale] marker");
@@ -1461,7 +1461,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Remember(["content"], "review-when-list",
             reviewWhen: "when auth system changes");
 
-        string list = await Tools().List(mode: "full");
+        string list = (await Tools().List(mode: "full")).ToYaml();
 
         ResponseParser.Parse(list).Content.Should().Contain("[review?]",
             because: "entries with reviewWhen should show [review?] marker");
@@ -1518,7 +1518,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["some content here"], "tokens-col-test");
 
-        string list = await Tools().List(mode: "full");
+        string list = (await Tools().List(mode: "full")).ToYaml();
 
         ResponseParser.Parse(list).Content.Should().Contain("~tokens",
             because: "List output must include a ~tokens column header");
@@ -1530,7 +1530,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["test content"], "search-tok-test");
 
-        string result = await Tools().Search("search-tok-test");
+        string result = (await Tools().Search("search-tok-test")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("tokens",
             because: "Search output must surface an estimated token count per result so " +
@@ -1547,12 +1547,12 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Append("line two", "append-test");
 
-        string result = await Tools().Recall("append-test");
+        string result = (await Tools().Recall("append-test")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
         content.Should().Contain("line one");
         content.Should().Contain("line two");
 
-        string chunkResult = await Tools().Recall("append-test", chunk: 1);
+        string chunkResult = (await Tools().Recall("append-test", chunk: 1)).ToYaml();
         ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/2",
             because: "after append, memory should have 2 chunks");
     }
@@ -1564,7 +1564,7 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Append("brand new content", "append-new");
 
-        string result = await Tools().Recall("append-new");
+        string result = (await Tools().Recall("append-new")).ToYaml();
         ResponseParser.Parse(result).Content.Should().Be("brand new content");
     }
 
@@ -1576,12 +1576,12 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Append("line B", "~append-eph");
 
-        string result = await Tools().Recall("~append-eph");
+        string result = (await Tools().Recall("~append-eph")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
         content.Should().Contain("line A");
         content.Should().Contain("line B");
 
-        string chunkResult = await Tools().Recall("~append-eph", chunk: 1);
+        string chunkResult = (await Tools().Recall("~append-eph", chunk: 1)).ToYaml();
         ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/2",
             because: "after append, ephemeral memory should have 2 chunks");
     }
@@ -1594,11 +1594,11 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         string[] chunks = ["## Auth\nOAuth2 flow.", "## Users\nCRUD endpoints.", "## Billing\nStripe integration."];
 
-        string result = await Tools().Remember(chunks, "chunked-api");
+        string result = (await Tools().Remember(chunks, "chunked-api")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("3 chunks");
 
-        string chunkResult = await Tools().Recall("chunked-api", chunk: 1);
+        string chunkResult = (await Tools().Recall("chunked-api", chunk: 1)).ToYaml();
         ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/3",
             because: "a three-element store must produce three chunks");
     }
@@ -1611,8 +1611,8 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Remember(chunks, "chunk-rt");
 
-        var chunk1Text = ResponseParser.Parse(await Tools().Recall("chunk-rt", chunk: 1)).Content!;
-        var chunk2Text = ResponseParser.Parse(await Tools().Recall("chunk-rt", chunk: 2)).Content!;
+        var chunk1Text = ResponseParser.Parse((await Tools().Recall("chunk-rt", chunk: 1)).ToYaml()).Content!;
+        var chunk2Text = ResponseParser.Parse((await Tools().Recall("chunk-rt", chunk: 2)).ToYaml()).Content!;
         // Extract chunk content after the "Chunk N/M\n\n" header
         string chunk1 = chunk1Text[(chunk1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
@@ -1627,10 +1627,10 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Remember(["Only one."], "single-chunk");
 
-        string chunkResult = await Tools().Recall("single-chunk", chunk: 1);
+        string chunkResult = (await Tools().Recall("single-chunk", chunk: 1)).ToYaml();
         ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/1",
             because: "a single-element store must produce one chunk");
-        string decoded = await Tools().Recall("single-chunk");
+        string decoded = (await Tools().Recall("single-chunk")).ToYaml();
         ResponseParser.Parse(decoded).Content.Should().Be("Only one.");
     }
 
@@ -1640,14 +1640,14 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         string[] chunks = ["Eph chunk 1.", "Eph chunk 2."];
 
-        string result = await Tools().Remember(chunks, "~eph-chunked");
+        string result = (await Tools().Remember(chunks, "~eph-chunked")).ToYaml();
         var parsed = ResponseParser.Parse(result);
 
         parsed.Content.Should().Contain("2 chunks");
         parsed.Content.Should().Contain("[ephemeral]");
 
-        var chunk1Text = ResponseParser.Parse(await Tools().Recall("~eph-chunked", chunk: 1)).Content!;
-        var chunk2Text = ResponseParser.Parse(await Tools().Recall("~eph-chunked", chunk: 2)).Content!;
+        var chunk1Text = ResponseParser.Parse((await Tools().Recall("~eph-chunked", chunk: 1)).ToYaml()).Content!;
+        var chunk2Text = ResponseParser.Parse((await Tools().Recall("~eph-chunked", chunk: 2)).ToYaml()).Content!;
         string chunk1 = chunk1Text[(chunk1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Eph chunk 1.");
@@ -1662,15 +1662,15 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["Original content."], "nc-test");
 
-        string result = await Tools().Append("New entry.", "nc-test");
+        string result = (await Tools().Append("New entry.", "nc-test")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("chunk 2");
-        var chunkText = ResponseParser.Parse(await Tools().Recall("nc-test", chunk: 1)).Content!;
+        var chunkText = ResponseParser.Parse((await Tools().Recall("nc-test", chunk: 1)).ToYaml()).Content!;
         chunkText.Should().Contain("Chunk 1/2",
             because: "after append, memory should have 2 chunks");
 
         string chunk1 = chunkText[(chunkText.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        var chunk2Text = ResponseParser.Parse(await Tools().Recall("nc-test", chunk: 2)).Content!;
+        var chunk2Text = ResponseParser.Parse((await Tools().Recall("nc-test", chunk: 2)).ToYaml()).Content!;
         string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Original content.");
         chunk2.Should().Be("New entry.");
@@ -1683,9 +1683,9 @@ public sealed class ScriniaMcpToolsTests
 
         await Tools().Append("First entry.", "nc-new");
 
-        string result = await Tools().Recall("nc-new");
+        string result = (await Tools().Recall("nc-new")).ToYaml();
         ResponseParser.Parse(result).Content.Should().Be("First entry.");
-        string chunkResult = await Tools().Recall("nc-new", chunk: 1);
+        string chunkResult = (await Tools().Recall("nc-new", chunk: 1)).ToYaml();
         ResponseParser.Parse(chunkResult).Content.Should().Contain("Chunk 1/1",
             because: "a newly created memory from append should have 1 chunk");
     }
@@ -1699,14 +1699,14 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("Day 2: Added auth.", "journal");
         await Tools().Append("Day 3: Fixed bugs.", "journal");
 
-        var chunkText = ResponseParser.Parse(await Tools().Recall("journal", chunk: 1)).Content!;
+        var chunkText = ResponseParser.Parse((await Tools().Recall("journal", chunk: 1)).ToYaml()).Content!;
         chunkText.Should().Contain("Chunk 1/3",
             because: "after two appends, memory should have 3 chunks");
 
         string day1 = chunkText[(chunkText.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        var day2Text = ResponseParser.Parse(await Tools().Recall("journal", chunk: 2)).Content!;
+        var day2Text = ResponseParser.Parse((await Tools().Recall("journal", chunk: 2)).ToYaml()).Content!;
         string day2 = day2Text[(day2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
-        var day3Text = ResponseParser.Parse(await Tools().Recall("journal", chunk: 3)).Content!;
+        var day3Text = ResponseParser.Parse((await Tools().Recall("journal", chunk: 3)).ToYaml()).Content!;
         string day3 = day3Text[(day3Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         day1.Should().Be("Day 1: Started project.");
         day2.Should().Be("Day 2: Added auth.");
@@ -1722,7 +1722,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("More data here.", "nc-meta");
 
         // Show returns the full decoded content (all chunks concatenated)
-        string full = await Tools().Recall("nc-meta");
+        string full = (await Tools().Recall("nc-meta")).ToYaml();
         var content = ResponseParser.Parse(full).Content!;
         content.Should().Contain("Initial.");
         content.Should().Contain("More data here.");
@@ -1734,12 +1734,12 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["Eph line 1."], "~nc-eph");
 
-        string result = await Tools().Append("Eph line 2.", "~nc-eph");
+        string result = (await Tools().Append("Eph line 2.", "~nc-eph")).ToYaml();
 
         ResponseParser.Parse(result).Content.Should().Contain("chunk 2");
 
-        var chunk1Text = ResponseParser.Parse(await Tools().Recall("~nc-eph", chunk: 1)).Content!;
-        var chunk2Text = ResponseParser.Parse(await Tools().Recall("~nc-eph", chunk: 2)).Content!;
+        var chunk1Text = ResponseParser.Parse((await Tools().Recall("~nc-eph", chunk: 1)).ToYaml()).Content!;
+        var chunk2Text = ResponseParser.Parse((await Tools().Recall("~nc-eph", chunk: 2)).ToYaml()).Content!;
         string chunk1 = chunk1Text[(chunk1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         string chunk2 = chunk2Text[(chunk2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         chunk1.Should().Be("Eph line 1.");
@@ -1756,7 +1756,7 @@ public sealed class ScriniaMcpToolsTests
         await Tools().Append("Charlie.", "nc-full");
 
         // Full show should return all three chunks concatenated (with header for multi-chunk)
-        string full = ResponseParser.Parse(await Tools().Recall("nc-full")).Content!;
+        string full = ResponseParser.Parse((await Tools().Recall("nc-full")).ToYaml()).Content!;
         // Multi-chunk Show prepends "(3 chunks)\n\n" header
         string fullContent = full.Contains("chunks)\n\n")
             ? full[(full.IndexOf("chunks)\n\n", StringComparison.Ordinal) + "chunks)\n\n".Length)..]
@@ -1764,9 +1764,9 @@ public sealed class ScriniaMcpToolsTests
         fullContent.Should().Be("Alpha.Bravo.Charlie.");
 
         // Individual chunks should match
-        var c1Text = ResponseParser.Parse(await Tools().Recall("nc-full", chunk: 1)).Content!;
-        var c2Text = ResponseParser.Parse(await Tools().Recall("nc-full", chunk: 2)).Content!;
-        var c3Text = ResponseParser.Parse(await Tools().Recall("nc-full", chunk: 3)).Content!;
+        var c1Text = ResponseParser.Parse((await Tools().Recall("nc-full", chunk: 1)).ToYaml()).Content!;
+        var c2Text = ResponseParser.Parse((await Tools().Recall("nc-full", chunk: 2)).ToYaml()).Content!;
+        var c3Text = ResponseParser.Parse((await Tools().Recall("nc-full", chunk: 3)).ToYaml()).Content!;
         string c1 = c1Text[(c1Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         string c2 = c2Text[(c2Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
         string c3 = c3Text[(c3Text.IndexOf("\n\n", StringComparison.Ordinal) + 2)..];
@@ -1799,7 +1799,7 @@ public sealed class ScriniaMcpToolsTests
         entry.TermFrequencies.Should().NotContainKey("person:mary",
             because: "the monolithic prefixed token is dead weight in BM25 and must not be seeded as-is");
 
-        var parsed = ResponseParser.Parse(await Tools().Search("Mary"));
+        var parsed = ResponseParser.Parse((await Tools().Search("Mary")).ToYaml());
         parsed.Status.Should().Be("success");
         parsed.Content.Should().Contain("typed-kw-test",
             because: "a key:value keyword's value must be reachable via BM25 even when absent from content");
@@ -1912,7 +1912,7 @@ public sealed class ScriniaMcpToolsTests
         entry.TermFrequencies!.Should().ContainKey("zorptree",
             because: "anchor tokens supplied on append must be TF-seeded so BM25 can match them");
 
-        var parsed = ResponseParser.Parse(await Tools().Search("how do I configure zorptree"));
+        var parsed = ResponseParser.Parse((await Tools().Search("how do I configure zorptree")).ToYaml());
         parsed.Status.Should().Be("success");
         parsed.Content.Should().Contain("append-anchor-bridge",
             because: "an anchor added on append must bridge a user query to the memory");
@@ -2011,7 +2011,7 @@ public sealed class ScriniaMcpToolsTests
             because: "remember must succeed");
 
         // Verify content is retrievable
-        string showResult = await Tools().Recall("remember-test");
+        string showResult = (await Tools().Recall("remember-test")).ToYaml();
         ResponseParser.Parse(showResult).Content.Should().Be(original,
             because: "content stored via remember must be retrievable via Show");
     }
@@ -2209,7 +2209,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        string result = await Tools().Recall("nonexistent-memory");
+        string result = (await Tools().Recall("nonexistent-memory")).ToYaml();
 
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("error");
@@ -2323,7 +2323,7 @@ public sealed class ScriniaMcpToolsTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["plain content with no anchors"], "no-anchors-test");
 
-        string result = await Tools().Search("plain");
+        string result = (await Tools().Search("plain")).ToYaml();
         var parsed = ResponseParser.Parse(result);
         parsed.Content.Should().NotContain("anchors:",
             because: "anchors section must be omitted entirely when the anchor attribute is null/empty");
@@ -2369,7 +2369,7 @@ public sealed class ScriniaMcpToolsTests
         // (4): A query in the anchor's vocabulary surfaces the entry. We expect it
         // among the results (top-most candidate is fine — the store is otherwise empty
         // for this scope so any non-empty match is the right one).
-        string result = await Tools().Search("what is foo");
+        string result = (await Tools().Search("what is foo")).ToYaml();
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success");
         parsed.Content.Should().Contain("anchor-flow-test",
@@ -2555,7 +2555,7 @@ public sealed class ScriniaMcpToolsTests
             Attributes = new Dictionary<string, string[]> { ["file"] = ["src/Foo.cs"] },
         });
 
-        string result = await Tools().References("src/Foo.cs");
+        string result = (await Tools().References("src/Foo.cs")).ToYaml();
         result.Should().Contain("legacy-ref").And.Contain("fields-ref");
     }
 

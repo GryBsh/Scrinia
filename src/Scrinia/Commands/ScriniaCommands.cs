@@ -31,6 +31,29 @@ public partial class ScriniaCommands
         WriteJson(new CliErrorOutput(message), CliJsonContext.Default.CliErrorOutput);
     }
 
+    /// <summary>
+    /// Human-facing rendering of an error envelope: the message, then one indented bullet per
+    /// <see cref="McpResponse.ActionNeeded"/> entry.
+    /// </summary>
+    /// <remarks>
+    /// The recovery hints are the difference between "not found" and "not found — here is how to
+    /// find it", so the terminal must not drop them. They are deliberately absent from the
+    /// <c>--json</c> path: <see cref="CliErrorOutput"/> is the shared machine-readable error
+    /// envelope for every command, and its single <c>error</c> field stays a clean message rather
+    /// than carrying embedded newlines and bullet prose.
+    /// </remarks>
+    internal static string FormatCliError(McpResponse r)
+    {
+        string message = r.Error ?? "unknown error";
+        if (r.ActionNeeded is not { Length: > 0 })
+            return message;
+
+        var sb = new System.Text.StringBuilder(message);
+        foreach (string hint in r.ActionNeeded)
+            sb.Append("\n  - ").Append(hint);
+        return sb.ToString();
+    }
+
     // ── MCP-passthrough commands ────────────────────────────────────────────
     //
     // Each of the six commands below wires the CLI directly into the same
@@ -38,20 +61,19 @@ public partial class ScriniaCommands
     // YAML response (terminal-friendly when read by humans, parseable by tools);
     // --json wraps the response in CliMcpOutput so callers get a stable shape.
 
-    private static int EmitMcpResult(string yaml, bool json, string action)
+    private static int EmitMcpResult(McpResponse r, bool json, string action)
     {
-        bool isError = yaml.Contains("status: error", StringComparison.Ordinal);
-        string status = isError ? "error"
-            : yaml.Contains("status: warning", StringComparison.Ordinal) ? "warning"
-            : "success";
+        bool isError = r.Status == "error";
 
         if (json)
         {
-            WriteJson(new CliMcpOutput(action, status, yaml), CliJsonContext.Default.CliMcpOutput);
+            // --json output is unchanged: CliMcpOutput still carries the rendered YAML.
+            WriteJson(new CliMcpOutput(action, r.Status, r.ToYaml()), CliJsonContext.Default.CliMcpOutput);
         }
         else
         {
             // Pass YAML straight through — same pattern as Show.
+            string yaml = r.ToYaml();
             Console.Write(yaml);
             if (!yaml.EndsWith('\n')) Console.WriteLine();
         }
@@ -97,18 +119,18 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        string yaml = await tools.Restore(cancellationToken);
+        McpResponse response = await tools.Restore(cancellationToken);
 
         if (hook)
         {
             // Client-tailored restore payload (terser framing for Claude, bare payload for
             // envelope-less clients). The agent CLI injects additionalContext into the model's
             // context off-transcript; no --client → the frozen reference shape.
-            Console.WriteLine(HintCommand.FormatRestoreHook(yaml, HintCommand.ParseClient(client)));
+            Console.WriteLine(HintCommand.FormatRestoreHook(response.ToYaml(), HintCommand.ParseClient(client)));
             return 0;
         }
 
-        return EmitMcpResult(yaml, json, "restore");
+        return EmitMcpResult(response, json, "restore");
     }
 
     /// <summary>Scan for merge conflicts in .scrinia/ or resolve a specific conflict.</summary>
@@ -141,8 +163,8 @@ public partial class ScriniaCommands
         }
 
         var tools = new ScriniaMcpTools();
-        string yaml = await tools.Reconcile(conflictId, choice, mergedContent, cancellationToken);
-        return EmitMcpResult(yaml, json, "reconcile");
+        McpResponse response = await tools.Reconcile(conflictId, choice, mergedContent, cancellationToken);
+        return EmitMcpResult(response, json, "reconcile");
     }
 
     private static List<string> ResolveFiles(string filesArg)

@@ -368,8 +368,9 @@ public partial class ScriniaCommands
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Remember([content], name, description ?? "", tagArray,
+        McpResponse response = await tools.Remember([content], name, description ?? "", tagArray,
             keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
+        string result = response.ToYaml();
 
         if (json)
         {
@@ -401,14 +402,19 @@ public partial class ScriniaCommands
         WorkspaceSetup.Configure(workspaceRoot);
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Recall(name, cancellationToken: cancellationToken);
+        McpResponse response = await tools.Recall(name, cancellationToken: cancellationToken);
 
-        if (result.StartsWith("Error:", StringComparison.Ordinal))
+        // Reads the typed status. The previous guard tested StartsWith("Error:"), a shape ToYaml
+        // has never emitted — every envelope opens with "status: " — so `scri show` exited 0 on a
+        // genuine not-found.
+        if (response.Status == "error")
         {
-            if (json) { WriteJsonError(result); return 1; }
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
+            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }
+
+        string result = response.ToYaml();
 
         if (json)
         {
@@ -444,14 +450,17 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Forget(name, cancellationToken);
+        McpResponse response = await tools.Forget(name, cancellationToken);
 
-        if (result.StartsWith("Error:", StringComparison.Ordinal))
+        // Same dead guard as Show — `scri forget` reported success on a real not-found.
+        if (response.Status == "error")
         {
-            if (json) { WriteJsonError(result); return 1; }
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
+            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }
+
+        string result = response.ToYaml();
 
         if (json)
             WriteJson(new CliForgetOutput(name, true, result), CliJsonContext.Default.CliForgetOutput);
@@ -500,8 +509,8 @@ public partial class ScriniaCommands
         }
 
         var tools = new ScriniaMcpTools();
-        string yaml = await tools.Append(content, name, cancellationToken: cancellationToken);
-        return EmitMcpResult(yaml, json, "append");
+        McpResponse response = await tools.Append(content, name, cancellationToken: cancellationToken);
+        return EmitMcpResult(response, json, "append");
     }
 
     /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version.</summary>
@@ -521,8 +530,8 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        string yaml = await tools.Compact(name, keepRecent, cancellationToken);
-        return EmitMcpResult(yaml, json, "compact");
+        McpResponse response = await tools.Compact(name, keepRecent, cancellationToken);
+        return EmitMcpResult(response, json, "compact");
     }
 
     /// <summary>Create a bidirectional link between two memories.</summary>
@@ -544,7 +553,7 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         var tools = new ScriniaMcpTools();
-        string yaml = await tools.Link(from, to, reason, cancellationToken);
-        return EmitMcpResult(yaml, json, "link");
+        McpResponse response = await tools.Link(from, to, reason, cancellationToken);
+        return EmitMcpResult(response, json, "link");
     }
 }

@@ -60,7 +60,7 @@ public sealed class BundleGitIgnoreTests : IDisposable
     {
         using var scope = new TestHelpers.StoreScope(createStoreDir: false);
 
-        string yaml = await new ScriniaMcpTools().Export(topics: ["notes"], cancellationToken: default);
+        string yaml = (await new ScriniaMcpTools().Export(topics: ["notes"], cancellationToken: default)).ToYaml();
 
         yaml.Should().Contain("error:", because: "no topic data was seeded, so the export itself is " +
             "expected to fail — the fixture proves .gitignore appears even on that failing path");

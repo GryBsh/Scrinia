@@ -10,6 +10,41 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — CLI exit codes and not-found output
+
+- `scri show` and `scri forget` now exit `1` when the memory does not exist. Both guarded on
+  `result.StartsWith("Error:")`, a shape the response serialiser has never emitted — every
+  envelope opens with `status: ` — so the branch was dead and both commands reported success
+  on a genuine not-found. Scripts that relied on the old always-zero exit code will now see a
+  failure where a failure actually occurred. MCP tool output is unchanged.
+- On that not-found path, both commands now print the error followed by the recovery hints:
+
+  ```
+  $ scri show /findings/nope; echo $?
+  Error: Memory '/findings/nope' not found.
+    - list() to see available memories
+    - search({ query: '...' }) to find by keyword
+  1
+  ```
+
+- **`--json` shape change on that same path.** `scri show --json` and `scri forget --json`
+  previously emitted `CliShowOutput` / `CliForgetOutput` with the error envelope sitting in the
+  content field and exit `0`. They now emit the standard error envelope, `{"error": "..."}`,
+  with exit `1` — the shape the dead branch always intended. The recovery hints are terminal
+  output only; the JSON `error` field stays a single clean message. Scripts parsing
+  `.content` from a not-found `scri show --json` must switch to checking the exit code.
+
+### Fixed — response envelope can no longer be impersonated by memory content
+
+- The twenty internal handlers in `Scrinia.Mcp` returned already-rendered YAML, so consumers
+  recovered structure by substring-matching it. Because `content` is emitted as an indented
+  but unescaped block, text inside a response body was indistinguishable from the envelope's
+  own `status:` line, and a successful command could be reported as a failure. Three commands
+  could reach it: `scri link` (echoes `--reason` into its success message), `scri reconcile`
+  (embeds decoded conflict bodies in its scan report), and `scri facts` (renders entity values
+  verbatim, and those come from unsanitised attribute text). Handlers now return the typed
+  response and serialise once at the tool boundary; the CLI reads the status field.
+
 ### Fixed — git merge driver
 
 - The `.nmp2` merge driver crashed on every real conflict. Git passes extensionless temp

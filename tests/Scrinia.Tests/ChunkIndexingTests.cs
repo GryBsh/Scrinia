@@ -162,7 +162,7 @@ public sealed class ChunkIndexingTests
         ];
         await Tools().Remember(chunks, "label-test");
 
-        string output = await Tools().Search("xylophone");
+        string output = (await Tools().Search("xylophone")).ToYaml();
         output.Should().Contain("[chunk");
         output.Should().Contain("chunk");
     }

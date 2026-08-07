@@ -12,7 +12,7 @@ public static class FactsResponseFormatter
     private static string Date(DateTimeOffset d) => d.ToString("yyyy-MM-dd", Ci);
     private static string Key(EntityRef e) => $"{e.Key}:{e.Value}";
 
-    public static string ToYaml(FactsResult result) => result switch
+    public static McpResponse ToResponse(FactsResult result) => result switch
     {
         EntitiesListResult r => Success(Entities(r)),
         ProfileResult r => Success(Profile(r)),
@@ -22,10 +22,10 @@ public static class FactsResponseFormatter
         _ => Success("no result"),
     };
 
-    private static string Success(string content) =>
-        ResponseBuilder.Success(content).WithAction("facts").ToYaml();
-    private static string Warning(string content) =>
-        ResponseBuilder.Warning(content).WithAction("facts").ToYaml();
+    private static McpResponse Success(string content) =>
+        ResponseBuilder.Success(content).WithAction("facts");
+    private static McpResponse Warning(string content) =>
+        ResponseBuilder.Warning(content).WithAction("facts");
 
     private static string Entities(EntitiesListResult r)
     {

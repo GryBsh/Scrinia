@@ -93,7 +93,7 @@ public sealed partial class ScriniaMcpTools
     {
         // Skill-path routing: '/skill/{name}' → SkillCreate.
         var skillRoute = TryRouteSkillRemember(path, content, cancellationToken);
-        if (skillRoute is not null) return await skillRoute;
+        if (skillRoute is not null) return (await skillRoute).ToYaml();
 
         if (content is null || content.Length == 0)
             return ResponseBuilder.Error(
@@ -119,13 +119,17 @@ public sealed partial class ScriniaMcpTools
                     "Split the content into multiple smaller elements in the content array.").ToYaml();
         }
 
-        string result = await Remember(content, path,
+        McpResponse response = await Remember(content, path,
             keywords: keywords, attributes: attributes,
             actionLabel: "remembered", cancellationToken: cancellationToken);
+
+        // Was InjectInfoHint doing string surgery on rendered YAML. The no-op-on-error rule is
+        // preserved deliberately: errors carry recovery text on actionNeeded, not info.
         string? typoHint = ReservedPrefixGuard.HintFor(path);
-        if (typoHint is not null)
-            result = McpResponseExtensions.InjectInfoHint(result, typoHint);
-        return result;
+        if (typoHint is not null && response.Status != "error")
+            response = response.WithInfo([.. response.Info ?? [], typoHint]);
+
+        return response.ToYaml();
     }
 
     [McpServerTool(Name = "recall"), Description(
@@ -140,7 +144,7 @@ public sealed partial class ScriniaMcpTools
         // Skill-path routing: '/skill/...' → SkillLoad. Handles both '/skill/{name}' (load)
         // and '/skill' or '/skill/' (list view).
         var skillRoute = TryRouteSkillRecall(path, withBuiltin, cancellationToken);
-        if (skillRoute is not null) return await skillRoute;
+        if (skillRoute is not null) return (await skillRoute).ToYaml();
 
         if (string.IsNullOrWhiteSpace(path))
             return ResponseBuilder.Error(
@@ -149,7 +153,7 @@ public sealed partial class ScriniaMcpTools
                 "recall({ path: '...' })",
                 "list() to discover available paths").ToYaml();
 
-        return await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken);
+        return (await Recall(path, chunk, actionLabel: "recalled", cancellationToken: cancellationToken)).ToYaml();
     }
 
     [McpServerTool(Name = "search"), Description(
@@ -176,13 +180,13 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "search({ query: 'keywords or phrase' })").ToYaml();
 
-        return await Search(query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken);
+        return (await Search(query, scopes, limit, excludeTopics, context, pathPrefix, attributeFilter, cancellationToken)).ToYaml();
     }
 
     [McpServerTool(Name = "list"), Description(
         "List stored memories. mode 'summary' (default) shows scopes + top keywords and attributes; " +
         "'full' paginates the table; 'drift' surfaces memories whose file attributes have changed.")]
-    public Task<string> MemoryList(
+    public async Task<string> MemoryList(
         [Description("Optional comma-separated scope order, e.g. 'local,api,ephemeral'. Topic names filter to local topics.")] string? scopes = null,
         [Description("'summary' (default), 'full' for a paginated table, 'drift' for a code-reference drift check.")] string mode = "summary",
         [Description("Starting index for full mode (0-based).")] int offset = 0,
@@ -190,7 +194,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional comma-separated topic names to exclude (e.g. 'plan,task,project,learn' to hide planning namespaces).")] string? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
-        return List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken);
+        return (await List(scopes, mode ?? "summary", offset, limit, excludeTopics, cancellationToken)).ToYaml();
     }
 
     [McpServerTool(Name = "append"), Description(
@@ -222,11 +226,15 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "Split the append into multiple smaller append calls.").ToYaml();
 
-        string result = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
+        McpResponse response = await Append(content, path, keywords: keywords, attributes: attributes, cancellationToken: cancellationToken);
+
+        // Same hint application as MemoryRemember: applied to the typed response before
+        // serialisation, and still a no-op on error (errors use actionNeeded, not info).
         string? typoHint = ReservedPrefixGuard.HintFor(path);
-        if (typoHint is not null)
-            result = McpResponseExtensions.InjectInfoHint(result, typoHint);
-        return result;
+        if (typoHint is not null && response.Status != "error")
+            response = response.WithInfo([.. response.Info ?? [], typoHint]);
+
+        return response.ToYaml();
     }
 
     [McpServerTool(Name = "forget"), Description(
@@ -242,56 +250,56 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.InvalidParameter,
                 "forget({ path: '...' })").ToYaml();
 
-        return await Forget(path, cancellationToken);
+        return (await Forget(path, cancellationToken)).ToYaml();
     }
 
     [McpServerTool(Name = "compact"), Description(
         "Merge a multi-chunk memory. Archives the original version. " +
         "Example: compact({ path: '/sessions/2026-05-11', keepRecent: 3 }).")]
-    public Task<string> MemoryCompact(
+    public async Task<string> MemoryCompact(
         [Description("Memory path to compact.")] string path,
         [Description("Keep only the N most recent chunks. 0 (default) merges all into one.")] int keepRecent = 0,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(path))
-            return Task.FromResult(ResponseBuilder.Error(
+            return ResponseBuilder.Error(
                 "compact requires 'path'.",
                 ErrorCodes.InvalidParameter,
-                "compact({ path: '...', keepRecent: 3 })").ToYaml());
+                "compact({ path: '...', keepRecent: 3 })").ToYaml();
 
-        return Compact(path, keepRecent, cancellationToken);
+        return (await Compact(path, keepRecent, cancellationToken)).ToYaml();
     }
 
     [McpServerTool(Name = "link"), Description(
         "Create a bidirectional link between two memories. " +
         "Example: link({ path: '/findings/SEC-001', destination: '/patterns/auth' }).")]
-    public Task<string> MemoryLink(
+    public async Task<string> MemoryLink(
         [Description("Source memory path.")] string path,
         [Description("Target memory path.")] string destination,
         [Description("Optional reason for the link.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(path))
-            return Task.FromResult(ResponseBuilder.Error(
+            return ResponseBuilder.Error(
                 "link requires 'path'.",
                 ErrorCodes.InvalidParameter,
-                "link({ path: '...', destination: '...' })").ToYaml());
+                "link({ path: '...', destination: '...' })").ToYaml();
         if (string.IsNullOrWhiteSpace(destination))
-            return Task.FromResult(ResponseBuilder.Error(
+            return ResponseBuilder.Error(
                 "link requires 'destination'.",
                 ErrorCodes.InvalidParameter,
-                "link({ path: '...', destination: '...' })").ToYaml());
+                "link({ path: '...', destination: '...' })").ToYaml();
 
-        return Link(path, destination, reason, cancellationToken);
+        return (await Link(path, destination, reason, cancellationToken)).ToYaml();
     }
 
     [McpServerTool(Name = "restore"), Description(
         "Resume workspace context — agent profile, patterns, today's session log, available skills, " +
         "unresolved merge conflicts. Usually unnecessary because guide() folds this in at session start; " +
         "call this mid-session to refresh after a long gap.")]
-    public Task<string> MemoryRestore(CancellationToken cancellationToken = default)
+    public async Task<string> MemoryRestore(CancellationToken cancellationToken = default)
     {
-        return Restore(cancellationToken);
+        return (await Restore(cancellationToken)).ToYaml();
     }
 
     [McpServerTool(Name = "reconcile"), Description(
@@ -300,13 +308,13 @@ public sealed partial class ScriniaMcpTools
         "With conflictId + choice: resolve manually ('ours', 'theirs', or 'merged'). " +
         "With conflictId only (no choice) on an auto-resolvable .meta.json conflict: apply the automatic merge. " +
         "Example: reconcile({ conflictId: 'memories/local/auth-flow.nmp2', choice: 'ours' }).")]
-    public Task<string> MemoryReconcile(
+    public async Task<string> MemoryReconcile(
         [Description("Workspace-relative path under .scrinia/ to the conflicted file. Omit to scan.")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged'. Required when conflictId is provided.")] string? choice = null,
         [Description("Content for 'merged' resolution.")] string? mergedContent = null,
         CancellationToken cancellationToken = default)
     {
-        return Reconcile(conflictId, choice, mergedContent, cancellationToken);
+        return (await Reconcile(conflictId, choice, mergedContent, cancellationToken)).ToYaml();
     }
 
     // ── Skill-path routing ────────────────────────────────────────────────────
@@ -322,7 +330,7 @@ public sealed partial class ScriniaMcpTools
     /// /skill/. Handles both '/skill/{name}' (load one) and '/skill' or '/skill/'
     /// (list available). Returns null when the call should fall through to normal recall.
     /// </summary>
-    private static Task<string>? TryRouteSkillRecall(string? path, bool withBuiltin, CancellationToken ct)
+    private static Task<McpResponse>? TryRouteSkillRecall(string? path, bool withBuiltin, CancellationToken ct)
     {
         if (!TryParseSkillPath(path, out string? skillName))
             return null;
@@ -333,7 +341,7 @@ public sealed partial class ScriniaMcpTools
     /// Routes a remember call to <see cref="SkillCreate"/> when the path is under
     /// /skill/. Returns null when the call should fall through to normal remember.
     /// </summary>
-    private static Task<string>? TryRouteSkillRemember(string? path, string[]? content, CancellationToken ct)
+    private static Task<McpResponse>? TryRouteSkillRemember(string? path, string[]? content, CancellationToken ct)
     {
         if (!TryParseSkillPath(path, out string? skillName))
             return null;
@@ -342,13 +350,13 @@ public sealed partial class ScriniaMcpTools
             return Task.FromResult(ResponseBuilder.Error(
                 "remember on a /skill/... path requires 'content' with at least one element (the skill instructions).",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/my-helper', content: ['instructions here'] })").ToYaml());
+                "remember({ path: '/skill/my-helper', content: ['instructions here'] })"));
 
         if (string.IsNullOrWhiteSpace(skillName))
             return Task.FromResult(ResponseBuilder.Error(
                 "remember on a /skill/... path requires a skill name in the path.",
                 ErrorCodes.InvalidParameter,
-                "remember({ path: '/skill/your-name-here', content: [...] })").ToYaml());
+                "remember({ path: '/skill/your-name-here', content: [...] })"));
 
         return SkillCreate(
             name: skillName,

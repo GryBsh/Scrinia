@@ -24,7 +24,7 @@ public sealed class V2PathSearchTests
         await Tools().Remember(["Frontend auth research"], "/goal/G-5/research/frontend", "frontend research");
         await Tools().Remember(["Backend auth research"], "/goal/G-5/research/backend", "backend research");
 
-        string result = await Tools().List(scopes: "/goal/G-5/", mode: "full");
+        string result = (await Tools().List(scopes: "/goal/G-5/", mode: "full")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("frontend", because: "listing with /goal/G-5/ prefix should include research/frontend");
@@ -38,7 +38,7 @@ public sealed class V2PathSearchTests
         await Tools().Remember(["G-5 content"], "/goal/G-5/notes", "G-5 notes");
         await Tools().Remember(["G-6 content"], "/goal/G-6/notes", "G-6 notes");
 
-        string result = await Tools().List(scopes: "/goal/G-5/", mode: "full");
+        string result = (await Tools().List(scopes: "/goal/G-5/", mode: "full")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("/goal/G-5/", because: "G-5 entries should be listed");
@@ -52,7 +52,7 @@ public sealed class V2PathSearchTests
         await Tools().Remember(["G-5 research"], "/goal/G-5/research/api", "G-5 research");
         await Tools().Remember(["G-50 research"], "/goal/G-50/research/api", "G-50 research");
 
-        string result = await Tools().List(scopes: "/goal/G-5/", mode: "full");
+        string result = (await Tools().List(scopes: "/goal/G-5/", mode: "full")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("/goal/G-5/", because: "/goal/G-5 should match /goal/G-5/research");
@@ -66,7 +66,7 @@ public sealed class V2PathSearchTests
         await Tools().Remember(["alpha content"], "/api/alpha", "alpha");
         await Tools().Remember(["beta content"], "/goal/G-1/beta", "beta");
 
-        string result = await Tools().List(scopes: "/", mode: "full");
+        string result = (await Tools().List(scopes: "/", mode: "full")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("alpha", because: "root path '/' should return all entries including /api/alpha");
@@ -82,7 +82,7 @@ public sealed class V2PathSearchTests
         await Tools().Remember(["OAuth2 authentication flow for REST API"], "/api/auth", "API auth notes");
         await Tools().Remember(["Authentication research for goal G-5"], "/goal/G-5/research/auth-stuff", "G-5 auth research");
 
-        string result = await Tools().Search("auth", scopes: "/api/");
+        string result = (await Tools().Search("auth", scopes: "/api/")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("auth", because: "search scoped to /api/ should find the api auth entry");
@@ -97,7 +97,7 @@ public sealed class V2PathSearchTests
         await Tools().Remember(["Goal research on authentication"], "/goal/G-7/research/auth-research", "G-7 auth");
 
         // Search without path prefix (scopes=null) but with scopes="all" to include entity scopes
-        string result = await Tools().Search("authentication", scopes: "all");
+        string result = (await Tools().Search("authentication", scopes: "all")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("auth-flow", because: "unscoped search should return results from /api/");
@@ -112,7 +112,7 @@ public sealed class V2PathSearchTests
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["Kubernetes deployment strategies for microservices"], "/infra/k8s-deploy", "K8s deploy notes");
 
-        string result = await Tools().Search("kubernetes", scopes: "all");
+        string result = (await Tools().Search("kubernetes", scopes: "all")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("k8s-deploy", because: "search should find entries stored via v2 path");
@@ -125,7 +125,7 @@ public sealed class V2PathSearchTests
         // Use a 3+ segment path so it routes through v2 (IsV2PathScope returns true)
         await Tools().Remember(["Service mesh configuration details"], "/infra/networking/service-mesh", "Service mesh notes");
 
-        string result = await Tools().List(scopes: "all", mode: "full");
+        string result = (await Tools().List(scopes: "all", mode: "full")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("/infra/networking/service-mesh",
@@ -141,7 +141,7 @@ public sealed class V2PathSearchTests
         await Tools().Remember(["path content about caching"], "/patterns/caching", "caching pattern");
         await Tools().Remember(["path content about logging"], "/observability/logging", "logging notes");
 
-        string result = await Tools().List(scopes: "all", mode: "full");
+        string result = (await Tools().List(scopes: "all", mode: "full")).ToYaml();
         var content = ResponseParser.Parse(result).Content!;
 
         content.Should().Contain("caching", because: "topic-path entries should appear in list");

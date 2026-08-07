@@ -17,6 +17,13 @@ public sealed partial class ScriniaMcpTools
 {
     /// <summary>Bundle operations — export and import memory topics.
     /// No longer exposed as an MCP tool; available via CLI (scri export, scri import).</summary>
+    /// <remarks>
+    /// Deliberately keeps returning rendered YAML while the internal handlers return
+    /// <see cref="McpResponse"/>. It is <c>public</c> on <see cref="ScriniaMcpTools"/> — part of the
+    /// assembly's external surface — but has no in-assembly caller, so it sits at the same
+    /// serialisation boundary as the twelve <c>[McpServerTool]</c> methods even though it carries no
+    /// attribute. Retyping it would push YAML rendering onto external embedders for no internal gain.
+    /// </remarks>
     public async Task<string> Bundle(
         [Description("Action: 'export' or 'import'.")] string action,
         [Description("Topic names to export, or topic filter for import.")] string[]? topics = null,
@@ -33,7 +40,7 @@ public sealed partial class ScriniaMcpTools
                         "bundle('export') requires 'topics' parameter.",
                         ErrorCodes.InvalidParameter,
                         "bundle('export', { topics: ['api', 'arch'] })").ToYaml();
-                return await Export(topics, bundlePath, cancellationToken);
+                return (await Export(topics, bundlePath, cancellationToken)).ToYaml();
 
             case "import":
                 if (string.IsNullOrWhiteSpace(bundlePath))
@@ -41,7 +48,7 @@ public sealed partial class ScriniaMcpTools
                         "bundle('import') requires 'bundlePath' parameter.",
                         ErrorCodes.InvalidParameter,
                         "bundle('import', { bundlePath: './exports/foo.scrinia-bundle' })").ToYaml();
-                return await Import(bundlePath, topics, overwrite, cancellationToken);
+                return (await Import(bundlePath, topics, overwrite, cancellationToken)).ToYaml();
 
             default:
                 return ResponseBuilder.Error(
@@ -57,7 +64,7 @@ public sealed partial class ScriniaMcpTools
     /// so the two-step scan → resolve workflow survives across processes. Each resolve re-reads the
     /// conflict markers from disk; there is no in-memory state shared between scan and resolve.
     /// </remarks>
-    internal Task<string> Reconcile(
+    internal Task<McpResponse> Reconcile(
         [Description("Workspace-relative path under .scrinia/ to the conflicted file. Omit to scan.")] string? conflictId = null,
         [Description("Resolution: 'ours', 'theirs', or 'merged'. Required when conflictId is provided.")] string? choice = null,
         [Description("Content for 'merged' resolution.")] string? content = null,
@@ -72,19 +79,19 @@ public sealed partial class ScriniaMcpTools
             : Task.FromResult(ScanForConflicts(scriniaDir));
     }
 
-    private static string ResolveConflictByPath(string scriniaDir, string conflictId, string? choice, string? mergedContent)
+    private static McpResponse ResolveConflictByPath(string scriniaDir, string conflictId, string? choice, string? mergedContent)
     {
         if (!TryResolveScriniaRelativePath(scriniaDir, conflictId, out string absolutePath, out string? pathError))
             return ResponseBuilder.Error(
                 pathError!,
                 ErrorCodes.InvalidParameter,
-                "reconcile() to list current conflicts by relative path").ToYaml();
+                "reconcile() to list current conflicts by relative path");
 
         if (!File.Exists(absolutePath))
             return ResponseBuilder.Error(
                 $"Conflict '{conflictId}' not found at {absolutePath}.",
                 ErrorCodes.NotFound,
-                "reconcile() to list current conflicts by relative path").ToYaml();
+                "reconcile() to list current conflicts by relative path");
 
         string fileContent;
         try { fileContent = File.ReadAllText(absolutePath); }
@@ -93,14 +100,14 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Reading {absolutePath}: {ex.Message}",
                 ErrorCodes.Internal,
-                "Verify filesystem permissions and retry.").ToYaml();
+                "Verify filesystem permissions and retry.");
         }
 
         if (!fileContent.Contains("<<<<<<<"))
             return ResponseBuilder.Error(
                 $"No conflict markers found in '{conflictId}'; nothing to resolve.",
                 ErrorCodes.Conflict,
-                "reconcile() to list current conflicts").ToYaml();
+                "reconcile() to list current conflicts");
 
         string type = ClassifyConflictType(absolutePath);
 
@@ -117,18 +124,18 @@ public sealed partial class ScriniaMcpTools
                     return ResponseBuilder.Error(
                         $"Writing resolved content to {absolutePath}: {ex.Message}",
                         ErrorCodes.Internal,
-                        "Verify filesystem permissions and disk space, then retry the reconcile.").ToYaml();
+                        "Verify filesystem permissions and disk space, then retry the reconcile.");
                 }
 
                 return ResponseBuilder.Success(
                         $"Resolved {conflictId} (meta.json) via automatic merge (keyword union, latest timestamp wins).")
-                    .WithAction("reconciled").ToYaml();
+                    .WithAction("reconciled");
             }
 
             return ResponseBuilder.Error(
                 "'choice' is required when resolving a conflict. Use 'ours', 'theirs', or 'merged'.",
                 ErrorCodes.InvalidParameter,
-                $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
+                $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})");
         }
 
         string normalisedChoice = choice.ToLowerInvariant();
@@ -142,7 +149,7 @@ public sealed partial class ScriniaMcpTools
                     return ResponseBuilder.Error(
                         $"{conflictId}: {extractError}",
                         ErrorCodes.Conflict,
-                        $"reconcile({{ conflictId: '{conflictId}', choice: 'merged', mergedContent: '...' }})").ToYaml();
+                        $"reconcile({{ conflictId: '{conflictId}', choice: 'merged', mergedContent: '...' }})");
 
                 // For .nmp2 the extracted region is an encoded artifact; decode for storage as plain text,
                 // then re-encode on write below.
@@ -161,7 +168,7 @@ public sealed partial class ScriniaMcpTools
                     return ResponseBuilder.Error(
                         "'merged' choice requires the mergedContent parameter.",
                         ErrorCodes.InvalidParameter,
-                        $"reconcile({{ conflictId: '{conflictId}', choice: 'merged', mergedContent: 'merged text here' }})").ToYaml();
+                        $"reconcile({{ conflictId: '{conflictId}', choice: 'merged', mergedContent: 'merged text here' }})");
                 if (type == "meta.json")
                 {
                     try { JsonNode.Parse(mergedContent!); }
@@ -170,7 +177,7 @@ public sealed partial class ScriniaMcpTools
                         return ResponseBuilder.Error(
                             "Merged content is not valid JSON for .meta.json conflict.",
                             ErrorCodes.Conflict,
-                            "Provide JSON-parseable mergedContent for .meta.json conflicts.").ToYaml();
+                            "Provide JSON-parseable mergedContent for .meta.json conflicts.");
                     }
                 }
                 resolvedContent = mergedContent!;
@@ -180,7 +187,7 @@ public sealed partial class ScriniaMcpTools
                 return ResponseBuilder.Error(
                     $"Invalid choice '{choice}'. Use 'ours', 'theirs', or 'merged'.",
                     ErrorCodes.InvalidParameter,
-                    $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})").ToYaml();
+                    $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }})");
         }
 
         try
@@ -193,13 +200,13 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 $"Writing resolved content to {absolutePath}: {ex.Message}",
                 ErrorCodes.Internal,
-                "Verify filesystem permissions and disk space, then retry the reconcile.").ToYaml();
+                "Verify filesystem permissions and disk space, then retry the reconcile.");
         }
 
-        return ResponseBuilder.Success($"Resolved {conflictId} ({type}) with '{choice}'.").WithAction("reconciled").ToYaml();
+        return ResponseBuilder.Success($"Resolved {conflictId} ({type}) with '{choice}'.").WithAction("reconciled");
     }
 
-    private static string ScanForConflicts(string scriniaDir)
+    private static McpResponse ScanForConflicts(string scriniaDir)
     {
         var autoResolved = new List<string>();
         var needsManual = new List<string>();
@@ -251,7 +258,7 @@ public sealed partial class ScriniaMcpTools
         }
 
         if (autoResolved.Count == 0 && needsManual.Count == 0)
-            return ResponseBuilder.Success("No merge conflicts found in .scrinia/.").WithAction("reconciled").ToYaml();
+            return ResponseBuilder.Success("No merge conflicts found in .scrinia/.").WithAction("reconciled");
 
         // Nothing on disk was changed by this scan — autoResolved lists conflicts that CAN be
         // auto-merged, not ones that already were. Every entry here still needs an explicit
@@ -282,8 +289,7 @@ public sealed partial class ScriniaMcpTools
 
         return ResponseBuilder.Success(sb.ToString())
             .WithAction("reconciled")
-            .WithActionNeeded(reconcileWarnings.ToArray())
-            .ToYaml();
+            .WithActionNeeded(reconcileWarnings.ToArray());
     }
 
     private static bool TryResolveScriniaRelativePath(
@@ -494,7 +500,7 @@ public sealed partial class ScriniaMcpTools
     // ── Maintenance tools ──────────────────────────────────────────────────
 
     /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version.</summary>
-    internal async Task<string> Compact(
+    internal async Task<McpResponse> Compact(
         [Description("Memory name to compact.")] string name,
         [Description("Keep only the N most recent chunks. 0 = merge all into one (default).")] int keepRecent = 0,
         CancellationToken cancellationToken = default)
@@ -513,15 +519,15 @@ public sealed partial class ScriniaMcpTools
                 $"Memory '{name}' not found.",
                 ErrorCodes.NotFound,
                 "list() to see available memories",
-                "remember({ path: '...', content: [...] }) to create it").ToYaml();
+                "remember({ path: '...', content: [...] }) to create it");
         }
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
         if (chunkCount <= 1)
-            return ResponseBuilder.Success("Already a single chunk, nothing to compact.").WithAction("compacted").ToYaml();
+            return ResponseBuilder.Success("Already a single chunk, nothing to compact.").WithAction("compacted");
 
         if (keepRecent > 0 && keepRecent >= chunkCount)
-            return ResponseBuilder.Success($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).").WithAction("compacted").ToYaml();
+            return ResponseBuilder.Success($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).").WithAction("compacted");
 
         // Archive the original before modifying
         store.ArchiveVersion(subject, scope);
@@ -579,11 +585,11 @@ public sealed partial class ScriniaMcpTools
         string qualifiedName = store.FormatQualifiedName(scope, subject);
         int dropped = chunkCount - newChunkCount;
         return ResponseBuilder.Success($"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived.")
-            .WithFileChanges().WithAction("compacted").ToYaml();
+            .WithFileChanges().WithAction("compacted");
     }
 
     /// <summary>Resume agent context — agent profile, patterns, session log, available skills.</summary>
-    internal async Task<string> Restore(CancellationToken cancellationToken)
+    internal async Task<McpResponse> Restore(CancellationToken cancellationToken)
     {
         var ctx = await BuildRestoreContextAsync(cancellationToken);
         return ResponseBuilder.Success(string.Join("\n\n", ctx.ContentSections))
@@ -591,8 +597,7 @@ public sealed partial class ScriniaMcpTools
             .WithActionNeeded(ctx.Warnings.ToArray())
             .WithInfo(ctx.Info.ToArray())
             .WithInstruction(ctx.Instruction)
-            .WithFollowUp(ctx.FollowUpNames.ToArray())
-            .ToYaml();
+            .WithFollowUp(ctx.FollowUpNames.ToArray());
     }
 
     /// <summary>

@@ -45,8 +45,15 @@ public partial class ScriniaCommands
         }
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Export(topicArray, filename, cancellationToken);
+        McpResponse response = await tools.Export(topicArray, filename, cancellationToken);
+        string result = response.ToYaml();
 
+        // NOTE: dead guard. ToYaml always opens with "status: ", so "Error:" never matches and
+        // `scri bundle export` exits 0 on a failed export. Left as-is deliberately: the
+        // response-shape branch sanctions exactly one exit-code change (`scri show` /
+        // `scri forget`), and widening it here would ship an unannounced third.
+        // Not tracked in an issue — see the response-shape branch report (task-3-report.md,
+        // "Other deliberate decisions") for the reasoning and the recommended follow-up.
         if (result.StartsWith("Error:", StringComparison.Ordinal))
         {
             if (json) { WriteJsonError(result); return 1; }
@@ -82,8 +89,12 @@ public partial class ScriniaCommands
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         var tools = new ScriniaMcpTools();
-        string result = await tools.Import(path, topicArray, overwrite, cancellationToken);
+        McpResponse response = await tools.Import(path, topicArray, overwrite, cancellationToken);
+        string result = response.ToYaml();
 
+        // NOTE: dead guard, same as Export above — neither "Error:" nor "No topics" can be a
+        // prefix of a rendered envelope. Deliberately preserved; see the note in Export.
+        // (The ToYaml() above is not wasted: `result` is also the text printed on success.)
         if (result.StartsWith("Error:", StringComparison.Ordinal) ||
             result.StartsWith("No topics", StringComparison.Ordinal))
         {
