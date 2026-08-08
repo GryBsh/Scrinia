@@ -32,6 +32,22 @@ public sealed partial class ScriniaMcpTools
             "This operation needs local filesystem access, and the active store is remote.");
 
     /// <summary>
+    /// Narrows a store to <see cref="ILocalMemoryStore"/> at the point a layout member is
+    /// actually reached. Use this when only <i>part</i> of a method needs local files; use
+    /// <see cref="CurrentLayout"/> only when the whole method does.
+    /// <para>Throwing here rather than at the top of the method is the entire point. Before the
+    /// split, <c>HttpMemoryStore</c>'s member threw at the moment of use, so an early return
+    /// upstream still returned, a validation error was still returned, and an enclosing
+    /// best-effort <c>catch</c> still swallowed it and skipped just that section. Hoisting the
+    /// check to the method entry silently converted all three into hard failures — which is what
+    /// <c>RemoteStoreToolTests</c> now pins.</para>
+    /// </summary>
+    private static ILocalMemoryStore AsLayout(IMemoryStore store) =>
+        store as ILocalMemoryStore
+        ?? throw new NotSupportedException(
+            "This operation needs local filesystem access, and the active store is remote.");
+
+    /// <summary>
     /// Resolves inline NMP/2 artifacts without requiring a configured store.
     /// Returns null if the input requires store-based resolution (memory name, file://, ephemeral, etc.).
     /// file:// URIs are deliberately NOT handled here — they require store-based resolution

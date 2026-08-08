@@ -487,7 +487,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // No-op in remote mode — server archives internally
     }
 
-    // ── Naming / addressing ─────────────────────────────────────────────────
+    // ── Addressing ──────────────────────────────────────────────────────────
 
     public string ArtifactUri(string name, string scope = "local") =>
         $"remote://{_store}/{scope}/{SanitizeName(name)}";

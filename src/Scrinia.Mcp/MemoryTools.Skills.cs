@@ -124,13 +124,15 @@ public sealed partial class ScriniaMcpTools
         [Description("Comma-separated tool names the agent should use (for custom scaffold).")] string? tools = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentLayout;
-
         if (!FileEntityName.IsValid(name))
             return ResponseBuilder.Error(
                 $"Invalid skill name '{name}'. Use letters, digits, '-', '_' or '.' only.",
                 ErrorCodes.InvalidParameter,
                 "remember({ path: '/skill/my-helper', content: [...] })");
+
+        // Narrowed after validation: an invalid name is an invalid name whether the store is
+        // local or remote, and must come back as a structured error either way.
+        var store = CurrentLayout;
 
         string promptContent;
         string role;

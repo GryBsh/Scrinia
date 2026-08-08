@@ -21,12 +21,15 @@ public sealed partial class ScriniaMcpTools
         [Description("Output filename (saved to .scrinia/exports/). Defaults to auto-generated name.")] string? filename = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentLayout;
         if (topics is null || topics.Length == 0)
             return Task.FromResult(ResponseBuilder.Error(
                 "At least one topic name is required.",
                 ErrorCodes.InvalidParameter,
                 "bundle('export', { topics: ['api', 'arch'] })"));
+
+        // Narrowed after validation: an invalid argument is an invalid argument whether the
+        // store is local or remote, and must come back as a structured error either way.
+        var store = CurrentLayout;
 
         string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
         FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);

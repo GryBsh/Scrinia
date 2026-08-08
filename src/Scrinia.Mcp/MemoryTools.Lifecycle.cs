@@ -607,7 +607,11 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal async Task<RestoreContext> BuildRestoreContextAsync(CancellationToken cancellationToken)
     {
-        var store = CurrentLayout;
+        // CurrentStore, not CurrentLayout: the three local-only sections below each sit inside a
+        // best-effort try/catch. Remotely the store threw into those catches and the section was
+        // skipped, leaving a valid context. Narrowing here instead would fail the whole call —
+        // including guide(), the first tool an agent calls in a session.
+        var store = CurrentStore;
         var warnings = new List<string>();
         var info = new List<string>();
         var contentSections = new List<string>();
@@ -617,7 +621,7 @@ public sealed partial class ScriniaMcpTools
         // Check for unresolved merge conflicts in .scrinia/
         try
         {
-            string resumeScriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
+            string resumeScriniaDir = Path.Combine(AsLayout(store).WorkspaceRoot, ".scrinia");
             if (Directory.Exists(resumeScriniaDir))
             {
                 bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
@@ -641,7 +645,7 @@ public sealed partial class ScriniaMcpTools
         // Available skills (built-in + disk overrides)
         try
         {
-            string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
+            string skillsDir = PathRouter.ToFileEntityDir("skill", AsLayout(store).WorkspaceRoot);
             var diskSkills = Directory.Exists(skillsDir)
                 ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
                 : [];
@@ -660,7 +664,7 @@ public sealed partial class ScriniaMcpTools
         // Collect agent/* names for followUp — .md files first, NMP/2 fallback
         try
         {
-            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
+            string agentDir = PathRouter.ToFileEntityDir("agent", AsLayout(store).WorkspaceRoot);
             bool usedMdFiles = false;
 
             if (Directory.Exists(agentDir))

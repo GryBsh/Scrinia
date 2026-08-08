@@ -131,7 +131,10 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentLayout;
+        // CurrentStore, not CurrentLayout: the ephemeral branch below returns before any layout
+        // member is read, and a remote store implements ephemeral storage for real. Narrowing
+        // here would break remember({ path: '/temp/...' }) in remote mode.
+        var store = CurrentStore;
         string joined = string.Concat(content);
 
         // Compute text analysis: keywords + term frequencies (single-pass)
@@ -263,12 +266,15 @@ public sealed partial class ScriniaMcpTools
         {
             string agentSubject = name["/agent/".Length..].Trim();
 
-            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
-            if (!PathRouter.TryToFileEntityPath("agent", agentSubject, store.WorkspaceRoot, out string filePath))
+            // The /agent/ branch is genuinely local-only — it writes a .md file into the
+            // workspace — so it narrows here, where it is actually reached.
+            var agentLayout = AsLayout(store);
+            string agentDir = PathRouter.ToFileEntityDir("agent", agentLayout.WorkspaceRoot);
+            if (!PathRouter.TryToFileEntityPath("agent", agentSubject, agentLayout.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
                     "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.", ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.");
-            FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
+            FileMemoryStore.EnsureGitIgnore(agentLayout.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);
 
             ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
@@ -351,7 +357,9 @@ public sealed partial class ScriniaMcpTools
         // Compute code-reference hashes from the `file` attribute values (drift detection). File
         // dependencies flow in exclusively via attributes.file now — the legacy codeRefs parameter
         // was retired.
-        string workspaceRoot = store.WorkspaceRoot;
+        // Unconditional, so this threw remotely before the split too — behaviour unchanged.
+        // Task 3 owns turning it into something better than an exception.
+        string workspaceRoot = AsLayout(store).WorkspaceRoot;
 
         var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
                 ? fileRefs : [])
@@ -585,10 +593,13 @@ public sealed partial class ScriniaMcpTools
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge listings.")] string? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentLayout;
+        // CurrentStore, not CurrentLayout: only the drift branch is unconditionally local.
+        // Summary mode, the empty-store early return, and full mode over entries without file
+        // attributes all worked remotely before the split and must keep working.
+        var store = CurrentStore;
 
         if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
-            return BuildDriftList(store);
+            return BuildDriftList(AsLayout(store));
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
@@ -712,7 +723,7 @@ public sealed partial class ScriniaMcpTools
     private static readonly Regex KeyValueKeywordShape =
         new(@"^[A-Za-z][A-Za-z0-9_-]{0,29}:.+", RegexOptions.Compiled);
 
-    internal static string BuildFullList(List<ScopedArtifact> entries, ILocalMemoryStore store, int offset, int limit)
+    internal static string BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)
     {
         int total = entries.Count;
         if (offset < 0) offset = 0;
@@ -723,7 +734,7 @@ public sealed partial class ScriniaMcpTools
         string? workspaceRoot = null;
         bool anyCodeRefs = page.Any(p => p.Entry.FileHashes is { Count: > 0 });
         if (anyCodeRefs)
-            workspaceRoot = store.WorkspaceRoot;
+            workspaceRoot = AsLayout(store).WorkspaceRoot;
 
         // Build qualified names first to compute dynamic column width (never truncate names)
         var rows = new List<(string Name, ArtifactEntry Entry)>(page.Count);
