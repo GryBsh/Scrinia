@@ -1,11 +1,9 @@
-using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
-using Scrinia.Plugin.Abstractions;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
 using Scrinia.Server.Services;

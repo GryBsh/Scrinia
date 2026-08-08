@@ -408,7 +408,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix)
     {
         string url = $"{BaseUrl}/search?q={Uri.EscapeDataString(query)}&limit={limit}";
-        if (scopes is not null)
+        if (!string.IsNullOrWhiteSpace(scopes))
             url += $"&scopes={Uri.EscapeDataString(scopes)}";
         if (!string.IsNullOrWhiteSpace(excludeTopics))
             url += $"&excludeTopics={Uri.EscapeDataString(excludeTopics)}";
