@@ -56,6 +56,62 @@ public sealed class BundleEndpointTests
         body.Should().NotBeNull();
         body!.Error.Should().Contain("local filesystem");
     }
+
+    // NOTE on request shape: a genuine multipart/form-data POST to /import — real file, real
+    // boundary, over both TestServer and a real Kestrel socket — is rejected with an empty-body
+    // 415 Unsupported Media Type before ANY endpoint code runs, for every store, local or not.
+    // Root cause, isolated by elimination (no-body request reaches the handler; a JSON body
+    // reaches the handler; multipart and text/plain content types do not): ImportBundle's
+    // `string[]? topics = null` parameter carries no [FromQuery], so minimal API's parameter
+    // binding infers it as an implicit JSON request body, and the framework 415s any request
+    // whose Content-Type isn't application/json before the delegate executes — including the
+    // multipart uploads this endpoint exists to accept. This is a pre-existing defect, orthogonal
+    // to the ILocalMemoryStore guard (topics's binding source is untouched by this task) and out
+    // of Task 3a's scope to fix. Recorded in task-3a-report.md as a new finding.
+    //
+    // Consequence for these tests: neither can reach the guard through a real upload, so both use
+    // a bodyless POST instead (proven, below, to reach the handler past framework binding). That
+    // request shape cannot exercise a successful import (there is no file, so the local case
+    // legitimately stops at "Multipart file upload required"), but it is sufficient — and, given
+    // the 415, currently the ONLY way — to prove the guard fires for a non-local store and does
+    // NOT fire for a local one, using the identical request against both.
+
+    [Fact]
+    public async Task Import_against_local_backend_reaches_form_validation()
+    {
+        using var factory = new ScriniaServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+
+        var resp = await client.PostAsync($"/api/v1/stores/{factory.PrimaryStore}/import", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            because: "the primary store satisfies ILocalMemoryStore, so the guard must pass and " +
+                     "execution must reach the real multipart-required check, not the 501 guard");
+
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body.Should().NotBeNull();
+        body!.Error.Should().Be("Multipart file upload required.");
+    }
+
+    [Fact]
+    public async Task Import_against_non_local_backend_returns_501()
+    {
+        using var factory = new NonLocalStoreServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+
+        // Bodyless, matching Import_against_local_backend_reaches_form_validation exactly except
+        // for the store — isolates the guard as the only variable that can explain a different
+        // status code between the two tests.
+        var resp = await client.PostAsync($"/api/v1/stores/{factory.RemoteStore}/import", null);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.NotImplemented,
+            because: "the configured backend hands back a non-local IMemoryStore, and the endpoint " +
+                     "must refuse cleanly rather than let RequestContext.LocalStore throw");
+
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body.Should().NotBeNull();
+        body!.Error.Should().Contain("local filesystem");
+    }
 }
 
 /// <summary>
