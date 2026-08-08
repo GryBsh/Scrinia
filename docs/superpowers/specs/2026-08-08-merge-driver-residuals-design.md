@@ -32,6 +32,8 @@ expected. Reviewing them together is cheaper than three separate passes over the
 | F6 | `LocateDriver` selects by `OrderByDescending(File.GetLastWriteTimeUtc)` | `tests/Scrinia.Merge.Tests/GitMergeHarness.cs:44-47` |
 | F7 | `ScanForConflicts` calls `TryReadConflictCopy` for both sides | `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:250-251` |
 | F8 | The upgrade doc still tells the reader the conflict copies "stay out of the" commit, with no untrack guidance | `docs/multi-user-setup.md:52` |
+| F8a | `MergeConfigTests.cs` contains no reference to the CLI writer, no serialization call, and no `Setup` call — it exercises the reader against hand-built input only | search for `Setup\|CliJson\|WriteMergeConfig\|Serialize` in `tests/Scrinia.Merge.Tests/MergeConfigTests.cs` returns nothing |
+| F8b | The `"conflicted"` flag has two test assertions, both of the form `doc.RootElement.GetProperty("conflicted").GetBoolean()` | `tests/Scrinia.Merge.Tests/MarkMetaConflictedTests.cs` |
 | F9 | `scri setup` always writes `"conflict"` as the ConflictDir | `ScriniaCommands.Setup.cs:352` (per the merge-driver residual; **re-verify, line may have moved**) |
 
 F9 is the one fact carried from memory rather than re-checked for this spec, and it is
@@ -96,6 +98,10 @@ that branch's final reviewer called this the highest-value follow-up in the list
 
 Write a test that goes through the **real writer** and the **real `MergeConfig.Load`**. A test
 that constructs the JSON by hand pins nothing — it would have passed under the original bug.
+
+F8a is the precise gap: the existing `MergeConfigTests.cs` is not a weak round-trip test, it is
+a reader test with hand-built input. It cannot detect writer drift by construction, so this is
+new coverage rather than a strengthening of what is there.
 
 The two types live in different assemblies, so establish during planning where the test can
 see both.
