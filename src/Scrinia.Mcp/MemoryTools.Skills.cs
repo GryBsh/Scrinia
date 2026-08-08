@@ -136,7 +136,8 @@ public sealed partial class ScriniaMcpTools
             return ResponseBuilder.Error(
                 "Skills are stored as .scrinia/skills/*.md in the local workspace, and the active store is remote.",
                 ErrorCodes.NotSupported,
-                "Create the skill in a local workspace, then export it as a bundle.");
+                "Create the skill in a local workspace, export it as a bundle, then import it "
+                + "through the server's bundle import endpoint.");
 
         string promptContent;
         string role;
