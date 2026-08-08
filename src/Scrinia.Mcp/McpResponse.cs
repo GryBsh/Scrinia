@@ -43,7 +43,7 @@ public sealed record McpResponse
     /// <summary>True when this response reports a failure. The one predicate for the
     /// stringly-typed <see cref="Status"/> — before this, four sites across two projects
     /// each spelled <c>Status == "error"</c> independently, two more spelled it
-    /// <c>!= "error"</c>, and a seventh spelled it as a substring match on rendered YAML
+    /// <c>!= "error"</c>, and two more spelled it as substring matches on rendered YAML
     /// that never matched anything.</summary>
     public bool IsError => Status == "error";
 

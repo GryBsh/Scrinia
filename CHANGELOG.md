@@ -112,6 +112,11 @@ and all assembly attributes.
   never emitted, since every envelope opens with `status: `. Any CI step or script gating on
   their exit code was not gated. Both now read the typed status. An import matching no topics
   still exits 0: that response is a `warning`, not an error.
+- **`--json` shape change on that same path.** `scri bundle export --json` and `scri bundle
+  import --json` previously fell through the same dead guard into the success path and emitted
+  `CliExportOutput{path, message}` / `CliImportOutput{message}` with exit `0` on genuine failure.
+  They now emit the standard error envelope, `{"error": "..."}`, with exit `1`. Scripts parsing
+  `.message` from a failed `scri bundle import --json` must switch to `.error` plus the exit code.
 
 ### Changed — search reuses the pipeline's materialized candidates
 
@@ -129,6 +134,10 @@ and all assembly attributes.
 
 ### Changed — remote-mode search filters server-side
 
+- `POST /api/v1/stores/{store}/search` now also bounds each `attributeFilter` value array at 64
+  entries, mirroring the existing 64-key bound on the filter itself. A request where any single
+  key carried more than 64 values previously passed validation and relied on Kestrel's body limit
+  as the only backstop; it now gets a 400 where it previously got 200.
 - `HttpMemoryStore.SearchAll` sent only `q`, `scopes`, and `limit` to `GET /search`;
   `excludeTopics`, `pathPrefix`, and `attributeFilter` were applied by post-filtering the
   results after they came back over the wire — filtering an already-truncated top-K. A

@@ -1,7 +1,6 @@
 using FluentAssertions;
 using Scrinia.Commands;
 using Scrinia.Mcp;
-using Xunit;
 
 namespace Scrinia.Tests;
 
@@ -19,8 +18,8 @@ public class BundleExitCodeTests
     {
         using var scope = new TestHelpers.StoreScope();
 
-        // Nonexistent topic -> ResponseBuilder.Error(..., ErrorCodes.NotFound, ...) per F5
-        // (MemoryTools.Bundling.cs:66-69, reached because no entries exist for the topic).
+        // Nonexistent topic -> ResponseBuilder.Error(..., ErrorCodes.NotFound, ...), reached
+        // because no entries exist for the topic (MemoryTools.Bundling.cs:66-69).
         int exit = await new ScriniaCommands().Export("nonexistent-topic", workspaceRoot: scope.WorkspaceDir);
 
         exit.Should().Be(1, "a failed export must not report success to a shell or CI step");
@@ -40,9 +39,10 @@ public class BundleExitCodeTests
     }
 
     /// <summary>
-    /// Status is "warning", not "error" (F4). Pinning today's behaviour deliberately: see "The
-    /// decision" in the task brief. If someone later decides an empty import is a failure, this
-    /// test is the place that records it was a decision and not an accident.
+    /// Status is "warning", not "error": an import matching no topics is not treated as a
+    /// failure. Pinning today's behaviour deliberately. If someone later decides an empty
+    /// import is a failure, this test is the place that records it was a decision and not an
+    /// accident.
     /// </summary>
     [Fact]
     public async Task Import_OnEmptyBundle_ExitsZero()
@@ -54,7 +54,7 @@ public class BundleExitCodeTests
         string bundlePath = exportContent[(exportContent.LastIndexOf(") to ", StringComparison.Ordinal) + 5)..];
 
         // Filter on a topic the bundle does not contain -> topicCount == 0, skippedCategories
-        // empty -> ResponseBuilder.Warning("No topics were imported ...") per F4.
+        // empty -> ResponseBuilder.Warning("No topics were imported ...").
         int exit = await new ScriniaCommands().Import(
             bundlePath, workspaceRoot: scope.WorkspaceDir, topics: "does-not-match-anything");
 

@@ -181,8 +181,8 @@ public sealed class BundleEndpointTests
         bundle.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         content.Add(bundle, "file", "x.scrinia-bundle");
 
-        // Per F7, [FromQuery] string[] binds repeated keys only — a single "topics=topicA" query
-        // value here binds to a one-element array, which is exactly the case under test.
+        // [FromQuery] string[] binds repeated keys only — a single "topics=topicA" query value
+        // here binds to a one-element array, which is exactly the case under test.
         var response = await client.PostAsync(
             $"/api/v1/stores/{factory.SecondaryStore}/import?topics={topicA}", content);
 
@@ -199,6 +199,56 @@ public sealed class BundleEndpointTests
         listB.Should().NotBeNull();
         listB!.Memories.Should().BeEmpty(
             because: "topics=topic-a was requested, so topic-b must have been filtered out of the import");
+    }
+
+    [Fact]
+    public async Task Import_WithRepeatedTopicsKeys_ImportsOnlyTheRequestedTopics()
+    {
+        using var factory = new ScriniaServerFactory();
+        using var client = factory.CreateAuthenticatedClient();
+
+        const string topicA = "import-repeated-topic-a";
+        const string topicB = "import-repeated-topic-b";
+        const string topicC = "import-repeated-topic-c";
+        const string markerA = "MARKER-repeated-topic-a";
+        const string markerB = "MARKER-repeated-topic-b";
+        const string markerC = "MARKER-repeated-topic-c";
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicA, "note-a", markerA);
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicB, "note-b", markerB);
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicC, "note-c", markerC);
+
+        byte[] bundleBytes = await ExportBundleAsync(client, factory.PrimaryStore, topicA, topicB, topicC);
+
+        using var content = new MultipartFormDataContent();
+        var bundle = new ByteArrayContent(bundleBytes);
+        bundle.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        content.Add(bundle, "file", "x.scrinia-bundle");
+
+        // Pins the CHANGELOG's claim that `topics` takes repeated query keys
+        // (?topics=a&topics=b), not a comma-separated value — nothing else in the suite
+        // exercised more than one key before this test.
+        var response = await client.PostAsync(
+            $"/api/v1/stores/{factory.SecondaryStore}/import?topics={topicA}&topics={topicB}", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var listA = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicA}");
+        listA.Should().NotBeNull();
+        listA!.Memories.Should().ContainSingle(m => m.Name == "note-a" && m.Description == markerA,
+            because: "topic-a was one of the two repeated topics keys, so its entry must have landed");
+
+        var listB = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicB}");
+        listB.Should().NotBeNull();
+        listB!.Memories.Should().ContainSingle(m => m.Name == "note-b" && m.Description == markerB,
+            because: "topic-b was one of the two repeated topics keys, so its entry must have landed");
+
+        var listC = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicC}");
+        listC.Should().NotBeNull();
+        listC!.Memories.Should().BeEmpty(
+            because: "topic-c was not among the repeated topics keys, so it must have been filtered out");
     }
 
     /// <summary>Stores a single-chunk memory under <c>/{topic}/{subject}</c>, using <paramref

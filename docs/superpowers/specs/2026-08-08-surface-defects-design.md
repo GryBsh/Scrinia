@@ -1,6 +1,6 @@
 # Surface Defects — Design
 
-**Status:** design, awaiting review
+**Status:** implemented on branch `surface-defects`.
 **Sequence:** residuals spec 3 of 4. Inventory: `2026-08-08-residuals-triage.md`
 (T2.1, T2.2, T3.3, T3.4, T4.1, T4.2, T4.5).
 
@@ -21,14 +21,20 @@ would cost more in ceremony than the fixes cost to make.
 
 ## Established facts
 
+**This table describes state at `02d1a29`** — the commit this branch was cut from, before any
+of the fixes below landed. Its line numbers are not updated for what the branch changed; in
+particular, the dead guards F4 describes (`ScriniaCommands.Bundle.cs:57`, `:99`) were removed
+by the branch, and F1, F7, F9, and F10 are all now fixed. See `CHANGELOG.md` and the branch's
+commits for current state.
+
 | # | Fact | Evidence |
 |---|---|---|
-| F1 | `POST /import` declares `string[]? topics = null` with no `[FromQuery]` | `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs:370` |
+| F1 | `POST /api/v1/stores/{store}/import` declares `string[]? topics = null` with no `[FromQuery]` | `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs:370` |
 | F2 | ASP.NET Core Minimal API infers a complex-typed parameter as JSON-body-bound, so a non-`application/json` Content-Type is rejected with 415 before the handler runs | framework behaviour; reproduced over both TestServer and a real Kestrel socket during store-boundaries Task 3a |
 | F3 | The sibling export endpoint takes an `ExportRequest` DTO and is correct | `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs:337` |
 | F4 | `ScriniaCommands.Bundle.cs` still tests `result.StartsWith("Error:", …)` at `:57` and `:99`, each preceded by a comment at `:51`/`:95` stating the guard is dead | `src/Scrinia/Commands/ScriniaCommands.Bundle.cs` |
 | F5 | `ToYaml` always opens with `status: `, so `"Error:"` never matches — the guards are dead by construction | established on the `mcp-response-shape` branch, which fixed the same defect for `show`/`forget` |
-| F6 | `Status == "error"` appears at four production sites | `MemoryTools.Core.cs:1377`, `ScriniaCommands.cs:66`, `ScriniaCommands.Memory.cs:421`, `:467` |
+| F6 | `Status == "error"` appears at six production sites: four `== "error"` and two `!= "error"` | `MemoryTools.Core.cs:1377`, `ScriniaCommands.cs:66`, `ScriniaCommands.Memory.cs:421`, `:467` (positive); `MemoryTools.cs:154`, `:259` (negative) |
 | F7 | `attributeFilter` is bounded at 64 keys; per-key value-array length is unbounded | `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs:300-301` |
 | F8 | `InstallDefault(params IMemoryEventSink[])` has no argument validation | `src/Scrinia.Core/IMemoryEventSink.cs:39-40` |
 | F9 | `BuildSearchGet` checks `scopes is not null` while its two siblings check `!IsNullOrWhiteSpace` | `src/Scrinia/HttpMemoryStore.cs:411` vs `:413`, `:415` |
@@ -40,7 +46,7 @@ grep is broken.
 
 ## Design
 
-### 1. `POST /import` accepts the requests it was built for
+### 1. `POST /api/v1/stores/{store}/import` accepts the requests it was built for
 
 Per F1–F3: every genuine multipart bundle upload gets 415 before the handler runs. This
 endpoint has likely never worked for a real caller. It was found by a *guard test* on the
@@ -72,7 +78,7 @@ fixes it, because the oddity now looks deliberate.
 
 ### 3. A shared predicate for error status
 
-Add `public bool IsError => Status == "error";` to `McpResponse` and route F6's four sites
+Add `public bool IsError => Status == "error";` to `McpResponse` and route F6's six sites
 through it.
 
 The `mcp-response-shape` residual is explicit that this was deliberately held out of that
@@ -88,9 +94,11 @@ and the same style as the existing key-count check.
 ### 5. `InstallDefault` validates its arguments
 
 Per F8: an empty array silently installs a no-op composite sink — every memory event is
-dropped, with no error. A null element becomes a `NullReferenceException` that
-`CompositeEventSink`'s own per-sink try/catch swallows, so the sink does nothing rather than
-failing loudly.
+dropped, with no error. A null element becomes a `NullReferenceException` on the first sink
+call; `CompositeEventSink`'s own per-sink catch handler then dereferences the same null via
+`sink.GetType()` to name it in the log line, so a *second* NRE is thrown from inside the catch,
+escapes the loop, and aborts every sink after it. That is a loud, misattributed crash, not a
+silent no-op.
 
 This is not a regression. The six inline call sites it replaced had identical exposure. But
 centralising them into one method turns six independent chances to notice into one trap for
@@ -119,8 +127,9 @@ discards every event is never what the caller meant.
 
 ## Testing
 
-- `POST /import` with a real multipart payload over a transport that performs content
-  negotiation → the handler runs. Assert on the import outcome, not merely on "not 415".
+- `POST /api/v1/stores/{store}/import` with a real multipart payload over a transport that
+  performs content negotiation → the handler runs. Assert on the import outcome, not merely on
+  "not 415".
 - `scri bundle export` and `scri bundle import` against a genuine failure → non-zero exit.
   Assert the exit code; asserting the message would re-create the substring coupling being
   removed.
@@ -128,7 +137,7 @@ discards every event is never what the caller meant.
 - `attributeFilter` with one key carrying an oversized value array → 400.
 
 The `IsError` change (§3) is a refactor with no behaviour change; the existing suite is its
-test, provided the four sites are genuinely all of them (F6).
+test, provided the six sites are genuinely all of them (F6).
 
 ## Risks
 
