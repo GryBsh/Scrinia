@@ -32,9 +32,11 @@ public sealed class RemoteStoreToolTests
         """;
 
     /// <summary>
-    /// Serves the one read endpoint these tools reach remotely (<c>GET .../memories</c>, used by
-    /// <see cref="HttpMemoryStore.ListScoped(string?)"/>). Everything else 404s, which is
-    /// deliberate: if a tool starts making an unexpected call, the test should notice.
+    /// Serves the two endpoints these tools reach remotely: <c>GET .../memories</c> (used by
+    /// <see cref="HttpMemoryStore.ListScoped(string?)"/>) and <c>POST .../memories</c> (used by
+    /// <see cref="HttpMemoryStore.WriteArtifactAsync"/>, which throws
+    /// <see cref="HttpRequestException"/> on any non-success status). Everything else 404s, which
+    /// is deliberate: if a tool starts making an unexpected call, the test should notice.
     /// </summary>
     private sealed class StubBackendHandler(string listJson) : HttpMessageHandler
     {
@@ -51,14 +53,28 @@ public sealed class RemoteStoreToolTests
 
         private HttpResponseMessage Respond(HttpRequestMessage request)
         {
-            if (request.Method == HttpMethod.Get
-                && request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal))
+            bool isMemoriesCollection =
+                request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal);
+
+            if (request.Method == HttpMethod.Get && isMemoriesCollection)
             {
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(listJson, Encoding.UTF8, "application/json"),
                 };
             }
+
+            // A persistent remote remember() writes through here. The body is ignored by the
+            // caller — only the status matters — but it must be a success status or
+            // WriteArtifactAsync throws before the code under test is ever reached.
+            if (request.Method == HttpMethod.Post && isMemoriesCollection)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+                };
+            }
+
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
     }
@@ -178,20 +194,18 @@ public sealed class RemoteStoreToolTests
     }
 
     [Fact]
-    public async Task List_DriftMode_RemoteStore_StillThrows()
+    public async Task List_DriftMode_RemoteStore_ReturnsNotSupported()
     {
-        // Deliberate boundary, not a regression: drift detection resolves file paths against the
-        // workspace root unconditionally, so it was never available remotely. Pinned so that a
-        // future change to the drift branch is a conscious one. Task 3 gives this a clean error.
+        // Drift detection resolves file paths against the workspace root unconditionally, so it
+        // genuinely cannot run remotely. That is a reason to answer, not to throw: this replaces
+        // the earlier pin that asserted a NotSupportedException escaped to the caller.
         using var scope = new RemoteStoreScope(OneEntryListJson);
 
-        var act = async () => await Tools().MemoryList(mode: "drift");
+        string yaml = await Tools().MemoryList(mode: "drift");
 
-        // Assert on the message, not just the type: HttpMessageHandler itself throws
-        // NotSupportedException for an unimplemented sync path, so the bare type would let a
-        // broken fixture masquerade as a passing test.
-        (await act.Should().ThrowAsync<NotSupportedException>())
-            .WithMessage("*local filesystem access*");
+        yaml.Should().Contain(ErrorCodes.NotSupported);
+        yaml.Should().Contain("actionNeeded",
+            because: "the refusal must name the plain listing as the way forward");
     }
 
     // ── I3: validation errors must stay structured errors ────────────────────
@@ -216,5 +230,111 @@ public sealed class RemoteStoreToolTests
 
         yaml.Should().Contain("Invalid skill name",
             because: "name validation runs before the store is touched, remote or not");
+    }
+
+    // ── Task 3: local-only tools answer NOT_SUPPORTED instead of throwing ────
+    //
+    // Each of these entry points needs the workspace filesystem for its whole body, so there is
+    // no degraded result to return. What there is, is a caller who deserves a structured refusal
+    // and a recovery action rather than an exception surfacing as an MCP transport failure.
+
+    [Fact]
+    public async Task Export_RemoteStore_ReturnsNotSupported()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var response = await Tools().Export(topics: ["api"]);
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.NotSupported);
+        response.ActionNeeded.Should().NotBeNullOrEmpty(
+            because: "a refusal without a next step leaves the caller stuck");
+    }
+
+    [Fact]
+    public async Task Import_RemoteStore_ReturnsNotSupported()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var response = await Tools().Import(bundlePath: "exports/anything.scrinia-bundle");
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.NotSupported);
+    }
+
+    [Fact]
+    public async Task Reconcile_RemoteStore_ReturnsNotSupported()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var response = await Tools().Reconcile();
+
+        response.Status.Should().Be("error");
+        response.ErrorCode.Should().Be(ErrorCodes.NotSupported);
+    }
+
+    [Fact]
+    public async Task SkillCreate_RemoteStore_ReturnsNotSupported()
+    {
+        // remember() on a /skill/ path routes to SkillCreate, which writes .scrinia/skills/*.md.
+        using var scope = new RemoteStoreScope();
+
+        string yaml = await Tools().MemoryRemember(path: "/skill/api-reviewer", content: ["instructions"]);
+
+        yaml.Should().Contain(ErrorCodes.NotSupported);
+    }
+
+    [Fact]
+    public async Task SkillLoad_RemoteStore_ReturnsNotSupported()
+    {
+        // recall() on a /skill/ path routes to SkillLoad, which enumerates .scrinia/skills/.
+        using var scope = new RemoteStoreScope();
+
+        string yaml = await Tools().MemoryRecall(path: "/skill/");
+
+        yaml.Should().Contain(ErrorCodes.NotSupported);
+    }
+
+    [Fact]
+    public async Task Remember_AgentPath_RemoteStore_ReturnsNotSupported()
+    {
+        // The /agent/ branch writes a .md file plus a JSON sidecar into the workspace.
+        using var scope = new RemoteStoreScope();
+
+        string yaml = await Tools().MemoryRemember(path: "/agent/profile", content: ["agent config"]);
+
+        yaml.Should().Contain(ErrorCodes.NotSupported);
+    }
+
+    // ── Task 3: persistent remember() no longer needs a workspace root ───────
+
+    [Fact]
+    public async Task Remember_PersistentPath_NoFileRefs_RemoteStore_Succeeds()
+    {
+        // A remember() with no `file` attribute has nothing to hash, so it needs no workspace
+        // root at all. Before the fix, the root was read unconditionally and every non-ephemeral
+        // remote remember() threw — the single largest hole in remote mode.
+        using var scope = new RemoteStoreScope();
+
+        string yaml = await Tools().MemoryRemember(path: "/api/note", content: ["a note with no file references"]);
+
+        yaml.Should().Contain("status: success");
+        yaml.Should().NotContain(ErrorCodes.NotSupported);
+    }
+
+    [Fact]
+    public async Task Remember_PersistentPath_WithFileRefs_RemoteStore_StoresWithoutHashes()
+    {
+        // With `file` refs there IS something to hash, and remotely there is no disk to hash it
+        // from. Degrade rather than refuse: the memory is stored, the drift hashes are simply
+        // absent. Nothing observable is lost — FileHashes never crosses the wire anyway.
+        using var scope = new RemoteStoreScope();
+
+        string yaml = await Tools().MemoryRemember(
+            path: "/api/hashed",
+            content: ["a note that references a file"],
+            attributes: new Dictionary<string, string[]> { ["file"] = ["src/Scrinia/HttpMemoryStore.cs"] });
+
+        yaml.Should().Contain("status: success");
     }
 }

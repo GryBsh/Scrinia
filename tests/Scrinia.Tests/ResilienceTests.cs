@@ -488,9 +488,13 @@ public sealed class CircuitBreakerRegistryTests : IDisposable
         CircuitBreakerRegistry.Register("provider-b", cb2);
 
         var all = CircuitBreakerRegistry.GetAll();
-        all.Should().HaveCount(2);
-        all["provider-a"].Should().BeSameAs(cb1);
-        all["provider-b"].Should().BeSameAs(cb2);
+        // Containment, not an exact count. The registry is a process-wide static and xUnit runs
+        // test classes in parallel, so any concurrently running test that constructs an
+        // HttpMemoryStore registers "http-memory-store:{store}" and inflates the total. The
+        // Clear() in this class's ctor cannot fence that off — it only orders against itself.
+        // What GetAll actually promises is that a registered breaker comes back; assert that.
+        all.Should().ContainKey("provider-a").WhoseValue.Should().BeSameAs(cb1);
+        all.Should().ContainKey("provider-b").WhoseValue.Should().BeSameAs(cb2);
     }
 
     [Fact]

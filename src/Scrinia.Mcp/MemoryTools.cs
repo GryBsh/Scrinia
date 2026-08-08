@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
@@ -46,6 +47,24 @@ public sealed partial class ScriniaMcpTools
         store as ILocalMemoryStore
         ?? throw new NotSupportedException(
             "This operation needs local filesystem access, and the active store is remote.");
+
+    /// <summary>
+    /// Non-throwing counterpart to <see cref="CurrentLayout"/>, for tool entry points that should
+    /// answer with an error response rather than propagate an exception.
+    /// <para>Use this where a tool is local-only <i>end to end</i> — bundle export/import, skill
+    /// and agent files, conflict scanning, drift detection — so there is no degraded result to
+    /// return, only a refusal to phrase well. Where only part of a method needs local files, use
+    /// <see cref="AsLayout"/> or an inline <c>is ILocalMemoryStore</c> test instead, so the rest
+    /// of the method still runs.</para>
+    /// <para>Place the call <b>after</b> a method's validation returns. A bad argument is a bad
+    /// argument whether the store is local or remote, and must come back as its own structured
+    /// error either way.</para>
+    /// </summary>
+    private static bool TryGetLayout([NotNullWhen(true)] out ILocalMemoryStore? layout)
+    {
+        layout = MemoryStoreContext.Current as ILocalMemoryStore;
+        return layout is not null;
+    }
 
     /// <summary>
     /// Resolves inline NMP/2 artifacts without requiring a configured store.

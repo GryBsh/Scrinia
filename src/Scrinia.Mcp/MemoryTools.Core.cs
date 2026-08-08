@@ -266,9 +266,15 @@ public sealed partial class ScriniaMcpTools
         {
             string agentSubject = name["/agent/".Length..].Trim();
 
-            // The /agent/ branch is genuinely local-only — it writes a .md file into the
-            // workspace — so it narrows here, where it is actually reached.
-            var agentLayout = AsLayout(store);
+            // The /agent/ branch is genuinely local-only — it writes a .md file plus a JSON
+            // sidecar into the workspace — so it is guarded here, where it is actually reached.
+            // Guarding at the method entry instead would refuse every remote remember().
+            if (!TryGetLayout(out var agentLayout))
+                return ResponseBuilder.Error(
+                    "An /agent/ config is written as a file in the local workspace, and the active store is remote.",
+                    ErrorCodes.NotSupported,
+                    "remember() to a regular memory path, which a remote store persists server-side.");
+
             string agentDir = PathRouter.ToFileEntityDir("agent", agentLayout.WorkspaceRoot);
             if (!PathRouter.TryToFileEntityPath("agent", agentSubject, agentLayout.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
@@ -357,24 +363,32 @@ public sealed partial class ScriniaMcpTools
         // Compute code-reference hashes from the `file` attribute values (drift detection). File
         // dependencies flow in exclusively via attributes.file now — the legacy codeRefs parameter
         // was retired.
-        // Unconditional, so this threw remotely before the split too — behaviour unchanged.
-        // Task 3 owns turning it into something better than an exception.
-        string workspaceRoot = AsLayout(store).WorkspaceRoot;
-
         var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
                 ? fileRefs : [])
-            .Distinct(StringComparer.OrdinalIgnoreCase);
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Drift detection hashes files on disk, so it needs a local workspace. A remote store has
+        // none; the memory is stored without file hashes rather than the whole call failing. The
+        // root is resolved lazily so a remember() with no file refs never asks for one at all.
+        // .ToList() above is required: allRefPaths is read twice now and Distinct is lazy.
+        string? workspaceRoot = allRefPaths.Count > 0
+            ? (store as ILocalMemoryStore)?.WorkspaceRoot
+            : null;
 
         Dictionary<string, string>? codeRefDict = null;
-        foreach (var refPath in allRefPaths)
+        if (workspaceRoot is not null)
         {
-            var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
-            if (fullPath is null || !File.Exists(fullPath)) continue;
-            var hash = ComputeFileHash(fullPath);
-            if (hash is not null)
+            foreach (var refPath in allRefPaths)
             {
-                codeRefDict ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                codeRefDict[refPath.Trim()] = hash;
+                var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
+                if (fullPath is null || !File.Exists(fullPath)) continue;
+                var hash = ComputeFileHash(fullPath);
+                if (hash is not null)
+                {
+                    codeRefDict ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    codeRefDict[refPath.Trim()] = hash;
+                }
             }
         }
 
@@ -598,8 +612,18 @@ public sealed partial class ScriniaMcpTools
         // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
 
+        // Only this branch is refused: drift detection re-hashes files on disk, so it needs the
+        // workspace. The guard sits here rather than at the method entry so a remote list() in
+        // any other mode still returns its listing.
         if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
-            return BuildDriftList(AsLayout(store));
+        {
+            if (!TryGetLayout(out var driftStore))
+                return Task.FromResult(ResponseBuilder.Error(
+                    "Drift detection re-hashes referenced files on disk, and the active store is remote.",
+                    ErrorCodes.NotSupported,
+                    "list() without mode='drift' for a plain listing."));
+            return BuildDriftList(driftStore);
+        }
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)

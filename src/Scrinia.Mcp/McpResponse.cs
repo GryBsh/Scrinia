@@ -26,6 +26,10 @@ public static class ErrorCodes
 
     /// <summary>Fallback for unexpected internal failures and uncategorised errors.</summary>
     public const string Internal = "INTERNAL";
+
+    /// <summary>The operation needs a capability the active store does not have — in practice,
+    /// local filesystem access against a remote store.</summary>
+    public const string NotSupported = "NOT_SUPPORTED";
 }
 
 /// <summary>
