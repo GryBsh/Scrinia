@@ -152,8 +152,8 @@ public partial class ScriniaCommands
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         // Determine output path
-        string exportsDir = Path.Combine(WorkspaceSetup.Store.WorkspaceRoot, ".scrinia", "exports");
-        FileMemoryStore.EnsureGitIgnore(WorkspaceSetup.Store.WorkspaceRoot);
+        string exportsDir = Path.Combine(WorkspaceSetup.LocalStore.WorkspaceRoot, ".scrinia", "exports");
+        FileMemoryStore.EnsureGitIgnore(WorkspaceSetup.LocalStore.WorkspaceRoot);
         Directory.CreateDirectory(exportsDir);
 
         if (!TryResolveBundlePath(exportsDir, output, out string bundlePath, out string? pathError, sanitizedTopic))
@@ -186,7 +186,7 @@ public partial class ScriniaCommands
             string artifact = Nmp2ChunkedEncoder.Encode(content);
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
             long originalBytes = System.Text.Encoding.UTF8.GetByteCount(content);
-            string preview = WorkspaceSetup.Store.GenerateContentPreview(content);
+            string preview = ContentPreview.Generate(content);
 
             string desc = !string.IsNullOrWhiteSpace(description)
                 ? description

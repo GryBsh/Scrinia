@@ -8,20 +8,9 @@ using Scrinia.Mcp;
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Comprehensive unit tests for the NMP/2 MCP tools:
-///   Show(artifactOrName, chunk?)             → decoded string or error message (chunk param for individual chunk retrieval)
-///   Store(content, name, description, tags)  → confirmation string
-///   List(scopes?, mode?)                     → index as formatted text (mode='drift' for code reference drift)
-///   Search(query, scopes?, limit)            → scored results table
-///   Copy(name, destination, overwrite)       → confirmation string
-///   Forget(name)                             → confirmation string
-///   Export(topics, filename?)                → confirmation string
-///   Import(bundlePath, topics?, overwrite)   → confirmation string
-///   Append(content, name)                    → confirmation string
-///
-/// All tests are offline — no LLM or external service required.
-/// Store/List/Forget tests use TestHelpers.StoreScope to isolate
-/// from the real user store.
+/// Comprehensive unit tests for the NMP/2 MCP tools. All tests are offline — no LLM or
+/// external service required. Store/List/Forget tests use TestHelpers.StoreScope to
+/// isolate from the real user store.
 /// </summary>
 public sealed class ScriniaMcpToolsTests
 {
@@ -284,7 +273,7 @@ public sealed class ScriniaMcpToolsTests
     public async Task Store_AutoDescription_UsesFirst500Chars()
     {
         // P6.2 reader cutover: with no explicit description, ContentPreview is auto-generated
-        // via GenerateContentPreview (maxLength 500) — the legacy Description auto-truncation
+        // via ContentPreview.Generate (maxLength 500) — the legacy Description auto-truncation
         // (first 200 chars) no longer drives what is displayed/searched.
         using var scope = new TestHelpers.StoreScope();
         string content = new string('x', 600);
@@ -559,7 +548,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "forget-me");
-        string filePath = MemoryStoreContext.Current!.ArtifactPath("forget-me");
+        string filePath = TestHelpers.LocalStore.ArtifactPath("forget-me");
         File.Exists(filePath).Should().BeTrue(because: "file must exist before Forget");
 
         string result = (await Tools().Forget("forget-me")).ToYaml();
@@ -666,7 +655,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "already-deleted");
-        string filePath = MemoryStoreContext.Current!.ArtifactPath("already-deleted");
+        string filePath = TestHelpers.LocalStore.ArtifactPath("already-deleted");
 
         // Manually delete the file first
         File.Delete(filePath);

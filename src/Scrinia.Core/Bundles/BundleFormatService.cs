@@ -44,7 +44,7 @@ public static class BundleFormatService
     /// </summary>
     /// <returns>Tuple of (exported topic names, total entry count).</returns>
     public static (List<string> Topics, int EntryCount) ExportTopicsToZip(
-        ZipArchive zip, IMemoryStore store, string[] topics)
+        ZipArchive zip, ILocalMemoryStore store, string[] topics)
     {
         int totalEntries = 0;
         var exportedTopics = new List<string>();
@@ -108,7 +108,7 @@ public static class BundleFormatService
     /// </returns>
     /// <exception cref="InvalidOperationException">If bundle is malformed.</exception>
     public static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportTopicsFromZip(
-        ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite)
+        ZipArchive zip, ILocalMemoryStore store, string[]? filterTopics, bool overwrite)
     {
         // Read manifest
         var manifestEntry = zip.GetEntry("manifest.json")
@@ -285,7 +285,7 @@ public static class BundleFormatService
     /// file-entity kind. Every kind resolves the same way now — the agent special-case is
     /// gone because agent no longer lives inside the memory store.
     /// </summary>
-    private static string? CategoryDir(IMemoryStore store, string category) =>
+    private static string? CategoryDir(ILocalMemoryStore store, string category) =>
         CategoryToKind.TryGetValue(category, out string? kind)
             ? PathRouter.ToFileEntityDir(kind, store.WorkspaceRoot)
             : null;
@@ -296,7 +296,7 @@ public static class BundleFormatService
     /// Skips the <c>versions/</c> subdirectory within each category.
     /// </summary>
     private static Dictionary<string, List<string>> ExportFileEntities(
-        ZipArchive zip, IMemoryStore store)
+        ZipArchive zip, ILocalMemoryStore store)
     {
         var fileEntities = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
@@ -350,7 +350,7 @@ public static class BundleFormatService
     /// keys) — reported so a bundle never silently loses content on import.
     /// </returns>
     private static List<string> ImportFileEntities(
-        ZipArchive zip, JsonElement manifestRoot, IMemoryStore store)
+        ZipArchive zip, JsonElement manifestRoot, ILocalMemoryStore store)
     {
         var skippedCategories = new List<string>();
 

@@ -23,7 +23,7 @@ public class AgentFileEntityTests
     public async Task AgentWrite_LandsAtTopLevelAgentDir_NotInTheStore()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = TestHelpers.LocalStore;
 
         await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
 
@@ -77,7 +77,7 @@ public class AgentFileEntityTests
     public async Task BundleImportOfAnAgentTopic_DoesNotDeleteAgentConfigMetadata()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
 
         await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
         string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);

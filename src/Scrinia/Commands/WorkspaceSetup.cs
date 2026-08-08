@@ -37,6 +37,15 @@ internal static class WorkspaceSetup
         MemoryStoreContext.Current ?? throw new InvalidOperationException(
             "WorkspaceSetup.Configure must be called before reading Store.");
 
+    /// <summary>The configured store, narrowed to the local-filesystem contract. CLI commands
+    /// that read or write workspace files use this. Throws when the process is in remote mode
+    /// (<c>scri serve --remote</c>), which is the only configuration that installs a non-local
+    /// store — see ScriniaCommands.Serve.</summary>
+    internal static ILocalMemoryStore LocalStore =>
+        MemoryStoreContext.Current as ILocalMemoryStore
+        ?? throw new InvalidOperationException(
+            "This command needs a local workspace; the configured store is remote.");
+
     internal static void Configure(string? workspaceRoot)
     {
         string root = WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory());
@@ -228,7 +237,7 @@ internal static class WorkspaceSetup
             // Maintenance sink is independent of the embeddings provider — it handles things
             // like updating last-accessed timestamps. Wire it standalone so plugin-failure
             // does not leave maintenance hooks unsubscribed.
-            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+            MemoryEventSinkContext.InstallDefault(new MaintenanceEventSink());
             Console.Error.WriteLine(
                 "[scrinia:info] Embeddings plugin exe detected — skipping built-in Model2Vec.");
             await TryLoadVulkanPluginAsync(ct);
@@ -388,11 +397,10 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.Default = new CompositeEventSink([
+                MemoryEventSinkContext.InstallDefault(
                     eventHandler,
                     new EntityTypingEventHandler(provider),
-                    new MaintenanceEventSink(),
-                ]);
+                    new MaintenanceEventSink());
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] HTTP embeddings ready " +
@@ -406,7 +414,7 @@ internal static class WorkspaceSetup
                     $"[scrinia:warn] HTTP embeddings provider '{options.Provider}' not available — " +
                     $"check Scrinia:Embeddings:* config. Search degrades to BM25-only.");
                 SearchContributorContext.Default = new PathSegmentScoreContributor();
-                MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+                MemoryEventSinkContext.InstallDefault(new MaintenanceEventSink());
             }
         }
         catch (Exception ex)
@@ -415,7 +423,7 @@ internal static class WorkspaceSetup
                 $"[scrinia:warn] Failed to initialize HTTP embeddings ('{options.Provider}'): " +
                 $"{ex.GetType().Name}: {ex.Message}");
             SearchContributorContext.Default = new PathSegmentScoreContributor();
-            MemoryEventSinkContext.Default = new CompositeEventSink([new MaintenanceEventSink()]);
+            MemoryEventSinkContext.InstallDefault(new MaintenanceEventSink());
         }
     }
 
@@ -435,11 +443,10 @@ internal static class WorkspaceSetup
                 var eventHandler = new CoreEmbeddingEventHandler(provider, vectorStore, logger, options);
 
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(reranker, new PathSegmentScoreContributor());
-                MemoryEventSinkContext.Default = new CompositeEventSink([
+                MemoryEventSinkContext.InstallDefault(
                     eventHandler,
                     new EntityTypingEventHandler(provider),
-                    new MaintenanceEventSink(),
-                ]);
+                    new MaintenanceEventSink());
 
                 Console.Error.WriteLine(
                     $"[scrinia:info] Built-in embeddings ready " +
@@ -516,7 +523,7 @@ internal static class WorkspaceSetup
             if (host.HasSearchCapability)
                 SearchContributorContext.Default = new CompositeSearchScoreContributor(host, new PathSegmentScoreContributor());
             if (host.HasEventSinkCapability)
-                MemoryEventSinkContext.Default = new CompositeEventSink([host, new MaintenanceEventSink()]);
+                MemoryEventSinkContext.InstallDefault(host, new MaintenanceEventSink());
 
             _pluginHost = host;
 

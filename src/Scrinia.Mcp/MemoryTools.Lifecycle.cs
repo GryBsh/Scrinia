@@ -70,7 +70,14 @@ public sealed partial class ScriniaMcpTools
         [Description("Content for 'merged' resolution.")] string? content = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        // Both branches — scan and resolve — walk .scrinia/ on disk for conflict markers. A
+        // remote store has no such directory, so there is no partial answer to give.
+        if (!TryGetLayout(out var store))
+            return Task.FromResult(ResponseBuilder.Error(
+                "Reconcile reads and rewrites conflicted files under .scrinia/ on disk, and the active store is remote.",
+                ErrorCodes.NotSupported,
+                "Resolve merge conflicts in the workspace checkout, then retry there."));
+
         string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
 
         return conflictId is not null
@@ -607,6 +614,12 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal async Task<RestoreContext> BuildRestoreContextAsync(CancellationToken cancellationToken)
     {
+        // The whole store, not a narrowed one: the three local-only sections below are each skipped
+        // when the store is remote, leaving a valid, degraded context. Narrowing here instead
+        // would fail the whole call — including guide(), the first tool an agent calls in a
+        // session. Each section tests for a local store rather than relying on its best-effort
+        // catch to swallow a throw: same result, without making the normal remote path an
+        // exception. The catches stay — they guard genuine I/O failures, which is their job.
         var store = CurrentStore;
         var warnings = new List<string>();
         var info = new List<string>();
@@ -614,78 +627,93 @@ public sealed partial class ScriniaMcpTools
         var followUpNames = new List<string>();
         string? instruction = null;
 
-        // Check for unresolved merge conflicts in .scrinia/
-        try
+        // Check for unresolved merge conflicts in .scrinia/ — local stores only; a remote store
+        // has no working copy to conflict.
+        if (store is ILocalMemoryStore conflictLayout)
         {
-            string resumeScriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
-            if (Directory.Exists(resumeScriniaDir))
+            try
             {
-                bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
-                    .Any(f =>
-                    {
-                        try
-                        {
-                            using var reader = new StreamReader(f);
-                            var buf = new char[10240];
-                            int read = reader.Read(buf, 0, buf.Length);
-                            return new string(buf, 0, read).Contains("<<<<<<<");
-                        }
-                        catch { return false; }
-                    });
-                if (hasConflicts)
-                    warnings.Add(".scrinia/ has unresolved merge conflicts. Run reconcile before continuing.");
-            }
-        }
-        catch { /* best-effort check */ }
-
-        // Available skills (built-in + disk overrides)
-        try
-        {
-            string skillsDir = PathRouter.ToFileEntityDir("skill", store.WorkspaceRoot);
-            var diskSkills = Directory.Exists(skillsDir)
-                ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
-                : [];
-            var builtInNames = BuiltInSkills.Keys.ToList();
-            var allSkills = new HashSet<string>(builtInNames, StringComparer.OrdinalIgnoreCase);
-            allSkills.UnionWith(diskSkills);
-            if (allSkills.Count > 0)
-            {
-                contentSections.Add(
-                    $"Skills available ({allSkills.Count}): " +
-                    string.Join(", ", allSkills.OrderBy(s => s, StringComparer.OrdinalIgnoreCase)));
-            }
-        }
-        catch { /* skills enumeration is best-effort */ }
-
-        // Collect agent/* names for followUp — .md files first, NMP/2 fallback
-        try
-        {
-            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
-            bool usedMdFiles = false;
-
-            if (Directory.Exists(agentDir))
-            {
-                var mdFiles = Directory.GetFiles(agentDir, "*.md");
-                if (mdFiles.Length > 0)
+                string resumeScriniaDir = Path.Combine(conflictLayout.WorkspaceRoot, ".scrinia");
+                if (Directory.Exists(resumeScriniaDir))
                 {
-                    usedMdFiles = true;
-                    foreach (string mdFile in mdFiles)
-                    {
-                        string agentName = Path.GetFileNameWithoutExtension(mdFile);
-                        followUpNames.Add($"/agent/{agentName}");
-                    }
+                    bool hasConflicts = Directory.EnumerateFiles(resumeScriniaDir, "*", SearchOption.AllDirectories)
+                        .Any(f =>
+                        {
+                            try
+                            {
+                                using var reader = new StreamReader(f);
+                                var buf = new char[10240];
+                                int read = reader.Read(buf, 0, buf.Length);
+                                return new string(buf, 0, read).Contains("<<<<<<<");
+                            }
+                            catch { return false; }
+                        });
+                    if (hasConflicts)
+                        warnings.Add(".scrinia/ has unresolved merge conflicts. Run reconcile before continuing.");
                 }
             }
-
-            if (!usedMdFiles)
-            {
-                var (agentScope, _) = store.ParseQualifiedName("/agent/placeholder");
-                var agentEntries = store.LoadIndex(agentScope);
-                foreach (var entry in agentEntries)
-                    followUpNames.Add($"/agent/{entry.Name}");
-            }
+            catch { /* best-effort check */ }
         }
-        catch { /* agent scope not yet created — skip silently */ }
+
+        // Available skills (built-in + disk overrides). Skipped entirely for a remote store:
+        // the built-in names alone, with no disk overrides to reconcile them against, would
+        // report a skill set the agent cannot actually load remotely.
+        if (store is ILocalMemoryStore skillsLayout)
+        {
+            try
+            {
+                string skillsDir = PathRouter.ToFileEntityDir("skill", skillsLayout.WorkspaceRoot);
+                var diskSkills = Directory.Exists(skillsDir)
+                    ? Directory.GetFiles(skillsDir, "*.md").Select(Path.GetFileNameWithoutExtension).Where(n => n is not null).Cast<string>().ToList()
+                    : [];
+                var builtInNames = BuiltInSkills.Keys.ToList();
+                var allSkills = new HashSet<string>(builtInNames, StringComparer.OrdinalIgnoreCase);
+                allSkills.UnionWith(diskSkills);
+                if (allSkills.Count > 0)
+                {
+                    contentSections.Add(
+                        $"Skills available ({allSkills.Count}): " +
+                        string.Join(", ", allSkills.OrderBy(s => s, StringComparer.OrdinalIgnoreCase)));
+                }
+            }
+            catch { /* skills enumeration is best-effort */ }
+        }
+
+        // Collect agent/* names for followUp — .md files first, NMP/2 fallback.
+        // The whole section is local-only, fallback included: remotely the workspace-root read
+        // threw into the catch below and took the fallback with it. Preserved deliberately —
+        // widening it to run the NMP/2 branch remotely is a behaviour change, not a tidy-up.
+        if (store is ILocalMemoryStore agentLayout)
+        {
+            try
+            {
+                string agentDir = PathRouter.ToFileEntityDir("agent", agentLayout.WorkspaceRoot);
+                bool usedMdFiles = false;
+
+                if (Directory.Exists(agentDir))
+                {
+                    var mdFiles = Directory.GetFiles(agentDir, "*.md");
+                    if (mdFiles.Length > 0)
+                    {
+                        usedMdFiles = true;
+                        foreach (string mdFile in mdFiles)
+                        {
+                            string agentName = Path.GetFileNameWithoutExtension(mdFile);
+                            followUpNames.Add($"/agent/{agentName}");
+                        }
+                    }
+                }
+
+                if (!usedMdFiles)
+                {
+                    var (agentScope, _) = store.ParseQualifiedName("/agent/placeholder");
+                    var agentEntries = store.LoadIndex(agentScope);
+                    foreach (var entry in agentEntries)
+                        followUpNames.Add($"/agent/{entry.Name}");
+                }
+            }
+            catch { /* agent scope not yet created — skip silently */ }
+        }
 
         // Collect patterns/* names for followUp
         try

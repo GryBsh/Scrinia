@@ -18,7 +18,7 @@ public class SkillPathAuthorityTests
     public async Task SkillWrite_LandsInThePathRouterDirectory()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = TestHelpers.LocalStore;
 
         await Tools().MemoryRemember(path: "/skill/api-reviewer", content: ["review the API"]);
 
@@ -33,7 +33,7 @@ public class SkillPathAuthorityTests
     public async Task SkillWrite_StaysOutOfTheMemoryStore()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = TestHelpers.LocalStore;
 
         await Tools().MemoryRemember(path: "/skill/api-reviewer", content: ["review the API"]);
 

@@ -12,7 +12,7 @@ public sealed class ConsolidateSingleStoreTests
     public async Task CompactEntryToSingleChunk_InvalidatesTheStoreIndexCache()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = TestHelpers.LocalStore;
         const string scopeName = "local:sessions";
         const string subject = "day-one";
 

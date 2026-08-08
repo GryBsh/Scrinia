@@ -19,15 +19,15 @@ public static class MemoryEndpoints
             .RequireAuthorization()
             .RequireRateLimiting("api");
 
-        group.MapPost("/memories", StoreMemory);
-        group.MapGet("/memories", ListMemories);
-        group.MapGet("/memories/{name}", ShowMemory);
+        group.MapPost("/memories", RememberMemory);
+        group.MapGet("/memories", ListMemory);
+        group.MapGet("/memories/{name}", RecallMemory);
         group.MapDelete("/memories/{name}", ForgetMemory);
         group.MapPost("/memories/{name}/append", AppendMemory);
         group.MapPost("/memories/{name}/copy", CopyMemory);
         group.MapGet("/memories/{name}/chunks/{i:int}", GetChunk);
-        group.MapGet("/search", SearchMemories);
-        group.MapPost("/search", SearchMemoriesPost);
+        group.MapGet("/search", SearchMemory);
+        group.MapPost("/search", SearchMemoryPost);
         group.MapPost("/export", ExportTopics);
         group.MapPost("/import", ImportBundle);
     }
@@ -40,7 +40,7 @@ public static class MemoryEndpoints
     internal static bool IsWritable(RequestContext ctx, string store) =>
         !string.Equals(ctx.GetStoreAccessLevel(store), "read-only", StringComparison.OrdinalIgnoreCase);
 
-    private static async Task<IResult> StoreMemory(
+    private static async Task<IResult> RememberMemory(
         string store,
         StoreRequest req,
         RequestContext ctx,
@@ -76,7 +76,7 @@ public static class MemoryEndpoints
     private const int DefaultListLimit = 200;
     private const int MaxListLimit = 1000;
 
-    private static Task<IResult> ListMemories(
+    private static Task<IResult> ListMemory(
         string store,
         RequestContext ctx,
         string? scopes = null,
@@ -117,7 +117,7 @@ public static class MemoryEndpoints
         return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));
     }
 
-    private static async Task<IResult> ShowMemory(
+    private static async Task<IResult> RecallMemory(
         string store,
         string name,
         RequestContext ctx,
@@ -247,7 +247,7 @@ public static class MemoryEndpoints
         return Results.Ok(new ChunkResponse(content, i, totalChunks));
     }
 
-    private static Task<IResult> SearchMemories(
+    private static Task<IResult> SearchMemory(
         string store,
         RequestContext ctx,
         PluginPipeline pipeline,
@@ -259,7 +259,7 @@ public static class MemoryEndpoints
         string? pathPrefix = null)
         => RunSearch(ctx, pipeline, q, scopes, limit, excludeTopics, pathPrefix, null, ct);
 
-    private static Task<IResult> SearchMemoriesPost(
+    private static Task<IResult> SearchMemoryPost(
         string store,
         SearchRequest req,
         RequestContext ctx,
@@ -343,7 +343,12 @@ public static class MemoryEndpoints
         if (req.Topics is null || req.Topics.Length == 0)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("topics is required.")));
 
-        var stream = BundleService.ExportToStream(ctx.Store!, req.Topics);
+        if (ctx.Store is not ILocalMemoryStore localStore)
+            return Task.FromResult<IResult>(Results.Json(
+                new ErrorResponse("Bundle export requires a store backed by a local filesystem."),
+                statusCode: StatusCodes.Status501NotImplemented));
+
+        var stream = BundleService.ExportToStream(localStore, req.Topics);
         string filename = $"export-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.scrinia-bundle";
         if (!string.IsNullOrWhiteSpace(req.Filename))
         {
@@ -371,6 +376,11 @@ public static class MemoryEndpoints
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
+        if (ctx.Store is not ILocalMemoryStore localStore)
+            return Results.Json(
+                new ErrorResponse("Bundle import requires a store backed by a local filesystem."),
+                statusCode: StatusCodes.Status501NotImplemented);
+
         // Kestrel's global MaxRequestBodySize (10 MB, set in Program.cs) is below the
         // intended 50 MB bundle-import ceiling (FormOptions.MultipartBodyLengthLimit).
         // Raise the per-request limit before the body is read so imports up to 50 MB
@@ -388,7 +398,7 @@ public static class MemoryEndpoints
 
         try
         {
-            var (topicCount, entryCount, names, skippedCategories) = BundleService.ImportFromStream(ctx.Store!, stream, topics, overwrite);
+            var (topicCount, entryCount, names, skippedCategories) = BundleService.ImportFromStream(localStore, stream, topics, overwrite);
             if (topicCount == 0 && skippedCategories.Count == 0)
                 return Results.Ok(new { message = "No topics were imported." });
             return Results.Ok(new

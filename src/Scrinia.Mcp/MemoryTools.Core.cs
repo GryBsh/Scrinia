@@ -29,7 +29,7 @@ public sealed partial class ScriniaMcpTools
         // ── Agent config: read .md file first, NMP/2 fallback ────────────
         if (artifactOrName.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
-            var agentStore = MemoryStoreContext.Current;
+            var agentStore = MemoryStoreContext.Current as ILocalMemoryStore;
             if (agentStore is not null)
             {
                 string agentSubject = artifactOrName["/agent/".Length..].Trim();
@@ -131,6 +131,9 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
+        // The whole store, not a narrowed one: the ephemeral branch below returns before any layout
+        // member is read, and a remote store implements ephemeral storage for real. Narrowing
+        // here would break remember({ path: '/temp/...' }) in remote mode.
         var store = CurrentStore;
         string joined = string.Concat(content);
 
@@ -198,7 +201,7 @@ public sealed partial class ScriniaMcpTools
         AttributeExtractor.SeedTermFrequencies(entryAttributes, tf);
 
         ChunkEntry[]? chunkEntries = content.Length > 1
-            ? TextAnalysis.ComputeChunkEntries(store, content)
+            ? TextAnalysis.ComputeChunkEntries(content)
             : null;
 
         // ── Ephemeral path (/temp/...) ──────────────────────────
@@ -216,7 +219,7 @@ public sealed partial class ScriniaMcpTools
             // ContentPreview (option A) — it wins over the auto content snippet.
             string ephPreview = !string.IsNullOrWhiteSpace(description)
                 ? description
-                : store.GenerateContentPreview(joined);
+                : ContentPreview.Generate(joined);
 
             // Check if updating existing ephemeral entry
             var existingEph = store.GetEphemeral(key);
@@ -263,12 +266,33 @@ public sealed partial class ScriniaMcpTools
         {
             string agentSubject = name["/agent/".Length..].Trim();
 
-            string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
-            if (!PathRouter.TryToFileEntityPath("agent", agentSubject, store.WorkspaceRoot, out string filePath))
+            // Validate before the guard, so /agent/ and /skill/ answer the same way for the same
+            // bad input. SkillCreate validates its name first; without this hoist, a remote
+            // remember({ path: '/agent/bad name' }) reported NOT_SUPPORTED while the /skill/
+            // sibling reported INVALID_PARAMETER. The path check below stays as defence in depth.
+            if (!FileEntityName.IsValid(agentSubject))
+                return ResponseBuilder.Error(
+                    "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.",
+                    ErrorCodes.InvalidParameter,
+                    "Use a path like '/agent/profile' for the agent config.");
+
+            // The /agent/ branch is genuinely local-only — it writes a .md file plus a JSON
+            // sidecar into the workspace — so it is guarded here, where it is actually reached.
+            // Guarding at the method entry instead would refuse every remote remember().
+            // Narrowed from the local `store`, not re-read from the ambient context: only part
+            // of this method needs local files.
+            if (store is not ILocalMemoryStore agentLayout)
+                return ResponseBuilder.Error(
+                    "An /agent/ config is written as a file in the local workspace, and the active store is remote.",
+                    ErrorCodes.NotSupported,
+                    "remember() to a regular memory path, which a remote store persists server-side.");
+
+            string agentDir = PathRouter.ToFileEntityDir("agent", agentLayout.WorkspaceRoot);
+            if (!PathRouter.TryToFileEntityPath("agent", agentSubject, agentLayout.WorkspaceRoot, out string filePath))
                 return ResponseBuilder.Error(
                     "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.", ErrorCodes.InvalidParameter,
                     "Use a path like '/agent/profile' for the agent config.");
-            FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
+            FileMemoryStore.EnsureGitIgnore(agentLayout.WorkspaceRoot);
             Directory.CreateDirectory(agentDir);
 
             ArchiveFileVersion(filePath, Path.Combine(agentDir, "versions"));
@@ -315,7 +339,7 @@ public sealed partial class ScriniaMcpTools
         // ContentPreview (option A) — it wins over the auto content snippet.
         string contentPreview = !string.IsNullOrWhiteSpace(description)
             ? description
-            : store.GenerateContentPreview(joined);
+            : ContentPreview.Generate(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         // New model: the `review` attribute carries review dates and/or free-text conditions.
@@ -351,22 +375,32 @@ public sealed partial class ScriniaMcpTools
         // Compute code-reference hashes from the `file` attribute values (drift detection). File
         // dependencies flow in exclusively via attributes.file now — the legacy codeRefs parameter
         // was retired.
-        string workspaceRoot = store.WorkspaceRoot;
-
         var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
                 ? fileRefs : [])
-            .Distinct(StringComparer.OrdinalIgnoreCase);
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Drift detection hashes files on disk, so it needs a local workspace. A remote store has
+        // none; the memory is stored without file hashes rather than the whole call failing. The
+        // root is resolved lazily so a remember() with no file refs never asks for one at all.
+        // .ToList() above is required: allRefPaths is read twice now and Distinct is lazy.
+        string? workspaceRoot = allRefPaths.Count > 0
+            ? (store as ILocalMemoryStore)?.WorkspaceRoot
+            : null;
 
         Dictionary<string, string>? codeRefDict = null;
-        foreach (var refPath in allRefPaths)
+        if (workspaceRoot is not null)
         {
-            var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
-            if (fullPath is null || !File.Exists(fullPath)) continue;
-            var hash = ComputeFileHash(fullPath);
-            if (hash is not null)
+            foreach (var refPath in allRefPaths)
             {
-                codeRefDict ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                codeRefDict[refPath.Trim()] = hash;
+                var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
+                if (fullPath is null || !File.Exists(fullPath)) continue;
+                var hash = ComputeFileHash(fullPath);
+                if (hash is not null)
+                {
+                    codeRefDict ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    codeRefDict[refPath.Trim()] = hash;
+                }
             }
         }
 
@@ -585,10 +619,23 @@ public sealed partial class ScriniaMcpTools
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge listings.")] string? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
+        // The whole store, not a narrowed one: only the drift branch is unconditionally local.
+        // Summary mode, the empty-store early return, and full mode over entries without file
+        // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
 
+        // Only this branch is refused: drift detection re-hashes files on disk, so it needs the
+        // workspace. The guard sits here rather than at the method entry so a remote list() in
+        // any other mode still returns its listing.
         if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
-            return BuildDriftList(store);
+        {
+            if (store is not ILocalMemoryStore driftStore)
+                return Task.FromResult(ResponseBuilder.Error(
+                    "Drift detection re-hashes referenced files on disk, and the active store is remote.",
+                    ErrorCodes.NotSupported,
+                    "list() without mode='drift' for a plain listing."));
+            return BuildDriftList(driftStore);
+        }
 
         List<ScopedArtifact> entries = store.ListScoped(scopes, excludeTopics);
         if (entries.Count == 0)
@@ -719,11 +766,16 @@ public sealed partial class ScriniaMcpTools
         if (limit < 1) limit = 50;
         var page = entries.Skip(offset).Take(limit).ToList();
 
-        // Derive workspace root for drift checking (only used if any entry has FileHashes)
-        string? workspaceRoot = null;
-        bool anyCodeRefs = page.Any(p => p.Entry.FileHashes is { Count: > 0 });
-        if (anyCodeRefs)
-            workspaceRoot = store.WorkspaceRoot;
+        // Derive workspace root for the [drift] column (only reached if an entry has FileHashes).
+        // Re-hashing needs files on disk, and a non-local store has none — so the page is returned
+        // without the column rather than the whole listing failing. Same degrade as the remember()
+        // path above (:387), and the same shape a remote store already gets here, since
+        // HttpMemoryStore.ListScoped never populates FileHashes. Reachable for real: the server
+        // installs whatever an IStorageBackend plugin's CreateStore returned as the ambient store,
+        // and nothing obliges that to be an ILocalMemoryStore.
+        string? workspaceRoot = page.Any(p => p.Entry.FileHashes is { Count: > 0 })
+            ? (store as ILocalMemoryStore)?.WorkspaceRoot
+            : null;
 
         // Build qualified names first to compute dynamic column width (never truncate names)
         var rows = new List<(string Name, ArtifactEntry Entry)>(page.Count);
@@ -1008,7 +1060,7 @@ public sealed partial class ScriniaMcpTools
         // Attributes via the entry-level merge in BuildAppendMetadata.
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
-            ContentPreview: store.GenerateContentPreview(content),
+            ContentPreview: ContentPreview.Generate(content),
             Keywords: newKw.Length > 0 ? newKw : null,
             TermFrequencies: newTf.Count > 0 ? newTf : null);
 
@@ -1031,7 +1083,7 @@ public sealed partial class ScriniaMcpTools
             // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
             string contentPreview = !string.IsNullOrWhiteSpace(description)
                 ? description
-                : (existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText));
+                : (existingEph?.ContentPreview ?? ContentPreview.Generate(fullText));
 
             // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
             // removed); ContentPreview (computed above) is the surviving display carrier.
@@ -1078,7 +1130,7 @@ public sealed partial class ScriniaMcpTools
             // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
             string contentPreview = !string.IsNullOrWhiteSpace(description)
                 ? description
-                : (existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText));
+                : (existingEntry?.ContentPreview ?? ContentPreview.Generate(fullText));
 
             // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
             // removed); ContentPreview (computed above) is the surviving display carrier.
@@ -1334,7 +1386,7 @@ public sealed partial class ScriniaMcpTools
         return ResponseBuilder.Success(linkMsg).WithAction("linked");
     }
 
-    private static Task<McpResponse> BuildDriftList(IMemoryStore store)
+    private static Task<McpResponse> BuildDriftList(ILocalMemoryStore store)
     {
         string workspaceRoot = store.WorkspaceRoot;
 

@@ -253,9 +253,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     public List<ArtifactEntry> LoadIndex(string scope = "local") =>
         []; // Not directly supported in remote mode; use ListScoped
 
-    public void SaveIndex(List<ArtifactEntry> entries, string scope = "local") =>
-        throw new NotSupportedException("SaveIndex is not supported in remote mode.");
-
     public void Upsert(ArtifactEntry entry, string scope = "local")
     {
         // In remote mode, store operations go through WriteArtifactAsync/StoreAsync
@@ -490,33 +487,10 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // No-op in remote mode — server archives internally
     }
 
-    // ── Paths (not supported in remote mode) ────────────────────────────────
-
-    public string ArtifactPath(string name, string scope = "local") =>
-        throw new NotSupportedException("ArtifactPath is not supported in remote mode.");
+    // ── Addressing ──────────────────────────────────────────────────────────
 
     public string ArtifactUri(string name, string scope = "local") =>
         $"remote://{_store}/{scope}/{SanitizeName(name)}";
-
-    public string FindArtifactPath(string subject, string normalizedScope) =>
-        throw new NotSupportedException("FindArtifactPath is not supported in remote mode.");
-
-    public string GetStoreDirForScope(string scope) =>
-        throw new NotSupportedException("GetStoreDirForScope is not supported in remote mode.");
-
-    public string WorkspaceRoot =>
-        throw new NotSupportedException(
-            "WorkspaceRoot is not supported in remote mode: it is the authority for the " +
-            "workspace's filesystem layout, and a remote store has no local filesystem.");
-
-    // ── Content utility ─────────────────────────────────────────────────────
-
-    public string GenerateContentPreview(string content, int maxLength = 500)
-    {
-        if (string.IsNullOrEmpty(content)) return "";
-        string preview = content[..Math.Min(maxLength, content.Length)];
-        return preview.Replace('\n', ' ').Replace('\r', ' ').Trim();
-    }
 
     // ── Artifact file I/O via REST API ──────────────────────────────────────
 
@@ -605,15 +579,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
         return topics;
     }
-
-    // ── Export/Import helpers ────────────────────────────────────────────────
-
-    public List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) =>
-        throw new NotSupportedException("ListTopicArtifacts is not supported in remote mode. Use export endpoint.");
-
-    public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite) =>
-        throw new NotSupportedException("ImportTopicEntries is not supported in remote mode. Use import endpoint.");
 
     public IReadOnlyList<string> ResolveReadScopes(string? scopes = null)
     {

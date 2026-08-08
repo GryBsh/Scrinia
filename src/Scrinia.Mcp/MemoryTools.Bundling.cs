@@ -21,12 +21,19 @@ public sealed partial class ScriniaMcpTools
         [Description("Output filename (saved to .scrinia/exports/). Defaults to auto-generated name.")] string? filename = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
         if (topics is null || topics.Length == 0)
             return Task.FromResult(ResponseBuilder.Error(
                 "At least one topic name is required.",
                 ErrorCodes.InvalidParameter,
                 "bundle('export', { topics: ['api', 'arch'] })"));
+
+        // Guarded after validation: an invalid argument is an invalid argument whether the
+        // store is local or remote, and must come back as its own structured error either way.
+        if (!TryGetLayout(out var store))
+            return Task.FromResult(ResponseBuilder.Error(
+                "Bundle export writes a file into the local workspace, and the active store is remote.",
+                ErrorCodes.NotSupported,
+                "Call the server's export endpoint instead, or run this against a local workspace."));
 
         string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
         FileMemoryStore.EnsureGitIgnore(store.WorkspaceRoot);
@@ -76,7 +83,13 @@ public sealed partial class ScriniaMcpTools
         [Description("When true, replaces existing entries if they conflict.")] bool overwrite = false,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        // Every path below resolves against the workspace root, so there is nothing this can do
+        // remotely — including the sandbox check, which is what makes the root load-bearing.
+        if (!TryGetLayout(out var store))
+            return Task.FromResult(ResponseBuilder.Error(
+                "Bundle import reads a file from the local workspace, and the active store is remote.",
+                ErrorCodes.NotSupported,
+                "Call the server's import endpoint instead, or run this against a local workspace."));
 
         // Resolve path relative to workspace root if not absolute
         string workspaceRoot = store.WorkspaceRoot;

@@ -10,6 +10,80 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — `IMemoryStore` split: local-only members moved to a new `ILocalMemoryStore`
+
+- `IMemoryStore` lost eight members. Six moved to a new `ILocalMemoryStore : IMemoryStore` in
+  `Scrinia.Core` — `ArtifactPath`, `FindArtifactPath`, `GetStoreDirForScope`, `WorkspaceRoot`,
+  `ListTopicArtifacts`, `ImportTopicEntries`. These are the members a store without a filesystem
+  could only ever implement by throwing; `v0.4.0` added `WorkspaceRoot` to the shared interface on
+  exactly that basis ("Remote stores throw `NotSupportedException`"), and this reverses that call.
+  "Needs local files" is now a compile-time fact rather than a runtime surprise, and no member of
+  `IMemoryStore` throws for lack of a filesystem any more.
+- Three more members were removed outright rather than moved: `SaveIndex` (no caller outside the
+  store implementations — now a plain public member of `FileMemoryStore`, on neither interface),
+  `GenerateContentPreview` (both implementations had byte-identical bodies that touched no store
+  state — now the static `Scrinia.Core.ContentPreview.Generate`), and `GetResultScope` (no callers
+  left after the search-contract change).
+- `FileMemoryStore` implements `ILocalMemoryStore`; `HttpMemoryStore` implements only
+  `IMemoryStore`. `Scrinia.Core` is not published to NuGet, so this affects in-process plugin
+  authors rather than package consumers — but a plugin DLL compiled against the old interface will
+  fail to load. An `IStorageBackend` plugin whose store has a workspace on disk should implement
+  `ILocalMemoryStore`; one that does not can implement `IMemoryStore` alone and every caller
+  degrades or refuses cleanly instead of throwing.
+
+### Fixed — remote-store operations that threw or returned incomplete results
+
+- `remember()` against a remote store (`scri serve --remote`) threw `NotSupportedException` for
+  any non-ephemeral memory carrying a `file` attribute — the drift-detection hasher read
+  `IMemoryStore.WorkspaceRoot`, which only a local store can answer, unconditionally. A remote
+  `remember()` now stores the memory without file hashes instead of failing outright; drift
+  detection against those hashes is inherently a local-only capability (see `list(mode:
+  'drift')` below). Ephemeral remembers (`/temp/*`) were unaffected — `HttpMemoryStore` has
+  always implemented ephemeral storage for real.
+- `list()` against a remote store threw in every mode, not only the mode that needed it: a
+  single overly-broad narrowing meant `summary` and `full` modes failed even though neither
+  reads the local filesystem. Both modes now return real listings against a remote store.
+  `list(mode: 'drift')` still declines — drift detection re-hashes files on disk by nature — but
+  now with a clean `NOT_SUPPORTED` error (see below) instead of an unhandled exception.
+- `guide()` and `restore()` against a remote store previously succeeded in a degraded form (the
+  conflict-scan, skills, and agent-config sections silently omitted) only because their file
+  reads happened to sit inside a swallowing `try/catch`. That behavior is preserved — remote
+  `guide()`/`restore()` still degrade the same way — but is now a deliberate, type-checked branch
+  covered by tests, not an incidental side effect of exception handling.
+- Server bundle endpoints (`POST /export`, `POST /import`) returned an unhandled-exception `500`
+  against a non-local store backend, because the request path read a `RequestContext` accessor
+  that threw. Both now return a clean `501 Not Implemented`.
+- `recall('/agent/<name>')` against a remote store threw `NotSupportedException`. The `/agent/`
+  branch prefers a hand-authored `.md` file in the workspace, which a remote store has none of;
+  it now falls through to ordinary NMP/2 resolution instead of refusing, so the call returns a
+  stored `/agent/*` memory if the backend has one and a `NOT_FOUND` error if it does not. This is
+  neither a refusal nor a degraded success — the lookup genuinely runs, it just cannot consult a
+  local file first.
+
+### Added — `NOT_SUPPORTED` MCP error code
+
+- MCP tools whose operation is inherently local-only — `export()`/`import()` (bundle
+  files), `reconcile()` (merge-conflict scan), skill creation/loading from a file path, and
+  `remember()` to an `/agent/*` config — now return a structured error response with
+  `code: NOT_SUPPORTED` when the active store is remote, instead of letting a raw
+  `NotSupportedException` propagate out of the tool call. Anything parsing MCP tool error codes
+  (previously `INVALID_PARAMETER`, `INVALID_ACTION`, `INVALID_PATH`, `NOT_FOUND`, `CONFLICT`,
+  `INTERNAL`) will see this new code for the first time; each response's `actionNeeded[]` names
+  the local-only feature and, where one exists, a remote-compatible alternative.
+
+### Changed — server handler names now match the published MCP tool vocabulary
+
+- `MemoryEndpoints`'s internal handler methods were renamed to line up with the MCP tool
+  names: `StoreMemory` → `RememberMemory`, `ListMemories` → `ListMemory`, `ShowMemory` →
+  `RecallMemory`, `SearchMemories` → `SearchMemory`, `SearchMemoriesPost` →
+  `SearchMemoryPost`. Route paths and the HTTP contract are unchanged. **One exception**:
+  Minimal API derives an endpoint's OpenAPI `operationId` from the handler method name when
+  none is set explicitly, and none of these five endpoints calls `.WithName()`.
+  `AddOpenApi()`/`MapOpenApi()` are wired up in `Program.cs` — exposed when the server runs
+  in Development or with `Scrinia:ExposeOpenApi=true`, and covered by `OpenApiTests`. Any
+  client generated from `/openapi/v1.json` against these five endpoints will see their
+  `operationId` change on this release.
+
 ### Changed — CLI exit codes and not-found output
 
 - `scri show` and `scri forget` now exit `1` when the memory does not exist. Both guarded on
