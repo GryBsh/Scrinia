@@ -124,6 +124,33 @@ public sealed class RemoteStoreToolTests
         public override void Upsert(ArtifactEntry entry, string scope = "local") => Stored.Add(entry);
     }
 
+    /// <summary>
+    /// A non-local store whose listing carries drift hashes.
+    /// <para><see cref="HttpMemoryStore.ListScoped(string?)"/> never populates
+    /// <c>FileHashes</c>, so the CLI's remote path cannot reach the drift column in
+    /// <c>BuildFullList</c>. The server can: <c>Scrinia.Server/Program.cs</c> installs
+    /// <c>MemoryStoreContext.Current = sm.GetStore(storeName)</c>, and <c>StoreManager.GetStore</c>
+    /// returns whatever <c>IStorageBackend.CreateStore</c> produced — a documented plugin seam
+    /// (<c>{dataDir}/plugins/*.dll</c>) with no requirement that the store be an
+    /// <see cref="ILocalMemoryStore"/>. A backend that populates <c>FileHashes</c> and is not
+    /// local is therefore constructible; <c>BundleEndpointTests.FakeNonLocalBackend</c> already
+    /// builds one.</para>
+    /// </summary>
+    private sealed class HashCarryingNonLocalStore : FakeMemoryStore
+    {
+        public override List<ScopedArtifact> ListScoped(string? scopes = null) =>
+        [
+            new ScopedArtifact("local", new ArtifactEntry(
+                Name: "hashed",
+                Uri: "plugin://default/local/hashed",
+                OriginalBytes: 128,
+                ChunkCount: 1,
+                CreatedAt: DateTimeOffset.UnixEpoch,
+                ContentPreview: "an entry that references a file",
+                FileHashes: new Dictionary<string, string> { ["src/Program.cs"] = "deadbeef" })),
+        ];
+    }
+
     /// <summary>Installs an arbitrary <see cref="IMemoryStore"/> double as the ambient store.</summary>
     private sealed class DoubleStoreScope : IDisposable
     {
@@ -226,6 +253,29 @@ public sealed class RemoteStoreToolTests
 
         yaml.Should().Contain("alpha",
             because: "full mode only needs WorkspaceRoot when an entry carries file attributes");
+    }
+
+    [Fact]
+    public async Task List_FullMode_NonLocalStoreWithFileHashes_OmitsDriftColumn()
+    {
+        // The last local-only site inside a tool that otherwise works remotely. `list(mode:'full')`
+        // renders a [drift] marker for entries carrying FileHashes, which needs the workspace root.
+        // A non-local store has none — so the page comes back without the marker, exactly as it
+        // does for a remote store today, rather than a raw NotSupportedException escaping the tool.
+        //
+        // Driven through a double rather than the HttpMemoryStore fixture because HttpMemoryStore
+        // never populates FileHashes; the reachable caller is an IStorageBackend plugin store
+        // installed ambiently by the server. See HashCarryingNonLocalStore.
+        using var scope = new DoubleStoreScope(new HashCarryingNonLocalStore());
+
+        string yaml = await Tools().MemoryList(mode: "full");
+
+        yaml.Should().Contain("hashed", because: "the listing itself needs no local filesystem");
+        yaml.Should().NotContain("[drift]",
+            because: "with no workspace root there is nothing to re-hash against, so the column " +
+                     "is omitted rather than guessed at");
+        yaml.Should().NotContain(ErrorCodes.NotSupported,
+            because: "a missing drift column is a degraded success, not a refused capability");
     }
 
     [Fact]

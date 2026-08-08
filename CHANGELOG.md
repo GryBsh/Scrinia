@@ -10,6 +10,27 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — `IMemoryStore` split: local-only members moved to a new `ILocalMemoryStore`
+
+- `IMemoryStore` lost eight members. Six moved to a new `ILocalMemoryStore : IMemoryStore` in
+  `Scrinia.Core` — `ArtifactPath`, `FindArtifactPath`, `GetStoreDirForScope`, `WorkspaceRoot`,
+  `ListTopicArtifacts`, `ImportTopicEntries`. These are the members a store without a filesystem
+  could only ever implement by throwing; `v0.4.0` added `WorkspaceRoot` to the shared interface on
+  exactly that basis ("Remote stores throw `NotSupportedException`"), and this reverses that call.
+  "Needs local files" is now a compile-time fact rather than a runtime surprise, and no member of
+  `IMemoryStore` throws for lack of a filesystem any more.
+- Three more members were removed outright rather than moved: `SaveIndex` (no caller outside the
+  store implementations — now a plain public member of `FileMemoryStore`, on neither interface),
+  `GenerateContentPreview` (both implementations had byte-identical bodies that touched no store
+  state — now the static `Scrinia.Core.ContentPreview.Generate`), and `GetResultScope` (no callers
+  left after the search-contract change).
+- `FileMemoryStore` implements `ILocalMemoryStore`; `HttpMemoryStore` implements only
+  `IMemoryStore`. `Scrinia.Core` is not published to NuGet, so this affects in-process plugin
+  authors rather than package consumers — but a plugin DLL compiled against the old interface will
+  fail to load. An `IStorageBackend` plugin whose store has a workspace on disk should implement
+  `ILocalMemoryStore`; one that does not can implement `IMemoryStore` alone and every caller
+  degrades or refuses cleanly instead of throwing.
+
 ### Fixed — remote-store operations that threw or returned incomplete results
 
 - `remember()` against a remote store (`scri serve --remote`) threw `NotSupportedException` for
@@ -32,6 +53,12 @@ and all assembly attributes.
 - Server bundle endpoints (`POST /export`, `POST /import`) returned an unhandled-exception `500`
   against a non-local store backend, because the request path read a `RequestContext` accessor
   that threw. Both now return a clean `501 Not Implemented`.
+- `recall('/agent/<name>')` against a remote store threw `NotSupportedException`. The `/agent/`
+  branch prefers a hand-authored `.md` file in the workspace, which a remote store has none of;
+  it now falls through to ordinary NMP/2 resolution instead of refusing, so the call returns a
+  stored `/agent/*` memory if the backend has one and a `NOT_FOUND` error if it does not. This is
+  neither a refusal nor a degraded success — the lookup genuinely runs, it just cannot consult a
+  local file first.
 
 ### Added — `NOT_SUPPORTED` MCP error code
 

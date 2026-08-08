@@ -1,16 +1,69 @@
 using System.Reflection;
 using FluentAssertions;
+using Scrinia;
 using Scrinia.Core;
 
 namespace Scrinia.Tests;
 
 /// <summary>
-/// Pins the store boundary: <see cref="IMemoryStore"/> is the contract both stores can honour,
-/// so a remote store must be able to implement all of it. The failure mode this catches is
-/// someone adding a local-only member back to the shared interface — which nothing else does.
+/// Pins the store boundary: no member of <see cref="IMemoryStore"/> throws for lack of a local
+/// filesystem, so a remote store can implement all of it without refusing a capability. The
+/// failure mode this catches is someone adding a local-only member back to the shared interface —
+/// which nothing else does.
+/// <para>That is narrower than "a remote store honours the whole contract in substance".
+/// <c>HttpMemoryStore</c> implements three members as silent no-ops rather than throws —
+/// <c>LoadIndex</c> returns <c>[]</c>, <c>Upsert</c> and <c>ArchiveVersion</c> are empty — which is
+/// exactly why a "count the throws" criterion never surfaced them. Two are defensible (the server
+/// does that work); <c>LoadIndex</c> is not, and is recorded as a known gap in
+/// <c>/findings/store-boundaries-deferred-followups</c>.</para>
 /// </summary>
 public sealed class StoreBoundaryTests
 {
+    /// <summary>The members that moved off <see cref="IMemoryStore"/> onto
+    /// <see cref="ILocalMemoryStore"/>. Same list as
+    /// <see cref="IMemoryStore_DoesNotDeclareLocalOnlyMembers"/> asserts the absence of, read from
+    /// the other side: gone from the shared interface AND present on the local one. A half-finished
+    /// split satisfies only one of the two.</summary>
+    private static readonly string[] LocalOnlyMembers =
+    [
+        "ArtifactPath", "FindArtifactPath", "GetStoreDirForScope",
+        "WorkspaceRoot", "ListTopicArtifacts", "ImportTopicEntries",
+    ];
+
+    [Fact]
+    public void ILocalMemoryStore_DeclaresExactlyTheLocalOnlyMembers()
+    {
+        // Property accessors (get_WorkspaceRoot) are members too; compare on the declared
+        // property/method surface an implementer actually writes.
+        var names = typeof(ILocalMemoryStore)
+            .GetMembers(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(m => m is MethodInfo { IsSpecialName: false } or PropertyInfo)
+            .Select(m => m.Name)
+            .ToHashSet();
+
+        names.Should().BeEquivalentTo(LocalOnlyMembers,
+            because: "the six members that need a filesystem live here and nowhere else — an " +
+                     "extra one means a member was moved without being removed upstream, a " +
+                     "missing one means it never arrived");
+    }
+
+    [Fact]
+    public void FileMemoryStore_Implements_ILocalMemoryStore()
+    {
+        typeof(ILocalMemoryStore).IsAssignableFrom(typeof(FileMemoryStore)).Should().BeTrue(
+            because: "FileMemoryStore is the sole implementation; without it the interface is " +
+                     "declared but unimplemented and every guard refuses unconditionally");
+    }
+
+    [Fact]
+    public void HttpMemoryStore_DoesNotImplement_ILocalMemoryStore()
+    {
+        typeof(ILocalMemoryStore).IsAssignableFrom(typeof(HttpMemoryStore)).Should().BeFalse(
+            because: "the whole point of the split is that a remote store fails to compile as a " +
+                     "local one; if it implemented the interface, every guard would pass and the " +
+                     "throws would simply move back inside the members");
+    }
+
     [Fact]
     public void HttpMemoryStore_ThrowsNotSupported_ForExactlyOneReason()
     {

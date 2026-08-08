@@ -19,29 +19,19 @@ public sealed partial class ScriniaMcpTools
             "No memory store configured. Call MemoryStoreContext.Current = ... before using MCP tools.");
 
     /// <summary>
-    /// Narrows a store to <see cref="ILocalMemoryStore"/> at the point a layout member is
-    /// actually reached. Use this when only <i>part</i> of a method needs local files, and that
-    /// part cannot produce a sensible answer without them.
-    /// <para>Throwing here rather than at the top of the method is the entire point. Before the
-    /// split, <c>HttpMemoryStore</c>'s member threw at the moment of use, so an early return
-    /// upstream still returned, a validation error was still returned, and an enclosing
-    /// best-effort <c>catch</c> still swallowed it and skipped just that section. Hoisting the
-    /// check to the method entry silently converted all three into hard failures — which is what
-    /// <c>RemoteStoreToolTests</c> now pins.</para>
-    /// </summary>
-    private static ILocalMemoryStore AsLayout(IMemoryStore store) =>
-        store as ILocalMemoryStore
-        ?? throw new NotSupportedException(
-            "This operation needs local filesystem access, and the active store is remote.");
-
-    /// <summary>
-    /// Non-throwing counterpart to <see cref="AsLayout"/>, for tool entry points that should
-    /// answer with an error response rather than propagate an exception.
+    /// Narrows the ambient store to <see cref="ILocalMemoryStore"/> without throwing, for tool
+    /// entry points that should answer with an error response rather than propagate an exception.
     /// <para>Use this where a tool is local-only <i>end to end</i> — bundle export/import, skill
     /// and agent files, conflict scanning, drift detection — so there is no degraded result to
-    /// return, only a refusal to phrase well. Where only part of a method needs local files, use
-    /// <see cref="AsLayout"/> or an inline <c>is ILocalMemoryStore</c> test instead, so the rest
-    /// of the method still runs.</para>
+    /// return, only a refusal to phrase well.</para>
+    /// <para>Where only <i>part</i> of a method needs local files, do <b>not</b> use this. Narrow
+    /// inline with <c>is</c>/<c>as</c> at the point the layout member is actually reached, and let
+    /// the rest of the method run. Narrowing at the point of use rather than at method entry is
+    /// the entire point. Before the split, <c>HttpMemoryStore</c>'s member threw at the moment of
+    /// use, so an early return upstream still returned, a validation error was still returned, and
+    /// an enclosing best-effort <c>catch</c> still swallowed it and skipped just that section.
+    /// Hoisting the check to the method entry silently converted all three into hard failures —
+    /// which is what <c>RemoteStoreToolTests</c> now pins.</para>
     /// <para>Place the call <b>after</b> a method's validation returns. A bad argument is a bad
     /// argument whether the store is local or remote, and must come back as its own structured
     /// error either way.</para>
