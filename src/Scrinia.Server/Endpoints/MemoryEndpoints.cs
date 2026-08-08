@@ -343,7 +343,7 @@ public static class MemoryEndpoints
         if (req.Topics is null || req.Topics.Length == 0)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("topics is required.")));
 
-        var stream = BundleService.ExportToStream(ctx.Store!, req.Topics);
+        var stream = BundleService.ExportToStream(ctx.LocalStore, req.Topics);
         string filename = $"export-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.scrinia-bundle";
         if (!string.IsNullOrWhiteSpace(req.Filename))
         {
@@ -388,7 +388,7 @@ public static class MemoryEndpoints
 
         try
         {
-            var (topicCount, entryCount, names, skippedCategories) = BundleService.ImportFromStream(ctx.Store!, stream, topics, overwrite);
+            var (topicCount, entryCount, names, skippedCategories) = BundleService.ImportFromStream(ctx.LocalStore, stream, topics, overwrite);
             if (topicCount == 0 && skippedCategories.Count == 0)
                 return Results.Ok(new { message = "No topics were imported." });
             return Results.Ok(new

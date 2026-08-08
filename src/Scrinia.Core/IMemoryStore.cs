@@ -18,7 +18,6 @@ public interface IMemoryStore
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
     List<ArtifactEntry> LoadIndex(string scope = "local");
-    void SaveIndex(List<ArtifactEntry> entries, string scope = "local");
     void Upsert(ArtifactEntry entry, string scope = "local");
     bool Remove(string name, string scope = "local");
 
@@ -149,24 +148,8 @@ public interface IMemoryStore
     bool CopyMemory(string src, string dst, bool overwrite, out string message);
     void ArchiveVersion(string subject, string scope = "local");
 
-    // Paths
-    string ArtifactPath(string name, string scope = "local");
+    // Naming / addressing
     string ArtifactUri(string name, string scope = "local");
-    string FindArtifactPath(string subject, string normalizedScope);
-    string GetStoreDirForScope(string scope);
-
-    /// <summary>
-    /// Absolute path to the workspace root — the directory that contains <c>.scrinia/</c>.
-    /// The authority for the workspace's filesystem layout: hand-authored file entities
-    /// (via <see cref="PathRouter.ToFileEntityDir"/>), bundle export/import, conflict
-    /// scanning, and drift detection all resolve their on-disk location from this one
-    /// property.
-    /// <para>Callers previously reverse-engineered this from <c>GetStoreDirForScope("local")</c>
-    /// using two different algorithms that agreed only by coincidence.</para>
-    /// </summary>
-    /// <exception cref="NotSupportedException">The store is remote; <see cref="WorkspaceRoot"/>
-    /// is local-only because a remote store has no local filesystem.</exception>
-    string WorkspaceRoot { get; }
 
     // Artifact file I/O
     Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default);
@@ -176,11 +159,6 @@ public interface IMemoryStore
     // Topic discovery
     string[] DiscoverTopics();
     List<TopicInfo> GatherTopicInfos(string? scopes = null);
-
-    // Export/Import support
-    List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
-    void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
-        Dictionary<string, string> artifactContents, bool overwrite);
 
     // Scope resolution
     IReadOnlyList<string> ResolveReadScopes(string? scopes = null);

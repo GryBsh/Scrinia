@@ -14,6 +14,22 @@ public sealed class RequestContext
     public string? ActiveStore { get; set; }
     public IMemoryStore? Store { get; set; }
 
+    /// <summary>
+    /// <see cref="Store"/> narrowed to the local-filesystem contract, for the endpoints that
+    /// read or write workspace files directly — bundle export and import.
+    /// <para>The store comes from <see cref="Scrinia.Core.IStorageBackend.CreateStore"/>, whose
+    /// only in-repo implementation (<see cref="Scrinia.Core.FilesystemBackend"/>) always returns a
+    /// <see cref="Scrinia.Core.FileMemoryStore"/>, so this is total for the server as shipped. A
+    /// replacement backend registered via DI could return a non-local store; before the
+    /// ILocalMemoryStore split those endpoints threw <see cref="NotSupportedException"/> from
+    /// inside the store in exactly that case, and they still do — from here, once, by name.</para>
+    /// </summary>
+    public ILocalMemoryStore LocalStore =>
+        Store as ILocalMemoryStore
+        ?? throw new NotSupportedException(
+            "This endpoint needs local filesystem access, and the configured storage backend "
+            + "did not produce a local store.");
+
     public bool HasPermission(string permission) =>
         Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
 

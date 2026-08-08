@@ -559,7 +559,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "forget-me");
-        string filePath = MemoryStoreContext.Current!.ArtifactPath("forget-me");
+        string filePath = TestHelpers.LocalStore.ArtifactPath("forget-me");
         File.Exists(filePath).Should().BeTrue(because: "file must exist before Forget");
 
         string result = (await Tools().Forget("forget-me")).ToYaml();
@@ -666,7 +666,7 @@ public sealed class ScriniaMcpToolsTests
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember([TestHelpers.Facts.Fact1], "already-deleted");
-        string filePath = MemoryStoreContext.Current!.ArtifactPath("already-deleted");
+        string filePath = TestHelpers.LocalStore.ArtifactPath("already-deleted");
 
         // Manually delete the file first
         File.Delete(filePath);

@@ -87,7 +87,7 @@ public sealed class BundleImportCategoryAllowlistTests : IDisposable
         // populated by importing a bundle. Old bundles must still import cleanly, and the
         // user must be told what was dropped rather than silently losing it.
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = TestHelpers.LocalStore;
 
         string bundlePath = Path.Combine(scope.WorkspaceDir, "legacy.scrinia-bundle");
         using (var zip = ZipFile.Open(bundlePath, ZipArchiveMode.Create))

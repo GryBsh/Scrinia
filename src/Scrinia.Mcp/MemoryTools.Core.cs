@@ -29,7 +29,7 @@ public sealed partial class ScriniaMcpTools
         // ── Agent config: read .md file first, NMP/2 fallback ────────────
         if (artifactOrName.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
         {
-            var agentStore = MemoryStoreContext.Current;
+            var agentStore = MemoryStoreContext.Current as ILocalMemoryStore;
             if (agentStore is not null)
             {
                 string agentSubject = artifactOrName["/agent/".Length..].Trim();
@@ -131,7 +131,7 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
         string joined = string.Concat(content);
 
         // Compute text analysis: keywords + term frequencies (single-pass)
@@ -585,7 +585,7 @@ public sealed partial class ScriniaMcpTools
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge listings.")] string? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
 
         if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
             return BuildDriftList(store);
@@ -712,7 +712,7 @@ public sealed partial class ScriniaMcpTools
     private static readonly Regex KeyValueKeywordShape =
         new(@"^[A-Za-z][A-Za-z0-9_-]{0,29}:.+", RegexOptions.Compiled);
 
-    internal static string BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)
+    internal static string BuildFullList(List<ScopedArtifact> entries, ILocalMemoryStore store, int offset, int limit)
     {
         int total = entries.Count;
         if (offset < 0) offset = 0;
@@ -1334,7 +1334,7 @@ public sealed partial class ScriniaMcpTools
         return ResponseBuilder.Success(linkMsg).WithAction("linked");
     }
 
-    private static Task<McpResponse> BuildDriftList(IMemoryStore store)
+    private static Task<McpResponse> BuildDriftList(ILocalMemoryStore store)
     {
         string workspaceRoot = store.WorkspaceRoot;
 

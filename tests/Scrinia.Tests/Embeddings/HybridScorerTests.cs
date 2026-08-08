@@ -261,7 +261,6 @@ public class HybridRerankerTests : IDisposable
         public string SanitizeName(string name) => name;
         public Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default) => Task.FromResult("");
         public List<ArtifactEntry> LoadIndex(string scope = "local") => [];
-        public void SaveIndex(List<ArtifactEntry> entries, string scope = "local") { }
         public void Upsert(ArtifactEntry entry, string scope = "local") { }
         public bool Remove(string name, string scope = "local") => false;
         public List<ScopedArtifact> ListScoped(string? scopes = null) => [];
@@ -271,18 +270,12 @@ public class HybridRerankerTests : IDisposable
         public EphemeralEntry? GetEphemeral(string key) => null;
         public bool CopyMemory(string src, string dst, bool overwrite, out string message) { message = ""; return false; }
         public void ArchiveVersion(string subject, string scope = "local") { }
-        public string ArtifactPath(string name, string scope = "local") => "";
         public string ArtifactUri(string name, string scope = "local") => "";
-        public string FindArtifactPath(string subject, string normalizedScope) => "";
-        public string GetStoreDirForScope(string scope) => "";
-        public string WorkspaceRoot => throw new NotSupportedException();
         public Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default) => Task.CompletedTask;
         public Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
         public bool DeleteArtifact(string subject, string scope) => false;
         public string[] DiscoverTopics() => [];
         public List<TopicInfo> GatherTopicInfos(string? scopes = null) => [];
-        public List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope) => [];
-        public void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries, Dictionary<string, string> artifactContents, bool overwrite) { }
         public IReadOnlyList<string> ResolveReadScopes(string? scopes = null) => ["local"];
     }
 }

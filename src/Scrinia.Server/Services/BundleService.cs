@@ -10,7 +10,7 @@ namespace Scrinia.Server.Services;
 /// </summary>
 public static class BundleService
 {
-    public static MemoryStream ExportToStream(IMemoryStore store, string[] topics)
+    public static MemoryStream ExportToStream(ILocalMemoryStore store, string[] topics)
     {
         var ms = new MemoryStream();
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
@@ -21,7 +21,7 @@ public static class BundleService
     }
 
     public static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportFromStream(
-        IMemoryStore store, Stream bundle, string[]? topics, bool overwrite)
+        ILocalMemoryStore store, Stream bundle, string[]? topics, bool overwrite)
     {
         using var zip = new ZipArchive(bundle, ZipArchiveMode.Read);
         return BundleFormatService.ImportTopicsFromZip(zip, store, topics, overwrite);

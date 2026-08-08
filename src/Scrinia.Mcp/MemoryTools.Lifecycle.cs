@@ -70,7 +70,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Content for 'merged' resolution.")] string? content = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
         string scriniaDir = Path.Combine(store.WorkspaceRoot, ".scrinia");
 
         return conflictId is not null
@@ -607,7 +607,7 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal async Task<RestoreContext> BuildRestoreContextAsync(CancellationToken cancellationToken)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
         var warnings = new List<string>();
         var info = new List<string>();
         var contentSections = new List<string>();

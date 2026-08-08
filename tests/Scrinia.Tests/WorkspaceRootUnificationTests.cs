@@ -16,7 +16,7 @@ public class WorkspaceRootUnificationTests
     public void WorkspaceRoot_MatchesTwoHopDerivationFromLocalStoreDir()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = TestHelpers.LocalStore;
 
         string storeDir = store.GetStoreDirForScope("local");
         string expected = Path.GetDirectoryName(Path.GetDirectoryName(storeDir)!)!;
@@ -29,7 +29,7 @@ public class WorkspaceRootUnificationTests
     public void ScriniaDir_IsOneHopFromLocalStoreDir()
     {
         using var scope = new TestHelpers.StoreScope();
-        var store = MemoryStoreContext.Current!;
+        var store = TestHelpers.LocalStore;
 
         string storeDir = store.GetStoreDirForScope("local");
         string scriniaDir = Path.GetDirectoryName(storeDir)!;

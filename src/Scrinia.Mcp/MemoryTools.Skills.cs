@@ -124,7 +124,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Comma-separated tool names the agent should use (for custom scaffold).")] string? tools = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
 
         if (!FileEntityName.IsValid(name))
             return ResponseBuilder.Error(
@@ -231,7 +231,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Set to true to show both built-in and override side-by-side for merging.")] bool withBuiltin = false,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
 
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -302,7 +302,7 @@ public sealed partial class ScriniaMcpTools
     }
 
     private static async Task<McpResponse> LoadSkillAsync(
-        IMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
+        ILocalMemoryStore store, string skillName, bool withBuiltin, CancellationToken ct)
     {
         if (!PathRouter.TryToFileEntityPath("skill", skillName, store.WorkspaceRoot, out string filePath))
             return ResponseBuilder.Error(

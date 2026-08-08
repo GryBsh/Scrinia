@@ -20,7 +20,7 @@ namespace Scrinia.Core;
 ///   "/topic/subject"       → local topic:   {workspace}/.scrinia/memories/topic/subject.nmp2
 ///   "/temp/subject"         → ephemeral:     in-memory only (dies with instance)
 /// </summary>
-public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
+public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 {
     private const int MaxEphemeralEntries = 1000;
     private readonly string _workspaceRoot;

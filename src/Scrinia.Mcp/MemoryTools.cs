@@ -18,6 +18,20 @@ public sealed partial class ScriniaMcpTools
             "No memory store configured. Call MemoryStoreContext.Current = ... before using MCP tools.");
 
     /// <summary>
+    /// The active store, narrowed to <see cref="ILocalMemoryStore"/>. Tools that touch the
+    /// workspace filesystem — bundle export/import, skill and agent files, conflict scanning —
+    /// go through here.
+    /// <para>This is the one place the local-store requirement is checked at runtime. It
+    /// replaces six separate members that each threw from inside <c>HttpMemoryStore</c>, where
+    /// a caller had no way to know which members were safe. Task 3 gives the tools that use it
+    /// a clean error response instead of this exception.</para>
+    /// </summary>
+    private static ILocalMemoryStore CurrentLayout =>
+        MemoryStoreContext.Current as ILocalMemoryStore
+        ?? throw new NotSupportedException(
+            "This operation needs local filesystem access, and the active store is remote.");
+
+    /// <summary>
     /// Resolves inline NMP/2 artifacts without requiring a configured store.
     /// Returns null if the input requires store-based resolution (memory name, file://, ephemeral, etc.).
     /// file:// URIs are deliberately NOT handled here — they require store-based resolution

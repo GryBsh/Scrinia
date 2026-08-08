@@ -105,7 +105,7 @@ public sealed class BundleV2Tests : IDisposable
     /// Imports a zip from raw bytes into the given store.
     /// </summary>
     private static (int TopicCount, int EntryCount, List<string> Names, List<string> SkippedCategories) ImportFromBytes(
-        byte[] zipBytes, IMemoryStore store, bool overwrite = true)
+        byte[] zipBytes, ILocalMemoryStore store, bool overwrite = true)
     {
         using var ms = new MemoryStream(zipBytes);
         using var zip = new ZipArchive(ms, ZipArchiveMode.Read);

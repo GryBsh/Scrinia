@@ -21,7 +21,7 @@ public sealed partial class ScriniaMcpTools
         [Description("Output filename (saved to .scrinia/exports/). Defaults to auto-generated name.")] string? filename = null,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
         if (topics is null || topics.Length == 0)
             return Task.FromResult(ResponseBuilder.Error(
                 "At least one topic name is required.",
@@ -76,7 +76,7 @@ public sealed partial class ScriniaMcpTools
         [Description("When true, replaces existing entries if they conflict.")] bool overwrite = false,
         CancellationToken cancellationToken = default)
     {
-        var store = CurrentStore;
+        var store = CurrentLayout;
 
         // Resolve path relative to workspace root if not absolute
         string workspaceRoot = store.WorkspaceRoot;
