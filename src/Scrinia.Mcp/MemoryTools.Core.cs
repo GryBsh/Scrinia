@@ -131,7 +131,7 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
-        // CurrentStore, not CurrentLayout: the ephemeral branch below returns before any layout
+        // The whole store, not a narrowed one: the ephemeral branch below returns before any layout
         // member is read, and a remote store implements ephemeral storage for real. Narrowing
         // here would break remember({ path: '/temp/...' }) in remote mode.
         var store = CurrentStore;
@@ -266,10 +266,22 @@ public sealed partial class ScriniaMcpTools
         {
             string agentSubject = name["/agent/".Length..].Trim();
 
+            // Validate before the guard, so /agent/ and /skill/ answer the same way for the same
+            // bad input. SkillCreate validates its name first; without this hoist, a remote
+            // remember({ path: '/agent/bad name' }) reported NOT_SUPPORTED while the /skill/
+            // sibling reported INVALID_PARAMETER. The path check below stays as defence in depth.
+            if (!FileEntityName.IsValid(agentSubject))
+                return ResponseBuilder.Error(
+                    "Invalid agent config name. Use letters, digits, '-', '_' or '.' only.",
+                    ErrorCodes.InvalidParameter,
+                    "Use a path like '/agent/profile' for the agent config.");
+
             // The /agent/ branch is genuinely local-only — it writes a .md file plus a JSON
             // sidecar into the workspace — so it is guarded here, where it is actually reached.
             // Guarding at the method entry instead would refuse every remote remember().
-            if (!TryGetLayout(out var agentLayout))
+            // Narrowed from the local `store`, not re-read from the ambient context: only part
+            // of this method needs local files.
+            if (store is not ILocalMemoryStore agentLayout)
                 return ResponseBuilder.Error(
                     "An /agent/ config is written as a file in the local workspace, and the active store is remote.",
                     ErrorCodes.NotSupported,
@@ -607,7 +619,7 @@ public sealed partial class ScriniaMcpTools
                      "Use 'plan,task,project,learn' to hide planning namespaces from knowledge listings.")] string? excludeTopics = null,
         CancellationToken cancellationToken = default)
     {
-        // CurrentStore, not CurrentLayout: only the drift branch is unconditionally local.
+        // The whole store, not a narrowed one: only the drift branch is unconditionally local.
         // Summary mode, the empty-store early return, and full mode over entries without file
         // attributes all worked remotely before the split and must keep working.
         var store = CurrentStore;
@@ -617,7 +629,7 @@ public sealed partial class ScriniaMcpTools
         // any other mode still returns its listing.
         if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
         {
-            if (!TryGetLayout(out var driftStore))
+            if (store is not ILocalMemoryStore driftStore)
                 return Task.FromResult(ResponseBuilder.Error(
                     "Drift detection re-hashes referenced files on disk, and the active store is remote.",
                     ErrorCodes.NotSupported,

@@ -19,23 +19,9 @@ public sealed partial class ScriniaMcpTools
             "No memory store configured. Call MemoryStoreContext.Current = ... before using MCP tools.");
 
     /// <summary>
-    /// The active store, narrowed to <see cref="ILocalMemoryStore"/>. Tools that touch the
-    /// workspace filesystem — bundle export/import, skill and agent files, conflict scanning —
-    /// go through here.
-    /// <para>This is the one place the local-store requirement is checked at runtime. It
-    /// replaces six separate members that each threw from inside <c>HttpMemoryStore</c>, where
-    /// a caller had no way to know which members were safe. Task 3 gives the tools that use it
-    /// a clean error response instead of this exception.</para>
-    /// </summary>
-    private static ILocalMemoryStore CurrentLayout =>
-        MemoryStoreContext.Current as ILocalMemoryStore
-        ?? throw new NotSupportedException(
-            "This operation needs local filesystem access, and the active store is remote.");
-
-    /// <summary>
     /// Narrows a store to <see cref="ILocalMemoryStore"/> at the point a layout member is
-    /// actually reached. Use this when only <i>part</i> of a method needs local files; use
-    /// <see cref="CurrentLayout"/> only when the whole method does.
+    /// actually reached. Use this when only <i>part</i> of a method needs local files, and that
+    /// part cannot produce a sensible answer without them.
     /// <para>Throwing here rather than at the top of the method is the entire point. Before the
     /// split, <c>HttpMemoryStore</c>'s member threw at the moment of use, so an early return
     /// upstream still returned, a validation error was still returned, and an enclosing
@@ -49,7 +35,7 @@ public sealed partial class ScriniaMcpTools
             "This operation needs local filesystem access, and the active store is remote.");
 
     /// <summary>
-    /// Non-throwing counterpart to <see cref="CurrentLayout"/>, for tool entry points that should
+    /// Non-throwing counterpart to <see cref="AsLayout"/>, for tool entry points that should
     /// answer with an error response rather than propagate an exception.
     /// <para>Use this where a tool is local-only <i>end to end</i> — bundle export/import, skill
     /// and agent files, conflict scanning, drift detection — so there is no degraded result to

@@ -252,30 +252,4 @@ public class HybridRerankerTests : IDisposable
 
         public void Dispose() { }
     }
-
-    private sealed class FakeMemoryStore : IMemoryStore
-    {
-        public (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
-        public string FormatQualifiedName(string scope, string subject) => $"{scope}:{subject}";
-        public bool IsEphemeral(string name) => name.StartsWith('~');
-        public string SanitizeName(string name) => name;
-        public Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default) => Task.FromResult("");
-        public List<ArtifactEntry> LoadIndex(string scope = "local") => [];
-        public void Upsert(ArtifactEntry entry, string scope = "local") { }
-        public bool Remove(string name, string scope = "local") => false;
-        public List<ScopedArtifact> ListScoped(string? scopes = null) => [];
-        public IReadOnlyList<SearchResult> SearchAll(SearchQuery query) => [];
-        public void RememberEphemeral(string key, EphemeralEntry entry) { }
-        public bool ForgetEphemeral(string key) => false;
-        public EphemeralEntry? GetEphemeral(string key) => null;
-        public bool CopyMemory(string src, string dst, bool overwrite, out string message) { message = ""; return false; }
-        public void ArchiveVersion(string subject, string scope = "local") { }
-        public string ArtifactUri(string name, string scope = "local") => "";
-        public Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default) => Task.CompletedTask;
-        public Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
-        public bool DeleteArtifact(string subject, string scope) => false;
-        public string[] DiscoverTopics() => [];
-        public List<TopicInfo> GatherTopicInfos(string? scopes = null) => [];
-        public IReadOnlyList<string> ResolveReadScopes(string? scopes = null) => ["local"];
-    }
 }

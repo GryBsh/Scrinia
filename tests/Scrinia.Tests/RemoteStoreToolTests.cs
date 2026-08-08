@@ -3,6 +3,7 @@ using System.Text;
 using FluentAssertions;
 using Scrinia;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
 using Scrinia.Mcp;
 using Xunit;
@@ -110,6 +111,40 @@ public sealed class RemoteStoreToolTests
         }
     }
 
+    /// <summary>
+    /// A non-local store that records what was written to it. Subclasses <see cref="FakeMemoryStore"/>
+    /// and overrides one member, rather than hand-writing 23. Its value over the
+    /// <see cref="HttpMemoryStore"/> fixture is that <see cref="Upsert"/> is observable — over
+    /// HTTP the stored entry's <c>FileHashes</c> simply never leaves the process.
+    /// </summary>
+    private sealed class RecordingRemoteStore : FakeMemoryStore
+    {
+        public List<ArtifactEntry> Stored { get; } = [];
+
+        public override void Upsert(ArtifactEntry entry, string scope = "local") => Stored.Add(entry);
+    }
+
+    /// <summary>Installs an arbitrary <see cref="IMemoryStore"/> double as the ambient store.</summary>
+    private sealed class DoubleStoreScope : IDisposable
+    {
+        private readonly IMemoryStore? _previous;
+        public IMemoryStore Store { get; }
+
+        public DoubleStoreScope(IMemoryStore store)
+        {
+            _previous = MemoryStoreContext.Current;
+            MemoryEventSinkContext.Default = null;
+            Store = store;
+            MemoryStoreContext.Current = store;
+        }
+
+        public void Dispose()
+        {
+            MemoryEventSinkContext.Default = null;
+            MemoryStoreContext.Current = _previous;
+        }
+    }
+
     private static ScriniaMcpTools Tools() => new();
 
     // ── C1: guide() and restore() ────────────────────────────────────────────
@@ -204,7 +239,7 @@ public sealed class RemoteStoreToolTests
         string yaml = await Tools().MemoryList(mode: "drift");
 
         yaml.Should().Contain(ErrorCodes.NotSupported);
-        yaml.Should().Contain("actionNeeded",
+        yaml.Should().Contain("mode='drift'",
             because: "the refusal must name the plain listing as the way forward");
     }
 
@@ -327,14 +362,63 @@ public sealed class RemoteStoreToolTests
     {
         // With `file` refs there IS something to hash, and remotely there is no disk to hash it
         // from. Degrade rather than refuse: the memory is stored, the drift hashes are simply
-        // absent. Nothing observable is lost — FileHashes never crosses the wire anyway.
+        // absent.
+        //
+        // Asserted through a recording double rather than the HttpMemoryStore fixture, because
+        // FileHashes is unobservable over the wire: StoreApiRequest (HttpMemoryStore.cs:106)
+        // carries only content and name, and HttpMemoryStore.Upsert is a no-op. A double's
+        // Upsert is the only seam where the stored entry can actually be inspected.
+        //
+        // The probe file lives in the CWD deliberately. The failure this guards against is
+        // fabricating a root — `?? Directory.GetCurrentDirectory()` — which would silently hash
+        // arbitrary files off the server's working directory. With the probe present, that
+        // implementation populates FileHashes and this test fails.
+        using var scope = new DoubleStoreScope(new RecordingRemoteStore());
+        string probeName = $"drift-probe-{Guid.NewGuid():N}.txt";
+        string probePath = Path.Combine(Directory.GetCurrentDirectory(), probeName);
+        await File.WriteAllTextAsync(probePath, "contents that would hash to something");
+
+        try
+        {
+            string yaml = await Tools().MemoryRemember(
+                path: "/api/hashed",
+                content: ["a note that references a file"],
+                attributes: new Dictionary<string, string[]> { ["file"] = [probeName] });
+
+            yaml.Should().Contain("status: success");
+
+            var stored = ((RecordingRemoteStore)scope.Store).Stored;
+            stored.Should().ContainSingle(because: "the memory must still be persisted");
+            stored[0].FileHashes.Should().BeNull(
+                because: "with no local workspace there is no root to resolve refs against, and " +
+                         "a fabricated one would hash whatever happens to sit in the CWD");
+            stored[0].Attributes.Should().NotBeNull().And.ContainKey("file",
+                because: "the reference itself is the user's data and must survive; only the " +
+                         "derived hashes are dropped");
+        }
+        finally
+        {
+            File.Delete(probePath);
+        }
+    }
+
+    // ── Task 3: the narrowed optional site in Recall ─────────────────────────
+
+    [Fact]
+    public async Task Recall_AgentPath_RemoteStore_FallsThroughInsteadOfThrowing()
+    {
+        // Recall's /agent/ branch prefers a workspace .md file but is not local-only: it narrows
+        // with `as` and falls through to NMP/2 resolution when there is no local store. Remotely
+        // that fallback reaches the backend, 404s, and surfaces as a clean NOT_FOUND.
+        //
+        // This is the branch's only narrowed-optional site that had no remote coverage. An eager
+        // narrowing here would throw instead, which is exactly what the fixture exists to catch.
         using var scope = new RemoteStoreScope();
 
-        string yaml = await Tools().MemoryRemember(
-            path: "/api/hashed",
-            content: ["a note that references a file"],
-            attributes: new Dictionary<string, string[]> { ["file"] = ["src/Scrinia/HttpMemoryStore.cs"] });
+        string yaml = await Tools().MemoryRecall(path: "/agent/profile");
 
-        yaml.Should().Contain("status: success");
+        yaml.Should().Contain(ErrorCodes.NotFound);
+        yaml.Should().NotContain(ErrorCodes.NotSupported,
+            because: "a missing agent file remotely is a lookup miss, not a refused capability");
     }
 }

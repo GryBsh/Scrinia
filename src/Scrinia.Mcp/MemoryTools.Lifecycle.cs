@@ -74,7 +74,7 @@ public sealed partial class ScriniaMcpTools
         // remote store has no such directory, so there is no partial answer to give.
         if (!TryGetLayout(out var store))
             return Task.FromResult(ResponseBuilder.Error(
-                "Conflict scanning reads .scrinia/ on disk, and the active store is remote.",
+                "Reconcile reads and rewrites conflicted files under .scrinia/ on disk, and the active store is remote.",
                 ErrorCodes.NotSupported,
                 "Resolve merge conflicts in the workspace checkout, then retry there."));
 
@@ -614,7 +614,7 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     internal async Task<RestoreContext> BuildRestoreContextAsync(CancellationToken cancellationToken)
     {
-        // CurrentStore, not CurrentLayout: the three local-only sections below are each skipped
+        // The whole store, not a narrowed one: the three local-only sections below are each skipped
         // when the store is remote, leaving a valid, degraded context. Narrowing here instead
         // would fail the whole call — including guide(), the first tool an agent calls in a
         // session. Each section tests for a local store rather than relying on its best-effort
