@@ -10,6 +10,19 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — server handler names now match the published MCP tool vocabulary
+
+- `MemoryEndpoints`'s internal handler methods were renamed to line up with the MCP tool
+  names: `StoreMemory` → `RememberMemory`, `ListMemories` → `ListMemory`, `ShowMemory` →
+  `RecallMemory`, `SearchMemories` → `SearchMemory`, `SearchMemoriesPost` →
+  `SearchMemoryPost`. Route paths and the HTTP contract are unchanged. **One exception**:
+  Minimal API derives an endpoint's OpenAPI `operationId` from the handler method name when
+  none is set explicitly, and none of these five endpoints calls `.WithName()`.
+  `AddOpenApi()`/`MapOpenApi()` are wired up in `Program.cs` — exposed when the server runs
+  in Development or with `Scrinia:ExposeOpenApi=true`, and covered by `OpenApiTests`. Any
+  client generated from `/openapi/v1.json` against these five endpoints will see their
+  `operationId` change on this release.
+
 ### Changed — CLI exit codes and not-found output
 
 - `scri show` and `scri forget` now exit `1` when the memory does not exist. Both guarded on
