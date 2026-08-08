@@ -43,6 +43,17 @@ the previous branch in this sequence shipped four wrong "facts" into execution, 
 claims of *completeness* rather than claims of *mechanism*. If a grep returns a count different
 from the one stated here, the grep is right.
 
+**A verification pass has already run against this plan and found five wrong claims.** They are
+corrected inline below, each marked `CORRECTED by the verification pass`. Note the pattern in
+what was wrong: a route prefix omitted, a failure mechanism described backwards, a test location
+that does not exist, two line ranges that would produce a duplicate local, and a CHANGELOG
+section that is not shaped the way the plan assumed. Four of the five would have surfaced as a
+compile error or a red test. **The route one would not** — it would have shipped a wrong URL into
+a user-facing CHANGELOG entry. Assume the same class of error survives somewhere in here.
+
+The pass also confirmed the riskiest claim: `[FromQuery] string[]?` genuinely does bind multipart
+requests correctly on this SDK, verified by building a probe endpoint rather than by reasoning.
+
 ## File Structure
 
 | File | Change |
@@ -76,6 +87,16 @@ from the one stated here, the grep is right.
 - Four production sites test `Status == "error"`. A fifth match in
   `tests/Scrinia.Tests/Benchmarks/ScriniaMemorySystem.cs:36` is test-project code — **decide
   whether to include it and say which you chose**; it is not counted in the four.
+- **CORRECTED by the verification pass — two more sites, spelled negatively.**
+  `MemoryTools.cs:154` and `:259` both read
+  `if (typoHint is not null && response.Status != "error")`. The original enumeration was
+  literally true (`== "error"` is four sites) and still missed these, because it grepped for the
+  spelling rather than for the concept. **Route them too**, as `!response.IsError`. Six sites
+  total. A refactor whose whole purpose is "one home for the status check" that leaves two
+  half-homes behind has not done its job.
+- The refactor is safe from leaking into output: `McpResponse` is never JSON-serialised (no
+  `JsonSerializable(typeof(McpResponse))` anywhere) and `ToYaml` enumerates fields explicitly, so
+  a new public property cannot appear in a rendered envelope or move a golden.
 
 **This task is a pure refactor. No behaviour changes. If a test result changes, stop.**
 
@@ -93,9 +114,15 @@ In `McpResponse.cs`, inside the `McpResponse` record, after the `Status` propert
 
 - [ ] **Step 2: Find every site**
 
-Run: `rtk grep -rn 'Status == "error"' src/`
-Expected: four hits, at the lines listed above. **If the count differs, the grep is right and
-this plan is wrong** — route all of them and note the discrepancy in your report.
+Run BOTH — the second is the one the first draft of this plan forgot:
+
+```
+rtk grep -rn 'Status == "error"' src/
+rtk grep -rn 'Status != "error"' src/
+```
+Expected: four hits and two hits respectively, at the lines listed above. **If either count
+differs, the grep is right and this plan is wrong** — route all of them and note the discrepancy
+in your report.
 
 - [ ] **Step 3: Route them**
 
@@ -117,6 +144,12 @@ this plan is wrong** — route all of them and note the discrepancy in your repo
         if (response.IsError)
 ```
 
+`MemoryTools.cs:154` and `:259` — the negative form:
+
+```csharp
+        if (typoHint is not null && !response.IsError)
+```
+
 - [ ] **Step 4: Build and run the full suite**
 
 ```
@@ -130,7 +163,7 @@ refactor — do not add new tests for a property that restates an existing compa
 - [ ] **Step 5: Commit**
 
 ```bash
-rtk git add src/Scrinia.Mcp/McpResponse.cs src/Scrinia.Mcp/MemoryTools.Core.cs src/Scrinia/Commands/ScriniaCommands.cs src/Scrinia/Commands/ScriniaCommands.Memory.cs
+rtk git add src/Scrinia.Mcp/McpResponse.cs src/Scrinia.Mcp/MemoryTools.Core.cs src/Scrinia.Mcp/MemoryTools.cs src/Scrinia/Commands/ScriniaCommands.cs src/Scrinia/Commands/ScriniaCommands.Memory.cs
 rtk git commit -m "refactor(mcp): give the error-status check one home"
 ```
 
@@ -172,8 +205,15 @@ decides it on purpose.
 
 - [ ] **Step 1: Write the failing tests**
 
-Two cases per command. Establish how the existing CLI tests drive these commands — look for
-prior art before inventing a harness — and follow it.
+Two cases per command. **Prior art:** `tests/Scrinia.Tests/ResponseStatusIsolationTests.cs:85`
+drives a CLI command exactly this way — `int exitCode = await new ScriniaCommands().Show(...)`
+inside a `TestHelpers.StoreScope`. Follow it. `Export`/`Import` are `internal`, but both
+`Scrinia.csproj:30` and `Scrinia.Mcp.csproj:13` carry `InternalsVisibleTo("Scrinia.Tests")`, so
+they are callable.
+
+**Use `TestHelpers.StoreScope`, not a bare temp path.** `MemoryTools.Bundling.cs:58` opens the
+bundle `FileStream` *before* the empty-topics check at `:63` and deletes it at `:65` — so an
+unconfigured or read-only workspace root makes the export test fail for the wrong reason.
 
 ```csharp
     [Fact]
@@ -207,7 +247,11 @@ never red is not evidence.
 
 - [ ] **Step 3: Replace the Export guard**
 
-In `ScriniaCommands.Bundle.cs`, replace lines 51-62 (the comment block and the dead guard) with:
+**CORRECTED by the verification pass — the line range in the first draft produced CS0128.**
+`string result = response.ToYaml();` already exists at **`:49`**, outside the range originally
+given (51-62), so the replacement below would have declared `result` twice in one scope. **Delete
+`:49` as well.** Replace lines **49-62** — the existing `result` declaration, the comment block,
+and the dead guard — with:
 
 ```csharp
         if (response.IsError)
@@ -220,13 +264,21 @@ In `ScriniaCommands.Bundle.cs`, replace lines 51-62 (the comment block and the d
         string result = response.ToYaml();
 ```
 
-Note the `ToYaml()` call at `:49` moves below the guard — on the error path the rendered YAML is
-no longer used.
+The net effect is that `ToYaml()` moves below the guard: on the error path the rendered YAML is
+no longer produced at all.
+
+`FormatCliError` and `WriteJsonError` are both `internal static` on `ScriniaCommands`
+(`ScriniaCommands.cs:45` and `:29`), and `Bundle.cs:21` declares the same `public partial class
+ScriniaCommands` — so they are directly accessible with no new using. `AnsiConsole` and `Markup`
+are already imported at `Bundle.cs:17`.
 
 - [ ] **Step 4: Replace the Import guard**
 
-Same shape, replacing lines 95-105. The `StartsWith("No topics")` condition is **deleted, not
-translated** — per F2.4 and the ruling above.
+Same shape and the **same correction**: the existing `string result = response.ToYaml();` is at
+`:93`, outside the originally-given range (95-105). Replace lines **93-105**.
+
+The `StartsWith("No topics")` condition is **deleted, not translated** — per F2.4 and the ruling
+above.
 
 - [ ] **Step 5: Run the tests**
 
@@ -245,14 +297,21 @@ changing it, and say so in your report.
 
 - [ ] **Step 7: CHANGELOG**
 
-Under `## [Unreleased]`, in the Fixed section:
+**CORRECTED by the verification pass.** There is no single "Fixed section" under
+`## [Unreleased]` — it carries ~10 themed subsections. The right home is the existing
+**`### Changed — CLI exit codes and not-found output`** at `CHANGELOG.md:87-93`, which already
+documents the byte-identical `scri show` / `scri forget` fix. This is a `Changed` (exit codes),
+not a `Fixed`, by this file's own convention, and filing it anywhere else splits one story across
+two sections.
+
+Append to that existing subsection:
 
 ```markdown
-- `scri bundle export` and `scri bundle import` exited 0 on genuine failure. Both tested
-  `result.StartsWith("Error:")` against rendered YAML, a shape the renderer has never emitted —
-  every envelope opens with `status: `. Any CI step or script gating on their exit code was not
-  gated. Both now read the typed status, matching the fix applied to `scri show` / `scri forget`.
-  An import that matches no topics still exits 0: that response is a `warning`, not an error.
+- `scri bundle export` and `scri bundle import` exited 0 on genuine failure, via the same dead
+  `result.StartsWith("Error:")` guard fixed above for `show`/`forget` — a shape the renderer has
+  never emitted, since every envelope opens with `status: `. Any CI step or script gating on
+  their exit code was not gated. Both now read the typed status. An import matching no topics
+  still exits 0: that response is a `warning`, not an error.
 ```
 
 - [ ] **Step 8: Commit**
@@ -283,7 +342,21 @@ rtk git commit -m "fix(cli): bundle export and import exited 0 on genuine failur
   **Only `topics` needs the attribute.**
 - F3.5 The sibling `ExportTopics` (`:335-338`) takes an `ExportRequest` DTO. It is *not* the
   model to copy here — export has no file payload, so it can afford a JSON body. Import cannot.
-- F3.6 Route registration is `group.MapPost("/import", ImportBundle);` at `:32`.
+- F3.6 Route registration is `group.MapPost("/import", ImportBundle);` at `:32`. **CORRECTED by
+  the verification pass — that is only the suffix.** The group prefix at `MemoryEndpoints.cs:18`
+  is `app.MapGroup("/api/v1/stores/{store}")`, so the real route is
+  **`/api/v1/stores/{store}/import`**. The first draft of this plan wrote `/stores/{store}/import`
+  in both the test sketch and the CHANGELOG entry — the test would have 404'd, and the CHANGELOG
+  would have shipped a wrong URL to users. Existing tests already use the correct form:
+  `$"/api/v1/stores/{factory.PrimaryStore}/import"`.
+- F3.7 `[FromQuery] string[]?` **binds repeated keys only** — verified empirically:
+  `?topics=x&topics=y` yields `["x","y"]`, while `?topics=x,y` yields the single element
+  `["x,y"]`. Note this diverges from the CLI, which comma-splits client-side
+  (`ScriniaCommands.Bundle.cs:88-89`). Do not "fix" the divergence here; record it.
+- F3.8 `tests/Scrinia.Server.Tests/BundleEndpointTests.cs` exists. Its harness is
+  `ScriniaServerFactory` (a `WebApplicationFactory<Program>`) with `PrimaryStore` = `"test-store"`
+  and `CreateAuthenticatedClient()`, whose key already carries `export` and `import` permissions.
+  A second `NonLocalStoreServerFactory` exists for the 501 cases.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -291,15 +364,16 @@ rtk git commit -m "fix(cli): bundle export and import exited 0 on genuine failur
     [Fact]
     public async Task Import_WithMultipartUpload_ReachesTheHandler()
     {
-        using var factory = /* the existing local-store factory used by BundleEndpointTests */;
-        using var client = factory.CreateClient();
+        using var factory = new ScriniaServerFactory();
+        using var client = factory.CreateAuthenticatedClient();
 
         using var content = new MultipartFormDataContent();
         var bundle = new ByteArrayContent(BuildMinimalBundleBytes());
         bundle.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         content.Add(bundle, "file", "x.scrinia-bundle");
 
-        var response = await client.PostAsync("/stores/{store}/import", content);
+        var response = await client.PostAsync(
+            $"/api/v1/stores/{factory.PrimaryStore}/import", content);
 
         response.StatusCode.Should().NotBe(HttpStatusCode.UnsupportedMediaType,
             because: "a complex-typed parameter with no [FromQuery] is inferred as JSON-body-bound, "
@@ -310,9 +384,9 @@ rtk git commit -m "fix(cli): bundle export and import exited 0 on genuine failur
 **Then assert the import outcome, not merely "not 415".** A test that only excludes one status
 code would pass against a handler that 500s. Assert the bundle's content actually landed.
 
-Fill in the real route template from `MemoryEndpoints.cs:20-32` and the auth/permission setup the
-neighbouring tests use — `import` permission is required (`:373`) and the store must be writable
-(`:376`).
+Note the route is `/api/v1/...` (F3.6) — the group prefix is not optional. `import` permission is
+required (`:373`) and the store must be writable (`:376`); `CreateAuthenticatedClient()`'s key
+already satisfies both (F3.8).
 
 - [ ] **Step 2: Run it and watch it fail**
 
@@ -343,6 +417,10 @@ Expected: PASS.
 The binding fix is only proven if `topics` actually arrives. Post a bundle with two topics and
 `?topics=one`, and assert only that topic imported.
 
+**Per F3.7, use repeated query keys for the multi-value case** — `?topics=one&topics=two`, not
+`?topics=one,two`. The comma form binds as a single element named `"one,two"`, so a test written
+that way would assert against a topic that does not exist and could pass for the wrong reason.
+
 - [ ] **Step 6: Full suite**
 
 ```
@@ -354,11 +432,12 @@ rtk dotnet test tests/Scrinia.Server.Tests
 - [ ] **Step 7: CHANGELOG**
 
 ```markdown
-- `POST /stores/{store}/import` rejected every multipart bundle upload with 415 Unsupported
-  Media Type. Its `topics` parameter was declared without `[FromQuery]`, so Minimal API inferred
-  it as JSON-body-bound and content negotiation failed before the handler ran — meaning none of
-  the endpoint's own permission, writability or file-presence guards were ever reached. The
-  endpoint had likely never worked for a real caller.
+- `POST /api/v1/stores/{store}/import` rejected every multipart bundle upload with 415
+  Unsupported Media Type. Its `topics` parameter was declared without `[FromQuery]`, so Minimal
+  API inferred it as JSON-body-bound and content negotiation failed before the handler ran —
+  meaning none of the endpoint's own permission, writability or file-presence guards were ever
+  reached. The endpoint had likely never worked for a real caller. Note `topics` takes repeated
+  query keys (`?topics=a&topics=b`), not a comma-separated list.
 ```
 
 - [ ] **Step 8: Commit**
@@ -380,12 +459,31 @@ rtk git commit -m "fix(server): POST /import 415'd every multipart upload"
 - F4.1 `InstallDefault(params IMemoryEventSink[] sinks) => Default = new CompositeEventSink(sinks);`
   — no validation (`IMemoryEventSink.cs:39-40`).
 - F4.2 An empty array installs a composite over nothing: every memory event is silently dropped.
-- F4.3 A null element becomes an NRE inside `CompositeEventSink`'s per-sink `try`/`catch`, which
-  swallows it — so the sink does nothing rather than failing loudly.
+- F4.3 **CORRECTED by the verification pass — the first draft had this backwards.** It claimed a
+  null element produces an NRE that `CompositeEventSink`'s per-sink catch *swallows*, leaving the
+  sink to "do nothing". What actually happens (`CompositeEventSink.cs:13-14`):
+
+  ```csharp
+  try { await sink.OnStoredAsync(qualifiedName, content, store, ct); }
+  catch (Exception ex) { Console.Error.WriteLine($"[scrinia:warn] Event sink {sink.GetType().Name} error: ..."); }
+  ```
+
+  The null `sink` throws inside the `try`, and then the catch handler dereferences **the same
+  null** via `sink.GetType()` — a second NRE, thrown from inside the catch block, which
+  propagates out of the method and aborts every remaining sink. So the real failure is a loud,
+  misattributed crash on the store path, not a silent no-op. The guard is still worth adding;
+  the rationale in code comments and test `because:` strings must state this mechanism, not the
+  original one.
 - F4.4 Six call sites in `WorkspaceSetup.cs` route through this (`:240`, `:400`, `:417`, `:426`,
-  `:446`, `:526`). **Verify none of them can legitimately pass an empty array before you make it
-  throw** — if one can, that is a finding, and you must report it rather than making a live path
-  throw.
+  `:446`, `:526`). **Verified by the pass: none can pass an empty array.** Every one is a literal
+  argument list of one to three non-null `new …()` expressions, and there is no other production
+  caller. Making this throw does not break a live path. Re-confirm rather than re-derive.
+- F4.5 `ArgumentNullException.ThrowIfNull(sinks)` is unreachable through normal calls — with
+  `params`, `InstallDefault()` yields an empty array, never null. Keep it as a boundary guard,
+  but do not write a test expecting to cover it.
+- F4.6 `tests/Scrinia.Tests/MemoryEventSinkContextInstallDefaultTests.cs` already exists and uses
+  a save/restore `prior = MemoryEventSinkContext.Default` pattern in a `finally`. Put the new
+  tests there. They must not assign `Default` at all.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -400,12 +498,16 @@ rtk git commit -m "fix(server): POST /import 415'd every multipart upload"
     public void InstallDefault_WithANullSink_Throws() =>
         FluentActions.Invoking(() => MemoryEventSinkContext.InstallDefault(new NoOpSink(), null!))
             .Should().Throw<ArgumentException>(
-                because: "CompositeEventSink's per-sink catch would swallow the NRE and do nothing");
+                because: "CompositeEventSink's catch handler dereferences the same null sink via "
+                       + "sink.GetType(), so the NRE escapes the catch and aborts every later sink");
 ```
 
-`MemoryEventSinkContext.Default` is process-wide static state. Follow whatever isolation the
-neighbouring event-sink tests already use — there is a known, unclosed race around `StoreScope`
-clearing `Default`, so do not invent a new isolation approach here.
+Note the `because:` reflects F4.3 as corrected, not the original wrong mechanism.
+
+`MemoryEventSinkContext.Default` is process-wide static state. Put these in the existing
+`MemoryEventSinkContextInstallDefaultTests.cs` (F4.6) and follow its save/restore pattern — there
+is a known, unclosed race where `TestHelpers.StoreScope` nulls `Default` on entry and exit, so do
+not invent a new isolation approach here.
 
 - [ ] **Step 2: Run and watch fail**
 
@@ -452,7 +554,7 @@ rtk git commit -m "fix(core): InstallDefault accepted input that silently disabl
 
 **Files:**
 - Modify: `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs` near `:300`
-- Test: `tests/Scrinia.Server.Tests/` — alongside the existing search-bounds tests
+- Test: `tests/Scrinia.Server.Tests/` — **a new file.** See F5.4.
 
 **Established facts:**
 - F5.1 `:300-301` bounds key *count* at 64 and returns 400. Per-key value-array length is
@@ -460,11 +562,19 @@ rtk git commit -m "fix(core): InstallDefault accepted input that silently disabl
 - F5.2 The neighbouring bounds are `q` at 10 KB (`:292`), `scopes`/`excludeTopics`/`pathPrefix`
   at 1 KB each (`:294-299`). Match their style and their error-message shape.
 - F5.3 Kestrel's body limit is the only current backstop.
+- F5.4 **CORRECTED by the verification pass — "the existing search-bounds tests" do not exist.**
+  Nothing in `tests/Scrinia.Server.Tests/` asserts any of the bounds at `:292-301`. The only
+  search-related `BadRequest` coverage is missing-query (`MemoryEndpointTests.cs:247`). There is
+  nothing to sit alongside; create a file.
+- F5.5 **The test must POST, not GET.** The bound lives in the shared `RunSearch`, and
+  `SearchMemory` (GET, `:250-260`) passes `attributeFilter: null` unconditionally — so a GET can
+  never reach this check. Post a `SearchRequest` body to
+  `/api/v1/stores/{store}/search`.
 
 - [ ] **Step 1: Write the failing test**
 
-One key carrying 1,000 values → 400. Assert the status and that the message names
-`attributeFilter`.
+One key carrying 1,000 values, POSTed per F5.5 → 400. Assert the status and that the message
+names `attributeFilter`.
 
 - [ ] **Step 2: Run and watch fail** (expected: 200, not 400)
 
@@ -513,8 +623,10 @@ rtk git commit -m "fix(server): bound attributeFilter value arrays, not just key
 ```
 rtk dotnet build Scrinia.sln -c Debug
 ```
-Expected: 0 errors. If either was load-bearing the compiler says so immediately — restore it and
-report which.
+Expected: 0 errors. **The verification pass already performed exactly this deletion and build:
+`Build succeeded. 0 Warning(s) 0 Error(s)` for `Scrinia.Server.csproj`, and 0 errors solution-wide.
+Both usings are genuinely dead.** Re-confirm rather than assume. Baseline for comparison: the
+solution builds with 0 errors and ~1723 warnings.
 
 - [ ] **Step 2: Make `scopes` consistent**
 
@@ -525,8 +637,9 @@ report which.
 
 - [ ] **Step 3: Full suite**
 
-No new test. This is a consistency fix with no known caller passing an empty string — say that
-plainly in your report rather than writing a test that asserts a URL shape nobody depends on.
+No new test. `BuildSearchGet` has exactly one caller, `HttpMemoryStore.cs:352`, and it does not
+pass an empty string — state that with the line number in your report rather than writing a test
+that asserts a URL shape nobody depends on.
 
 - [ ] **Step 4: Commit**
 
@@ -552,8 +665,12 @@ judgement rather than assuming it.
 - [ ] **Step 2: Re-verify the source spec against what shipped**
 
 Read `docs/superpowers/specs/2026-08-08-surface-defects-design.md` and correct any claim this
-branch falsified. The spec's own F6 count (four `Status == "error"` sites) is the most likely
-candidate.
+branch falsified. Two are known already:
+
+- The spec's F6 says four `Status == "error"` sites. Task 1 routes **six** — the spec counted the
+  spelling, not the concept, and missed `MemoryTools.cs:154` and `:259`.
+- The spec's §1 describes the import route without its `/api/v1` prefix if it names a URL at all.
+  Check and correct.
 
 - [ ] **Step 3: Full gate**
 
