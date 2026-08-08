@@ -300,6 +300,9 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse("pathPrefix parameter too long (max 1KB)."));
         if (attributeFilter is { Count: > 64 })
             return Results.BadRequest(new ErrorResponse("attributeFilter may not exceed 64 keys."));
+        if (attributeFilter is not null && attributeFilter.Any(kv => kv.Value is { Length: > 64 }))
+            return Results.BadRequest(
+                new ErrorResponse("attributeFilter may not exceed 64 values per key."));
         limit = Math.Clamp(limit, 1, 1000);
 
         var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit,
