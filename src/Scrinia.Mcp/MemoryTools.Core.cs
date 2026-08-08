@@ -1374,7 +1374,7 @@ public sealed partial class ScriniaMcpTools
         // Add ref:{from} attribute to {to}
         McpResponse result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
 
-        if (result1.Status == "error" || result2.Status == "error")
+        if (result1.IsError || result2.IsError)
             return ResponseBuilder.Error(
                 $"Partial link failure:\n  {from}: {result1.Error ?? result1.Content}\n  {to}: {result2.Error ?? result2.Content}",
                 ErrorCodes.Internal,

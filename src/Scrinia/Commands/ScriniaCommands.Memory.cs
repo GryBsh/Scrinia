@@ -418,7 +418,7 @@ public partial class ScriniaCommands
         // Reads the typed status. The previous guard tested StartsWith("Error:"), a shape ToYaml
         // has never emitted — every envelope opens with "status: " — so `scri show` exited 0 on a
         // genuine not-found.
-        if (response.Status == "error")
+        if (response.IsError)
         {
             if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
@@ -464,7 +464,7 @@ public partial class ScriniaCommands
         McpResponse response = await tools.Forget(name, cancellationToken);
 
         // Same dead guard as Show — `scri forget` reported success on a real not-found.
-        if (response.Status == "error")
+        if (response.IsError)
         {
             if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");

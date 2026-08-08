@@ -39,6 +39,14 @@ public static class ErrorCodes
 public sealed record McpResponse
 {
     public required string Status { get; init; }   // "success", "error", "warning"
+
+    /// <summary>True when this response reports a failure. The one predicate for the
+    /// stringly-typed <see cref="Status"/> — before this, four sites across two projects
+    /// each spelled <c>Status == "error"</c> independently, two more spelled it
+    /// <c>!= "error"</c>, and a seventh spelled it as a substring match on rendered YAML
+    /// that never matched anything.</summary>
+    public bool IsError => Status == "error";
+
     public string? Action { get; init; }           // "created", "completed", "listed", etc.
     public string? Path { get; init; }              // "/goal/G-60-abc", "/concern/SEC-054", etc.
     public string? Instruction { get; init; }      // what the agent must do next

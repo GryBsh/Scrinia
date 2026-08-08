@@ -63,7 +63,7 @@ public partial class ScriniaCommands
 
     private static int EmitMcpResult(McpResponse r, bool json, string action)
     {
-        bool isError = r.Status == "error";
+        bool isError = r.IsError;
 
         if (json)
         {
