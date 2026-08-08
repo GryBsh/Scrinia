@@ -10,9 +10,14 @@
 
 **Branch:** `store-boundaries`, cut from `main` at `c5cbb21`. Working tree clean apart from a pre-existing untracked `cmds.txt` that is **not part of this work**.
 
+> **This plan was audited by two independent verification subagents on 2026-08-07, and they found a lot.** Corrections are recorded inline — marked "corrected by the verification pass" — rather than silently applied, because the pattern in them is instructive: the first draft's errors were almost all **claims of completeness**. It called a call-site list exhaustive when the grep had never looked at `tests/`; it said `Scrinia.Server` did not change when a two-line forwarder made it change; it gave one guard form for six methods when two of them were `async`. Individually small, collectively enough that the tree would not have built at Task 2's commit.
+>
+> The practical consequence for anyone executing this: **where the plan enumerates call sites, treat the list as a starting point and the compiler as the authority.** Where it gives code, it has been checked to compile — but check anyway.
+
 ## Global Constraints
 
-- `TreatWarningsAsErrors=true` for everything under `src/` (`Directory.Build.props:44-46`). A warning is a build failure.
+- `TreatWarningsAsErrors=true` for projects not ending `.Tests` / `.Benchmarks` (`Directory.Build.props:44-46`). In `src/`, a warning is a build failure. In test projects it is not — and there are ~1694 pre-existing analyzer warnings there (F-18), so **warning count is not a health signal on this branch.** Do not fix warnings you did not introduce.
+- There is **no `.editorconfig`** in this repo, and `EnforceCodeStyleInBuild` is unset, so IDE-prefixed rules never run at build. `NoWarn` covers `CA1848;CA1873;CA1822;CA1725;CA1051;CA1305;CA1310`. `ImplicitUsings` is on and `tests/Scrinia.Tests/GlobalUsings.cs` declares `global using Xunit;`.
 - **Never `git add .`** — `cmds.txt` is untracked and unrelated. Stage explicit paths only.
 - **Nothing is pushed.** Commit locally; do not `git push`.
 - `dotnet build Scrinia.sln -c Debug` must be clean before any test run.
@@ -45,7 +50,19 @@ The spec's own arithmetic already required this: 8 throws − 1 kept (`file://`)
 **`ILocalMemoryStore` therefore has 6 members: `ArtifactPath`, `FindArtifactPath`, `GetStoreDirForScope`, `WorkspaceRoot`, `ListTopicArtifacts`, `ImportTopicEntries`.**
 
 **F-3. The interface is named `ILocalMemoryStore` and extends `IMemoryStore`.**
-Decided by the user on 2026-08-07, superseding the spec's standalone `ILocalStoreLayout`. Rationale: every call site that touches a layout member also touches ordinary store members (F-6, F-7), and C# has no intersection types, so a standalone interface would force two parameters referring to the same object at every such site. The name follows the design — it is a store, not a layout.
+Decided by the user on 2026-08-07, superseding the spec's standalone `ILocalStoreLayout`.
+
+**Corrected 2026-08-07 by the verification pass.** An earlier draft justified this with "every call site that touches a layout member also touches ordinary store members." That is **false** — layout-only sites exist: `BundleFormatService.CategoryDir` (`:288`), `BundleFormatService.ExportFileEntities` (`:299`), and every `store.` use in `MemoryTools.Skills.cs` (`:195,196,201,238,307`, all `WorkspaceRoot`). The decision still holds, but on the narrower and true grounds that the **boundary** sites need both, and C# has no intersection types:
+
+| Site | Layout members | Ordinary members |
+|---|---|---|
+| `BundleFormatService.ExportTopicsToZip` | `ListTopicArtifacts` | `SanitizeName`, `LoadIndex` |
+| `BundleFormatService.ImportTopicsFromZip` | `ImportTopicEntries` | `SanitizeName` |
+| `MemoryTools.Core.BuildDriftList:1337` | `WorkspaceRoot` | `ListScoped` |
+| `MemoryTools.Lifecycle.BuildRestoreContextAsync` | `WorkspaceRoot` ×3 | `ParseQualifiedName`, `LoadIndex`, `ResolveArtifactAsync` |
+| `ScriniaCommands.Migration.CompactEntryToSingleChunk:280` | `FindArtifactPath` | `ReadArtifactAsync`, `ArchiveVersion`, `WriteArtifactAsync`, `Upsert` |
+
+A standalone interface would force two parameters referring to the same object at each of these. The name follows the design — it is a store, not a layout.
 
 **F-4. The two `GenerateContentPreview` implementations are byte-identical.**
 `rtk grep -n -A 8 "public string GenerateContentPreview" src/Scrinia.Core/FileMemoryStore.cs` (`:1504-1509`) and `src/Scrinia/HttpMemoryStore.cs:514-519` both read:
@@ -54,21 +71,43 @@ if (string.IsNullOrEmpty(content)) return "";
 string preview = content[..Math.Min(maxLength, content.Length)];
 return preview.Replace('\n', ' ').Replace('\r', ' ').Trim();
 ```
-Extraction to a static helper is therefore provably behaviour-preserving. One test double differs — `tests/Scrinia.Tests/Embeddings/HybridScorerTests.cs:279` returns an untrimmed truncation — and is deleted with the interface member.
+Extraction to a static helper is therefore provably behaviour-preserving **in production**. One test double differs — `tests/Scrinia.Tests/Embeddings/HybridScorerTests.cs:279` returns a truncation that is neither trimmed nor newline-flattened — so any assertion that runs a preview through `FakeMemoryStore` *does* change. It is deleted along with the interface member; if a `HybridScorerTests` assertion moves as a result, that is the divergence surfacing, not a regression. Do not describe Task 1 as behaviour-preserving without this qualification.
 
-**F-5. `GenerateContentPreview` has 21 matching lines, of which 15 are production call sites.**
-`rtk grep -rn "GenerateContentPreview" --include=*.cs src/ tests/` → 3 declarations (`IMemoryStore.cs:172`, `FileMemoryStore.cs:1504`, `HttpMemoryStore.cs:514`), 1 test-double declaration, 1 comment (`ScriniaMcpToolsTests.cs:287`), and call sites at `ScriniaCommands.Bundle.cs:189`, `TextAnalysis.cs:231`, `MemoryTools.Core.cs:219,318,1011,1034,1081`, `MemoryOrchestrator.cs:71,128,218,233,266`, `EmbeddingBenchmarkAllTests.cs:442`, `EmbeddingBenchmarkTests.cs:462`, `FileMemoryStoreTests.cs:249`.
+**F-5. `GenerateContentPreview` has 21 matching lines: 15 call sites, of which 12 are production.**
+`rtk grep -rn "GenerateContentPreview" --include=*.cs src/ tests/` → 3 declarations (`IMemoryStore.cs:172`, `FileMemoryStore.cs:1504`, `HttpMemoryStore.cs:514`), 1 test-double declaration (`HybridScorerTests.cs:279`), 1 comment (`ScriniaMcpToolsTests.cs:287`), 1 test method name (`FileMemoryStoreTests.cs:246`), and 15 call sites.
+**Production (12):** `ScriniaCommands.Bundle.cs:189`, `TextAnalysis.cs:231`, `MemoryTools.Core.cs:219,318,1011,1034,1081`, `MemoryOrchestrator.cs:71,128,218,233,266`.
+**Test (3):** `EmbeddingBenchmarkAllTests.cs:442`, `EmbeddingBenchmarkTests.cs:462`, `FileMemoryStoreTests.cs:249`.
+(An earlier draft said "15 production call sites" and its accounting summed to 20 of 21 lines. Corrected by the verification pass.)
 
-**F-6. `SaveIndex` has zero production callers outside the store implementations.**
-`rtk grep -rn "SaveIndex" --include=*.cs .` → the only non-comment, non-declaration call in `src/` is `FileMemoryStore.cs:1630` (inside `ImportTopicEntries`, i.e. `this`). Every other use is a test holding a concrete `FileMemoryStore` (`AgentFileEntityTests.cs:89`, `FileMemoryStoreTests.cs:277,929,1029,1040`, `SaveIndexOrphanSidecarTests.cs:32,39`) or the `HybridScorerTests` stub at `:264`. Confirms spec fact 10.
+**F-6. `SaveIndex` has zero production callers outside the store implementations — but one test call breaks.**
+`rtk grep -rn "SaveIndex" --include=*.cs .` → the only non-comment, non-declaration call in `src/` is `FileMemoryStore.cs:1630` (inside `ImportTopicEntries`, i.e. `this`). Confirms spec fact 10.
+**Corrected by the verification pass:** an earlier draft said every test use holds a concrete `FileMemoryStore`. `tests/Scrinia.Tests/AgentFileEntityTests.cs:89` does not — its `store` comes from `var store = MemoryStoreContext.Current!;` at `:80`, static type `IMemoryStore?`. That call breaks when `SaveIndex` leaves the interface. `FileMemoryStoreTests.cs:277,929,1029,1040` and `SaveIndexOrphanSidecarTests.cs:32,39` do hold concrete fields and are safe.
 
-**F-7. Layout-member call sites outside `Scrinia.Core`, by member.**
+**F-7. Layout-member call sites in `src/`, by member. NOT EXHAUSTIVE — see the warning below.**
 `rtk grep -rn "\.<member>\b" --include=*.cs src/Scrinia.Mcp src/Scrinia src/Scrinia.Server`
-- `ArtifactPath`, `GetStoreDirForScope`, `ListTopicArtifacts`, `ImportTopicEntries`: **zero** sites outside `Scrinia.Core`.
-- `FindArtifactPath`: one — `ScriniaCommands.Migration.cs:282`, inside `internal static async Task CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)` (`:280`).
-- `WorkspaceRoot`: 20 — `MemoryTools.Bundling.cs:31,32,82`; `MemoryTools.Core.cs:36,266,267,271,354,726,1339`; `MemoryTools.Lifecycle.cs:74,620,644,663`; `MemoryTools.Skills.cs:195,196,201,238,307`; `ScriniaCommands.Bundle.cs:155,156`.
+- `ArtifactPath`, `GetStoreDirForScope`: **zero** sites outside `Scrinia.Core`.
+- `ListTopicArtifacts`, `ImportTopicEntries`: `BundleFormatService.cs:55,258` only.
+- `FindArtifactPath`: one — `ScriniaCommands.Migration.cs:282`, inside `CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)` (`:280`).
+- `WorkspaceRoot`: **21** — `MemoryTools.Bundling.cs:31,32,82`; `MemoryTools.Core.cs:36,266,267,271,354,726,1339`; `MemoryTools.Lifecycle.cs:74,620,644,663`; `MemoryTools.Skills.cs:195,196,201,238,307`; `ScriniaCommands.Bundle.cs:155,156`; `BundleFormatService.cs:290`.
 
-**F-8. `Scrinia.Server` does not change for F3.** Its only members from the affected set are `ArtifactUri` (`MemoryOrchestrator.cs:120,281`) and `GenerateContentPreview` — and `ArtifactUri` stays on `IMemoryStore` per F-2. Spec fact 11's "2 Server" sites were the `ArtifactUri` pair.
+> **CORRECTED 2026-08-07 by the verification pass, and the correction is the important part.**
+> An earlier draft of this plan called this list exhaustive and said the total was 20. Both were wrong: the arithmetic was off by one, and the grep was scoped to three `src/` projects, so it could not have been exhaustive — it never looked at `tests/`. **It missed the entire test-side blast radius (F-19) and the whole `Scrinia.Server` bundle chain (F-8).**
+>
+> **Treat the compiler, not this list, as the authority on what Task 2 must touch.** The list above tells an implementer where to *start* and which sites are subtle. It does not bound the work. An error in a file this plan never names is expected, not a surprise — see Task 2 Step 5's rule for how to fix one.
+
+**F-8. `Scrinia.Server` DOES change — the earlier claim that it does not was wrong.**
+Corrected 2026-08-07 by the verification pass. `src/Scrinia.Server/Services/BundleService.cs:13` and `:24` take `IMemoryStore store` and forward it to `BundleFormatService.ExportTopicsToZip` / `ImportTopicsFromZip` (`:17`, `:27`). Retyping those per F-13 breaks `BundleService`, which breaks its callers at `MemoryEndpoints.cs:346` and `:391`, which pass `ctx.Store!` — and `RequestContext.Store` is `public IMemoryStore? Store { get; set; }` (`src/Scrinia.Server/Auth/RequestContext.cs:15`).
+
+**The server's store cannot simply be retyped, because it is a plugin seam.** `RequestContext.Store` is assigned once, at `Program.cs:434`, from `StoreManager.GetStore(string) → IMemoryStore` (`StoreManager.cs:27`), which delegates to `IStorageBackend.CreateStore` (`:33`). `Program.cs:92-95` registers `FilesystemBackend` and comments that plugin DI "runs before StoreManager is constructed **so plugins can replace `IStorageBackend`**". Narrowing `GetStore`'s return type would require every future backend to expose local filesystem paths — closing a seam this branch has no mandate to close. Task 3a narrows at the two bundle endpoints instead, with an HTTP error, mirroring what the MCP tools do one layer up.
+
+**F-19. The test-side blast radius is large and this plan does not enumerate it.**
+`rg "\.(ArtifactPath|WorkspaceRoot|GetStoreDirForScope|FindArtifactPath|SaveIndex|ListTopicArtifacts|ImportTopicEntries)\b" tests/` returns 40+ hits across ~20 files. Most hold a concrete `FileMemoryStore _store` field and are unaffected. The ones that break hold an `IMemoryStore`-typed receiver — overwhelmingly `var store = MemoryStoreContext.Current!;`, whose static type is `IMemoryStore?` (`src/Scrinia.Core/MemoryStoreContext.cs:16`). Known breakers, from the verification pass:
+`ScriniaMcpToolsTests.cs:562,669`; `AgentFileEntityTests.cs:31,34,83,89`; `SkillPathAuthorityTests.cs:26,40`; `StorePurityInvariantTests.cs:27,40,41,66`; `WorkspaceRootUnificationTests.cs:21,24,34,37`; `ConsolidateReembedTests.cs:73`; `BundleImportCategoryAllowlistTests.cs:103,106`; `BundleV2Tests.cs:108`; `EntityFactStorePersistenceTests.cs:28,42`; `AttributeMigrationTests.cs:207`.
+Also `HybridScorerTests.cs` declares **all six** layout members (`:274,276,277,278,285,286`) plus `SaveIndex` (`:264`) and `GenerateContentPreview` (`:279`) — the plan's Task 1 and Task 2 each name only part of that.
+Task 2 Step 5a adds one test helper so this is a mechanical substitution rather than 20 ad-hoc casts.
+
+**F-20. There are exactly three `IMemoryStore` implementations in the repo.**
+Verified repo-wide: `FileMemoryStore.cs:23`, `HttpMemoryStore.cs:17`, and the hand-written `FakeMemoryStore` at `tests/Scrinia.Tests/Embeddings/HybridScorerTests.cs:256`. `benchmarks/` contains zero references to `IMemoryStore` or any affected member. The plugin projects consume `IMemoryStore` only as an `IMemoryEventSink` parameter and touch none of the eight moved members. `tests/Scrinia.Server.Tests/Conformance/StoreConformanceFixture.cs:33,34,47` holds `IMemoryStore Local`/`Remote` but uses only `SearchAll` and `FormatQualifiedName`, so it survives unchanged.
 
 **F-9. `scri serve --remote <url>` runs the whole MCP tool surface against `HttpMemoryStore`.**
 `src/Scrinia/Commands/ScriniaCommands.Serve.cs:40-63`: when `--remote` is set, `MemoryStoreContext.Current = new HttpMemoryStore(httpClient, store ?? "default")` and the MCP host starts. `rtk grep -rn "new HttpMemoryStore" --include=*.cs src/ tests/` shows this is the only production construction site. So every fact below about "remote mode" is about a real, reachable configuration.
@@ -91,8 +130,10 @@ private static IMemoryStore CurrentStore =>
 ```
 `rtk grep -rn "CurrentStore" --include=*.cs src/Scrinia.Mcp/` shows `var store = CurrentStore;` as the opening line of tool methods. **The spec's instruction to "change their parameter type" does not fit these sites — they have no parameter.** The guarded accessor in Task 2 is the answer.
 
-**F-13. `BundleFormatService` needs both member sets in one method.**
-`rtk grep -n "store\." src/Scrinia.Core/Bundles/BundleFormatService.cs` → `SanitizeName` (`:54,61,74,147,148,247`) and `LoadIndex` (`:56`) alongside `ListTopicArtifacts` (`:55`), `ImportTopicEntries` (`:258`), `WorkspaceRoot` (`:290`). Signatures: `ExportTopicsToZip(ZipArchive zip, IMemoryStore store, string[] topics)` (`:46-47`) and `ImportTopicsFromZip(ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite)` (`:110-111`). This is the concrete case F-3 was decided for.
+**F-13. `BundleFormatService` needs both member sets in one method, and has four `IMemoryStore` parameters, not two.**
+`rtk grep -n "store\." src/Scrinia.Core/Bundles/BundleFormatService.cs` → `SanitizeName` (`:54,61,74,147,148,247`) and `LoadIndex` (`:56`) alongside `ListTopicArtifacts` (`:55`), `ImportTopicEntries` (`:258`), `WorkspaceRoot` (`:290`).
+Public signatures: `ExportTopicsToZip(ZipArchive zip, IMemoryStore store, string[] topics)` (`:46-47`) and `ImportTopicsFromZip(ZipArchive zip, IMemoryStore store, string[]? filterTopics, bool overwrite)` (`:110-111`).
+**Added by the verification pass — an earlier draft named only the two public methods.** Two private helpers in the same file also take `IMemoryStore` and must be retyped with them: `CategoryDir(IMemoryStore store, string category)` (`:288`, the actual holder of the `:290` `WorkspaceRoot` read) and `ExportFileEntities(ZipArchive, IMemoryStore)` (`:299`). A fourth parameter at `:353` also takes `IMemoryStore` — read it and decide. This is the concrete case F-3 was decided for.
 
 **F-14. `ErrorCodes` has no code for an unsupported capability.**
 `src/Scrinia.Mcp/McpResponse.cs:13-28` declares exactly: `InvalidParameter`, `InvalidAction`, `InvalidPath`, `NotFound`, `Conflict`, `Internal`. Task 3 adds `NotSupported = "NOT_SUPPORTED"`.
@@ -107,8 +148,9 @@ private static IMemoryStore CurrentStore =>
 **F-17. The stale tool-list comment is `ScriniaMcpToolsTests.cs:10-25`, not `:11-23`.**
 Lines `:11-20` are the stale inventory (`Show`, `Store`, `List`, `Search`, `Copy`, `Forget`, `Export`, `Import`, `Append`). Lines `:22-24` are still true — "All tests are offline" and "Store/List/Forget tests use TestHelpers.StoreScope to isolate from the real user store." The spec said "delete"; this plan deletes only the stale inventory and keeps the two accurate notes, because deleting a true statement is not a cleanup.
 
-**F-18. Baseline is green.**
-`rtk dotnet build Scrinia.sln -c Debug` → `17 projects, 0 errors, 0 warnings`.
+**F-18. Baseline builds clean, but "0 warnings" is not the signal it looks like.**
+`rtk dotnet build Scrinia.sln -c Debug` on an already-built tree → `0 errors, 0 warnings`. **Corrected by the verification pass:** that was a no-op incremental build. A cold build reports **1694 warnings, 0 errors** across **16** projects. Every one of the 1694 is an analyzer warning (CA1707, CA1861, …) in a **test** project, and `TreatWarningsAsErrors` covers `src/` only (`Directory.Build.props:44-46`) — so they are pre-existing and not a gate.
+**Consequence for implementers:** do not use warning count as a health signal, and do not "fix" warnings you did not introduce. The gate is `0 errors`, plus no *new* warning in a `src/` project (where any warning is an error anyway).
 
 ---
 
@@ -127,8 +169,11 @@ Lines `:11-20` are the stale inventory (`Show`, `Store`, `List`, `Search`, `Copy
 | `src/Scrinia.Mcp/MemoryTools.{Core,Bundling,Lifecycle,Skills}.cs` | modify | Local-only tools guard; optional uses narrow. |
 | `src/Scrinia/Commands/{WorkspaceSetup,ScriniaCommands.Bundle,ScriniaCommands.Migration}.cs` | modify | CLI holds a concrete store; sink installs route through one method. |
 | `src/Scrinia.Core/IMemoryEventSink.cs` | modify | Adds `InstallDefault`. |
-| `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs` | modify | Handler renames (F6). |
+| `src/Scrinia.Server/Services/BundleService.cs` | modify | Takes `ILocalMemoryStore` (F-8). |
+| `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs` | modify | Bundle endpoints narrow with a 501 (F-8); handler renames (F6). |
+| `tests/Scrinia.Tests/TestHelpers.cs` | modify | `LocalStore` narrowing helper, so ~10 test files need no casts (F-19). |
 | `tests/Scrinia.Tests/StoreBoundaryTests.cs` | **create** | The one-remaining-throw property; remote-mode tool behaviour. |
+| ~10 further test files (F-19) | modify | Receiver narrowed via the helper. **The compiler is the authority, not F-7.** |
 | `docs/architecture/core.md` (+ any live doc that names the moved members) | modify | Interface description. |
 | `CHANGELOG.md` | modify | `[Unreleased]` entries. |
 
@@ -188,7 +233,9 @@ Do **not** change `WorkspaceSetup.Store.GenerateContentPreview(content)` at `Scr
 
 - [ ] **Step 4: Remove the member from the interface and both implementations**
 
-Delete `IMemoryStore.cs:171-172` (the `// Content utility` comment and the declaration), `FileMemoryStore.cs:1504-1509`, `HttpMemoryStore.cs:512-519` (including the `// ── Content utility ──` banner), and the test double at `HybridScorerTests.cs:279`.
+Delete `IMemoryStore.cs:171-172` (the `// Content utility` comment and the declaration), `FileMemoryStore.cs:1502-1509` (**including its `// ── Content utility ──` banner at `:1502`** — an earlier draft ordered the banner deleted in `HttpMemoryStore` only, leaving this one orphaned), `HttpMemoryStore.cs:512-519` (banner at `:512`), and the test double at `HybridScorerTests.cs:279`.
+
+**Also handle the parameter this strands.** `TextAnalysis.ComputeChunkEntries(IMemoryStore store, string[] chunks)` (`TextAnalysis.cs:224`) uses `store` **only** at `:231`. After the substitution it is an unused parameter on a `public static` `Scrinia.Core` API. It is not a build break (IDE analyzers do not run at build here), but leaving it is worse than removing it: it advertises a dependency the method no longer has. Remove the parameter and fix its callers, or — if a caller makes that costly — say so in the report and leave it, rather than deciding silently.
 
 - [ ] **Step 5: Build and run the affected suites**
 
@@ -329,16 +376,22 @@ public sealed class StoreBoundaryTests
 
     private static string RepoRoot()
     {
+        // Same walk-up as tests/Scrinia.Merge.Tests/GitMergeHarness.cs:33-38. Copy its
+        // failure message too — it names the directory it started from, which is the only
+        // thing worth knowing when this fails. That project is outside this branch's test
+        // scope, so the helper is duplicated rather than referenced.
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Scrinia.sln")))
             dir = dir.Parent;
-        dir.Should().NotBeNull(because: "the test must locate the repo root to read source");
-        return dir!.FullName;
+        return dir?.FullName ?? throw new InvalidOperationException(
+            $"Could not find Scrinia.sln walking up from {AppContext.BaseDirectory}.");
     }
 }
 ```
 
-**Implementer note on the first test:** it reads source text rather than reflecting, because the property is about *how many throw sites exist*, which reflection cannot see. If the file-reading approach proves brittle in this harness (e.g. the working directory is not under the repo), say so in the report rather than weakening the assertion — a substitute must still count throw sites, not merely check that one exists.
+**Implementer notes on the first test.**
+- It reads source text rather than reflecting, because the property is about *how many throw sites exist*, which reflection cannot see. If a substitute is needed it must still count throw sites, not merely check that one exists.
+- The walk-up is verified to work here: test binaries land in `tests/Scrinia.Tests/bin/Debug/net10.0/`, four levels below the root, and VSTest does not shadow-copy by default, so `AppContext.BaseDirectory` is the real output directory.
 
 Run: `rtk dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~StoreBoundaryTests"`
 Expected **before** the split: both tests FAIL — the first finds 8 throw sites, the second finds `WorkspaceRoot` on `IMemoryStore`. **Record the observed numbers in the report.** If either passes at this point, the test is not measuring what it claims and must be fixed before proceeding.
@@ -354,7 +407,9 @@ In `src/Scrinia.Core/FileMemoryStore.cs`, change the type declaration to impleme
 
 In `src/Scrinia/HttpMemoryStore.cs`, delete the seven members that threw: `SaveIndex` (`:256-257`), `ArtifactPath` (`:495-496`), `FindArtifactPath` (`:501-502`), `GetStoreDirForScope` (`:504-505`), `WorkspaceRoot` (`:507-510`), `ListTopicArtifacts` (`:611-612`), `ImportTopicEntries` (`:614-616`). Keep `ArtifactUri` (`:498-499`). Delete the now-empty `// ── Paths (not supported in remote mode) ──` banner and move `ArtifactUri` under a banner that describes what it is.
 
-Delete the `SaveIndex` stub at `tests/Scrinia.Tests/Embeddings/HybridScorerTests.cs:264`.
+Delete the now-orphaned `// ── Export/Import helpers ──` banner at `HttpMemoryStore.cs:609`.
+
+Delete the `SaveIndex` stub at `tests/Scrinia.Tests/Embeddings/HybridScorerTests.cs:264` **and its six layout stubs at `:274,276,277,278,285,286`** — the double implements all of them.
 
 - [ ] **Step 4: Add the guarded ambient accessor**
 
@@ -379,18 +434,35 @@ private static ILocalMemoryStore CurrentLayout =>
 
 - [ ] **Step 5: Make it compile — the mechanical wave**
 
-Change `var store = CurrentStore;` to `var store = CurrentLayout;` in the methods that touch a layout member (F-7, mapped to enclosing methods):
-- `MemoryTools.Bundling.cs` — `Export` (`:19`, uses `:31,32`), `Import` (`:73`, uses `:82`)
-- `MemoryTools.Lifecycle.cs` — `Reconcile` (`:67`, uses `:74`), `BuildRestoreContextAsync` (`:608`, uses `:620,644,663`)
-- `MemoryTools.Skills.cs` — `SkillCreate` (`:120`, uses `:195,196,201`), `SkillLoad` (`:229`, uses `:238`)
-- `MemoryTools.Core.cs` — `Remember` (`:109`, uses `:266,267,271,354`)
+Change `var store = CurrentStore;` to `var store = CurrentLayout;` in the methods that touch a layout member. **The line numbers below are the `var store = …` assignment lines, not the method declarations** — an earlier draft cited declaration lines here, which sent an implementer to the wrong line in every case:
+
+| File | Method | **Assignment line to edit** | Layout uses |
+|---|---|---|---|
+| `MemoryTools.Bundling.cs` | `Export` (decl `:19`) | **`:24`** | `:31,32` |
+| `MemoryTools.Bundling.cs` | `Import` (decl `:73`) | **`:79`** | `:82` |
+| `MemoryTools.Lifecycle.cs` | `Reconcile` (decl `:67`) | **`:73`** | `:74` |
+| `MemoryTools.Lifecycle.cs` | `BuildRestoreContextAsync` (decl `:608`) | **`:610`** | `:620,644,663` |
+| `MemoryTools.Skills.cs` | `SkillCreate` (decl `:120`) | **`:127`** | `:195,196,201` |
+| `MemoryTools.Skills.cs` | `SkillLoad` (decl `:229`) | **`:234`** | `:238` |
+| `MemoryTools.Core.cs` | `Remember` (decl `:109`) | **`:134`** | `:266,267,271,354` |
+
+Note the collision hazard: `Bundling.cs`'s `Import` is declared at `:73` and `Lifecycle.cs`'s `Reconcile` *assigns* at `:73`. Different files, same number.
 
 Retype parameters where the method receives a store:
 - `MemoryTools.Skills.cs:304-305` — `LoadSkillAsync(IMemoryStore store, …)` → `LoadSkillAsync(ILocalMemoryStore store, …)`
 - `MemoryTools.Core.cs:715` — `BuildFullList(List<ScopedArtifact> entries, IMemoryStore store, int offset, int limit)` → `ILocalMemoryStore store`
 - `MemoryTools.Core.cs:1337` — `BuildDriftList(IMemoryStore store)` → `ILocalMemoryStore store`
-- `BundleFormatService.cs:47` and `:111` — `IMemoryStore store` → `ILocalMemoryStore store` (F-13)
+- `BundleFormatService.cs:47`, `:111`, and the private helpers `CategoryDir` (`:288`), `ExportFileEntities` (`:299`), and `:353` — `IMemoryStore store` → `ILocalMemoryStore store` (F-13)
 - `ScriniaCommands.Migration.cs:280` — `CompactEntryToSingleChunk(ScopedArtifact item, IMemoryStore store, CancellationToken ct)` → `ILocalMemoryStore store`
+
+**Then fix the callers those retypes break. Both were missing from an earlier draft and each one alone stops the tree building at this commit:**
+
+- **`MemoryTools.Core.cs:588`** — `List` does `var store = CurrentStore;` and passes it to *both* retyped callees: `BuildDriftList(store)` at `:591` and `BuildFullList(entries, store, offset, limit)` at `:602`. Change `:588` to `var store = CurrentLayout;`.
+  **This site is why F-7's grep could not be exhaustive:** the word `WorkspaceRoot` never appears in `List`, so a member-name search could not find it. Expect more of this shape.
+  Task 3 Step 6 revisits `:588` — `list()` is not a local-only tool.
+- **`ScriniaCommands.Migration.cs:198`** — `IMemoryStore store = WorkspaceSetup.Store;`, passed to `CompactEntryToSingleChunk` at `:206`. Change to `ILocalMemoryStore store = WorkspaceSetup.LocalStore;`.
+
+Test callers of the retyped methods, which the compiler will also flag: `McpDisplayCutoverTests.cs:55` (passes a concrete `FileMemoryStore` — **survives unchanged**), `ConsolidateReembedTests.cs:94` and `ConsolidateSingleStoreTests.cs:35` (pass `IMemoryStore` — fixed by Step 5a).
 
 For `MemoryTools.Core.cs:36` (`Recall`'s `/agent/` branch), the local is `MemoryStoreContext.Current` with an explicit null check. Narrow it in place, preserving the existing fall-through:
 ```csharp
@@ -412,9 +484,51 @@ internal static ILocalMemoryStore LocalStore =>
 ```
 Then `ScriniaCommands.Bundle.cs:155-156` uses `WorkspaceSetup.LocalStore`, and `ScriniaCommands.Migration.cs`'s caller of `CompactEntryToSingleChunk` passes it.
 
-**Do not add casts anywhere else.** If a site needs a cast that is not in this list, that is a finding, not a fix — report it. It means either the plan missed a call site or the member belongs on a different interface.
+**Expect compile errors in files this plan does not name.** F-7's list is a starting point, not a bound — an earlier draft claimed it was exhaustive and was wrong twice over (F-8, F-19). The compiler produces the real list. For each error, apply this rule, in order:
 
-**Three of these edits are deliberately temporary, and Task 3 revisits them.** `Remember` (`CurrentLayout`), `BuildFullList` (`ILocalMemoryStore` parameter) and `Recall`'s `/agent/` narrow are not local-only operations — they merely *touch* a local-only member on one branch. Task 2 gives them the widest shape that preserves today's behaviour exactly, so the mechanical wave carries no behaviour claim; Task 3 narrows the touch instead of the method. This churn is the price of keeping the two diffs separately reviewable. Do not "fix" it early.
+1. **Is the receiver already a concrete `FileMemoryStore`?** Then it should not be erroring; re-read it.
+2. **Is the whole operation local-only?** Retype the parameter or local to `ILocalMemoryStore`. Preferred.
+3. **Is it a test using `MemoryStoreContext.Current!`?** Use the helper from Step 5a. Do not write an inline cast.
+4. **Does it need a cast at a genuine remote/local boundary?** Stop and report it. That is a finding — it means a member is on the wrong interface, or a real operation is about to start throwing where it used to work.
+
+Never silence an error with `(ILocalMemoryStore)` at a site where the store could legitimately be remote. That converts a compile-time guarantee back into the runtime trap this branch exists to remove.
+
+- [ ] **Step 5a: Add the test-side narrowing helper before fixing any test**
+
+Per F-19, roughly ten test files reach layout members through `var store = MemoryStoreContext.Current!;`, whose static type is `IMemoryStore?`. `TestHelpers.StoreScope` always installs a `FileMemoryStore` (`TestHelpers.cs:111`), so in those tests the narrowing is always valid — it just needs saying once.
+
+In `tests/Scrinia.Tests/TestHelpers.cs`, beside `StoreScope`:
+```csharp
+/// <summary>The ambient store, narrowed to the local contract. StoreScope always installs a
+/// FileMemoryStore, so this is total inside a StoreScope. Exists so that tests reaching a
+/// path member do so through one named helper rather than ~20 inline casts.</summary>
+internal static ILocalMemoryStore LocalStore =>
+    MemoryStoreContext.Current as ILocalMemoryStore
+    ?? throw new InvalidOperationException(
+        "No local store is installed. Is this test inside a StoreScope?");
+```
+Then `MemoryStoreContext.Current!.ArtifactPath(x)` → `TestHelpers.LocalStore.ArtifactPath(x)`, and `var store = MemoryStoreContext.Current!;` → `var store = TestHelpers.LocalStore;`.
+
+**The eight files that break, with the lines that fail** (verified by the verification pass; `Scrinia.Server.Tests` and `Scrinia.Plugin.Embeddings.Tests` are unaffected — their `_store` fields are concrete `FileMemoryStore`):
+
+| File | Failing lines | `store` declared at |
+|---|---|---|
+| `AgentFileEntityTests.cs` | `:31, 34, 83, 89` | `:26`, `:80` |
+| `BundleImportCategoryAllowlistTests.cs` | `:106` | `:90` |
+| `ConsolidateReembedTests.cs` | `:73, 94` | `:54` |
+| `ConsolidateSingleStoreTests.cs` | `:35` | `:15` |
+| `ScriniaMcpToolsTests.cs` | `:562, 669` | inline `MemoryStoreContext.Current!` |
+| `SkillPathAuthorityTests.cs` | `:26, 40` | `:21`, `:36`, `:49` |
+| `StorePurityInvariantTests.cs` | `:27, 40, 41, 66` | `:21`, `:38`, `:61` |
+| `WorkspaceRootUnificationTests.cs` | `:21, 24, 34, 37` | `:19`, `:32` |
+
+`BundleV2Tests.cs:108` also calls a private helper `ImportFromBytes(byte[], IMemoryStore store, …)` that forwards to `ImportTopicsFromZip`; retype that helper's parameter.
+
+This table is a starting point like F-7 — **run the build and fix what it reports**, do not assume the table is complete.
+
+`HybridScorerTests.cs`'s `FakeMemoryStore` (`:256`) declares all six layout members (`:274,276,277,278,285,286`) plus `SaveIndex` (`:264`) — delete all eight from it, not just the two named earlier in this plan.
+
+**Three of Step 5's production edits are deliberately temporary, and Task 3 revisits them.** `Remember` (`CurrentLayout`), `BuildFullList` (`ILocalMemoryStore` parameter) and `Recall`'s `/agent/` narrow are not local-only operations — they merely *touch* a local-only member on one branch. Task 2 gives them the widest shape that preserves today's behaviour exactly, so the mechanical wave carries no behaviour claim; Task 3 narrows the touch instead of the method. This churn is the price of keeping the two diffs separately reviewable. Do not "fix" it early.
 
 - [ ] **Step 6: Run the property test and watch it turn green**
 
@@ -474,29 +588,32 @@ In `src/Scrinia.Mcp/MemoryTools.cs`, beside `CurrentLayout`:
 ```csharp
 /// <summary>Non-throwing counterpart to <see cref="CurrentLayout"/>, for tool entry points
 /// that should answer with an error response rather than propagate an exception.</summary>
-private static bool TryGetLayout(out ILocalMemoryStore layout)
+private static bool TryGetLayout([NotNullWhen(true)] out ILocalMemoryStore? layout)
 {
-    layout = (MemoryStoreContext.Current as ILocalMemoryStore)!;
+    layout = MemoryStoreContext.Current as ILocalMemoryStore;
     return layout is not null;
 }
 ```
+Requires `using System.Diagnostics.CodeAnalysis;`. The nullable annotation is not decoration: without `[NotNullWhen(true)]` every caller's success branch needs a `!`, and with a non-nullable `out` the false branch holds a typed null.
 
 - [ ] **Step 3: Write the red checks for the local-only tools**
 
 Add to `tests/Scrinia.Tests/StoreBoundaryTests.cs`. The test double is a hand-written class — **no mocking frameworks** (repo-wide rule). It implements `IMemoryStore` only, which is the whole point: after Task 2 the compiler will not let it be mistaken for a local store.
 
+**Do not hand-write two full doubles.** `IMemoryStore` declares 30 required members today; after Tasks 1 and 2 remove 8, each double would need **22 member bodies** — 44 across two classes. Instead, extract the double that already exists.
+
+`tests/Scrinia.Tests/Embeddings/HybridScorerTests.cs:256` holds `private sealed class FakeMemoryStore : IMemoryStore` with all 30 implemented. Task 2 already opens that file (to delete its `SaveIndex` stub at `:264`, its preview stub at `:279`, and its six layout stubs at `:274,276,277,278,285,286`). Finish the job here:
+
+1. Move it to its own file under `tests/Scrinia.Tests/`, as `internal class FakeMemoryStore : IMemoryStore` — not `sealed`, not nested — with `virtual` members.
+2. `HybridScorerTests` uses it unchanged.
+3. `RemoteOnlyStore` and `RecordingRemoteStore` become subclasses overriding only what each needs — roughly six members between them instead of 44.
+
+If moving it turns out to perturb `HybridScorerTests` (it currently sees the test class's private state, if any), say so in the report and fall back to hand-writing — but check first.
+
 ```csharp
-/// <summary>
-/// An IMemoryStore with no local filesystem — the shape HttpMemoryStore has after the split.
-/// Every member throws, because no test here should reach one: these tests assert that the
-/// tools refuse before they touch the store.
-/// </summary>
-private sealed class RemoteOnlyStore : IMemoryStore
-{
-    // Implement every IMemoryStore member as `throw new InvalidOperationException(
-    //     "test reached a store member it should have refused before")`.
-    // The implementer writes these out; the compiler lists them.
-}
+/// <summary>An IMemoryStore with no local filesystem — the shape HttpMemoryStore has after
+/// the split. Overrides nothing: these tests assert the tools refuse before touching it.</summary>
+private sealed class RemoteOnlyStore : FakeMemoryStore { }
 
 [Fact]
 public async Task BundleExport_AgainstRemoteStore_ReturnsErrorNotException()
@@ -508,7 +625,7 @@ public async Task BundleExport_AgainstRemoteStore_ReturnsErrorNotException()
     using var scope = new TestHelpers.StoreScope();
     MemoryStoreContext.Current = new RemoteOnlyStore();
 
-    var response = await Tools().Bundle("export", topics: ["api"], cancellationToken: default);
+    var response = await Tools().Export(topics: ["api"], cancellationToken: default);
 
     response.Status.Should().Be("error");
     response.ErrorCode.Should().Be(ErrorCodes.NotSupported);
@@ -517,16 +634,26 @@ public async Task BundleExport_AgainstRemoteStore_ReturnsErrorNotException()
 
 `Status` and `ErrorCode` are the real property names — `McpResponse` is a record declared at `McpResponse.cs:35`, with `Status` at `:37` and `ErrorCode` at `:46`.
 
-**Implementer notes.**
-- `Bundle` is the public tool entry (`MemoryTools.Lifecycle.cs:27`); `Export`/`Import` are `internal` behind it. Drive the public surface where one exists — read `Bundle`'s actual parameter list before writing the call above, since this plan did not pin it.
-- Write the equivalent case for each guarded entry: `bundle('import', …)`, `reconcile()`, `restore()`, `skill` create, `skill` load.
+**Drive `Export`/`Import`, not `Bundle`.** An earlier draft called `Tools().Bundle("export", …)` and asserted `.Status` on the result. That does not compile: `Bundle` is `public async Task<string>` (`MemoryTools.Lifecycle.cs:27`) — it returns *rendered YAML*, deliberately (its own remarks explain why). `Export` (`Bundling.cs:19`) and `Import` (`:73`) are `internal Task<McpResponse>` and are what these tests must call. `Scrinia.Mcp` declares `InternalsVisibleTo` for `Scrinia.Tests`, so `internal` is reachable.
+
+Write the equivalent case for each guarded entry: `Export`, `Import`, `Reconcile`, `SkillCreate`, `SkillLoad`, and the restore path (see Step 4a).
 
 Run: `rtk dotnet test tests/Scrinia.Tests/Scrinia.Tests.csproj --filter "FullyQualifiedName~StoreBoundaryTests"`
 Expected: every new case FAILS with `NotSupportedException` escaping from `CurrentLayout`, not with an assertion failure on the status. **Record the exception message observed.** A case that fails on the assertion instead means the tool never reached the store — investigate before "fixing" it.
 
 - [ ] **Step 4: Guard the local-only tools**
 
-In each of `Export`, `Import` (`MemoryTools.Bundling.cs`), `Reconcile`, `BuildRestoreContextAsync` (`MemoryTools.Lifecycle.cs`), `SkillCreate`, `SkillLoad` (`MemoryTools.Skills.cs`), replace `var store = CurrentLayout;` with:
+Replace `var store = CurrentLayout;` with a guard. **The return form differs per method — an earlier draft gave one form for all six and was wrong for the async ones.** Verified signatures:
+
+| Method | Location | Async? | Guard return |
+|---|---|---|---|
+| `Export` | `Bundling.cs:19` | no | `return Task.FromResult(ResponseBuilder.Error(…));` |
+| `Import` | `Bundling.cs:73` | no | `return Task.FromResult(…);` |
+| `Reconcile` | `Lifecycle.cs:67` | no | `return Task.FromResult(…);` |
+| `SkillLoad` | `Skills.cs:229` | no | `return Task.FromResult(…);` |
+| `SkillCreate` | `Skills.cs:120` | **yes** | `return ResponseBuilder.Error(…);` — **no** `Task.FromResult` |
+| `Restore` | `Lifecycle.cs:591` | **yes** | `return ResponseBuilder.Error(…);` |
+
 ```csharp
 if (!TryGetLayout(out var store))
     return Task.FromResult(ResponseBuilder.Error(
@@ -534,9 +661,23 @@ if (!TryGetLayout(out var store))
         ErrorCodes.NotSupported,
         "run this against a local store, or use the server's export endpoint"));
 ```
-Adapt per method: the message names the operation, the hint names the remote alternative where one exists (the export/import endpoints do — see the messages the deleted `HttpMemoryStore` members carried at `:612` and `:616`), and `async` methods return the response directly rather than `Task.FromResult`.
 
-`BuildRestoreContextAsync` returns `RestoreContext`, not `McpResponse` — guard at its caller `Restore` (`MemoryTools.Lifecycle.cs:591`) instead, or give `BuildRestoreContextAsync` an empty-context path. Choose whichever leaves `Restore`'s existing empty-state message intact and say which you chose.
+**The third argument is `params string[] recovery`, not a hint string.** `ResponseBuilder.Error(string error, string code, params string[] recovery)` lives at `McpResponse.cs:81` and populates `ActionNeeded`. The 3-arg call compiles, but write the string as an action the caller can take, not as explanatory prose. For export and import there is a real alternative to name — the deleted `HttpMemoryStore` members carried it at `:612` and `:616` ("Use export endpoint" / "Use import endpoint").
+
+- [ ] **Step 4a: Decide what `guide()` does in remote mode**
+
+`BuildRestoreContextAsync` returns `RestoreContext`, not `McpResponse`, so it cannot carry the guard itself. It has **two** callers, not one:
+- `Restore` (`MemoryTools.Lifecycle.cs:593`)
+- **`Guide` (`MemoryTools.cs:54`)**
+
+An earlier draft named only `Restore`. Guarding just it leaves `guide()` propagating `NotSupportedException` in remote mode — and `guide()` is the tool this workspace's `CLAUDE.md` instructs agents to call at session start, so it is the worst possible place to leave a raw exception.
+
+First establish what `guide()` does today in remote mode — read `MemoryTools.cs:40-70` and `BuildRestoreContextAsync`'s three `WorkspaceRoot` reads (`:620,644,663`) and determine whether any is conditional. Then choose, and state the choice with its reason in the report:
+- **(a)** Guard both callers, so `guide()` returns a `NOT_SUPPORTED` response. Honest, but makes the session-start tool fail outright against a remote store.
+- **(b)** Give `BuildRestoreContextAsync` a degraded path that returns an empty/partial `RestoreContext` when there is no local store, so `guide()` still returns its primer and `restore()` reports nothing to restore. Better behaviour, larger change.
+- **(c)** Guard `Restore` only and leave `guide()` as it is — acceptable **only** if the reading above shows `guide()`'s path never reaches a `WorkspaceRoot`.
+
+**(b) is the likely right answer**, but do not assume it — the reading decides. Whichever you pick, add a test driving `guide()` against `RemoteOnlyStore`.
 
 Run the new cases: expected PASS.
 
@@ -568,18 +709,32 @@ Read `Remember`'s real parameter list at `MemoryTools.Core.cs:109` before writin
 Expected pre-fix: `NotSupportedException` from `WorkspaceRoot` — except that after Task 2 the member no longer exists on `IMemoryStore`, so what the pre-fix state actually produces is whatever Task 2's `CurrentLayout` does: a `NotSupportedException` from the accessor. **Either way, record the exact exception and message observed.** If the call succeeds before the fix, F-10 is wrong — stop and report, because the fix's entire justification rests on it.
 
 Then change `MemoryTools.Core.cs:354` from an unconditional read to one that happens only when there is something to hash, mirroring the shape `BuildFullList:723-726` already uses:
+The existing code is:
 ```csharp
-var refPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
+string workspaceRoot = store.WorkspaceRoot;                              // :354
+
+var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
+        ? fileRefs : [])
+    .Distinct(StringComparer.OrdinalIgnoreCase);                          // :356
+
+Dictionary<string, string>? codeRefDict = null;
+foreach (var refPath in allRefPaths)                                      // :361
+```
+
+Reorder so the root is resolved only when there is something to hash. **Keep the name `allRefPaths`** — an earlier draft of this plan introduced a new `refPaths` and left `:361`'s loop referencing `allRefPaths`, which is CS0103:
+```csharp
+var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
         ? fileRefs : [])
     .Distinct(StringComparer.OrdinalIgnoreCase)
     .ToList();
 
 // Drift detection hashes files on disk, so it needs a local workspace. A remote store has
 // none; the memory is stored without file hashes rather than the whole call failing.
-string? workspaceRoot = refPaths.Count > 0
+string? workspaceRoot = allRefPaths.Count > 0
     ? (store as ILocalMemoryStore)?.WorkspaceRoot
     : null;
 ```
+The `.ToList()` is required — `allRefPaths` is now read twice (`.Count` and the loop) and `Distinct` is lazy.
 `store` is `CurrentLayout` after Task 2 — revert that method to `CurrentStore` and narrow here, since `Remember` is no longer local-only. Its `/agent/` and `/skill/` write branches (`:262-277`) **are** local-only and take the Step 4 guard.
 
 Follow the downstream uses of `workspaceRoot` (`ResolveWorkspacePath` at `:1392`, `ComputeFileHash` at `:1398`) and skip hashing when it is null. Do not fabricate a root.
@@ -595,7 +750,20 @@ For `BuildFullList`, Task 2 retyped its parameter to `ILocalMemoryStore`; revert
 if (anyCodeRefs)
     workspaceRoot = (store as ILocalMemoryStore)?.WorkspaceRoot;
 ```
-`BuildDriftList` (`:1337`) stays `ILocalMemoryStore` — drift detection genuinely is local-only — and its caller takes the Step 4 guard.
+
+`BuildDriftList` (`:1337`) stays `ILocalMemoryStore` — drift detection genuinely is local-only. **Its guard goes on the drift branch, not on `List`.** An earlier draft said "its caller takes the Step 4 guard", which contradicted this same step's requirement that remote `list()` succeed: `List` is the caller, and guarding its entry would refuse every remote listing. Revert `:588` to `var store = CurrentStore;` and guard only the drift branch at `:590-591`:
+```csharp
+if (string.Equals(mode, "drift", StringComparison.OrdinalIgnoreCase))
+{
+    if (!TryGetLayout(out var localStore))
+        return Task.FromResult(ResponseBuilder.Error(
+            "drift detection needs a local workspace; the active store is remote.",
+            ErrorCodes.NotSupported,
+            "run list() without mode='drift' for a plain listing"));
+    return BuildDriftList(localStore);
+}
+```
+So `list()` works remotely, `list(mode: 'drift')` returns a clean refusal, and the drift column is simply absent from a remote plain listing. Add a test for each of the three.
 
 - [ ] **Step 7: Build and run all four suites, then commit**
 
@@ -614,6 +782,51 @@ git commit -m "fix(mcp): answer instead of throwing when a tool needs local file
 remember() read WorkspaceRoot unconditionally, so every remember against a
 remote store threw. Local-only tools now return NOT_SUPPORTED; tools that
 merely prefer a local store degrade."
+```
+
+---
+
+## Task 3a: The server's bundle endpoints (F-8)
+
+**Added 2026-08-07 by the verification pass.** An earlier draft of this plan asserted that `Scrinia.Server` did not change at all. It does: retyping `BundleFormatService` per F-13 breaks `BundleService`, which breaks two endpoints. This task exists because that claim was wrong, and it is separated from Task 3 so the MCP-side and HTTP-side guards can be judged independently.
+
+**Files:**
+- Modify: `src/Scrinia.Server/Services/BundleService.cs:13,24`
+- Modify: `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs:346,391`
+- Modify: `tests/Scrinia.Server.Tests/` — one endpoint test per branch
+
+**Interfaces:**
+- Consumes: `ILocalMemoryStore`, and `BundleFormatService`'s retyped signatures from Task 2.
+
+- [ ] **Step 1: Retype `BundleService`**
+
+`ExportToStream(ILocalMemoryStore store, string[] topics)` and `ImportFromStream(ILocalMemoryStore store, Stream bundle, string[]? topics, bool overwrite)`. Bodies unchanged — they only forward.
+
+- [ ] **Step 2: Narrow at the endpoints, and do NOT narrow `StoreManager`**
+
+`MemoryEndpoints.cs:346` and `:391` pass `ctx.Store!`, typed `IMemoryStore?` (`RequestContext.cs:15`). Narrow there:
+```csharp
+if (ctx.Store is not ILocalMemoryStore localStore)
+    return Results.Problem(
+        detail: "Bundle export requires a store backed by a local filesystem.",
+        statusCode: StatusCodes.Status501NotImplemented);
+```
+
+**Do not "fix" this by changing `StoreManager.GetStore`'s return type to `ILocalMemoryStore`.** It looks like the tidier fix and it is the wrong one: `GetStore` (`StoreManager.cs:27`) delegates to `IStorageBackend.CreateStore` (`:33`), and `Program.cs:92-95` registers `FilesystemBackend` behind a comment stating that plugin DI runs first **so plugins can replace `IStorageBackend`**. Narrowing the return type would oblige every future backend to expose local filesystem paths — closing a deliberate seam, on a branch whose mandate is to stop conflating local-only capability with the shared contract. Match the shape to the fact: the *server* can host a non-local backend, so the *endpoint* is where the check belongs.
+
+Check the surrounding handlers' actual return type before writing the guard — if they return `IResult`, the above fits; if they return a typed result, adapt and say so.
+
+- [ ] **Step 3: Test both branches**
+
+Two tests in `Scrinia.Server.Tests`: a local-backend export returns 200 (this should already pass — it is the regression guard), and an export against a `RequestContext` whose `Store` is not an `ILocalMemoryStore` returns 501. For the second, a hand-written non-local `IMemoryStore` double is needed — check whether `StoreConformanceFixture` or another file already has one before writing a third.
+
+Red check: the 501 test cannot be written before Step 2 exists, so instead assert the *current* behaviour first — that the endpoint with a non-local store fails with an unhandled exception rather than a 501 — and record what you observe.
+
+- [ ] **Step 4: Build, run `Scrinia.Server.Tests`, commit**
+
+```bash
+git add src/Scrinia.Server/ tests/Scrinia.Server.Tests/
+git commit -m "fix(server): answer 501 when a bundle endpoint needs a local store"
 ```
 
 ---
@@ -694,7 +907,13 @@ Rename the server's internal handler methods to the MCP vocabulary, which is the
 | `SearchMemories` | `SearchMemory` | `:29` | `:250` |
 | `SearchMemoriesPost` | `SearchMemoryPost` | `:30` | `:262` |
 
-The last row is not in the spec — `SearchMemoriesPost` was added by the `search-contract` branch after the spec was written (F-16). It is renamed for the same reason as its GET sibling, preserving the existing `…Post` suffix convention.
+The last row is not in the spec — `SearchMemoriesPost` was added by the `search-contract` branch after the spec was written (F-16). It is renamed for the same reason as its GET sibling, preserving the existing `…Post` suffix convention. None of the five new names collides with an existing member in the file (`ForgetMemory`, `AppendMemory`, `CopyMemory`, `GetChunk`, `RunSearch`, `ExportTopics`, `ImportBundle` are all distinct).
+
+**Before committing, check one thing the "internal naming only" claim depends on.** ASP.NET Core Minimal API derives an endpoint's `DisplayName` — and, where OpenAPI generation is on, its `operationId` — from the handler method name. Grep for OpenAPI/Swagger generation and for anything consuming a generated document:
+```bash
+rtk grep -rn "AddOpenApi\|MapOpenApi\|Swagger\|operationId" --include=*.cs --include=*.json src/ tests/
+```
+If nothing generates or consumes a document, the claim holds as written. If something does, the rename changes a published identifier and belongs in the CHANGELOG — say which you found.
 
 - [ ] **Step 2: Delete the stale tool inventory**
 
@@ -756,6 +975,8 @@ Record every count. Then stage explicit paths (**never `git add .`**) and commit
 **The Task 2 mechanical wave is one large commit that cannot be partially landed.** Removing members from an interface breaks the repo until every call site is fixed. Mitigations: the property test lands first and is observed red; Task 1 removes the largest mechanical piece from this diff; the exhaustive call-site list in F-7 and Step 5 means the compiler's error list should match the plan's list, and any site not on it is a reportable finding.
 
 **Task 3 changes behaviour in six tools at once.** Mitigation: every case is red-checked individually and the fixes are separable — if one guard is wrong, it does not implicate the others.
+
+**The plan's own completeness is the risk the verification pass kept finding.** Three separate claims of exhaustiveness were false (F-7, F-8, and Task 2's step list, which omitted `MemoryTools.Core.cs:588` — a site no member-name grep could have found, since `WorkspaceRoot` never appears in `List`). All are corrected above, but the class of error should be assumed to persist. Task 2's build **will** report errors in files this plan does not name; that is expected, and Step 5's four-rule ladder says how to resolve each.
 
 **F-10 is the plan's most consequential factual claim** — that `remember()` is broken in remote mode today. It is traced (`Serve.cs:62` → `MemoryStoreContext.Current` → `MemoryTools.cs:16` → `MemoryTools.Core.cs:354` → `HttpMemoryStore.cs:507`) but not yet executed. Task 3 Step 5's red check is the execution. **If the red check does not reproduce the throw, stop and report** — the claim is wrong and the fix's justification with it.
 
