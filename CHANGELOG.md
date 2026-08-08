@@ -107,6 +107,11 @@ and all assembly attributes.
   with exit `1` — the shape the dead branch always intended. The recovery hints are terminal
   output only; the JSON `error` field stays a single clean message. Scripts parsing
   `.content` from a not-found `scri show --json` must switch to checking the exit code.
+- `scri bundle export` and `scri bundle import` exited 0 on genuine failure, via the same dead
+  `result.StartsWith("Error:")` guard fixed above for `show`/`forget` — a shape the renderer has
+  never emitted, since every envelope opens with `status: `. Any CI step or script gating on
+  their exit code was not gated. Both now read the typed status. An import matching no topics
+  still exits 0: that response is a `warning`, not an error.
 
 ### Changed — search reuses the pipeline's materialized candidates
 

@@ -46,20 +46,15 @@ public partial class ScriniaCommands
 
         var tools = new ScriniaMcpTools();
         McpResponse response = await tools.Export(topicArray, filename, cancellationToken);
-        string result = response.ToYaml();
 
-        // NOTE: dead guard. ToYaml always opens with "status: ", so "Error:" never matches and
-        // `scri bundle export` exits 0 on a failed export. Left as-is deliberately: the
-        // response-shape branch sanctions exactly one exit-code change (`scri show` /
-        // `scri forget`), and widening it here would ship an unannounced third.
-        // Recorded as a residual — see Scrinia memory /findings/mcp-response-shape-deferred-followups
-        // for the reasoning and the recommended follow-up.
-        if (result.StartsWith("Error:", StringComparison.Ordinal))
+        if (response.IsError)
         {
-            if (json) { WriteJsonError(result); return 1; }
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
+            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }
+
+        string result = response.ToYaml();
 
         if (json)
             WriteJson(new CliExportOutput("", result), CliJsonContext.Default.CliExportOutput);
@@ -90,19 +85,15 @@ public partial class ScriniaCommands
 
         var tools = new ScriniaMcpTools();
         McpResponse response = await tools.Import(path, topicArray, overwrite, cancellationToken);
-        string result = response.ToYaml();
 
-        // NOTE: dead guard, same as Export above — neither "Error:" nor "No topics" can be a
-        // prefix of a rendered envelope. Deliberately preserved; see the note in Export and
-        // Scrinia memory /findings/mcp-response-shape-deferred-followups.
-        // (The ToYaml() above is not wasted: `result` is also the text printed on success.)
-        if (result.StartsWith("Error:", StringComparison.Ordinal) ||
-            result.StartsWith("No topics", StringComparison.Ordinal))
+        if (response.IsError)
         {
-            if (json) { WriteJsonError(result); return 1; }
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(result)}[/]");
+            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
             return 1;
         }
+
+        string result = response.ToYaml();
 
         if (json)
             WriteJson(new CliImportOutput(result), CliJsonContext.Default.CliImportOutput);
