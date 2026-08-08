@@ -212,6 +212,12 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 
 - Bundle import left the cached entity-fact store stale, so `facts()` and entity-fact
   surfacing in search omitted every imported memory for the life of the process.
+- `POST /api/v1/stores/{store}/import` rejected every multipart bundle upload with 415
+  Unsupported Media Type. Its `topics` parameter was declared without `[FromQuery]`, so Minimal
+  API inferred it as JSON-body-bound and content negotiation failed before the handler ran —
+  meaning none of the endpoint's own permission, writability or file-presence guards were ever
+  reached. The endpoint had likely never worked for a real caller. Note `topics` takes repeated
+  query keys (`?topics=a&topics=b`), not a comma-separated list.
 
 ### Changed — file-entity unification
 

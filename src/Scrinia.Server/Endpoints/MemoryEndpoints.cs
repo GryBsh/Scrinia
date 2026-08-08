@@ -1,5 +1,6 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Mvc;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
@@ -367,7 +368,7 @@ public static class MemoryEndpoints
         string store,
         HttpRequest request,
         RequestContext ctx,
-        string[]? topics = null,
+        [FromQuery] string[]? topics = null,
         bool overwrite = false)
     {
         if (!ctx.HasPermission("import"))
