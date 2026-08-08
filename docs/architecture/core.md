@@ -302,13 +302,13 @@ This is a **forward-only migration**: `Attributes` is `null` for entries written
 
 ### IMemoryStore
 
-29 abstract methods plus the abstract `WorkspaceRoot` property (30 members a conforming store
-must implement with no default), plus 4 members with default bodies a store may override for
+The contract every store — local or remote — can honour. 22 abstract methods a conforming store
+must implement with no default, plus 4 members with default bodies a store may override for
 efficiency, covering all memory operations:
 
 **Naming:** `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName`
 
-**CRUD:** `LoadIndex`, `SaveIndex`, `Upsert`, `Remove`, `ResolveArtifactAsync`
+**CRUD:** `LoadIndex`, `Upsert`, `Remove`, `ResolveArtifactAsync`
 
 **Listing:** `ListScoped(scopes)`
 
@@ -325,14 +325,17 @@ build."
 
 **Ephemeral:** `RememberEphemeral`, `ForgetEphemeral`, `GetEphemeral`
 
-**File I/O:** `GenerateContentPreview`, `WriteArtifactAsync`, `ReadArtifactAsync`, `DeleteArtifact`, `ArtifactPath`, `ArtifactUri`
+**File I/O:** `WriteArtifactAsync`, `ReadArtifactAsync`, `DeleteArtifact`
+
+**Naming / addressing:** `ArtifactUri` — stays on the shared interface (not on `ILocalMemoryStore`
+below) because `HttpMemoryStore` implements it for real, returning a `remote://{store}/{scope}/{name}`
+URI rather than throwing.
 
 **Copy/Archive:** `CopyMemory`, `ArchiveVersion`
 
-**Topics:** `DiscoverTopics`, `GatherTopicInfos`, `ListTopicArtifacts`, `ImportTopicEntries`
+**Topics:** `DiscoverTopics`, `GatherTopicInfos`
 
-**Scope resolution:** `ResolveReadScopes(scopes)`, `GetStoreDirForScope`, `FindArtifactPath`,
-`WorkspaceRoot` (property; throws `NotSupportedException` on a remote store)
+**Scope resolution:** `ResolveReadScopes(scopes)`
 
 **Default-bodied members (a store may override for efficiency):** `TryUpdateEntry` (non-atomic
 load→mutate→Upsert unless overridden), `GetEntityFactStore` (rebuilds fresh from `ListScoped`
@@ -345,9 +348,46 @@ overload anymore: `excludeTopics` for search travels as `SearchQuery.ExcludeTopi
 among several on the single `SearchAll` method above, not a separate overload. The MCP `list` and
 `search` actions accept `excludeTopics` so agents can scope queries to specific topic subsets.
 
+`GenerateContentPreview` is not a store member at all — it moved to the static
+`Scrinia.Core.ContentPreview.Generate(string content, int maxLength = 500)`. Both prior
+implementations (`FileMemoryStore`, `HttpMemoryStore`) had byte-identical bodies that touched no
+store state, so it was never really a storage operation.
+
+### ILocalMemoryStore
+
+```csharp
+public interface ILocalMemoryStore : IMemoryStore
+{
+    string ArtifactPath(string name, string scope = "local");
+    string FindArtifactPath(string subject, string normalizedScope);
+    string GetStoreDirForScope(string scope);
+    string WorkspaceRoot { get; }
+    List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
+    void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
+        Dictionary<string, string> artifactContents, bool overwrite);
+}
+```
+
+The six members that only make sense against a local filesystem — the ones a remote store could
+previously implement only by throwing `NotSupportedException` at runtime. `FileMemoryStore` is the
+sole implementation; `HttpMemoryStore` implements only `IMemoryStore` and does not implement this
+interface at all, so a caller that needs a local path now fails to compile against a remote store
+instead of discovering the gap at runtime. `HttpMemoryStore` retains exactly one
+`NotSupportedException`, unrelated to this split: rejecting a `file://`-prefixed input to
+`ResolveArtifactAsync`, which is a rejection of an input value rather than of a capability.
+
+Callers that need a local path reach it through a guarded ambient accessor
+(`ScriniaMcpTools.CurrentLayout` / `TryGetLayout` in `Scrinia.Mcp`, `WorkspaceSetup.LocalStore` in
+the CLI) rather than casting `IMemoryStore` by hand.
+
+`SaveIndex` left `IMemoryStore` entirely rather than moving to `ILocalMemoryStore` — it has no
+production caller outside the store implementations themselves, so it is a public member of
+`FileMemoryStore` directly, not part of either interface.
+
 ### FileMemoryStore
 
-Instance-based implementation of `IMemoryStore`. One instance per workspace (CLI) or per store (server).
+Instance-based implementation of `ILocalMemoryStore` (which extends `IMemoryStore`). One instance
+per workspace (CLI) or per store (server).
 
 **Scope mapping:**
 - `"local"` → `.scrinia/store/`

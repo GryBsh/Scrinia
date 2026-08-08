@@ -112,9 +112,22 @@ Verified repo-wide: `FileMemoryStore.cs:23`, `HttpMemoryStore.cs:17`, and the ha
 **F-9. `scri serve --remote <url>` runs the whole MCP tool surface against `HttpMemoryStore`.**
 `src/Scrinia/Commands/ScriniaCommands.Serve.cs:40-63`: when `--remote` is set, `MemoryStoreContext.Current = new HttpMemoryStore(httpClient, store ?? "default")` and the MCP host starts. `rtk grep -rn "new HttpMemoryStore" --include=*.cs src/ tests/` shows this is the only production construction site. So every fact below about "remote mode" is about a real, reachable configuration.
 
-**F-10. `remember()` throws in remote mode today, unconditionally.**
-`src/Scrinia.Mcp/MemoryTools.Core.cs:354` reads `string workspaceRoot = store.WorkspaceRoot;` on the main `Remember` path — not inside any conditional — and `store` is `CurrentStore` (`MemoryTools.cs:16-18`), which is `MemoryStoreContext.Current`. Under F-9 that is `HttpMemoryStore`, whose `WorkspaceRoot` throws (`:507-510`). The value is used only to hash `file` attribute references for drift detection, which most calls do not have.
-**This is a live defect that Task 3 fixes and Task 3's red check must demonstrate.** Do not take it on faith — the red check is the proof.
+**F-10. `remember()` throws in remote mode today — but NOT unconditionally.**
+
+> **CORRECTED 2026-08-07 after Task 2's review.** This fact originally read "throws in remote mode today, **unconditionally**", and justified that with "`:354` is on the main `Remember` path — not inside any conditional." That reasoning was the same species of error the plan's other corrections record: it established that the *statement* is not nested, and concluded that *control always reaches it*. Those are different claims.
+>
+> `Remember` tests `store.IsEphemeral(name)` at `:207` and **returns at `:257`**. `HttpMemoryStore` implements ephemeral storage for real — `// Ephemeral storage stays client-side` (`:15`), backed by `_ephemeral` (`:85`), `RememberEphemeral` (`:164`), `GetEphemeral` (`:179`). So `remember({ path: '/temp/scratch' })` **worked** against a remote store and must keep working.
+>
+> The Task 2 implementer reproduced the original error exactly, auditing reachability by brace depth, and it cost a Critical-severity regression elsewhere (`guide()`). **Brace depth cannot see an early `return` upstream, and cannot see a `catch { }` that made the old throw a no-op.** Trace control flow, or run it.
+
+The true claim: `src/Scrinia.Mcp/MemoryTools.Core.cs:354` reads `store.WorkspaceRoot` on the **non-ephemeral** `Remember` path, and `store` is `CurrentStore` (`MemoryTools.cs:16-18`) = `MemoryStoreContext.Current`, which under F-9 is `HttpMemoryStore`, whose `WorkspaceRoot` throws (`:507-510`). The value is used only to hash `file` attribute references for drift detection, which most calls do not have. So an ordinary remote `remember` of a normal memory throws; an ephemeral one does not.
+
+**Task 3's red check must distinguish the two cases** — assert the ephemeral path succeeds AND the non-ephemeral path throws before the fix.
+
+**F-10a. `restore()` and `guide()` work in remote mode today, degraded — and must keep doing so.**
+Established 2026-08-07 by Task 2's review, verified against source. `BuildRestoreContextAsync`'s three `WorkspaceRoot` reads (`Lifecycle.cs:620,644,663`) each sit inside a `try { … } catch { /* best-effort */ }` (catches at `:639,658,688`). Remotely the throw lands in those catches and is swallowed: the method returns a valid context minus the conflict-scan, skills, and agent sections.
+`BuildRestoreContextAsync` has **two** callers — `Restore` (`Lifecycle.cs:593`) and **`Guide` (`MemoryTools.cs:68`)**, the tool this workspace's `CLAUDE.md` instructs agents to call at session start.
+**This settles Task 3 Step 4a empirically.** Option (b) — a degraded path — is not a design preference; it is what the code already does. Restoring it is behaviour preservation, and any option that makes `guide()` fail outright against a remote store is a regression.
 
 **F-11. Three further layout uses are already conditional or already have a fallback.**
 - `MemoryTools.Core.cs:723-726` (`BuildFullList`): `workspaceRoot` is `string?`, assigned only `if (anyCodeRefs)`. Remote `list()` works until an entry carries `FileHashes`.
@@ -150,6 +163,8 @@ Lines `:11-20` are the stale inventory (`Show`, `Store`, `List`, `Search`, `Copy
 
 **F-18. Baseline builds clean, but "0 warnings" is not the signal it looks like.**
 `rtk dotnet build Scrinia.sln -c Debug` on an already-built tree → `0 errors, 0 warnings`. **Corrected by the verification pass:** that was a no-op incremental build. A cold build reports **1694 warnings, 0 errors** across **16** projects. Every one of the 1694 is an analyzer warning (CA1707, CA1861, …) in a **test** project, and `TreatWarningsAsErrors` covers `src/` only (`Directory.Build.props:44-46`) — so they are pre-existing and not a gate.
+
+**CORRECTED 2026-08-07 by Task 6's doc pass.** The project count above is wrong: a cold `dotnet build Scrinia.sln -c Debug --no-incremental` reports **17** projects, not 16. The warning count (1694) was right and is unaffected. Not worth its own commit; folded into Task 6's documentation changes.
 **Consequence for implementers:** do not use warning count as a health signal, and do not "fix" warnings you did not introduce. The gate is `0 errors`, plus no *new* warning in a `src/` project (where any warning is an error anyway).
 
 ---
@@ -672,12 +687,11 @@ if (!TryGetLayout(out var store))
 
 An earlier draft named only `Restore`. Guarding just it leaves `guide()` propagating `NotSupportedException` in remote mode — and `guide()` is the tool this workspace's `CLAUDE.md` instructs agents to call at session start, so it is the worst possible place to leave a raw exception.
 
-First establish what `guide()` does today in remote mode — read `MemoryTools.cs:40-70` and `BuildRestoreContextAsync`'s three `WorkspaceRoot` reads (`:620,644,663`) and determine whether any is conditional. Then choose, and state the choice with its reason in the report:
-- **(a)** Guard both callers, so `guide()` returns a `NOT_SUPPORTED` response. Honest, but makes the session-start tool fail outright against a remote store.
-- **(b)** Give `BuildRestoreContextAsync` a degraded path that returns an empty/partial `RestoreContext` when there is no local store, so `guide()` still returns its primer and `restore()` reports nothing to restore. Better behaviour, larger change.
-- **(c)** Guard `Restore` only and leave `guide()` as it is — acceptable **only** if the reading above shows `guide()`'s path never reaches a `WorkspaceRoot`.
+**This choice is now settled — see F-10a. Take option (b); the other two are regressions.**
 
-**(b) is the likely right answer**, but do not assume it — the reading decides. Whichever you pick, add a test driving `guide()` against `RemoteOnlyStore`.
+Originally this step offered a three-way choice to be decided by reading. The reading has since been done, during Task 2's review: all three `WorkspaceRoot` reads sit inside swallowing `try`/`catch` blocks, so `restore()` and `guide()` **already work remotely in a degraded form**. Giving `BuildRestoreContextAsync` a degraded path is therefore not a design decision at all — it restores what the code did before the split. Making `guide()` return `NOT_SUPPORTED` would break the tool this workspace tells agents to call first.
+
+Narrow inside each of the three `try` blocks so a remote store skips that section exactly as the swallowed exception used to make it skip. Add tests driving both `guide()` and `restore()` against `RemoteOnlyStore`.
 
 Run the new cases: expected PASS.
 
@@ -892,6 +906,8 @@ git commit -m "refactor(core): install the default event sink from one place"
 ## Task 5: One vocabulary (F6)
 
 Rename the server's internal handler methods to the MCP vocabulary, which is the published one. **Route paths and the HTTP contract do not change** — this is internal naming only. Per F-16 the rename is confined to `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs`; no test references these names.
+
+**CORRECTED 2026-08-07 — SPEC CLAIM FALSIFIED, verified independently by the controller during Task 5.** "Internal naming only; route paths and the HTTP contract do not change" is FALSE when OpenAPI is exposed. `Program.cs:252` calls `AddOpenApi()`; `Program.cs:517` calls `MapOpenApi()`, gated on Development or `Scrinia:ExposeOpenApi=true`; `tests/Scrinia.Server.Tests/OpenApiTests.cs` covers it. There are ZERO `.WithName(` calls anywhere in `src/`, so Minimal API derives each endpoint's OpenAPI `operationId` from the handler method name. Renaming the five handlers below therefore changes five published operationIds — this is the third spec/plan fact this branch falsified (after F-7 completeness and F-8 server-unchanged), and Step 1's own caveat at the bottom of this task is what caught it. A CHANGELOG entry was added as a result (see `CHANGELOG.md`, "server handler names now match the published MCP tool vocabulary").
 
 **Files:**
 - Modify: `src/Scrinia.Server/Endpoints/MemoryEndpoints.cs`

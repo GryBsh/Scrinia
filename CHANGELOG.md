@@ -10,6 +10,40 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — remote-store operations that threw or returned incomplete results
+
+- `remember()` against a remote store (`scri serve --remote`) threw `NotSupportedException` for
+  any non-ephemeral memory carrying a `file` attribute — the drift-detection hasher read
+  `IMemoryStore.WorkspaceRoot`, which only a local store can answer, unconditionally. A remote
+  `remember()` now stores the memory without file hashes instead of failing outright; drift
+  detection against those hashes is inherently a local-only capability (see `list(mode:
+  'drift')` below). Ephemeral remembers (`/temp/*`) were unaffected — `HttpMemoryStore` has
+  always implemented ephemeral storage for real.
+- `list()` against a remote store threw in every mode, not only the mode that needed it: a
+  single overly-broad narrowing meant `summary` and `full` modes failed even though neither
+  reads the local filesystem. Both modes now return real listings against a remote store.
+  `list(mode: 'drift')` still declines — drift detection re-hashes files on disk by nature — but
+  now with a clean `NOT_SUPPORTED` error (see below) instead of an unhandled exception.
+- `guide()` and `restore()` against a remote store previously succeeded in a degraded form (the
+  conflict-scan, skills, and agent-config sections silently omitted) only because their file
+  reads happened to sit inside a swallowing `try/catch`. That behavior is preserved — remote
+  `guide()`/`restore()` still degrade the same way — but is now a deliberate, type-checked branch
+  covered by tests, not an incidental side effect of exception handling.
+- Server bundle endpoints (`POST /export`, `POST /import`) returned an unhandled-exception `500`
+  against a non-local store backend, because the request path read a `RequestContext` accessor
+  that threw. Both now return a clean `501 Not Implemented`.
+
+### Added — `NOT_SUPPORTED` MCP error code
+
+- MCP tools whose operation is inherently local-only — `export()`/`import()` (bundle
+  files), `reconcile()` (merge-conflict scan), skill creation/loading from a file path, and
+  `remember()` to an `/agent/*` config — now return a structured error response with
+  `code: NOT_SUPPORTED` when the active store is remote, instead of letting a raw
+  `NotSupportedException` propagate out of the tool call. Anything parsing MCP tool error codes
+  (previously `INVALID_PARAMETER`, `INVALID_ACTION`, `INVALID_PATH`, `NOT_FOUND`, `CONFLICT`,
+  `INTERNAL`) will see this new code for the first time; each response's `actionNeeded[]` names
+  the local-only feature and, where one exists, a remote-compatible alternative.
+
 ### Changed — server handler names now match the published MCP tool vocabulary
 
 - `MemoryEndpoints`'s internal handler methods were renamed to line up with the MCP tool

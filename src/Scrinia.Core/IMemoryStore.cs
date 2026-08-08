@@ -127,18 +127,6 @@ public interface IMemoryStore
                 }),
             StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Extracts the scope string from any <see cref="SearchResult"/> subtype.
-    /// Returns empty string for unknown result types.
-    /// </summary>
-    static string GetResultScope(SearchResult result) => result switch
-    {
-        EntryResult er => er.Item.Scope,
-        ChunkEntryResult cr => cr.ParentItem.Scope,
-        TopicResult tr => tr.Scope,
-        _ => string.Empty
-    };
-
     // Ephemeral
     void RememberEphemeral(string key, EphemeralEntry entry);
     bool ForgetEphemeral(string key);
