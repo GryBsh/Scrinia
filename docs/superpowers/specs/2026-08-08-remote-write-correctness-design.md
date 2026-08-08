@@ -79,24 +79,35 @@ F1e is what settles it. The storage side completed this migration — `ArtifactE
 the orchestrator's own comment states that "the former legacy entry members no longer exist."
 Storage moved; the wire did not.
 
-**Design: `attributes` becomes the wire representation, request and response**, matching the
-MCP surface. `Tags`/`ReviewAfter`/`ReviewWhen` stay *accepted* on input for compatibility with
-existing clients, translated at the edge — which is what `BuildCarrierAttributes` already does,
-so the shim survives, demoted from primary path to compatibility edge. Responses gain the full
-map; `Tags` stays populated alongside it so existing consumers keep working.
+**Design: `attributes` replaces the legacy fields on the wire, request and response**, matching
+the MCP surface.
 
-**This supersedes my first draft of this section**, which said to add an `Attributes` field and
-keep the legacy fields as-is with the redundancy noted. That was wrong in a way worth recording:
-it would have made the shim permanent *and* introduced a second representation beside it, so
-the server would accept the same information two ways with an undefined merge order between
-them. The correct move is to make the wire match the model and demote the legacy fields to
-compatibility inputs.
+**Nothing is deployed over HTTP** (confirmed 2026-08-08). That removes the entire compatibility
+burden and makes the clean fix available: `Tags`, `ReviewAfter` and `ReviewWhen` come *out* of
+`StoreRequest` and `StoreApiRequest` rather than being demoted and carried indefinitely. There
+is no external client to deprecate for, and the only consumer — `web/src/api/types.ts`, F1f —
+is in this repo and moves in the same change.
 
-**Trust:** an attributes map from a client is caller-supplied metadata at the same trust level
-as `Tags`, which the server already accepts. No new trust boundary. But the server must
-validate keys — an unbounded attribute map is a storage-growth vector in a way a fixed set of
-named fields was not. Bound key count and value-array length, mirroring the search-side bounds
-in spec 3 §4.
+`Description` stays. It is not a legacy carrier: `MemoryOrchestrator.cs:126-128` uses it as a
+curated `ContentPreview` that wins over the auto-generated snippet. Different concept, still
+current.
+
+The request-translation call to `AttributeMigration.BuildCarrierAttributes`
+(`MemoryOrchestrator.cs:135-137`) goes with the fields it translates. Note that the *other*
+call at `:290-291` stays — it carries an existing entry's review forward on append, which is
+genuine migration work, not request translation. Do not delete the class.
+
+**Two drafts of this section were wrong, both recorded because the error is instructive.** The
+first said to add an `Attributes` field and keep the legacy fields with the redundancy noted —
+that would have made the shim permanent and given the server two ways to receive the same
+information with no defined merge order. The second demoted them to compatibility inputs with a
+deprecation path — correct for a deployed API, and pure overhead for one with no clients. Both
+drafts designed for a constraint that was assumed rather than checked.
+
+**Trust and bounds:** an attributes map from a client is caller-supplied metadata at the same
+trust level as `Tags`, which the server already accepts, so no new trust boundary. But an
+unbounded map is a storage-growth vector in a way a fixed set of named fields was not. Bound key
+count and value-array length, mirroring the search-side bounds in spec 3 §4.
 
 ### 2. `LoadIndex` stops lying
 
@@ -120,26 +131,40 @@ per-caller audit *before* the proxy, not after.
 
 ### 3. Filters stop failing open
 
-Add a capability probe: `HttpMemoryStore` asks the server what it supports once, caches the
-answer for the client's lifetime, and **refuses rather than silently under-filtering** when a
-requested filter is unsupported.
+The recorded finding is that `excludeTopics`/`pathPrefix` go out as additive query params, an
+older server ignores unknown params rather than rejecting them, and the client returns the
+unfiltered result set as though it were filtered. There is no version handshake on either end.
 
-Failing closed is the right default here because the failure mode being fixed is precisely
-that the caller believes filtering happened. An unfiltered result set that looks filtered is
-worse than an error: it silently widens the blast radius of anything built on it.
+**With nothing deployed, the old-server population is empty**, so the capability probe I first
+specified is machinery for a scenario that does not exist. The residual routed a "capability
+probe" here from the search-contract branch; that recommendation predates knowing there are no
+clients.
 
-If the server does not answer the probe at all, treat it as "v1, no filter support" — that is
-the only honest reading of a server that predates the probe.
+Do the cheap thing that actually closes the hole: **a version assertion**. The server reports
+its API version; `HttpMemoryStore` refuses to operate against a version it does not recognise.
+One field, one check, and it fails closed — which is the property that matters, because an
+unfiltered result set that looks filtered silently widens the blast radius of everything built
+on it.
+
+Revisit if and when something is deployed. A capability probe is the right answer for a real
+population of mixed-version servers; it is over-engineering for a client and server that ship
+from the same commit.
 
 ### 4. Search results stop fabricating metadata
 
 Widen the search response to carry real `OriginalBytes` and `CreatedAt` per result, and have
-`HttpMemoryStore` use them. When the server does not supply them (older server, per the probe
-above), the client must surface absence rather than substitute `UtcNow`.
+`HttpMemoryStore` use them.
 
-This requires `ArtifactEntry`'s remote construction path to tolerate genuinely-unknown values.
-Decide during planning whether that means nullable fields or a sentinel; **do not** default to
-`DateTimeOffset.MinValue`, which is a fabrication with a different disguise.
+Simpler than first drafted, for the same reason as §1 and §3: with no older servers, the fields
+are always present, so there is no absent-value case to represent. The nullable-versus-sentinel
+question I raised does not arise. One rule survives from that draft and is worth keeping in the
+plan: if a genuinely-unknown value ever does need representing, **do not** use
+`DateTimeOffset.MinValue` — that is a fabrication with a different disguise, which is the exact
+defect being fixed here.
+
+Note the response DTOs are `ListApiItem`/`SearchApiItem` on the client
+(`HttpMemoryStore.cs:110-114`) and `MemoryListItem` on the server (`ApiDtos.cs:31-40`); the
+listing side already carries `OriginalBytes` and `CreatedAt`, so this is the search side only.
 
 ### 5. `ArtifactUri`
 
@@ -162,14 +187,10 @@ while losing data".
 - `ArtifactUri` dereferenceability (§5) and remote scoring surface (§6).
 - `Upsert`/`ArchiveVersion` no-ops — correct as written (F8).
 - Any change to local-mode behaviour. Every fix here is client- or server-side HTTP.
-- **Updating the web client to consume the new shape.** Per F1f, `web/src/api/types.ts`
-  mirrors the legacy DTOs and is a second consumer frozen at the same generation. Because §1
-  keeps `Tags` populated on responses, the web client keeps working unchanged — so this is a
-  follow-up, not a blocker. Record it; do not fold it in. A UI that surfaces the full attribute
-  map is a feature with its own design questions.
-- **Retiring the legacy request fields.** §1 demotes them; removing them is a breaking change
-  for any existing client and needs a deprecation period. Note the target state, ship the
-  demotion.
+- **A UI that surfaces the full attribute map.** `web/src/api/types.ts` is now **in scope** —
+  §1 removes fields it declares, so it moves in the same change or the build breaks. But
+  updating the type declarations is all this spec owns. Displaying attributes in the web UI is
+  a feature with its own design questions; keep it out.
 
 ## Testing
 
@@ -192,10 +213,12 @@ Specific cases:
 
 ## Risks
 
-**The wire format changes.** A new client against an old server, and an old client against a
-new server, must both be defined. The probe in §3 handles the first. The second is handled by
-additive-only fields: an old client ignores `Attributes` it does not know about. Nothing here
-removes or renames an existing field, and nothing should.
+**The wire format changes incompatibly, and that is now the cheap option.** With nothing
+deployed over HTTP, there is no mixed-version population to design for — client, server and web
+types ship from one commit. The risk this leaves is not compatibility but *silence*: the change
+is only safe as long as that stays true, so the CHANGELOG entry must say plainly that the
+`/memories` request and response shapes changed and that pre-change clients will not work.
 
-**`LoadIndex` becomes a network call.** Stated above; the mitigation is auditing callers first.
-Flagging it as the item most likely to produce a surprise during implementation.
+**`LoadIndex` becomes a network call.** The one item most likely to produce a surprise during
+implementation, and the only risk here not reduced by the no-clients answer. Mitigation is
+auditing callers before writing the proxy — the same audit spec 4 Part A needs, so do it once.
