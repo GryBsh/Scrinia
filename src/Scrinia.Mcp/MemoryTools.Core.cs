@@ -198,7 +198,7 @@ public sealed partial class ScriniaMcpTools
         AttributeExtractor.SeedTermFrequencies(entryAttributes, tf);
 
         ChunkEntry[]? chunkEntries = content.Length > 1
-            ? TextAnalysis.ComputeChunkEntries(store, content)
+            ? TextAnalysis.ComputeChunkEntries(content)
             : null;
 
         // ── Ephemeral path (/temp/...) ──────────────────────────
@@ -216,7 +216,7 @@ public sealed partial class ScriniaMcpTools
             // ContentPreview (option A) — it wins over the auto content snippet.
             string ephPreview = !string.IsNullOrWhiteSpace(description)
                 ? description
-                : store.GenerateContentPreview(joined);
+                : ContentPreview.Generate(joined);
 
             // Check if updating existing ephemeral entry
             var existingEph = store.GetEphemeral(key);
@@ -315,7 +315,7 @@ public sealed partial class ScriniaMcpTools
         // ContentPreview (option A) — it wins over the auto content snippet.
         string contentPreview = !string.IsNullOrWhiteSpace(description)
             ? description
-            : store.GenerateContentPreview(joined);
+            : ContentPreview.Generate(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         // New model: the `review` attribute carries review dates and/or free-text conditions.
@@ -1008,7 +1008,7 @@ public sealed partial class ScriniaMcpTools
         // Attributes via the entry-level merge in BuildAppendMetadata.
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
-            ContentPreview: store.GenerateContentPreview(content),
+            ContentPreview: ContentPreview.Generate(content),
             Keywords: newKw.Length > 0 ? newKw : null,
             TermFrequencies: newTf.Count > 0 ? newTf : null);
 
@@ -1031,7 +1031,7 @@ public sealed partial class ScriniaMcpTools
             // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
             string contentPreview = !string.IsNullOrWhiteSpace(description)
                 ? description
-                : (existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText));
+                : (existingEph?.ContentPreview ?? ContentPreview.Generate(fullText));
 
             // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
             // removed); ContentPreview (computed above) is the surviving display carrier.
@@ -1078,7 +1078,7 @@ public sealed partial class ScriniaMcpTools
             // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
             string contentPreview = !string.IsNullOrWhiteSpace(description)
                 ? description
-                : (existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText));
+                : (existingEntry?.ContentPreview ?? ContentPreview.Generate(fullText));
 
             // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
             // removed); ContentPreview (computed above) is the surviving display carrier.

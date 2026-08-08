@@ -52,7 +52,7 @@ public static class MemoryOrchestrator
         AttributeExtractor.SeedTermFrequencies(attributes, tf);
 
         ChunkEntry[]? chunkEntries = req.Content.Length > 1
-            ? TextAnalysis.ComputeChunkEntries(store, req.Content)
+            ? TextAnalysis.ComputeChunkEntries(req.Content)
             : null;
 
         // ── Ephemeral path ───────────────────────────────────────────────
@@ -68,7 +68,7 @@ public static class MemoryOrchestrator
             // ContentPreview (option A) — it wins over the auto content snippet.
             string ephPreview = !string.IsNullOrWhiteSpace(req.Description)
                 ? req.Description
-                : store.GenerateContentPreview(joined);
+                : ContentPreview.Generate(joined);
 
             var existingEph = store.GetEphemeral(key);
             DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
@@ -125,7 +125,7 @@ public static class MemoryOrchestrator
         // ContentPreview (option A) — it wins over the auto content snippet.
         string contentPreview = !string.IsNullOrWhiteSpace(req.Description)
             ? req.Description
-            : store.GenerateContentPreview(joined);
+            : ContentPreview.Generate(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         DateTimeOffset? parsedReviewAfter = null;
@@ -215,7 +215,7 @@ public static class MemoryOrchestrator
         foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
         var newChunkEntry = new ChunkEntry(
             ChunkIndex: chunkCount,
-            ContentPreview: store.GenerateContentPreview(content),
+            ContentPreview: ContentPreview.Generate(content),
             Keywords: newKw.Length > 0 ? newKw : null,
             TermFrequencies: newTf.Count > 0 ? newTf : null);
 
@@ -230,7 +230,7 @@ public static class MemoryOrchestrator
                 ? [.. existingEph.ChunkEntries, newChunkEntry]
                 : [newChunkEntry];
 
-            string contentPreview = existingEph?.ContentPreview ?? store.GenerateContentPreview(fullText);
+            string contentPreview = existingEph?.ContentPreview ?? ContentPreview.Generate(fullText);
 
             var incoming = KnownAttributes.Merge(
                 AttributeExtractor.Extract(content), AttributeExtractor.ExtractRefAttributes(content));
@@ -263,7 +263,7 @@ public static class MemoryOrchestrator
                 ? [.. existingEntry.ChunkEntries, newChunkEntry]
                 : [newChunkEntry];
 
-            string contentPreview = existingEntry?.ContentPreview ?? store.GenerateContentPreview(fullText);
+            string contentPreview = existingEntry?.ContentPreview ?? ContentPreview.Generate(fullText);
 
             // Captured for the rollback below: appending to an existing memory must revert to
             // this content, not delete it. Nothing reads the versions/ archive back, so a

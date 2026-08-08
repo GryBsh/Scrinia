@@ -276,7 +276,6 @@ public class HybridRerankerTests : IDisposable
         public string FindArtifactPath(string subject, string normalizedScope) => "";
         public string GetStoreDirForScope(string scope) => "";
         public string WorkspaceRoot => throw new NotSupportedException();
-        public string GenerateContentPreview(string content, int maxLength = 500) => content.Length > maxLength ? content[..maxLength] : content;
         public Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default) => Task.CompletedTask;
         public Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
         public bool DeleteArtifact(string subject, string scope) => false;

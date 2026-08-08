@@ -168,9 +168,6 @@ public interface IMemoryStore
     /// is local-only because a remote store has no local filesystem.</exception>
     string WorkspaceRoot { get; }
 
-    // Content utility
-    string GenerateContentPreview(string content, int maxLength = 500);
-
     // Artifact file I/O
     Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default);
     Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default);

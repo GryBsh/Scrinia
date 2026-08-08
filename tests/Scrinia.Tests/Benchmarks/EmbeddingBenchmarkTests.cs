@@ -459,7 +459,7 @@ public sealed class EmbeddingBenchmarkTests(ITestOutputHelper output) : IAsyncLi
             string artifact = Nmp2ChunkedEncoder.Encode(content);
             int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
             long originalBytes = System.Text.Encoding.UTF8.GetByteCount(content);
-            string preview = _store.GenerateContentPreview(content);
+            string preview = ContentPreview.Generate(content);
 
             var entry = new ArtifactEntry(
                 Name: name,

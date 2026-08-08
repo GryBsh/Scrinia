@@ -509,15 +509,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             "WorkspaceRoot is not supported in remote mode: it is the authority for the " +
             "workspace's filesystem layout, and a remote store has no local filesystem.");
 
-    // ── Content utility ─────────────────────────────────────────────────────
-
-    public string GenerateContentPreview(string content, int maxLength = 500)
-    {
-        if (string.IsNullOrEmpty(content)) return "";
-        string preview = content[..Math.Min(maxLength, content.Length)];
-        return preview.Replace('\n', ' ').Replace('\r', ' ').Trim();
-    }
-
     // ── Artifact file I/O via REST API ──────────────────────────────────────
 
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default)

@@ -439,7 +439,7 @@ public sealed class EmbeddingBenchmarkAllTests(ITestOutputHelper output, Embeddi
             var entry = new ArtifactEntry(
                 Name: fact.Key, Uri: "", OriginalBytes: originalBytes, ChunkCount: chunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: _store.GenerateContentPreview(fact.Content));
+                ContentPreview: ContentPreview.Generate(fact.Content));
 
             _store.Upsert(entry, scope);
             await _store.WriteArtifactAsync(fact.Key, scope, artifact);

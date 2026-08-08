@@ -1499,15 +1499,6 @@ public sealed partial class FileMemoryStore : IMemoryStore, IDisposable
         }
     }
 
-    // ── Content utility ──────────────────────────────────────────────────────
-
-    public string GenerateContentPreview(string content, int maxLength = 500)
-    {
-        if (string.IsNullOrEmpty(content)) return "";
-        string preview = content[..Math.Min(maxLength, content.Length)];
-        return preview.Replace('\n', ' ').Replace('\r', ' ').Trim();
-    }
-
     // ── Topic discovery ──────────────────────────────────────────────────────
 
     public string[] DiscoverTopics()

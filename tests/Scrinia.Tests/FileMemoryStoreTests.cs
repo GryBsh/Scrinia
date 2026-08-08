@@ -246,7 +246,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     public void GenerateContentPreview_truncates()
     {
         string long_content = new string('x', 1000);
-        string preview = _store.GenerateContentPreview(long_content);
+        string preview = ContentPreview.Generate(long_content);
         preview.Length.Should().BeLessOrEqualTo(500);
     }
 
