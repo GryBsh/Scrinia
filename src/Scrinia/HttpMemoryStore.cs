@@ -254,13 +254,105 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         return Nmp2ChunkedEncoder.Encode(show.Content);
     }
 
-    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") =>
-        []; // Not directly supported in remote mode; use ListScoped
+    /// <summary>
+    /// Proxies to the same listing endpoint <see cref="ListScoped(string?)"/> already uses,
+    /// filtered to <paramref name="scope"/>.
+    ///
+    /// <para><b>This is a blocking network round trip, deliberately.</b> <c>LoadIndex</c> is
+    /// declared synchronous on <see cref="IMemoryStore"/> (mirroring <see cref="FileMemoryStore"/>'s
+    /// free, in-process cache read), so there is no async seam to hide the cost behind — every
+    /// call here really does block the calling thread on <see cref="SendSync"/>. That trade was
+    /// chosen over the alternative of overriding <c>TryUpdateEntry</c> to PATCH server-side: that
+    /// needs a brand-new endpoint and DTO and would still leave every other caller — the async
+    /// entity-typing sink, the maintenance sink, and every MCP tool's "does this entry already
+    /// exist" lookup — reading an empty list. Proxying here fixes the read for all of them in one
+    /// change. See the cost audit in
+    /// docs/superpowers/sdd/2026-08-10-remote-write-correctness/task-6-report.md for which
+    /// production call sites can actually reach an <see cref="HttpMemoryStore"/> and confirmation
+    /// that none of them call this in a loop.</para>
+    /// </summary>
+    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
+    {
+        string url = $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scope)}";
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        using var resp = SendSync(req);
+
+        if (!resp.IsSuccessStatusCode)
+        {
+            // Returning [] here would look exactly like "this scope has no entries" — the same
+            // lie LoadIndex told unconditionally before this fix, just gated behind a failed
+            // request instead of always. A caller (TryUpdateEntry's default implementation among
+            // them) must not conclude "not found" from a server that is unreachable or erroring;
+            // that is a materially different condition and losing the distinction is how the
+            // original defect happened. Throwing matches WriteArtifactAsync's existing
+            // throw-on-failure contract elsewhere in this type.
+            throw new HttpRequestException(
+                $"Remote store listing failed for scope '{scope}': {(int)resp.StatusCode} {resp.StatusCode}.",
+                inner: null,
+                statusCode: resp.StatusCode);
+        }
+
+        using var stream = resp.Content.ReadAsStream();
+        var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
+        if (list?.Memories is null)
+            return [];
+
+        var result = new List<ArtifactEntry>(list.Memories.Length);
+        foreach (var item in list.Memories)
+        {
+            result.Add(new ArtifactEntry(
+                Name: item.Name,
+                Uri: "",
+                OriginalBytes: item.OriginalBytes,
+                ChunkCount: item.ChunkCount,
+                CreatedAt: item.CreatedAt,
+                ContentPreview: item.Description,
+                UpdatedAt: item.UpdatedAt,
+                Attributes: item.Attributes));
+        }
+        return result;
+    }
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
     {
         // In remote mode, store operations go through WriteArtifactAsync/StoreAsync
         // Upsert is managed server-side
+    }
+
+    /// <summary>
+    /// Overrides <see cref="IMemoryStore"/>'s default implementation, which ends with
+    /// <c>Upsert(updated, scope)</c>. <see cref="Upsert"/> is a deliberate no-op here — see its
+    /// comment — because persistent writes go through <see cref="WriteArtifactAsync"/> instead.
+    ///
+    /// <para>Now that <see cref="LoadIndex"/> proxies to the real listing endpoint rather than
+    /// unconditionally returning <c>[]</c>, the inherited default would find the entry, apply the
+    /// caller's mutation, hand it to the no-op <c>Upsert</c>, and still return <c>true</c> —
+    /// reporting a successful write that never reached the server. That is a strictly worse lie
+    /// than the pre-fix "not found": a caller like the entity-typing sink treats <c>true</c> as
+    /// "the promotion is now durable" and stops retrying, so the metadata is lost with an even
+    /// higher-confidence signal that it wasn't.</para>
+    ///
+    /// <para>The correct fix is a dedicated attributes-only PATCH endpoint, so a metadata-only
+    /// mutation does not have to replay the whole artifact through <c>WriteArtifactAsync</c>
+    /// (which would also trigger a spurious version-archive on every mutation — unlike
+    /// <c>FileMemoryStore.TryUpdateEntry</c>'s atomic, sidecar-only write, this store has no
+    /// remote equivalent). That endpoint and DTO are out of scope for the change that added this
+    /// override — seeded remotely, LoadIndex used to make the "not found" case lie in one
+    /// direction (found nothing existing); without this override, fixing LoadIndex would only
+    /// move the lie to the other, worse direction. Until the endpoint exists, this fails closed:
+    /// a mutation that would have applied is refused, not silently dropped while reporting
+    /// success.</para>
+    /// </summary>
+    public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    {
+        var current = LoadIndex(scope).FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+        if (current is null) return false;
+        var updated = mutate(current);
+        if (updated is null) return false;
+        // `updated` is discarded even when non-null: there is no remote channel that can persist
+        // a metadata-only mutation (see the class doc above). Returning false — not true — here
+        // is the entire point of this override.
+        return false;
     }
 
     public bool Remove(string name, string scope = "local")
