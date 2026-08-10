@@ -23,13 +23,23 @@ public sealed class PluginPipeline
     {
         if (_hooks.Length > 0)
         {
+            // Normalize rather than index req.Attributes directly: it is deserialized from JSON with
+            // the default ordinal comparer, so a caller's "Tag" would miss a raw "tag" lookup. This
+            // is the same map the orchestrator goes on to persist.
+            var normalized = KnownAttributes.Normalize(req.Attributes);
             var ctx = new BeforeStoreContext
             {
                 Store = store,
                 Name = req.Name,
                 Content = req.Content,
                 Description = req.Description,
-                Tags = req.Tags,
+                // BeforeStoreContext.Tags is the plugin-facing contract and is out of this change's
+                // scope, so it keeps being fed the same values it always got — which now arrive
+                // under the "tag" attribute key rather than the removed StoreRequest.Tags field.
+                Tags = normalized is not null
+                    && normalized.TryGetValue(KnownAttributes.TagKey, out var tagValues)
+                        ? tagValues
+                        : null,
                 Keywords = req.Keywords,
             };
 

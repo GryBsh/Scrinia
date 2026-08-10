@@ -62,6 +62,28 @@ public static class KnownAttributes
         || ReferenceKeys.Contains(key)
         || string.Equals(key, MentionKey, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Canonicalizes an agent-supplied attribute map before it is merged: lowercases and
+    /// trims keys, trims values, drops blank keys/values and any key left with no values. Null when
+    /// nothing survives. Matches the Attributes convention (AttributeExtractor lowercases keys).
+    ///
+    /// <para>Every write path calls this — the MCP tools locally and
+    /// <c>MemoryOrchestrator</c> for requests arriving over HTTP — so a local and a remote write of
+    /// the same map produce the same attributes. It lives here, next to <see cref="Merge"/>, for
+    /// that reason: a second copy is how local and remote drift apart.</para></summary>
+    public static Dictionary<string, string[]>? Normalize(IReadOnlyDictionary<string, string[]>? attributes)
+    {
+        if (attributes is not { Count: > 0 }) return null;
+        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in attributes)
+        {
+            if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is null) continue;
+            var vals = kv.Value.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).ToArray();
+            if (vals.Length == 0) continue;
+            result[kv.Key.Trim().ToLowerInvariant()] = vals;
+        }
+        return result.Count > 0 ? result : null;
+    }
+
     /// <summary>
     /// Merges incoming attributes over existing per the key-class semantics: multi-valued keys
     /// union-dedupe (existing values keep their order); scalar keys are replaced by the

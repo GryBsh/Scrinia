@@ -4,10 +4,8 @@ export interface StoreRequest {
   content: string[];
   name: string;
   description?: string;
-  tags?: string[];
+  attributes?: Record<string, string[]>;
   keywords?: string[];
-  reviewAfter?: string;
-  reviewWhen?: string;
 }
 
 export interface StoreResponse {

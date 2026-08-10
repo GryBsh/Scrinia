@@ -165,14 +165,17 @@ POST /api/v1/stores/{store}/memories
   "name": "/api/auth-flow",
   "content": ["Full text content here..."],
   "description": "OAuth2 authentication flow",
-  "tags": ["auth", "oauth"],
-  "keywords": ["token", "refresh"],
-  "reviewAfter": "2026-06-01",
-  "reviewWhen": "when auth system changes"
+  "attributes": {
+    "tag": ["auth", "oauth"],
+    "review": ["2026-06-01T00:00:00.0000000+00:00", "when auth system changes"]
+  },
+  "keywords": ["token", "refresh"]
 }
 ```
 
 The `content` array controls chunking: a single element creates a single-chunk memory; multiple elements create independently retrievable chunks.
+
+`attributes` is the searchable facet map — any key, each with an array of values. Up to 32 keys, up to 64 values per key; requests past either bound are rejected. `tag` and `review` are ordinary keys in that map: they replace the former top-level `tags`, `reviewAfter` and `reviewWhen` fields, which are no longer accepted. A `review` value that parses as a round-trip (ISO 8601 "o") timestamp is read as the review date; any other value is read as the review condition.
 
 **Response (201):**
 

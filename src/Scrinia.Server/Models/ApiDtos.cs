@@ -2,14 +2,17 @@ namespace Scrinia.Server.Models;
 
 // ── Memory CRUD ──────────────────────────────────────────────────────────────
 
+/// <summary>Body of POST /memories. <c>Attributes</c> is the agent-supplied attribute map — the
+/// current model. It replaces the legacy <c>tags</c>/<c>reviewAfter</c>/<c>reviewWhen</c> carriers,
+/// which were only ever translated server-side into the <c>tag</c> and <c>review</c> attribute keys;
+/// callers write those keys directly now. <c>Description</c> stays — it is a curated ContentPreview,
+/// a different concept from the carriers.</summary>
 public sealed record StoreRequest(
     string[] Content,
     string Name,
     string? Description = null,
-    string[]? Tags = null,
-    string[]? Keywords = null,
-    string? ReviewAfter = null,
-    string? ReviewWhen = null);
+    Dictionary<string, string[]>? Attributes = null,
+    string[]? Keywords = null);
 
 public sealed record StoreResponse(
     string Name,

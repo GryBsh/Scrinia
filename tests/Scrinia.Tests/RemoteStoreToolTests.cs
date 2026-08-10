@@ -415,9 +415,10 @@ public sealed class RemoteStoreToolTests
         // absent.
         //
         // Asserted through a recording double rather than the HttpMemoryStore fixture, because
-        // FileHashes is unobservable over the wire: StoreApiRequest (HttpMemoryStore.cs:106)
-        // carries only content and name, and HttpMemoryStore.Upsert is a no-op. A double's
-        // Upsert is the only seam where the stored entry can actually be inspected.
+        // FileHashes is unobservable over the wire: StoreApiRequest carries content, name,
+        // description, attributes and keywords — the path->hash map is not among them — and
+        // HttpMemoryStore.Upsert is a no-op. A double's Upsert is the only seam where the stored
+        // entry can actually be inspected.
         //
         // The probe file lives in the CWD deliberately. The failure this guards against is
         // fabricating a root — `?? Directory.GetCurrentDirectory()` — which would silently hash

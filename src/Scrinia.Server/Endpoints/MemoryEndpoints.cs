@@ -61,6 +61,17 @@ public static class MemoryEndpoints
         if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
             return Results.BadRequest(new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
+        // KnownAttributes.MaxAttributes, not the search filter's 64: KnownAttributes.Merge caps at
+        // MaxAttributes and silently truncates past it, so accepting a larger map would drop keys
+        // with no signal. Refusing at the number the domain already enforces keeps remote and local
+        // rejecting the same input.
+        if (req.Attributes is { Count: > KnownAttributes.MaxAttributes })
+            return Results.BadRequest(new ErrorResponse(
+                $"attributes may not exceed {KnownAttributes.MaxAttributes} keys."));
+        if (req.Attributes is not null && req.Attributes.Any(kv => kv.Value is { Length: > 64 }))
+            return Results.BadRequest(
+                new ErrorResponse("attributes may not exceed 64 values per key."));
+
         try
         {
             var result = await pipeline.StoreAsync(ctx.Store!, req, ct);

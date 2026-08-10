@@ -70,7 +70,10 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
     {
         var resp = await _client.PostAsJsonAsync(
             $"/api/v1/stores/{_factory.PrimaryStore}/memories",
-            new StoreRequest([body], name, body, tags));
+            new StoreRequest([body], name, body,
+                Attributes: tags is { Length: > 0 }
+                    ? new Dictionary<string, string[]> { [KnownAttributes.TagKey] = tags }
+                    : null));
         resp.EnsureSuccessStatusCode();
         return name;
     }

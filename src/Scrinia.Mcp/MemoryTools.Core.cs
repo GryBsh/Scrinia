@@ -196,7 +196,7 @@ public sealed partial class ScriniaMcpTools
                 KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)),
                 refAttributes),
             AttributeExtractor.ExtractMentionSpans(joined));
-        entryAttributes = KnownAttributes.Merge(entryAttributes, NormalizeAttributes(attributes));
+        entryAttributes = KnownAttributes.Merge(entryAttributes, KnownAttributes.Normalize(attributes));
         entryAttributes = AttributeExtractor.DropMentionsShadowedByTypedKeys(entryAttributes);
         AttributeExtractor.SeedTermFrequencies(entryAttributes, tf);
 
@@ -1275,7 +1275,7 @@ public sealed partial class ScriniaMcpTools
         var incoming = KnownAttributes.Merge(
             KnownAttributes.Merge(routedNewAttributes, AttributeExtractor.Extract(appendedContent)),
             AttributeExtractor.ExtractRefAttributes(appendedContent));
-        incoming = KnownAttributes.Merge(incoming, NormalizeAttributes(attributes));   // explicit agent attributes
+        incoming = KnownAttributes.Merge(incoming, KnownAttributes.Normalize(attributes));   // explicit agent attributes
         var mergedAttributes = KnownAttributes.Merge(existingAttributes, incoming);
 
         // Dual-write: fold the fully-merged tag/anchor set into Attributes at write time —
@@ -1461,22 +1461,6 @@ public sealed partial class ScriniaMcpTools
     {
         try { return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fullPath))); }
         catch { return null; }
-    }
-
-    /// <summary>Lowercases attribute keys and trims/drops empty values, matching the Attributes
-    /// convention (AttributeExtractor lowercases keys). Null when nothing survives.</summary>
-    private static Dictionary<string, string[]>? NormalizeAttributes(IReadOnlyDictionary<string, string[]>? attributes)
-    {
-        if (attributes is not { Count: > 0 }) return null;
-        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kv in attributes)
-        {
-            if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is null) continue;
-            var vals = kv.Value.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).ToArray();
-            if (vals.Length == 0) continue;
-            result[kv.Key.Trim().ToLowerInvariant()] = vals;
-        }
-        return result.Count > 0 ? result : null;
     }
 
     /// <summary>
