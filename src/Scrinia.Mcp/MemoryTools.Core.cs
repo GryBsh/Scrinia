@@ -329,7 +329,7 @@ public sealed partial class ScriniaMcpTools
             ? Nmp2ChunkedEncoder.Encode(content[0])
             : Nmp2ChunkedEncoder.EncodeChunks(content);
 
-        await store.WriteArtifactAsync(subject, scope, artifact, cancellationToken);
+        await store.WriteArtifactAsync(subject, scope, artifact, ct: cancellationToken);
 
         string uri = store.ArtifactUri(subject, scope);
 
@@ -1149,7 +1149,7 @@ public sealed partial class ScriniaMcpTools
             if (existingEntry is not null)
                 store.ArchiveVersion(subject, scope);
 
-            await store.WriteArtifactAsync(subject, scope, newArtifact, cancellationToken);
+            await store.WriteArtifactAsync(subject, scope, newArtifact, ct: cancellationToken);
 
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);

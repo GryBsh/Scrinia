@@ -53,7 +53,7 @@ public class SkillPathAuthorityTests
         string legacyScope = MemoryNaming.BuildScopedTopicScope("skill");
         await store.WriteArtifactAsync(
             "ghost", legacyScope, Scrinia.Core.Encoding.Nmp2ChunkedEncoder.Encode("legacy body"),
-            CancellationToken.None);
+            ct: CancellationToken.None);
 
         string result = await Tools().MemoryRecall(path: "/skill/ghost");
 

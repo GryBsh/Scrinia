@@ -568,7 +568,7 @@ public sealed partial class ScriniaMcpTools
             newChunkCount = keepRecent;
         }
 
-        await store.WriteArtifactAsync(subject, scope, compacted, cancellationToken);
+        await store.WriteArtifactAsync(subject, scope, compacted, ct: cancellationToken);
 
         // Preserve keywords from the existing entry metadata
         var entries = store.LoadIndex(scope);

@@ -360,7 +360,8 @@ internal sealed class FakeNonLocalMemoryStore : IMemoryStore
     public bool CopyMemory(string src, string dst, bool overwrite, out string message) { message = ""; return false; }
     public void ArchiveVersion(string subject, string scope = "local") { }
     public string ArtifactUri(string name, string scope = "local") => "";
-    public Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default) => Task.CompletedTask;
+    public Task WriteArtifactAsync(string subject, string scope, string artifactText,
+        ArtifactWriteMetadata? meta = null, CancellationToken ct = default) => Task.CompletedTask;
     public Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
     public bool DeleteArtifact(string subject, string scope) => false;
     public string[] DiscoverTopics() => [];

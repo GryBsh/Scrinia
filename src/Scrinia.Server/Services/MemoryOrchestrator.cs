@@ -115,7 +115,7 @@ public static class MemoryOrchestrator
             ? Nmp2ChunkedEncoder.Encode(req.Content[0])
             : Nmp2ChunkedEncoder.EncodeChunks(req.Content);
 
-        await store.WriteArtifactAsync(subject, scope, artifact, ct);
+        await store.WriteArtifactAsync(subject, scope, artifact, ct: ct);
 
         string uri = store.ArtifactUri(subject, scope);
 
@@ -276,7 +276,7 @@ public static class MemoryOrchestrator
                 store.ArchiveVersion(subject, scope);
             }
 
-            await store.WriteArtifactAsync(subject, scope, newArtifact, ct);
+            await store.WriteArtifactAsync(subject, scope, newArtifact, ct: ct);
 
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
@@ -323,7 +323,7 @@ public static class MemoryOrchestrator
                 try
                 {
                     if (previousArtifact is not null)
-                        await store.WriteArtifactAsync(subject, scope, previousArtifact, CancellationToken.None);
+                        await store.WriteArtifactAsync(subject, scope, previousArtifact, ct: CancellationToken.None);
                     else
                         store.DeleteArtifact(subject, scope);
                 }

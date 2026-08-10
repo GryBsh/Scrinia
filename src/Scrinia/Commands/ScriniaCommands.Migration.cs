@@ -290,7 +290,7 @@ public partial class ScriniaCommands
         byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
         string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
         string compacted = Nmp2ChunkedEncoder.Encode(fullText);
-        await store.WriteArtifactAsync(item.Entry.Name, item.Scope, compacted, ct);
+        await store.WriteArtifactAsync(item.Entry.Name, item.Scope, compacted, ct: ct);
 
         var updated = item.Entry with
         {

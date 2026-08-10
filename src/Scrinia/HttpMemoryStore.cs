@@ -494,7 +494,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     // ── Artifact file I/O via REST API ──────────────────────────────────────
 
-    public async Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default)
+    public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
+        ArtifactWriteMetadata? meta = null, CancellationToken ct = default)
     {
         // Decode the NMP/2 artifact back to text, then store via the API
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifactText);
