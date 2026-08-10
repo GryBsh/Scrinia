@@ -108,7 +108,8 @@ Reflection was checked as an escape hatch: `CachedIndex` is `internal sealed`, a
 `JsonElement.GetProperty` string lookups, unrelated to this type. `Scrinia.Core` grants
 `InternalsVisibleTo` to seven assemblies (`src/Scrinia.Core/Properties/AssemblyInfo.cs:3-10`), so
 `CachedIndex` *is* visible to tests — but no test names it: `rtk grep -rn "CachedIndex"` over `*.cs`
-returns only the six `FileMemoryStore.cs` lines, plus one test *comment* mentioning `_indexCache`
+returns only the eight `FileMemoryStore.cs` lines (`:29, :63, :71, :630, :903, :930, :958, :1001`),
+plus one test *comment* mentioning `_indexCache`
 (`tests/Scrinia.Tests/AttributesKeyMigrationTests.cs:174`).
 
 **F5 is confirmed.** Only `Entries` is consumed, at `:593`. There is no derived structure that a
@@ -195,12 +196,21 @@ With A1–A3 answered: **no, provided C1 holds.**
   `FileMemoryStore` instances never share a `List<T>`.
 
 One honest caveat that a later implementation task must not assume away: **on the cold path the
-returned list is not guaranteed to be the cached one.** Two threads may hold the read lock
-simultaneously, each build its own `entries` list at `:596`, each write `_indexCache[scope]` at
-`:630` (last-writer-wins), and each return its own list. "The returned list is the cached list" is a
-warm-path property only. It does not create a bug (nobody mutates), but any future code that relies
-on reference identity between a `LoadIndex` result and the cache would be relying on something that
-is not true.
+returned list is not the cached one.** This is unconditional, not a race:
+
+- **In the code as it stands**, `LoadIndexUnsafe` caches `entries` at `:630` and then returns
+  `entries.ToList()` at `:632` — a different instance every time, single-threaded runs included.
+- **After a change that aliases the cold path too** (returning `entries` at `:632`), identity still
+  fails in two ways. The cache write at `:630` is guarded by `if (entries.Count > 0)` (`:629`), so an
+  **empty** cold load caches nothing and returns a list that is in no cache at all. And for non-empty
+  loads, two threads may hold the read lock simultaneously, each build its own `entries` list at
+  `:596`, each write `_indexCache[scope]` at `:630` (last-writer-wins), and each return its own list —
+  so at most one of them holds the cached instance.
+
+"The returned list is the cached list" is therefore a warm-path property only, under both the current
+and the post-change shape. It creates no bug (nobody mutates), but any future code that relies on
+reference identity between a `LoadIndex` result and the cache is relying on something that is not
+true — hence condition C4.
 
 ### A5. Test doubles
 
@@ -241,20 +251,64 @@ returns `List<ArtifactEntry>`, a mutable type, on a **public interface member**
 (`IMemoryStore.cs:20`), so any future caller can legally call `.Add` and would silently corrupt the
 cache with no compile error and no failing test. That is a materially different risk profile from
 today, where the same mistake is harmless. Hence SAFE WITH CONDITIONS, not SAFE — the conditions are
-what convert a today-true fact into a maintained invariant.
+what convert a today-true fact into a maintained invariant, and C5 in particular is what moves the
+guarantee from "every caller was checked" to "the type forbids it."
 
-**Conditions (all four required before the change ships):**
+**Conditions (all five required before the change ships):**
 
 - **C1.** `FileMemoryStore.cs:1594` gets an explicit `.ToList()`. Non-negotiable; without it the change
   is outright unsafe (A3).
 - **C2.** `IMemoryStore.LoadIndex`'s XML doc states the returned list is a live view that callers must
   not mutate, and `LoadIndexUnsafe`'s cache-hit line carries a comment naming `NameToPosition` and
   `Rebuild()` as dead — so the next reader learns *why* it is safe, not just that it is.
-- **C3.** A regression test that fails if a future edit reintroduces a mutating caller. Behavioural,
-  not reference-identity-based: e.g. `LoadIndex(scope)` twice, mutate the first result, assert the
-  second is unaffected — pinning the contract at the seam rather than at the implementation.
+- **C3.** The narrowing is pinned by a test, so it cannot be silently undone. See below — the earlier
+  draft of this condition proposed a mutate-and-compare test that cannot work, and is corrected here.
 - **C4.** Reference identity between a `LoadIndex` result and `_indexCache[scope]` is **not** asserted
   anywhere, because it does not hold on the cold path (A4).
+- **C5.** The return type is narrowed to `IReadOnlyList<ArtifactEntry>` **in the same change** that
+  introduces the alias. See below — aliasing without narrowing is the genuinely dangerous combination.
+
+#### C5, and why it is a precondition rather than a companion
+
+Verdict A's residual risk is that a future caller mutates the alias with no compile error. Narrowing
+`LoadIndex`'s return type from `List<ArtifactEntry>` to `IReadOnlyList<ArtifactEntry>` removes that
+risk at the type level: `Add`/`Insert`/`Clear`/indexer-set are simply not on the interface, so the
+mistake becomes a build failure rather than silent cache corruption.
+
+This also converts **C1 from a discipline into a compile error.** After narrowing,
+`existingEntries[idx] = updatedEntry` (`:1616`) and `existingEntries.Add(updatedEntry)` (`:1618`) do
+not compile, so `ImportTopicEntries` *cannot* be left without its `.ToList()`.
+
+The consequence is an ordering constraint: shipping the alias while the return type is still
+`List<ArtifactEntry>` is strictly worse than either the status quo or the fully narrowed change, and
+it is the one intermediate state to avoid. Ship both together.
+
+#### C3, restated so it is actually implementable
+
+The earlier formulation of C3 — call `LoadIndex(scope)` twice, mutate the first result, assert the
+second is unaffected — is wrong, and would fail as a test for two independent reasons. Under the
+aliasing change it exists to guard, both calls return **the same live list**, so mutating the first
+necessarily changes the second and the assertion fails by construction. And under C5's narrowing the
+mutation does not compile at all. It described the behaviour of the code *before* the change, which
+is precisely what the change removes. Recorded rather than quietly deleted, because "assert the copy
+is defensive" is the obvious test to reach for here and the next person will reach for it too.
+
+What is actually checkable against the post-change code:
+
+- **C3a (the real guard).** A reflection test pinning the declared return type, in the idiom
+  `tests/Scrinia.Tests/StoreBoundaryTests.cs` already uses for the interface surface — assert
+  `typeof(IMemoryStore).GetMethod("LoadIndex")!.ReturnType` is `IReadOnlyList<ArtifactEntry>`. Under
+  C5 the compiler already prevents mutation; this test prevents the *narrowing* from being widened
+  back, which is the only way mutation could silently return. It fails loudly on the edit that
+  matters and is immune to the cold-path identity problem in C4.
+- **C3b (optional, and weaker than it looks).** A concurrency stress test — one thread enumerating
+  `LoadIndex(scope)` in a loop while another runs `ImportTopicEntries` on the same scope — which
+  throws `InvalidOperationException` if C1's `.ToList()` is ever removed. Worth stating explicitly
+  that a *single-threaded* round-trip test does **not** catch C1's removal: without the `.ToList()`,
+  `ImportTopicEntries` mutates the cached list in place and then re-caches that same list, so the
+  final contents are still correct and the test passes. The hazard is purely concurrent, which is why
+  C5's compile error is the dependable guard and this test is a belt-and-braces addition with the
+  usual flakiness caveats.
 
 ---
 
@@ -360,16 +414,52 @@ path and always throws exactly as now.
 
 ### B4. What the change must look like
 
-The lock can only be skipped if the cache check moves **ahead** of the acquire — i.e. `LoadIndex`
-checks `_indexCache.TryGetValue` first and only falls through to
-`AcquireShared` + `EnterReadLock` + `LoadIndexUnsafe` on a miss. Reading the cache outside the
-in-process read lock is safe on its own terms: `_indexCache` is a `ConcurrentDictionary` (`:29`) and
-every write is an atomic whole-object replace (A2), so a lock-free `TryGetValue` returns either the
-old `CachedIndex` or the new one, never a torn one. Losing that race means returning the pre-write
-snapshot — which is the same staleness B2 establishes is already unavoidable across processes.
+`LoadIndex` holds **two** locks today: the cross-process `FileLock.AcquireShared` (`:576`) and the
+in-process `ReaderWriterLockSlim` read lock (`:578`). Verdict B is about the first one only. They are
+separable, and the distinction decides the implementation shape, so all three candidates are
+evaluated here rather than only the endpoints.
 
-`LoadIndexUnsafe` must keep its own cache check as the second, under-lock check, so a miss that
-races a concurrent population still short-circuits.
+| Shape | Fast-path cache check sits… | File lock on hit | In-process read lock on hit | Verdict |
+|---|---|---|---|---|
+| S0 | inside `LoadIndexUnsafe`, under both locks | taken | taken | status quo |
+| **S1** | **in `LoadIndex`, under `EnterReadLock` only** | **skipped** | **taken** | **recommended** |
+| S2 | in `LoadIndex`, above both locks | skipped | skipped | rejected — see below |
+
+**S1 is the right shape**, and it is what this analysis recommends. `LoadIndex` acquires only the
+in-process read lock, checks `_indexCache.TryGetValue`, and returns on a hit; on a miss it releases,
+then takes `AcquireShared` + `EnterReadLock` + `LoadIndexUnsafe` exactly as today. `LoadIndexUnsafe`
+must keep its own cache check as the second, under-lock check, so a miss that races a concurrent
+population still short-circuits rather than re-reading disk.
+
+S1 delivers everything Verdict B claims. The costs being removed on a warm read are a
+`GetStoreDirForScope` call, a `Directory.CreateDirectory`, a file handle open and close, and the
+possibility of blocking or throwing `FileLockTimeoutException` behind another process's writer. The
+`EnterReadLock`/`ExitReadLock` pair that S1 keeps is uncontended in-process work of a few nanoseconds
+— it is not the cost anyone is trying to remove.
+
+**S2 is rejected, and the reason is not the one B2 covers.** Dropping the in-process read lock as
+well would introduce a *new* failure mode that the current code closes. Every write runs under
+`WithExclusiveLock` (`:555-569`), which takes `EnterWriteLock` at `:560` and performs both the sidecar
+write and the cache replacement inside it. Because a reader takes `EnterReadLock` at `:578`, a
+same-process reader on another thread **blocks until that write completes and therefore observes the
+post-write cache**. Under S2 the reader's lock-free `TryGetValue` can run mid-write and return the
+*pre*-write `CachedIndex`.
+
+That is a genuine regression, and it must not be waved through by pointing at B2. B2's staleness is
+**cross-process, pre-existing, and unavoidable** — no lock discipline inside this process can fix it.
+S2's staleness would be **same-process, cross-thread, and newly introduced** by the change, in a
+window the `ReaderWriterLockSlim` currently closes. The two are not the same thing, and equating them
+(as an earlier draft of this section did) is the kind of reasoning that makes a verdict look
+pre-decided. It also matters in practice: the MCP tools and `MemoryOrchestrator` do read-then-write
+sequences, and the event sinks (`MaintenanceEventSink`, `EntityTypingEventHandler`) run off the back
+of a write while other work proceeds — exactly the concurrent-reader shape that would observe the
+stale snapshot.
+
+Since S1 costs essentially nothing and preserves that guarantee, there is no reason to pay for S2.
+
+**This does not weaken Verdict B.** The file lock buys nothing on a cache hit under either shape;
+what S1-versus-S2 decides is only how much *else* gets dropped along with it. Verdict B stands as
+SAFE TO SKIP, and S1 is how to skip it.
 
 ### Verdict B justification
 
@@ -386,7 +476,10 @@ non-obvious risk — that `GetLockPath` doubles as the trigger for the v3 layout
 population sites are reached through a `GetStoreDirForScope` call, so the existence of a cache entry
 is itself proof the latch already fired; a miss still takes the lock and still fires it. The residual
 changes are the loss of a `.lock` file creation on warm reads (nothing depends on it, and it only ever
-removes a write) and the loss of a spurious timeout throw on contended warm reads.
+removes a write) and the loss of a spurious timeout throw on contended warm reads. The verdict applies
+to the **file** lock alone: the in-process `ReaderWriterLockSlim` read lock must stay on the fast path
+(shape S1 in B4), because it closes a same-process read-your-writes window that dropping it would
+reopen — a separate question from the one Verdict B answers, and one whose answer is different.
 
 ---
 
@@ -407,10 +500,22 @@ removes a write) and the loss of a spurious timeout throw on contended warm read
   `core.md:445` claim would be tempted to write — breaks it directly.
 - **Any new MUTATING call site**, i.e. any caller that calls `Add`/`AddRange`/`Remove`/`RemoveAt`/
   `RemoveAll`/`Insert`/`Clear`/`Sort`/`Reverse` or an indexer set on a `LoadIndex` result, or passes
-  it to something that outlives the expression. The table above is the baseline. C3's regression test
-  is what makes this detectable rather than silent.
+  it to something that outlives the expression. The table above is the baseline. Under C5 this is a
+  compile error; C3a is what stops C5 being undone.
+- **Widening `LoadIndex`'s return type back to `List<ArtifactEntry>`** after C5 narrows it. This is
+  the single edit that would silently restore the whole risk class, which is why C3a pins it.
 - **Removal of the `.ToList()` at `FileMemoryStore.cs:1594`** (condition C1) — the same failure,
-  reintroduced at the one site that has always had it coming.
+  reintroduced at the one site that has always had it coming. Under C5 this does not compile; without
+  C5 it is silent, which is why C5 is a precondition and not a companion.
+- **`Scrinia.Core` becoming a published library.** Verdict A's exhaustiveness rests entirely on a
+  repo-wide grep having found *every* caller — a premise that holds only while every consumer is in
+  this repo. `src/Scrinia.Core/Scrinia.Core.csproj` carries `PackageLicenseExpression` (`:8`) but no
+  `PackageId`, `IsPackable` or `GeneratePackageOnBuild`, and no `src/` project sets them, so nothing
+  is packed today and the premise holds. Adding any of them would invalidate the call-site table
+  wholesale: external callers compiled against `List<ArtifactEntry>` could mutate the alias, and no
+  grep here would ever see them. C5's narrowing is what makes this survivable, since it moves the
+  guarantee from "we checked every caller" to "the type forbids it" — but a packing change should
+  still force a re-read of this section.
 - **`BundleIndex` (`BundleFormatService.cs:10`) gaining a lifetime** beyond the inline
   `JsonSerializer.Serialize` argument at `:65`. It captures the list by reference; today that is
   harmless only because the instance is discarded within the expression.
@@ -437,6 +542,15 @@ removes a write) and the loss of a spurious timeout throw on contended warm read
 - **`LoadIndexUnsafe` gaining a second caller** that does not hold the read lock. It has exactly one
   today (`:581`), which is what makes "the cache check is the first statement" a complete description
   of the hit path.
+- **The fast-path cache check being hoisted above `EnterReadLock` (shape S2 in B4).** This does not
+  flip Verdict B — the file lock still buys nothing — but it silently trades the verdict's benefit for
+  a same-process read-your-writes regression that the current `ReaderWriterLockSlim` closes. If a
+  future change removes the in-process read lock from the fast path, that is a separate decision
+  needing its own justification, and it cannot borrow this document's.
+- **Writes ceasing to replace the `CachedIndex` under `EnterWriteLock`.** S1's correctness on a hit
+  depends on the reader either seeing the whole old `CachedIndex` or the whole new one. That holds
+  because every write runs inside `WithExclusiveLock` (`:555-569`) and installs a new object (A2). An
+  in-place cache update would break Verdict A and this at the same time.
 
 ---
 
