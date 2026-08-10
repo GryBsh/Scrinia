@@ -573,11 +573,42 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     public List<ArtifactEntry> LoadIndex(string scope = "local")
     {
-        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         var lk = GetIndexLock(scope);
+
+        // Fast lane: an in-memory cache hit performs no I/O, so it needs no file handle.
+        //
+        // The shared file lock keeps a COLD read from seeing a half-written sidecar. It cannot
+        // make a cache hit more correct: nothing invalidates _indexCache across processes, so a
+        // hit already returns whatever this process last loaded, lock or no lock. Taking the
+        // lock here bought a file handle open and close per call and no guarantee whatsoever.
+        //
+        // The in-process read lock STAYS. Writes replace the cache under EnterWriteLock (:560),
+        // so dropping it here would newly open a same-process read-your-writes race — which is
+        // not the same as the cross-process staleness above, and is not ours to introduce.
+        //
+        // Skipping GetLockPath also skips its GetStoreDirForScope call — which is load-bearing
+        // for the layout-migration latch. Safe because every path that populates _indexCache
+        // reaches it through GetStoreDirForScope first, so a cache entry cannot exist before
+        // migration has been triggered. See
+        // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
         lk.EnterReadLock();
         try
         {
+            if (_indexCache.TryGetValue(scope, out var cached))
+                return cached.Entries.ToList();
+        }
+        finally
+        {
+            lk.ExitReadLock();
+        }
+
+        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
+        lk.EnterReadLock();
+        try
+        {
+            // LoadIndexUnsafe re-checks the cache as its first statement, which covers the
+            // window between the two acquisitions above — another thread may have populated it
+            // while this one was waiting on the file lock.
             return LoadIndexUnsafe(scope);
         }
         finally
