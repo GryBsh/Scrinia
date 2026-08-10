@@ -2,6 +2,7 @@ using System.Reflection;
 using FluentAssertions;
 using Scrinia;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 
 namespace Scrinia.Tests;
 
@@ -100,6 +101,17 @@ public sealed class StoreBoundaryTests
 
         names.Should().Contain("ArtifactUri",
             because: "HttpMemoryStore implements it for real, returning a remote:// URI");
+    }
+
+    [Fact]
+    public void IMemoryStore_LoadIndex_ReturnsAReadOnlyList()
+    {
+        typeof(IMemoryStore).GetMethod(nameof(IMemoryStore.LoadIndex))!.ReturnType
+            .Should().Be<IReadOnlyList<ArtifactEntry>>(
+                because: "LoadIndex hands out a live view of the index cache. The read-only type "
+                       + "is what makes mutating it a compile error instead of silent cache "
+                       + "corruption — widening it back would reopen that hole with no other "
+                       + "test failing");
     }
 
     private static string RepoRoot()

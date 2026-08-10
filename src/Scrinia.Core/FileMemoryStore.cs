@@ -62,6 +62,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// </summary>
     internal sealed class CachedIndex
     {
+        /// <summary>The cached entries. Handed out by reference from LoadIndex — callers get a
+        /// live view of this list, not a copy. That is safe only because no reader mutates it
+        /// and every cache write REPLACES the CachedIndex rather than mutating this instance.
+        /// A caller that needs to mutate must call ToList() explicitly, as ImportTopicEntries
+        /// does. See docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.</summary>
         public List<ArtifactEntry> Entries { get; }
         public Dictionary<string, int> NameToPosition { get; private set; }
 
@@ -571,7 +576,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     private void WithExclusiveLock(string scope, Action body) =>
         WithExclusiveLock(scope, () => { body(); return true; });
 
-    public List<ArtifactEntry> LoadIndex(string scope = "local")
+    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
         var lk = GetIndexLock(scope);
 
@@ -594,8 +599,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         lk.EnterReadLock();
         try
         {
+            // Live view, not a copy. Safe because CachedIndex.NameToPosition, Rebuild() and
+            // GetOrComputeCorpusStats() have no readers anywhere in the repo — there is no
+            // derived structure to desync — and every cache write REPLACES the CachedIndex
+            // rather than mutating this list. See
+            // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
             if (_indexCache.TryGetValue(scope, out var cached))
-                return cached.Entries.ToList();
+                return cached.Entries;
         }
         finally
         {
@@ -617,11 +627,19 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         }
     }
 
-    private List<ArtifactEntry> LoadIndexUnsafe(string scope)
+    // CA1859: the analyzer wants the concrete List<T> here since this private method has a
+    // single call site with no polymorphism need — but IReadOnlyList<ArtifactEntry> is the
+    // return type LoadIndex itself narrows to, and LoadIndexUnsafe exists purely to share
+    // LoadIndex's cache-hit/cold-load logic. Matching its signature keeps the two in lockstep
+    // rather than reintroducing a List<T> boundary the public contract just removed.
+#pragma warning disable CA1859
+    private IReadOnlyList<ArtifactEntry> LoadIndexUnsafe(string scope)
+#pragma warning restore CA1859
     {
         // Check in-memory cache first
+        // Live view — see the comment on the fast-path check in LoadIndex.
         if (_indexCache.TryGetValue(scope, out var cached))
-            return cached.Entries.ToList();
+            return cached.Entries;
 
         string storeDir = GetStoreDirForScope(scope);
         var entries = LoadEntriesFromSidecars(storeDir);
@@ -660,7 +678,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         if (entries.Count > 0)
             _indexCache[scope] = new CachedIndex(entries);
 
-        return entries.ToList();
+        return entries;
     }
 
     private List<ArtifactEntry> LoadEntriesFromSidecars(string storeDir)
@@ -1653,7 +1671,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         string storeDir = GetStoreDirForScope(topicScope);
         Directory.CreateDirectory(storeDir);
 
-        var existingEntries = LoadIndex(topicScope);
+        // ToList() because this method mutates the list below and hands it to SaveIndex, which
+        // takes ownership of the instance it is given (it becomes the cache). Mutating the
+        // cache's own backing list here would corrupt every other reader's live view.
+        var existingEntries = LoadIndex(topicScope).ToList();
 
         foreach (var entry in entries)
         {

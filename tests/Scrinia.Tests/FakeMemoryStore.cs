@@ -20,7 +20,7 @@ internal class FakeMemoryStore : IMemoryStore
     public virtual bool IsEphemeral(string name) => name.StartsWith('~');
     public virtual string SanitizeName(string name) => name;
     public virtual Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default) => Task.FromResult("");
-    public virtual List<ArtifactEntry> LoadIndex(string scope = "local") => [];
+    public virtual IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
     public virtual void Upsert(ArtifactEntry entry, string scope = "local") { }
     public virtual bool Remove(string name, string scope = "local") => false;
     public virtual List<ScopedArtifact> ListScoped(string? scopes = null) => [];

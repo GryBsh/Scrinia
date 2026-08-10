@@ -250,7 +250,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         return Nmp2ChunkedEncoder.Encode(show.Content);
     }
 
-    public List<ArtifactEntry> LoadIndex(string scope = "local") =>
+    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") =>
         []; // Not directly supported in remote mode; use ListScoped
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
