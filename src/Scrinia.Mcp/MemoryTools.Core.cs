@@ -329,18 +329,11 @@ public sealed partial class ScriniaMcpTools
             ? Nmp2ChunkedEncoder.Encode(content[0])
             : Nmp2ChunkedEncoder.EncodeChunks(content);
 
-        await store.WriteArtifactAsync(subject, scope, artifact, ct: cancellationToken);
-
-        string uri = store.ArtifactUri(subject, scope);
-
-        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
-        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
         // Merge 3 Task 2b: an explicit curated description becomes the displayed
         // ContentPreview (option A) — it wins over the auto content snippet.
         string contentPreview = !string.IsNullOrWhiteSpace(description)
             ? description
             : ContentPreview.Generate(joined);
-        string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         // New model: the `review` attribute carries review dates and/or free-text conditions.
         // Feed date-parseable values into the existing reviewAfter parse (first wins); join the
@@ -406,13 +399,30 @@ public sealed partial class ScriniaMcpTools
 
         // Dual-write: fold tag/anchor/review/file into Attributes at write time — the attributes-native
         // write path (byte-identical to AttributeMigration.Forward's fold, Task 1). Inserted here,
-        // immediately before construction, so it captures the auto-derived reviewWhen (above) and
+        // immediately before the write, so it captures the auto-derived reviewWhen (above) and
         // the completed codeRefDict (above) — inserting any earlier would fold stale/empty values.
+        // It has to precede the *write*, not merely the ArtifactEntry construction below: a remote
+        // store's Upsert is a no-op, so WriteArtifactAsync is the only channel these attributes
+        // have. Nothing between here and the construction reassigns entryAttributes, so the entry
+        // still sees exactly this merged map.
         var carrier = AttributeMigration.BuildCarrierAttributes(
             tags, codeRefDict?.Keys, parsedReviewAfter,
             string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen, cleanedAnchors);
         if (carrier.Count > 0)
             entryAttributes = KnownAttributes.Merge(entryAttributes, carrier);
+
+        await store.WriteArtifactAsync(subject, scope, artifact,
+            new ArtifactWriteMetadata(
+                Attributes: entryAttributes,
+                Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
+                Description: contentPreview),
+            cancellationToken);
+
+        string uri = store.ArtifactUri(subject, scope);
+
+        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
+        string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         var entry = new ArtifactEntry(
             Name: subject,
