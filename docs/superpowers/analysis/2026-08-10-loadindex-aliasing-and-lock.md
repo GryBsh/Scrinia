@@ -591,3 +591,46 @@ Out of this task's scope (it produces no code), recorded so they are not lost:
 6. **`rtk grep` silently truncates.** It reported 125 `LoadIndex(` occurrences in `tests/` where
    `rtk proxy grep … | wc -l` reports 141 (the brief's figure, and the correct one). Any count derived
    from `rtk grep` should be re-derived with `rtk proxy` before it is used as evidence.
+
+## Measurement
+
+Harness: `tests/Scrinia.Benchmarks/LoadIndexBenchmarks.cs`, BenchmarkDotNet 0.15.4, `-c Release`.
+
+```
+BenchmarkDotNet v0.15.4, Windows 11 (10.0.26300.9032)
+AMD Ryzen 5 9600X 3.90GHz, 1 CPU, 12 logical and 6 physical cores
+.NET SDK 10.0.400-preview.0.26322.102
+  [Host]     : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v4
+  DefaultJob : .NET 10.0.9 (10.0.9, 10.0.926.27113), X64 RyuJIT x86-64-v4
+```
+
+"Before" = `src/Scrinia.Core/FileMemoryStore.cs` checked out at `f8a316c` (pre-Task-2, lock
+acquired before the cache check on every `LoadIndex` call). "After" = the same file at `cc7b3b4`
+(current `HEAD`, cache checked first; the `.lock` file handle is only opened on a cache miss).
+
+| Entries | Before (lock first) | After (cache first) | Delta | Alloc before | Alloc after |
+|---|---|---|---|---|---|
+| 100 | 164.90 us (±3.26 us 99.9% CI, N=28) | 76.99 ns (±1.542 ns 99.9% CI, N=28) | −164.82 us (~2142× faster) | 2.23 KB | 856 B |
+| 1000 | 169.40 us (±3.36 us 99.9% CI, N=41) | 447.98 ns (±8.817 ns 99.9% CI, N=24) | −168.95 us (~378× faster) | 9.27 KB | 8056 B (7.87 KB) |
+| 5000 | 170.93 us (±3.28 us 99.9% CI, N=19) | 1.817 us (±0.034 us 99.9% CI, N=15) | −169.11 us (~94× faster) | 40.52 KB | 40056 B (39.12 KB) |
+
+**Reading:** This is not in the noise — it is several orders of magnitude beyond any margin of
+error at all three sizes, in the expected direction (before slower, after faster). The "before"
+mean sits in a tight 164.9–170.9 us band that barely moves with entry count, which is exactly the
+shape you'd expect from a roughly constant per-call cost (opening and closing a `.lock` file
+handle) dominating a cheap, size-dependent cache read. The "after" mean, with the lock removed
+from the cache-hit path, scales with entry count instead (77 ns → 448 ns → 1.82 us across
+100/1000/5000), consistent with the remaining cost being the defensive `ToList()` copy over the
+cached list — the thing this benchmark deliberately still measures. Allocation drops at the low
+end (856 B vs 2.23 KB at 100 entries) and converges toward parity at 5000 entries, where the
+`ToList()` copy itself dominates the allocation and the lock's own allocations become a rounding
+error by comparison.
+
+One note on expectations: the brief's "Context for the sizes below" section cites prior figures
+of ~0.87–1.14 ms (70 entries) and ~2.16–2.45 ms (272 entries) as the scale to expect. Those prior
+numbers came from a different, heavier benchmark — a fuller read path including scoring, not an
+isolated warm `LoadIndex` call — so the lock's cost was diluted among other work there. Here the
+lock is the only thing separating "before" from "after," so its cost is not diluted and it
+dominates the whole measurement; a >2000× difference at 100 entries is the expected consequence of
+isolating it, not a contradiction of the earlier numbers. As stated up top, the change stands on
+the syscall being unnecessary, not on this table — but the table backs that claim up unambiguously.
