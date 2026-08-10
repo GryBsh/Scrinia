@@ -54,6 +54,8 @@ public class SearchCandidatesHintTests
 
         Names(results).Should().NotContain("beta-note",
             because: "Candidates is a hint about cost, never about the answer");
+        Names(results).Should().Contain("alpha-note",
+            because: "the in-scope memory must still come back — an empty result set would pass the assertion above vacuously");
     }
 
     [Fact]
@@ -73,6 +75,8 @@ public class SearchCandidatesHintTests
 
         Names(results).Should().NotContain("beta-note",
             because: "an excludeTopics filter the caller ignored is still this query's filter");
+        Names(results).Should().Contain("alpha-note",
+            because: "the in-scope memory must still come back — an empty result set would pass the assertion above vacuously");
     }
 
     [Fact]
@@ -91,6 +95,8 @@ public class SearchCandidatesHintTests
         });
         var withoutHint = store.SearchAll(new SearchQuery("needle") { Scopes = "local:alpha" });
 
+        Names(withHint).Should().Contain("alpha-note",
+            because: "both runs are expected to return the in-scope memory — equivalence between two empty sets would prove nothing");
         Names(withHint).Should().BeEquivalentTo(Names(withoutHint),
             because: "the hint must be invisible in the results when the caller honoured it");
     }

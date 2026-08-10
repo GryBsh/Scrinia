@@ -36,11 +36,15 @@ public sealed record SearchQuery(string Query)
     /// <summary>
     /// Pre-materialized candidates. When set, the store skips its own <c>ListScoped</c> — the
     /// caller already paid for it.
-    /// <para><b>Contract:</b> a hint about cost, not about the answer. The store re-applies this
-    /// query's own <see cref="Scopes"/> and <see cref="ExcludeTopics"/> to whatever is supplied,
-    /// so a wider or differently-scoped list cannot change the result set — it only wastes the
-    /// work spent materializing the surplus. <see cref="SearchPipeline"/> is the only production
-    /// caller that sets this, and it builds both from the same values.</para>
+    /// <para><b>Contract:</b> a hint about cost, not about the answer — in one direction. The
+    /// store re-applies this query's own <see cref="Scopes"/> and <see cref="ExcludeTopics"/> to
+    /// whatever is supplied, so a wider or differently-scoped list cannot add results the query's
+    /// own filters would exclude; the surplus is filtered out, not returned. Filtering can only
+    /// remove candidates, though — it cannot source ones that were never supplied — so a list
+    /// <i>narrower</i> than this query's scopes still under-returns, the same as calling
+    /// <c>ListScoped</c> with that narrower filter would. <see cref="SearchPipeline"/> is the only
+    /// production caller that sets this, and it builds both from the same values, so this
+    /// asymmetry never surfaces there.</para>
     /// <para><b>Staleness:</b> the list is a snapshot. A caller that materializes candidates,
     /// awaits something slow (an embedding provider), then searches will not see a memory written
     /// during that await — where re-listing inside the store would have. That is an accepted
