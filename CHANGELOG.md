@@ -10,6 +10,24 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed — store read path
+
+- A cached `LoadIndex` no longer opens a file handle. The shared `.lock` was acquired before the
+  in-memory cache was consulted, so every call paid an OS handle open and close even when no I/O
+  followed. The lock still guards cold reads, which are the only ones that touch disk — it never
+  guarded cache freshness, because nothing invalidates the cache across processes.
+- `SearchQuery.Candidates` is now a cost hint that cannot make a search's answer *wider* — supplying
+  a wider or differently-scoped candidate list previously returned memories from scopes the query
+  had excluded, silently. The store now re-applies the query's own `scopes`/`excludeTopics` to
+  whatever is handed in. `SearchPipeline` — the only production caller that sets it — already
+  built both from the same values, so no caller's results change. Note the filter can only
+  remove candidates, never source them: a list *narrower* than the query's scopes still
+  under-returns.
+- `IMemoryStore.LoadIndex` returns `IReadOnlyList<ArtifactEntry>` and no longer copies the cached
+  list on every read. The single caller that mutates the result (`ImportTopicEntries`) now copies
+  explicitly. The read-only type makes a caller's mutation a compile error rather than silent
+  corruption of the store's index cache.
+
 ### Changed — `IMemoryStore` split: local-only members moved to a new `ILocalMemoryStore`
 
 - `IMemoryStore` lost eight members. Six moved to a new `ILocalMemoryStore : IMemoryStore` in

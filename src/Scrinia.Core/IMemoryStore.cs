@@ -17,7 +17,13 @@ public interface IMemoryStore
 
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
-    List<ArtifactEntry> LoadIndex(string scope = "local");
+
+    /// <summary>
+    /// The scope's index entries. <b>The returned list may be a live view of the store's internal
+    /// cache — callers must not mutate it.</b> Call <c>ToList()</c> first if you need to.
+    /// The read-only type makes that a compile error rather than silent cache corruption.
+    /// </summary>
+    IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local");
     void Upsert(ArtifactEntry entry, string scope = "local");
     bool Remove(string name, string scope = "local");
 

@@ -349,7 +349,7 @@ internal sealed class FakeNonLocalMemoryStore : IMemoryStore
     public bool IsEphemeral(string name) => name.StartsWith('~');
     public string SanitizeName(string name) => name;
     public Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default) => Task.FromResult("");
-    public List<ArtifactEntry> LoadIndex(string scope = "local") => [];
+    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
     public void Upsert(ArtifactEntry entry, string scope = "local") { }
     public bool Remove(string name, string scope = "local") => false;
     public List<ScopedArtifact> ListScoped(string? scopes = null) => [];

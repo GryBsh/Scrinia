@@ -57,11 +57,18 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     private long _factStoreGeneration;
 
     /// <summary>
-    /// In-memory cache of a scope's index entries with O(1) name→position lookup
-    /// and lazily computed BM25 corpus statistics.
+    /// In-memory cache of a scope's index entries, handed out by reference on a
+    /// <see cref="LoadIndex"/> cache hit. <see cref="NameToPosition"/>, <see cref="Rebuild"/> and
+    /// <see cref="GetOrComputeCorpusStats"/> have no readers anywhere in the repo — see
+    /// docs/architecture/core.md's "CachedIndex" section for why they are kept anyway.
     /// </summary>
     internal sealed class CachedIndex
     {
+        /// <summary>The cached entries. Handed out by reference from LoadIndex — callers get a
+        /// live view of this list, not a copy. That is safe only because no reader mutates it
+        /// and every cache write REPLACES the CachedIndex rather than mutating this instance.
+        /// A caller that needs to mutate must call ToList() explicitly, as ImportTopicEntries
+        /// does. See docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.</summary>
         public List<ArtifactEntry> Entries { get; }
         public Dictionary<string, int> NameToPosition { get; private set; }
 
@@ -571,13 +578,49 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     private void WithExclusiveLock(string scope, Action body) =>
         WithExclusiveLock(scope, () => { body(); return true; });
 
-    public List<ArtifactEntry> LoadIndex(string scope = "local")
+    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
-        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
         var lk = GetIndexLock(scope);
+
+        // Fast lane: an in-memory cache hit performs no I/O, so it needs no file handle.
+        //
+        // The shared file lock keeps a COLD read from seeing a half-written sidecar. It cannot
+        // make a cache hit more correct: nothing invalidates _indexCache across processes, so a
+        // hit already returns whatever this process last loaded, lock or no lock. Taking the
+        // lock here bought a file handle open and close per call and no guarantee whatsoever.
+        //
+        // The in-process read lock STAYS. Writes replace the cache under EnterWriteLock (:560),
+        // so dropping it here would newly open a same-process read-your-writes race — which is
+        // not the same as the cross-process staleness above, and is not ours to introduce.
+        //
+        // Skipping GetLockPath also skips its GetStoreDirForScope call — which is load-bearing
+        // for the layout-migration latch. Safe because every path that populates _indexCache
+        // reaches it through GetStoreDirForScope first, so a cache entry cannot exist before
+        // migration has been triggered. See
+        // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
         lk.EnterReadLock();
         try
         {
+            // Live view, not a copy. Safe because CachedIndex.NameToPosition, Rebuild() and
+            // GetOrComputeCorpusStats() have no readers anywhere in the repo — there is no
+            // derived structure to desync — and every cache write REPLACES the CachedIndex
+            // rather than mutating this list. See
+            // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
+            if (_indexCache.TryGetValue(scope, out var cached))
+                return cached.Entries;
+        }
+        finally
+        {
+            lk.ExitReadLock();
+        }
+
+        using var fileLock = FileLock.AcquireShared(GetLockPath(scope));
+        lk.EnterReadLock();
+        try
+        {
+            // LoadIndexUnsafe re-checks the cache as its first statement, which covers the
+            // window between the two acquisitions above — another thread may have populated it
+            // while this one was waiting on the file lock.
             return LoadIndexUnsafe(scope);
         }
         finally
@@ -588,9 +631,9 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     private List<ArtifactEntry> LoadIndexUnsafe(string scope)
     {
-        // Check in-memory cache first
+        // Live view — see the comment on the fast-path check in LoadIndex.
         if (_indexCache.TryGetValue(scope, out var cached))
-            return cached.Entries.ToList();
+            return cached.Entries;
 
         string storeDir = GetStoreDirForScope(scope);
         var entries = LoadEntriesFromSidecars(storeDir);
@@ -629,7 +672,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         if (entries.Count > 0)
             _indexCache[scope] = new CachedIndex(entries);
 
-        return entries.ToList();
+        return entries;
     }
 
     private List<ArtifactEntry> LoadEntriesFromSidecars(string storeDir)
@@ -877,6 +920,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             File.Delete(metaPath);
     }
 
+    /// <summary>
+    /// Persists <paramref name="entries"/> as the full index for <paramref name="scope"/> and takes
+    /// ownership of the list instance: it becomes the scope's in-memory cache directly, not a copy.
+    /// The caller must not retain a reference to <paramref name="entries"/> or mutate it after this
+    /// call — doing so corrupts the cache and, since readers now get that same list by reference
+    /// from <see cref="LoadIndex"/>, can surface as an <see cref="InvalidOperationException"/> inside
+    /// an unrelated concurrent enumerator. Pass a fresh or already-copied list (see
+    /// <see cref="ImportTopicEntries"/> for the pattern).
+    /// </summary>
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
         WithExclusiveLock(scope, () => SaveIndexUnsafe(entries, scope));
@@ -1278,10 +1330,17 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         bool hasPath = !string.IsNullOrWhiteSpace(query.PathPrefix);
         bool hasAttr = query.AttributeFilter is { Count: > 0 };
 
-        // Candidates set means the caller (SearchPipeline) already materialized this exact
-        // scope+excludeTopics slice for the contributors — skip the second ListScoped.
+        // Candidates set means the caller (SearchPipeline) already materialized this slice for
+        // the contributors — skip the second ListScoped. It is a hint about COST, never about
+        // the ANSWER: re-apply this query's own scope and excludeTopics filter so a caller who
+        // supplies a wider or differently-scoped list gets exactly what it would have got with
+        // no Candidates at all. (A list narrower than the query's scopes is not corrected here —
+        // it still under-returns.) One HashSet build plus a Contains per candidate — cheap, and
+        // there is no re-listing to compare it against in this branch.
         IReadOnlyList<ScopedArtifact> allCandidates =
-            query.Candidates ?? ListScoped(query.Scopes, query.ExcludeTopics);
+            query.Candidates is { } supplied
+                ? FilterToQueryScopes(supplied, query.Scopes, query.ExcludeTopics)
+                : ListScoped(query.Scopes, query.ExcludeTopics);
 
         IReadOnlyList<ScopedArtifact> entryCandidates = hasPath || hasAttr
             ? allCandidates
@@ -1305,6 +1364,32 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         var searcher = new WeightedAttributeScorer(RankerOptions);
         return searcher.SearchAll(query.Query, entryCandidates, topics, query.Limit,
             query.SupplementalScores, query.EntityGraphScores);
+    }
+
+    /// <summary>
+    /// Constrains a caller-supplied candidate list to exactly the scopes this query resolves to, so
+    /// a wider or differently-scoped <see cref="SearchQuery.Candidates"/> cannot change a search's
+    /// answer. A list narrower than the query's scopes is not corrected here — it still under-returns.
+    /// Mirrors <see cref="ListScoped(string?, string?)"/>'s scope resolution, including its rule
+    /// for when ephemeral memories are in play.
+    /// </summary>
+    private List<ScopedArtifact> FilterToQueryScopes(
+        IReadOnlyList<ScopedArtifact> candidates, string? scopes, string? excludeTopics)
+    {
+        var allowed = new HashSet<string>(
+            ResolveReadScopes(scopes, excludeTopics), StringComparer.OrdinalIgnoreCase);
+
+        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes)
+            || scopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+        if (includeEphemeral)
+            allowed.Add("ephemeral");
+
+        var result = new List<ScopedArtifact>(candidates.Count);
+        foreach (var candidate in candidates)
+            if (allowed.Contains(candidate.Scope))
+                result.Add(candidate);
+        return result;
     }
 
     /// <summary>
@@ -1591,7 +1676,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         string storeDir = GetStoreDirForScope(topicScope);
         Directory.CreateDirectory(storeDir);
 
-        var existingEntries = LoadIndex(topicScope);
+        // ToList() because this method mutates the list below and hands it to SaveIndex, which
+        // takes ownership of the instance it is given (it becomes the cache). Mutating the
+        // cache's own backing list here would corrupt every other reader's live view.
+        var existingEntries = LoadIndex(topicScope).ToList();
 
         foreach (var entry in entries)
         {

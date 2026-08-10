@@ -62,7 +62,9 @@ public static class BundleFormatService
             exportedTopics.Add(sanitizedTopic);
 
             // Write index.json for this topic
-            string indexJson = JsonSerializer.Serialize(new BundleIndex(entries), BundleJsonContext.Default.BundleIndex);
+            // ToList() because BundleIndex is a serialization DTO declared over List<T>; LoadIndex now
+            // returns a live view of the index cache and must not be handed to a type that could retain it.
+            string indexJson = JsonSerializer.Serialize(new BundleIndex(entries.ToList()), BundleJsonContext.Default.BundleIndex);
             var indexEntry = zip.CreateEntry($"topics/{sanitizedTopic}/index.json");
             using (var writer = new StreamWriter(indexEntry.Open()))
                 writer.Write(indexJson);
