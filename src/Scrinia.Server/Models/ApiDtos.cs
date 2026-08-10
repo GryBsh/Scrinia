@@ -40,7 +40,7 @@ public sealed record MemoryListItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset? UpdatedAt,
     string Description,
-    string[]? Tags);
+    Dictionary<string, string[]>? Attributes);
 
 public sealed record ShowResponse(
     string Name,

@@ -109,7 +109,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     internal sealed record ShowApiResponse(string Name, string Content, int ChunkCount, long OriginalBytes);
     internal sealed record ListApiResponse(ListApiItem[] Memories, int Total);
     internal sealed record ListApiItem(string Name, string QualifiedName, string Scope, int ChunkCount,
-        long OriginalBytes, DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt, string Description, string[]? Tags);
+        long OriginalBytes, DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt, string Description,
+        Dictionary<string, string[]>? Attributes);
     internal sealed record SearchApiResponse(SearchApiItem[] Results);
     internal sealed record SearchApiItem(string Type, string Name, double Score, string? Description,
         int? ChunkIndex = null, int? TotalChunks = null);
@@ -315,9 +316,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                         CreatedAt: item.CreatedAt,
                         ContentPreview: item.Description,
                         UpdatedAt: item.UpdatedAt,
-                        Attributes: item.Tags is { Length: > 0 } tags
-                            ? new Dictionary<string, string[]> { [KnownAttributes.TagKey] = tags }
-                            : null);
+                        Attributes: item.Attributes);
                     result.Add(new ScopedArtifact(scope, entry));
                 }
             }

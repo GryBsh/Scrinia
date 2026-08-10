@@ -1,6 +1,8 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Server.Models;
@@ -63,6 +65,53 @@ public sealed class StoreAttributesWireTests
             .WhoseValue.Should().Contain("§3");
         entry.Attributes.Should().ContainKey("custom")
             .WhoseValue.Should().Contain("v");
+    }
+
+    /// <summary>
+    /// The list response wire carries the full attributes map, not a flattened tag list.
+    ///
+    /// Why the response is read as raw JSON rather than through the client's typed
+    /// <see cref="ListResponse"/>: at the point this test is written the DTO still exposes the old
+    /// <c>tags</c> field, so a typed read would fail to compile instead of failing the assertion —
+    /// exactly the "goes green for the wrong reason" trap Task 3's sibling test above avoids on the
+    /// request side. Reading raw JSON keeps the test meaningful before AND after the DTO rename.
+    ///
+    /// Why <c>person</c> and <c>custom</c> and not <c>tag</c>: the old projection —
+    /// <c>AttributeReaders.DisplayTags(item.Entry.Attributes).ToArray()</c> — could already surface
+    /// the <c>tag</c> key. Asserting on it would pass under that flattening and prove nothing about
+    /// the full map reaching the wire.
+    /// </summary>
+    [Fact]
+    public async Task List_response_attributes_reach_the_wire()
+    {
+        using var factory = new ScriniaServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+
+        var storeResp = await client.PostAsync(
+            $"/api/v1/stores/{factory.PrimaryStore}/memories",
+            Json("""
+                 {
+                   "content": ["List probe body with no inline attribute syntax."],
+                   "name": "list-attributes-test",
+                   "attributes": { "person": ["maria"], "custom": ["v"] }
+                 }
+                 """));
+        storeResp.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var listResp = await client.GetAsync(
+            $"/api/v1/stores/{factory.PrimaryStore}/memories?limit=1000");
+        listResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync());
+        var items = doc.RootElement.GetProperty("memories").EnumerateArray().ToList();
+        var item = items.Single(m => m.GetProperty("qualifiedName").GetString() == "list-attributes-test");
+
+        item.TryGetProperty("attributes", out var attributes).Should().BeTrue(
+            because: "the response must carry the attributes map, not a flattened tag list");
+        attributes.GetProperty("person").EnumerateArray().Select(v => v.GetString())
+            .Should().Contain("maria");
+        attributes.GetProperty("custom").EnumerateArray().Select(v => v.GetString())
+            .Should().Contain("v");
     }
 
     [Fact]

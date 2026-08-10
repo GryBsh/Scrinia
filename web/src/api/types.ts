@@ -41,7 +41,7 @@ export interface MemoryListItem {
   createdAt: string;
   updatedAt?: string;
   description: string;
-  tags?: string[];
+  attributes?: Record<string, string[]>;
 }
 
 export interface ShowResponse {

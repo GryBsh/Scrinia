@@ -133,7 +133,7 @@ public static class MemoryEndpoints
                 item.Entry.CreatedAt,
                 item.Entry.UpdatedAt,
                 AttributeReaders.PreviewText(item.Entry.ContentPreview),
-                AttributeReaders.DisplayTags(item.Entry.Attributes).ToArray()));
+                item.Entry.Attributes));
         }
 
         return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));

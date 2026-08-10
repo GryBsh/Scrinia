@@ -29,7 +29,7 @@ public sealed class RemoteStoreToolTests
     private const string OneEntryListJson = """
         {"memories":[{"name":"alpha","qualifiedName":"local:alpha","scope":"local",
         "chunkCount":1,"originalBytes":128,"createdAt":"2026-01-01T00:00:00+00:00",
-        "updatedAt":null,"description":"an entry","tags":null}],"total":1}
+        "updatedAt":null,"description":"an entry","attributes":null}],"total":1}
         """;
 
     /// <summary>
