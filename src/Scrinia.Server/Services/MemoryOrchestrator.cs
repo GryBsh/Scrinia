@@ -45,9 +45,18 @@ public static class MemoryOrchestrator
                 refAttributes),
             mentionAttributes);
         // Explicit agent-supplied attributes fold in last so they win scalar collisions — the same
-        // position and the same Normalize call as the MCP write path, so a local and a remote write
-        // of the same map assemble identically. Merged before the shadow-drop and the TF seeding
+        // position and the same Normalize call as the MCP write path, so the resulting ATTRIBUTE MAP
+        // matches a local write of the same input. Merged before the shadow-drop and the TF seeding
         // below so both see the agent's keys.
+        //
+        // TermFrequencies do NOT match a local write, and that is a known residual rather than an
+        // oversight. Over the wire the carrier keys (tag/review/anchor/file) arrive inside this one
+        // flat map and get seeded here; locally SeedTermFrequencies runs before the carrier merge,
+        // so those keys are never seeded. The server also cannot tell an agent-supplied attribute
+        // from a carrier one — a wire map is flat by construction — so it treats the caller's
+        // keywords as agent-supplied and boosts them accordingly. Net effect: BM25 ranking for the
+        // same memory differs slightly by store mode. Reproducing local's split would mean sending
+        // the two maps separately, which is a wire-shape change, not a reordering here.
         attributes = KnownAttributes.Merge(attributes, KnownAttributes.Normalize(req.Attributes));
         // An agent-supplied (or req.Keywords-routed) "person:jolene" collides with a mention:jolene
         // span extracted from the same content. Shadow-drop unconditionally; it's a no-op when

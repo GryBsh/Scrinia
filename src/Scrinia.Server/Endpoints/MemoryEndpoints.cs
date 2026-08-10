@@ -61,13 +61,25 @@ public static class MemoryEndpoints
         if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
             return Results.BadRequest(new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
-        // KnownAttributes.MaxAttributes, not the search filter's 64: KnownAttributes.Merge caps at
-        // MaxAttributes and silently truncates past it, so accepting a larger map would drop keys
-        // with no signal. Refusing at the number the domain already enforces keeps remote and local
-        // rejecting the same input.
+        // Key cap: KnownAttributes.MaxAttributes, not the search filter's 64. KnownAttributes.Merge
+        // caps at MaxAttributes and truncates past it with no signal, so accepting a larger map
+        // would drop keys silently. This does NOT diverge from local: Merge caps the map on the MCP
+        // side too, so an MCP-originated wire map can never arrive over this bound.
+        //
+        // It only partly achieves "say no rather than truncate quietly", and the gap is worth
+        // knowing: Merge counts the extraction-derived keys FIRST, so a request of 30 keys against
+        // content yielding 5 extracted keys still loses 3 to truncation, under this bound. Rejecting
+        // on the post-merge count would need the merge to have run, which is past the point where a
+        // 400 is the right answer. What this bound removes is the grossly-over case, not every case.
         if (req.Attributes is { Count: > KnownAttributes.MaxAttributes })
             return Results.BadRequest(new ErrorResponse(
                 $"attributes may not exceed {KnownAttributes.MaxAttributes} keys."));
+        // Values-per-key cap: mirrors the attributeFilter precedent below. Unlike the key cap this
+        // one IS a remote-only limit — nothing validates per-key value counts on the local MCP path,
+        // so remember({ person: [65 values] }) succeeds in-process and 400s here. That asymmetry is
+        // deliberate rather than an oversight: an unbounded map arriving over HTTP is a
+        // storage-growth vector in a way an in-process call from the agent itself is not. The
+        // divergence is loud (a 400 naming the bound), never a silent truncation.
         if (req.Attributes is not null && req.Attributes.Any(kv => kv.Value is { Length: > 64 }))
             return Results.BadRequest(
                 new ErrorResponse("attributes may not exceed 64 values per key."));

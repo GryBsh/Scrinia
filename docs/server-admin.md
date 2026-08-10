@@ -175,7 +175,9 @@ POST /api/v1/stores/{store}/memories
 
 The `content` array controls chunking: a single element creates a single-chunk memory; multiple elements create independently retrievable chunks.
 
-`attributes` is the searchable facet map — any key, each with an array of values. Up to 32 keys, up to 64 values per key; requests past either bound are rejected. `tag` and `review` are ordinary keys in that map: they replace the former top-level `tags`, `reviewAfter` and `reviewWhen` fields, which are no longer accepted. A `review` value that parses as a round-trip (ISO 8601 "o") timestamp is read as the review date; any other value is read as the review condition.
+`attributes` is the searchable facet map — any key, each with an array of values. Up to 32 keys, up to 64 values per key; requests past either bound are rejected with a 400. `tag` and `review` are ordinary keys in that map: they replace the former top-level `tags`, `reviewAfter` and `reviewWhen` fields. Those three fields are no longer read — unknown members are ignored rather than rejected, so a stale client still sending them gets a 201 and the values are silently dropped. Check that your client sends `attributes` rather than relying on an error to tell you.
+
+**`review` dates must be round-trip format on this endpoint.** A `review` value that parses as an ISO 8601 round-trip ("o") timestamp — `2026-06-01T00:00:00.0000000+00:00` — is read as the review date; any other value, including a bare `2026-06-01`, is read as the review *condition*. The MCP `remember` tool accepts the bare form and normalises it before storing; this endpoint does not, so the same string means different things on the two surfaces. A memory written here with a bare date will report as needing review indefinitely instead of going stale when the date passes.
 
 **Response (201):**
 
