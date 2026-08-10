@@ -113,7 +113,10 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         Dictionary<string, string[]>? Attributes);
     internal sealed record SearchApiResponse(SearchApiItem[] Results);
     internal sealed record SearchApiItem(string Type, string Name, double Score, string? Description,
-        int? ChunkIndex = null, int? TotalChunks = null);
+        int? ChunkIndex = null, int? TotalChunks = null,
+        // Null for a "topic" item — a topic is a scope label, not a memory, and has no real byte
+        // count or creation time. Present for "entry" and "chunk" items.
+        long? OriginalBytes = null, DateTimeOffset? CreatedAt = null);
     internal sealed record SearchApiRequest(string Q, string? Scopes, int Limit, string? ExcludeTopics,
         string? PathPrefix, Dictionary<string, string[]>? AttributeFilter);
     internal sealed record AppendApiRequest(string Content);
@@ -368,16 +371,19 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // remote result's scope to "local". ParseQualifiedName must run unconditionally.
             var (scope, subject) = ParseQualifiedName(item.Name);
 
-            var artifactEntry = new ArtifactEntry(
-                Name: subject,
-                Uri: "",
-                OriginalBytes: 0,
-                ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: item.Description ?? "");
+            // artifactEntry is built lazily (only inside the entry/chunk branches below) rather
+            // than once up front: a "topic" item has no real ArtifactEntry to build (it is a
+            // scope label, not a memory) and never reaches this constructor, so there is no
+            // topic-shaped value to invent here.
+            //
+            // NOTE: two of ArtifactEntry's four constructor arguments are still fabricated —
+            // Uri: "" (making remote:// dereferenceable is a separate capability decision) and
+            // ChunkCount: 1 (wrong for any multi-chunk memory; needs its own wire field). Only
+            // OriginalBytes and CreatedAt were in scope for this fix.
 
             if (item.Type == "chunk" && item.ChunkIndex.HasValue)
             {
+                var artifactEntry = BuildArtifactEntry(item, subject);
                 var chunkEntry = new ChunkEntry(
                     item.ChunkIndex.Value,
                     item.Description,
@@ -394,6 +400,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             }
             else
             {
+                var artifactEntry = BuildArtifactEntry(item, subject);
                 results.Add(new EntryResult(
                     new ScopedArtifact(scope, artifactEntry),
                     item.Score));
@@ -402,6 +409,25 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
         return results;
     }
+
+    /// <summary>
+    /// Builds the <see cref="ArtifactEntry"/> for an "entry" or "chunk" search item — never called
+    /// for a "topic" item, which has no ArtifactEntry to build.
+    ///
+    /// <c>item.OriginalBytes</c>/<c>item.CreatedAt</c> are nullable on the wire DTO only because it
+    /// is shared across all three result types; a same-version server always populates both for
+    /// "entry" and "chunk" (only "topic" omits them — a genuine absent-value case, not a version-
+    /// skew one). <c>.Value</c> below intentionally throws rather than silently substituting a
+    /// fabricated byte count or "now" as the creation time if that contract is ever violated —
+    /// reinstating either fallback is the exact defect this method exists to fix.
+    /// </summary>
+    private static ArtifactEntry BuildArtifactEntry(SearchApiItem item, string subject) => new(
+        Name: subject,
+        Uri: "",
+        OriginalBytes: item.OriginalBytes!.Value,
+        ChunkCount: 1,
+        CreatedAt: item.CreatedAt!.Value,
+        ContentPreview: item.Description ?? "");
 
     private HttpRequestMessage BuildSearchGet(
         string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix)

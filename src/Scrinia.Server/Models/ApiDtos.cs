@@ -66,7 +66,13 @@ public sealed record SearchResultItem(
     double Score,
     string? Description,
     int? ChunkIndex = null,
-    int? TotalChunks = null);
+    int? TotalChunks = null,
+    // Null for a "topic" result: a topic is a scope label, not a memory, so it has no real byte
+    // count or creation time to report. Never fabricated/aggregated and never
+    // DateTimeOffset.MinValue as a stand-in for "unknown" — both are the defect this exists to fix,
+    // wearing a different hat. Present (non-null) for "entry" and "chunk" results.
+    long? OriginalBytes = null,
+    DateTimeOffset? CreatedAt = null);
 
 public sealed record ChunkResponse(
     string Content,

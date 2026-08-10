@@ -336,7 +336,9 @@ public static class MemoryEndpoints
                     ? $"~{er.Item.Entry.Name}"
                     : ctx.Store!.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
                 er.Score,
-                AttributeReaders.PreviewText(er.Item.Entry.ContentPreview)),
+                AttributeReaders.PreviewText(er.Item.Entry.ContentPreview),
+                OriginalBytes: er.Item.Entry.OriginalBytes,
+                CreatedAt: er.Item.Entry.CreatedAt),
             ChunkEntryResult cr => new SearchResultItem(
                 "chunk",
                 cr.ParentItem.Scope == "ephemeral"
@@ -345,7 +347,11 @@ public static class MemoryEndpoints
                 cr.Score,
                 cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
                 cr.Chunk.ChunkIndex,
-                cr.TotalChunks),
+                cr.TotalChunks,
+                OriginalBytes: cr.ParentItem.Entry.OriginalBytes,
+                CreatedAt: cr.ParentItem.Entry.CreatedAt),
+            // A topic is a scope label, not a memory — no real byte count or creation time exists
+            // to report, so both stay null rather than being aggregated from member entries.
             TopicResult tr => new SearchResultItem(
                 "topic",
                 MemoryNaming.FormatScopeLabel(tr.Scope),

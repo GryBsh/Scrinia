@@ -88,9 +88,10 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
     }
 
     /// <summary>Ordered-insensitive comparison key: the qualified label of each result.
-    /// Score, CreatedAt and OriginalBytes are deliberately excluded — HttpMemoryStore
-    /// fabricates the latter two (a documented limitation), and scoring differs because the
-    /// server always has a PathSegmentScoreContributor registered.</summary>
+    /// Score, CreatedAt and OriginalBytes are deliberately excluded — CreatedAt and OriginalBytes
+    /// now round-trip honestly over HttpMemoryStore (fixed: remote-write-correctness Task 5), but
+    /// scoring still differs because the server always has a PathSegmentScoreContributor
+    /// registered, so all three stay out of this identity comparison.</summary>
     public static string[] Names(IMemoryStore store, IEnumerable<SearchResult> results) =>
         results.Select(r => r switch
         {

@@ -62,6 +62,10 @@ export interface SearchResultItem {
   description?: string;
   chunkIndex?: number;
   totalChunks?: number;
+  // Absent for a "topic" result — a topic is a scope label, not a memory, so it has no real byte
+  // count or creation time. Present for "entry" and "chunk" results.
+  originalBytes?: number;
+  createdAt?: string;
 }
 
 export interface ChunkResponse {
