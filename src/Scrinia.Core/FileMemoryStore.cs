@@ -57,8 +57,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     private long _factStoreGeneration;
 
     /// <summary>
-    /// In-memory cache of a scope's index entries with O(1) name→position lookup
-    /// and lazily computed BM25 corpus statistics.
+    /// In-memory cache of a scope's index entries, handed out by reference on a
+    /// <see cref="LoadIndex"/> cache hit. <see cref="NameToPosition"/>, <see cref="Rebuild"/> and
+    /// <see cref="GetOrComputeCorpusStats"/> have no readers anywhere in the repo — see
+    /// docs/architecture/core.md's "CachedIndex" section for why they are kept anyway.
     /// </summary>
     internal sealed class CachedIndex
     {
@@ -627,16 +629,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         }
     }
 
-    // CA1859: the analyzer wants the concrete List<T> here since this private method has a
-    // single call site with no polymorphism need — but IReadOnlyList<ArtifactEntry> is the
-    // return type LoadIndex itself narrows to, and LoadIndexUnsafe exists purely to share
-    // LoadIndex's cache-hit/cold-load logic. Matching its signature keeps the two in lockstep
-    // rather than reintroducing a List<T> boundary the public contract just removed.
-#pragma warning disable CA1859
-    private IReadOnlyList<ArtifactEntry> LoadIndexUnsafe(string scope)
-#pragma warning restore CA1859
+    private List<ArtifactEntry> LoadIndexUnsafe(string scope)
     {
-        // Check in-memory cache first
         // Live view — see the comment on the fast-path check in LoadIndex.
         if (_indexCache.TryGetValue(scope, out var cached))
             return cached.Entries;
@@ -926,6 +920,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             File.Delete(metaPath);
     }
 
+    /// <summary>
+    /// Persists <paramref name="entries"/> as the full index for <paramref name="scope"/> and takes
+    /// ownership of the list instance: it becomes the scope's in-memory cache directly, not a copy.
+    /// The caller must not retain a reference to <paramref name="entries"/> or mutate it after this
+    /// call — doing so corrupts the cache and, since readers now get that same list by reference
+    /// from <see cref="LoadIndex"/>, can surface as an <see cref="InvalidOperationException"/> inside
+    /// an unrelated concurrent enumerator. Pass a fresh or already-copied list (see
+    /// <see cref="ImportTopicEntries"/> for the pattern).
+    /// </summary>
     public void SaveIndex(List<ArtifactEntry> entries, string scope = "local")
     {
         WithExclusiveLock(scope, () => SaveIndexUnsafe(entries, scope));
@@ -1331,8 +1334,9 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         // the contributors — skip the second ListScoped. It is a hint about COST, never about
         // the ANSWER: re-apply this query's own scope and excludeTopics filter so a caller who
         // supplies a wider or differently-scoped list gets exactly what it would have got with
-        // no Candidates at all. One HashSet build plus a Contains per candidate, against the
-        // full re-listing it replaces.
+        // no Candidates at all. (A list narrower than the query's scopes is not corrected here —
+        // it still under-returns.) One HashSet build plus a Contains per candidate — cheap, and
+        // there is no re-listing to compare it against in this branch.
         IReadOnlyList<ScopedArtifact> allCandidates =
             query.Candidates is { } supplied
                 ? FilterToQueryScopes(supplied, query.Scopes, query.ExcludeTopics)
@@ -1363,8 +1367,9 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     }
 
     /// <summary>
-    /// Constrains a caller-supplied candidate list to exactly the scopes this query resolves to,
-    /// so <see cref="SearchQuery.Candidates"/> cannot change a search's answer.
+    /// Constrains a caller-supplied candidate list to exactly the scopes this query resolves to, so
+    /// a wider or differently-scoped <see cref="SearchQuery.Candidates"/> cannot change a search's
+    /// answer. A list narrower than the query's scopes is not corrected here — it still under-returns.
     /// Mirrors <see cref="ListScoped(string?, string?)"/>'s scope resolution, including its rule
     /// for when ephemeral memories are in play.
     /// </summary>

@@ -476,12 +476,14 @@ noted them here.
 
 `FileLock` in `Scrinia.Core` provides OS-enforced shared/exclusive file locks for safe multi-process access. Per-scope `.lock` files (`.scrinia/store/.lock`, `.scrinia/topics/{topic}/.lock`) prevent concurrent index corruption when multiple CLI processes (or a CLI and a server) access the same workspace.
 
-- **Shared locks** for reads (multiple readers allowed)
+- **Shared locks** for cold reads (multiple readers allowed) — a `LoadIndex` call that hits the
+  in-memory cache takes no file lock at all; see **Keyword-Only Index Scans**, below.
 - **Exclusive locks** for writes (single writer, no readers)
 - Exponential backoff retry on contention
 - Unique PID-based `.tmp` filenames prevent write collisions
 
-Both `FileMemoryStore` and `ScriniaArtifactStore` use file locks for all index and artifact operations.
+`FileMemoryStore` uses file locks for all cold index reads and all index/artifact writes; a
+cached `LoadIndex` takes no file lock.
 
 ### Concurrency
 

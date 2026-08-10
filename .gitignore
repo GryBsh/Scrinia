@@ -53,6 +53,10 @@ docs/reports
 # Downloaded ML model caches used by retrieval benchmarks (large binaries, not source)
 benchmarks/Scrinia.Retrieval.Benchmarks/tools/kompress/model-cache/
 
+# BenchmarkDotNet run output (logs + reports), written to the repo root by any BenchmarkDotNet
+# project run locally. Per-machine, not source-controlled.
+BenchmarkDotNet.Artifacts/
+
 **/.venv/
 
 docs/proposals/
