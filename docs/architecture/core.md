@@ -217,7 +217,11 @@ Standard BM25 with parameters `k1 = 1.5`, `b = 0.75`:
 - **TF normalization:** `(tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * (docLen / avgDocLen)))`
 - Scores are min-max normalized to 0-100 across the result set
 
-Corpus statistics (average doc length, document frequencies) are lazily computed and cached per scope in `CachedIndex`.
+Corpus statistics (average doc length, document frequencies) are computed directly by
+`Bm25Scorer.ComputeCorpusStats` on every `WeightedAttributeScorer.Search`/`SearchAll` call
+(`WeightedAttributeScorer.cs:80-82`, `:141-143`) — not cached. `CachedIndex` has a
+`GetOrComputeCorpusStats()` method that would cache them per scope, but nothing calls it; see
+**CachedIndex** below.
 
 ### Keyword TF Boosting
 
@@ -431,18 +435,34 @@ per workspace (CLI) or per store (server).
 
 ### CachedIndex
 
-Internal structure for O(1) index operations:
+Internal structure holding a scope's cached index entries:
 
 ```csharp
 internal sealed class CachedIndex
 {
+    /// <summary>The cached entries. Handed out by reference from LoadIndex — callers get a
+    /// live view of this list, not a copy.</summary>
     public List<ArtifactEntry> Entries { get; }
-    public Dictionary<string, int> NameToPosition { get; }  // O(1) lookup by name
+    public Dictionary<string, int> NameToPosition { get; private set; }
     public CorpusStats? Stats { get; set; }                 // lazy BM25 stats
 }
 ```
 
-`NameToPosition` enables O(1) upsert and remove without scanning. BM25 corpus stats are computed once per cache invalidation.
+`Entries` is the list `LoadIndex` hands back directly on a cache hit — see **Keyword-Only Index
+Scans**, below, for why that is safe. `NameToPosition`, `Rebuild()`, and
+`GetOrComputeCorpusStats()` currently have **no readers anywhere in the repo** — they are dead
+code, not part of any live path:
+
+- `NameToPosition` is written in the constructor and in `Rebuild()`, but nothing ever reads it,
+  and `Rebuild()` itself is never called.
+- `Upsert` and `Remove` (`FileMemoryStore.cs`) do not consult `NameToPosition` to avoid a scan —
+  they reload the whole scope from sidecars via `LoadEntriesFromSidecars` and replace the
+  `CachedIndex` outright.
+- `GetOrComputeCorpusStats()` is not on the live BM25 path either; corpus stats are computed
+  directly by `WeightedAttributeScorer` on every search (see **BM25**, above).
+
+They are left in place — removing them is a code change outside the scope of the docs fix that
+noted them here.
 
 ### Artifact LRU Cache
 
@@ -473,7 +493,7 @@ Both `FileMemoryStore` and `ScriniaArtifactStore` use file locks for all index a
 
 ### Keyword-Only Index Scans
 
-Index entries carry `Keywords` so consumers can filter without decoding artifacts. `LoadIndex(scope)` returns `IReadOnlyList<ArtifactEntry>` (O(1) via CachedIndex). Filtering on keywords (e.g. `status:active`, `tag:onboarder`) lets callers reduce a large index to a small candidate set before decoding any payload — important for keeping `list` and `search` responsive on large stores.
+Index entries carry `Keywords` so consumers can filter without decoding artifacts. `LoadIndex(scope)` returns `IReadOnlyList<ArtifactEntry>` (O(1) on a cache hit — the cached list itself, not a copy). Filtering on keywords (e.g. `status:active`, `tag:onboarder`) lets callers reduce a large index to a small candidate set before decoding any payload — important for keeping `list` and `search` responsive on large stores.
 
 ### Version Archiving
 
