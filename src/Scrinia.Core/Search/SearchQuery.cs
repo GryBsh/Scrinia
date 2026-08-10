@@ -36,10 +36,11 @@ public sealed record SearchQuery(string Query)
     /// <summary>
     /// Pre-materialized candidates. When set, the store skips its own <c>ListScoped</c> — the
     /// caller already paid for it.
-    /// <para><b>Contract:</b> the caller must have materialized these with the same
-    /// <see cref="Scopes"/> and <see cref="ExcludeTopics"/> carried on this query. Handing over a
-    /// differently-scoped list silently changes the result set. <see cref="SearchPipeline"/> is
-    /// the only production caller that sets this, and it builds both from the same values.</para>
+    /// <para><b>Contract:</b> a hint about cost, not about the answer. The store re-applies this
+    /// query's own <see cref="Scopes"/> and <see cref="ExcludeTopics"/> to whatever is supplied,
+    /// so a wider or differently-scoped list cannot change the result set — it only wastes the
+    /// work spent materializing the surplus. <see cref="SearchPipeline"/> is the only production
+    /// caller that sets this, and it builds both from the same values.</para>
     /// <para><b>Staleness:</b> the list is a snapshot. A caller that materializes candidates,
     /// awaits something slow (an embedding provider), then searches will not see a memory written
     /// during that await — where re-listing inside the store would have. That is an accepted

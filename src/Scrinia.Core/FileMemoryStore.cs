@@ -1309,10 +1309,16 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         bool hasPath = !string.IsNullOrWhiteSpace(query.PathPrefix);
         bool hasAttr = query.AttributeFilter is { Count: > 0 };
 
-        // Candidates set means the caller (SearchPipeline) already materialized this exact
-        // scope+excludeTopics slice for the contributors — skip the second ListScoped.
+        // Candidates set means the caller (SearchPipeline) already materialized this slice for
+        // the contributors — skip the second ListScoped. It is a hint about COST, never about
+        // the ANSWER: re-apply this query's own scope and excludeTopics filter so a caller who
+        // supplies a wider or differently-scoped list gets exactly what it would have got with
+        // no Candidates at all. One HashSet build plus a Contains per candidate, against the
+        // full re-listing it replaces.
         IReadOnlyList<ScopedArtifact> allCandidates =
-            query.Candidates ?? ListScoped(query.Scopes, query.ExcludeTopics);
+            query.Candidates is { } supplied
+                ? FilterToQueryScopes(supplied, query.Scopes, query.ExcludeTopics)
+                : ListScoped(query.Scopes, query.ExcludeTopics);
 
         IReadOnlyList<ScopedArtifact> entryCandidates = hasPath || hasAttr
             ? allCandidates
@@ -1336,6 +1342,31 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         var searcher = new WeightedAttributeScorer(RankerOptions);
         return searcher.SearchAll(query.Query, entryCandidates, topics, query.Limit,
             query.SupplementalScores, query.EntityGraphScores);
+    }
+
+    /// <summary>
+    /// Constrains a caller-supplied candidate list to exactly the scopes this query resolves to,
+    /// so <see cref="SearchQuery.Candidates"/> cannot change a search's answer.
+    /// Mirrors <see cref="ListScoped(string?, string?)"/>'s scope resolution, including its rule
+    /// for when ephemeral memories are in play.
+    /// </summary>
+    private List<ScopedArtifact> FilterToQueryScopes(
+        IReadOnlyList<ScopedArtifact> candidates, string? scopes, string? excludeTopics)
+    {
+        var allowed = new HashSet<string>(
+            ResolveReadScopes(scopes, excludeTopics), StringComparer.OrdinalIgnoreCase);
+
+        bool includeEphemeral = string.IsNullOrWhiteSpace(scopes)
+            || scopes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Any(s => s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase));
+        if (includeEphemeral)
+            allowed.Add("ephemeral");
+
+        var result = new List<ScopedArtifact>(candidates.Count);
+        foreach (var candidate in candidates)
+            if (allowed.Contains(candidate.Scope))
+                result.Add(candidate);
+        return result;
     }
 
     /// <summary>
