@@ -151,7 +151,7 @@ public sealed partial class ScriniaMcpTools
         // Was InjectInfoHint doing string surgery on rendered YAML. The no-op-on-error rule is
         // preserved deliberately: errors carry recovery text on actionNeeded, not info.
         string? typoHint = ReservedPrefixGuard.HintFor(path);
-        if (typoHint is not null && response.Status != "error")
+        if (typoHint is not null && !response.IsError)
             response = response.WithInfo([.. response.Info ?? [], typoHint]);
 
         return response.ToYaml();
@@ -256,7 +256,7 @@ public sealed partial class ScriniaMcpTools
         // Same hint application as MemoryRemember: applied to the typed response before
         // serialisation, and still a no-op on error (errors use actionNeeded, not info).
         string? typoHint = ReservedPrefixGuard.HintFor(path);
-        if (typoHint is not null && response.Status != "error")
+        if (typoHint is not null && !response.IsError)
             response = response.WithInfo([.. response.Info ?? [], typoHint]);
 
         return response.ToYaml();

@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Scrinia.Core;
-using Xunit;
 
 namespace Scrinia.Tests;
 
@@ -42,6 +41,19 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
         }
     }
 
+    [Fact]
+    public void InstallDefault_WithNoSinks_Throws() =>
+        FluentActions.Invoking(() => MemoryEventSinkContext.InstallDefault())
+            .Should().Throw<ArgumentException>(
+                because: "an empty composite silently discards every memory event");
+
+    [Fact]
+    public void InstallDefault_WithANullSink_Throws() =>
+        FluentActions.Invoking(() => MemoryEventSinkContext.InstallDefault(new NoOpSink(), null!))
+            .Should().Throw<ArgumentException>(
+                because: "CompositeEventSink's catch handler dereferences the same null sink via "
+                       + "sink.GetType(), so the NRE escapes the catch and aborts every later sink");
+
     private sealed class RecordingSink(string name, List<string> order) : IMemoryEventSink
     {
         public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
@@ -49,6 +61,18 @@ public sealed class MemoryEventSinkContextInstallDefaultTests
             order.Add(name);
             return Task.CompletedTask;
         }
+
+        public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
+            => Task.CompletedTask;
+
+        public Task OnForgottenAsync(string qualifiedName, bool wasDeleted, IMemoryStore store, CancellationToken ct)
+            => Task.CompletedTask;
+    }
+
+    private sealed class NoOpSink : IMemoryEventSink
+    {
+        public Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
+            => Task.CompletedTask;
 
         public Task OnAppendedAsync(string qualifiedName, string content, IMemoryStore store, CancellationToken ct)
             => Task.CompletedTask;

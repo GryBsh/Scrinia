@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -111,6 +112,163 @@ public sealed class BundleEndpointTests
         var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
         body.Should().NotBeNull();
         body!.Error.Should().Contain("local filesystem");
+    }
+
+    // NOTE on request shape (contrast with the NOTE above at line 60): this fact and the two
+    // below post a genuine multipart/form-data body built from a real, server-produced bundle —
+    // exported via POST /export, which is JSON-bodied and therefore unaffected by the [FromQuery]
+    // binding defect this task fixes. That keeps Step 2 (red check) failing for exactly the
+    // reason under test — 415 from ImportBundle's own parameter binding — rather than failing to
+    // produce a well-formed bundle in the first place.
+
+    [Fact]
+    public async Task Import_WithMultipartUpload_ReachesTheHandler()
+    {
+        using var factory = new ScriniaServerFactory();
+        using var client = factory.CreateAuthenticatedClient();
+
+        const string topic = "import-mp-topic";
+        const string marker = "MARKER-import-with-multipart-upload-reaches-the-handler";
+        await StoreMemoryAsync(client, factory.PrimaryStore, topic, "note", marker);
+
+        byte[] bundleBytes = await ExportBundleAsync(client, factory.PrimaryStore, topic);
+
+        using var content = new MultipartFormDataContent();
+        var bundle = new ByteArrayContent(bundleBytes);
+        bundle.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        content.Add(bundle, "file", "x.scrinia-bundle");
+
+        var response = await client.PostAsync(
+            $"/api/v1/stores/{factory.SecondaryStore}/import", content);
+
+        // The "because" text embeds the response body so a red-check run (pre-fix) captures the
+        // exact 415 payload in the assertion-failure output, not just the status code.
+        string responseBody = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().NotBe(HttpStatusCode.UnsupportedMediaType,
+            because: "a complex-typed parameter with no [FromQuery] is inferred as JSON-body-bound, "
+                   + "so every genuine multipart upload was rejected before the handler ran. "
+                   + $"Response body was: \"{responseBody}\"");
+
+        // Assert the import actually happened, not merely that it avoided 415 — a handler that
+        // 500s or no-ops would also satisfy the assertion above.
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var list = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topic}");
+        list.Should().NotBeNull();
+        list!.Memories.Should().ContainSingle(m => m.Name == "note" && m.Description == marker,
+            because: "the exported bundle's single entry, carrying its original content preview, " +
+                     "must have actually landed in the target store's index");
+    }
+
+    [Fact]
+    public async Task Import_WithTopicsFilter_OnlyImportsSpecifiedTopic()
+    {
+        using var factory = new ScriniaServerFactory();
+        using var client = factory.CreateAuthenticatedClient();
+
+        const string topicA = "import-filter-topic-a";
+        const string topicB = "import-filter-topic-b";
+        const string markerA = "MARKER-topics-filter-topic-a";
+        const string markerB = "MARKER-topics-filter-topic-b";
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicA, "note-a", markerA);
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicB, "note-b", markerB);
+
+        byte[] bundleBytes = await ExportBundleAsync(client, factory.PrimaryStore, topicA, topicB);
+
+        using var content = new MultipartFormDataContent();
+        var bundle = new ByteArrayContent(bundleBytes);
+        bundle.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        content.Add(bundle, "file", "x.scrinia-bundle");
+
+        // [FromQuery] string[] binds repeated keys only — a single "topics=topicA" query value
+        // here binds to a one-element array, which is exactly the case under test.
+        var response = await client.PostAsync(
+            $"/api/v1/stores/{factory.SecondaryStore}/import?topics={topicA}", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var listA = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicA}");
+        listA.Should().NotBeNull();
+        listA!.Memories.Should().ContainSingle(m => m.Name == "note-a" && m.Description == markerA,
+            because: "topics=topic-a was requested, so topic-a's entry must have landed");
+
+        var listB = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicB}");
+        listB.Should().NotBeNull();
+        listB!.Memories.Should().BeEmpty(
+            because: "topics=topic-a was requested, so topic-b must have been filtered out of the import");
+    }
+
+    [Fact]
+    public async Task Import_WithRepeatedTopicsKeys_ImportsOnlyTheRequestedTopics()
+    {
+        using var factory = new ScriniaServerFactory();
+        using var client = factory.CreateAuthenticatedClient();
+
+        const string topicA = "import-repeated-topic-a";
+        const string topicB = "import-repeated-topic-b";
+        const string topicC = "import-repeated-topic-c";
+        const string markerA = "MARKER-repeated-topic-a";
+        const string markerB = "MARKER-repeated-topic-b";
+        const string markerC = "MARKER-repeated-topic-c";
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicA, "note-a", markerA);
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicB, "note-b", markerB);
+        await StoreMemoryAsync(client, factory.PrimaryStore, topicC, "note-c", markerC);
+
+        byte[] bundleBytes = await ExportBundleAsync(client, factory.PrimaryStore, topicA, topicB, topicC);
+
+        using var content = new MultipartFormDataContent();
+        var bundle = new ByteArrayContent(bundleBytes);
+        bundle.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        content.Add(bundle, "file", "x.scrinia-bundle");
+
+        // Pins the CHANGELOG's claim that `topics` takes repeated query keys
+        // (?topics=a&topics=b), not a comma-separated value — nothing else in the suite
+        // exercised more than one key before this test.
+        var response = await client.PostAsync(
+            $"/api/v1/stores/{factory.SecondaryStore}/import?topics={topicA}&topics={topicB}", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var listA = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicA}");
+        listA.Should().NotBeNull();
+        listA!.Memories.Should().ContainSingle(m => m.Name == "note-a" && m.Description == markerA,
+            because: "topic-a was one of the two repeated topics keys, so its entry must have landed");
+
+        var listB = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicB}");
+        listB.Should().NotBeNull();
+        listB!.Memories.Should().ContainSingle(m => m.Name == "note-b" && m.Description == markerB,
+            because: "topic-b was one of the two repeated topics keys, so its entry must have landed");
+
+        var listC = await client.GetFromJsonAsync<ListResponse>(
+            $"/api/v1/stores/{factory.SecondaryStore}/memories?scopes={topicC}");
+        listC.Should().NotBeNull();
+        listC!.Memories.Should().BeEmpty(
+            because: "topic-c was not among the repeated topics keys, so it must have been filtered out");
+    }
+
+    /// <summary>Stores a single-chunk memory under <c>/{topic}/{subject}</c>, using <paramref
+    /// name="content"/> as both the body and the description so the returned content preview is
+    /// a reliable, distinguishing marker for round-trip assertions.</summary>
+    private static async Task StoreMemoryAsync(HttpClient client, string store, string topic, string subject, string content)
+    {
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/stores/{store}/memories",
+            new StoreRequest([content], $"/{topic}/{subject}", content));
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    /// <summary>Exports the given topics from <paramref name="store"/> via the real export
+    /// endpoint and returns the raw bundle bytes, for use as multipart upload content.</summary>
+    private static async Task<byte[]> ExportBundleAsync(HttpClient client, string store, params string[] topics)
+    {
+        var resp = await client.PostAsJsonAsync($"/api/v1/stores/{store}/export", new ExportRequest(topics));
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        return await resp.Content.ReadAsByteArrayAsync();
     }
 }
 

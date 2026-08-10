@@ -35,7 +35,22 @@ public static class MemoryEventSinkContext
     /// <summary>Installs the process-wide default sink as a composite over <paramref name="sinks"/>.
     /// The one place <see cref="Default"/> is assigned from — six call sites in WorkspaceSetup each
     /// built their own CompositeEventSink, so a change to how the default is composed had six
-    /// places to miss.</summary>
-    public static void InstallDefault(params IMemoryEventSink[] sinks) =>
+    /// places to miss.
+    /// The guards below exist because centralising six call sites turned six independent chances
+    /// to notice a bad argument into one trap for the seventh caller.</summary>
+    public static void InstallDefault(params IMemoryEventSink[] sinks)
+    {
+        ArgumentNullException.ThrowIfNull(sinks);
+        if (sinks.Length == 0)
+            throw new ArgumentException(
+                "At least one sink is required — an empty composite silently discards every memory event.",
+                nameof(sinks));
+        if (Array.IndexOf(sinks, null) >= 0)
+            throw new ArgumentException(
+                "Sinks must not contain nulls — CompositeEventSink's per-sink catch dereferences the "
+                + "sink to name it, so a null escapes the catch and aborts every later sink.",
+                nameof(sinks));
+
         Default = new CompositeEventSink(sinks);
+    }
 }

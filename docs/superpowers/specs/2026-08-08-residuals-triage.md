@@ -58,7 +58,7 @@ tags and review dates *do* cross the wire; the general attributes map does not.
 | T4.2 | `BuildSearchGet` checks `scopes is not null` while its two siblings check `!IsNullOrWhiteSpace` — an empty-string scopes still emits `&scopes=` | `HttpMemoryStore.cs:411` vs `:413`, `:415` | OPEN |
 | T4.3 | The `"conflicted": true` sidecar flag has one writer and zero readers — a spurious committed diff on every conflicted merge that nothing can act on | writer `Nmp2ConflictHandler.cs:126`; no reader in `src/` | OPEN — decide reader or delete |
 | T4.4 | `MemoryList` builders use `AppendLine` (`\r\n`) while `ToYaml` splits on `\n` only, leaving stray `\r`. Masked by `GoldenNormalizer`'s blanket `\r` strip | 20 `AppendLine` calls in `MemoryTools.Core.cs` | OPEN — fixing moves every golden |
-| T4.5 | `Status == "error"` stringly-typed with no shared predicate | 4 production sites, not the 8 recorded: `MemoryTools.Core.cs:1377`, `ScriniaCommands.cs:66`, `Memory.cs:421`, `:467` | OPEN, **count corrected** |
+| T4.5 | `Status == "error"` stringly-typed with no shared predicate | 6 production sites, not the 8 recorded: `MemoryTools.Core.cs:1377`, `ScriniaCommands.cs:66`, `Memory.cs:421`, `:467` (positive); `MemoryTools.cs:154`, `:259` (negative) | OPEN, **count corrected** |
 
 ---
 
