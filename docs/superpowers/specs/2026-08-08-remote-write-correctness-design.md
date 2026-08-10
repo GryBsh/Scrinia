@@ -1,6 +1,9 @@
 # Remote Write Correctness — Design
 
-**Status:** design, awaiting review
+**Status:** design, revised 2026-08-10 after grounding against `cdc7050`. §1 gained the
+`WriteArtifactAsync` seam widening; F8 and this spec's own correction to the source memory were
+both wrong and are fixed. Residuals spec 4 Part A is merged, so §2's `LoadIndex` caller audit is
+already done — see `docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md`.
 **Sequence:** residuals spec 1 of 4. See `2026-08-08-residuals-triage.md` for the verified
 inventory this is cut from (tier T1/T3 items).
 
@@ -44,13 +47,25 @@ list; the residuals memories that fed this spec contained two false claims (belo
 | F5 | `BuildSearchGet` appends `excludeTopics`/`pathPrefix` as additive query params; there is no version negotiation anywhere in `HttpMemoryStore` | `src/Scrinia/HttpMemoryStore.cs:409-417` |
 | F6 | Remote search results are rebuilt with `OriginalBytes: 0, CreatedAt: DateTimeOffset.UtcNow` | `src/Scrinia/HttpMemoryStore.cs:375-377` |
 | F7 | `ArtifactUri` returns a synthesized `remote://{store}/{scope}/{name}` | `src/Scrinia/HttpMemoryStore.cs:492-493` |
-| F8 | `Upsert` (`:256`) and `ArchiveVersion` (`:485`) are empty on purpose — the server performs those writes | `src/Scrinia/HttpMemoryStore.cs` |
+| F8 | `ArchiveVersion` (`:485`) is empty on purpose. **`Upsert` (`:256-260`) is not** — see F11 | `src/Scrinia/HttpMemoryStore.cs` |
+| F9 | `IMemoryStore.WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken)` has **no parameter capable of carrying metadata** | `src/Scrinia.Core/IMemoryStore.cs:149` |
+| F10 | The only construction of `StoreApiRequest` anywhere is `new StoreApiRequest([text], qualifiedName)` — content and name only; the other five fields take their defaults | `src/Scrinia/HttpMemoryStore.cs:503`, sole match for `new StoreApiRequest` |
+| F11 | The MCP remember path calls `WriteArtifactAsync` at `MemoryTools.Core.cs:332`, assembles the `ArtifactEntry` (attributes, keywords, review, preview) at `:336+`, then calls `Upsert`. In remote mode that `Upsert` is a no-op, so **everything assembled after the write is discarded** | as cited |
+| F12 | 8 `WriteArtifactAsync` call sites in `src/`: `MemoryTools.Core.cs:332`, `:1152`; `MemoryTools.Lifecycle.cs:571`; `MemoryOrchestrator.cs:118`, `:279`, `:326`; `ScriniaCommands.Migration.cs:293`; plus `FileMemoryStore.cs:1066` (the implementation) | `rtk proxy grep -rn "WriteArtifactAsync" src/ --include=*.cs` |
 
-**Two corrections to the source memories, already applied above.** The store-boundaries
-residual states `StoreApiRequest` "carries only content and name"; F1 shows that is wrong, and
-the real loss is narrower — tags and review dates do cross the wire. Any task that assumes the
-broader claim will write a test that passes vacuously. Second: F8's two no-ops are
-*defensible* and are not in scope; only `LoadIndex` is a defect.
+**Three corrections to the source memories and to this spec's own earlier draft.**
+
+1. **The store-boundaries residual was right and this spec's correction of it was wrong.** The
+   residual said `StoreApiRequest` "carries only content and name." F1 shows the *DTO declares*
+   seven fields, so the correction looked justified — but F10 shows the *only construction site*
+   passes two. Nothing but content and name ever crosses the wire. A task written against
+   "tags and review dates do cross" will assert on a field that is always null.
+2. **F8 was wrong about `Upsert`.** "The server performs those writes" is true only of the
+   content. The server re-derives what it can from the artifact text; every piece of
+   agent-supplied metadata assembled locally is dropped by the no-op (F11). The no-op *is* the
+   data loss, not a division of labour.
+3. Consequently **`LoadIndex` is not the only defect** on the client, as this spec previously
+   asserted.
 
 ## Design
 
@@ -97,12 +112,43 @@ The request-translation call to `AttributeMigration.BuildCarrierAttributes`
 call at `:290-291` stays — it carries an existing entry's review forward on append, which is
 genuine migration work, not request translation. Do not delete the class.
 
-**Two drafts of this section were wrong, both recorded because the error is instructive.** The
+**The seam has to be widened too — this is the part the earlier drafts missed entirely.**
+
+Changing the DTOs is necessary and not sufficient. Per F9 there is no parameter on
+`WriteArtifactAsync` to populate `attributes` *from*, and per F11 the metadata does not exist
+yet at the moment the write happens — it is assembled afterwards and then handed to a no-op
+`Upsert`. Widening `StoreApiRequest` alone would add a field the client can never fill.
+
+**Design: `WriteArtifactAsync` gains an optional metadata parameter.**
+
+```csharp
+Task WriteArtifactAsync(string subject, string scope, string artifactText,
+    ArtifactWriteMetadata? meta = null, CancellationToken ct = default);
+```
+
+- `FileMemoryStore` **ignores** it and keeps taking its metadata through `Upsert`. That asymmetry
+  is real and must be commented at the implementation, not left for a reader to infer: the local
+  store persists the entry itself, the remote store cannot, and this parameter exists for the
+  seam that crosses a network.
+- `HttpMemoryStore` puts it on the wire, so a remote write is **one** request carrying content
+  and metadata together — one merge on the server, with a defined precedence, rather than two
+  sources arriving separately.
+- The MCP remember path must be **reordered**: the attribute/keyword assembly currently at
+  `MemoryTools.Core.cs:336+` moves above the `WriteArtifactAsync` call at `:332`. This is the
+  riskiest mechanical part of the spec and belongs in its own task with its own review.
+- Remote `Upsert` stays a no-op, and its comment gets corrected to say why it is *now* legitimate
+  — the write already carried the metadata — rather than the current claim, which was not true
+  when it was written.
+
+**Three drafts of this section were wrong, all recorded because the errors are instructive.** The
 first said to add an `Attributes` field and keep the legacy fields with the redundancy noted —
 that would have made the shim permanent and given the server two ways to receive the same
 information with no defined merge order. The second demoted them to compatibility inputs with a
 deprecation path — correct for a deployed API, and pure overhead for one with no clients. Both
-drafts designed for a constraint that was assumed rather than checked.
+designed for a constraint that was assumed rather than checked. The third — this spec as
+written before the seam finding — got the wire format right and never asked whether the client
+had anything to put in it. All three failed the same way: reasoning about the DTO in isolation
+instead of tracing one write end to end.
 
 **Trust and bounds:** an attributes map from a client is caller-supplied metadata at the same
 trust level as `Tags`, which the server already accepts, so no new trust boundary. But an
@@ -185,7 +231,8 @@ while losing data".
 ## Out of scope
 
 - `ArtifactUri` dereferenceability (§5) and remote scoring surface (§6).
-- `Upsert`/`ArchiveVersion` no-ops — correct as written (F8).
+- `ArchiveVersion`'s no-op — correct as written. Remote `Upsert` stays a no-op too, but only
+  *after* §1 makes that true; today it is where the data is lost (F11).
 - Any change to local-mode behaviour. Every fix here is client- or server-side HTTP.
 - **A UI that surfaces the full attribute map.** `web/src/api/types.ts` is now **in scope** —
   §1 removes fields it declares, so it moves in the same change or the build breaks. But
@@ -200,6 +247,17 @@ passed vacuously, because the field it asserted on does not exist in the DTO.
 
 So: **every test here asserts on what the server received or persisted, not on what the client
 sent.** A recording server double, or an assertion against the stored entry after a round trip.
+
+F10 is why this matters more here than anywhere else in the sequence. The field a naive test
+would assert on (`StoreApiRequest.Tags`) is not merely unpopulated by the caller — it is
+*never* populated, by anything, so an assertion that it round-trips correctly would have gone
+green against a wire that carries nothing.
+
+**The web build is not in `Scrinia.sln`.** `dotnet build Scrinia.sln` will not catch a
+TypeScript break in `web/src/api/types.ts`. CI runs `cd web && npm ci && npm run build`
+(`.github/workflows/ci.yml:21-22`), so it is gated there — but any task touching `web/` must run
+`npm run build` in `web/` itself as its gate. Note CI does **not** run `npm test`, though
+`web/package.json` defines a `vitest` script.
 
 Specific cases:
 - `remember()` with entities, anchors and an arbitrary attribute key against a remote store →
