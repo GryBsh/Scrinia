@@ -28,7 +28,7 @@ public static class Nmp2ConflictHandler
         string dir = Path.GetDirectoryName(mergedPath)!;
         string dirFull = Path.GetFullPath(dir);
         string conflictDir = Path.GetFullPath(Path.Combine(dirFull, config.ConflictDir));
-        if (Path.IsPathRooted(config.ConflictDir) || !IsWithin(dirFull, conflictDir))
+        if (Path.IsPathRooted(config.ConflictDir) || !IsStrictlyWithin(dirFull, conflictDir))
             throw new InvalidOperationException(
                 $"merge.config ConflictDir '{config.ConflictDir}' escapes the artifact directory.");
         string currentDir = Path.Combine(conflictDir, "current");
@@ -113,10 +113,17 @@ public static class Nmp2ConflictHandler
     // with no Scrinia.Core dependency, so we deliberately do NOT pull in PathContainment here;
     // the merge driver only needs to reject rooted/traversal ConflictDir values.
     // Lexical only; does not resolve symlinks.
-    private static bool IsWithin(string baseFull, string candidateFull)
+    /// <summary>
+    /// True when <paramref name="candidateFull"/> is strictly below <paramref name="baseFull"/>.
+    ///
+    /// <para>Equality returns FALSE, deliberately. A ConflictDir of "." or "" resolves back to the
+    /// artifact directory, and the caller writes a .gitignore of "*" into whatever this approves —
+    /// so treating "the directory itself" as an acceptable conflict directory silently untracks
+    /// every memory at and below it. The separate Scrinia.Core.PathContainment.IsWithin keeps its
+    /// equality case; this one is private to this class and has a single caller.</para>
+    /// </summary>
+    private static bool IsStrictlyWithin(string baseFull, string candidateFull)
     {
-        if (string.Equals(baseFull, candidateFull, StringComparison.Ordinal))
-            return true;
         string withSep = baseFull.EndsWith(Path.DirectorySeparatorChar)
             ? baseFull
             : baseFull + Path.DirectorySeparatorChar;
