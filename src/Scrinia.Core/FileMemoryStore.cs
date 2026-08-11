@@ -566,37 +566,47 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
         //
         // RULING (the-sweep, Task 1, G4): this EnterReadLock/ExitReadLock pair is deliberately
-        // NOT pinned by a test, after a real attempt to write one. What it protects: it forces a
-        // concurrent reader hitting this fast lane during another thread's WithExclusiveLock
-        // (Upsert/SaveIndex/Remove/TryUpdateEntry) to block until that write's ENTIRE body
-        // completes, rather than observing whatever intermediate state falls out of the write in
-        // progress — most concretely the window in Upsert/Remove/TryUpdateEntry between
-        // `_indexCache.TryRemove(scope, out _)` and the following `_indexCache[scope] = new
-        // CachedIndex(...)`, where a lookup for `scope` would otherwise miss.
+        // NOT pinned by a test, after a real attempt to write one — but it is not dead code, and
+        // the race :558-560 names is real and present-day, not a hypothetical future one. This
+        // ruling does not weaken that claim; it explains why nothing here can pin it.
         //
-        // Why no deterministic test pins it: _indexCache is a ConcurrentDictionary, so that
-        // miss can never manifest as an exception, a torn list, or a "shrinking" read — every
-        // individual Get/Remove/Set is already thread-safe, and every published CachedIndex is
-        // immutable, so a concurrent reader only ever sees a fully-formed old value, a
-        // fully-formed new value, or (without this lock) a transient miss that silently falls
-        // through to the slow (file-locked, disk-reading) path below and still returns a correct
-        // answer. The only difference removing this lock makes is which path a racing reader
-        // takes, not what it returns — and "which internal path was taken" isn't observable
-        // through LoadIndex's public return value. A stress test built on exceptions or
-        // monotonicity (the natural black-box probes) was run 300 times — 50 rounds with this
-        // lock in place, 250 without it, each round racing a writer doing 25 Upserts against a
-        // tight-loop reader — and it passed all 300/300 regardless of whether the lock was
-        // present. It does not discriminate, so it was deleted rather than kept as a test that
-        // reports coverage it doesn't have.
+        // What it protects: every write runs inside WithExclusiveLock, which holds EnterWriteLock
+        // across the write's ENTIRE body — sidecar I/O, LoadEntriesFromSidecars, and the final
+        // `_indexCache[scope] = new CachedIndex(...)`. Because a reader takes EnterReadLock here,
+        // a same-process reader on another thread blocks until that write finishes and therefore
+        // always observes the post-write cache. Without this lock, the reader's lock-free
+        // `_indexCache.TryGetValue` can run at ANY point during that write — not only the narrow
+        // `TryRemove`-to-reset window — and return the PRE-write CachedIndex: a stale value, not a
+        // torn one, since ConcurrentDictionary and CachedIndex's immutability rule out corruption.
+        // This is exactly shape S2, rejected in
+        // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md ("S2 is rejected,
+        // and the reason is not the one B2 covers") as a genuine, newly-introduced same-process
+        // regression, distinct from the pre-existing cross-process staleness that lock skipping
+        // is otherwise safe against. It names a live caller of this exact shape:
+        // EntityTypingEventHandler.PromoteAsync (src/Scrinia/Services/EntityTypingEventHandler.cs:38)
+        // calls LoadIndex(scope) from a detached background task fired by BackgroundWork.Fire ->
+        // Task.Run (src/Scrinia.Core/BackgroundWork.cs:33-64) with no ordering guarantee against a
+        // second concurrent MCP write to the same scope.
         //
-        // What breaks if this is deleted as dead code: nothing a test can currently see. Its
-        // value is a defensive one — it keeps a same-process racing reader's answer sequenced
-        // after any write already in flight, on the theory that a future change to CachedIndex
-        // (e.g. a mutable field, a multi-step publish) could turn today's benign miss-window into
-        // a real torn read. Removing it is safe only for as long as CachedIndex stays the
-        // immutable, atomically-published value it is today; if that invariant ever changes,
-        // this lock is the only thing standing between a racing reader and a genuinely corrupt
-        // answer, and it should be re-justified before being cut.
+        // Why no deterministic test pins it: the difference this lock makes is staleness, not
+        // failure. A racing reader without it never throws and never sees a shrinking or torn
+        // list — it just, on an unlucky interleaving, returns the answer from before the
+        // concurrent write instead of after it. Whether a given run's race window lands before,
+        // during, or after the writer's critical section is a timing accident with no black-box
+        // hook to force it, so a test can observe one specific outcome but cannot make the race
+        // land inside the dangerous window on demand — the miss is silent by construction, not
+        // merely rare. A stress test built on the two natural black-box probes (exceptions,
+        // shrinking entry counts) was run 300 times total — 50 rounds with this lock in place
+        // first, to confirm those probes behave against a known-correct baseline, then 250 more
+        // with the lock removed, hunting for either probe to trip — and neither probe ever fired
+        // in either configuration, because neither one can detect staleness at all; a stale-but
+        // well-formed CachedIndex looks identical to a fresh one to both checks. That silence is
+        // not evidence the race is safe — it is evidence the probes were the wrong instrument.
+        // Deleted rather than kept, so the suite does not claim coverage it never had.
+        //
+        // This lock must not be removed as dead code. It is the only thing keeping a same-process
+        // racing reader's answer sequenced after any write already in flight against the same
+        // scope, and EntityTypingEventHandler.PromoteAsync depends on that today.
         lk.EnterReadLock();
         try
         {
