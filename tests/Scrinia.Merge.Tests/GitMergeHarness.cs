@@ -27,8 +27,11 @@ internal sealed class GitMergeHarness : IDisposable
         Git("config core.autocrlf false");
     }
 
-    /// <summary>Absolute path to the built scri-merge executable.</summary>
-    internal static string LocateDriver()
+    /// <summary>
+    /// Walks up from the test assembly's output directory to the repo root — the directory
+    /// containing Scrinia.sln.
+    /// </summary>
+    internal static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Scrinia.sln")))
@@ -36,18 +39,64 @@ internal sealed class GitMergeHarness : IDisposable
         if (dir is null)
             throw new InvalidOperationException(
                 $"Could not find Scrinia.sln walking up from {AppContext.BaseDirectory}.");
+        return dir.FullName;
+    }
 
-        string bin = Path.Combine(dir.FullName, "src", "Scrinia.Merge", "bin");
+    /// <summary>Absolute path to the built scri-merge executable.</summary>
+    internal static string LocateDriver()
+    {
+        string repoRoot = FindRepoRoot();
+        string bin = Path.Combine(repoRoot, "src", "Scrinia.Merge", "bin");
         if (!Directory.Exists(bin))
             throw new InvalidOperationException($"{bin} does not exist. Build Scrinia.sln first.");
 
-        string? exe = Directory.EnumerateFiles(bin, "scri-merge*", SearchOption.AllDirectories)
-            .Where(p => Path.GetFileName(p) is "scri-merge.exe" or "scri-merge")
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
+        // Select by the configuration the TEST ASSEMBLY was built in, not by mtime. A stale
+        // Release build sitting next to a fresh Debug one would otherwise get picked by
+        // OrderByDescending(GetLastWriteTimeUtc) whenever it happens to be newer, and the
+        // resulting failure would read as a driver bug rather than a harness bug.
+#if DEBUG
+        const string Configuration = "Debug";
+#else
+        const string Configuration = "Release";
+#endif
+        string configSegment = Path.DirectorySeparatorChar + Configuration + Path.DirectorySeparatorChar;
 
-        return exe ?? throw new InvalidOperationException(
-            $"No scri-merge executable under {bin}. Build Scrinia.sln first.");
+        var allCandidates = Directory.EnumerateFiles(bin, "scri-merge*", SearchOption.AllDirectories)
+            .Where(p => Path.GetFileName(p) is "scri-merge.exe" or "scri-merge")
+            .ToList();
+
+        var configCandidates = allCandidates
+            .Where(p => p.Contains(configSegment, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // A local `dotnet publish` of the AOT driver leaves extra Release candidates alongside
+        // the plain build output: bin/Release/.../native/ (AOT native image) and
+        // bin/Release/.../publish/ (publish staging dir). Neither is what `dotnet build`/`dotnet
+        // test` produces, so exclude them by path SEGMENT (not substring — "publish" must not
+        // match a hypothetical "unpublished" directory) rather than let
+        // Directory.EnumerateFiles's unspecified order pick one arbitrarily. Do not reinstate
+        // these as valid candidates: an ambiguous harness is exactly the defect this method
+        // exists to prevent.
+        var preferredCandidates = configCandidates
+            .Where(p => !p.Split(Path.DirectorySeparatorChar)
+                .Any(segment => segment.Equals("native", StringComparison.OrdinalIgnoreCase)
+                             || segment.Equals("publish", StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (preferredCandidates.Count == 1)
+            return preferredCandidates[0];
+
+        if (preferredCandidates.Count > 1)
+            throw new InvalidOperationException(
+                $"Ambiguous scri-merge executable for configuration '{Configuration}' under {bin} — " +
+                $"{preferredCandidates.Count} candidates found and none can be preferred over another: " +
+                $"{string.Join(", ", preferredCandidates)}. " +
+                "Delete the stale build outputs so exactly one remains.");
+
+        throw new InvalidOperationException(
+            $"No scri-merge executable built for configuration '{Configuration}' under {bin}. " +
+            $"Searched: {(allCandidates.Count == 0 ? "(no scri-merge executables found at all)" : string.Join(", ", allCandidates))}. " +
+            "Build Scrinia.sln in this configuration first.");
     }
 
     /// <summary>

@@ -30,20 +30,25 @@ deleting the entry is closure.
 
 ---
 
-## Group A — merge driver (SPECCED, 8 items)
+## Group A — CLOSED on `merge-driver-residuals`, 2026-08-11.
 
-Design: `2026-08-08-merge-driver-residuals-design.md`. Untouched by the three merged branches;
-its facts are from `c3773bf` and need re-verification, and it flags F9 as carried-from-memory.
+All 8 items fixed. `ConflictDir` values that resolve to the artifact directory itself
+(`"."`, `""`, `"./"`, `".//"`, or a bare trailing separator) are now **rejected** rather than
+accepted, closing the hole where the driver wrote a `.gitignore` of `*` into the artifact
+directory itself. Git does not retroactively untrack files it already tracks, so this did not
+untrack existing memories — but it clobbered any `.gitignore` the user already had there, and
+every memory written into the directory afterwards became invisible to `git status`/`git add`
+and was silently lost on a fresh clone. The legacy four-argument
+invocation branch moved inside the top-level try (closing an unguarded-exception gap) and no
+longer describes an unregistered driver key with failure language. The `"conflicted": true`
+sidecar flag that nothing ever read was deleted. A `merge.config` round-trip test now pins the
+contract through the **real writer** and the **real reader** — the exact divergence that was the
+camelCase bug — and also records that the reader's `ResolverCommand` property is untestable from
+the writer side today, since the writer has no parameter for it.
 
-Sharpest item: a `ConflictDir` of `"."` or `""` resolves to the artifact directory and the driver
-writes a `.gitignore` containing `*` into it — silently untracking every memory at and below it.
-The previous fix wave made this **worse** (before the `.gitignore` write it merely left a stray
-directory pair). Needs a hand-edited `merge.config` to reach: low likelihood, high consequence.
-
-Also carries the highest-value follow-up its own reviewer named: a `merge.config` round-trip test
-through the **real writer** and the **real reader**. The contract is declared twice in two
-assemblies with two independent camelCase policies and nothing pinning them — that exact
-divergence *was* the camelCase bug.
+See commits `4ff61d0`, `ddfdf0c`, `715ae37`, `d49521c`, `783f8a6`, `384166a`, `fcec93e`,
+`7745c22`, `af84907`, `ccd247f` on `merge-driver-residuals`, and the plan at
+`docs/superpowers/plans/2026-08-11-merge-driver-residuals.md`.
 
 ## Group B — the sweep (SPECCED, 11 items + 5 inherited)
 
@@ -157,13 +162,20 @@ them, not deleted from the record:
 See commits `0f46797`, `f943f8e` on `closure-hygiene-rulings`, and the plan at
 `docs/superpowers/plans/2026-08-10-closure-hygiene-rulings.md`.
 
-## Group G — genuinely unverified, must be checked before ruling (3 items)
+## Group G — 1 verified and specced, 2 still genuinely unverified
 
-Carried as "unverified" since the original triage and never resolved. **Verify first; a ruling on
-an unverified claim is a guess.**
+Carried as "unverified" since the original triage. **Verify first; a ruling on an unverified
+claim is a guess.** The first item below was verified on `merge-driver-residuals`, 2026-08-11;
+the remaining two still need to be checked before ruling.
 
-- `reconcile()` leaving `originalBytes`/`chunkCount`/`contentPreview`/`keywords` stale after
-  resolving, with no reindex triggered.
+- **VERIFIED TRUE, `merge-driver-residuals`, 2026-08-11.** `reconcile()`'s resolution path
+  writes via a raw `File.WriteAllText` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:199-212`, meta
+  auto-merge branch at `:125-138`), bypassing `FileMemoryStore`'s write pipeline entirely — so
+  `originalBytes`, `chunkCount`, `contentPreview`, and `keywords` keep their pre-merge values and
+  no reindex is triggered. Deliberately **out of scope** here: a behaviour change to the
+  resolution path needs its own design, per the merge-driver spec's Out of Scope section. This
+  becomes **one specced item** — a dedicated design for reindexing after `reconcile()`'s
+  resolution writes — not a `/findings/` chunk.
 - Whether `WorkspaceRoot` still bypasses the layout-migration latch (recorded as harmless at the
   time, with the reasoning noted as incomplete).
 - The `WithInfo` prepend→append ordering concern. The original claim ("provably unreachable
@@ -193,22 +205,20 @@ them.
 
 - ~~Group F + Group D + E1~~ — closed on `closure-hygiene-rulings`, 2026-08-10. See the group
   sections above.
+- ~~Group A~~ — closed on `merge-driver-residuals`, 2026-08-11. See the group section above.
 
 **Ready to execute (specs exist or none needed):**
 
-1. **Group A — merge driver.** Spec exists (`2026-08-08-merge-driver-residuals-design.md`); its
-   facts are from `c3773bf` and must be re-verified first. Contains the `.gitignore`-clobbering
-   `ConflictDir` bug and the `merge.config` round-trip test.
-2. **Group B — the sweep.** Spec exists (Part B of the store-read-path design), plus the five
+1. **Group B — the sweep.** Spec exists (Part B of the store-read-path design), plus the five
    coverage gaps this sequence added. Ranks the two cannot-fail tests first.
-3. **Group C** — folds into whichever remote branch runs first, or stands alone if none does soon.
+2. **Group C** — folds into whichever remote branch runs first, or stands alone if none does soon.
 
 **Needs a spec before a plan:**
 
-4. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
+3. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
    the wire. One spec, for the reason given above.
-5. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
-6. **Remote scoring surface (E3)** — start from the trust question.
+4. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
+5. **Remote scoring surface (E3)** — start from the trust question.
 
 **Group G** gets verified inside whichever branch touches its area. Each result either closes the
 item or produces exactly one new specced item — not a `/findings/` chunk.

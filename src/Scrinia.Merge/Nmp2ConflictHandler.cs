@@ -28,9 +28,20 @@ public static class Nmp2ConflictHandler
         string dir = Path.GetDirectoryName(mergedPath)!;
         string dirFull = Path.GetFullPath(dir);
         string conflictDir = Path.GetFullPath(Path.Combine(dirFull, config.ConflictDir));
-        if (Path.IsPathRooted(config.ConflictDir) || !IsWithin(dirFull, conflictDir))
-            throw new InvalidOperationException(
-                $"merge.config ConflictDir '{config.ConflictDir}' escapes the artifact directory.");
+        bool rooted = Path.IsPathRooted(config.ConflictDir);
+        if (rooted || !IsStrictlyWithin(dirFull, conflictDir))
+        {
+            const string hint = "Set it to a name like \"conflict\".";
+            // "." / "" / "./" etc. don't escape the artifact directory — they ARE it. Calling
+            // that "escapes" sends a user hand-editing merge.config looking for a ".." or an
+            // absolute path that isn't there. Only the genuinely out-of-bounds case (rooted or
+            // resolves outside the artifact directory) gets the "escapes" wording.
+            string message = !rooted && IsSameDirectory(dirFull, conflictDir)
+                ? $"merge.config ConflictDir '{config.ConflictDir}' must name a subdirectory of " +
+                  $"the artifact directory — it resolves to the artifact directory itself. {hint}"
+                : $"merge.config ConflictDir '{config.ConflictDir}' escapes the artifact directory. {hint}";
+            throw new InvalidOperationException(message);
+        }
         string currentDir = Path.Combine(conflictDir, "current");
         string incomingDir = Path.Combine(conflictDir, "incoming");
 
@@ -47,8 +58,6 @@ public static class Nmp2ConflictHandler
 
         File.Copy(oursPath, Path.Combine(currentDir, fileName), overwrite: true);
         File.Copy(theirsPath, Path.Combine(incomingDir, fileName), overwrite: true);
-
-        MarkMetaConflicted(Path.GetFullPath(mergedPath));
 
         // Git adds no markers of its own for a custom driver — whatever the driver
         // leaves in %A becomes the working-tree file. The markers are the detection
@@ -99,38 +108,41 @@ public static class Nmp2ConflictHandler
         }
     }
 
-    private static void MarkMetaConflicted(string nmp2Path)
+    /// <summary>
+    /// True when <paramref name="candidateFull"/> is strictly below <paramref name="baseFull"/>.
+    ///
+    /// <para>Local lexical containment check. Scrinia.Merge is a standalone AOT/trimmed executable
+    /// with no Scrinia.Core dependency, so we deliberately do NOT pull in PathContainment here;
+    /// the merge driver only needs to reject rooted/traversal ConflictDir values. Lexical only;
+    /// does not resolve symlinks.</para>
+    ///
+    /// <para>Equality returns FALSE, deliberately. A ConflictDir of "." or "" resolves back to the
+    /// artifact directory, and the caller writes a .gitignore of "*" into whatever this approves.
+    /// Git does not retroactively untrack files it already tracks, so this does not untrack
+    /// existing memories — but it clobbers whatever .gitignore the user already had there, and
+    /// every memory written into the directory afterwards becomes invisible to git status/add and
+    /// is silently lost on a fresh clone. The separate Scrinia.Core.PathContainment.IsWithin keeps
+    /// its equality case; this one is private to this class and has a single caller.</para>
+    ///
+    /// <para>Both paths are trimmed of a trailing directory separator before comparison. Without
+    /// this, a ConflictDir of "./" survives <see cref="Path.GetFullPath(string)"/> as
+    /// <c>baseFull + separator</c> — not string-equal to <paramref name="baseFull"/> — and then
+    /// trivially satisfies "starts with baseFull + separator" against itself, reopening the same
+    /// hole the equality check above was meant to close.</para>
+    /// </summary>
+    private static bool IsStrictlyWithin(string baseFull, string candidateFull)
     {
-        string metaPath = Path.ChangeExtension(nmp2Path, ".meta.json");
-        if (!File.Exists(metaPath))
-            return;
-
-        string meta = File.ReadAllText(metaPath);
-        File.WriteAllText(metaPath, InsertConflictedFlag(meta));
+        if (IsSameDirectory(baseFull, candidateFull))
+            return false;
+        string withSep = Path.TrimEndingDirectorySeparator(baseFull) + Path.DirectorySeparatorChar;
+        return Path.TrimEndingDirectorySeparator(candidateFull)
+            .StartsWith(withSep, StringComparison.Ordinal);
     }
 
-    // Local lexical containment check. Scrinia.Merge is a standalone AOT/trimmed executable
-    // with no Scrinia.Core dependency, so we deliberately do NOT pull in PathContainment here;
-    // the merge driver only needs to reject rooted/traversal ConflictDir values.
-    // Lexical only; does not resolve symlinks.
-    private static bool IsWithin(string baseFull, string candidateFull)
-    {
-        if (string.Equals(baseFull, candidateFull, StringComparison.Ordinal))
-            return true;
-        string withSep = baseFull.EndsWith(Path.DirectorySeparatorChar)
-            ? baseFull
-            : baseFull + Path.DirectorySeparatorChar;
-        return candidateFull.StartsWith(withSep, StringComparison.Ordinal);
-    }
-
-    internal static string InsertConflictedFlag(string metaJson)
-    {
-        string trimmed = metaJson.TrimEnd();
-        int lastBrace = trimmed.LastIndexOf('}');
-        if (lastBrace < 0)
-            return metaJson; // not an object; leave untouched
-        string head = trimmed[..lastBrace].TrimEnd();
-        string sep = head.EndsWith('{') ? "" : ","; // empty object → no leading comma
-        return head + sep + "\n  \"conflicted\": true\n}";
-    }
+    /// <summary>True when both paths, trimmed of a trailing directory separator, are identical.</summary>
+    private static bool IsSameDirectory(string baseFull, string candidateFull) =>
+        string.Equals(
+            Path.TrimEndingDirectorySeparator(baseFull),
+            Path.TrimEndingDirectorySeparator(candidateFull),
+            StringComparison.Ordinal);
 }

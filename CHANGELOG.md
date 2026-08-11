@@ -376,11 +376,11 @@ and all assembly attributes.
   from it; the `.nmp2` driver additionally resolves the artifact, its sidecar, and the
   conflict directory from the same path.
 - A conflicted `.nmp2` now stops the merge with git's path marked unmerged, writes whole
-  `conflict/current` and `conflict/incoming` copies beside the artifact, marks the sidecar
-  `"conflicted": true`, and leaves markers for `reconcile()` to find. `reconcile()` prefers
-  the whole `conflict/current` and `conflict/incoming` copies when resolving a conflicted
-  `.nmp2`, falling back to the marker body when a copy is absent — so a marker body that is
-  not independently decodable no longer blocks resolution.
+  `conflict/current` and `conflict/incoming` copies beside the artifact, and leaves markers
+  for `reconcile()` to find. `reconcile()` prefers the whole `conflict/current` and
+  `conflict/incoming` copies when resolving a conflicted `.nmp2`, falling back to the marker
+  body when a copy is absent — so a marker body that is not independently decodable no
+  longer blocks resolution.
 - A driver registered before `%P` repairs its own local git config and stops, rather than
   proceeding without knowing which artifact it is merging.
 - `scri-merge` is published alongside `scri` and included in the CLI release archives. No
@@ -390,6 +390,27 @@ and all assembly attributes.
   into the conflict directory as it creates it. Committed copies persisted after
   `git merge --abort` and were preferred by `reconcile()` on every later conflict, resolving
   from stale bytes instead of the actual merge.
+- A `merge.config` whose `ConflictDir` resolves to the artifact directory itself — `"."`,
+  `""`, `"./"`, `".//"`, or `"." + separator` — is now **rejected** with an
+  `InvalidOperationException` rather than accepted. Previously the driver wrote the
+  `.gitignore` of `*` above into the artifact directory itself. Git does not retroactively
+  untrack files already tracked, so this did not silently untrack existing memories — but it
+  did clobber any `.gitignore` the user already had there, and every memory written into the
+  directory afterwards became invisible to `git status`/`git add` and was silently lost on a
+  fresh clone. Reaching this required hand-editing `merge.config`, since `scri setup
+  --multi-user` hard-codes `"conflict"`.
+- The driver no longer writes a `"conflicted": true` property into a conflicted artifact's
+  `.meta.json`. Nothing read it, and the next legitimate sidecar write dropped it again
+  (`WriteSidecarCore` serializes the typed `ArtifactEntry`, which has no such field); its
+  only observable effect was a spurious diff.
+- A legacy four-argument invocation (a driver registered before `%P` was added) with only
+  one of the two driver keys (`merge.scrinia-meta.driver`, `merge.scrinia-nmp2.driver`)
+  registered no longer reports the other, unregistered key with failure language. `git
+  config --get` on a key that was simply never registered is indistinguishable from a key
+  that failed to read, so the message now names only the invoked key's outcome and notes
+  that a repair was also attempted for the other, without characterising its result — e.g.
+  `[scrinia] merge driver invoked without %P — updated merge.scrinia-nmp2.driver to pass
+  %P; meta repair also attempted; re-run your merge`.
 
 **Upgrade action for existing workspaces.** A workspace configured before this release has
 `merge.scrinia-nmp2.driver` pointing at `.scrinia/hooks/scri-merge`, a path no release ever

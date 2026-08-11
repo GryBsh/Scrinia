@@ -10,32 +10,46 @@ if (args.Length < 4)
     return 1;
 }
 
-if (args.Length < 5)
-{
-    // Registered before %P was passed. Without the pathname the artifact cannot be
-    // identified, so repair the registration and stop rather than guess. Both keys are
-    // repaired, not just the invoked one: a legacy workspace registered both at four
-    // arguments, and leaving the other behind only defers the same failure to the next merge.
-    string kind = args[0];
-    bool metaRepaired = GitConfigRepair.TryAppendPathname("meta", out string metaMessage);
-    bool nmp2Repaired = GitConfigRepair.TryAppendPathname("nmp2", out string nmp2Message);
-    bool invokedRepaired = kind switch
-    {
-        "meta" => metaRepaired,
-        "nmp2" => nmp2Repaired,
-        _ => false
-    };
-
-    string outcomes = $"meta: {metaMessage}; nmp2: {nmp2Message}";
-    Console.Error.WriteLine(invokedRepaired
-        ? $"[scrinia] merge driver invoked without %P — {outcomes}; re-run your merge"
-        : $"[scrinia:error] merge driver invoked without %P — {outcomes}. " +
-          "Re-run: scri setup --multi-user");
-    return 1;
-}
-
 try
 {
+    if (args.Length < 5)
+    {
+        // Registered before %P was passed. Without the pathname the artifact cannot be
+        // identified, so repair the registration and stop rather than guess. Both keys are
+        // repaired, not just the invoked one: a legacy workspace registered both at four
+        // arguments, and leaving the other behind only defers the same failure to the next merge.
+        string kind = args[0];
+        bool metaRepaired = GitConfigRepair.TryAppendPathname("meta", out string metaMessage);
+        bool nmp2Repaired = GitConfigRepair.TryAppendPathname("nmp2", out string nmp2Message);
+        bool invokedRepaired = kind switch
+        {
+            "meta" => metaRepaired,
+            "nmp2" => nmp2Repaired,
+            _ => false
+        };
+
+        string invokedMessage = kind switch
+        {
+            "meta" => metaMessage,
+            "nmp2" => nmp2Message,
+            _ => $"unknown driver kind '{kind}'"
+        };
+        string otherKind = kind == "meta" ? "nmp2" : "meta";
+
+        // Report the invoked key's outcome only. The other key is repaired too — a legacy
+        // workspace registered both at four arguments — but `git config --get` exits 1 with
+        // empty stderr both when the key was simply never registered and when it genuinely
+        // failed to read (F4), so its message text cannot be trusted to say which case this is.
+        // Naming that a repair was attempted, without characterising a result we don't actually
+        // know, is deliberate: do not "helpfully" reattach the other key's message here.
+        Console.Error.WriteLine(invokedRepaired
+            ? $"[scrinia] merge driver invoked without %P — {invokedMessage}; " +
+              $"{otherKind} repair also attempted; re-run your merge"
+            : $"[scrinia:error] merge driver invoked without %P — {invokedMessage}. " +
+              "Re-run: scri setup --multi-user");
+        return 1;
+    }
+
     string command = args[0];
     string ancestor = args[1];
     string ours = args[2];
@@ -61,7 +75,11 @@ catch (Exception ex)
     // Git prints whatever the driver writes to stderr inside its merge output, and reads a
     // non-zero exit as a conflict. A raw stack trace there is unreadable and the resulting
     // state — ours' content, no markers, no copies — is the one this driver exists to avoid,
-    // so report the message and let git mark the path unmerged.
+    // so report the message and let git mark the path unmerged. The four-argument
+    // legacy branch is inside this try as well: it makes two git invocations, and
+    // GitConfigRepair.TryGit's catch filter covers only Win32Exception and
+    // InvalidOperationException — an IOException reading git's stdout would otherwise
+    // reach git's merge output as a raw stack trace.
     Console.Error.WriteLine($"[scrinia:error] {ex.Message}");
     return 1;
 }
