@@ -134,6 +134,55 @@ and all assembly attributes.
   `HttpErrorBody`) in the exception it throws for a failed write. A `400` naming the exact bound it
   refused used to reach the caller as a bare "400 BadRequest".
 
+### Fixed — a re-store under a different casing discarded the prior version
+
+- Memory-name lookups are now case-insensitive across the write paths. Re-storing a memory under a
+  different casing than it was created with (`MixedCase` then `mixedcase`) was treated as a brand
+  new memory: the previous version was not archived and `CreatedAt` was reset, while the write
+  still landed on the same file on a case-insensitive filesystem — the prior version was lost with
+  no archive. Appending under a mismatched casing dropped everything the entry carried forward
+  (its attributes, its curated preview, its per-chunk entries), and compacting under one dropped
+  the memory's attributes and keywords. Ten call sites in total.
+- A resolved entry now also hands its own casing forward. Matching the name is only half the fix:
+  every one of these paths turns the subject back into a file path afterwards, so leaving the
+  caller's casing in place would have left the fix relying on the filesystem to fold case on its
+  behalf — right on NTFS, and a second entry alongside the first anywhere case-sensitive.
+  **Visible consequence:** `remember({ path: 'mixedcase' })` against a memory created as
+  `MixedCase` leaves it named `MixedCase`, and the response reports `MixedCase` rather than what
+  the caller typed. On a case-insensitive filesystem the old code silently renamed the memory to
+  the caller's casing.
+  *Ruling: re-storing under a different casing is an update, so there is no longer any route to
+  change a memory's name casing through `remember()`. That is intended — casing renames are not a
+  `remember()` capability, and the old behaviour was an accident of the defect, not a feature.*
+- `copy()` from a source named in a different casing now carries the source's metadata. It resolved
+  the source *file* case-insensitively (the filesystem did it) but its *entry* ordinally, so the
+  copy silently took the synthesized-defaults branch: destination created, bytes intact, attributes
+  and keywords and curated preview gone. Its two lookups are now one, taken before the path is
+  built. Covered by `CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata`; the
+  pre-existing `CopyMemory_persistent_to_persistent` uses one casing throughout and asserts only
+  that the destination exists, so it could not see this.
+- Three remaining filesystem-case dependencies in `FileMemoryStore` are closed for
+  case-sensitive filesystems: `TryUpdateEntry`'s `File.Exists` fast path (which reported "no such
+  entry" for an entry its own authoritative lookup finds, without invoking the mutation) is gone,
+  and `Remove` and `DeleteArtifact` each fall back to a case-insensitive directory scan when the
+  exact name misses. None is observable on Windows, where NTFS folds case for all three — each
+  carries a ruling comment at the site saying so and naming what would observe it.
+- `forget()` no longer reports success while leaving the memory's content on disk.
+  `Remove` (the sidecar) had been made case-insensitive while `DeleteArtifact` (the `.nmp2` file)
+  had not, and `forget()` calls both. On a case-sensitive filesystem `forget('mixedcase')` against a
+  memory stored as `MixedCase` therefore answered "Forgot: mixedcase." with the artifact still on
+  disk — orphaned, unreachable through `list()` or `search()`, and invisible to the next `forget()`.
+  Fixed in the store primitive rather than at the three call sites, so the pairing agrees for every
+  caller.
+- `append()` resolves the memory's artifact under the entry's own casing, not the caller's. The
+  index lookup now runs *before* the artifact read in both implementations (the MCP tool and the
+  server orchestrator). Previously the read ran first on the caller's casing; on a case-sensitive
+  filesystem it missed, and the create-new fallback underneath it — whose own lookup *is*
+  case-insensitive — then landed on the existing memory and replaced its content with the appended
+  chunk alone. `append()` behaving as `replace()`. NTFS folds case in `File.Exists`, so this was
+  never reachable on Windows; both sites carry a ruling comment saying so, and the ordering itself
+  is pinned by a test at each.
+
 ### Added — the client refuses an unrecognised server API version
 
 - Remote search filter parameters (`excludeTopics`, `pathPrefix`, and friends) were sent as
@@ -1153,6 +1202,14 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   matches `src/Scrinia.Mcp/skills/` exactly.
 - `docs/reviews/2026-04-29-llm-integration-architect-review.md` moved to
   `docs/reviews/archive/` with a resolution annotation.
+
+### Fixed — the store listing endpoint dropped keywords
+
+- The store listing endpoint (`GET /api/v1/stores/{store}/memories`) now returns each memory's
+  `keywords`. The field was absent from the wire entirely, so a remote client saw `null` keywords
+  for every memory regardless of what was stored. Additive and optional in both directions: an
+  older client ignores the new field, and a newer client against an older server reads `null`
+  exactly as before, so `X-Scrinia-Api-Version` is deliberately not bumped.
 
 ## [0.5.0] — Initial public baseline
 

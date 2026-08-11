@@ -129,7 +129,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     internal sealed record ListApiResponse(ListApiItem[] Memories, int Total);
     internal sealed record ListApiItem(string Name, string QualifiedName, string Scope, int ChunkCount,
         long OriginalBytes, DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt, string Description,
-        Dictionary<string, string[]>? Attributes);
+        Dictionary<string, string[]>? Attributes, string[]? Keywords = null);
     internal sealed record SearchApiResponse(SearchApiItem[] Results);
     internal sealed record SearchApiItem(string Type, string Name, double Score, string? Description,
         int? ChunkIndex = null, int? TotalChunks = null,
@@ -357,7 +357,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                     CreatedAt: item.CreatedAt,
                     ContentPreview: item.Description,
                     UpdatedAt: item.UpdatedAt,
-                    Attributes: item.Attributes));
+                    Attributes: item.Attributes,
+                    Keywords: item.Keywords));
             }
 
             offset += list.Memories.Length;
@@ -406,7 +407,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
-        var current = LoadIndex(scope).FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+        var current = LoadIndex(scope).FirstOrDefault(
+            e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
         if (current is null) return false;
         // From here to the end of the method, this is deliberately dead work: `updated` and the
         // `null` branch below can only ever produce `return false`, same as skipping straight to
@@ -501,7 +503,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                     CreatedAt: item.CreatedAt,
                     ContentPreview: item.Description,
                     UpdatedAt: item.UpdatedAt,
-                    Attributes: item.Attributes);
+                    Attributes: item.Attributes,
+                    Keywords: item.Keywords);
                 result.Add(new ScopedArtifact(scope, entry));
             }
         }

@@ -1498,6 +1498,97 @@ public sealed class ScriniaMcpToolsTests
             because: "overwriting must preserve the original CreatedAt");
     }
 
+    /// <summary>
+    /// The same two guarantees as the two tests above, for a re-store whose casing differs from
+    /// the one the memory was created with. remember()'s existing-entry lookup
+    /// (<c>MemoryTools.Core.cs:323-324</c>) used an ordinal <c>e.Name == subject</c> while the write
+    /// path underneath it is case-insensitive on NTFS — so the second remember() overwrote the
+    /// artifact while reporting the memory as new: no archive, and CreatedAt reset. The prior
+    /// content was unrecoverable.
+    /// </summary>
+    [Fact]
+    public async Task Store_OverwriteUnderADifferentCasing_ArchivesAndPreservesCreatedAt()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(["v1 content"], "CasingArchive");
+        var entries1 = MemoryStoreContext.Current!.LoadIndex();
+        entries1.Should().ContainSingle(because: "precondition: one memory exists");
+        var originalCreatedAt = entries1[0].CreatedAt;
+
+        await Task.Delay(50); // ensure different timestamp
+        await Tools().Remember(["v2 content"], "casingarchive");
+
+        string versionsDir = Path.Combine(scope.TempDir, "versions");
+        Directory.Exists(versionsDir).Should().BeTrue(
+            because: "the second remember() overwrote the artifact, so the first version had to " +
+                     "be archived before it — a case-mismatched name does not make it a new memory");
+        Directory.GetFiles(versionsDir, "*.nmp2").Should().HaveCount(1);
+
+        var entries2 = MemoryStoreContext.Current!.LoadIndex();
+        entries2.Should().ContainSingle(
+            because: "the re-store updates the existing memory rather than adding a second one");
+        entries2[0].CreatedAt.Should().Be(originalCreatedAt,
+            because: "overwriting must preserve the original CreatedAt, casing notwithstanding");
+        entries2[0].UpdatedAt.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// The MCP <c>append()</c> persistent branch, under a casing the memory was not created with.
+    /// Its existing-entry lookup (<c>MemoryTools.Core.cs:1096-1099</c>) is the same defect class as
+    /// the remember() one above: an ordinal <c>e.Name == subject</c> made a case-mismatched append
+    /// read as a brand-new memory, so everything the entry carried forward was dropped —
+    /// <c>CreatedAt</c> reset, the prior <c>ChunkEntries</c> discarded, no version archived — while
+    /// the write still landed on the same artifact file because NTFS folds case.
+    ///
+    /// <para>The only other append coverage in the suite drives
+    /// <c>MemoryOrchestrator.AppendAsync</c>, a different implementation in a different project, so
+    /// before this test the whole MCP site was unguarded: deleting its <c>OrdinalIgnoreCase</c> and
+    /// its carry-forward passed the entire suite. Verified red by temporarily reverting that
+    /// comparison to an ordinal <c>==</c>; all three assertions below fail.</para>
+    ///
+    /// <para>Distinct from
+    /// <c>RememberWriteMetadataTests.Append_UnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwn
+    /// Casing</c>, which guards the ORDER of the lookup against the artifact read. This one guards
+    /// the lookup's comparison and carry-forward through the real store.</para>
+    ///
+    /// <para>The seed is TWO chunks, not one, and that is load-bearing rather than incidental:
+    /// <c>remember()</c> populates <c>ChunkEntries</c> only for multi-chunk content
+    /// (<c>MemoryTools.Core.cs:203-205</c> — <c>content.Length > 1 ? ... : null</c>). Seeded with a
+    /// single chunk the entry carries <c>ChunkEntries == null</c>, so the append produces exactly
+    /// one chunk entry whether or not it found the existing entry, and the carry-forward assertion
+    /// reads 1 both before and after the fix. Measured, not assumed.</para>
+    /// </summary>
+    [Fact]
+    public async Task Append_UnderADifferentCasing_PreservesCreatedAtAndCarriesTheChunksForward()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(["v1 first part", "v1 second part"], "CasingAppend");
+        var entries1 = MemoryStoreContext.Current!.LoadIndex();
+        entries1.Should().ContainSingle(because: "precondition: one memory exists");
+        entries1[0].ChunkEntries.Should().HaveCount(2,
+            because: "precondition: a two-chunk remember populates ChunkEntries");
+        var originalCreatedAt = entries1[0].CreatedAt;
+
+        await Task.Delay(50); // ensure a reset CreatedAt would be distinguishable
+
+        await Tools().Append("v2 content", "casingappend");
+
+        var entries2 = MemoryStoreContext.Current!.LoadIndex();
+        entries2.Should().ContainSingle(
+            because: "a case-mismatched append updates the existing memory, not a second one");
+        entries2[0].CreatedAt.Should().Be(originalCreatedAt,
+            because: "appending to a memory does not create it, casing notwithstanding");
+        entries2[0].ChunkEntries.Should().HaveCount(3,
+            because: "the two prior chunk entries must be carried forward and the appended one " +
+                     "added — a null existingEntry leaves only the new chunk behind");
+
+        string versionsDir = Path.Combine(scope.TempDir, "versions");
+        Directory.Exists(versionsDir).Should().BeTrue(
+            because: "the append rewrote the artifact, so ArchiveVersion must have run first");
+        Directory.GetFiles(versionsDir, "*.nmp2").Should().HaveCount(1,
+            because: "exactly one prior version existed to archive");
+    }
+
     // ── List output (2 tests) ────────────────────────────────────────────────
 
     [Fact]

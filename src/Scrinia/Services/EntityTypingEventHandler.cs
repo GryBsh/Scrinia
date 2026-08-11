@@ -35,8 +35,13 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
 
         var (scope, subject) = store.ParseQualifiedName(qualifiedName);
 
+        // Case-insensitive to match IMemoryStore's default TryUpdateEntry: SanitizeName does not
+        // fold case, so an ordinal match here gated a case-mismatched name out of promotion
+        // entirely, above and independent of the store's own lookup. Every store's own lookup is
+        // case-insensitive too, on every filesystem — but this one runs first, so it has to be.
         var entry = store.LoadIndex(scope)
-            .FirstOrDefault(e => store.SanitizeName(e.Name) == store.SanitizeName(subject));
+            .FirstOrDefault(e => store.SanitizeName(e.Name)
+                .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
         if (entry?.Attributes is null) return;
         if (!entry.Attributes.TryGetValue(KnownAttributes.MentionKey, out var mentions) || mentions.Length == 0)
             return;
@@ -60,7 +65,13 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
         if (moves.Count == 0) return;
 
         // Apply under the store lock; move only values STILL under mention: on the current entry.
-        store.TryUpdateEntry(subject, scope, current =>
+        // Pass entry.Name (the resolved entry's own casing), not the event's subject. This is the
+        // convention across every name-resolving write path in the codebase: once a lookup has
+        // resolved an entry case-insensitively, the entry's OWN casing is what travels onward,
+        // because the write paths rebuild filesystem paths out of that name (sidecars, artifacts,
+        // version archives) and a name is only as good as the file it names. Handing the event's
+        // casing back instead would resolve one entry and write against another's path.
+        store.TryUpdateEntry(entry.Name, scope, current =>
         {
             if (current.Attributes is null ||
                 !current.Attributes.TryGetValue(KnownAttributes.MentionKey, out var curMentions))

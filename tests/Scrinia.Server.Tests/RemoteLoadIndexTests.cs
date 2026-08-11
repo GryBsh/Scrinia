@@ -60,11 +60,12 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    private async Task StoreAsync(string name, string body, Dictionary<string, string[]>? attributes = null)
+    private async Task StoreAsync(string name, string body,
+        Dictionary<string, string[]>? attributes = null, string[]? keywords = null)
     {
         var resp = await _client.PostAsJsonAsync(
             $"/api/v1/stores/{_factory.PrimaryStore}/memories",
-            new StoreRequest([body], name, body, Attributes: attributes));
+            new StoreRequest([body], name, body, Attributes: attributes, Keywords: keywords));
         resp.EnsureSuccessStatusCode();
     }
 
@@ -208,5 +209,82 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         entries.Should().Contain(e => e.Name == "probe-0204",
             because: "the last entry seeded — the one a first-page-only read would have dropped " +
                      "— must be present");
+    }
+
+    /// <summary>
+    /// <c>HttpMemoryStore.TryUpdateEntry</c>'s own lookup used an ordinal
+    /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, so a case-mismatched subject fell out
+    /// at the <c>current is null</c> guard and returned <c>false</c> WITHOUT invoking the mutation
+    /// — collapsing "no such entry" back into "found it, cannot persist", the exact distinction
+    /// this override exists to keep apart (the two sibling tests above pin each side of it). The
+    /// return value is <c>false</c> in both cases by design, so <c>mutateRan</c> is the only thing
+    /// that can tell them apart.
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEntry_FindsTheEntry_WhenTheSubjectCasingDiffers()
+    {
+        await StoreAsync("MixedCaseProbe", "probe body for casing");
+
+        bool mutateRan = false;
+        bool updated = _remote.TryUpdateEntry("mixedcaseprobe", "local", entry =>
+        {
+            mutateRan = true;
+            return entry;
+        });
+
+        mutateRan.Should().BeTrue(
+            because: "the entry exists under a different casing and must be found — falling out at " +
+                     "the null guard would report it absent, which is a different condition");
+        updated.Should().BeFalse(
+            because: "finding the entry changes nothing about this store's inability to persist a " +
+                     "metadata-only mutation — the fail-closed contract is unchanged by this fix");
+    }
+
+    /// <summary>
+    /// The listing wire carried no keywords at all — <c>MemoryListItem</c> had no such field, so
+    /// every remote <c>ArtifactEntry</c> came back with <c>Keywords</c> null regardless of what was
+    /// stored, while the server held them in hand. <c>MaintenanceEventSink</c> reads that field in
+    /// three places; at <c>:102</c> an empty read makes the orphan branch write
+    /// <c>Keywords = ["orphan"]</c>, clobbering every other keyword. That is inert only because
+    /// <c>HttpMemoryStore.TryUpdateEntry</c> refuses every write today — the E4 PATCH endpoint
+    /// would arm it.
+    /// </summary>
+    [Fact]
+    public async Task LoadIndex_CarriesKeywords()
+    {
+        await StoreAsync("keyword-probe", "probe body for keywords", keywords: ["zebra"]);
+
+        var entry = _remote.LoadIndex("local").Single(e => e.Name == "keyword-probe");
+
+        entry.Keywords.Should().NotBeNull(
+            because: "the server holds this entry's keywords and the listing endpoint must project " +
+                     "them — a null here is the wire dropping data the server has in hand");
+        // Contain, not equality: MemoryOrchestrator merges agent keywords with auto-extracted ones,
+        // so the stored set is a superset (measured: [body, keywords, probe, zebra]).
+        entry.Keywords!.Should().Contain("zebra");
+    }
+
+    /// <summary>
+    /// <c>ListScoped</c> is a second, separate construction site for the fix above — not a
+    /// redundant sibling of <see cref="LoadIndex_CarriesKeywords"/>, which only exercises
+    /// <c>LoadIndex</c>'s own <c>ArtifactEntry</c> build. This one was unguarded: nothing pinned
+    /// that <c>ListScoped</c> threads <c>item.Keywords</c> into the <c>ArtifactEntry</c> it
+    /// constructs, so dropping the `Keywords:` argument there would have passed every existing
+    /// test. <c>MaintenanceEventSink.cs:95</c> reads <c>sa.Entry.Keywords</c> through exactly this
+    /// path for inbound-ref detection, so this is real production logic, not a formality.
+    /// </summary>
+    [Fact]
+    public async Task ListScoped_CarriesKeywords()
+    {
+        await StoreAsync("keyword-probe-scoped", "probe body for scoped keywords", keywords: ["zebra"]);
+
+        var scoped = _remote.ListScoped("local").Single(sa => sa.Entry.Name == "keyword-probe-scoped");
+
+        scoped.Entry.Keywords.Should().NotBeNull(
+            because: "ListScoped builds its own ArtifactEntry independently of LoadIndex, and must " +
+                     "also thread the server's keywords through rather than dropping them");
+        // Contain, not equality — same reasoning as LoadIndex_CarriesKeywords: MemoryOrchestrator
+        // merges agent keywords with auto-extracted ones, so the stored set is a superset.
+        scoped.Entry.Keywords!.Should().Contain("zebra");
     }
 }

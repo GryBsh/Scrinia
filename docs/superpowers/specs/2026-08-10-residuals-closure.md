@@ -1,6 +1,6 @@
 # Residuals Closure — the backlog stops rotating here
 
-**Status:** inventory, awaiting scope decision.
+**Status:** closure in progress — Groups A–D and F closed; E decided; three designs outstanding.
 **Supersedes as the working list:** `2026-08-08-residuals-triage.md` (the 35-item inventory that
 started this sequence).
 
@@ -105,16 +105,174 @@ G4)`), explaining what the lock protects and why nothing here can pin it.
 See commits `20a14dd`, `4bd2436`, `3ae44b6`, `7eab8d9`, `2ebd54a`, `32bc5fe`, `692cae0`, `767dc7a`,
 `f0184da` on `the-sweep`, and the plan at `docs/superpowers/plans/2026-08-11-the-sweep.md`.
 
-## Group C — remote-mode leftovers (OPEN, 4 items)
+## Group C — CLOSED on `remote-mode-leftovers`, 2026-08-11.
 
-Left by `remote-write-correctness`. Small, and all in one blast radius.
+All four specced items fixed. **This section's own table was wrong about the scale: it named 2
+sites of the case-sensitivity defect, and there were 10 — fixing those uncovered 2 more.** The
+user ruled at plan time that the branch fixes the whole class rather than only the named sites, so
+one of its five tasks exists entirely because of that undercount. Recorded here rather than
+quietly corrected.
 
-| Item | Evidence |
-|---|---|
-| `IMemoryStore`'s **default** `TryUpdateEntry` still matches names with an ordinal `==` — the identical bug just fixed in `FileMemoryStore` | `src/Scrinia.Core/IMemoryStore.cs:41`, verified at `d6fd830` |
-| `EntityTypingEventHandler` has its **own** case-sensitive lookup upstream of its `TryUpdateEntry` call, which still gates mixed-case names out early | pre-dates the branch |
-| The "Security headers" middleware sets headers by direct assignment and has the identical `Response.Clear()` wipe exposure Task 7 fixed for the version header — headers absent on a genuine 500 | `src/Scrinia.Server/Program.cs`; the proven one-liner (`Response.OnStarting`) is a few lines below it |
-| `Keywords` is never populated by the `LoadIndex` proxy because `ListApiItem` has no such field, so `MaintenanceEventSink` always sees null remotely | same gap `ListScoped` already had |
+The ten: the interface default (`src/Scrinia.Core/IMemoryStore.cs:50`), the remote override
+(`src/Scrinia/HttpMemoryStore.cs:411`), `EntityTypingEventHandler`'s own upstream lookup
+(`src/Scrinia/Services/EntityTypingEventHandler.cs:43-44`),
+`MemoryOrchestrator.StoreAsync` (`src/Scrinia.Server/Services/MemoryOrchestrator.cs:124-127`) and
+`AppendAsync` (`:228-231`), the two MCP write paths (`src/Scrinia.Mcp/MemoryTools.Core.cs:323-326`
+and `:1096-1099`), `compact()` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:583-586`), and
+`FileMemoryStore.CopyMemory`'s two ordinal source lookups, now one lookup taken before the
+artifact path is built (`src/Scrinia.Core/FileMemoryStore.cs:1614-1617`).
+
+**Three of the ten lost data silently, and each deserves naming:**
+
+- **`StoreAsync` lost a version with no archive.** A re-store under different casing was read as a
+  brand-new memory, so it skipped `ArchiveVersion` and reset `CreatedAt` — while the write still
+  landed on the same file on a case-insensitive filesystem. Prior version gone, nothing in
+  `versions/`.
+- **`AppendAsync` dropped everything the entry carried forward** — its prior `ChunkEntries`, its
+  merged attributes, its curated preview — because a null `existingEntry` meant the append had
+  nothing to carry.
+- **`compact()` discarded the memory's attributes and keywords**, sending the write out with
+  `meta: null`, which is exactly the metadata reset the comment above that call already existed to
+  prevent.
+
+`CopyMemory` was a fourth, of a different shape: it resolved the source *file* case-insensitively
+(the filesystem did that) but its *entry* ordinally, so a case-mismatched copy silently took the
+synthesized-defaults branch — destination created, bytes intact, attributes and keywords and
+curated preview gone.
+
+**Matching the name was only half the fix.** Every one of these paths turns the subject back into
+a file path afterwards (artifact writes, sidecar upserts, version archives), so a resolved entry
+now hands its own casing forward as well. Leaving the caller's casing in place would have left the
+fix depending on the filesystem to fold case on its behalf: right on NTFS, and a second entry
+alongside the first anywhere case-sensitive. That is not a stylistic preference — it is the
+Critical finding from the branch's first review, where a fix that looked complete was still
+Windows-only.
+
+**The interface default is reachable only from the test doubles, and its fix should not be
+overstated.** Both real stores override `TryUpdateEntry`
+(`FileMemoryStore.cs:1078`, `HttpMemoryStore.cs:408`); `Scrinia.TestDoubles.FakeMemoryStore` is
+the only type that inherits the default. Fixing it is a contract fix and a double-fidelity fix —
+it keeps the doubles modelling the stores they stand in for, and it keeps the interface's stated
+contract true — **not** a live production bug fix.
+
+**The remote override's fix restores a distinction, not data.** `HttpMemoryStore.TryUpdateEntry`
+still returns `false` by design, because there is no server endpoint to persist an entry-metadata
+mutation through; E4's PATCH endpoint remains the real fix for remote metadata writes. What the
+case-insensitive lookup buys is that "not found" and "found but cannot persist" stay told apart,
+and since the return value is `false` either way, `mutateRan` is the only observable — which is
+what the guards assert (`tests/Scrinia.Server.Tests/RemoteLoadIndexTests.cs:105-150,228-235`).
+
+**`Keywords` on the wire disarms a trap rather than fixing a live loss.** `MemoryListItem` and
+`ListApiItem` now carry `keywords`, threaded at both server construction sites and both client
+ones. Remotely, `MaintenanceEventSink`'s orphan branch (`src/Scrinia.Core/MaintenanceEventSink.cs:102-108`)
+reads `sourceEntry.Keywords`, gets `null`, defaults to an empty list and writes back
+`Keywords = ["orphan"]` — clobbering every other keyword the memory had. It is inert today only
+because the remote `TryUpdateEntry` refuses every write. **E4 would arm it.** Fixing the wire now
+means the trap is disarmed before the endpoint that would spring it exists.
+
+**`RemoteApiVersion.Current` was deliberately not bumped.** It stays at `"1"`
+(`src/Scrinia.Core/Resilience/RemoteApiVersion.cs:22`). The reasoning: this is an additive,
+optional *response* field, and it cannot make either direction silently wrong — an older client
+ignores it, and a newer client against an older server reads `null` exactly as it did before the
+change. The guard exists to catch a server silently ignoring a *request* parameter it does not
+understand; nothing here is a request parameter.
+
+**Two sites carry rulings instead of tests, because NTFS cannot observe either fix.**
+`FileMemoryStore.TryUpdateEntry`'s `File.Exists(SanitizeName(subject) + ".meta.json")` gate is
+removed — the authoritative lookup below it is already case-insensitive and returns false for a
+genuine miss, so the gate could only ever disagree with it by being wrong — and `Remove`'s
+exact-name probe now falls back to a case-insensitive sidecar scan (ordinal-sorted, so the
+tie-break on a filesystem holding both `Note.meta.json` and `note.meta.json` is deterministic
+rather than arbitrary). On Windows the gate always succeeded and the fallback is never entered, so
+a green test written at either site would be green for the filesystem's reasons, not the code's.
+What proved the `TryUpdateEntry` gate was simulating a case-sensitive filesystem; what would
+observe both is running the suite on one. Both rulings are at the sites
+(`src/Scrinia.Core/FileMemoryStore.cs:1008`, `:1084`), each naming the instrument that would
+observe it. The reviewer specifically checked whether "unpinnable" was a convenient excuse here
+and judged it genuine.
+
+**One user-visible behaviour change, ruled intended.** Re-storing `MixedCase` as `mixedcase` now
+keeps the name `MixedCase` instead of silently renaming the memory to the caller's casing, and the
+response reports `MixedCase`. The consequence is that `remember()` no longer offers any route to
+change a memory's name casing — a case-differing name is an update. Ruled intended: casing renames
+are not a `remember()` capability, and the old behaviour was an accident of the defect, not a
+feature. In CHANGELOG.md.
+
+**Two spec/plan errors this branch found, both load-bearing enough to record:**
+
+- **The plan claimed `FileMemoryStore.TryUpdateEntry` "already got this fix."** It did not. The
+  claim came from reading the method's case-insensitive comparison and not the case-sensitive
+  `File.Exists` gate three lines above it, which gated the whole method. This is what made the
+  first task's fix Windows-only, and it is why an eighth site had to be added to a task specced for
+  seven.
+- **The plan told an implementer to pin the append defect via the wire's `chunkCount`, which
+  cannot observe it.** `chunkCount` is derived from the appended artifact
+  (`MemoryOrchestrator.cs:256`), never from `existingEntry`, so the prescribed `ChunkCount == 2`
+  assertion passed *before* the fix. What a null `existingEntry` actually loses is `ChunkEntries`,
+  which is not a wire field at all. The implementer caught this by measuring rather than working
+  around it, and re-aimed the guard at `Attributes` and `CreatedAt`, which do fail pre-fix.
+
+**One same-class site deliberately not fixed. It is an open decision awaiting an answer, not a
+deferral** — this branch's standing rule forbids writing new deferred followups, and this is not
+one:
+
+1. **`CopyMemory`'s *destination* existence check is still filesystem-case-dependent**
+   (`src/Scrinia.Core/FileMemoryStore.cs:1653`). There is no existing case-insensitive lookup to
+   align it with, and the right answer is a product call, not an implementer's: is a
+   case-differing destination "already exists", or a distinct memory? **Needs a decision.**
+
+**A second open decision was recorded here and has since been closed by fixing it, because the
+claim underneath it was false.** It read: "`Compact` and `AppendAsync` resolve the artifact on the
+caller's casing before the entry lookup … Both fail *closed* on a case-sensitive filesystem —
+not-found, or create-new — so there is no data loss." The whole-branch review disproved the append
+half. "Create-new" does not create anything new: `append()` fell through to the store/`Remember`
+path, whose lookup **this branch had just made case-insensitive**, which found the existing memory,
+archived it, and wrote the appended chunk alone as the memory's entire content. `append()` behaved
+as `replace()` — and that was a regression this branch introduced, since before it the fallback's
+lookup was ordinal too and the miss produced a harmless duplicate instead. Both append
+implementations now take the entry lookup **before** the artifact read and read under the entry's
+own casing; see the "Fixed — a re-store under a different casing…" section of CHANGELOG.md.
+
+`Compact` was checked at the same time and does genuinely fail closed: its
+`ReadArtifactAsync` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:520`) returns a `NotFound` error
+response and the method changes nothing — no archive, no write. Left as it is, deliberately. The
+residual is that on a case-sensitive filesystem `compact('mixedcase')` answers "not found" for a
+memory that exists, and its own case-insensitive lookup at `:583-584` is then unreachable. That is
+a wrong answer, not a lost one.
+
+Suite went 1849 → 1867, zero failures throughout.
+
+See commits `f79dde1`, `b96b7d1`, `b6e2ce6`, `e8c2e25`, `64911b5`, `66d31c3`, `7898ed7` on
+`remote-mode-leftovers`, and the plan at
+`docs/superpowers/plans/2026-08-11-remote-mode-leftovers.md`.
+
+**The whole-branch review found three things the five per-task reviews structurally could not, and
+they are fixed in `706b3e7`, `588e03a`, `37b5bea`, `860c624`.** Two of the twelve fixes were halves
+whose other half nobody owned, and one of those was a regression this branch introduced:
+
+- **`append()` under a mismatched casing became a destructive replace** — the open decision
+  corrected above. Both implementations now take the entry lookup before the artifact read.
+- **`forget()` was half-fixed.** `Remove` became case-insensitive; `DeleteArtifact` did not, and
+  `forget()` calls both. On a case-sensitive filesystem it reported success while leaving the
+  `.nmp2` on disk, orphaned. Fixed in the store primitive so the pair agrees for every caller.
+- **One of the ten sites had no guard at all** — the MCP `append()` persistent branch. Deleting its
+  `OrdinalIgnoreCase` and its carry-forward passed the entire suite, because the only append
+  coverage drove `MemoryOrchestrator.AppendAsync`, a different implementation in a different
+  project. Now covered.
+
+**A third wrong prescribed fact, caught by measuring.** The review specified pinning the append
+carry-forward with a single-chunk seed and a `ChunkEntries.Length == 2` assertion. `remember()`
+populates `ChunkEntries` only for multi-chunk content (`MemoryTools.Core.cs:203-205`), so a
+single-chunk seed leaves it `null` and the assertion reads 1 with or without the fix. The guard uses
+a two-chunk seed and asserts 2 → 3 instead.
+
+**Two of the three fixes are unobservable on NTFS and say so at the site.** The append hoist and
+`DeleteArtifact`'s fallback both carry ruling comments naming the instrument that would observe them
+(a case-sensitive filesystem; CI runs `ubuntu-latest`). The append hoist additionally has something
+that *is* observable here — the ordering — pinned at both sites by a test that records which read
+seam was reached and under which name, each verified red by removing the hoist and changing nothing
+else. That split is deliberate: the behavioural guard stays green when the hoist is removed, and
+only the ordering guard catches it.
 
 ## Group D — CLOSED on `closure-hygiene-rulings`, 2026-08-10.
 
@@ -254,7 +412,7 @@ the CHANGELOG. Listed so nobody rediscovers them as bugs.
 
 Group E's answers turned three closure branches into **three closure branches plus three new
 designs**. The designs are the long pole; the closure work is ready now and should not wait on
-them.
+them. **All of the closure work has now landed — the three designs are all that remain.**
 
 **Done:**
 
@@ -262,17 +420,15 @@ them.
   sections above.
 - ~~Group A~~ — closed on `merge-driver-residuals`, 2026-08-11. See the group section above.
 - ~~Group B~~ — closed on `the-sweep`, 2026-08-11. See the group section above.
-
-**Ready to execute (specs exist or none needed):**
-
-1. **Group C** — folds into whichever remote branch runs first, or stands alone if none does soon.
+- ~~Group C~~ — closed on `remote-mode-leftovers`, 2026-08-11. See the group section above, which
+  also carries two open decisions it deliberately did not close.
 
 **Needs a spec before a plan:**
 
-2. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
+1. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
    the wire. One spec, for the reason given above.
-3. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
-4. **Remote scoring surface (E3)** — start from the trust question.
+2. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
+3. **Remote scoring surface (E3)** — start from the trust question.
 
 **Group G** gets verified inside whichever branch touches its area. Each result either closes the
 item or produces exactly one new specced item — not a `/findings/` chunk.

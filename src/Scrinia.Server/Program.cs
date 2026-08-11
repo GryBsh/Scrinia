@@ -369,12 +369,25 @@ if (!app.Environment.IsDevelopment())
 }
 
 // Security headers
+//
+// Registered via Response.OnStarting, not direct assignment, for exactly the reason documented on
+// the API-version middleware below: UseExceptionHandler (registered above, so it wraps this) calls
+// Response.Clear() on an unhandled exception, emptying the header collection before it writes the
+// 500 body. Headers assigned directly here were wiped by that Clear(), so a genuine server crash —
+// the response most likely to carry an unexpected content type — arrived with no nosniff and no
+// framing protection at all. OnStarting callbacks live outside the header collection and fire
+// immediately before the response starts, i.e. after any Clear(), so they survive whatever happens
+// downstream (reproduced: see SecurityHeadersOn500Tests).
 app.Use(async (context, next) =>
 {
-    context.Response.Headers.XContentTypeOptions = "nosniff";
-    context.Response.Headers.XFrameOptions = "DENY";
-    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
-    context.Response.Headers.XXSSProtection = "0"; // modern browsers: CSP preferred
+    context.Response.OnStarting(() =>
+    {
+        context.Response.Headers.XContentTypeOptions = "nosniff";
+        context.Response.Headers.XFrameOptions = "DENY";
+        context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+        context.Response.Headers.XXSSProtection = "0"; // modern browsers: CSP preferred
+        return Task.CompletedTask;
+    });
     await next();
 });
 
