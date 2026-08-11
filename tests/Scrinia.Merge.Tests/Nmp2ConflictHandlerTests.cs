@@ -75,7 +75,7 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
         string oursPath = WriteFile("ours.nmp2", "changed by ours");
         string theirsPath = WriteFile("theirs.nmp2", "changed by theirs");
 
-        // Also create a meta.json sidecar for ours so MarkMetaConflicted works
+        // Also create a meta.json sidecar for ours to exercise the sidecar path
         File.WriteAllText(Path.ChangeExtension(oursPath, ".meta.json"),
             "{\n  \"name\": \"test\"\n}");
 
@@ -94,24 +94,6 @@ public sealed class Nmp2ConflictHandlerTests : IDisposable
             .Should().Be("changed by ours");
         File.ReadAllText(Path.Combine(incomingDir, "ours.nmp2"))
             .Should().Be("changed by theirs");
-    }
-
-    [Fact]
-    public void Handle_BothChanged_MarksMetaConflicted()
-    {
-        string ancestorPath = WriteFile("ancestor.nmp2", "original");
-        string oursPath = WriteFile("ours.nmp2", "changed by ours");
-        string theirsPath = WriteFile("theirs.nmp2", "changed by theirs");
-
-        // Create meta.json sidecar
-        string metaPath = Path.ChangeExtension(oursPath, ".meta.json");
-        File.WriteAllText(metaPath, "{\n  \"name\": \"test\"\n}");
-
-        Nmp2ConflictHandler.Handle(ancestorPath, oursPath, theirsPath, oursPath, _config);
-
-        string metaContent = File.ReadAllText(metaPath);
-        metaContent.Should().Contain("\"conflicted\": true",
-            because: "the meta.json should be marked as conflicted when both sides changed");
     }
 
     [Fact]

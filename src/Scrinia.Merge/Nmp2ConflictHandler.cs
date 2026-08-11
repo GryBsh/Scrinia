@@ -48,8 +48,6 @@ public static class Nmp2ConflictHandler
         File.Copy(oursPath, Path.Combine(currentDir, fileName), overwrite: true);
         File.Copy(theirsPath, Path.Combine(incomingDir, fileName), overwrite: true);
 
-        MarkMetaConflicted(Path.GetFullPath(mergedPath));
-
         // Git adds no markers of its own for a custom driver — whatever the driver
         // leaves in %A becomes the working-tree file. The markers are the detection
         // signal reconcile() scans for; the decodable content normally lives in the conflict/
@@ -99,16 +97,6 @@ public static class Nmp2ConflictHandler
         }
     }
 
-    private static void MarkMetaConflicted(string nmp2Path)
-    {
-        string metaPath = Path.ChangeExtension(nmp2Path, ".meta.json");
-        if (!File.Exists(metaPath))
-            return;
-
-        string meta = File.ReadAllText(metaPath);
-        File.WriteAllText(metaPath, InsertConflictedFlag(meta));
-    }
-
     /// <summary>
     /// True when <paramref name="candidateFull"/> is strictly below <paramref name="baseFull"/>.
     ///
@@ -137,16 +125,5 @@ public static class Nmp2ConflictHandler
             return false;
         string withSep = baseTrimmed + Path.DirectorySeparatorChar;
         return candidateTrimmed.StartsWith(withSep, StringComparison.Ordinal);
-    }
-
-    internal static string InsertConflictedFlag(string metaJson)
-    {
-        string trimmed = metaJson.TrimEnd();
-        int lastBrace = trimmed.LastIndexOf('}');
-        if (lastBrace < 0)
-            return metaJson; // not an object; leave untouched
-        string head = trimmed[..lastBrace].TrimEnd();
-        string sep = head.EndsWith('{') ? "" : ","; // empty object → no leading comma
-        return head + sep + "\n  \"conflicted\": true\n}";
     }
 }

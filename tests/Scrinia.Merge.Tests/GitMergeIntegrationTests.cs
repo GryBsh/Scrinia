@@ -88,8 +88,6 @@ public sealed class GitMergeIntegrationTests
         repo.FileExists(".scrinia/memories/local/conflict/incoming/auth-flow.nmp2").Should().BeTrue();
         repo.ReadFile(".scrinia/memories/local/conflict/current/auth-flow.nmp2").Should().Contain("b3Vycw");
         repo.ReadFile(".scrinia/memories/local/conflict/incoming/auth-flow.nmp2").Should().Contain("dGhlaXJz");
-        repo.ReadFile(Sidecar).Should().Contain("\"conflicted\": true",
-            because: "the real sidecar is marked, not a stray .meta.json in the repo root");
         repo.FileExists(".meta.json").Should().BeFalse(
             because: "ChangeExtension on an extensionless temp file used to produce exactly this");
     }
@@ -208,7 +206,7 @@ public sealed class GitMergeIntegrationTests
     }
 
     [Fact]
-    public void SidecarAndArtifactConflictingTogether_LeavesTheSidecarMarkedConflicted()
+    public void SidecarAndArtifactConflictingTogether_MetaDriverGenuinelyConflicts()
     {
         using var repo = new GitMergeHarness();
         repo.RegisterDriver("meta");
@@ -240,8 +238,6 @@ public sealed class GitMergeIntegrationTests
         sidecar.Should().NotContain("theirs-kw",
             because: "the meta driver must genuinely conflict here — an auto-merge would union the keywords "
                      + "and the ordering this test pins would go unexercised");
-        sidecar.Should().Contain("\"conflicted\": true",
-            because: "the nmp2 driver's sidecar mark must survive the meta driver running in the same merge");
     }
 
     [Fact]
