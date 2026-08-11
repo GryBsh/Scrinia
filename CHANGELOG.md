@@ -22,6 +22,23 @@ and all assembly attributes.
 - There is no `UnmappedMemberHandling.Disallow` on the request DTO, so unknown members are
   **ignored, not rejected**: a stale client still sending `tags`/`reviewAfter`/`reviewWhen` gets a
   `201` and those values are silently dropped rather than surfaced as an error.
+- `POST /api/v1/stores/{store}/memories` now **rejects** two attribute shapes it previously
+  accepted, with a `400` naming the bound. More than `KnownAttributes.MaxAttributes` (32) keys in
+  `attributes` is refused rather than accepted-and-truncated (`KnownAttributes.Merge` silently drops
+  keys past the cap, so accepting would lose data quietly). More than
+  `KnownAttributes.MaxValuesPerKey` (256) values under a single key is refused as a
+  storage-growth guard. Neither bound can fire for a map produced by Scrinia's own code: both are
+  enforced by `KnownAttributes.Merge`, which every write path funnels through, so local and remote
+  accept the same input. They are the wire guard for a hand-rolled client.
+  *(The values-per-key bound was 64 during development and was reachable from routine
+  auto-extraction — nothing caps `file`/`ref` values, so a memory citing 70 distinct paths stored
+  locally and `400`'d remotely. 256 is unreachable from extraction.)*
+- **`remember()` now requires the `search` permission as well as `store`.** The write path's
+  existing-entry lookup goes through `LoadIndex`, which proxies to
+  `GET /api/v1/stores/{store}/memories` — and that endpoint requires `search`
+  (`MemoryEndpoints.ListMemory`). An API key scoped to `store` alone could `remember()` before this
+  change and now gets a `403` from inside the write. This coupling is a consequence of proxying the
+  listing rather than adding a dedicated existence-check endpoint; decoupling them needs one.
 
 ### Fixed — remote writes silently discarded the agent's metadata
 
@@ -59,6 +76,38 @@ and all assembly attributes.
   is therefore overridden to fail closed (always returns `false`) until a dedicated attributes-only
   PATCH endpoint exists server-side. Entity-typing promotion against a remote store still does not
   persist; it now fails honestly instead of silently.
+- `HttpMemoryStore.ListScoped` now throws on a non-2xx listing response, matching `LoadIndex`. It
+  used to fall through to an empty list, so a `403` from the `search` permission gate made `list()`
+  answer "No memories stored." for a store full of them.
+
+### Fixed — remote `link()`/`update()` reported writes that never happened
+
+- `MemoryTools.UpdateMeta` — reached by `update()` and by both halves of `link()` — went
+  `LoadIndex` → mutate → `Upsert` → success. It reached the no-op remote `Upsert` **directly**,
+  bypassing the `TryUpdateEntry` override above, so once `LoadIndex` was fixed to return the real
+  listing, a remote `link()` answered `status: success / action: linked` while no `ref` attribute
+  ever reached the server. It now routes through `TryUpdateEntry` and reports `NOT_SUPPORTED` when
+  the store cannot persist a metadata-only change — the same fail-closed mechanism, not a second
+  one. Locally this also makes the update atomic under `FileMemoryStore`'s per-scope write lock
+  instead of a racy read-modify-write. `MaintenanceEventSink`'s auto-link and orphan-marking writes
+  were converted for the same reason.
+
+### Fixed — remote `append()` and `compact()` destroyed the attributes `remember()` persists
+
+- Both called `WriteArtifactAsync` without metadata and assembled the entry afterwards for the
+  no-op `Upsert`. Remotely the write re-runs the server's whole store path, replacing the entry with
+  server-extracted attributes only — so an `append()` to a memory carrying `tag`/`anchor`/`person`
+  left just the freshly extracted mentions behind, while reporting success. Identical calls against
+  a local store preserved everything. `append()` now hoists its carried-forward attribute map above
+  the write and hands it over (the same reorder `remember()` got); `compact()` reads the existing
+  entry *before* the write — reading after sampled the already-replaced entry — and carries its
+  attributes, keywords and description across. The CLI compaction path
+  (`ScriniaCommands.CompactEntryToSingleChunk`) carries them too; it is typed `ILocalMemoryStore` so
+  it cannot reach a remote store today, but the call site now states the requirement rather than
+  relying on the parameter's static type.
+- `HttpMemoryStore.WriteArtifactAsync` now includes the server's response body (truncated via
+  `HttpErrorBody`) in the exception it throws for a failed write. A `400` naming the exact bound it
+  refused used to reach the caller as a bare "400 BadRequest".
 
 ### Added — the client refuses an unrecognised server API version
 
@@ -68,6 +117,18 @@ and all assembly attributes.
   `X-Scrinia-Api-Version` on every response under `/api/v1/stores`, and `HttpMemoryStore` throws if
   a response is missing the header or carries a version it doesn't recognise, on both the
   synchronous and asynchronous send paths.
+
+### Changed — BM25 ranking differs slightly between a local and a remote write
+
+- The same memory, stored through MCP against a local store and through
+  `POST /api/v1/stores/{store}/memories`, gets different term frequencies and therefore ranks
+  slightly differently. Over the wire the carrier keys (`tag`/`review`/`anchor`/`file`) arrive
+  inside one flat `attributes` map and are seeded into TF; locally `SeedTermFrequencies` runs
+  *before* the carrier merge, so those keys are never seeded. The server also cannot tell an
+  agent-supplied attribute from a carrier one — a wire map is flat by construction — so it treats
+  the caller's keywords as agent-supplied and boosts them accordingly. Attribute *maps* match
+  exactly; only ranking differs. Reproducing local's split needs the two maps sent separately,
+  which is a wire-shape change. Documented at `MemoryOrchestrator.cs`.
 
 ### Changed — MCP and REST disagree on a bare date in a `review` attribute
 
