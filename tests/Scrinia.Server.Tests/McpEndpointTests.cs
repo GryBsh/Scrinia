@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using FluentAssertions;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

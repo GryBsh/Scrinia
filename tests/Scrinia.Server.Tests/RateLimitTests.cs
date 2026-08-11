@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Server.Auth;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

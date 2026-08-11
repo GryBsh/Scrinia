@@ -219,9 +219,8 @@ Standard BM25 with parameters `k1 = 1.5`, `b = 0.75`:
 
 Corpus statistics (average doc length, document frequencies) are computed directly by
 `Bm25Scorer.ComputeCorpusStats` on every `WeightedAttributeScorer.Search`/`SearchAll` call
-(`WeightedAttributeScorer.cs:80-82`, `:141-143`) — not cached. `CachedIndex` has a
-`GetOrComputeCorpusStats()` method that would cache them per scope, but nothing calls it; see
-**CachedIndex** below.
+(`WeightedAttributeScorer.cs:80-82`, `:141-143`) — not cached. A per-scope cache for them was
+carried on `CachedIndex` and never called; it was deleted on 2026-08-10. See **CachedIndex** below.
 
 ### Keyword TF Boosting
 
@@ -443,26 +442,17 @@ internal sealed class CachedIndex
     /// <summary>The cached entries. Handed out by reference from LoadIndex — callers get a
     /// live view of this list, not a copy.</summary>
     public List<ArtifactEntry> Entries { get; }
-    public Dictionary<string, int> NameToPosition { get; private set; }
-    public CorpusStats? Stats { get; set; }                 // lazy BM25 stats
 }
 ```
 
 `Entries` is the list `LoadIndex` hands back directly on a cache hit — see **Keyword-Only Index
-Scans**, below, for why that is safe. `NameToPosition`, `Rebuild()`, and
-`GetOrComputeCorpusStats()` currently have **no readers anywhere in the repo** — they are dead
-code, not part of any live path:
+Scans**, below, for why that is safe.
 
-- `NameToPosition` is written in the constructor and in `Rebuild()`, but nothing ever reads it,
-  and `Rebuild()` itself is never called.
-- `Upsert` and `Remove` (`FileMemoryStore.cs`) do not consult `NameToPosition` to avoid a scan —
-  they reload the whole scope from sidecars via `LoadEntriesFromSidecars` and replace the
-  `CachedIndex` outright.
-- `GetOrComputeCorpusStats()` is not on the live BM25 path either; corpus stats are computed
-  directly by `WeightedAttributeScorer` on every search (see **BM25**, above).
-
-They are left in place — removing them is a code change outside the scope of the docs fix that
-noted them here.
+The class previously also carried `NameToPosition`, `Rebuild()` and `GetOrComputeCorpusStats()`.
+None had a reader anywhere in the repo, and `NameToPosition` was rebuilt on every cache write for
+nothing. They were deleted on 2026-08-10. `Upsert` and `Remove` never consulted the position map —
+they reload the scope from sidecars via `LoadEntriesFromSidecars` and replace the `CachedIndex`
+outright — and corpus stats are computed directly by `WeightedAttributeScorer` on every search.
 
 ### Artifact LRU Cache
 

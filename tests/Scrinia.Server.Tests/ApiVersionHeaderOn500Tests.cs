@@ -6,7 +6,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Core;
 using Scrinia.Core.Resilience;
 using Scrinia.Server.Auth;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

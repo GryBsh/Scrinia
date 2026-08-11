@@ -4,7 +4,6 @@ using Scrinia.Core;
 using Scrinia.Plugin.Abstractions;
 using Scrinia.Server.Models;
 using Scrinia.Server.Services;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

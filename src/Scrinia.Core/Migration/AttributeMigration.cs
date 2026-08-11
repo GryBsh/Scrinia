@@ -160,10 +160,10 @@ public static class AttributeMigration
         {
             if (MigratesTo(entry, out var next))
             {
-                // PersistMigratedEntry locks on GetLockPath(scope), and FileLock.Acquire creates that
-                // lock's parent dir (GetStoreDirForScope(scope)) as a side effect — so an empty namespaced
-                // dir may be materialized here even for a flat-dir write. Harmless: EnumerateRawForMigration
-                // only ever emits a scope whose namespaced dir already exists.
+                // PersistMigratedEntry locks on GetLockPath(scope), and FileLock.AcquireExclusive creates
+                // that lock's parent dir (GetStoreDirForScope(scope)) as a side effect — so an empty
+                // namespaced dir may be materialized here even for a flat-dir write. Harmless:
+                // EnumerateRawForMigration only ever emits a scope whose namespaced dir already exists.
                 if (!dryRun) store.PersistMigratedEntry(next, storeDir, scope);
                 migrated++;
             }

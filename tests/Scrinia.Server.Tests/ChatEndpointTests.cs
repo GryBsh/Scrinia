@@ -8,7 +8,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Chat;
 using Scrinia.Server.Models;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

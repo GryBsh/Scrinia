@@ -7,11 +7,12 @@ namespace Scrinia.Tests;
 /// <summary>
 /// Pins the read path's fast lane: an in-memory cache hit performs no filesystem work at all.
 ///
-/// The observable proxy for "opened a file handle" is the .lock file itself. FileLock.Acquire
-/// opens it with FileMode.OpenOrCreate (FileLock.cs:62) after a Directory.CreateDirectory
-/// (:51), so any call that reaches the file lock recreates it. Deleting it and finding it
-/// still absent afterwards is direct evidence that no handle was opened — which is stronger
-/// than timing the call, and deterministic.
+/// The observable proxy for "opened a file handle" is the .lock file itself. FileLock's private
+/// Acquire helper opens it with FileMode.OpenOrCreate, and AcquireExclusive creates the lock's
+/// parent directory before calling it, so any write that reaches the file lock recreates the
+/// file. Deleting it and finding it still absent afterwards is direct evidence that no handle
+/// was opened — which is stronger than timing the call, and deterministic. (Line numbers are
+/// deliberately omitted here — they drift with every unrelated edit to FileLock.cs.)
 /// </summary>
 public class LoadIndexCacheHitTests
 {

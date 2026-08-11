@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Globalization;
-using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Scrinia.Core.Encoding;
@@ -58,9 +57,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     /// <summary>
     /// In-memory cache of a scope's index entries, handed out by reference on a
-    /// <see cref="LoadIndex"/> cache hit. <see cref="NameToPosition"/>, <see cref="Rebuild"/> and
-    /// <see cref="GetOrComputeCorpusStats"/> have no readers anywhere in the repo — see
-    /// docs/architecture/core.md's "CachedIndex" section for why they are kept anyway.
+    /// <see cref="LoadIndex"/> cache hit.
+    ///
+    /// <para>This wraps a single list rather than being one because it is the documented home of
+    /// the aliasing contract below — see
+    /// docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md. It previously also
+    /// carried a name-to-position map, a lazy BM25 corpus-stats cache and a rebuild method; none
+    /// had a single reader anywhere in the repo, and the map was rebuilt on every cache write.
+    /// Deleted 2026-08-10.</para>
     /// </summary>
     internal sealed class CachedIndex
     {
@@ -68,49 +72,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         /// live view of this list, not a copy. That is safe only because no reader mutates it
         /// and every cache write REPLACES the CachedIndex rather than mutating this instance.
         /// A caller that needs to mutate must call ToList() explicitly, as ImportTopicEntries
-        /// does. See docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.</summary>
+        /// does.</summary>
         public List<ArtifactEntry> Entries { get; }
-        public Dictionary<string, int> NameToPosition { get; private set; }
 
-        /// <summary>Lazily computed BM25 corpus stats. Cleared on mutation.</summary>
-        public CorpusStats? Stats { get; set; }
-
-        public CachedIndex(List<ArtifactEntry> entries)
-        {
-            Entries = entries;
-            NameToPosition = BuildNameMap(entries);
-        }
-
-        public void Rebuild()
-        {
-            NameToPosition = BuildNameMap(Entries);
-            Stats = null; // Invalidate corpus stats on mutation
-        }
-
-        /// <summary>Computes and caches corpus stats on first access.</summary>
-        public CorpusStats GetOrComputeCorpusStats()
-        {
-            if (Stats is not null) return Stats;
-
-            var (avgDocLen, docFreqs) = Bm25Scorer.ComputeCorpusStats(
-                Entries.Select(e => (IReadOnlyDictionary<string, int>?)e.TermFrequencies),
-                docCountHint: Entries.Count);
-
-            Stats = new CorpusStats(avgDocLen, docFreqs, Entries.Count);
-            return Stats;
-        }
-
-        private static Dictionary<string, int> BuildNameMap(List<ArtifactEntry> entries)
-        {
-            var map = new Dictionary<string, int>(entries.Count, StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < entries.Count; i++)
-                map[entries[i].Name] = i;
-            return map;
-        }
+        public CachedIndex(List<ArtifactEntry> entries) => Entries = entries;
     }
-
-    /// <summary>Pre-computed BM25 corpus statistics for a scope.</summary>
-    public sealed record CorpusStats(double AvgDocLength, Dictionary<string, int> DocumentFrequencies, int CorpusSize);
 
     /// <summary>
     /// LRU cache for decoded artifact text, bounded by total byte size.
@@ -601,11 +567,9 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         lk.EnterReadLock();
         try
         {
-            // Live view, not a copy. Safe because CachedIndex.NameToPosition, Rebuild() and
-            // GetOrComputeCorpusStats() have no readers anywhere in the repo — there is no
-            // derived structure to desync — and every cache write REPLACES the CachedIndex
-            // rather than mutating this list. See
-            // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
+            // Live view, not a copy. Safe because no reader mutates the returned list — there is
+            // no derived structure on CachedIndex left to desync — and every cache write REPLACES
+            // the CachedIndex rather than mutating this instance.
             if (_indexCache.TryGetValue(scope, out var cached))
                 return cached.Entries;
         }

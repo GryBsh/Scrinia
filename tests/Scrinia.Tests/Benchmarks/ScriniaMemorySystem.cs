@@ -33,7 +33,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
     /// </summary>
     private static void ThrowIfWriteFailed(McpResponse response, string name)
     {
-        if (response.Status == "error")
+        if (response.IsError)
             throw new InvalidOperationException($"Write to '{name}' failed:\n{response.Error}");
     }
 
@@ -60,7 +60,7 @@ internal sealed class ScriniaMemorySystem : MemorySystemBase
                 McpResponse recalled = await _tools.Recall(names[0]);
                 string showResult = recalled.ToYaml();
                 charsConsumed += showResult.Length;
-                if (recalled.Status != "error")
+                if (!recalled.IsError)
                     foundContent.Add(showResult);
 
                 // Check if target is in the results

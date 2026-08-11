@@ -10,7 +10,6 @@ using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 
@@ -249,6 +248,35 @@ public sealed class BundleEndpointTests
         listC.Should().NotBeNull();
         listC!.Memories.Should().BeEmpty(
             because: "topic-c was not among the repeated topics keys, so it must have been filtered out");
+    }
+
+    /// <summary>
+    /// RULED 2026-08-10: an import that matched no topics is not a success. Returning 200 made a
+    /// deploy step gating on the status code pass while nothing had been imported.
+    /// </summary>
+    [Fact]
+    public async Task ImportBundle_WhenNoTopicsMatch_Returns422()
+    {
+        using var factory = new ScriniaServerFactory();
+        using var client = factory.CreateAuthenticatedClient();
+
+        const string topic = "import-no-match-topic";
+        const string marker = "MARKER-import-no-topics-match";
+        await StoreMemoryAsync(client, factory.PrimaryStore, topic, "note", marker);
+
+        byte[] bundleBytes = await ExportBundleAsync(client, factory.PrimaryStore, topic);
+
+        using var content = new MultipartFormDataContent();
+        var bundle = new ByteArrayContent(bundleBytes);
+        bundle.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        content.Add(bundle, "file", "x.scrinia-bundle");
+
+        var response = await client.PostAsync(
+            $"/api/v1/stores/{factory.SecondaryStore}/import?topics=does-not-exist-in-bundle", content);
+
+        response.StatusCode.Should().Be(HttpStatusCode.UnprocessableContent,
+            because: "the bundle contained a topic, but the filter matched none of them, so nothing " +
+                     "was imported and that is not a success");
     }
 
     /// <summary>Stores a single-chunk memory under <c>/{topic}/{subject}</c>, using <paramref

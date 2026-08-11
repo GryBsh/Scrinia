@@ -3,7 +3,6 @@ using System.Net.Http.Json;
 using FluentAssertions;
 using Scrinia.Core.Resilience;
 using Scrinia.Server.Models;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

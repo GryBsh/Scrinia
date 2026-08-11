@@ -4,7 +4,6 @@ using Scrinia;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Mcp;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

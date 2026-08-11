@@ -54,6 +54,18 @@ public partial class ScriniaCommands
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Writes a response envelope in its status-appropriate colour and returns the process exit
+    /// code. Every non-JSON envelope print goes through here: printing a warning in green and
+    /// returning 0 reported "matched nothing" as success on four separate commands.
+    /// </summary>
+    private static int RenderEnvelope(McpResponse response, string yaml)
+    {
+        string colour = response.IsWarning ? "yellow" : "green";
+        AnsiConsole.MarkupLine($"[{colour}]{Markup.Escape(yaml)}[/]");
+        return response.IsWarning ? 1 : 0;
+    }
+
     // ── MCP-passthrough commands ────────────────────────────────────────────
     //
     // Each of the six commands below wires the CLI directly into the same
@@ -63,7 +75,10 @@ public partial class ScriniaCommands
 
     private static int EmitMcpResult(McpResponse r, bool json, string action)
     {
-        bool isError = r.IsError;
+        // A warning envelope means the command completed without doing what was asked — an empty
+        // import, an entity that matched nothing, an update specifying no changes. Exiting 0 for
+        // that reported a no-op as success to any script gating on this command.
+        bool failed = r.IsError || r.IsWarning;
 
         if (json)
         {
@@ -77,7 +92,7 @@ public partial class ScriniaCommands
             Console.Write(yaml);
             if (!yaml.EndsWith('\n')) Console.WriteLine();
         }
-        return isError ? 1 : 0;
+        return failed ? 1 : 0;
     }
 
     /// <summary>Print the embedded agent guide.</summary>

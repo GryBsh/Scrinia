@@ -37,6 +37,7 @@ scrinia-test/
 # Local misc files
 .fake
 .env
+/cmds.txt
 
 # Planning Reports
 docs/reports

@@ -4,7 +4,6 @@ using FluentAssertions;
 using Scrinia;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Resilience;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

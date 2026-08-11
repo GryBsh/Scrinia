@@ -401,6 +401,9 @@ public static class MemoryEndpoints
         string store,
         HttpRequest request,
         RequestContext ctx,
+        // CLI comma-splits; the HTTP endpoint binds repeated ?topics= keys. Deliberate — see
+        // "Bundle commands: topic filters differ deliberately between CLI and HTTP" in
+        // docs/architecture/cli.md.
         [FromQuery] string[]? topics = null,
         bool overwrite = false)
     {
@@ -433,8 +436,13 @@ public static class MemoryEndpoints
         try
         {
             var (topicCount, entryCount, names, skippedCategories) = BundleService.ImportFromStream(localStore, stream, topics, overwrite);
+            // RULED 2026-08-10: "imported nothing" is not a success. A 200 here made any deploy
+            // step gating on the status code pass while the bundle had not been imported. 422 —
+            // the request was well-formed and authorised, but yielded nothing to import.
             if (topicCount == 0 && skippedCategories.Count == 0)
-                return Results.Ok(new { message = "No topics were imported." });
+                return Results.Json(
+                    new ErrorResponse("No topics were imported (empty bundle or all filtered out)."),
+                    statusCode: StatusCodes.Status422UnprocessableEntity);
             return Results.Ok(new
             {
                 message = $"Imported {topicCount} topic(s) ({entryCount} entries): {string.Join(", ", names)}",

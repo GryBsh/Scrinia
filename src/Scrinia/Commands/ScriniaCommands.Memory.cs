@@ -381,6 +381,16 @@ public partial class ScriniaCommands
         var tools = new ScriniaMcpTools();
         McpResponse response = await tools.Remember([content], name, description ?? "", tagArray,
             keywordArray, reviewAfter: reviewAfter, reviewWhen: reviewWhen, cancellationToken: cancellationToken);
+
+        // Store had no IsError guard at all and returned 0 unconditionally — the same dead-guard
+        // defect already fixed at Show, Forget, Export and Import.
+        if (response.IsError)
+        {
+            if (json) { WriteJsonError(response.Error ?? "unknown error"); return 1; }
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(FormatCliError(response))}");
+            return 1;
+        }
+
         string result = response.ToYaml();
 
         if (json)
@@ -390,12 +400,9 @@ public partial class ScriniaCommands
             long bytes = System.Text.Encoding.UTF8.GetByteCount(content);
             WriteJson(new CliStoreOutput(qualifiedName, 1, bytes, result),
                 CliJsonContext.Default.CliStoreOutput);
+            return response.IsWarning ? 1 : 0;
         }
-        else
-        {
-            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
-        }
-        return 0;
+        return RenderEnvelope(response, result);
     }
 
     /// <summary>Display memory content.</summary>
@@ -474,10 +481,11 @@ public partial class ScriniaCommands
         string result = response.ToYaml();
 
         if (json)
+        {
             WriteJson(new CliForgetOutput(name, true, result), CliJsonContext.Default.CliForgetOutput);
-        else
-            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
-        return 0;
+            return response.IsWarning ? 1 : 0;
+        }
+        return RenderEnvelope(response, result);
     }
 
     /// <summary>Append a new chunk to an existing memory.</summary>

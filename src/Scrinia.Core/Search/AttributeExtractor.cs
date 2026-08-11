@@ -108,6 +108,11 @@ public static partial class AttributeExtractor
     /// between the auto-keyword (+2) and agent-keyword (+5) boosts — so BM25 picks up attribute
     /// vocabulary transparently.
     /// </summary>
+    /// <remarks>Values are tokenized as prose, which means a round-tripped timestamp in a `review`
+    /// attribute seeds junk terms (`00`, `0000000`, `2026`) at +3 each. This is accepted: it is
+    /// ranking noise, not data loss, it affects the local and remote paths identically, and the
+    /// alternative — type-aware seeding that skips date-shaped values — buys a small precision
+    /// gain for a per-key type model this scorer does not otherwise need.</remarks>
     public static void SeedTermFrequencies(
         Dictionary<string, string[]>? attributes, Dictionary<string, int> tf)
     {
