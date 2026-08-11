@@ -181,9 +181,12 @@ public class EntityTypingEventHandlerTests
     /// <summary>
     /// The sink's OWN entry lookup — upstream of <c>TryUpdateEntry</c> — matched sanitized names
     /// with an ordinal <c>==</c>, so a memory stored as "Note" and written under the qualified name
-    /// "/findings/note" was gated out at the very first read: the sink returned before reaching the
-    /// store's (already case-insensitive) update path and the promotion silently did not happen.
-    /// Fixing the store alone would not have fixed this; the gate is above it.
+    /// "/findings/note" was gated out at the very first read: the sink returned before ever calling
+    /// <c>TryUpdateEntry</c>, and the promotion silently did not happen. Fixing the store alone
+    /// would not have fixed this; the gate is above it. The sink also hands <c>TryUpdateEntry</c>
+    /// the resolved entry's OWN casing (<c>entry.Name</c>, "Note"), not the event's ("note") —
+    /// otherwise this would still fail on a case-sensitive filesystem, where
+    /// <c>FileMemoryStore.TryUpdateEntry</c>'s own <c>File.Exists</c> gate is case-sensitive.
     /// </summary>
     [Fact]
     public async Task Promotes_WhenTheStoredNameDiffersInCasingFromTheEvent()

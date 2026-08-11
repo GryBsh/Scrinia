@@ -139,7 +139,7 @@ public class TryUpdateEntryTests
         public override IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => _entries;
         public override void Upsert(ArtifactEntry entry, string scope = "local")
         {
-            _entries.RemoveAll(e => e.Name == entry.Name);
+            _entries.RemoveAll(e => e.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
             _entries.Add(entry);
         }
     }

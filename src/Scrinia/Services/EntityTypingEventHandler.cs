@@ -35,9 +35,11 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
 
         var (scope, subject) = store.ParseQualifiedName(qualifiedName);
 
-        // Case-insensitive to match FileMemoryStore.TryUpdateEntry and IMemoryStore's default:
-        // SanitizeName does not fold case, so an ordinal match here gated a case-mismatched name
-        // out of promotion entirely, above and independent of the store's own lookup.
+        // Case-insensitive to match IMemoryStore's default TryUpdateEntry: SanitizeName does not
+        // fold case, so an ordinal match here gated a case-mismatched name out of promotion
+        // entirely, above and independent of the store's own lookup. (FileMemoryStore's own
+        // TryUpdateEntry gate is case-insensitive only on case-insensitive filesystems — see the
+        // entry.Name fix below for why this method does not rely on that.)
         var entry = store.LoadIndex(scope)
             .FirstOrDefault(e => store.SanitizeName(e.Name)
                 .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
@@ -64,7 +66,12 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
         if (moves.Count == 0) return;
 
         // Apply under the store lock; move only values STILL under mention: on the current entry.
-        store.TryUpdateEntry(subject, scope, current =>
+        // Pass entry.Name (the resolved entry's own casing), not the event's subject: FileMemoryStore's
+        // TryUpdateEntry gates on File.Exists(SanitizeName(subject) + ".meta.json"), which is
+        // case-sensitive on Linux/macOS -- SanitizeName does not fold case. Handing back the
+        // event's casing would pass the read-side gate above but fail this write-side one on a
+        // case-mismatched name, on any filesystem where File.Exists is case-sensitive.
+        store.TryUpdateEntry(entry.Name, scope, current =>
         {
             if (current.Attributes is null ||
                 !current.Attributes.TryGetValue(KnownAttributes.MentionKey, out var curMentions))

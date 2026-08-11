@@ -35,10 +35,14 @@ public interface IMemoryStore
     /// <para>Default implementation is a non-atomic load→mutate→Upsert, adequate for in-memory/test
     /// stores with no concurrent writers. FileMemoryStore overrides it to run under its per-scope
     /// write lock.</para>
-    /// <para>Name matching is case-insensitive, matching <c>FileMemoryStore.TryUpdateEntry</c> and
-    /// <c>Remove</c>'s <c>File.Exists</c> guard — <c>SanitizeName</c> does not fold case, so an
+    /// <para>Name matching is case-insensitive here, matching how <c>Remove</c>'s
+    /// <c>File.Exists</c> guard and <c>FileMemoryStore.TryUpdateEntry</c> behave on
+    /// case-insensitive filesystems (Windows/NTFS) — <c>SanitizeName</c> does not fold case, so an
     /// ordinal comparison here silently reported "not found" for an entry stored under a different
-    /// casing.</para>
+    /// casing. On case-sensitive filesystems, <c>File.Exists</c> and
+    /// <c>FileMemoryStore.TryUpdateEntry</c>'s own gate remain case-sensitive regardless of this
+    /// fix; that mismatch is a pre-existing, separately tracked defect in
+    /// <c>FileMemoryStore</c> itself.</para>
     /// </summary>
     bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
