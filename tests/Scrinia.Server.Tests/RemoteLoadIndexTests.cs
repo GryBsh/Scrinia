@@ -263,4 +263,28 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         // so the stored set is a superset (measured: [body, keywords, probe, zebra]).
         entry.Keywords!.Should().Contain("zebra");
     }
+
+    /// <summary>
+    /// <c>ListScoped</c> is a second, separate construction site for the fix above — not a
+    /// redundant sibling of <see cref="LoadIndex_CarriesKeywords"/>, which only exercises
+    /// <c>LoadIndex</c>'s own <c>ArtifactEntry</c> build. This one was unguarded: nothing pinned
+    /// that <c>ListScoped</c> threads <c>item.Keywords</c> into the <c>ArtifactEntry</c> it
+    /// constructs, so dropping the `Keywords:` argument there would have passed every existing
+    /// test. <c>MaintenanceEventSink.cs:95</c> reads <c>sa.Entry.Keywords</c> through exactly this
+    /// path for inbound-ref detection, so this is real production logic, not a formality.
+    /// </summary>
+    [Fact]
+    public async Task ListScoped_CarriesKeywords()
+    {
+        await StoreAsync("keyword-probe-scoped", "probe body for scoped keywords", keywords: ["zebra"]);
+
+        var scoped = _remote.ListScoped("local").Single(sa => sa.Entry.Name == "keyword-probe-scoped");
+
+        scoped.Entry.Keywords.Should().NotBeNull(
+            because: "ListScoped builds its own ArtifactEntry independently of LoadIndex, and must " +
+                     "also thread the server's keywords through rather than dropping them");
+        // Contain, not equality — same reasoning as LoadIndex_CarriesKeywords: MemoryOrchestrator
+        // merges agent keywords with auto-extracted ones, so the stored set is a superset.
+        scoped.Entry.Keywords!.Should().Contain("zebra");
+    }
 }
