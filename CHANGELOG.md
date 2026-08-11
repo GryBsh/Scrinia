@@ -161,12 +161,27 @@ and all assembly attributes.
   built. Covered by `CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata`; the
   pre-existing `CopyMemory_persistent_to_persistent` uses one casing throughout and asserts only
   that the destination exists, so it could not see this.
-- Two remaining filesystem-case dependencies in `FileMemoryStore` are closed for
+- Three remaining filesystem-case dependencies in `FileMemoryStore` are closed for
   case-sensitive filesystems: `TryUpdateEntry`'s `File.Exists` fast path (which reported "no such
   entry" for an entry its own authoritative lookup finds, without invoking the mutation) is gone,
-  and `Remove` falls back to a case-insensitive sidecar scan when the exact name misses. Neither is
-  observable on Windows, where NTFS folds case for both — each carries a ruling comment at the site
-  saying so and naming what would observe it.
+  and `Remove` and `DeleteArtifact` each fall back to a case-insensitive directory scan when the
+  exact name misses. None is observable on Windows, where NTFS folds case for all three — each
+  carries a ruling comment at the site saying so and naming what would observe it.
+- `forget()` no longer reports success while leaving the memory's content on disk.
+  `Remove` (the sidecar) had been made case-insensitive while `DeleteArtifact` (the `.nmp2` file)
+  had not, and `forget()` calls both. On a case-sensitive filesystem `forget('mixedcase')` against a
+  memory stored as `MixedCase` therefore answered "Forgot: mixedcase." with the artifact still on
+  disk — orphaned, unreachable through `list()` or `search()`, and invisible to the next `forget()`.
+  Fixed in the store primitive rather than at the three call sites, so the pairing agrees for every
+  caller.
+- `append()` resolves the memory's artifact under the entry's own casing, not the caller's. The
+  index lookup now runs *before* the artifact read in both implementations (the MCP tool and the
+  server orchestrator). Previously the read ran first on the caller's casing; on a case-sensitive
+  filesystem it missed, and the create-new fallback underneath it — whose own lookup *is*
+  case-insensitive — then landed on the existing memory and replaced its content with the appended
+  chunk alone. `append()` behaving as `replace()`. NTFS folds case in `File.Exists`, so this was
+  never reachable on Windows; both sites carry a ruling comment saying so, and the ordering itself
+  is pinned by a test at each.
 
 ### Added — the client refuses an unrecognised server API version
 
