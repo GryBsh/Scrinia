@@ -58,6 +58,22 @@ public sealed class KnownAttributesTests
     }
 
     [Fact]
+    public void Merge_ValuesUnderOneKey_CappedAtMaxValuesPerKey()
+    {
+        var incoming = new Dictionary<string, string[]>
+        {
+            ["person"] = Enumerable.Range(1, KnownAttributes.MaxValuesPerKey + 44)
+                .Select(i => $"p{i}").ToArray(),
+        };
+
+        var merged = KnownAttributes.Merge(null, incoming);
+
+        merged!["person"].Should().HaveCount(KnownAttributes.MaxValuesPerKey,
+            because: "local Merge must cap a single key's values the same way the wire-level " +
+                     "400 does, so local and remote accept the same input by construction");
+    }
+
+    [Fact]
     public void EntityGraph_AttributesAndLegacyKeywords_ProduceIdenticalGraphs()
     {
         var fromKeywords = EntityGraph.Build(

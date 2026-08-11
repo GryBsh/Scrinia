@@ -9,8 +9,8 @@ namespace Scrinia.Tests;
 
 public class HttpMemoryStoreWriteFailureTests
 {
-    /// <summary>Test handler that returns a fixed status for every request.</summary>
-    private sealed class FixedStatusHandler(HttpStatusCode status) : HttpMessageHandler
+    /// <summary>Test handler that returns a fixed status (and optional body) for every request.</summary>
+    private sealed class FixedStatusHandler(HttpStatusCode status, string? body = null) : HttpMessageHandler
     {
         public int Calls { get; private set; }
         protected override Task<HttpResponseMessage> SendAsync(
@@ -39,13 +39,16 @@ public class HttpMemoryStoreWriteFailureTests
         {
             var response = new HttpResponseMessage(status);
             response.Headers.TryAddWithoutValidation(RemoteApiVersion.HeaderName, RemoteApiVersion.Current);
+            if (body is not null)
+                response.Content = new StringContent(body);
             return response;
         }
     }
 
-    private static HttpMemoryStore MakeStore(HttpStatusCode status, out FixedStatusHandler handler)
+    private static HttpMemoryStore MakeStore(
+        HttpStatusCode status, out FixedStatusHandler handler, string? body = null)
     {
-        handler = new FixedStatusHandler(status);
+        handler = new FixedStatusHandler(status, body);
         var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000") };
         // MaxRetries: 0 keeps transient-status tests fast (no backoff sleeps).
         return new HttpMemoryStore(http, "default", retryOptions: new RetryOptions(MaxRetries: 0));
@@ -101,5 +104,41 @@ public class HttpMemoryStoreWriteFailureTests
 
         act.Should().Throw<HttpRequestException>()
             .Which.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="LoadIndex_NonSuccessStatus_Throws"/> for the other listing entry point:
+    /// <c>ListScoped</c> throws-on-failure rather than returning an empty list that would be
+    /// indistinguishable from "this store has nothing in it".
+    /// </summary>
+    [Fact]
+    public void ListScoped_NonSuccessStatus_Throws()
+    {
+        using var store = MakeStore(HttpStatusCode.Forbidden, out _);
+
+        var act = () => store.ListScoped(null);
+
+        act.Should().Throw<HttpRequestException>()
+            .Which.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>
+    /// <c>WriteArtifactAsync</c> reads the server's error body via <c>HttpErrorBody.Truncate</c>
+    /// specifically so a self-describing rejection ("attributes may not exceed N values per
+    /// key") reaches the caller instead of a bare status code. The existing failure tests use a
+    /// handler that never sets <c>Content</c>, so nothing pins that the body actually makes it
+    /// into the thrown message.
+    /// </summary>
+    [Fact]
+    public async Task WriteArtifactAsync_NonTransientFailureWithBody_MessageContainsBody()
+    {
+        const string serverMessage = "attributes may not exceed 256 values per key";
+        using var store = MakeStore(HttpStatusCode.BadRequest, out _, body: serverMessage);
+
+        var act = async () => await store.WriteArtifactAsync("note", "local", Artifact());
+
+        (await act.Should().ThrowAsync<HttpRequestException>())
+            .Which.Message.Should().Contain(serverMessage,
+                because: "the server's error body must reach the caller, not just the status code");
     }
 }

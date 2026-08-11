@@ -54,4 +54,22 @@ public class ChatProviderHttpTests
         error.Should().StartWith("Provider returned 400: ").And.EndWith("...");
         error!.Length.Should().Be("Provider returned 400: ".Length + 503);
     }
+
+    [Fact]
+    public async Task TransientFailure_RecordsBreakerFailure()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        using var http = Client(handler);
+        var breaker = new CircuitBreaker(new CircuitBreakerOptions(Threshold: 1));
+
+        var (response, error) = await ChatProviderHttp.SendAsync(
+            http, () => new HttpRequestMessage(HttpMethod.Post, "v1/chat"),
+            breaker, new RetryOptions(MaxRetries: 0), CancellationToken.None);
+
+        response.Should().BeNull();
+        error.Should().NotBeNull();
+        breaker.State.Should().Be(CircuitState.Open,
+            because: "a transient 503 must reach CircuitBreaker.RecordFailure, and with " +
+                     "Threshold: 1 a single recorded failure opens the circuit");
+    }
 }
