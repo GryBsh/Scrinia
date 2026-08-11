@@ -209,4 +209,33 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
             because: "the last entry seeded — the one a first-page-only read would have dropped " +
                      "— must be present");
     }
+
+    /// <summary>
+    /// <c>HttpMemoryStore.TryUpdateEntry</c>'s own lookup used an ordinal
+    /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, so a case-mismatched subject fell out
+    /// at the <c>current is null</c> guard and returned <c>false</c> WITHOUT invoking the mutation
+    /// — collapsing "no such entry" back into "found it, cannot persist", the exact distinction
+    /// this override exists to keep apart (the two sibling tests above pin each side of it). The
+    /// return value is <c>false</c> in both cases by design, so <c>mutateRan</c> is the only thing
+    /// that can tell them apart.
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEntry_FindsTheEntry_WhenTheSubjectCasingDiffers()
+    {
+        await StoreAsync("MixedCaseProbe", "probe body for casing");
+
+        bool mutateRan = false;
+        bool updated = _remote.TryUpdateEntry("mixedcaseprobe", "local", entry =>
+        {
+            mutateRan = true;
+            return entry;
+        });
+
+        mutateRan.Should().BeTrue(
+            because: "the entry exists under a different casing and must be found — falling out at " +
+                     "the null guard would report it absent, which is a different condition");
+        updated.Should().BeFalse(
+            because: "finding the entry changes nothing about this store's inability to persist a " +
+                     "metadata-only mutation — the fail-closed contract is unchanged by this fix");
+    }
 }

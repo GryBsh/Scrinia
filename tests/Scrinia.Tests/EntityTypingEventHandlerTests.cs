@@ -177,6 +177,35 @@ public class EntityTypingEventHandlerTests
         reloaded.Attributes!["mention"].Should().Contain("someone-else",
             "the concurrent write's own content must survive, not be clobbered by a stale promotion");
     }
+
+    /// <summary>
+    /// The sink's OWN entry lookup — upstream of <c>TryUpdateEntry</c> — matched sanitized names
+    /// with an ordinal <c>==</c>, so a memory stored as "Note" and written under the qualified name
+    /// "/findings/note" was gated out at the very first read: the sink returned before reaching the
+    /// store's (already case-insensitive) update path and the promotion silently did not happen.
+    /// Fixing the store alone would not have fixed this; the gate is above it.
+    /// </summary>
+    [Fact]
+    public async Task Promotes_WhenTheStoredNameDiffersInCasingFromTheEvent()
+    {
+        using var tmp = new TempWorkspace();
+        var store = tmp.Store;
+        store.Upsert(new ArtifactEntry("known", "uri", 1, 1, DateTimeOffset.UtcNow,
+            Attributes: new(StringComparer.OrdinalIgnoreCase) { ["thing"] = ["susie"] }), "local:findings");
+        store.Upsert(Mentioning("Note", "seraphim"), "local:findings");
+
+        var map = new Dictionary<string, float[]> { ["seraphim"] = [0f, 0f, 1f], ["susie"] = [0f, 0f, 1f] };
+        var sink = new EntityTypingEventHandler(new DictEmbeddingProvider(map, 3));
+
+        // Lowercase subject; the entry is stored as "Note".
+        await sink.OnStoredAsync("/findings/note", ["We saw Seraphim."], store, default);
+
+        var reloaded = store.LoadIndex("local:findings").Single(e => e.Name == "Note");
+        (reloaded.Attributes!.TryGetValue("mention", out var m) ? m : []).Should().NotContain("seraphim",
+            because: "the promotion must run even though the event's subject casing differs from " +
+                     "the stored entry's");
+        reloaded.Attributes!["thing"].Should().Contain("seraphim");
+    }
 }
 
 internal sealed class UnavailableEmbeddingProvider : Scrinia.Core.Embeddings.IEmbeddingProvider

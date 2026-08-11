@@ -406,7 +406,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
-        var current = LoadIndex(scope).FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+        var current = LoadIndex(scope).FirstOrDefault(
+            e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
         if (current is null) return false;
         // From here to the end of the method, this is deliberately dead work: `updated` and the
         // `null` branch below can only ever produce `return false`, same as skipping straight to

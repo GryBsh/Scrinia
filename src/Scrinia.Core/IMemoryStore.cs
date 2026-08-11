@@ -35,10 +35,15 @@ public interface IMemoryStore
     /// <para>Default implementation is a non-atomic load→mutate→Upsert, adequate for in-memory/test
     /// stores with no concurrent writers. FileMemoryStore overrides it to run under its per-scope
     /// write lock.</para>
+    /// <para>Name matching is case-insensitive, matching <c>FileMemoryStore.TryUpdateEntry</c> and
+    /// <c>Remove</c>'s <c>File.Exists</c> guard — <c>SanitizeName</c> does not fold case, so an
+    /// ordinal comparison here silently reported "not found" for an entry stored under a different
+    /// casing.</para>
     /// </summary>
     bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
-        var current = LoadIndex(scope).FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+        var current = LoadIndex(scope).FirstOrDefault(
+            e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
         if (current is null) return false;
         var updated = mutate(current);
         if (updated is null) return false;

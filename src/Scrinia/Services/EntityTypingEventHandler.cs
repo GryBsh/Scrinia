@@ -35,8 +35,12 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
 
         var (scope, subject) = store.ParseQualifiedName(qualifiedName);
 
+        // Case-insensitive to match FileMemoryStore.TryUpdateEntry and IMemoryStore's default:
+        // SanitizeName does not fold case, so an ordinal match here gated a case-mismatched name
+        // out of promotion entirely, above and independent of the store's own lookup.
         var entry = store.LoadIndex(scope)
-            .FirstOrDefault(e => store.SanitizeName(e.Name) == store.SanitizeName(subject));
+            .FirstOrDefault(e => store.SanitizeName(e.Name)
+                .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
         if (entry?.Attributes is null) return;
         if (!entry.Attributes.TryGetValue(KnownAttributes.MentionKey, out var mentions) || mentions.Length == 0)
             return;
