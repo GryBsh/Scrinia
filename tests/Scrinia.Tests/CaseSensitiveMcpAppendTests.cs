@@ -68,5 +68,6 @@ public sealed class CaseSensitiveMcpAppendTests : IDisposable
 
         // No orphaned "mixedcase"-cased sidecar was created alongside "MixedCase".
         File.Exists(store.ArtifactPath("mixedcase", "local")).Should().BeFalse();
+        File.Exists(store.MetaPath("mixedcase", "local")).Should().BeFalse();
     }
 }

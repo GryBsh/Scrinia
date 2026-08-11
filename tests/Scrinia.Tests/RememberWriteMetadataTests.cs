@@ -210,10 +210,14 @@ public class RememberWriteMetadataTests
     ///
     /// <para>Verified discriminating by running it: with the hoisted lookup moved back below the
     /// artifact read — and the case-insensitive comparison left intact, so only the ORDER changes —
-    /// <c>ReadSubject</c> is never set and this test fails on null, while the behavioural guard
-    /// <c>ScriniaMcpToolsTests.Append_UnderADifferentCasing_PreservesCreatedAtAndCarriesTheChunks
-    /// Forward</c> stays green. That split is the whole point: on NTFS the outcome is unchanged and
-    /// only the ordering is observable.</para>
+    /// <c>ReadSubject</c> IS set, to "mixedcase" (the caller's casing that reached the read), and
+    /// this test fails on a value mismatch against the expected "MixedCase" — not on a null check.
+    /// Unlike the server-side <c>AppendAsync</c>, this MCP <c>Append</c> persistent branch has no
+    /// rollback-capture read further down to overwrite <c>ReadSubject</c> with the corrected
+    /// casing, so nothing here masks the discriminator the way it does on the server side (see
+    /// <see cref="Scrinia.Server.Tests.MemoryOrchestratorAttributesTests"/> for that contrast). That
+    /// split is the whole point: on NTFS the outcome is unchanged and only the ordering is
+    /// observable.</para>
     /// </summary>
     [Fact]
     public async Task Append_UnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing()

@@ -255,13 +255,25 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
     /// proves the OUTCOME, but only where a case-sensitive directory is available (it skips
     /// otherwise, never silently passing).</para>
     ///
-    /// <para>Verified discriminating by running it: with the hoisted lookup moved back below the
-    /// artifact read, this test fails on <c>ResolvedName</c> ("mixedcase" reached the
-    /// caller's-casing seam). Note which assertion does the work — <c>ReadSubject</c> is NOT the
-    /// discriminator here, because the rollback capture further down <c>AppendAsync</c> calls
-    /// <c>ReadArtifactAsync(subject, scope)</c> with the canonical name as well, so it reads
-    /// "MixedCase" with or without the hoist. The assertion that cannot be satisfied by accident is
-    /// that <c>ResolveArtifactAsync</c> is never reached at all.</para>
+    /// <para><b>What a pure block-move revert does NOT discriminate:</b> moving the index-lookup
+    /// block back below the artifact read — leaving the case-insensitive comparison and the
+    /// <c>ReadArtifactAsync</c>/<c>ResolveArtifactAsync</c> split otherwise intact — leaves all
+    /// three assertions here green. <c>ReadSubject</c> is not the discriminator, because the
+    /// rollback capture further down <c>AppendAsync</c> calls <c>ReadArtifactAsync(subject, scope)</c>
+    /// again with the (by-then-corrected) canonical name, overwriting whatever the first read saw —
+    /// "MixedCase" either way. <c>ResolvedName</c> is not the discriminator either, despite an
+    /// earlier version of this comment claiming otherwise: for a non-ephemeral name,
+    /// <c>ResolveArtifactAsync</c> is never called at all, hoist or no hoist, so it stays
+    /// <c>null</c> regardless. <c>WrittenSubject</c> likewise ends up "MixedCase" either way, since
+    /// the existing-entry lookup always resolves before the write. Verified by running the suite
+    /// with exactly that block-move revert applied: none of the three assertions flip. This test's
+    /// content OUTCOME is what <see cref="Scrinia.Server.Tests.CaseSensitiveAppendTests"/> pins
+    /// instead (see above). A DIFFERENT and LARGER mutation — collapsing the persistent branch's
+    /// <c>ReadArtifactAsync(subject, scope)</c> back into the single unified
+    /// <c>ResolveArtifactAsync(name)</c> call the pre-refactor code used for every name — is what
+    /// would make <c>ResolvedName</c> fire; that is a distinct, bigger change than the hoist this
+    /// branch reverts, and a prior review certified this guard load-bearing under that larger
+    /// mutation. Both results are true; they are not about the same revert.</para>
     /// </summary>
     [Fact]
     public async Task AppendUnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing()
