@@ -5,7 +5,6 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

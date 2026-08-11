@@ -81,30 +81,24 @@ Left by `remote-write-correctness`. Small, and all in one blast radius.
 | The "Security headers" middleware sets headers by direct assignment and has the identical `Response.Clear()` wipe exposure Task 7 fixed for the version header — headers absent on a genuine 500 | `src/Scrinia.Server/Program.cs`; the proven one-liner (`Response.OnStarting`) is a few lines below it |
 | `Keywords` is never populated by the `LoadIndex` proxy because `ListApiItem` has no such field, so `MaintenanceEventSink` always sees null remotely | same gap `ListScoped` already had |
 
-## Group D — hygiene (OPEN, 5 items)
+## Group D — CLOSED on `closure-hygiene-rulings`, 2026-08-10.
 
-| Item | Verified at `d6fd830` |
-|---|---|
-| `cmds.txt` is untracked **and unignored** at the repo root — `git check-ignore` finds no rule. Every branch in this sequence has routed around it by staging explicit paths | confirmed |
-| `src/Scrinia.Core/FileMemoryStore.cs:3` — unnecessary `using System.Linq;` (CS8019/CS8933), invisible to the build because `EnforceCodeStyleInBuild` is unset and there is no `.editorconfig` | confirmed |
-| `FileLock.AcquireShared` does **four** filesystem ops per call: `Directory.Exists` at `:43`, then an **unconditional** `Directory.CreateDirectory` at `:51` redundant with it, then the open, then dispose. Removing the redundancy cuts the remaining cold-path cost | confirmed |
-| `CachedIndex.BuildNameMap` runs on every cache write to build a dictionary nobody reads. `NameToPosition`, `Rebuild()`, `GetOrComputeCorpusStats()` are documented as dead in code and docs but not deleted | documented on `store-read-path` |
-| **Live** docs still referencing the deleted `ScriniaArtifactStore`: `docs/architecture/cli.md` and `AGENTS.md`. **Do not touch** the 12 hits under `docs/planning/**` and `docs/superpowers/**` — those are dated records of past work, and rewriting history to match the present is how a project loses its audit trail | confirmed |
-
-Also: `tests/Scrinia.Tests/ScriniaMcpToolsTests.cs:265` cites
-`docs/superpowers/specs/2026-07-10-memory-model-keywords-attributes-design.md`, which does not
-exist and was never tracked.
+All five items fixed, plus the stray test citation: the `cmds.txt` ignore rule was added, the
+unnecessary `using System.Linq;` was removed, `FileLock.AcquireShared`'s redundant
+`Directory.CreateDirectory` was cut, `CachedIndex`'s unread members (`BuildNameMap`,
+`NameToPosition`, `Rebuild()`, `GetOrComputeCorpusStats()`) were deleted, and the live references
+to the deleted `ScriniaArtifactStore` in `docs/architecture/cli.md` and `AGENTS.md` were corrected.
+See `.superpowers/sdd/2026-08-10-closure-hygiene-rulings/task-{3,4,5}-report.md`.
 
 ## Group E — DECIDED 2026-08-10. All five ruled; none documented away.
 
 The user took the maximal option on every one. Nothing here closes with a written limitation;
 all five become work. **E2–E5 are design efforts, not fixes** — they need specs before plans.
 
-**E1 — RULED: "matched nothing" is NOT a success. Make it fail visibly on all three surfaces.**
-The warning envelope prints yellow, not green (`ScriniaCommands.Bundle.cs:62`, `:101`);
-`scri bundle import --topics doesnotexist` exits non-zero; `ImportBundle` stops returning 200 when
-`topicCount == 0`. Breaking for anything gating on exit 0 or HTTP 200 — needs a CHANGELOG entry
-saying so. This is the one Group E item that is a straightforward fix rather than a design.
+**E1 — CLOSED on `closure-hygiene-rulings`, 2026-08-10.** Fixed, not just ruled: the warning
+envelope now prints yellow, not green; `scri bundle import --topics doesnotexist` exits non-zero;
+`ImportBundle` returns `422` instead of `200` when `topicCount == 0`. Breaking change recorded in
+CHANGELOG.md. See `.superpowers/sdd/2026-08-10-closure-hygiene-rulings/task-{1,2}-report.md`.
 
 **E2 — RULED: design a resolvable addressing scheme.** `remote://{store}/{scope}/{name}` stops
 being a synthesized string nothing can dereference. Needs its own spec.
@@ -137,26 +131,28 @@ separate — how artifacts are *named and resolved*, not what the wire *carries*
 E3 is a different axis entirely: trust and where computation happens. Its own spec, its own
 brainstorm.
 
-## Group F — rule closed, do not carry (RULE, 6 items)
+## Group F — CLOSED on `closure-hygiene-rulings`, 2026-08-10.
 
-Each has been deliberately left with sound reasoning, more than once. Write the ruling into the
-code or docs where a future reader will hit it, then **delete the backlog entry**.
+Six items closed. Two were reclassified from RULE to fix — cheaper to fix than to explain:
 
-1. `tests/Scrinia.Tests/Benchmarks/ScriniaMemorySystem.cs:36,63` spell `Status == "error"` rather
-   than using `McpResponse.IsError`. Test-project code, deliberate, zero stray occurrences in
-   `src/`.
-2. `HttpMemoryStore.ListScoped`'s `scopes is not null` check drives *which URL is built*, not
-   whether an empty filter is appended — genuinely not the same inconsistency as the sibling that
-   was changed.
-3. CLI/HTTP divergence on bundle topic filters: `[FromQuery] string[]` binds repeated keys, the
-   CLI comma-splits. Both correct for their own surface; documented and pinned. Do not unify
-   without deciding which surface is canonical.
-4. `using Xunit;` in `tests/Scrinia.Server.Tests` files — that project has no `GlobalUsings.cs`,
-   so it is required, and in `tests/Scrinia.Tests` it is the 72-file house preamble.
-5. `Uri: ""` and `ChunkCount: 1` in the client's search-result `ArtifactEntry` — `Uri` is E2,
-   `ChunkCount` is E5. Tracked there, not separately.
-6. The `review` round-trip timestamp is tokenized into junk search terms (`00`, `0000000`, `2026`)
-   on **both** paths. Ranking noise, affects local equally, no data loss.
+- **F1** (fixed, not ruled): `tests/Scrinia.Tests/Benchmarks/ScriniaMemorySystem.cs:36,63` now use
+  `McpResponse.IsError` instead of hand-spelling `Status == "error"`.
+- **F4** (fixed, not ruled): `tests/Scrinia.Server.Tests/GlobalUsings.cs` added, matching
+  `tests/Scrinia.Tests`; the 30 individual `using Xunit;` lines it made redundant were removed.
+
+The remaining four were ruled — written into the code and docs where a future reader will hit
+them, not deleted from the record:
+
+- **F2**: `HttpMemoryStore.cs` — the `ListScoped` `scopes is not null` ruling, above the URL
+  construction.
+- **F3**: `docs/architecture/cli.md` — "Topic filters: CLI and HTTP differ deliberately", with
+  pointer comments at `ScriniaCommands.Bundle.cs` and `MemoryEndpoints.cs`.
+- **F5**: `HttpMemoryStore.cs` — the `Uri`/`ChunkCount` placeholder ruling at `BuildArtifactEntry`,
+  with pointer comments at the three other `ArtifactEntry` construction sites.
+- **F6**: `AttributeExtractor.cs` — the timestamp-tokenization ruling on `SeedTermFrequencies`'s
+  doc comment.
+
+See `.superpowers/sdd/2026-08-10-closure-hygiene-rulings/task-6-report.md`.
 
 ## Group G — genuinely unverified, must be checked before ruling (3 items)
 
@@ -190,24 +186,26 @@ Group E's answers turned three closure branches into **three closure branches pl
 designs**. The designs are the long pole; the closure work is ready now and should not wait on
 them.
 
+**Done:**
+
+- ~~Group F + Group D + E1~~ — closed on `closure-hygiene-rulings`, 2026-08-10. See the group
+  sections above.
+
 **Ready to execute (specs exist or none needed):**
 
-1. **Group F + Group D + E1** — one branch. Write the six standing rulings where a future reader
-   hits them, delete the backlog entries, do the five hygiene fixes, and make the bundle warning
-   fail visibly. Small, mechanical, one review. Shrinks the list fastest.
-2. **Group A — merge driver.** Spec exists (`2026-08-08-merge-driver-residuals-design.md`); its
+1. **Group A — merge driver.** Spec exists (`2026-08-08-merge-driver-residuals-design.md`); its
    facts are from `c3773bf` and must be re-verified first. Contains the `.gitignore`-clobbering
    `ConflictDir` bug and the `merge.config` round-trip test.
-3. **Group B — the sweep.** Spec exists (Part B of the store-read-path design), plus the five
+2. **Group B — the sweep.** Spec exists (Part B of the store-read-path design), plus the five
    coverage gaps this sequence added. Ranks the two cannot-fail tests first.
-4. **Group C** — folds into whichever remote branch runs first, or stands alone if none does soon.
+3. **Group C** — folds into whichever remote branch runs first, or stands alone if none does soon.
 
 **Needs a spec before a plan:**
 
-5. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
+4. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
    the wire. One spec, for the reason given above.
-6. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
-7. **Remote scoring surface (E3)** — start from the trust question.
+5. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
+6. **Remote scoring surface (E3)** — start from the trust question.
 
 **Group G** gets verified inside whichever branch touches its area. Each result either closes the
 item or produces exactly one new specced item — not a `/findings/` chunk.

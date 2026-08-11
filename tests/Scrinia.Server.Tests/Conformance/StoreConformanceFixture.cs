@@ -5,7 +5,6 @@ using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Server.Models;
 using Scrinia.Server.Services;
-using Xunit;
 
 namespace Scrinia.Server.Tests.Conformance;
 

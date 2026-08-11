@@ -10,7 +10,6 @@ using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

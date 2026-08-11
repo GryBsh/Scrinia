@@ -1,6 +1,5 @@
 using Scrinia.Server.Auth;
 using FluentAssertions;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

@@ -5,7 +5,6 @@ using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Server.Services;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

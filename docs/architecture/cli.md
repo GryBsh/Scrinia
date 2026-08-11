@@ -39,6 +39,16 @@ app.Run(args);
 - XML doc comment aliases must not duplicate auto-generated option names
 - Source generation happens at compile time; adding new commands requires rebuilding
 
+#### Topic filters: CLI and HTTP differ deliberately
+
+`scri bundle import --topics a,b` comma-splits one string. The HTTP endpoint binds
+`[FromQuery] string[] topics` and reads repeated keys — `?topics=a&topics=b`. Each follows its own
+surface's convention: comma-separated lists are idiomatic for a CLI flag, repeated keys are
+idiomatic for a query string and are what ASP.NET Core's model binder produces.
+
+This is not an inconsistency to unify. Unifying requires first deciding which surface is canonical,
+and neither has a claim over the other. Documented and pinned 2026-08-10.
+
 ## Workspace Discovery
 
 `WorkspaceSetup` handles workspace initialization:

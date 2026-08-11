@@ -210,6 +210,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             var e = kvp.Value;
             var artifactEntry = new ArtifactEntry(
                 Name: $"~{e.Name}",
+                // Uri and ChunkCount are placeholders on the remote path — see the note at
+                // BuildArtifactEntry for the two capability decisions that own them.
                 Uri: "",
                 OriginalBytes: e.OriginalBytes,
                 ChunkCount: e.ChunkCount,
@@ -343,6 +345,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
             foreach (var item in list.Memories)
             {
+                // Uri and ChunkCount are placeholders on the remote path — see the note at
+                // BuildArtifactEntry for the two capability decisions that own them.
                 result.Add(new ArtifactEntry(
                     Name: item.Name,
                     Uri: "",
@@ -443,6 +447,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             result.AddRange(ListEphemeral());
 
         // Fetch from server
+        // The `scopes is not null` test here selects WHICH URL is built — filtered or unfiltered —
+        // rather than whether an empty filter parameter gets appended to one. That makes it a
+        // different question from the sibling check that was changed to a whitespace test, and the
+        // two are not an inconsistency to reconcile. An empty-but-non-null `scopes` correctly
+        // produces `?scopes=`, which the server reads as "no scopes matched" — the same answer the
+        // caller asked for.
         string url = scopes is not null
             ? $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scopes)}"
             : $"{BaseUrl}/memories";
@@ -476,6 +486,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                     _ => $"local:{item.Scope}"
                 };
 
+                // Uri and ChunkCount are placeholders on the remote path — see the note at
+                // BuildArtifactEntry for the two capability decisions that own them.
                 var entry = new ArtifactEntry(
                     Name: item.Name,
                     Uri: "",
@@ -540,10 +552,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // scope label, not a memory) and never reaches this constructor, so there is no
             // topic-shaped value to invent here.
             //
-            // NOTE: two of ArtifactEntry's four constructor arguments are still fabricated —
-            // Uri: "" (making remote:// dereferenceable is a separate capability decision) and
-            // ChunkCount: 1 (wrong for any multi-chunk memory; needs its own wire field). Only
-            // OriginalBytes and CreatedAt were in scope for this fix.
+            // Uri: "" and ChunkCount: 1 are placeholders, not defects, and are not tracked
+            // separately from the two capability decisions that own them. A dereferenceable
+            // remote:// scheme is an addressing design (RULED 2026-08-10: build it); carrying real
+            // chunk structure across the wire is a wire-parity design (RULED 2026-08-10: send the
+            // chunks). Until those land, remote reads flatten to a single chunk and the URI has
+            // nothing to resolve against. Both are specced work, not backlog.
 
             if (item.Type == "chunk" && item.ChunkIndex.HasValue)
             {
@@ -587,6 +601,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// </summary>
     private static ArtifactEntry BuildArtifactEntry(SearchApiItem item, string subject) => new(
         Name: subject,
+        // Uri and ChunkCount are placeholders on the remote path — see the note at
+        // BuildArtifactEntry for the two capability decisions that own them.
         Uri: "",
         OriginalBytes: item.OriginalBytes!.Value,
         ChunkCount: 1,

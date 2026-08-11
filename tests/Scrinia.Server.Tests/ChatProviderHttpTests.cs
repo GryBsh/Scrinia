@@ -2,7 +2,6 @@ using System.Net;
 using FluentAssertions;
 using Scrinia.Core.Resilience;
 using Scrinia.Server.Chat.Providers;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 

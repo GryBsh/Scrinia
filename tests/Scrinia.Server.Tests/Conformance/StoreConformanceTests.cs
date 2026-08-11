@@ -1,7 +1,6 @@
 using FluentAssertions;
 using Scrinia.Core.Search;
 using Scrinia.Server.Services;
-using Xunit;
 
 namespace Scrinia.Server.Tests.Conformance;
 

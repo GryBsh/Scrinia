@@ -7,7 +7,6 @@ using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Scrinia.Mcp;
 using Scrinia.Server.Auth;
-using Xunit;
 
 namespace Scrinia.Server.Tests;
 
