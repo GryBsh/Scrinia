@@ -43,11 +43,13 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Scrinia.Retrieval.Benchmarks", "benchmarks\Scrinia.Retrieval.Benchmarks\Scrinia.Retrieval.Benchmarks.csproj", "{81B6FB04-39F3-4A8D-B081-6B28777A9D81}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{0275FFF7-1936-4882-AF78-4B4CE3792BF7}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Scrinia.Retrieval.Benchmarks.Tests", "tests\Scrinia.Retrieval.Benchmarks.Tests\Scrinia.Retrieval.Benchmarks.Tests.csproj", "{8143CF27-FFE9-4657-82A3-5A94975A03D9}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Scrinia.Benchmarks", "tests\Scrinia.Benchmarks\Scrinia.Benchmarks.csproj", "{3048C0F4-40C3-4D20-ABA0-46C5B2559A25}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Scrinia.TestDoubles", "tests\Scrinia.TestDoubles\Scrinia.TestDoubles.csproj", "{9C5977F4-5FA2-4875-809E-9CE32FB8659E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -251,6 +253,18 @@ Global
 		{3048C0F4-40C3-4D20-ABA0-46C5B2559A25}.Release|x64.Build.0 = Release|Any CPU
 		{3048C0F4-40C3-4D20-ABA0-46C5B2559A25}.Release|x86.ActiveCfg = Release|Any CPU
 		{3048C0F4-40C3-4D20-ABA0-46C5B2559A25}.Release|x86.Build.0 = Release|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Debug|x64.Build.0 = Debug|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Debug|x86.Build.0 = Debug|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Release|x64.ActiveCfg = Release|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Release|x64.Build.0 = Release|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Release|x86.ActiveCfg = Release|Any CPU
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -272,6 +286,7 @@ Global
 		{81B6FB04-39F3-4A8D-B081-6B28777A9D81} = {66320409-64EC-F7C5-3DEF-65E7510DAAD1}
 		{8143CF27-FFE9-4657-82A3-5A94975A03D9} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{3048C0F4-40C3-4D20-ABA0-46C5B2559A25} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{9C5977F4-5FA2-4875-809E-9CE32FB8659E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {78B6F1CF-8FB0-40CD-925A-F463A2E0BDDC}

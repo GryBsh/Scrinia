@@ -30,6 +30,7 @@
     <ProjectReference Include="..\..\src\Scrinia\Scrinia.csproj" />
     <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
     <ProjectReference Include="..\..\src\Scrinia.Merge\Scrinia.Merge.csproj" />
+    <ProjectReference Include="..\Scrinia.TestDoubles\Scrinia.TestDoubles.csproj" />
   </ItemGroup>
 
   <ItemGroup>

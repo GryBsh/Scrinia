@@ -2,6 +2,7 @@ using FluentAssertions;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Mcp;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests;
 

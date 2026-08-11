@@ -6,6 +6,7 @@ using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
 using Scrinia.Mcp;
+using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Tests;

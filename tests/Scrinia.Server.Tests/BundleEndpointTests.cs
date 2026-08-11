@@ -10,6 +10,7 @@ using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Server.Tests;
 
@@ -361,38 +362,5 @@ public sealed class NonLocalStoreServerFactory : WebApplicationFactory<Program>
 internal sealed class FakeNonLocalBackend : IStorageBackend
 {
     public string BackendId => "fake-non-local";
-    public IMemoryStore CreateStore(string storeName, string storePath) => new FakeNonLocalMemoryStore();
-}
-
-/// <summary>
-/// A do-nothing <see cref="IMemoryStore"/> that deliberately does NOT implement
-/// <see cref="ILocalMemoryStore"/> — the point of the double. Not shared with
-/// tests/Scrinia.Tests/FakeMemoryStore.cs: that type is internal to the Scrinia.Tests assembly
-/// and this test project has no visibility into it.
-/// </summary>
-internal sealed class FakeNonLocalMemoryStore : IMemoryStore
-{
-    public (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
-    public string FormatQualifiedName(string scope, string subject) => $"{scope}:{subject}";
-    public bool IsEphemeral(string name) => name.StartsWith('~');
-    public string SanitizeName(string name) => name;
-    public Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default) => Task.FromResult("");
-    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
-    public void Upsert(ArtifactEntry entry, string scope = "local") { }
-    public bool Remove(string name, string scope = "local") => false;
-    public List<ScopedArtifact> ListScoped(string? scopes = null) => [];
-    public IReadOnlyList<SearchResult> SearchAll(SearchQuery query) => [];
-    public void RememberEphemeral(string key, EphemeralEntry entry) { }
-    public bool ForgetEphemeral(string key) => false;
-    public EphemeralEntry? GetEphemeral(string key) => null;
-    public bool CopyMemory(string src, string dst, bool overwrite, out string message) { message = ""; return false; }
-    public void ArchiveVersion(string subject, string scope = "local") { }
-    public string ArtifactUri(string name, string scope = "local") => "";
-    public Task WriteArtifactAsync(string subject, string scope, string artifactText,
-        ArtifactWriteMetadata? meta = null, CancellationToken ct = default) => Task.CompletedTask;
-    public Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
-    public bool DeleteArtifact(string subject, string scope) => false;
-    public string[] DiscoverTopics() => [];
-    public List<TopicInfo> GatherTopicInfos(string? scopes = null) => [];
-    public IReadOnlyList<string> ResolveReadScopes(string? scopes = null) => ["local"];
+    public IMemoryStore CreateStore(string storeName, string storePath) => new FakeMemoryStore();
 }
