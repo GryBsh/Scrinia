@@ -27,6 +27,29 @@ public class StorePurityInvariantTests
         string memories = store.GetStoreDirForScope("local");
         Directory.EnumerateFiles(memories, "*.md", SearchOption.AllDirectories)
             .Should().BeEmpty(because: "hand-authored Markdown never enters the store");
+
+        // The other half of the class doc's invariant: every .meta.json under a store scope
+        // directory must be traceable to a real NMP/2 index entry for that scope. This is the
+        // exact expected-names set SaveIndex's orphan sweep computes for itself (FileMemoryStore,
+        // SaveIndexUnsafe: SanitizeName(entry.Name) + ".meta.json" for each entry currently in
+        // that scope's index) — mirroring it here means a foreign sidecar the sweep would delete
+        // is exactly what this assertion flags. A blanket "no .meta.json" check would be wrong:
+        // legitimate NMP/2 sidecars (like "note.meta.json" below) belong here.
+        foreach (string metaFile in Directory.EnumerateFiles(memories, "*.meta.json", SearchOption.AllDirectories))
+        {
+            string relativeDir = Path.GetRelativePath(memories, Path.GetDirectoryName(metaFile)!);
+            string scopeName = relativeDir == "."
+                ? "local"
+                : "local:" + relativeDir.Replace(Path.DirectorySeparatorChar, '/');
+
+            var expectedSidecars = new HashSet<string>(
+                store.LoadIndex(scopeName).Select(e => store.SanitizeName(e.Name) + ".meta.json"),
+                StringComparer.OrdinalIgnoreCase);
+
+            expectedSidecars.Should().Contain(Path.GetFileName(metaFile),
+                because: $"a foreign sidecar in scope \"{scopeName}\" is exactly what SaveIndex's " +
+                         "orphan sweep would delete");
+        }
     }
 
     [Theory]
