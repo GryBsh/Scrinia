@@ -1169,8 +1169,53 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     public bool DeleteArtifact(string subject, string scope)
     {
         string path = ArtifactPath(subject, scope);
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path))
+        {
+            // RULING (remote-mode-leftovers, final fixes, Finding 2): this fallback is the exact
+            // counterpart of the one in Remove above, and like it, nothing on this host can pin it.
+            //
+            // forget() calls Remove and DeleteArtifact as a pair (MemoryTools.Core.cs, and
+            // MemoryOrchestrator.ForgetAsync). Remove's name match is case-insensitive; this one was
+            // not. On a case-sensitive filesystem forget("mixedcase") against a memory stored as
+            // "MixedCase" therefore returned removed=true, deleted=false — the caller reported
+            // "Forgot: mixedcase." and the server answered success, while MixedCase.nmp2 stayed on
+            // disk with its sidecar gone: orphaned, unreachable through list() or search(), and
+            // invisible to the next forget(). Before the sidecar lookup became case-insensitive both
+            // halves returned false and the user got a clean "no artifact found"; fixing one half
+            // and not the other turned a correct no-op into a partial delete reported as success.
+            //
+            // Fixed here rather than at the three forget() call sites: DeleteArtifact is a public
+            // store primitive, the pairing with Remove is what has to agree, and the file:// forget
+            // path (MemoryTools.Core.cs) sweeps every read scope with a name taken from a URI and
+            // has no entry in hand to canonicalize from. Aligning the primitive fixes all callers,
+            // including any added later; canonicalizing at call sites fixes only the ones edited.
+            //
+            // Why nothing here can pin it: NTFS folds case, so the probe above always succeeds on
+            // this host and this branch is never entered — a green test written here would be green
+            // for the filesystem's reasons, not this code's. Running the suite on a case-sensitive
+            // filesystem is what would observe it; the project's CI runs ubuntu-latest.
+            //
+            // Tie-break: identical to Remove's, and it matters for the same reason — this is a
+            // delete, a case-sensitive filesystem holding pre-branch data can hold both
+            // "Note.nmp2" and "note.nmp2", and this branch is only entered when the caller asked
+            // for neither exactly. Directory enumeration order is not guaranteed, so candidates are
+            // sorted ordinally and the first is taken. Ordinal sort puts uppercase first, so
+            // "Note.nmp2" wins over "note.nmp2" — the same coin, decided the same way, as Remove's.
+            string dir = Path.GetDirectoryName(path)!;
+            string wanted = Path.GetFileName(path);
+            string? actual = Directory.Exists(dir)
+                ? Directory.EnumerateFiles(dir, "*.nmp2")
+                    .Where(p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(p => p, StringComparer.Ordinal)
+                    .FirstOrDefault()
+                : null;
+            if (actual is null) return false;
+            path = actual;
+        }
+
         File.Delete(path);
+        // Invalidate covers the differently-cased key too: ArtifactLruCache.Invalidate matches its
+        // prefix with OrdinalIgnoreCase, and read keys are "{scope}|{subject}|{ticks}".
         _artifactCache.Invalidate($"{scope}|{subject}|");
         return true;
     }
