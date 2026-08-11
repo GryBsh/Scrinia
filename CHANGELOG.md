@@ -154,6 +154,17 @@ and all assembly attributes.
   *Ruling: re-storing under a different casing is an update, so there is no longer any route to
   change a memory's name casing through `remember()`. That is intended — casing renames are not a
   `remember()` capability, and the old behaviour was an accident of the defect, not a feature.*
+- `copy()` to a *destination* named in a different casing now reports the collision instead of
+  creating a second memory. The destination check asked the filesystem
+  (`File.Exists(ArtifactPath(...))`), which folds case on an ordinary NTFS volume and does not
+  elsewhere — so on a case-sensitive filesystem, copying onto `Archive` while `archive` existed saw
+  no collision and wrote a second memory, and with `overwrite: true` wrote a twin rather than
+  replacing. The destination is now resolved through the index and adopts the existing memory's
+  casing, so the bytes land on the memory that is already there and it keeps its own name.
+  *Ruling: `archive` and `Archive` are one memory.* The alternative — case-sensitive names
+  throughout — is a coherent design, but it is a storage-format decision (two names differing only
+  in case need two files, which an ordinary NTFS volume cannot hold), not a change to this check.
+  This was the last open site of the class.
 - `copy()` from a source named in a different casing now carries the source's metadata. It resolved
   the source *file* case-insensitively (the filesystem did it) but its *entry* ordinally, so the
   copy silently took the synthesized-defaults branch: destination created, bytes intact, attributes

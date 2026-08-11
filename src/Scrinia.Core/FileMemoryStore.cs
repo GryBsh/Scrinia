@@ -1655,6 +1655,27 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
         // Persistent → Persistent
         var (persistDstScope, persistDstSubject) = ParseQualifiedName(dstKey);
+
+        // Resolve the DESTINATION through the index and adopt its casing, exactly as the source side
+        // does above — and for the same reason, which is not only the comparison. `persistDstSubject`
+        // decides three things: whether the existence check below sees a collision, where the bytes
+        // land, and what the new entry is called. This check used to ask the filesystem
+        // (`File.Exists(ArtifactPath(...))`), which reads case-insensitively on an ordinary NTFS
+        // volume and case-sensitively elsewhere; on a case-sensitive filesystem, copying onto
+        // "Archive" while "archive" existed reported no collision and wrote a SECOND memory, and
+        // with overwrite=true wrote a twin instead of replacing. Fixing only the check would have
+        // left the twin. The memory that already exists keeps its own casing, as every other
+        // resolved name in this store now does.
+        //
+        // This settles the last open question of the case-sensitivity class: "archive" and "Archive"
+        // are ONE memory. The alternative — case-sensitive names everywhere — is a coherent design,
+        // but it is a storage-format decision (two names differing only in case need two files, which
+        // an ordinary NTFS volume cannot hold), not a change to this line.
+        ArtifactEntry? destinationExisting = LoadIndex(persistDstScope).FirstOrDefault(
+            e => e.Name.Equals(persistDstSubject, StringComparison.OrdinalIgnoreCase));
+        if (destinationExisting is not null)
+            persistDstSubject = destinationExisting.Name;
+
         string destPathP = ArtifactPath(persistDstSubject, persistDstScope);
         if (File.Exists(destPathP) && !overwrite)
         {
