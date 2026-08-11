@@ -29,13 +29,25 @@ public sealed class FileLock : IDisposable
     /// Retries with exponential backoff up to <paramref name="timeout"/>.
     /// </summary>
     public static FileLock AcquireExclusive(string lockPath, TimeSpan? timeout = null, ILogger? logger = null)
-        => Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, timeout ?? TimeSpan.FromSeconds(5), logger);
+    {
+        // Writers create the directory; readers do not. An exclusive lock guards a write, and the
+        // write needs somewhere to land. AcquireShared has already returned a lock over nothing if
+        // the directory is missing, so this call was pure cost on every cold read.
+        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
+        return Acquire(lockPath, FileAccess.ReadWrite, FileShare.None, timeout ?? TimeSpan.FromSeconds(5), logger);
+    }
 
     /// <summary>
     /// Acquires a shared lock for read operations. Multiple shared locks can coexist.
     ///
     /// <para>When the lock's directory does not exist there is nothing to read and nothing to
     /// guard, so this returns a lock over nothing rather than creating the directory.</para>
+    ///
+    /// <para>If the directory is deleted between that check and the open, the open throws
+    /// <see cref="DirectoryNotFoundException"/> — an <see cref="IOException"/>, so the retry loop
+    /// below retries it to timeout rather than recreating the directory. That is intended: a store
+    /// directory vanishing under an in-flight read is a torn state, and failing loudly beats
+    /// silently resurrecting a directory the caller never asked for.</para>
     /// </summary>
     public static FileLock AcquireShared(string lockPath, TimeSpan? timeout = null, ILogger? logger = null)
     {
@@ -48,8 +60,6 @@ public sealed class FileLock : IDisposable
 
     private static FileLock Acquire(string lockPath, FileAccess access, FileShare share, TimeSpan timeout, ILogger? logger)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(lockPath)!);
-
         ILogger log = logger ?? DefaultLogger;
         var sw = Stopwatch.StartNew();
         int delayMs = 10;
