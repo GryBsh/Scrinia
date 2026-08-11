@@ -193,4 +193,88 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
         (mentions ?? []).Should().NotContain("jolene",
             because: "a keyword-routed typed attribute must not also be left as an untyped mention");
     }
+
+    /// <summary>
+    /// Records which artifact-read seam <see cref="MemoryOrchestrator.AppendAsync"/> reached for,
+    /// and under which name. Holds one entry called "MixedCase" and returns a real two-chunk NMP/2
+    /// artifact so the append proceeds past its create-new branch.
+    /// </summary>
+    private sealed class CasingRecordingStore : Scrinia.TestDoubles.FakeMemoryStore
+    {
+        public static readonly ArtifactEntry Seeded = new(
+            Name: "MixedCase",
+            Uri: "",
+            OriginalBytes: 24,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UnixEpoch);
+
+        public string? ReadSubject { get; private set; }
+        public string? ResolvedName { get; private set; }
+        public string? WrittenSubject { get; private set; }
+
+        public override IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [Seeded];
+
+        private static string OneChunk() =>
+            Scrinia.Core.Encoding.Nmp2ChunkedEncoder.Encode("the first body");
+
+        public override Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
+        {
+            ReadSubject = subject;
+            return Task.FromResult(OneChunk());
+        }
+
+        public override Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default)
+        {
+            ResolvedName = nameOrArtifact;
+            return Task.FromResult(OneChunk());
+        }
+
+        public override Task WriteArtifactAsync(string subject, string scope, string artifactText,
+            ArtifactWriteMetadata? meta = null, CancellationToken ct = default)
+        {
+            WrittenSubject = subject;
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// The ORDERING guard for <see cref="MemoryOrchestrator.AppendAsync"/>: the index lookup must
+    /// run BEFORE the artifact read, and the read must be given the entry's own casing.
+    ///
+    /// <para>This asserts the order rather than the outcome, deliberately. The defect it guards —
+    /// an append that resolves on the caller's casing, misses on a case-sensitive filesystem, falls
+    /// through to <see cref="MemoryOrchestrator.StoreAsync"/>, and there lands on the existing
+    /// memory (that lookup IS case-insensitive) and replaces its content with the appended chunk
+    /// alone — cannot be reproduced on NTFS at all, because <c>File.Exists</c> folds case and the
+    /// read succeeds either way. An outcome assertion ("append under a mismatched casing appends")
+    /// is green with and without the hoist and proves nothing. The order is observable here and
+    /// nowhere else on this host; a case-sensitive filesystem (the project's CI runs
+    /// <c>ubuntu-latest</c>) is what would observe the outcome.</para>
+    ///
+    /// <para>Verified discriminating by running it: with the hoisted lookup moved back below the
+    /// artifact read, this test fails on <c>ResolvedName</c> ("mixedcase" reached the
+    /// caller's-casing seam). Note which assertion does the work — <c>ReadSubject</c> is NOT the
+    /// discriminator here, because the rollback capture further down <c>AppendAsync</c> calls
+    /// <c>ReadArtifactAsync(subject, scope)</c> with the canonical name as well, so it reads
+    /// "MixedCase" with or without the hoist. The assertion that cannot be satisfied by accident is
+    /// that <c>ResolveArtifactAsync</c> is never reached at all.</para>
+    /// </summary>
+    [Fact]
+    public async Task AppendUnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing()
+    {
+        var recording = new CasingRecordingStore();
+
+        var result = await MemoryOrchestrator.AppendAsync(recording, "mixedcase", "the appended body");
+
+        recording.ReadSubject.Should().Be("MixedCase",
+            because: "the index lookup must run first and hand its entry's own casing to the read — " +
+                     "resolving on the caller's casing is what makes this append a replace on a " +
+                     "case-sensitive filesystem");
+        recording.ResolvedName.Should().BeNull(
+            because: "the caller's-casing resolve is the seam that missed; nothing must reach it");
+        recording.WrittenSubject.Should().Be("MixedCase",
+            because: "the canonical casing has to carry through to the write as well as the read");
+        result.ChunkCount.Should().Be(2,
+            because: "the real append path ran — the create-new path would have written one chunk");
+    }
 }

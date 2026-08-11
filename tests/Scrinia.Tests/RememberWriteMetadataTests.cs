@@ -100,8 +100,9 @@ public class RememberWriteMetadataTests
         private static string TwoChunks() =>
             Scrinia.Core.Encoding.Nmp2ChunkedEncoder.EncodeChunks(["first chunk", "second chunk"]);
 
-        // Both: append resolves the existing artifact through ResolveArtifactAsync, compact reads
-        // it through ReadArtifactAsync.
+        // Both: compact reads the existing artifact through ReadArtifactAsync, and append does too
+        // for a persistent name (it takes ResolveArtifactAsync only for an ephemeral one). Both are
+        // overridden so this double keeps working whichever seam a caller reaches for.
         public override Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default) =>
             Task.FromResult(TwoChunks());
 
@@ -144,6 +145,89 @@ public class RememberWriteMetadataTests
         recording.LastMeta.Keywords.Should().Contain("portcullis");
         recording.LastMeta.Description.Should().Be("a curated description",
             because: "an append with no new description preserves the curated one");
+    }
+
+    /// <summary>
+    /// Records which artifact-read seam <c>append()</c> reached for, and under which name. Holds
+    /// one entry called "MixedCase" and returns a real single-chunk NMP/2 artifact so the append
+    /// proceeds past its create-new branch.
+    /// </summary>
+    private sealed class CasingRecordingStore : FakeMemoryStore
+    {
+        public static readonly ArtifactEntry Seeded = new(
+            Name: "MixedCase",
+            Uri: "",
+            OriginalBytes: 24,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UnixEpoch);
+
+        public string? ReadSubject { get; private set; }
+        public string? ResolvedName { get; private set; }
+        public string? WrittenSubject { get; private set; }
+
+        public override IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [Seeded];
+
+        private static string OneChunk() =>
+            Scrinia.Core.Encoding.Nmp2ChunkedEncoder.Encode("the first body");
+
+        public override Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)
+        {
+            ReadSubject = subject;
+            return Task.FromResult(OneChunk());
+        }
+
+        public override Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default)
+        {
+            ResolvedName = nameOrArtifact;
+            return Task.FromResult(OneChunk());
+        }
+
+        public override Task WriteArtifactAsync(string subject, string scope, string artifactText,
+            ArtifactWriteMetadata? meta = null, CancellationToken ct = default)
+        {
+            WrittenSubject = subject;
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// The ORDERING guard for the MCP <c>append()</c> persistent branch: the index lookup must run
+    /// BEFORE the artifact read, and the read must be given the entry's own casing.
+    ///
+    /// <para>This asserts the order rather than the outcome, deliberately. The defect it guards —
+    /// an append that resolves on the caller's casing, misses on a case-sensitive filesystem, falls
+    /// through to the <c>Remember()</c> create path, and there lands on the existing memory (that
+    /// lookup IS case-insensitive) and replaces its content with the appended chunk alone — cannot
+    /// be reproduced on NTFS at all, because <c>File.Exists</c> folds case and the read succeeds
+    /// either way. An outcome assertion ("append under a mismatched casing appends") is green with
+    /// and without the hoist and proves nothing. The order is observable here and nowhere else on
+    /// this host; a case-sensitive filesystem (the project's CI runs <c>ubuntu-latest</c>) is what
+    /// would observe the outcome.</para>
+    ///
+    /// <para>Verified discriminating by running it: with the hoisted lookup moved back below the
+    /// artifact read — and the case-insensitive comparison left intact, so only the ORDER changes —
+    /// <c>ReadSubject</c> is never set and this test fails on null, while the behavioural guard
+    /// <c>ScriniaMcpToolsTests.Append_UnderADifferentCasing_PreservesCreatedAtAndCarriesTheChunks
+    /// Forward</c> stays green. That split is the whole point: on NTFS the outcome is unchanged and
+    /// only the ordering is observable.</para>
+    /// </summary>
+    [Fact]
+    public async Task Append_UnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var recording = new CasingRecordingStore();
+        MemoryStoreContext.Current = recording;
+
+        await new ScriniaMcpTools().MemoryAppend(path: "mixedcase", content: "an appended chunk");
+
+        recording.ReadSubject.Should().Be("MixedCase",
+            because: "the index lookup must run first and hand its entry's own casing to the read — " +
+                     "resolving on the caller's casing is what makes this append a replace on a " +
+                     "case-sensitive filesystem");
+        recording.ResolvedName.Should().BeNull(
+            because: "the caller's-casing resolve is the seam that missed; nothing must reach it");
+        recording.WrittenSubject.Should().Be("MixedCase",
+            because: "the canonical casing has to carry through to the write as well as the read");
     }
 
     /// <summary>

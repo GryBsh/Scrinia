@@ -1058,10 +1058,53 @@ public sealed partial class ScriniaMcpTools
     {
         var store = CurrentStore;
 
+        bool ephemeral = store.IsEphemeral(name);
+
+        // RULING (remote-mode-leftovers, final fixes, Finding 1): the index lookup below is
+        // HOISTED ABOVE the artifact read deliberately, and the ORDER is the fix. Nothing on this
+        // host can observe the defect it closes.
+        //
+        // What it prevents: the read used to run on the caller's casing. SanitizeName does not fold
+        // case, so on a case-sensitive filesystem append("mixedcase", ...) against a memory stored
+        // as "MixedCase" got FileNotFoundException, fell through to the Remember() create path
+        // below, and remember()'s own lookup — which this branch made case-insensitive — then found
+        // "MixedCase", archived it, and replaced its content with the appended chunk alone.
+        // append() silently behaving as replace(). Resolving identity from the index FIRST and
+        // reading with the entry's own casing means the read succeeds and the real append runs.
+        //
+        // Why nothing here can pin it: NTFS folds case in File.Exists, so on this host the read
+        // succeeded either way and the defect never occurred. A test asserting "append under a
+        // mismatched casing appends" is green with or without this hoist. What DOES discriminate on
+        // this host is the ordering itself — Append_UnderADifferentCasing_ReadsTheArtifactUnderThe
+        // EntrysOwnCasing (tests/Scrinia.Tests/RememberWriteMetadataTests.cs) records the subject
+        // handed to ReadArtifactAsync and fails if the hoist is removed. What would observe the
+        // defect end-to-end is running the suite on a case-sensitive filesystem; the project's own
+        // CI runs ubuntu-latest.
+        //
+        // Ephemeral names keep ResolveArtifactAsync: they live in an in-memory dictionary, not on
+        // disk, there is no index entry to resolve identity from, and its "~key" branch is the only
+        // thing that reads them. Non-ephemeral names now take ReadArtifactAsync(subject, scope) so
+        // the canonical name travels as (scope, subject) rather than through a FormatQualifiedName
+        // round trip; HttpMemoryStore.ReadArtifactAsync is a thin wrapper over ResolveArtifactAsync,
+        // so remote behaviour is unchanged.
+        string scope = "";
+        string subject = "";
+        ArtifactEntry? existingEntry = null;
+        if (!ephemeral)
+        {
+            (scope, subject) = store.ParseQualifiedName(name);
+            existingEntry = store.LoadIndex(scope).FirstOrDefault(
+                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            if (existingEntry is not null)
+                subject = existingEntry.Name;
+        }
+
         string? existingArtifact = null;
         try
         {
-            existingArtifact = await store.ResolveArtifactAsync(name, cancellationToken);
+            existingArtifact = ephemeral
+                ? await store.ResolveArtifactAsync(name, cancellationToken)
+                : await store.ReadArtifactAsync(subject, scope, cancellationToken);
         }
         catch (FileNotFoundException)
         {
@@ -1117,7 +1160,7 @@ public sealed partial class ScriniaMcpTools
         // which would reparse to the wrong scope for any v1-namespaced topic.
         string sinkQualifiedName;
 
-        if (store.IsEphemeral(name))
+        if (ephemeral)
         {
             string key = MemoryNaming.StripEphemeralPrefix(name);
             var existingEph = store.GetEphemeral(key);
@@ -1163,17 +1206,10 @@ public sealed partial class ScriniaMcpTools
         }
         else
         {
-            var (scope, subject) = store.ParseQualifiedName(name);
-
-            // Check existing entry for versioning + timestamps.
-            // Case-insensitive match plus canonical-casing carry-forward — same class as the
-            // remember() path above.
-            var existingEntries = store.LoadIndex(scope);
-            var existingEntry = existingEntries.FirstOrDefault(
-                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-            if (existingEntry is not null)
-                subject = existingEntry.Name;
-
+            // `scope`, `subject` and `existingEntry` were resolved at the top of this method — the
+            // case-insensitive match and the canonical-casing carry-forward both live there now,
+            // because the artifact read needs the canonical name too. Same class as the remember()
+            // path above; the entry supplies versioning + timestamps below.
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
 
             // Merge 3 Task 2b: new description wins; otherwise preserve the existing entry's

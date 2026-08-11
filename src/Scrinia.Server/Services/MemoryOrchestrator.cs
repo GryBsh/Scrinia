@@ -186,10 +186,57 @@ public static class MemoryOrchestrator
     public static async Task<AppendResponse> AppendAsync(
         IMemoryStore store, string name, string content, CancellationToken ct = default)
     {
+        bool ephemeral = store.IsEphemeral(name);
+
+        // RULING (remote-mode-leftovers, final fixes, Finding 1): the index lookup below is
+        // HOISTED ABOVE the artifact read deliberately, and the ORDER is the fix. Nothing on this
+        // host can observe the defect it closes.
+        //
+        // What it prevents: the read used to run on the caller's casing. SanitizeName does not fold
+        // case, so on a case-sensitive filesystem append("mixedcase", ...) against a memory stored
+        // as "MixedCase" got FileNotFoundException, fell through to the store path below, and that
+        // path's lookup — which this branch made case-insensitive — then found "MixedCase" and
+        // overwrote it with the appended chunk alone. append() silently behaving as replace().
+        // Resolving identity from the index FIRST and reading with the entry's own casing means the
+        // read succeeds and the real append path runs.
+        //
+        // Why nothing here can pin it: NTFS folds case in File.Exists, so on this host the read
+        // succeeded either way and the defect never occurred. A test asserting "append under a
+        // mismatched casing appends" is green with or without this hoist. What DOES discriminate on
+        // this host is the ordering itself — AppendUnderADifferentCasing_ReadsTheArtifactUnderThe
+        // EntrysOwnCasing (tests/Scrinia.Server.Tests/MemoryOrchestratorAttributesTests.cs) records
+        // which read seam was reached and under which name, and goes red if the hoist is removed.
+        // Its load-bearing assertion is that ResolveArtifactAsync is NEVER reached: the rollback
+        // capture further down this method calls ReadArtifactAsync(subject, scope) too, so
+        // "ReadArtifactAsync saw the canonical name" is satisfied either way and cannot be the
+        // discriminator here. Verified by removing the hoist and watching it fail on that
+        // assertion. What would observe the defect end-to-end is running the suite on a
+        // case-sensitive filesystem; the project's own CI runs ubuntu-latest.
+        //
+        // Ephemeral names keep ResolveArtifactAsync: they live in an in-memory dictionary, not on
+        // disk, there is no index entry to resolve identity from, and its "~key" branch is the only
+        // thing that reads them. Non-ephemeral names now take ReadArtifactAsync(subject, scope) so
+        // the canonical name travels as (scope, subject) rather than through a FormatQualifiedName
+        // round trip — same call EmbeddingReindexer makes, and HttpMemoryStore.ReadArtifactAsync is
+        // a thin wrapper over ResolveArtifactAsync, so remote behaviour is unchanged.
+        string scope = "";
+        string subject = "";
+        ArtifactEntry? existingEntry = null;
+        if (!ephemeral)
+        {
+            (scope, subject) = store.ParseQualifiedName(name);
+            existingEntry = store.LoadIndex(scope).FirstOrDefault(
+                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            if (existingEntry is not null)
+                subject = existingEntry.Name;
+        }
+
         string? existingArtifact = null;
         try
         {
-            existingArtifact = await store.ResolveArtifactAsync(name, ct);
+            existingArtifact = ephemeral
+                ? await store.ResolveArtifactAsync(name, ct)
+                : await store.ReadArtifactAsync(subject, scope, ct);
         }
         catch (FileNotFoundException)
         {
@@ -233,7 +280,7 @@ public static class MemoryOrchestrator
 
         string qualifiedName;
 
-        if (store.IsEphemeral(name))
+        if (ephemeral)
         {
             string key = MemoryNaming.StripEphemeralPrefix(name);
             var existingEph = store.GetEphemeral(key);
@@ -267,16 +314,11 @@ public static class MemoryOrchestrator
         }
         else
         {
-            var (scope, subject) = store.ParseQualifiedName(name);
-            var existingEntries = store.LoadIndex(scope);
-            // Case-insensitive match plus canonical-casing carry-forward — see StoreAsync above
-            // for why both halves are needed. Here the loss was every value the append carries
-            // over: the prior chunk entries, the merged attributes, the curated preview.
-            var existingEntry = existingEntries.FirstOrDefault(
-                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-            if (existingEntry is not null)
-                subject = existingEntry.Name;
-
+            // `scope`, `subject` and `existingEntry` were resolved at the top of this method — the
+            // case-insensitive match and the canonical-casing carry-forward both live there now,
+            // because the artifact read needs the canonical name too. See StoreAsync above for why
+            // both halves are needed; here the loss was every value the append carries over: the
+            // prior chunk entries, the merged attributes, the curated preview.
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
             ChunkEntry[] updatedChunks = existingEntry?.ChunkEntries is not null
                 ? [.. existingEntry.ChunkEntries, newChunkEntry]
