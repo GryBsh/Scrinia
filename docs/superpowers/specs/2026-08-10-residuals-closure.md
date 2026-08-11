@@ -1,6 +1,6 @@
 # Residuals Closure — the backlog stops rotating here
 
-**Status:** inventory, awaiting scope decision.
+**Status:** closure in progress — Groups A–D and F closed; E decided; three designs outstanding.
 **Supersedes as the working list:** `2026-08-08-residuals-triage.md` (the 35-item inventory that
 started this sequence).
 
@@ -117,10 +117,10 @@ The ten: the interface default (`src/Scrinia.Core/IMemoryStore.cs:50`), the remo
 (`src/Scrinia/HttpMemoryStore.cs:411`), `EntityTypingEventHandler`'s own upstream lookup
 (`src/Scrinia/Services/EntityTypingEventHandler.cs:43-44`),
 `MemoryOrchestrator.StoreAsync` (`src/Scrinia.Server/Services/MemoryOrchestrator.cs:124-127`) and
-`AppendAsync` (`:275-278`), the two MCP write paths (`src/Scrinia.Mcp/MemoryTools.Core.cs:323-326`
-and `:1172-1175`), `compact()` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:583-586`), and
+`AppendAsync` (`:228-231`), the two MCP write paths (`src/Scrinia.Mcp/MemoryTools.Core.cs:323-326`
+and `:1096-1099`), `compact()` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:583-586`), and
 `FileMemoryStore.CopyMemory`'s two ordinal source lookups, now one lookup taken before the
-artifact path is built (`src/Scrinia.Core/FileMemoryStore.cs:1569-1572`).
+artifact path is built (`src/Scrinia.Core/FileMemoryStore.cs:1614-1617`).
 
 **Three of the ten lost data silently, and each deserves naming:**
 
@@ -207,30 +207,72 @@ feature. In CHANGELOG.md.
   seven.
 - **The plan told an implementer to pin the append defect via the wire's `chunkCount`, which
   cannot observe it.** `chunkCount` is derived from the appended artifact
-  (`MemoryOrchestrator.cs:209`), never from `existingEntry`, so the prescribed `ChunkCount == 2`
+  (`MemoryOrchestrator.cs:256`), never from `existingEntry`, so the prescribed `ChunkCount == 2`
   assertion passed *before* the fix. What a null `existingEntry` actually loses is `ChunkEntries`,
   which is not a wire field at all. The implementer caught this by measuring rather than working
   around it, and re-aimed the guard at `Attributes` and `CreatedAt`, which do fail pre-fix.
 
-**Two same-class sites deliberately not fixed. These are open decisions awaiting an answer, not
-deferrals** — this branch's standing rule forbids writing new deferred followups, and neither of
-these is one:
+**One same-class site deliberately not fixed. It is an open decision awaiting an answer, not a
+deferral** — this branch's standing rule forbids writing new deferred followups, and this is not
+one:
 
 1. **`CopyMemory`'s *destination* existence check is still filesystem-case-dependent**
-   (`src/Scrinia.Core/FileMemoryStore.cs:1608`). There is no existing case-insensitive lookup to
+   (`src/Scrinia.Core/FileMemoryStore.cs:1653`). There is no existing case-insensitive lookup to
    align it with, and the right answer is a product call, not an implementer's: is a
    case-differing destination "already exists", or a distinct memory? **Needs a decision.**
-2. **`Compact` and `AppendAsync` resolve the artifact on the caller's casing before the entry
-   lookup** (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:520` ahead of `:583`;
-   `src/Scrinia.Server/Services/MemoryOrchestrator.cs:192` ahead of `:275`). Both fail *closed* on
-   a case-sensitive filesystem — not-found, or create-new — so there is no data loss, but it is the
-   same shape as the ten and should be settled rather than rediscovered. **Needs a decision.**
 
-Suite went 1849 → 1864, zero failures throughout.
+**A second open decision was recorded here and has since been closed by fixing it, because the
+claim underneath it was false.** It read: "`Compact` and `AppendAsync` resolve the artifact on the
+caller's casing before the entry lookup … Both fail *closed* on a case-sensitive filesystem —
+not-found, or create-new — so there is no data loss." The whole-branch review disproved the append
+half. "Create-new" does not create anything new: `append()` fell through to the store/`Remember`
+path, whose lookup **this branch had just made case-insensitive**, which found the existing memory,
+archived it, and wrote the appended chunk alone as the memory's entire content. `append()` behaved
+as `replace()` — and that was a regression this branch introduced, since before it the fallback's
+lookup was ordinal too and the miss produced a harmless duplicate instead. Both append
+implementations now take the entry lookup **before** the artifact read and read under the entry's
+own casing; see the "Fixed — a re-store under a different casing…" section of CHANGELOG.md.
+
+`Compact` was checked at the same time and does genuinely fail closed: its
+`ReadArtifactAsync` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:520`) returns a `NotFound` error
+response and the method changes nothing — no archive, no write. Left as it is, deliberately. The
+residual is that on a case-sensitive filesystem `compact('mixedcase')` answers "not found" for a
+memory that exists, and its own case-insensitive lookup at `:583-584` is then unreachable. That is
+a wrong answer, not a lost one.
+
+Suite went 1849 → 1867, zero failures throughout.
 
 See commits `f79dde1`, `b96b7d1`, `b6e2ce6`, `e8c2e25`, `64911b5`, `66d31c3`, `7898ed7` on
 `remote-mode-leftovers`, and the plan at
 `docs/superpowers/plans/2026-08-11-remote-mode-leftovers.md`.
+
+**The whole-branch review found three things the five per-task reviews structurally could not, and
+they are fixed in `706b3e7`, `588e03a`, `37b5bea`, `860c624`.** Two of the twelve fixes were halves
+whose other half nobody owned, and one of those was a regression this branch introduced:
+
+- **`append()` under a mismatched casing became a destructive replace** — the open decision
+  corrected above. Both implementations now take the entry lookup before the artifact read.
+- **`forget()` was half-fixed.** `Remove` became case-insensitive; `DeleteArtifact` did not, and
+  `forget()` calls both. On a case-sensitive filesystem it reported success while leaving the
+  `.nmp2` on disk, orphaned. Fixed in the store primitive so the pair agrees for every caller.
+- **One of the ten sites had no guard at all** — the MCP `append()` persistent branch. Deleting its
+  `OrdinalIgnoreCase` and its carry-forward passed the entire suite, because the only append
+  coverage drove `MemoryOrchestrator.AppendAsync`, a different implementation in a different
+  project. Now covered.
+
+**A third wrong prescribed fact, caught by measuring.** The review specified pinning the append
+carry-forward with a single-chunk seed and a `ChunkEntries.Length == 2` assertion. `remember()`
+populates `ChunkEntries` only for multi-chunk content (`MemoryTools.Core.cs:203-205`), so a
+single-chunk seed leaves it `null` and the assertion reads 1 with or without the fix. The guard uses
+a two-chunk seed and asserts 2 → 3 instead.
+
+**Two of the three fixes are unobservable on NTFS and say so at the site.** The append hoist and
+`DeleteArtifact`'s fallback both carry ruling comments naming the instrument that would observe them
+(a case-sensitive filesystem; CI runs `ubuntu-latest`). The append hoist additionally has something
+that *is* observable here — the ordering — pinned at both sites by a test that records which read
+seam was reached and under which name, each verified red by removing the hoist and changing nothing
+else. That split is deliberate: the behavioural guard stays green when the hoist is removed, and
+only the ordering guard catches it.
 
 ## Group D — CLOSED on `closure-hygiene-rulings`, 2026-08-10.
 
