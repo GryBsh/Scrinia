@@ -136,7 +136,8 @@ public static class MemoryEndpoints
                 item.Entry.CreatedAt,
                 item.Entry.UpdatedAt,
                 AttributeReaders.PreviewText(item.Entry.ContentPreview),
-                item.Entry.Attributes));
+                item.Entry.Attributes,
+                item.Entry.Keywords));
         }
 
         return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));

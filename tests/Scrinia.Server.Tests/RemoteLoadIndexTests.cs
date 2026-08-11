@@ -60,11 +60,12 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    private async Task StoreAsync(string name, string body, Dictionary<string, string[]>? attributes = null)
+    private async Task StoreAsync(string name, string body,
+        Dictionary<string, string[]>? attributes = null, string[]? keywords = null)
     {
         var resp = await _client.PostAsJsonAsync(
             $"/api/v1/stores/{_factory.PrimaryStore}/memories",
-            new StoreRequest([body], name, body, Attributes: attributes));
+            new StoreRequest([body], name, body, Attributes: attributes, Keywords: keywords));
         resp.EnsureSuccessStatusCode();
     }
 
@@ -237,5 +238,29 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         updated.Should().BeFalse(
             because: "finding the entry changes nothing about this store's inability to persist a " +
                      "metadata-only mutation — the fail-closed contract is unchanged by this fix");
+    }
+
+    /// <summary>
+    /// The listing wire carried no keywords at all — <c>MemoryListItem</c> had no such field, so
+    /// every remote <c>ArtifactEntry</c> came back with <c>Keywords</c> null regardless of what was
+    /// stored, while the server held them in hand. <c>MaintenanceEventSink</c> reads that field in
+    /// three places; at <c>:102</c> an empty read makes the orphan branch write
+    /// <c>Keywords = ["orphan"]</c>, clobbering every other keyword. That is inert only because
+    /// <c>HttpMemoryStore.TryUpdateEntry</c> refuses every write today — the E4 PATCH endpoint
+    /// would arm it.
+    /// </summary>
+    [Fact]
+    public async Task LoadIndex_CarriesKeywords()
+    {
+        await StoreAsync("keyword-probe", "probe body for keywords", keywords: ["zebra"]);
+
+        var entry = _remote.LoadIndex("local").Single(e => e.Name == "keyword-probe");
+
+        entry.Keywords.Should().NotBeNull(
+            because: "the server holds this entry's keywords and the listing endpoint must project " +
+                     "them — a null here is the wire dropping data the server has in hand");
+        // Contain, not equality: MemoryOrchestrator merges agent keywords with auto-extracted ones,
+        // so the stored set is a superset (measured: [body, keywords, probe, zebra]).
+        entry.Keywords!.Should().Contain("zebra");
     }
 }

@@ -1188,6 +1188,14 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
 - `docs/reviews/2026-04-29-llm-integration-architect-review.md` moved to
   `docs/reviews/archive/` with a resolution annotation.
 
+### Fixed — the store listing endpoint dropped keywords
+
+- The store listing endpoint (`GET /api/v1/stores/{store}/memories`) now returns each memory's
+  `keywords`. The field was absent from the wire entirely, so a remote client saw `null` keywords
+  for every memory regardless of what was stored. Additive and optional in both directions: an
+  older client ignores the new field, and a newer client against an older server reads `null`
+  exactly as before, so `X-Scrinia-Api-Version` is deliberately not bumped.
+
 ## [0.5.0] — Initial public baseline
 
 First release with the canonical two-tool MCP surface (`guide`, `memory`) after the
