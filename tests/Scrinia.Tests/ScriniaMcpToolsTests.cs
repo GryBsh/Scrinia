@@ -1534,7 +1534,7 @@ public sealed class ScriniaMcpToolsTests
 
     /// <summary>
     /// The MCP <c>append()</c> persistent branch, under a casing the memory was not created with.
-    /// Its existing-entry lookup (<c>MemoryTools.Core.cs:1096-1099</c>) is the same defect class as
+    /// Its existing-entry lookup (<c>MemoryTools.Core.cs:1102-1105</c>) is the same defect class as
     /// the remember() one above: an ordinal <c>e.Name == subject</c> made a case-mismatched append
     /// read as a brand-new memory, so everything the entry carried forward was dropped —
     /// <c>CreatedAt</c> reset, the prior <c>ChunkEntries</c> discarded, no version archived — while

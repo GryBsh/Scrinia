@@ -117,10 +117,10 @@ The ten: the interface default (`src/Scrinia.Core/IMemoryStore.cs:50`), the remo
 (`src/Scrinia/HttpMemoryStore.cs:411`), `EntityTypingEventHandler`'s own upstream lookup
 (`src/Scrinia/Services/EntityTypingEventHandler.cs:43-44`),
 `MemoryOrchestrator.StoreAsync` (`src/Scrinia.Server/Services/MemoryOrchestrator.cs:124-127`) and
-`AppendAsync` (`:228-231`), the two MCP write paths (`src/Scrinia.Mcp/MemoryTools.Core.cs:323-326`
-and `:1096-1099`), `compact()` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:583-586`), and
+`AppendAsync` (`:238-241`), the two MCP write paths (`src/Scrinia.Mcp/MemoryTools.Core.cs:323-326`
+and `:1102-1105`), `compact()` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:583-586`), and
 `FileMemoryStore.CopyMemory`'s two ordinal source lookups, now one lookup taken before the
-artifact path is built (`src/Scrinia.Core/FileMemoryStore.cs:1614-1617`).
+artifact path is built (`src/Scrinia.Core/FileMemoryStore.cs:1620-1623`).
 
 **Three of the ten lost data silently, and each deserves naming:**
 
@@ -150,7 +150,7 @@ Windows-only.
 
 **The interface default is reachable only from the test doubles, and its fix should not be
 overstated.** Both real stores override `TryUpdateEntry`
-(`FileMemoryStore.cs:1078`, `HttpMemoryStore.cs:408`); `Scrinia.TestDoubles.FakeMemoryStore` is
+(`FileMemoryStore.cs:1081`, `HttpMemoryStore.cs:408`); `Scrinia.TestDoubles.FakeMemoryStore` is
 the only type that inherits the default. Fixing it is a contract fix and a double-fidelity fix —
 it keeps the doubles modelling the stores they stand in for, and it keeps the interface's stated
 contract true — **not** a live production bug fix.
@@ -177,19 +177,57 @@ ignores it, and a newer client against an older server reads `null` exactly as i
 change. The guard exists to catch a server silently ignoring a *request* parameter it does not
 understand; nothing here is a request parameter.
 
-**Two sites carry rulings instead of tests, because NTFS cannot observe either fix.**
-`FileMemoryStore.TryUpdateEntry`'s `File.Exists(SanitizeName(subject) + ".meta.json")` gate is
-removed — the authoritative lookup below it is already case-insensitive and returns false for a
-genuine miss, so the gate could only ever disagree with it by being wrong — and `Remove`'s
-exact-name probe now falls back to a case-insensitive sidecar scan (ordinal-sorted, so the
-tie-break on a filesystem holding both `Note.meta.json` and `note.meta.json` is deterministic
-rather than arbitrary). On Windows the gate always succeeded and the fallback is never entered, so
-a green test written at either site would be green for the filesystem's reasons, not the code's.
-What proved the `TryUpdateEntry` gate was simulating a case-sensitive filesystem; what would
-observe both is running the suite on one. Both rulings are at the sites
-(`src/Scrinia.Core/FileMemoryStore.cs:1008`, `:1084`), each naming the instrument that would
-observe it. The reviewer specifically checked whether "unpinnable" was a convenient excuse here
-and judged it genuine.
+**Two sites shipped rulings instead of tests, on a claim that was false — CORRECTED on
+`case-sensitive-guards`, 2026-08-11.** `FileMemoryStore.TryUpdateEntry`'s
+`File.Exists(SanitizeName(subject) + ".meta.json")` gate is removed — the authoritative lookup
+below it is already case-insensitive and returns false for a genuine miss, so the gate could only
+ever disagree with it by being wrong — and `Remove`'s exact-name probe now falls back to a
+case-insensitive sidecar scan (ordinal-sorted, so the tie-break on a filesystem holding both
+`Note.meta.json` and `note.meta.json` is deterministic rather than arbitrary). Both fixes are
+right. The ruling attached to them was not. It said NTFS folds case, so a green test at either
+site "would be green for the filesystem's reasons, not the code's", and that the only instrument
+that could observe them was running the suite on a case-sensitive filesystem, which this host was
+taken to be incapable of providing.
+
+**NTFS is case-sensitive per directory on request.** `fsutil file setCaseSensitiveInfo <dir>
+enable` — no admin rights, no WSL — and the flag is inherited by every subdirectory created
+underneath afterwards, including the ones .NET creates. Both behaviours are now pinned by tests
+that run on Windows against a directory carrying that flag:
+`CaseSensitiveFileStoreTests.TryUpdateEntry_ResolvesCaseMismatchedSubject` and
+`Remove_DeletesCaseMismatchedName` (`tests/Scrinia.Tests/CaseSensitiveFileStoreTests.cs:37,62`),
+over the helper at `tests/Scrinia.TestDoubles/CaseSensitiveDirectory.cs`. Each was verified
+load-bearing by reverting the production fix and watching it fail, and the reviewer reproduced
+those reverts independently rather than taking the implementer's word. The comments at
+`src/Scrinia.Core/FileMemoryStore.cs:1008` and `:1087` survive, but they now cite the tests
+instead of asserting nothing can pin them.
+
+**The false claim was in eight places, not two.** Five `RULING` comments in `src/`
+(`FileMemoryStore.cs:1008`, `:1087`, `:1177`;
+`src/Scrinia.Server/Services/MemoryOrchestrator.cs:191`;
+`src/Scrinia.Mcp/MemoryTools.Core.cs:1063`); two untagged restatements of it in test doc comments
+(`tests/Scrinia.Tests/RememberWriteMetadataTests.cs`,
+`tests/Scrinia.Server.Tests/MemoryOrchestratorAttributesTests.cs`); and one further paragraph
+claiming an ordering guard fails under a revert it does not fail under. The plan was written for
+five; verifying the plan found the two untagged ones, and the branch's own Task 2 review found the
+eighth.
+
+**Why it survived scrutiny is the transferable part.** Two reviewers examined "unpinnable"
+specifically for whether it was a convenient excuse, and both judged it genuine. They answered
+their own question correctly: the excuse was *sincere*. It was also *false*. Nobody checked
+whether NTFS could be *made* case-sensitive. Sincerity and truth are separate tests, and a review
+that runs only the first one passes an honest mistake through untouched.
+
+**Nothing about the production behaviour changed.** Every `src/` edit on `case-sensitive-guards`
+is a comment; the fixes themselves were already correct when they landed on
+`remote-mode-leftovers`. Only the claims about their observability were wrong. Where the
+case-sensitivity flag cannot be obtained — a non-NTFS volume, a policy that blocks `fsutil`, a
+case-insensitive macOS volume — `CaseSensitiveDirectory.TryCreate` returns null and every new test
+**skips rather than passes**, because a skipped test read as a passing one is the same failure
+wearing a new costume. The suite went 1867 → 1872 with the pre-existing skip count held at 4 at
+every step, which is how that was checked rather than assumed.
+
+See commits `428140f`, `ef059a4`, `4c26866`, `4b825a1` on `case-sensitive-guards`, and the plan at
+`docs/superpowers/plans/2026-08-11-case-sensitive-guards.md`.
 
 **One user-visible behaviour change, ruled intended.** Re-storing `MixedCase` as `mixedcase` now
 keeps the name `MixedCase` instead of silently renaming the memory to the caller's casing, and the
@@ -207,7 +245,7 @@ feature. In CHANGELOG.md.
   seven.
 - **The plan told an implementer to pin the append defect via the wire's `chunkCount`, which
   cannot observe it.** `chunkCount` is derived from the appended artifact
-  (`MemoryOrchestrator.cs:256`), never from `existingEntry`, so the prescribed `ChunkCount == 2`
+  (`MemoryOrchestrator.cs:266`), never from `existingEntry`, so the prescribed `ChunkCount == 2`
   assertion passed *before* the fix. What a null `existingEntry` actually loses is `ChunkEntries`,
   which is not a wire field at all. The implementer caught this by measuring rather than working
   around it, and re-aimed the guard at `Attributes` and `CreatedAt`, which do fail pre-fix.
@@ -217,7 +255,7 @@ deferral** — this branch's standing rule forbids writing new deferred followup
 one:
 
 1. **`CopyMemory`'s *destination* existence check is still filesystem-case-dependent**
-   (`src/Scrinia.Core/FileMemoryStore.cs:1653`). There is no existing case-insensitive lookup to
+   (`src/Scrinia.Core/FileMemoryStore.cs:1659`). There is no existing case-insensitive lookup to
    align it with, and the right answer is a product call, not an implementer's: is a
    case-differing destination "already exists", or a distinct memory? **Needs a decision.**
 
@@ -266,13 +304,39 @@ populates `ChunkEntries` only for multi-chunk content (`MemoryTools.Core.cs:203-
 single-chunk seed leaves it `null` and the assertion reads 1 with or without the fix. The guard uses
 a two-chunk seed and asserts 2 → 3 instead.
 
-**Two of the three fixes are unobservable on NTFS and say so at the site.** The append hoist and
-`DeleteArtifact`'s fallback both carry ruling comments naming the instrument that would observe them
-(a case-sensitive filesystem; CI runs `ubuntu-latest`). The append hoist additionally has something
-that *is* observable here — the ordering — pinned at both sites by a test that records which read
-seam was reached and under which name, each verified red by removing the hoist and changing nothing
-else. That split is deliberate: the behavioural guard stays green when the hoist is removed, and
-only the ordering guard catches it.
+**Two of the three fixes were labelled unobservable on NTFS at the site, and both labels were
+wrong — CORRECTED on `case-sensitive-guards`, 2026-08-11.** The append hoist
+(`src/Scrinia.Server/Services/MemoryOrchestrator.cs:191`, `src/Scrinia.Mcp/MemoryTools.Core.cs:1063`)
+and `DeleteArtifact`'s fallback (`src/Scrinia.Core/FileMemoryStore.cs:1177`) carried ruling comments
+naming a case-sensitive filesystem — "CI runs `ubuntu-latest`" — as the instrument that would observe
+them. That instrument is available here: NTFS takes the case-sensitivity flag per directory (see the
+correction above). All three are now pinned by tests asserting the **outcome**, not the ordering:
+`CaseSensitiveAppendTests.AppendUnderADifferentCasing_AppendsRatherThanReplacesTheContent`
+(`tests/Scrinia.Server.Tests/CaseSensitiveAppendTests.cs:33`),
+`CaseSensitiveMcpAppendTests.Append_UnderADifferentCasing_AppendsRatherThanReplacesTheContent`
+(`tests/Scrinia.Tests/CaseSensitiveMcpAppendTests.cs:38`), and
+`CaseSensitiveFileStoreTests.DeleteArtifact_DeletesCaseMismatchedName`
+(`tests/Scrinia.Tests/CaseSensitiveFileStoreTests.cs:85`). With the hoist reverted, both append tests
+fail on content — the appended body replaces the original instead of following it. That is the data
+loss itself, not a proxy for it. All three skip rather than pass where the flag cannot be obtained.
+
+**The claim about the ordering guards needed its own correction, and it cuts both ways.** The
+paragraph above asserted that removing the hoist turns the ordering guard red at both sites. On the
+server side that is **not** true of a pure block-move revert: `MemoryOrchestrator.AppendAsync`'s
+rollback capture (`:339`) calls `ReadArtifactAsync(subject, scope)` with the by-then-corrected
+subject regardless of hoist order, overwriting the value the guard recorded, so all three of its
+assertions stay green — verified by applying exactly that revert, not reasoned out. It **is**
+discriminating for the larger whole-file revert an earlier reviewer used to certify it load-bearing,
+which also collapses the persistent branch's `ReadArtifactAsync(subject, scope)` back into the
+unified `ResolveArtifactAsync(name)` call — the mutation that actually makes `ResolvedName` fire.
+Both results are true; the original comment never said which mutation it meant. The MCP-side
+ordering guard genuinely does discriminate, because that path has no rollback read to mask it:
+reverted, `ReadSubject` is `"mixedcase"` and the assertion fails on a value mismatch, not on a null.
+Both guards now say all of this at the site
+(`tests/Scrinia.Server.Tests/MemoryOrchestratorAttributesTests.cs:258-276`,
+`tests/Scrinia.Tests/RememberWriteMetadataTests.cs:211-220`). The content-based tests are the reliable
+discriminator in both cases; the ordering guards are complementary rather than redundant — they run
+on every host and prove only the order.
 
 ## Group D — CLOSED on `closure-hygiene-rulings`, 2026-08-10.
 
@@ -420,8 +484,13 @@ them. **All of the closure work has now landed — the three designs are all tha
   sections above.
 - ~~Group A~~ — closed on `merge-driver-residuals`, 2026-08-11. See the group section above.
 - ~~Group B~~ — closed on `the-sweep`, 2026-08-11. See the group section above.
-- ~~Group C~~ — closed on `remote-mode-leftovers`, 2026-08-11. See the group section above, which
-  also carries two open decisions it deliberately did not close.
+- ~~Group C~~ — closed on `remote-mode-leftovers`, 2026-08-11; its rulings corrected on
+  `case-sensitive-guards`, 2026-08-11. Five behaviours had shipped as rulings claiming NTFS could
+  not observe them and that only a `ubuntu-latest` CI leg could; that was false, and all five are
+  now pinned by tests running on Windows against a per-directory case-sensitive volume. **Nothing
+  in Group C is waiting on a CI leg to be verified.** See the group section above, which also
+  carries one open decision it deliberately did not close (`CopyMemory`'s destination existence
+  check — the second recorded decision was closed by fixing it).
 
 **Needs a spec before a plan:**
 

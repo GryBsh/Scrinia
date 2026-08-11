@@ -108,10 +108,13 @@ public class TryUpdateEntryTests
     /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, which silently broke update()/link() for
     /// any case-mismatched name — stored as "MixedCase", looked up as "mixedcase".
     /// <para>This test passes on Windows for a second, weaker reason as well, which is worth
-    /// knowing when reading it: NTFS folds case, so the <c>File.Exists(metaPath)</c> fast path the
-    /// method used to open with also reported the entry present. That gate has since been removed —
-    /// it was the same defect one line up, and on a case-sensitive filesystem it made THIS test
-    /// fail. See the ruling comment at <see cref="FileMemoryStore.TryUpdateEntry"/>.</para>
+    /// knowing when reading it: NTFS folds case by default, so the <c>File.Exists(metaPath)</c>
+    /// fast path the method used to open with also reported the entry present here, on an ordinary
+    /// (case-insensitive) volume. That gate has since been removed — it was the same defect one line
+    /// up. What actually pins its removal is
+    /// <see cref="CaseSensitiveFileStoreTests.TryUpdateEntry_ResolvesCaseMismatchedSubject"/>
+    /// (tests/Scrinia.Tests/CaseSensitiveFileStoreTests.cs), which runs against a directory carrying
+    /// NTFS's per-directory case-sensitivity flag instead of relying on the default.</para>
     /// </summary>
     [Fact]
     public void MutateWithDifferentCasing_StillFindsAndUpdatesTheEntry()

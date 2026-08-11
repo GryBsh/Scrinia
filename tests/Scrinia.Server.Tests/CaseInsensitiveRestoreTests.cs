@@ -122,12 +122,12 @@ public sealed class CaseInsensitiveRestoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// <c>MemoryOrchestrator.cs:228-229</c>, the append path. With <c>existingEntry</c> null every
+    /// <c>MemoryOrchestrator.cs:238-239</c>, the append path. With <c>existingEntry</c> null every
     /// value carried forward from the prior entry is lost: the caller's attribute map, the curated
     /// content preview, <c>CreatedAt</c>, and the version archive.
     /// <para><c>ChunkCount</c> is deliberately NOT the assertion here even though it is a wire
     /// field: it is computed from the appended artifact (<c>Nmp2ChunkedEncoder.GetChunkCount</c>,
-    /// <c>MemoryOrchestrator.cs:256</c>), never from <c>existingEntry</c>, so it reads 2 both
+    /// <c>MemoryOrchestrator.cs:266</c>), never from <c>existingEntry</c>, so it reads 2 both
     /// before and after this fix. Measured, not assumed — see the task report.</para>
     /// </summary>
     [Fact]

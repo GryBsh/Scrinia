@@ -1005,18 +1005,21 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
             if (!File.Exists(metaPath))
             {
-                // RULING (remote-mode-leftovers, Task 2): this fallback is deliberately NOT pinned
-                // by a test, and nothing on this host can pin it.
+                // RULING (remote-mode-leftovers, Task 2): pinned by
+                // CaseSensitiveFileStoreTests.Remove_DeletesCaseMismatchedName in
+                // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
+                // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI
+                // leg. The test skips (never silently passes) on a volume that cannot provide the
+                // flag.
                 //
                 // SanitizeName does not fold case, so on a case-sensitive filesystem the exact-name
                 // probe above answers "no such memory" for a sidecar that differs only in casing —
                 // forget("mixedcase") reporting not-found for a memory stored as "MixedCase", while
                 // every name match around it (LoadIndex, TryUpdateEntry, the write paths) is
-                // case-insensitive. This scan restores the agreement. NTFS folds case itself, so on
-                // Windows the probe above always succeeds and this branch is never entered: a test
-                // written here would pass for the filesystem's reasons rather than this code's.
-                // What would observe it is running the suite on a case-sensitive filesystem — the
-                // same instrument that proved the sibling defect in TryUpdateEntry below.
+                // case-insensitive. This scan restores the agreement. NTFS folds case itself by
+                // default, so on an ordinary Windows volume the probe above always succeeds and this
+                // branch is never entered — the guard test above uses a directory that opts out of
+                // that default, which is what exercises it.
                 //
                 // Kept as a fallback rather than replacing the probe: the exact-name hit is the
                 // overwhelmingly common case and costs one stat, where this costs a directory
@@ -1082,8 +1085,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             string storeDir = GetStoreDirForScope(scope);
 
             // RULING (remote-mode-leftovers, Task 2): the `File.Exists(SanitizeName(subject) +
-            // ".meta.json")` fast path that used to stand here is gone, deliberately, and no test
-            // on this host can observe its removal.
+            // ".meta.json")` fast path that used to stand here is gone, deliberately.
             //
             // What it did: SanitizeName does not fold case, so on a case-sensitive filesystem the
             // gate answered "no such entry" for a subject whose sidecar differs only in casing, and
@@ -1092,12 +1094,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // is already case-insensitive and is the authority; the gate was an optimization that
             // could only ever disagree with it by being wrong.
             //
-            // Why nothing here can pin it: NTFS is case-insensitive, so File.Exists succeeded on
-            // this host either way. What proved it was simulating a case-sensitive filesystem —
-            // with the gate restored, MutateWithDifferentCasing_StillFindsAndUpdatesTheEntry
-            // (tests/Scrinia.Tests/TryUpdateEntryTests.cs) fails. Running the suite on a
-            // case-sensitive filesystem is what would observe this; a green test written here
-            // would be green for the filesystem's reasons, not this code's.
+            // Pinned by CaseSensitiveFileStoreTests.TryUpdateEntry_ResolvesCaseMismatchedSubject in
+            // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
+            // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI leg.
+            // The test skips (never silently passes) on a volume that cannot provide the flag. NTFS
+            // is case-insensitive by default, so on an ordinary Windows volume File.Exists would
+            // succeed for a case-mismatched subject either way and the removed gate would never have
+            // disagreed with the lookup below; the guard test's directory opts out of that default.
             //
             // What is unchanged: "entry genuinely missing -> false, and mutate never runs".
             // LoadEntriesFromSidecars returns [] for a directory that does not exist, so the
@@ -1172,7 +1175,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         if (!File.Exists(path))
         {
             // RULING (remote-mode-leftovers, final fixes, Finding 2): this fallback is the exact
-            // counterpart of the one in Remove above, and like it, nothing on this host can pin it.
+            // counterpart of the one in Remove above.
             //
             // forget() calls Remove and DeleteArtifact as a pair (MemoryTools.Core.cs, and
             // MemoryOrchestrator.ForgetAsync). Remove's name match is case-insensitive; this one was
@@ -1190,10 +1193,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // has no entry in hand to canonicalize from. Aligning the primitive fixes all callers,
             // including any added later; canonicalizing at call sites fixes only the ones edited.
             //
-            // Why nothing here can pin it: NTFS folds case, so the probe above always succeeds on
-            // this host and this branch is never entered — a green test written here would be green
-            // for the filesystem's reasons, not this code's. Running the suite on a case-sensitive
-            // filesystem is what would observe it; the project's CI runs ubuntu-latest.
+            // Pinned by CaseSensitiveFileStoreTests.DeleteArtifact_DeletesCaseMismatchedName in
+            // tests/Scrinia.Tests, which runs against a directory carrying NTFS's per-directory
+            // case-sensitivity flag — so this is exercised on Windows, not only on a Linux CI leg.
+            // The test skips (never silently passes) on a volume that cannot provide the flag. NTFS
+            // folds case by default, so on an ordinary Windows volume the probe above always
+            // succeeds and this branch is never entered; the guard test's directory opts out of
+            // that default, which is what exercises it.
             //
             // Tie-break: identical to Remove's, and it matters for the same reason — this is a
             // delete, a case-sensitive filesystem holding pre-branch data can hold both
