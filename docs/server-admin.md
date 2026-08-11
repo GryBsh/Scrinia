@@ -150,6 +150,13 @@ All memory endpoints are scoped to a store:
 /api/v1/stores/{store}/...
 ```
 
+Every response under `/api/v1/stores` — success or error, including a `500` — carries an
+`X-Scrinia-Api-Version` response header identifying the version of the REST contract the server
+speaks. A client that doesn't recognise the header's value, or doesn't see the header at all,
+should treat the server as untrusted rather than assume compatibility: an older or mismatched
+server can silently ignore a parameter it doesn't understand (e.g. `excludeTopics`, `pathPrefix`)
+instead of rejecting it, which would return an unfiltered result set that looks filtered.
+
 ### Store a Memory
 
 ```
@@ -213,7 +220,9 @@ GET /api/v1/stores/{store}/memories[?scopes=local,api]
       "createdAt": "2026-03-01T10:00:00Z",
       "updatedAt": null,
       "description": "OAuth2 authentication flow",
-      "tags": ["auth", "oauth"]
+      "attributes": {
+        "tag": ["auth", "oauth"]
+      }
     }
   ],
   "total": 1
@@ -337,12 +346,16 @@ GET /api/v1/stores/{store}/search?q=authentication[&scopes=local,api][&limit=20]
     "score": 85.5,
     "description": "OAuth2 authentication flow",
     "chunkIndex": null,
-    "totalChunks": null
+    "totalChunks": null,
+    "originalBytes": 1234,
+    "createdAt": "2026-03-01T10:00:00Z"
   }
 ]
 ```
 
-Result types: `entry`, `chunk`, `topic`.
+Result types: `entry`, `chunk`, `topic`. `originalBytes` and `createdAt` are present for `entry`
+and `chunk` results and `null` for `topic` results — a topic is a scope label, not a memory, and
+has no real byte count or creation time.
 
 #### POST form (attribute filtering)
 

@@ -10,6 +10,78 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — the HTTP store request and response shapes
+
+- `POST /api/v1/stores/{store}/memories`'s request body drops `tags`, `reviewAfter`, and
+  `reviewWhen` in favour of `attributes` — a map of key to string array, the same shape the MCP
+  tools already write. Listing responses (`GET /api/v1/stores/{store}/memories`) now carry the same
+  `attributes` map instead of a flattened `tags` array. Search responses carry `originalBytes` and
+  `createdAt` for `entry`/`chunk` results (null for `topic` results, which are scope labels, not
+  memories). Nothing is deployed over HTTP today, so there is no migration path and none is
+  needed — but a pre-change client speaking the old shape will not work against this server.
+- There is no `UnmappedMemberHandling.Disallow` on the request DTO, so unknown members are
+  **ignored, not rejected**: a stale client still sending `tags`/`reviewAfter`/`reviewWhen` gets a
+  `201` and those values are silently dropped rather than surfaced as an error.
+
+### Fixed — remote writes silently discarded the agent's metadata
+
+- The write seam (`IMemoryStore.WriteArtifactAsync`) carried only the artifact text, and
+  `HttpMemoryStore.Upsert` is a no-op by design (persistent writes go through
+  `WriteArtifactAsync` instead), so a `remember()` against a remote store (`scri serve --remote`)
+  sent the attributes map, the keywords, and the curated description nowhere — none of it reached
+  the server. `WriteArtifactAsync` now takes an optional `ArtifactWriteMetadata`, and the MCP
+  remember path assembles it *before* the write instead of trying to patch it in afterward.
+
+### Fixed — remote search results reported fabricated metadata
+
+- Every remote search result was rebuilt with `originalBytes: 0` and `createdAt: <now>`, so a
+  caller reading a remote result's creation time got the time of the query, not the memory's actual
+  age. Search results now carry the real values from the server. Two fabrications remain and are
+  not fixed by this: `uri` (always `""`; making a remote result dereferenceable is a separate
+  capability decision) and `chunkCount` (always `1`, wrong for any multi-chunk memory — it has no
+  wire field yet).
+
+### Fixed / Changed — `LoadIndex` proxies remotely; `TryUpdateEntry` fails closed
+
+- `HttpMemoryStore.LoadIndex` returned `[]` unconditionally in remote mode. Every caller that asks
+  "does this entry already exist" — the async entity-typing sink, the maintenance sink, every MCP
+  tool's existing-entry lookup — got an empty answer for a scope that was not actually empty.
+  `LoadIndex` now proxies to the same listing endpoint `ListScoped` already uses, and paginates
+  using the server's reported total so a scope larger than one page still comes back whole. This is
+  now a genuine blocking network round trip (more than one for a large scope) where it was
+  previously a free in-process read — there is no async seam on `LoadIndex` to hide the cost
+  behind.
+- **This does not fix entity-typing promotion remotely — it still does not work.** Fixing
+  `LoadIndex` in isolation would have made things *worse*: with `Upsert` a no-op remotely,
+  `IMemoryStore`'s default `TryUpdateEntry` would now *find* the entry via the fixed `LoadIndex`,
+  apply the caller's mutation, hand it to the no-op `Upsert`, and still return `true` — a false
+  success where before there was at least an honest "not found". `HttpMemoryStore.TryUpdateEntry`
+  is therefore overridden to fail closed (always returns `false`) until a dedicated attributes-only
+  PATCH endpoint exists server-side. Entity-typing promotion against a remote store still does not
+  persist; it now fails honestly instead of silently.
+
+### Added — the client refuses an unrecognised server API version
+
+- Remote search filter parameters (`excludeTopics`, `pathPrefix`, and friends) were sent as
+  additive query params, so a server that predates them silently ignored what it didn't understand
+  and returned an unfiltered result set the client presented as filtered. The server now stamps
+  `X-Scrinia-Api-Version` on every response under `/api/v1/stores`, and `HttpMemoryStore` throws if
+  a response is missing the header or carries a version it doesn't recognise, on both the
+  synchronous and asynchronous send paths.
+
+### Changed — MCP and REST disagree on a bare date in a `review` attribute
+
+- The MCP `remember()` tool routes a `review` attribute value through a lenient
+  `DateTimeOffset.TryParse` and stores the result in round-trip (`"o"`) format — `"2026-08-01"`
+  becomes `"2026-08-01T00:00:00.0000000+00:00"`, which `TryReadReview` recognises as a review
+  *date* and reports as `[stale]` once it passes. A direct
+  `POST /api/v1/stores/{store}/memories` performs no such parsing — `KnownAttributes.Normalize`
+  only trims and lowercases — so the same bare `"2026-08-01"` is stored verbatim, `TryReadReview`
+  cannot parse it as a round-trip date, and it is read as a review *condition* instead: the memory
+  reports `needsReview: true` forever rather than going stale on the date. The MCP tool description
+  (`MemoryTools.cs`) advertises exactly the lenient bare-date form (`review: ['2026-08-01']`) that
+  only works correctly through MCP, not through the REST endpoint directly.
+
 ### Changed — store read path
 
 - A cached `LoadIndex` no longer opens a file handle. The shared `.lock` was acquired before the
