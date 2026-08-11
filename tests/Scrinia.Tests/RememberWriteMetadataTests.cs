@@ -194,15 +194,19 @@ public class RememberWriteMetadataTests
     /// The ORDERING guard for the MCP <c>append()</c> persistent branch: the index lookup must run
     /// BEFORE the artifact read, and the read must be given the entry's own casing.
     ///
-    /// <para>This asserts the order rather than the outcome, deliberately. The defect it guards —
-    /// an append that resolves on the caller's casing, misses on a case-sensitive filesystem, falls
-    /// through to the <c>Remember()</c> create path, and there lands on the existing memory (that
-    /// lookup IS case-insensitive) and replaces its content with the appended chunk alone — cannot
-    /// be reproduced on NTFS at all, because <c>File.Exists</c> folds case and the read succeeds
-    /// either way. An outcome assertion ("append under a mismatched casing appends") is green with
-    /// and without the hoist and proves nothing. The order is observable here and nowhere else on
-    /// this host; a case-sensitive filesystem (the project's CI runs <c>ubuntu-latest</c>) is what
-    /// would observe the outcome.</para>
+    /// <para>This asserts the order rather than the outcome, deliberately, and runs on every host —
+    /// case-sensitive filesystem or not. The defect it guards — an append that resolves on the
+    /// caller's casing, misses on a case-sensitive filesystem, falls through to the
+    /// <c>Remember()</c> create path, and there lands on the existing memory (that lookup IS
+    /// case-insensitive) and replaces its content with the appended chunk alone — is NOT
+    /// reproducible through an outcome assertion on an ordinary NTFS volume, because
+    /// <c>File.Exists</c> folds case there and the read succeeds either way. But NTFS does support
+    /// per-directory case sensitivity, and <see cref="CaseSensitiveMcpAppendTests"/>
+    /// (tests/Scrinia.Tests/CaseSensitiveMcpAppendTests.cs) obtains one and asserts the outcome
+    /// directly — the resulting content contains both the original and the appended text. The two
+    /// guards are complementary, not redundant: this one proves the ORDER on every host; that one
+    /// proves the OUTCOME, but only where a case-sensitive directory is available (it skips
+    /// otherwise, never silently passing).</para>
     ///
     /// <para>Verified discriminating by running it: with the hoisted lookup moved back below the
     /// artifact read — and the case-insensitive comparison left intact, so only the ORDER changes —

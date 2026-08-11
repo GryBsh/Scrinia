@@ -63,6 +63,7 @@ public sealed class CaseSensitiveDirectory : IDisposable
             });
             if (proc is null) return false;
             proc.WaitForExit(30_000);
+            if (!proc.HasExited) { try { proc.Kill(entireProcessTree: true); } catch { } }
             return proc.HasExited && proc.ExitCode == 0;
         }
         catch

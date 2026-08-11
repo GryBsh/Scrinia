@@ -189,8 +189,7 @@ public static class MemoryOrchestrator
         bool ephemeral = store.IsEphemeral(name);
 
         // RULING (remote-mode-leftovers, final fixes, Finding 1): the index lookup below is
-        // HOISTED ABOVE the artifact read deliberately, and the ORDER is the fix. Nothing on this
-        // host can observe the defect it closes.
+        // HOISTED ABOVE the artifact read deliberately, and the ORDER is the fix.
         //
         // What it prevents: the read used to run on the caller's casing. SanitizeName does not fold
         // case, so on a case-sensitive filesystem append("mixedcase", ...) against a memory stored
@@ -200,18 +199,23 @@ public static class MemoryOrchestrator
         // Resolving identity from the index FIRST and reading with the entry's own casing means the
         // read succeeds and the real append path runs.
         //
-        // Why nothing here can pin it: NTFS folds case in File.Exists, so on this host the read
-        // succeeded either way and the defect never occurred. A test asserting "append under a
-        // mismatched casing appends" is green with or without this hoist. What DOES discriminate on
-        // this host is the ordering itself — AppendUnderADifferentCasing_ReadsTheArtifactUnderThe
-        // EntrysOwnCasing (tests/Scrinia.Server.Tests/MemoryOrchestratorAttributesTests.cs) records
-        // which read seam was reached and under which name, and goes red if the hoist is removed.
-        // Its load-bearing assertion is that ResolveArtifactAsync is NEVER reached: the rollback
-        // capture further down this method calls ReadArtifactAsync(subject, scope) too, so
+        // How it's pinned: this is no longer an unpinnable ruling — NTFS supports per-directory case
+        // sensitivity, and tests/Scrinia.Server.Tests/CaseSensitiveAppendTests.cs constructs a
+        // FileMemoryStore rooted in a CaseSensitiveDirectory and asserts the OUTCOME directly: after
+        // append("mixedcase", ...) against a memory stored as "MixedCase", the resulting content
+        // contains both the original body and the appended body. With this hoist reverted, that
+        // assertion fails — the content becomes the appended body alone, reproducing the defect
+        // exactly. That test SKIPS rather than silently passing on a host that cannot provide a
+        // case-sensitive directory. Complementing it, the pre-existing ORDERING guard —
+        // AppendUnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing
+        // (tests/Scrinia.Server.Tests/MemoryOrchestratorAttributesTests.cs) — runs on every host,
+        // case-sensitive filesystem or not, and records which read seam was reached and under which
+        // name. Its load-bearing assertion is that ResolveArtifactAsync is NEVER reached: the
+        // rollback capture further down this method also calls ReadArtifactAsync(subject, scope), so
         // "ReadArtifactAsync saw the canonical name" is satisfied either way and cannot be the
-        // discriminator here. Verified by removing the hoist and watching it fail on that
-        // assertion. What would observe the defect end-to-end is running the suite on a
-        // case-sensitive filesystem; the project's own CI runs ubuntu-latest.
+        // discriminator there. The two guards are complementary, not redundant: the ordering guard
+        // fires everywhere but only proves the order; the outcome guard proves the fix actually
+        // prevents content loss, but only where a case-sensitive directory is available.
         //
         // Ephemeral names keep ResolveArtifactAsync: they live in an in-memory dictionary, not on
         // disk, there is no index entry to resolve identity from, and its "~key" branch is the only
