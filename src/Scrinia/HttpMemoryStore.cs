@@ -79,7 +79,20 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // any status-code-based handling below gets a chance to treat its response as trustworthy
         // (see RemoteApiVersionGuard — this covers the synchronous send path; the async path is
         // covered at each of its two call sites below).
-        RemoteApiVersionGuard.Validate(response);
+        //
+        // Every caller of SendSync does `using var resp = SendSync(req)`, so before this guard
+        // existed, the response always reached that `using`. A throw from here skips the handoff,
+        // so it must dispose the response itself first — otherwise every call against a
+        // misversioned server leaks the response and its content stream.
+        try
+        {
+            RemoteApiVersionGuard.Validate(response);
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
 
         if (response.IsSuccessStatusCode)
             _circuitBreaker.RecordSuccess();

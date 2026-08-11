@@ -16,10 +16,13 @@ namespace Scrinia.Server.Tests;
 /// old/unversioned server represents (it would ignore filter params like excludeTopics/pathPrefix
 /// instead of rejecting them, so the client would present an unfiltered result set as filtered).
 ///
-/// <para>Each case drives both of <c>HttpMemoryStore</c>'s send paths — <see cref="HttpMemoryStore.LoadIndex"/>
-/// (synchronous, via <c>HttpClient.Send</c>) and <see cref="HttpMemoryStore.WriteArtifactAsync"/>
-/// (asynchronous, via <c>HttpClient.SendAsync</c>) — in one test, so a check that only lives on one
-/// path cannot pass this suite while leaving the other unguarded.</para>
+/// <para>Each case drives all three of <c>HttpMemoryStore</c>'s guarded send call sites — <see
+/// cref="HttpMemoryStore.LoadIndex"/> (the one synchronous path, via <c>HttpClient.Send</c>),
+/// <see cref="HttpMemoryStore.WriteArtifactAsync"/>, and <see cref="HttpMemoryStore.ResolveArtifactAsync"/>
+/// (two independent asynchronous paths, each with its own <c>RetryPolicy.ExecuteAsync</c> call and
+/// its own <c>Validate</c> call site — neither is a helper the other routes through) — in one
+/// test, so a check missing from any one of the three cannot pass this suite while leaving that
+/// site unguarded.</para>
 ///
 /// <para>Uses an in-process stub handler rather than a real Kestrel server (contrast
 /// <c>RemoteLoadIndexTests</c>/<c>StoreConformanceFixture</c>): the real server always stamps a
@@ -33,24 +36,33 @@ public sealed class ApiVersionAssertionTests
     /// simulates a server that never learned about the version contract at all.</summary>
     private sealed class VersionStubHandler(string? headerValue, HttpStatusCode status) : HttpMessageHandler
     {
-        // GET .../memories (LoadIndex) needs a body that deserializes as an empty ListApiResponse;
-        // POST .../memories (WriteArtifactAsync) ignores the body and only reads the status. Both
-        // overrides are required: LoadIndex goes through HttpMemoryStore's synchronous send path
-        // (HttpClient.Send), and a handler that only overrides SendAsync throws NotSupportedException
-        // from HttpMessageHandler's own Send default — see the same note in
+        // Both overrides are required: LoadIndex goes through HttpMemoryStore's synchronous send
+        // path (HttpClient.Send), and a handler that only overrides SendAsync throws
+        // NotSupportedException from HttpMessageHandler's own Send default — see the same note in
         // HttpMemoryStoreWriteFailureTests.FixedStatusHandler and RemoteStoreToolTests.StubBackendHandler.
         protected override HttpResponseMessage Send(
-            HttpRequestMessage request, CancellationToken cancellationToken) => Respond();
+            HttpRequestMessage request, CancellationToken cancellationToken) => Respond(request);
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(Respond());
+            Task.FromResult(Respond(request));
 
-        private HttpResponseMessage Respond()
+        private HttpResponseMessage Respond(HttpRequestMessage request)
         {
+            // GET/POST .../memories (LoadIndex, WriteArtifactAsync) need a body that deserializes
+            // as an empty ListApiResponse (WriteArtifactAsync only reads the status, but an empty
+            // list body is harmless there too). GET .../memories/{name} (ResolveArtifactAsync's
+            // Show lookup) needs a ShowApiResponse-shaped body, or the matching-version case would
+            // throw from JSON/NMP2 decoding instead of exercising the version guard at all.
+            bool isMemoriesCollection =
+                request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal);
+            string body = isMemoriesCollection
+                ? """{"memories":[],"total":0}"""
+                : """{"name":"note","content":"hello world","chunkCount":1,"originalBytes":11}""";
+
             var response = new HttpResponseMessage(status)
             {
-                Content = new StringContent("""{"memories":[],"total":0}""", Encoding.UTF8, "application/json"),
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
             };
             if (headerValue is not null)
                 response.Headers.TryAddWithoutValidation(RemoteApiVersion.HeaderName, headerValue);
@@ -78,8 +90,15 @@ public sealed class ApiVersionAssertionTests
             .WithMessage("*999*", because: "a caller who hits this needs to know which version " +
                          "mismatched, not just that something failed");
 
-        var asyncAct = async () => await store.WriteArtifactAsync("note", "local", Artifact());
-        (await asyncAct.Should().ThrowAsync<RemoteApiVersionMismatchException>())
+        var asyncWriteAct = async () => await store.WriteArtifactAsync("note", "local", Artifact());
+        (await asyncWriteAct.Should().ThrowAsync<RemoteApiVersionMismatchException>())
+            .Which.Message.Should().Contain("999");
+
+        // ResolveArtifactAsync is a distinct async call site (its own RetryPolicy.ExecuteAsync,
+        // not routed through WriteArtifactAsync's) — a guard present on the write path only would
+        // still satisfy the assertion above while leaving this one open.
+        var asyncResolveAct = async () => await store.ResolveArtifactAsync("note");
+        (await asyncResolveAct.Should().ThrowAsync<RemoteApiVersionMismatchException>())
             .Which.Message.Should().Contain("999");
     }
 
@@ -93,8 +112,11 @@ public sealed class ApiVersionAssertionTests
             because: "a server that never stamps the header must fail closed exactly like a " +
                      "server that stamps the wrong value — silence must not reopen the hole");
 
-        var asyncAct = async () => await store.WriteArtifactAsync("note", "local", Artifact());
-        await asyncAct.Should().ThrowAsync<RemoteApiVersionMismatchException>();
+        var asyncWriteAct = async () => await store.WriteArtifactAsync("note", "local", Artifact());
+        await asyncWriteAct.Should().ThrowAsync<RemoteApiVersionMismatchException>();
+
+        var asyncResolveAct = async () => await store.ResolveArtifactAsync("note");
+        await asyncResolveAct.Should().ThrowAsync<RemoteApiVersionMismatchException>();
     }
 
     [Fact]
@@ -106,7 +128,10 @@ public sealed class ApiVersionAssertionTests
         syncAct.Should().NotThrow(
             because: "the guard against the check being so strict it breaks a same-version server");
 
-        var asyncAct = async () => await store.WriteArtifactAsync("note", "local", Artifact());
-        await asyncAct.Should().NotThrowAsync();
+        var asyncWriteAct = async () => await store.WriteArtifactAsync("note", "local", Artifact());
+        await asyncWriteAct.Should().NotThrowAsync();
+
+        var asyncResolveAct = async () => await store.ResolveArtifactAsync("note");
+        await asyncResolveAct.Should().NotThrowAsync();
     }
 }
