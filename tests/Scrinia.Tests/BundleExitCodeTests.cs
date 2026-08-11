@@ -9,7 +9,9 @@ namespace Scrinia.Tests;
 /// <c>result.StartsWith("Error:", ...)</c> against <c>response.ToYaml()</c> — a shape the
 /// renderer has never produced, since every envelope opens with <c>status: </c>. Both commands
 /// therefore exited 0 on a genuine failure. These tests pin the fix (typed <see cref="McpResponse.IsError"/>)
-/// on both sides: failure now exits 1, and the pre-existing success/warning paths still exit 0.
+/// on both sides: failure now exits 1. The pre-existing success path still exits 0, but the
+/// warning path does not — an empty or fully-filtered import is also treated as a failure now
+/// (see <see cref="Import_OnEmptyBundle_ExitsNonZero"/> below and <see cref="McpResponse.IsWarning"/>).
 /// </summary>
 public class BundleExitCodeTests
 {

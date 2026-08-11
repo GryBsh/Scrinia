@@ -210,8 +210,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             var e = kvp.Value;
             var artifactEntry = new ArtifactEntry(
                 Name: $"~{e.Name}",
-                // Uri and ChunkCount are placeholders on the remote path — see the note at
-                // BuildArtifactEntry for the two capability decisions that own them.
+                // Uri is empty because an ephemeral artifact has no backing file — not the
+                // remote-path placeholder described at BuildArtifactEntry. These entries come
+                // from the in-process _ephemeral dictionary, not the server.
                 Uri: "",
                 OriginalBytes: e.OriginalBytes,
                 ChunkCount: e.ChunkCount,
@@ -345,8 +346,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
             foreach (var item in list.Memories)
             {
-                // Uri and ChunkCount are placeholders on the remote path — see the note at
-                // BuildArtifactEntry for the two capability decisions that own them.
+                // Uri is a placeholder on the remote path — see the note at BuildArtifactEntry
+                // for the capability decision that owns it. ChunkCount is not: item.ChunkCount is
+                // a real wire field, populated server-side (see MemoryEndpoints.cs).
                 result.Add(new ArtifactEntry(
                     Name: item.Name,
                     Uri: "",
@@ -488,8 +490,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                     _ => $"local:{item.Scope}"
                 };
 
-                // Uri and ChunkCount are placeholders on the remote path — see the note at
-                // BuildArtifactEntry for the two capability decisions that own them.
+                // Uri is a placeholder on the remote path — see the note at BuildArtifactEntry
+                // for the capability decision that owns it. ChunkCount is not: item.ChunkCount is
+                // a real wire field, populated server-side (see MemoryEndpoints.cs).
                 var entry = new ArtifactEntry(
                     Name: item.Name,
                     Uri: "",

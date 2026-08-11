@@ -33,13 +33,7 @@ app.Run(args);
 
 `app.Add<T>()` registers each public method on the type as a command. `app.Add<T>("prefix")` nests them under that prefix — `MemoryCommands.List` becomes `scri memory list`, `BundleCommands.Export` becomes `scri bundle export`. Methods on `ScriniaCommands` that should NOT be top-level commands (the memory CRUD operations, the bundle file operations) are kept `internal` so the source generator skips them while the forwarder classes in `MemoryCommands` / `BundleCommands` call into them across the assembly.
 
-### Pitfalls
-
-- `[Argument]` attribute requires `using ConsoleAppFramework;`
-- XML doc comment aliases must not duplicate auto-generated option names
-- Source generation happens at compile time; adding new commands requires rebuilding
-
-#### Topic filters: CLI and HTTP differ deliberately
+### Bundle commands: topic filters differ deliberately between CLI and HTTP
 
 `scri bundle import --topics a,b` comma-splits one string. The HTTP endpoint binds
 `[FromQuery] string[] topics` and reads repeated keys — `?topics=a&topics=b`. Each follows its own
@@ -48,6 +42,12 @@ idiomatic for a query string and are what ASP.NET Core's model binder produces.
 
 This is not an inconsistency to unify. Unifying requires first deciding which surface is canonical,
 and neither has a claim over the other. Documented and pinned 2026-08-10.
+
+### Pitfalls
+
+- `[Argument]` attribute requires `using ConsoleAppFramework;`
+- XML doc comment aliases must not duplicate auto-generated option names
+- Source generation happens at compile time; adding new commands requires rebuilding
 
 ## Workspace Discovery
 

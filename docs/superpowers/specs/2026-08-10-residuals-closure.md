@@ -88,7 +88,8 @@ unnecessary `using System.Linq;` was removed, `FileLock.AcquireShared`'s redunda
 `Directory.CreateDirectory` was cut, `CachedIndex`'s unread members (`BuildNameMap`,
 `NameToPosition`, `Rebuild()`, `GetOrComputeCorpusStats()`) were deleted, and the live references
 to the deleted `ScriniaArtifactStore` in `docs/architecture/cli.md` and `AGENTS.md` were corrected.
-See `.superpowers/sdd/2026-08-10-closure-hygiene-rulings/task-{3,4,5}-report.md`.
+See commits `d703150`, `a9323fb`, `8b32bbe`, `230ac93` on `closure-hygiene-rulings`, and the plan
+at `docs/superpowers/plans/2026-08-10-closure-hygiene-rulings.md`.
 
 ## Group E — DECIDED 2026-08-10. All five ruled; none documented away.
 
@@ -98,7 +99,8 @@ all five become work. **E2–E5 are design efforts, not fixes** — they need sp
 **E1 — CLOSED on `closure-hygiene-rulings`, 2026-08-10.** Fixed, not just ruled: the warning
 envelope now prints yellow, not green; `scri bundle import --topics doesnotexist` exits non-zero;
 `ImportBundle` returns `422` instead of `200` when `topicCount == 0`. Breaking change recorded in
-CHANGELOG.md. See `.superpowers/sdd/2026-08-10-closure-hygiene-rulings/task-{1,2}-report.md`.
+CHANGELOG.md. See commits `133d9aa`, `aca1088`, `064902f` on `closure-hygiene-rulings`, and the
+plan at `docs/superpowers/plans/2026-08-10-closure-hygiene-rulings.md`.
 
 **E2 — RULED: design a resolvable addressing scheme.** `remote://{store}/{scope}/{name}` stops
 being a synthesized string nothing can dereference. Needs its own spec.
@@ -145,14 +147,15 @@ them, not deleted from the record:
 
 - **F2**: `HttpMemoryStore.cs` — the `ListScoped` `scopes is not null` ruling, above the URL
   construction.
-- **F3**: `docs/architecture/cli.md` — "Topic filters: CLI and HTTP differ deliberately", with
-  pointer comments at `ScriniaCommands.Bundle.cs` and `MemoryEndpoints.cs`.
+- **F3**: `docs/architecture/cli.md` — "Bundle commands: topic filters differ deliberately between
+  CLI and HTTP", with pointer comments at `ScriniaCommands.Bundle.cs` and `MemoryEndpoints.cs`.
 - **F5**: `HttpMemoryStore.cs` — the `Uri`/`ChunkCount` placeholder ruling at `BuildArtifactEntry`,
   with pointer comments at the three other `ArtifactEntry` construction sites.
 - **F6**: `AttributeExtractor.cs` — the timestamp-tokenization ruling on `SeedTermFrequencies`'s
   doc comment.
 
-See `.superpowers/sdd/2026-08-10-closure-hygiene-rulings/task-6-report.md`.
+See commits `0f46797`, `f943f8e` on `closure-hygiene-rulings`, and the plan at
+`docs/superpowers/plans/2026-08-10-closure-hygiene-rulings.md`.
 
 ## Group G — genuinely unverified, must be checked before ruling (3 items)
 

@@ -402,7 +402,8 @@ public static class MemoryEndpoints
         HttpRequest request,
         RequestContext ctx,
         // CLI comma-splits; the HTTP endpoint binds repeated ?topics= keys. Deliberate — see
-        // "Topic filters: CLI and HTTP differ deliberately" in docs/architecture/cli.md.
+        // "Bundle commands: topic filters differ deliberately between CLI and HTTP" in
+        // docs/architecture/cli.md.
         [FromQuery] string[]? topics = null,
         bool overwrite = false)
     {

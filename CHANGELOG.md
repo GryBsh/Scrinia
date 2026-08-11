@@ -47,9 +47,15 @@ and all assembly attributes.
   `200` — so a CI step gating on the exit code or the status code passed while nothing had
   happened. Three call sites produce this envelope: an empty or fully-filtered bundle import, a
   `facts` entity argument that matched nothing, and an update specifying no changes.
-- **CLI:** `scri bundle import`, `scri bundle export`, `scri store` and `scri forget` exit `1` on a
-  warning envelope and print it in yellow. Concretely,
-  `scri bundle import --topics doesnotexist` now exits `1`.
+- **CLI:** `scri facts` exits `1` on a warning envelope: an entity argument that resolves to
+  nothing (e.g. `scri facts profile person:nobody`), or one that resolves to more than one key —
+  a `DisambiguationResult`, "matched too many" rather than "matched nothing" (e.g.
+  `scri facts profile jolene` when both `person:jolene` and `place:jolene` exist). `scri bundle
+  import` exits `1` when a topic filter matches nothing, e.g.
+  `scri bundle import --topics doesnotexist`. `scri bundle export`, `scri store` and `scri forget`
+  print a warning envelope in yellow and exit `1` through the same code path, but as of this
+  writing none of their call sites can actually produce a warning envelope — only `facts` and
+  `bundle import` do today.
 - **HTTP:** `POST /api/v1/stores/{store}/import` returns `422 Unprocessable Content`
   instead of `200` when no topics were imported. `422` rather than `400`, because the request was
   well-formed and authorised — it simply yielded nothing to import.
@@ -287,6 +293,10 @@ and all assembly attributes.
   `CliExportOutput{path, message}` / `CliImportOutput{message}` with exit `0` on genuine failure.
   They now emit the standard error envelope, `{"error": "..."}`, with exit `1`. Scripts parsing
   `.message` from a failed `scri bundle import --json` must switch to `.error` plus the exit code.
+  `scri store --json` gets the same shape change for a different reason: it had no error guard at
+  all (see "Also fixed" above), so a genuinely failed store emitted `CliStoreOutput` with exit `0`.
+  It now emits the same `{"error": "..."}` envelope with exit `1`; scripts must switch from
+  reading `.name`/`.bytes` to checking `.error` plus the exit code.
 
 ### Changed — search reuses the pipeline's materialized candidates
 

@@ -78,9 +78,6 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         public CachedIndex(List<ArtifactEntry> entries) => Entries = entries;
     }
 
-    /// <summary>Pre-computed BM25 corpus statistics for a scope.</summary>
-    public sealed record CorpusStats(double AvgDocLength, Dictionary<string, int> DocumentFrequencies, int CorpusSize);
-
     /// <summary>
     /// LRU cache for decoded artifact text, bounded by total byte size.
     /// Thread-safe via internal locking.

@@ -82,7 +82,8 @@ public partial class ScriniaCommands
         await WorkspaceSetup.LoadPluginsAsync(cancellationToken);
 
         // CLI comma-splits; the HTTP endpoint binds repeated ?topics= keys. Deliberate — see
-        // "Topic filters: CLI and HTTP differ deliberately" in docs/architecture/cli.md.
+        // "Bundle commands: topic filters differ deliberately between CLI and HTTP" in
+        // docs/architecture/cli.md.
         string[]? topicArray = topics?
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
