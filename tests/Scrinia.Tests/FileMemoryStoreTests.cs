@@ -202,7 +202,7 @@ public sealed class FileMemoryStoreTests : IDisposable
     /// <summary>
     /// <c>CopyMemory</c> resolves the source artifact through the filesystem (case-insensitive on
     /// NTFS) but looked its index entry up with an ordinal <c>e.Name == srcSubject</c>
-    /// (<c>FileMemoryStore.cs:1614-1615</c>). A source named "SrcMixed" copied as "srcmixed" therefore
+    /// (<c>FileMemoryStore.cs:1620-1621</c>). A source named "SrcMixed" copied as "srcmixed" therefore
     /// found its file and not its entry, and the copy silently fell through to the
     /// synthesized-defaults branch: the destination kept the bytes and lost the attributes,
     /// keywords and curated preview the source carried. The pre-existing

@@ -117,10 +117,10 @@ The ten: the interface default (`src/Scrinia.Core/IMemoryStore.cs:50`), the remo
 (`src/Scrinia/HttpMemoryStore.cs:411`), `EntityTypingEventHandler`'s own upstream lookup
 (`src/Scrinia/Services/EntityTypingEventHandler.cs:43-44`),
 `MemoryOrchestrator.StoreAsync` (`src/Scrinia.Server/Services/MemoryOrchestrator.cs:124-127`) and
-`AppendAsync` (`:228-231`), the two MCP write paths (`src/Scrinia.Mcp/MemoryTools.Core.cs:323-326`
-and `:1096-1099`), `compact()` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:583-586`), and
+`AppendAsync` (`:238-241`), the two MCP write paths (`src/Scrinia.Mcp/MemoryTools.Core.cs:323-326`
+and `:1102-1105`), `compact()` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:583-586`), and
 `FileMemoryStore.CopyMemory`'s two ordinal source lookups, now one lookup taken before the
-artifact path is built (`src/Scrinia.Core/FileMemoryStore.cs:1614-1617`).
+artifact path is built (`src/Scrinia.Core/FileMemoryStore.cs:1620-1623`).
 
 **Three of the ten lost data silently, and each deserves naming:**
 
@@ -150,7 +150,7 @@ Windows-only.
 
 **The interface default is reachable only from the test doubles, and its fix should not be
 overstated.** Both real stores override `TryUpdateEntry`
-(`FileMemoryStore.cs:1078`, `HttpMemoryStore.cs:408`); `Scrinia.TestDoubles.FakeMemoryStore` is
+(`FileMemoryStore.cs:1081`, `HttpMemoryStore.cs:408`); `Scrinia.TestDoubles.FakeMemoryStore` is
 the only type that inherits the default. Fixing it is a contract fix and a double-fidelity fix —
 it keeps the doubles modelling the stores they stand in for, and it keeps the interface's stated
 contract true — **not** a live production bug fix.
@@ -245,7 +245,7 @@ feature. In CHANGELOG.md.
   seven.
 - **The plan told an implementer to pin the append defect via the wire's `chunkCount`, which
   cannot observe it.** `chunkCount` is derived from the appended artifact
-  (`MemoryOrchestrator.cs:256`), never from `existingEntry`, so the prescribed `ChunkCount == 2`
+  (`MemoryOrchestrator.cs:266`), never from `existingEntry`, so the prescribed `ChunkCount == 2`
   assertion passed *before* the fix. What a null `existingEntry` actually loses is `ChunkEntries`,
   which is not a wire field at all. The implementer caught this by measuring rather than working
   around it, and re-aimed the guard at `Attributes` and `CreatedAt`, which do fail pre-fix.
@@ -255,7 +255,7 @@ deferral** — this branch's standing rule forbids writing new deferred followup
 one:
 
 1. **`CopyMemory`'s *destination* existence check is still filesystem-case-dependent**
-   (`src/Scrinia.Core/FileMemoryStore.cs:1653`). There is no existing case-insensitive lookup to
+   (`src/Scrinia.Core/FileMemoryStore.cs:1659`). There is no existing case-insensitive lookup to
    align it with, and the right answer is a product call, not an implementer's: is a
    case-differing destination "already exists", or a distinct memory? **Needs a decision.**
 

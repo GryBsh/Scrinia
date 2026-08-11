@@ -206,16 +206,22 @@ public static class MemoryOrchestrator
         // contains both the original body and the appended body. With this hoist reverted, that
         // assertion fails — the content becomes the appended body alone, reproducing the defect
         // exactly. That test SKIPS rather than silently passing on a host that cannot provide a
-        // case-sensitive directory. Complementing it, the pre-existing ORDERING guard —
+        // case-sensitive directory. CaseSensitiveAppendTests is what actually pins this hoist: it is
+        // the guard whose result flips when the hoist is reverted.
+        //
+        // The pre-existing ORDERING guard —
         // AppendUnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing
         // (tests/Scrinia.Server.Tests/MemoryOrchestratorAttributesTests.cs) — runs on every host,
         // case-sensitive filesystem or not, and records which read seam was reached and under which
-        // name. Its load-bearing assertion is that ResolveArtifactAsync is NEVER reached: the
-        // rollback capture further down this method also calls ReadArtifactAsync(subject, scope), so
-        // "ReadArtifactAsync saw the canonical name" is satisfied either way and cannot be the
-        // discriminator there. The two guards are complementary, not redundant: the ordering guard
-        // fires everywhere but only proves the order; the outcome guard proves the fix actually
-        // prevents content loss, but only where a case-sensitive directory is available.
+        // name, but under a pure block-move revert of this hoist it does NOT discriminate: ReadSubject
+        // is masked by the rollback capture further down this method (MemoryOrchestrator.cs:339),
+        // which calls ReadArtifactAsync(subject, scope) again with the by-then-corrected canonical
+        // name and overwrites whatever the first read saw, either way; and ResolveArtifactAsync is
+        // never reached for a non-ephemeral name regardless of hoist order, so that assertion is
+        // satisfied unconditionally too and discriminates nothing here. Its real value is pinning a
+        // different, larger mutation (collapsing the persistent branch's ReadArtifactAsync call back
+        // into the single unified ResolveArtifactAsync call the pre-refactor code used for every
+        // name), not this hoist.
         //
         // Ephemeral names keep ResolveArtifactAsync: they live in an in-memory dictionary, not on
         // disk, there is no index entry to resolve identity from, and its "~key" branch is the only
