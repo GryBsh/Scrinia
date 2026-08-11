@@ -191,11 +191,11 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
     {
         // Content longer than the legacy 200-char Description truncation but within the
         // 500-char ContentPreview cap, so the two carriers diverge when no explicit
-        // description is supplied. Tags come in via the legacy carrier; the read-time
-        // forward-fill (P6.1) promotes it into Fields["tag"] on load, which is what
-        // AttributeReaders.DisplayTags should surface.
+        // description is supplied. The tag arrives on the request's attribute map under the "tag"
+        // key, which now surfaces on list via the full Attributes map (not a DisplayTags flatten).
         string longContent = string.Concat(Enumerable.Repeat("segment ", 40)).TrimEnd();
-        var req = new StoreRequest([longContent], "preview-cutover-test", Description: "", Tags: ["alpha"]);
+        var req = new StoreRequest([longContent], "preview-cutover-test", Description: "",
+            Attributes: new Dictionary<string, string[]> { [KnownAttributes.TagKey] = ["alpha"] });
         var storeResp = await _client.PostAsJsonAsync($"{_base}/memories", req);
         storeResp.StatusCode.Should().Be(HttpStatusCode.Created);
 
@@ -205,13 +205,18 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
 
         item.Description.Should().Be(longContent,
             because: "display Description now sources ContentPreview (spec: Description fully removed from display), not the legacy 200-char truncation");
-        item.Tags.Should().Contain("alpha");
+        item.Attributes.Should().NotBeNull();
+        item.Attributes!.Should().ContainKey(KnownAttributes.TagKey)
+            .WhoseValue.Should().Contain("alpha");
     }
 
     private async Task SeedAsync(string name, string body, string[]? tags = null)
     {
         var resp = await _client.PostAsJsonAsync($"{_base}/memories",
-            new StoreRequest([body], name, body, Tags: tags));
+            new StoreRequest([body], name, body,
+                Attributes: tags is { Length: > 0 }
+                    ? new Dictionary<string, string[]> { [KnownAttributes.TagKey] = tags }
+                    : null));
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
     }
 

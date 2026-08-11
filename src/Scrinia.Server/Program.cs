@@ -8,6 +8,7 @@ using ModelContextProtocol.Server;
 using Scalar.AspNetCore;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Resilience;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.Plugin.Abstractions;
@@ -374,6 +375,40 @@ app.Use(async (context, next) =>
     context.Response.Headers.XFrameOptions = "DENY";
     context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
     context.Response.Headers.XXSSProtection = "0"; // modern browsers: CSP preferred
+    await next();
+});
+
+// API version — stamped on every response under /api/v1/stores (MemoryEndpoints' group and its
+// nested ChatEndpoints group) so HttpMemoryStore can fail closed against a server it doesn't
+// recognise: an old/unversioned server ignores an unknown filter param (excludeTopics,
+// pathPrefix, …) instead of rejecting it, silently returning an unfiltered result set that looks
+// filtered. Deliberately middleware, not an endpoint filter: an endpoint filter only runs once
+// UseAuthorization has already let a request through to the matched endpoint, so it would miss
+// the header on a 401/403 — and the client must recognise a real server on those responses too.
+//
+// Registered via Response.OnStarting, not a direct header assignment, and deliberately NOT via a
+// second app.Use(...) that just sets the header before next() (that was this middleware's first
+// shape, and it was wrong): UseExceptionHandler (registered earlier, above, so it wraps this
+// middleware) calls Response.Clear() — which empties the header collection — whenever an
+// unhandled exception propagates up from anything after this point and the response hasn't
+// started, then runs its own separate error-writing branch to produce the 500 body. A header set
+// directly here would be wiped by that Clear() before the client ever sees it, so a genuine server
+// crash would arrive with no version header at all — indistinguishable, to the client's guard,
+// from an old/unversioned server, misdirecting the caller toward "wrong API version" instead of
+// "the server crashed" (reproduced: see ApiVersionHeaderOn500Tests). OnStarting callbacks are
+// stored outside the header collection and fire immediately before the response actually starts —
+// i.e. after any Clear() — so registering the stamp here, rather than writing it immediately,
+// guarantees it survives regardless of what happens downstream, unhandled exception or not.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/v1/stores"))
+    {
+        context.Response.OnStarting(() =>
+        {
+            context.Response.Headers[RemoteApiVersion.HeaderName] = RemoteApiVersion.Current;
+            return Task.CompletedTask;
+        });
+    }
     await next();
 });
 

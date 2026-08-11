@@ -12,11 +12,24 @@ namespace Scrinia.Tests;
 /// failure mode this catches is someone adding a local-only member back to the shared interface —
 /// which nothing else does.
 /// <para>That is narrower than "a remote store honours the whole contract in substance".
-/// <c>HttpMemoryStore</c> implements three members as silent no-ops rather than throws —
-/// <c>LoadIndex</c> returns <c>[]</c>, <c>Upsert</c> and <c>ArchiveVersion</c> are empty — which is
-/// exactly why a "count the throws" criterion never surfaced them. Two are defensible (the server
-/// does that work); <c>LoadIndex</c> is not, and is recorded as a known gap in
-/// <c>/findings/store-boundaries-deferred-followups</c>.</para>
+/// <c>HttpMemoryStore</c> still implements <c>Upsert</c> and <c>ArchiveVersion</c> as silent
+/// no-ops rather than throws — defensible, since the server does that work — which is exactly why
+/// a "count the throws" criterion never surfaced them.
+/// <c>LoadIndex</c> used to be a third silent no-op (returned <c>[]</c> unconditionally, recorded
+/// as a known gap); it now proxies to the listing endpoint instead
+/// (remote-write-correctness Task 6). <c>TryUpdateEntry</c> is the one member with a fourth shape:
+/// it is neither a throw nor a silent success — <c>HttpMemoryStore</c> overrides the default
+/// (LoadIndex + mutate + Upsert) to fail closed, because the fixed <c>LoadIndex</c> would
+/// otherwise let it find an entry, discard the mutation into the no-op <c>Upsert</c>, and still
+/// report <c>true</c>. That override corrects the contract but does not make remote
+/// <c>TryUpdateEntry</c> actually persist anything — doing that needs a dedicated attributes-only
+/// PATCH endpoint (so a metadata-only mutation need not replay the whole artifact through
+/// <c>WriteArtifactAsync</c>, which would also trigger a spurious version-archive on every
+/// mutation), which is out of scope here. Until that endpoint exists, the MCP tools that need a
+/// metadata-only write — <c>update()</c> and <c>link()</c>, both via <c>MemoryTools.UpdateMeta</c>
+/// — report an honest NOT_SUPPORTED remotely rather than a success they cannot back up. Recorded
+/// here rather than in a planning document because <c>.superpowers/</c> is gitignored: a path
+/// under it does not exist for anyone who clones this repo.</para>
 /// </summary>
 public sealed class StoreBoundaryTests
 {

@@ -40,6 +40,13 @@ public sealed class StoreConformanceTests(StoreConformanceFixture fx)
         StoreConformanceFixture.Names(fx.Remote, remoteResults).Should()
             .BeEquivalentTo(StoreConformanceFixture.Names(fx.Local, localResults));
 
+        // Names() is blind to fabricated entry fields — it only looks at the name. Identity()
+        // folds in OriginalBytes and CreatedAt, the two the remote client used to invent (0 and
+        // "now"); without this line, reverting HttpMemoryStore.BuildArtifactEntry to those
+        // fabricated values leaves the whole suite green.
+        StoreConformanceFixture.Identity(fx.Remote, remoteResults).Should()
+            .BeEquivalentTo(StoreConformanceFixture.Identity(fx.Local, localResults));
+
         // Names() alone is blind to a scope-only defect: FormatQualifiedName reassembles the
         // same qualified label whether or not the client recovered the scope correctly from the
         // wire name, so compare the raw scope sets directly too.

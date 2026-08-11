@@ -568,11 +568,24 @@ public sealed partial class ScriniaMcpTools
             newChunkCount = keepRecent;
         }
 
-        await store.WriteArtifactAsync(subject, scope, compacted, cancellationToken);
-
-        // Preserve keywords from the existing entry metadata
+        // Read the existing entry BEFORE the write, not after. Compaction rewrites content, not
+        // metadata, so the entry's attributes/keywords/description must survive it — and remotely
+        // the write is a full re-store that replaces the entry with server-extracted attributes
+        // only, with the Upsert below a no-op. Reading first and handing the metadata to the write
+        // is the only channel it has; reading after would sample the already-clobbered entry.
+        // Locally this reads the same values either way: FileMemoryStore.WriteArtifactAsync touches
+        // the artifact file only and leaves the sidecar alone.
         var entries = store.LoadIndex(scope);
         var existingEntry = entries.FirstOrDefault(e => e.Name == subject);
+
+        await store.WriteArtifactAsync(subject, scope, compacted,
+            existingEntry is null
+                ? null
+                : new ArtifactWriteMetadata(
+                    Attributes: existingEntry.Attributes,
+                    Keywords: existingEntry.Keywords,
+                    Description: existingEntry.ContentPreview),
+            cancellationToken);
 
         if (existingEntry is not null)
         {

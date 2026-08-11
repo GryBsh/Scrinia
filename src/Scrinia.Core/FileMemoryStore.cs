@@ -1040,7 +1040,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
             var current = LoadEntriesFromSidecars(storeDir)
                 .Select(e => e.NormalizeAttributesKey())
-                .FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+                .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
             if (current is null) return false;
 
             var updated = mutate(current);
@@ -1063,8 +1063,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     // ── Artifact file I/O ────────────────────────────────────────────────────
 
-    public async Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default)
+    public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
+        ArtifactWriteMetadata? meta = null, CancellationToken ct = default)
     {
+        // meta is deliberately ignored. The local store receives an entry's metadata through
+        // Upsert immediately after this call, which is richer than meta and is the authority.
+        // The parameter exists for HttpMemoryStore, whose Upsert is a no-op because the server
+        // owns persistence — for it, this call is the only channel the metadata has.
         string path = ArtifactPath(subject, scope);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await AtomicWriteAllTextAsync(path, artifactText, ct);

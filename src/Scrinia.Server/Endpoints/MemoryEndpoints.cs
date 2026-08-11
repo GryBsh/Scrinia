@@ -61,6 +61,32 @@ public static class MemoryEndpoints
         if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
             return Results.BadRequest(new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
+        // Key cap: KnownAttributes.MaxAttributes, not the search filter's 64. KnownAttributes.Merge
+        // caps at MaxAttributes and truncates past it with no signal, so accepting a larger map
+        // would drop keys silently. This does NOT diverge from local: Merge caps the map on the MCP
+        // side too, so an MCP-originated wire map can never arrive over this bound.
+        //
+        // It only partly achieves "say no rather than truncate quietly", and the gap is worth
+        // knowing: Merge counts the extraction-derived keys FIRST, so a request of 30 keys against
+        // content yielding 5 extracted keys still loses 3 to truncation, under this bound. Rejecting
+        // on the post-merge count would need the merge to have run, which is past the point where a
+        // 400 is the right answer. What this bound removes is the grossly-over case, not every case.
+        if (req.Attributes is { Count: > KnownAttributes.MaxAttributes })
+            return Results.BadRequest(new ErrorResponse(
+                $"attributes may not exceed {KnownAttributes.MaxAttributes} keys."));
+        // Values-per-key cap. This used to be a remote-ONLY bound of 64, justified as a deliberate
+        // asymmetry — but it was reachable from routine auto-extraction, not just from a caller
+        // deliberately supplying 65 values: nothing caps `file`/`ref` values locally, so a memory
+        // citing 70 distinct paths stored fine in-process and 400'd here. The bound now lives in
+        // KnownAttributes.MaxValuesPerKey and is enforced by KnownAttributes.Merge, which every
+        // write path funnels through, so this check can no longer fire for a map produced by
+        // Scrinia's own code — local and remote accept the same input. It stays as the wire guard
+        // for a hand-rolled client that never went through Merge, and, like the key cap above, says
+        // no rather than truncating quietly.
+        if (req.Attributes is not null && req.Attributes.Any(kv => kv.Value is { Length: > KnownAttributes.MaxValuesPerKey }))
+            return Results.BadRequest(
+                new ErrorResponse($"attributes may not exceed {KnownAttributes.MaxValuesPerKey} values per key."));
+
         try
         {
             var result = await pipeline.StoreAsync(ctx.Store!, req, ct);
@@ -110,7 +136,7 @@ public static class MemoryEndpoints
                 item.Entry.CreatedAt,
                 item.Entry.UpdatedAt,
                 AttributeReaders.PreviewText(item.Entry.ContentPreview),
-                AttributeReaders.DisplayTags(item.Entry.Attributes).ToArray()));
+                item.Entry.Attributes));
         }
 
         return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));
@@ -313,7 +339,9 @@ public static class MemoryEndpoints
                     ? $"~{er.Item.Entry.Name}"
                     : ctx.Store!.FormatQualifiedName(er.Item.Scope, er.Item.Entry.Name),
                 er.Score,
-                AttributeReaders.PreviewText(er.Item.Entry.ContentPreview)),
+                AttributeReaders.PreviewText(er.Item.Entry.ContentPreview),
+                OriginalBytes: er.Item.Entry.OriginalBytes,
+                CreatedAt: er.Item.Entry.CreatedAt),
             ChunkEntryResult cr => new SearchResultItem(
                 "chunk",
                 cr.ParentItem.Scope == "ephemeral"
@@ -322,7 +350,11 @@ public static class MemoryEndpoints
                 cr.Score,
                 cr.Chunk.ContentPreview ?? AttributeReaders.PreviewText(cr.ParentItem.Entry.ContentPreview),
                 cr.Chunk.ChunkIndex,
-                cr.TotalChunks),
+                cr.TotalChunks,
+                OriginalBytes: cr.ParentItem.Entry.OriginalBytes,
+                CreatedAt: cr.ParentItem.Entry.CreatedAt),
+            // A topic is a scope label, not a memory — no real byte count or creation time exists
+            // to report, so both stay null rather than being aggregated from member entries.
             TopicResult tr => new SearchResultItem(
                 "topic",
                 MemoryNaming.FormatScopeLabel(tr.Scope),

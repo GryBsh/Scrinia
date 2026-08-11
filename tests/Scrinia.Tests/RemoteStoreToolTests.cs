@@ -29,7 +29,7 @@ public sealed class RemoteStoreToolTests
     private const string OneEntryListJson = """
         {"memories":[{"name":"alpha","qualifiedName":"local:alpha","scope":"local",
         "chunkCount":1,"originalBytes":128,"createdAt":"2026-01-01T00:00:00+00:00",
-        "updatedAt":null,"description":"an entry","tags":null}],"total":1}
+        "updatedAt":null,"description":"an entry","attributes":null}],"total":1}
         """;
 
     /// <summary>
@@ -57,26 +57,35 @@ public sealed class RemoteStoreToolTests
             bool isMemoriesCollection =
                 request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal);
 
+            HttpResponseMessage response;
             if (request.Method == HttpMethod.Get && isMemoriesCollection)
             {
-                return new HttpResponseMessage(HttpStatusCode.OK)
+                response = new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(listJson, Encoding.UTF8, "application/json"),
                 };
             }
-
             // A persistent remote remember() writes through here. The body is ignored by the
             // caller — only the status matters — but it must be a success status or
             // WriteArtifactAsync throws before the code under test is ever reached.
-            if (request.Method == HttpMethod.Post && isMemoriesCollection)
+            else if (request.Method == HttpMethod.Post && isMemoriesCollection)
             {
-                return new HttpResponseMessage(HttpStatusCode.OK)
+                response = new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent("{}", Encoding.UTF8, "application/json"),
                 };
             }
+            else
+            {
+                response = new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
 
-            return new HttpResponseMessage(HttpStatusCode.NotFound);
+            // Stamped with a matching API version header (remote-write-correctness Task 7) on
+            // every response, including the 404 fallback above — HttpMemoryStore now fails closed
+            // on any response missing this header, and this fixture is about tool behaviour over
+            // an already-recognised remote store, not about the version check itself.
+            response.Headers.TryAddWithoutValidation(RemoteApiVersion.HeaderName, RemoteApiVersion.Current);
+            return response;
         }
     }
 
@@ -415,9 +424,10 @@ public sealed class RemoteStoreToolTests
         // absent.
         //
         // Asserted through a recording double rather than the HttpMemoryStore fixture, because
-        // FileHashes is unobservable over the wire: StoreApiRequest (HttpMemoryStore.cs:106)
-        // carries only content and name, and HttpMemoryStore.Upsert is a no-op. A double's
-        // Upsert is the only seam where the stored entry can actually be inspected.
+        // FileHashes is unobservable over the wire: StoreApiRequest carries content, name,
+        // description, attributes and keywords — the path->hash map is not among them — and
+        // HttpMemoryStore.Upsert is a no-op. A double's Upsert is the only seam where the stored
+        // entry can actually be inspected.
         //
         // The probe file lives in the CWD deliberately. The failure this guards against is
         // fabricating a root — `?? Directory.GetCurrentDirectory()` — which would silently hash
@@ -450,6 +460,60 @@ public sealed class RemoteStoreToolTests
         {
             File.Delete(probePath);
         }
+    }
+
+    // ── Final review, Critical 1: UpdateMeta must not report an unpersisted write ──
+
+    /// <summary>
+    /// <c>UpdateMeta</c> — reached by <c>update()</c> and by both halves of <c>link()</c> — used to
+    /// go LoadIndex → mutate → <c>Upsert</c> → <c>ResponseBuilder.Success</c>. Remotely
+    /// <c>Upsert</c> is a deliberate no-op, so once <c>LoadIndex</c> was fixed to return the real
+    /// listing, the entry was found, mutated, dropped, and reported as updated. Measured against a
+    /// Kestrel host: <c>link()</c> answered <c>status: success / action: linked</c> while the target
+    /// entry gained no <c>ref</c> attribute. It now routes through <c>TryUpdateEntry</c>, whose
+    /// remote override already fails closed, and reports that refusal.
+    /// <para>The list JSON here makes the entry EXIST, which is what separates this from an
+    /// ordinary "not found": the answer must be NOT_SUPPORTED, not NOT_FOUND.</para>
+    /// </summary>
+    [Fact]
+    public async Task UpdateMeta_RemoteStore_ReportsNotSupported_RatherThanAFabricatedSuccess()
+    {
+        using var scope = new RemoteStoreScope(OneEntryListJson);
+
+        var response = await Tools().UpdateMeta("alpha", keywords: ["curated"]);
+
+        response.Status.Should().Be("error",
+            because: "a remote store has no channel for a metadata-only write, so success would " +
+                     "be a report of something that did not happen");
+        response.ErrorCode.Should().Be(ErrorCodes.NotSupported,
+            because: "the entry exists — this is a missing capability, not a missing memory");
+        response.ActionNeeded.Should().NotBeNullOrEmpty(
+            because: "a refusal without a next step leaves the caller stuck");
+    }
+
+    /// <summary>The pre-existing NOT_FOUND case must still answer NOT_FOUND: the fail-closed path
+    /// above must not swallow the ordinary "no such memory" answer.</summary>
+    [Fact]
+    public async Task UpdateMeta_RemoteStore_StillReportsNotFound_WhenTheEntryDoesNotExist()
+    {
+        using var scope = new RemoteStoreScope(EmptyListJson);
+
+        var response = await Tools().UpdateMeta("absent", keywords: ["curated"]);
+
+        response.ErrorCode.Should().Be(ErrorCodes.NotFound);
+    }
+
+    /// <summary>And the "nothing to change" case must still be the warning it was, not an error:
+    /// TryUpdateEntry returns false for a null mutation too, and the three causes have to stay
+    /// distinguishable.</summary>
+    [Fact]
+    public async Task UpdateMeta_RemoteStore_StillWarns_WhenNothingWasSpecified()
+    {
+        using var scope = new RemoteStoreScope(OneEntryListJson);
+
+        var response = await Tools().UpdateMeta("alpha");
+
+        response.Status.Should().Be("warning");
     }
 
     // ── Task 3: the narrowed optional site in Recall ─────────────────────────

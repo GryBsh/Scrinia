@@ -11,6 +11,29 @@ public static class KnownAttributes
 {
     public const int MaxAttributes = 32;
 
+    /// <summary>
+    /// Maximum values retained under a single attribute key. Enforced by <see cref="Merge"/> — the
+    /// one point every write path funnels through — so a local write and a remote one keep the same
+    /// values for the same input, and the server's matching wire bound
+    /// (<c>MemoryEndpoints.RememberMemory</c>) can never fire for a map this code produced.
+    ///
+    /// <para>Sized to be unreachable from auto-extraction rather than to be tight. The previous
+    /// wire-only bound of 64 was reachable from ROUTINE extraction: nothing caps <c>file</c> or
+    /// <c>ref</c> values (unlike <c>mention</c>, capped at
+    /// <see cref="AttributeExtractor.MaxMentionSpans"/>), and a memory citing 70 distinct paths —
+    /// an ordinary shape for a code-heavy note — stored fine locally and 400'd remotely. Raising the
+    /// bound alone would only move that cliff, and capping at 64 to match would start discarding
+    /// file references from real content; 256 distinct values under one key is past what any
+    /// extractor produces from a single memory, so this bounds storage growth without truncating
+    /// anything a caller meant.</para>
+    /// </summary>
+    public const int MaxValuesPerKey = 256;
+
+    /// <summary>Truncates a value array to <see cref="MaxValuesPerKey"/>, keeping the first values —
+    /// the same "existing order is preserved" rule <see cref="Merge"/> applies to unions.</summary>
+    private static string[] Cap(string[] values) =>
+        values.Length > MaxValuesPerKey ? values[..MaxValuesPerKey] : values;
+
     /// <summary>Entity attribute keys — union-merge, graph-building. Same set as EntityGraph.RealTypes.</summary>
     public static readonly IReadOnlySet<string> EntityKeys =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "person", "place", "org", "thing", "topic" };
@@ -62,6 +85,28 @@ public static class KnownAttributes
         || ReferenceKeys.Contains(key)
         || string.Equals(key, MentionKey, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Canonicalizes an agent-supplied attribute map before it is merged: lowercases and
+    /// trims keys, trims values, drops blank keys/values and any key left with no values. Null when
+    /// nothing survives. Matches the Attributes convention (AttributeExtractor lowercases keys).
+    ///
+    /// <para>Every write path calls this — the MCP tools locally and
+    /// <c>MemoryOrchestrator</c> for requests arriving over HTTP — so a local and a remote write of
+    /// the same map produce the same attributes. It lives here, next to <see cref="Merge"/>, for
+    /// that reason: a second copy is how local and remote drift apart.</para></summary>
+    public static Dictionary<string, string[]>? Normalize(IReadOnlyDictionary<string, string[]>? attributes)
+    {
+        if (attributes is not { Count: > 0 }) return null;
+        var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in attributes)
+        {
+            if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is null) continue;
+            var vals = kv.Value.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).ToArray();
+            if (vals.Length == 0) continue;
+            result[kv.Key.Trim().ToLowerInvariant()] = vals;
+        }
+        return result.Count > 0 ? result : null;
+    }
+
     /// <summary>
     /// Merges incoming attributes over existing per the key-class semantics: multi-valued keys
     /// union-dedupe (existing values keep their order); scalar keys are replaced by the
@@ -81,7 +126,7 @@ public static class KnownAttributes
             foreach (var kv in existing)
             {
                 if (merged.Count >= MaxAttributes) break;
-                merged[kv.Key] = kv.Value;
+                merged[kv.Key] = Cap(kv.Value);
             }
         }
         if (incoming is not null)
@@ -90,13 +135,13 @@ public static class KnownAttributes
             {
                 if (merged.TryGetValue(kv.Key, out var current))
                 {
-                    merged[kv.Key] = IsMultiValued(kv.Key)
+                    merged[kv.Key] = Cap(IsMultiValued(kv.Key)
                         ? current.Union(kv.Value, StringComparer.OrdinalIgnoreCase).ToArray()
-                        : kv.Value;
+                        : kv.Value);
                 }
                 else if (merged.Count < MaxAttributes)
                 {
-                    merged[kv.Key] = kv.Value;
+                    merged[kv.Key] = Cap(kv.Value);
                 }
             }
         }

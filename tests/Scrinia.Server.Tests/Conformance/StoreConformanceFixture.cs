@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Core;
+using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 using Scrinia.Server.Models;
 using Scrinia.Server.Services;
@@ -70,7 +71,10 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
     {
         var resp = await _client.PostAsJsonAsync(
             $"/api/v1/stores/{_factory.PrimaryStore}/memories",
-            new StoreRequest([body], name, body, tags));
+            new StoreRequest([body], name, body,
+                Attributes: tags is { Length: > 0 }
+                    ? new Dictionary<string, string[]> { [KnownAttributes.TagKey] = tags }
+                    : null));
         resp.EnsureSuccessStatusCode();
         return name;
     }
@@ -84,10 +88,12 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
         return Task.CompletedTask;
     }
 
-    /// <summary>Ordered-insensitive comparison key: the qualified label of each result.
-    /// Score, CreatedAt and OriginalBytes are deliberately excluded — HttpMemoryStore
-    /// fabricates the latter two (a documented limitation), and scoring differs because the
-    /// server always has a PathSegmentScoreContributor registered.</summary>
+    /// <summary>Ordered-insensitive comparison key: the qualified label of each result, and nothing
+    /// else — several assertions match on it as a path string (<c>StartsWith("/api/")</c>,
+    /// <c>== "goal/G-1"</c>), so it must stay a bare name. Score is excluded on purpose and stays
+    /// excluded: the server always has a PathSegmentScoreContributor registered, so scores
+    /// legitimately differ between the two stores. CreatedAt and OriginalBytes are NOT excluded any
+    /// more — see <see cref="Identity"/>.</summary>
     public static string[] Names(IMemoryStore store, IEnumerable<SearchResult> results) =>
         results.Select(r => r switch
         {
@@ -96,6 +102,28 @@ public sealed class StoreConformanceFixture : IAsyncLifetime
             TopicResult tr => MemoryNaming.FormatScopeLabel(tr.Scope),
             _ => "",
         }).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToArray();
+
+    /// <summary>
+    /// <see cref="Names"/> plus the two entry fields <c>HttpMemoryStore</c> used to fabricate:
+    /// <c>OriginalBytes</c> (was hard-coded 0) and <c>CreatedAt</c> (was <c>DateTimeOffset.UtcNow</c>,
+    /// i.e. the time of the search). Both now come off the wire DTO, and this is what holds them
+    /// there: with them merely excluded from the comparison key, reverting
+    /// <c>HttpMemoryStore.BuildArtifactEntry</c> to the fabricated values left the entire suite
+    /// green — measured. Topic results carry no entry, so they contribute their label alone.
+    /// </summary>
+    public static string[] Identity(IMemoryStore store, IEnumerable<SearchResult> results) =>
+        results.Select(r => r switch
+        {
+            EntryResult er => Key(store, er.Item),
+            ChunkEntryResult cr => Key(store, cr.ParentItem),
+            TopicResult tr => MemoryNaming.FormatScopeLabel(tr.Scope),
+            _ => "",
+        }).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToArray();
+
+    private static string Key(IMemoryStore store, ScopedArtifact item) =>
+        $"{store.FormatQualifiedName(item.Scope, item.Entry.Name)}" +
+        $"|bytes={item.Entry.OriginalBytes}" +
+        $"|created={item.Entry.CreatedAt.UtcDateTime:O}";
 
     /// <summary>The raw internal scope of each result (e.g. "local", "local:goal/G-1") — unlike
     /// <see cref="Names"/>, this is NOT blind to a client that mis-recovers scope from the wire

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using FluentAssertions;
 using Scrinia.Core;
@@ -61,16 +62,26 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
     /// cannot distinguish "populated at write" from "upgraded on this read". This test instead
     /// reads the raw `*.meta.json` sidecar directly (via the `internal MetaPath` helper, which
     /// Scrinia.Core exposes to Scrinia.Server.Tests via InternalsVisibleTo) with a plain
-    /// deserialize that never calls AttributeMigration. Before Task 3's change, this assertion
-    /// fails because the freshly-written sidecar's Attributes lacks "tag"/"review" (only
-    /// keyword/ref/attribute-derived keys are present at write time).
+    /// deserialize that never calls AttributeMigration.
+    ///
+    /// The request now supplies "tag"/"review" as attribute keys rather than through the removed
+    /// Tags/ReviewAfter carrier fields, so what this pins is unchanged in substance: whatever the
+    /// request said about tag and review is in the sidecar the write produced, not merely
+    /// reconstructed by a later read.
     /// </summary>
     [Fact]
     public async Task StoreAsync_Persistent_FoldsToAttributesAtWriteTime()
     {
+        string reviewDateToken = DateTimeOffset.Parse("2026-08-01T00:00:00Z", CultureInfo.InvariantCulture)
+            .ToString("o", CultureInfo.InvariantCulture);
+
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Body about widgets."], "orch-writer-cutover-store",
-                Tags: ["widgets"], ReviewAfter: "2026-08-01"));
+                Attributes: new Dictionary<string, string[]>
+                {
+                    [KnownAttributes.TagKey] = ["widgets"],
+                    [KnownAttributes.ReviewKey] = [reviewDateToken],
+                }));
 
         string metaPath = _store.MetaPath("orch-writer-cutover-store", "local");
         string json = File.ReadAllText(metaPath);
@@ -89,14 +100,15 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
     /// <summary>
     /// Ephemeral counterpart: EphemeralEntry is in-memory-only and never forward-filled at read
     /// time, so asserting directly against the store (no sidecar/LoadIndex involved at all)
-    /// proves <see cref="MemoryOrchestrator.StoreAsync"/>'s tag->Attributes routing runs at write.
+    /// proves the request's attribute map reaches <see cref="MemoryOrchestrator.StoreAsync"/>'s
+    /// ephemeral branch at write, which has no read-time forward-fill to fall back on.
     /// </summary>
     [Fact]
     public async Task StoreAsync_Ephemeral_FoldsToAttributesAtWriteTime()
     {
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Ephemeral scratch note about widgets."], "~orch-writer-cutover-eph",
-                Tags: ["widgets"]));
+                Attributes: new Dictionary<string, string[]> { [KnownAttributes.TagKey] = ["widgets"] }));
 
         var entry = _store.GetEphemeral("orch-writer-cutover-eph");
         entry.Should().NotBeNull();
@@ -161,7 +173,7 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
     }
 
     /// <summary>
-    /// StoreRequest has no explicit-attributes field, but req.Keywords can still route a
+    /// Independently of the request's explicit attribute map, req.Keywords can route a
     /// "person:jolene"-shaped entry into the typed `person` attribute (via
     /// AttributeExtractor.RouteKeywords) — which collides with a `mention:jolene` span
     /// mechanically extracted from prose in the same content. Without the shadow-drop, both land

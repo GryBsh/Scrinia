@@ -75,6 +75,25 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             throw;
         }
 
+        // Fail closed against a server that doesn't speak this client's version contract, before
+        // any status-code-based handling below gets a chance to treat its response as trustworthy
+        // (see RemoteApiVersionGuard — this covers the synchronous send path; the async path is
+        // covered at each of its two call sites below).
+        //
+        // Every caller of SendSync does `using var resp = SendSync(req)`, so before this guard
+        // existed, the response always reached that `using`. A throw from here skips the handoff,
+        // so it must dispose the response itself first — otherwise every call against a
+        // misversioned server leaks the response and its content stream.
+        try
+        {
+            RemoteApiVersionGuard.Validate(response);
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
+
         if (response.IsSuccessStatusCode)
             _circuitBreaker.RecordSuccess();
         else if (TransientDetector.IsTransient(response))
@@ -104,15 +123,19 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     // Internal DTOs for the REST API
     internal sealed record StoreApiRequest(string[] Content, string Name, string? Description = null,
-        string[]? Tags = null, string[]? Keywords = null, string? ReviewAfter = null, string? ReviewWhen = null);
+        Dictionary<string, string[]>? Attributes = null, string[]? Keywords = null);
     internal sealed record StoreApiResponse(string Name, string QualifiedName, int ChunkCount, long OriginalBytes, string Message);
     internal sealed record ShowApiResponse(string Name, string Content, int ChunkCount, long OriginalBytes);
     internal sealed record ListApiResponse(ListApiItem[] Memories, int Total);
     internal sealed record ListApiItem(string Name, string QualifiedName, string Scope, int ChunkCount,
-        long OriginalBytes, DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt, string Description, string[]? Tags);
+        long OriginalBytes, DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt, string Description,
+        Dictionary<string, string[]>? Attributes);
     internal sealed record SearchApiResponse(SearchApiItem[] Results);
     internal sealed record SearchApiItem(string Type, string Name, double Score, string? Description,
-        int? ChunkIndex = null, int? TotalChunks = null);
+        int? ChunkIndex = null, int? TotalChunks = null,
+        // Null for a "topic" item — a topic is a scope label, not a memory, and has no real byte
+        // count or creation time. Present for "entry" and "chunk" items.
+        long? OriginalBytes = null, DateTimeOffset? CreatedAt = null);
     internal sealed record SearchApiRequest(string Q, string? Scopes, int Limit, string? ExcludeTopics,
         string? PathPrefix, Dictionary<string, string[]>? AttributeFilter);
     internal sealed record AppendApiRequest(string Content);
@@ -234,6 +257,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             () => _http.GetAsync($"{BaseUrl}/memories/{encoded}", ct),
             r => TransientDetector.IsTransient(r),
             _retryOptions, logger: null, ct);
+        // Fail closed on the async send path too — see the sync-path comment in SendSync above.
+        RemoteApiVersionGuard.Validate(resp);
         if (resp.IsSuccessStatusCode)
             _circuitBreaker.RecordSuccess();
         else
@@ -250,13 +275,146 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         return Nmp2ChunkedEncoder.Encode(show.Content);
     }
 
-    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") =>
-        []; // Not directly supported in remote mode; use ListScoped
+    /// <summary>
+    /// Proxies to the same listing endpoint <see cref="ListScoped(string?)"/> already uses,
+    /// filtered to <paramref name="scope"/>.
+    ///
+    /// <para><b>This is a blocking network round trip, deliberately — and for a scope with more
+    /// entries than the server's page size, more than one.</b> <c>LoadIndex</c> is declared
+    /// synchronous on <see cref="IMemoryStore"/> (mirroring <see cref="FileMemoryStore"/>'s free,
+    /// in-process cache read), so there is no async seam to hide the cost behind — every call
+    /// here really does block the calling thread on <see cref="SendSync"/>, once per page. That
+    /// trade was chosen over the alternative of overriding <c>TryUpdateEntry</c> to PATCH
+    /// server-side: that needs a brand-new endpoint and DTO and would still leave every other
+    /// caller — the async entity-typing sink, the maintenance sink, and every MCP tool's "does
+    /// this entry already exist" lookup — reading an empty (or, pre-pagination-fix, truncated)
+    /// list. Proxying here fixes the read for all of them in one change.</para>
+    ///
+    /// <para>The call sites that can reach this store, and their cost: <c>MemoryTools.Core</c>'s
+    /// remember and append existing-entry lookups, <c>MemoryTools.Lifecycle</c>'s compact and
+    /// restore lookups, <c>BundleFormatService</c>'s per-topic export read,
+    /// <c>EntityTypingEventHandler.PromoteAsync</c>, <c>MaintenanceEventSink</c> (through
+    /// <see cref="TryUpdateEntry"/>), and <see cref="TryUpdateEntry"/> itself. Each spends one
+    /// logical call — none of them loops over <c>LoadIndex</c> per entry, so the round trips are
+    /// bounded by the number of tool invocations, not by corpus size. <c>MemoryOrchestrator</c>'s
+    /// two call sites are server-side and always hold a <c>FileMemoryStore</c>. (This method's own
+    /// internal paging loop is a different thing — one logical call, several pages.)</para>
+    /// </summary>
+    public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
+    {
+        var result = new List<ArtifactEntry>();
+        int offset = 0;
+        // 1000 is MaxListLimit server-side (MemoryEndpoints.cs) — the largest page the server
+        // will honour, so paging at this size minimizes round trips for a large scope. The
+        // server's default page size (200) is what silently truncated LoadIndex before this loop
+        // existed: a caller who asked for "the scope" got the first page and no signal that more
+        // existed. The loop below keeps requesting pages until it has collected every entry the
+        // server reports via ListApiResponse.Total, so a scope of any size comes back whole.
+        const int pageSize = 1000;
+
+        while (true)
+        {
+            string url = $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scope)}&offset={offset}&limit={pageSize}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var resp = SendSync(req);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Returning [] here would look exactly like "this scope has no entries" — the
+                // same lie LoadIndex told unconditionally before this fix, just gated behind a
+                // failed request instead of always. A caller (TryUpdateEntry's default
+                // implementation among them) must not conclude "not found" from a server that is
+                // unreachable or erroring; that is a materially different condition and losing
+                // the distinction is how the original defect happened. Throwing matches
+                // WriteArtifactAsync's existing throw-on-failure contract elsewhere in this type.
+                // The status code is included in the message specifically so a 403 here reads as
+                // a permission problem (this endpoint requires the "search" permission, distinct
+                // from "store") rather than an opaque server fault.
+                throw new HttpRequestException(
+                    $"Remote store listing failed for scope '{scope}': {(int)resp.StatusCode} {resp.StatusCode}.",
+                    inner: null,
+                    statusCode: resp.StatusCode);
+            }
+
+            using var stream = resp.Content.ReadAsStream();
+            var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
+            if (list?.Memories is null || list.Memories.Length == 0)
+                break;
+
+            foreach (var item in list.Memories)
+            {
+                result.Add(new ArtifactEntry(
+                    Name: item.Name,
+                    Uri: "",
+                    OriginalBytes: item.OriginalBytes,
+                    ChunkCount: item.ChunkCount,
+                    CreatedAt: item.CreatedAt,
+                    ContentPreview: item.Description,
+                    UpdatedAt: item.UpdatedAt,
+                    Attributes: item.Attributes));
+            }
+
+            offset += list.Memories.Length;
+            if (offset >= list.Total)
+                break;
+        }
+
+        return result;
+    }
 
     public void Upsert(ArtifactEntry entry, string scope = "local")
     {
         // In remote mode, store operations go through WriteArtifactAsync/StoreAsync
         // Upsert is managed server-side
+    }
+
+    /// <summary>
+    /// Overrides <see cref="IMemoryStore"/>'s default implementation, which ends with
+    /// <c>Upsert(updated, scope)</c>. <see cref="Upsert"/> is a deliberate no-op here — see its
+    /// comment — because persistent writes go through <see cref="WriteArtifactAsync"/> instead.
+    ///
+    /// <para>Now that <see cref="LoadIndex"/> proxies to the real listing endpoint rather than
+    /// unconditionally returning <c>[]</c>, the inherited default would find the entry, apply the
+    /// caller's mutation, hand it to the no-op <c>Upsert</c>, and still return <c>true</c> —
+    /// reporting a successful write that never reached the server. That is a contract violation
+    /// regardless of who currently reads it: <see cref="IMemoryStore.TryUpdateEntry"/>'s own doc
+    /// promises the return value means the mutation was persisted, and <c>true</c> here would
+    /// make that promise false. To be precise about what this fixes today rather than overstate
+    /// it: the one production caller, <c>EntityTypingEventHandler.PromoteAsync</c>, calls this
+    /// as a discarded statement and does not branch on the result or retry either way — so
+    /// <c>true</c> vs. <c>false</c> is currently unobservable in production, and this override is
+    /// a correctness fix for the contract itself (for whichever future caller does read the
+    /// result — the interface's own doc already promises one exists), not a fix for an observed
+    /// live bug.</para>
+    ///
+    /// <para>The correct fix is a dedicated attributes-only PATCH endpoint, so a metadata-only
+    /// mutation does not have to replay the whole artifact through <c>WriteArtifactAsync</c>
+    /// (which would also trigger a spurious version-archive on every mutation — unlike
+    /// <c>FileMemoryStore.TryUpdateEntry</c>'s atomic, sidecar-only write, this store has no
+    /// remote equivalent). That endpoint and DTO are out of scope for the change that added this
+    /// override — seeded remotely, LoadIndex used to make the "not found" case lie in one
+    /// direction (found nothing existing); without this override, fixing LoadIndex would only
+    /// move the lie to the other, worse direction. Until the endpoint exists, this fails closed:
+    /// a mutation that would have applied is refused, not silently dropped while reporting
+    /// success.</para>
+    /// </summary>
+    public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
+    {
+        var current = LoadIndex(scope).FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+        if (current is null) return false;
+        // From here to the end of the method, this is deliberately dead work: `updated` and the
+        // `null` branch below can only ever produce `return false`, same as skipping straight to
+        // `return false` after the LoadIndex check above. It is kept anyway — spending the
+        // LoadIndex round trip above and running `mutate` for real, not stubbing it out — as
+        // documentation-by-code: it proves this override honours the same "find, then apply the
+        // caller's mutation" contract the default implementation does, up to the point where a
+        // remote store has no channel left to persist the result. Do NOT delete this and jump
+        // straight to `return false`: that would silently reintroduce ambiguity about whether a
+        // "not found" and a "found but cannot persist" case are being told apart, which is the
+        // exact distinction the LoadIndex fix exists to preserve for every other caller.
+        var updated = mutate(current);
+        if (updated is null) return false;
+        return false;
     }
 
     public bool Remove(string name, string scope = "local")
@@ -291,35 +449,43 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         using var resp = SendSync(req);
-        if (resp.IsSuccessStatusCode)
-        {
-            using var stream = resp.Content.ReadAsStream();
-            var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
-            if (list?.Memories is not null)
-            {
-                foreach (var item in list.Memories)
-                {
-                    // Reconstruct scope from the qualified name
-                    string scope = item.Scope switch
-                    {
-                        "local" => "local",
-                        "ephemeral" => "ephemeral",
-                        _ => $"local:{item.Scope}"
-                    };
 
-                    var entry = new ArtifactEntry(
-                        Name: item.Name,
-                        Uri: "",
-                        OriginalBytes: item.OriginalBytes,
-                        ChunkCount: item.ChunkCount,
-                        CreatedAt: item.CreatedAt,
-                        ContentPreview: item.Description,
-                        UpdatedAt: item.UpdatedAt,
-                        Attributes: item.Tags is { Length: > 0 } tags
-                            ? new Dictionary<string, string[]> { [KnownAttributes.TagKey] = tags }
-                            : null);
-                    result.Add(new ScopedArtifact(scope, entry));
-                }
+        // Same endpoint, same permission, so the same honesty as LoadIndex above: a non-2xx here
+        // used to fall through to `return result`, which for the common case (no ephemeral entries)
+        // is an empty list — indistinguishable from "this store has nothing in it". A 403 from the
+        // "search" permission gate made list() answer "No memories stored." for a store full of
+        // them. Throwing keeps "cannot read the listing" apart from "the listing is empty".
+        if (!resp.IsSuccessStatusCode)
+            throw new HttpRequestException(
+                $"Remote store listing failed{(scopes is null ? "" : $" for scopes '{scopes}'")}: " +
+                $"{(int)resp.StatusCode} {resp.StatusCode}.",
+                inner: null,
+                statusCode: resp.StatusCode);
+
+        using var stream = resp.Content.ReadAsStream();
+        var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
+        if (list?.Memories is not null)
+        {
+            foreach (var item in list.Memories)
+            {
+                // Reconstruct scope from the qualified name
+                string scope = item.Scope switch
+                {
+                    "local" => "local",
+                    "ephemeral" => "ephemeral",
+                    _ => $"local:{item.Scope}"
+                };
+
+                var entry = new ArtifactEntry(
+                    Name: item.Name,
+                    Uri: "",
+                    OriginalBytes: item.OriginalBytes,
+                    ChunkCount: item.ChunkCount,
+                    CreatedAt: item.CreatedAt,
+                    ContentPreview: item.Description,
+                    UpdatedAt: item.UpdatedAt,
+                    Attributes: item.Attributes);
+                result.Add(new ScopedArtifact(scope, entry));
             }
         }
 
@@ -369,16 +535,19 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // remote result's scope to "local". ParseQualifiedName must run unconditionally.
             var (scope, subject) = ParseQualifiedName(item.Name);
 
-            var artifactEntry = new ArtifactEntry(
-                Name: subject,
-                Uri: "",
-                OriginalBytes: 0,
-                ChunkCount: 1,
-                CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: item.Description ?? "");
+            // artifactEntry is built lazily (only inside the entry/chunk branches below) rather
+            // than once up front: a "topic" item has no real ArtifactEntry to build (it is a
+            // scope label, not a memory) and never reaches this constructor, so there is no
+            // topic-shaped value to invent here.
+            //
+            // NOTE: two of ArtifactEntry's four constructor arguments are still fabricated —
+            // Uri: "" (making remote:// dereferenceable is a separate capability decision) and
+            // ChunkCount: 1 (wrong for any multi-chunk memory; needs its own wire field). Only
+            // OriginalBytes and CreatedAt were in scope for this fix.
 
             if (item.Type == "chunk" && item.ChunkIndex.HasValue)
             {
+                var artifactEntry = BuildArtifactEntry(item, subject);
                 var chunkEntry = new ChunkEntry(
                     item.ChunkIndex.Value,
                     item.Description,
@@ -395,6 +564,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             }
             else
             {
+                var artifactEntry = BuildArtifactEntry(item, subject);
                 results.Add(new EntryResult(
                     new ScopedArtifact(scope, artifactEntry),
                     item.Score));
@@ -403,6 +573,25 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
         return results;
     }
+
+    /// <summary>
+    /// Builds the <see cref="ArtifactEntry"/> for an "entry" or "chunk" search item — never called
+    /// for a "topic" item, which has no ArtifactEntry to build.
+    ///
+    /// <c>item.OriginalBytes</c>/<c>item.CreatedAt</c> are nullable on the wire DTO only because it
+    /// is shared across all three result types; a same-version server always populates both for
+    /// "entry" and "chunk" (only "topic" omits them — a genuine absent-value case, not a version-
+    /// skew one). <c>.Value</c> below intentionally throws rather than silently substituting a
+    /// fabricated byte count or "now" as the creation time if that contract is ever violated —
+    /// reinstating either fallback is the exact defect this method exists to fix.
+    /// </summary>
+    private static ArtifactEntry BuildArtifactEntry(SearchApiItem item, string subject) => new(
+        Name: subject,
+        Uri: "",
+        OriginalBytes: item.OriginalBytes!.Value,
+        ChunkCount: 1,
+        CreatedAt: item.CreatedAt!.Value,
+        ContentPreview: item.Description ?? "");
 
     private HttpRequestMessage BuildSearchGet(
         string query, string? scopes, int limit, string? excludeTopics, string? pathPrefix)
@@ -494,13 +683,25 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     // ── Artifact file I/O via REST API ──────────────────────────────────────
 
-    public async Task WriteArtifactAsync(string subject, string scope, string artifactText, CancellationToken ct = default)
+    public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
+        ArtifactWriteMetadata? meta = null, CancellationToken ct = default)
     {
         // Decode the NMP/2 artifact back to text, then store via the API
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifactText);
         string text = System.Text.Encoding.UTF8.GetString(bytes);
         string qualifiedName = FormatQualifiedName(scope, subject);
-        var req = new StoreApiRequest([text], qualifiedName);
+        // Keywords travel alongside Attributes, not instead of them. The map handed to this write is
+        // the caller's PRE-AttributeMigration.Forward map; the server re-runs Forward, which re-folds
+        // recognized "key:value" keywords into attributes. Send the map without the keywords and
+        // Forward has nothing to re-fold, so that class of agent-supplied keyword is lost silently.
+        // ToDictionary: ArtifactWriteMetadata.Attributes is IReadOnlyDictionary and the
+        // source-generated serializer needs the concrete Dictionary.
+        var req = new StoreApiRequest(
+            [text],
+            qualifiedName,
+            Description: meta?.Description,
+            Attributes: meta?.Attributes?.ToDictionary(kv => kv.Key, kv => kv.Value),
+            Keywords: meta?.Keywords);
         _circuitBreaker.EnsureClosed();
         var resp = await RetryPolicy.ExecuteAsync(
             () =>
@@ -511,6 +712,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             },
             r => TransientDetector.IsTransient(r),
             _retryOptions, logger: null, ct);
+        // Fail closed on this second async send path too — see the sync-path comment in SendSync.
+        RemoteApiVersionGuard.Validate(resp);
         if (resp.IsSuccessStatusCode)
         {
             _circuitBreaker.RecordSuccess();
@@ -521,8 +724,25 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // successful store to callers (matches FileMemoryStore's throw-on-failure contract).
             if (TransientDetector.IsTransient(resp))
                 _circuitBreaker.RecordFailure();
+            // Read the body: the server's 4xx responses carry an ErrorResponse whose message names
+            // the exact bound or field that was refused ("attributes may not exceed N values per
+            // key", "Permission 'store' required"). Without it a fixable, self-describing rejection
+            // reached the agent as a bare "400 BadRequest" — a mystery instead of an instruction.
+            // HttpErrorBody.Truncate is the repo's one place for this: bodies can be megabytes of
+            // proxy HTML. ReadAsStringAsync is best-effort — a failure to read the body must not
+            // replace the status-code exception with a different one.
+            string body;
+            try
+            {
+                body = HttpErrorBody.Truncate(await resp.Content.ReadAsStringAsync(ct));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                body = "";
+            }
+            string detail = string.IsNullOrWhiteSpace(body) ? "" : $" {body}";
             throw new HttpRequestException(
-                $"Remote store write failed for '{qualifiedName}': {(int)resp.StatusCode} {resp.StatusCode}.",
+                $"Remote store write failed for '{qualifiedName}': {(int)resp.StatusCode} {resp.StatusCode}.{detail}",
                 inner: null,
                 statusCode: resp.StatusCode);
         }

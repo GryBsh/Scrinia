@@ -44,10 +44,23 @@ public static class MemoryOrchestrator
                 KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)),
                 refAttributes),
             mentionAttributes);
-        // StoreRequest carries no explicit agent-attributes field, but req.Keywords can still
-        // route a "person:jolene"-shaped entry into routedAttributes (above) — which collides
-        // with a mention:jolene span extracted from the same content. Shadow-drop unconditionally;
-        // it's a no-op when nothing shadows.
+        // Explicit agent-supplied attributes fold in last so they win scalar collisions — the same
+        // position and the same Normalize call as the MCP write path, so the resulting ATTRIBUTE MAP
+        // matches a local write of the same input. Merged before the shadow-drop and the TF seeding
+        // below so both see the agent's keys.
+        //
+        // TermFrequencies do NOT match a local write, and that is a known residual rather than an
+        // oversight. Over the wire the carrier keys (tag/review/anchor/file) arrive inside this one
+        // flat map and get seeded here; locally SeedTermFrequencies runs before the carrier merge,
+        // so those keys are never seeded. The server also cannot tell an agent-supplied attribute
+        // from a carrier one — a wire map is flat by construction — so it treats the caller's
+        // keywords as agent-supplied and boosts them accordingly. Net effect: BM25 ranking for the
+        // same memory differs slightly by store mode. Reproducing local's split would mean sending
+        // the two maps separately, which is a wire-shape change, not a reordering here.
+        attributes = KnownAttributes.Merge(attributes, KnownAttributes.Normalize(req.Attributes));
+        // An agent-supplied (or req.Keywords-routed) "person:jolene" collides with a mention:jolene
+        // span extracted from the same content. Shadow-drop unconditionally; it's a no-op when
+        // nothing shadows.
         attributes = AttributeExtractor.DropMentionsShadowedByTypedKeys(attributes);
         AttributeExtractor.SeedTermFrequencies(attributes, tf);
 
@@ -74,13 +87,6 @@ public static class MemoryOrchestrator
             DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
             DateTimeOffset? ephUpdatedAt = existingEph is not null ? DateTimeOffset.UtcNow : null;
 
-            // Route req.Tags -> Attributes["tag"] at write time (req.Tags is the StoreRequest
-            // DTO field, not an entry member). EphemeralEntry carries no other request-supplied
-            // attribute source on this path, so tag is the only carrier to route here.
-            var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-            if (req.Tags is { Length: > 0 }) ephIncoming[KnownAttributes.TagKey] = req.Tags;
-            var ephAttributes = ephIncoming.Count > 0 ? KnownAttributes.Merge(attributes, ephIncoming) : attributes;
-
             var ephEntry = new EphemeralEntry(
                 Name: key,
                 Artifact: ephArtifact,
@@ -92,7 +98,7 @@ public static class MemoryOrchestrator
                 TermFrequencies: tf.Count > 0 ? tf : null,
                 UpdatedAt: ephUpdatedAt,
                 ChunkEntries: chunkEntries,
-                Attributes: ephAttributes);
+                Attributes: attributes);
 
             store.RememberEphemeral(key, ephEntry);
 
@@ -115,7 +121,7 @@ public static class MemoryOrchestrator
             ? Nmp2ChunkedEncoder.Encode(req.Content[0])
             : Nmp2ChunkedEncoder.EncodeChunks(req.Content);
 
-        await store.WriteArtifactAsync(subject, scope, artifact, ct);
+        await store.WriteArtifactAsync(subject, scope, artifact, ct: ct);
 
         string uri = store.ArtifactUri(subject, scope);
 
@@ -127,16 +133,6 @@ public static class MemoryOrchestrator
             ? req.Description
             : ContentPreview.Generate(joined);
         string qualifiedName = store.FormatQualifiedName(scope, subject);
-
-        DateTimeOffset? parsedReviewAfter = null;
-        if (!string.IsNullOrWhiteSpace(req.ReviewAfter) && DateTimeOffset.TryParse(req.ReviewAfter, out var ra))
-            parsedReviewAfter = ra;
-
-        var carrier = AttributeMigration.BuildCarrierAttributes(
-            req.Tags, fileKeys: null, parsedReviewAfter,
-            string.IsNullOrWhiteSpace(req.ReviewWhen) ? null : req.ReviewWhen, anchors: null);
-        if (carrier.Count > 0)
-            attributes = KnownAttributes.Merge(attributes, carrier);
 
         var entry = new ArtifactEntry(
             Name: subject,
@@ -152,8 +148,9 @@ public static class MemoryOrchestrator
             Attributes: attributes);
 
         // Keyword/file safety-net: Forward folds recognized key:value keywords and FileHashes->file
-        // into Attributes. (tag/review were already folded into Attributes from the request params
-        // above; the former legacy entry members no longer exist.)
+        // into Attributes. Load-bearing for remote writes: HttpMemoryStore hands us the caller's
+        // PRE-Forward attribute map plus its keywords, so this is where an agent-supplied
+        // "person:maria"-shaped keyword gets re-folded into Attributes on this side of the wire.
         entry = AttributeMigration.Forward(entry);
 
         try
@@ -276,7 +273,7 @@ public static class MemoryOrchestrator
                 store.ArchiveVersion(subject, scope);
             }
 
-            await store.WriteArtifactAsync(subject, scope, newArtifact, ct);
+            await store.WriteArtifactAsync(subject, scope, newArtifact, ct: ct);
 
             string uri = store.ArtifactUri(subject, scope);
             qualifiedName = store.FormatQualifiedName(scope, subject);
@@ -323,7 +320,7 @@ public static class MemoryOrchestrator
                 try
                 {
                     if (previousArtifact is not null)
-                        await store.WriteArtifactAsync(subject, scope, previousArtifact, CancellationToken.None);
+                        await store.WriteArtifactAsync(subject, scope, previousArtifact, ct: CancellationToken.None);
                     else
                         store.DeleteArtifact(subject, scope);
                 }

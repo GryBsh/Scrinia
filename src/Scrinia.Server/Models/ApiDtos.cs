@@ -2,14 +2,17 @@ namespace Scrinia.Server.Models;
 
 // ── Memory CRUD ──────────────────────────────────────────────────────────────
 
+/// <summary>Body of POST /memories. <c>Attributes</c> is the agent-supplied attribute map — the
+/// current model. It replaces the legacy <c>tags</c>/<c>reviewAfter</c>/<c>reviewWhen</c> carriers,
+/// which were only ever translated server-side into the <c>tag</c> and <c>review</c> attribute keys;
+/// callers write those keys directly now. <c>Description</c> stays — it is a curated ContentPreview,
+/// a different concept from the carriers.</summary>
 public sealed record StoreRequest(
     string[] Content,
     string Name,
     string? Description = null,
-    string[]? Tags = null,
-    string[]? Keywords = null,
-    string? ReviewAfter = null,
-    string? ReviewWhen = null);
+    Dictionary<string, string[]>? Attributes = null,
+    string[]? Keywords = null);
 
 public sealed record StoreResponse(
     string Name,
@@ -37,7 +40,7 @@ public sealed record MemoryListItem(
     DateTimeOffset CreatedAt,
     DateTimeOffset? UpdatedAt,
     string Description,
-    string[]? Tags);
+    Dictionary<string, string[]>? Attributes);
 
 public sealed record ShowResponse(
     string Name,
@@ -63,7 +66,13 @@ public sealed record SearchResultItem(
     double Score,
     string? Description,
     int? ChunkIndex = null,
-    int? TotalChunks = null);
+    int? TotalChunks = null,
+    // Null for a "topic" result: a topic is a scope label, not a memory, so it has no real byte
+    // count or creation time to report. Never fabricated/aggregated and never
+    // DateTimeOffset.MinValue as a stand-in for "unknown" — both are the defect this exists to fix,
+    // wearing a different hat. Present (non-null) for "entry" and "chunk" results.
+    long? OriginalBytes = null,
+    DateTimeOffset? CreatedAt = null);
 
 public sealed record ChunkResponse(
     string Content,

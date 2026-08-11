@@ -4,10 +4,8 @@ export interface StoreRequest {
   content: string[];
   name: string;
   description?: string;
-  tags?: string[];
+  attributes?: Record<string, string[]>;
   keywords?: string[];
-  reviewAfter?: string;
-  reviewWhen?: string;
 }
 
 export interface StoreResponse {
@@ -43,7 +41,7 @@ export interface MemoryListItem {
   createdAt: string;
   updatedAt?: string;
   description: string;
-  tags?: string[];
+  attributes?: Record<string, string[]>;
 }
 
 export interface ShowResponse {
@@ -64,6 +62,10 @@ export interface SearchResultItem {
   description?: string;
   chunkIndex?: number;
   totalChunks?: number;
+  // Absent for a "topic" result — a topic is a scope label, not a memory, so it has no real byte
+  // count or creation time. Present for "entry" and "chunk" results.
+  originalBytes?: number;
+  createdAt?: string;
 }
 
 export interface ChunkResponse {
