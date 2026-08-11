@@ -78,12 +78,55 @@ public class ResponseGoldenTests
             Nmp2ChunkedEncoder.Encode("Session rotation logs are archived nightly."));
     }
 
+    /// <summary>
+    /// Seeds an entry whose content exceeds ResponseBuilder's ~7992-char truncation cap, so
+    /// recall-truncated exercises the <c>ContentTruncated</c> followUp entry that <c>ToYaml</c>
+    /// appends — no existing fixture's content is anywhere near the cap.
+    /// </summary>
+    private static async Task SeedTruncationCase(IMemoryStore store)
+    {
+        string longText = string.Concat(Enumerable.Repeat(
+            "This paragraph repeats to push recalled content past the response truncation cap. ", 120));
+        store.Upsert(new ArtifactEntry("long-note", "uri", longText.Length, 1, Fixed,
+            ContentPreview: "A very long note.",
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["topic"] = ["verbose"],
+            }), "local:findings");
+        await store.WriteArtifactAsync("long-note", "local:findings",
+            Nmp2ChunkedEncoder.Encode(longText));
+    }
+
+    /// <summary>
+    /// Seeds a genuinely multi-chunk NMP/2 artifact (via <see cref="Nmp2ChunkedEncoder.EncodeChunks"/>)
+    /// so compact-multichunk exercises the merge-all branch instead of the "already a single
+    /// chunk, nothing to compact" no-op that <c>compact.yaml</c> pins.
+    /// </summary>
+    private static async Task SeedMultiChunkCase(IMemoryStore store)
+    {
+        string[] chunks =
+        [
+            "First chunk of the multi-part note.",
+            "Second chunk of the multi-part note.",
+            "Third chunk of the multi-part note.",
+        ];
+        store.Upsert(new ArtifactEntry("multi-note", "uri", chunks.Sum(c => c.Length), chunks.Length, Fixed,
+            ContentPreview: "A multi-chunk note.",
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["topic"] = ["multipart"],
+            }), "local:findings");
+        await store.WriteArtifactAsync("multi-note", "local:findings",
+            Nmp2ChunkedEncoder.EncodeChunks(chunks));
+    }
+
     public static TheoryData<string> Cases() =>
     [
         "remember", "recall", "search", "search-filtered",
         "list-summary", "list-full", "append", "forget",
         "compact", "link", "reconcile-scan", "facts-entities",
         "error-missing-path", "error-empty-content",
+        "update-warning", "recall-truncated", "compact-multichunk", "link-partial-failure",
     ];
 
     [Theory]
@@ -94,6 +137,10 @@ public class ResponseGoldenTests
         await Seed(MemoryStoreContext.Current!);
         if (name is "search" or "search-filtered")
             await SeedSearchDivergenceCase(MemoryStoreContext.Current!);
+        if (name == "recall-truncated")
+            await SeedTruncationCase(MemoryStoreContext.Current!);
+        if (name == "compact-multichunk")
+            await SeedMultiChunkCase(MemoryStoreContext.Current!);
         var tools = new ScriniaMcpTools();
 
         string yaml = name switch
@@ -112,6 +159,17 @@ public class ResponseGoldenTests
             "facts-entities"  => await tools.Facts("entities"),
             "error-missing-path" => await tools.MemoryRecall(""),
             "error-empty-content" => await tools.MemoryRemember("/findings/x", []),
+            // No changes specified: UpdateMeta's changes.Count == 0 branch (MemoryTools.Core.cs)
+            // is the cleanest of the three warning producers to drive — it needs no new seed
+            // state (auth-flow already exists via Seed()) and no filesystem/formatter setup,
+            // unlike an empty bundle import or a facts() entity lookup that matches nothing.
+            "update-warning"  => (await tools.UpdateMeta("/findings/auth-flow")).ToYaml(),
+            "recall-truncated" => await tools.MemoryRecall("/findings/long-note"),
+            "compact-multichunk" => await tools.MemoryCompact("/findings/multi-note"),
+            // link's open question (partial-failure envelope) turned out to be cheap to cover:
+            // an unresolvable `from` makes the first internal UpdateMeta call error, which link
+            // folds into its own "Partial link failure" error envelope — no seed helper needed.
+            "link-partial-failure" => await tools.MemoryLink("/findings/does-not-exist", "/patterns/retry"),
             _ => throw new ArgumentOutOfRangeException(nameof(name), name, "unknown golden case"),
         };
 

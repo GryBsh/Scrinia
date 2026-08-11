@@ -1,0 +1,3 @@
+status: warning
+content: |
+  No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen.
