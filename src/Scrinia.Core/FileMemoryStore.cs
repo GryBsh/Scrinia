@@ -564,6 +564,39 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         // reaches it through GetStoreDirForScope first, so a cache entry cannot exist before
         // migration has been triggered. See
         // docs/superpowers/analysis/2026-08-10-loadindex-aliasing-and-lock.md.
+        //
+        // RULING (the-sweep, Task 1, G4): this EnterReadLock/ExitReadLock pair is deliberately
+        // NOT pinned by a test, after a real attempt to write one. What it protects: it forces a
+        // concurrent reader hitting this fast lane during another thread's WithExclusiveLock
+        // (Upsert/SaveIndex/Remove/TryUpdateEntry) to block until that write's ENTIRE body
+        // completes, rather than observing whatever intermediate state falls out of the write in
+        // progress — most concretely the window in Upsert/Remove/TryUpdateEntry between
+        // `_indexCache.TryRemove(scope, out _)` and the following `_indexCache[scope] = new
+        // CachedIndex(...)`, where a lookup for `scope` would otherwise miss.
+        //
+        // Why no deterministic test pins it: _indexCache is a ConcurrentDictionary, so that
+        // miss can never manifest as an exception, a torn list, or a "shrinking" read — every
+        // individual Get/Remove/Set is already thread-safe, and every published CachedIndex is
+        // immutable, so a concurrent reader only ever sees a fully-formed old value, a
+        // fully-formed new value, or (without this lock) a transient miss that silently falls
+        // through to the slow (file-locked, disk-reading) path below and still returns a correct
+        // answer. The only difference removing this lock makes is which path a racing reader
+        // takes, not what it returns — and "which internal path was taken" isn't observable
+        // through LoadIndex's public return value. A stress test built on exceptions or
+        // monotonicity (the natural black-box probes) was run 300 times — 50 rounds with this
+        // lock in place, 250 without it, each round racing a writer doing 25 Upserts against a
+        // tight-loop reader — and it passed all 300/300 regardless of whether the lock was
+        // present. It does not discriminate, so it was deleted rather than kept as a test that
+        // reports coverage it doesn't have.
+        //
+        // What breaks if this is deleted as dead code: nothing a test can currently see. Its
+        // value is a defensive one — it keeps a same-process racing reader's answer sequenced
+        // after any write already in flight, on the theory that a future change to CachedIndex
+        // (e.g. a mutable field, a multi-step publish) could turn today's benign miss-window into
+        // a real torn read. Removing it is safe only for as long as CachedIndex stays the
+        // immutable, atomically-published value it is today; if that invariant ever changes,
+        // this lock is the only thing standing between a racing reader and a genuinely corrupt
+        // answer, and it should be re-justified before being cut.
         lk.EnterReadLock();
         try
         {

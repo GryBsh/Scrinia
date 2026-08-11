@@ -29,6 +29,9 @@ public class LoadIndexCacheHitTests
         // (FileMemoryStore.cs:982), so the very next LoadIndex is a cache hit.
         store.Upsert(Entry("warm"), "local");
         string lockPath = Path.Combine(store.GetStoreDirForScope("local"), ".lock");
+        File.Exists(lockPath).Should().BeTrue(
+            because: "precondition: Upsert must have created the lock file, or its absence below "
+                   + "proves nothing — File.Delete on a missing file is a silent no-op");
         File.Delete(lockPath);
 
         store.LoadIndex("local").Should().ContainSingle("the cache still answers the read");
