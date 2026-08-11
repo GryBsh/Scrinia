@@ -109,25 +109,34 @@ public static class Nmp2ConflictHandler
         File.WriteAllText(metaPath, InsertConflictedFlag(meta));
     }
 
-    // Local lexical containment check. Scrinia.Merge is a standalone AOT/trimmed executable
-    // with no Scrinia.Core dependency, so we deliberately do NOT pull in PathContainment here;
-    // the merge driver only needs to reject rooted/traversal ConflictDir values.
-    // Lexical only; does not resolve symlinks.
     /// <summary>
     /// True when <paramref name="candidateFull"/> is strictly below <paramref name="baseFull"/>.
+    ///
+    /// <para>Local lexical containment check. Scrinia.Merge is a standalone AOT/trimmed executable
+    /// with no Scrinia.Core dependency, so we deliberately do NOT pull in PathContainment here;
+    /// the merge driver only needs to reject rooted/traversal ConflictDir values. Lexical only;
+    /// does not resolve symlinks.</para>
     ///
     /// <para>Equality returns FALSE, deliberately. A ConflictDir of "." or "" resolves back to the
     /// artifact directory, and the caller writes a .gitignore of "*" into whatever this approves —
     /// so treating "the directory itself" as an acceptable conflict directory silently untracks
     /// every memory at and below it. The separate Scrinia.Core.PathContainment.IsWithin keeps its
     /// equality case; this one is private to this class and has a single caller.</para>
+    ///
+    /// <para>Both paths are trimmed of a trailing directory separator before comparison. Without
+    /// this, a ConflictDir of "./" survives <see cref="Path.GetFullPath(string)"/> as
+    /// <c>baseFull + separator</c> — not string-equal to <paramref name="baseFull"/> — and then
+    /// trivially satisfies "starts with baseFull + separator" against itself, reopening the same
+    /// hole the equality check above was meant to close.</para>
     /// </summary>
     private static bool IsStrictlyWithin(string baseFull, string candidateFull)
     {
-        string withSep = baseFull.EndsWith(Path.DirectorySeparatorChar)
-            ? baseFull
-            : baseFull + Path.DirectorySeparatorChar;
-        return candidateFull.StartsWith(withSep, StringComparison.Ordinal);
+        string baseTrimmed = Path.TrimEndingDirectorySeparator(baseFull);
+        string candidateTrimmed = Path.TrimEndingDirectorySeparator(candidateFull);
+        if (string.Equals(baseTrimmed, candidateTrimmed, StringComparison.Ordinal))
+            return false;
+        string withSep = baseTrimmed + Path.DirectorySeparatorChar;
+        return candidateTrimmed.StartsWith(withSep, StringComparison.Ordinal);
     }
 
     internal static string InsertConflictedFlag(string metaJson)
