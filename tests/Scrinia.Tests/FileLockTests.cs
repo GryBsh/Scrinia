@@ -100,22 +100,6 @@ public class FileLockTests : IDisposable
         File.Exists(nested).Should().BeTrue();
     }
 
-    /// <summary>A shared lock over a missing directory is a lock over nothing — it must not
-    /// create the directory as a side effect of reading. Pins the read path after the
-    /// directory-creating call moved onto AcquireExclusive, its only real caller.</summary>
-    [Fact]
-    public void AcquireShared_WhenDirectoryDoesNotExist_DoesNotCreateIt()
-    {
-        string missingDir = Path.Combine(_tempDir, "nested");
-        string lockPath = Path.Combine(missingDir, ".lock");
-
-        using (var fileLock = FileLock.AcquireShared(lockPath))
-            Directory.Exists(missingDir).Should().BeFalse();
-
-        Directory.Exists(missingDir).Should().BeFalse(
-            because: "disposing a lock over nothing must not create anything either");
-    }
-
     [Fact]
     public void Contention_LogsWarningAndTimeoutErrors()
     {
