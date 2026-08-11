@@ -39,13 +39,19 @@ public class BundleExitCodeTests
     }
 
     /// <summary>
-    /// Status is "warning", not "error": an import matching no topics is not treated as a
-    /// failure. Pinning today's behaviour deliberately. If someone later decides an empty
-    /// import is a failure, this test is the place that records it was a decision and not an
-    /// accident.
+    /// RULED 2026-08-10: an import that matched no topics is a failure, not a success.
+    ///
+    /// <para>This test previously asserted exit 0 and said, in as many words, that if someone
+    /// later decided an empty import was a failure, this was the place to record it as a
+    /// decision. That decision has now been taken: a caller that asked for topics and received
+    /// none has had its request silently not-performed, and reporting exit 0 makes a CI step
+    /// gating on it pass. The same ruling applies to every <c>warning</c> envelope — see
+    /// <see cref="McpResponse.IsWarning"/>.</para>
+    ///
+    /// <para>Breaking for anything gating on exit 0; recorded in CHANGELOG.md.</para>
     /// </summary>
     [Fact]
-    public async Task Import_OnEmptyBundle_ExitsZero()
+    public async Task Import_OnEmptyBundle_ExitsNonZero()
     {
         using var scope = new TestHelpers.StoreScope();
         await new ScriniaMcpTools().Remember(["auth flow doc"], "/api/auth");
@@ -58,7 +64,7 @@ public class BundleExitCodeTests
         int exit = await new ScriniaCommands().Import(
             bundlePath, workspaceRoot: scope.WorkspaceDir, topics: "does-not-match-anything");
 
-        exit.Should().Be(0);
+        exit.Should().Be(1, "an import that matched nothing must not report success to a CI step");
     }
 
     [Fact]
@@ -70,5 +76,35 @@ public class BundleExitCodeTests
         int exit = await new ScriniaCommands().Export("api", workspaceRoot: scope.WorkspaceDir);
 
         exit.Should().Be(0);
+    }
+
+    [Fact]
+    public void IsWarning_IsTrueOnlyForTheWarningStatus()
+    {
+        ResponseBuilder.Warning("x").IsWarning.Should().BeTrue();
+        ResponseBuilder.Success("x").IsWarning.Should().BeFalse();
+        ResponseBuilder.Error("x").IsWarning.Should().BeFalse();
+        ResponseBuilder.Warning("x").IsError.Should().BeFalse(
+            because: "a warning is not an error — the two predicates must not overlap");
+    }
+
+    /// <summary>
+    /// `scri store` had no IsError guard at all and returned 0 unconditionally — the same dead-guard
+    /// defect already fixed at Show, Forget, Export and Import.
+    /// </summary>
+    [Fact]
+    public async Task Store_OnGenuineFailure_ExitsNonZero()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string contentFile = Path.Combine(scope.TempDir, "content.txt");
+        await File.WriteAllTextAsync(contentFile, "some content");
+
+        // A space is not a valid FileEntityName character, so the /agent/ route rejects this with
+        // ResponseBuilder.Error(..., INVALID_PARAMETER) at MemoryTools.Core.cs:273-274 — before the
+        // ILocalMemoryStore check below it, so the verdict does not depend on the store mode.
+        int exit = await new ScriniaCommands().Store(
+            "/agent/bad name", contentFile, workspaceRoot: scope.WorkspaceDir);
+
+        exit.Should().Be(1);
     }
 }

@@ -57,10 +57,11 @@ public partial class ScriniaCommands
         string result = response.ToYaml();
 
         if (json)
+        {
             WriteJson(new CliExportOutput("", result), CliJsonContext.Default.CliExportOutput);
-        else
-            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
-        return 0;
+            return response.IsWarning ? 1 : 0;
+        }
+        return RenderEnvelope(response, result);
     }
 
     /// <summary>Import from a .scrinia-bundle.</summary>
@@ -96,10 +97,11 @@ public partial class ScriniaCommands
         string result = response.ToYaml();
 
         if (json)
+        {
             WriteJson(new CliImportOutput(result), CliJsonContext.Default.CliImportOutput);
-        else
-            AnsiConsole.MarkupLine($"[green]{Markup.Escape(result)}[/]");
-        return 0;
+            return response.IsWarning ? 1 : 0;
+        }
+        return RenderEnvelope(response, result);
     }
 
     /// <summary>Bundle raw files into a .scrinia-bundle.</summary>

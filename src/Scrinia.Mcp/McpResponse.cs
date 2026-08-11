@@ -47,6 +47,13 @@ public sealed record McpResponse
     /// that never matched anything.</summary>
     public bool IsError => Status == "error";
 
+    /// <summary>True when this response reports that the operation completed without doing what
+    /// was asked — an empty import, an entity that matched nothing, a no-op update. Not an error:
+    /// nothing failed. Not a success either: the caller's request was not performed, so a surface
+    /// that renders this as success (green text, exit 0, HTTP 200) is lying to a CI step. Callers
+    /// must treat it as a non-success outcome.</summary>
+    public bool IsWarning => Status == "warning";
+
     public string? Action { get; init; }           // "created", "completed", "listed", etc.
     public string? Path { get; init; }              // "/goal/G-60-abc", "/concern/SEC-054", etc.
     public string? Instruction { get; init; }      // what the agent must do next
