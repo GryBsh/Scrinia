@@ -10,6 +10,13 @@ namespace Scrinia.Tests;
 /// and nothing pinning them together. That divergence was a real shipped bug. MergeConfigTests
 /// in Scrinia.Merge.Tests cannot catch it: it feeds MergeConfig.Load hand-built JSON, so it would
 /// have passed under the bug. This test drives the REAL writer into the REAL reader.
+///
+/// <para>Known blind spot: the reader's <c>MergeConfig</c> has a fourth property,
+/// <c>ResolverCommand</c> (<c>string?</c>, default <c>null</c>), that
+/// <see cref="ScriniaCommands.SerializeMergeConfig"/> has no parameter for and therefore cannot
+/// emit. These tests only round-trip <c>JaccardThreshold</c>, <c>Resolver</c>, and
+/// <c>ConflictDir</c>. If writer-side support for <c>ResolverCommand</c> is ever added, it will
+/// land untested unless these tests are extended to cover it.</para>
 /// </summary>
 public class MergeConfigRoundTripTests
 {

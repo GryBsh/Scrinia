@@ -37,6 +37,24 @@ the merge leaves the path unmerged with `ours`' content and no conflict markers,
 `reconcile()` finds nothing to resolve. Re-running the command re-points both drivers at
 the installed binary. Do it once per clone.
 
+**If a `conflict/` directory was ever committed, untrack it too.** The driver writes a
+`.gitignore` of `*` into each conflict directory as it creates one, but git keeps tracking
+files it already tracks — a `.gitignore` added after the fact does not retroactively
+untrack anything. A workspace that ran an older, pre-fix driver and committed a
+`conflict/current` or `conflict/incoming` copy needs `git rm -r --cached` on each committed
+directory, then a commit, before the `.gitignore` takes effect:
+
+```bash
+git rm -r --cached <path-to-artifact>/conflict
+git commit -m "chore: untrack committed merge-conflict scratch directories"
+```
+
+**Re-running setup does not clear stale committed copies.** `reconcile()` prefers the
+`conflict/current` and `conflict/incoming` copies unconditionally when resolving a
+conflicted `.nmp2` — it has no freshness check against the working-tree file. Until the
+committed copies above are removed, `reconcile()` can resolve from those stale pre-upgrade
+bytes even after `scri setup --multi-user` reports success.
+
 ## Workflow After Merge
 
 When pulling or merging a branch that touches `.scrinia/`:
