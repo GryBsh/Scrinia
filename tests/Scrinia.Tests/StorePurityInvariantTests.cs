@@ -52,8 +52,14 @@ public class StorePurityInvariantTests
         // no independent source of truth to cross-check against. That gap is real and unclosed
         // by this assertion: it narrows the invariant to "no orphaned or corrupt sidecar
         // survives", not "no foreign sidecar of any shape survives".
-        var coldStore = new FileMemoryStore(store.WorkspaceRoot);
-        foreach (string metaFile in Directory.EnumerateFiles(memories, "*.meta.json", SearchOption.AllDirectories))
+        using var coldStore = new FileMemoryStore(store.WorkspaceRoot);
+        var metaFiles = Directory.EnumerateFiles(memories, "*.meta.json", SearchOption.AllDirectories).ToList();
+        metaFiles.Should().NotBeEmpty(
+            because: "the three MemoryRemember calls above must have seeded at least one sidecar, " +
+                     "or the loop below evaluates zero assertions and the invariant passes vacuously " +
+                     "— the exact shape this check exists to avoid");
+
+        foreach (string metaFile in metaFiles)
         {
             string relativeDir = Path.GetRelativePath(memories, Path.GetDirectoryName(metaFile)!);
             string scopeName = relativeDir == "."

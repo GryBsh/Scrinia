@@ -430,14 +430,17 @@ public sealed class RemoteStoreToolTests
         // HttpMemoryStore.Upsert is a no-op. A double's Upsert is the only seam where the stored
         // entry can actually be inspected.
         //
-        // Probe files sit at every root a regression is plausible enough to fabricate: the CWD
-        // (`?? Directory.GetCurrentDirectory()`) and `AppContext.BaseDirectory` (the executable's
-        // own directory, a common "give me *some* path" fallback). Both carry the same probe
-        // name, so whichever root a regressed implementation resolves to, ResolveWorkspacePath
-        // finds a file there, computes a hash, and this test fails. A regression that falls back
-        // to an arbitrary hardcoded literal path (neither of the above) is NOT covered — there is
-        // no finite set of locations that discriminates every possible literal, so widening stops
-        // here; see Task 1 report for why this is the accepted limit.
+        // Probe files sit at CWD (`?? Directory.GetCurrentDirectory()`) and
+        // `AppContext.BaseDirectory` (the executable's own directory, a common "give me *some*
+        // path" fallback) — the two roots a regression is plausible enough to fabricate. Under
+        // VSTest these are the same directory, so the second write lands on top of the first and
+        // the pair adds no discriminating power beyond either alone. The test still catches a
+        // regression that resolves to that directory, which is what makes it a real guard — it
+        // just does not additionally prove anything about CWD vs. BaseDirectory as distinct
+        // roots. A regression that falls back to an arbitrary hardcoded literal path (neither of
+        // the above) is NOT covered — there is no finite set of locations that discriminates
+        // every possible literal, so widening stops here; see Task 1 report for why this is the
+        // accepted limit.
         using var scope = new DoubleStoreScope(new RecordingRemoteStore());
         string probeName = $"drift-probe-{Guid.NewGuid():N}.txt";
         string probePathCwd = Path.Combine(Directory.GetCurrentDirectory(), probeName);

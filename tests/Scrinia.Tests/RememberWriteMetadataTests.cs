@@ -14,9 +14,10 @@ namespace Scrinia.Tests;
 public class RememberWriteMetadataTests
 {
     /// <summary>
-    /// Records what WriteArtifactAsync was handed. Subclasses the existing FakeMemoryStore
-    /// (tests/Scrinia.Tests/FakeMemoryStore.cs) rather than writing a fresh 21-member delegator:
-    /// it is internal to this same assembly and every member is virtual.
+    /// Records what WriteArtifactAsync was handed. Subclasses the existing
+    /// <see cref="FakeMemoryStore"/> (tests/Scrinia.TestDoubles/FakeMemoryStore.cs) rather than
+    /// writing a fresh 21-member delegator: it is public in the shared Scrinia.TestDoubles
+    /// assembly and every member is virtual.
     /// </summary>
     private sealed class RecordingStore : FakeMemoryStore
     {

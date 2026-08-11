@@ -57,7 +57,9 @@ Design: `2026-08-08-store-read-path-and-sweep-design.md`, **Part B**.
 All items closed: the two cannot-fail tests were repaired
 (`Migration_DoesNotSweepTheAgentDirectory` now captures and asserts `Migrate()`'s `Result.Ran`;
 the remote file-refs mutation test now plants its probe at both `CWD` and
-`AppContext.BaseDirectory` so a fabricated root can't hide from it), plus the bundle-import
+`AppContext.BaseDirectory` — under VSTest these resolve to the same directory, so the pair adds
+no discriminating power beyond either alone, but the test still catches the real regression),
+plus the bundle-import
 agent-metadata test (B5) widened into a real export/import round trip and the lock-file
 precondition test (G5) now asserts the lock file existed before deleting it. B1 (transient 503 →
 breaker), G1 (`MaxValuesPerKey` cap), G2 (`ListScoped` non-2xx throw), and G3 (error-body text in
@@ -66,7 +68,11 @@ invariant its own doc states, via a cold-load second store. Four golden fixtures
 (`update-warning`, `recall-truncated`, `compact-multichunk`, `link-partial-failure`), taking the
 snapshot count from 14 to 18. The `MemoryTools.Core.cs` `AppendLine`/`\r` formatting defect is
 fixed — all 20 `AppendLine` calls in `BuildSummary`/`BuildFullList` now use
-`Append(...).Append('\n')` — the only production change in this branch. `Scrinia.TestDoubles` now
+`Append(...).Append('\n')` — the only production change in this branch. Its regression guard
+(`ListLineEndingTests`) binds only on a host where `Environment.NewLine` is `\r\n`; CI runs
+`ubuntu-latest`, so CI does not enforce it, and the goldens structurally cannot either since
+`GoldenNormalizer` strips `\r` on the write path — the guard is real but Windows-only, and that
+is recorded, not silently assumed. `Scrinia.TestDoubles` now
 holds one shared set of memory-store doubles instead of a duplicated fake store.
 
 **Two spec corrections this branch found, both load-bearing enough to record:**
@@ -79,13 +85,16 @@ holds one shared set of memory-store doubles instead of a duplicated fake store.
   `list-full.yaml` (the only two fixtures downstream of the fixed builders) and getting a
   byte-identical diff.
 
-**B2 was redefined, not implemented as specced.** The proposed test (rooted-path names rejected
-by `FileEntityName.IsValid`) could never fail: `IsValid` short-circuits on
-`IndexOfAny(['/','\\'])` before reaching `!Path.IsPathRooted(name)`, and no input can be rooted
-while passing the sibling checks — verified by running `Path.IsPathRooted` against
-representative inputs, not by inspection alone. B2 now adds the reachable cases and records the
-unreachability as a ruling in `FileEntityName.cs` (`IsValid`'s doc comment), the same defect
-class the two cannot-fail tests above exist to remove.
+**B2 was redefined, not implemented as specced.** The proposed test inputs (`C:\foo`, `/foo`)
+could never pin `FileEntityName.IsValid`'s `!Path.IsPathRooted(name)` clause: both contain a
+separator, so `IsValid` short-circuits on `IndexOfAny(['/','\\'])` before reaching
+`!Path.IsPathRooted(name)` — verified by running `Path.IsPathRooted` against representative
+inputs, not by inspection alone. The clause itself is reachable, though — `C:foo` (no separator)
+passes the slash and `..` checks and reaches it, and it rejects `C:foo` because
+`Path.IsPathRooted("C:foo")` is `true` on Windows. The clause is redundant, not unreachable: the
+char whitelist that follows would also reject `C:foo` (it admits no `:`) had this clause not
+fired first. B2 now adds the two non-pinning-but-still-required cases and records the redundancy
+(not unreachability) as a ruling in `FileEntityName.cs` (`IsValid`'s doc comment).
 
 **G4 was ruled closed in writing, not pinned by a test.** The fast-path `EnterReadLock` in
 `FileMemoryStore.LoadIndex` got a real 300-round stress test; it never failed with or without the
@@ -198,19 +207,30 @@ be checked before ruling.
   resolution path needs its own design, per the merge-driver spec's Out of Scope section. This
   becomes **one specced item** — a dedicated design for reindexing after `reconcile()`'s
   resolution writes — not a `/findings/` chunk.
-- **VERIFIED TRUE, `the-sweep`, 2026-08-11.** `MemoryEventSinkContext.Default`
-  (`src/Scrinia.Core/IMemoryEventSink.cs:27,33`) is a bare mutable static with no lock, mutated
-  by many uncoordinated fixtures — `TestHelpers.cs:111-118` (`StoreScope`, used pervasively),
-  `RemoteStoreToolTests.cs:106,118,173,180`, `ConsolidateReembedTests.cs:46,89`, and
-  `MemoryEventSinkContextInstallDefaultTests.cs:19-41` — none of which sit in a `[Collection]`,
-  though the suite uses `DisableParallelization` collections elsewhere. It surfaced once during
-  Task 6 of `the-sweep` and did not reproduce across three full reruns. Not fixed here — both
-  real fixes have costs outside that branch's scope: serialising every mutator means putting
-  `StoreScope`, used by most of the suite, into a non-parallel collection, which would serialise
-  a large fraction of the run; making `Default` `AsyncLocal` is a production change with its own
-  semantics to settle. This becomes **one specced item** — a dedicated design choosing between
-  serialising `StoreScope`'s mutators and making `MemoryEventSinkContext.Default` `AsyncLocal` —
-  not a `/findings/` chunk.
+- **VERIFIED TRUE, `the-sweep`, 2026-08-11 (evidence corrected — see below).**
+  `MemoryEventSinkContext.Default` (`src/Scrinia.Core/IMemoryEventSink.cs:27,33`) is a bare
+  mutable static with no lock, mutated by many uncoordinated fixtures — `TestHelpers.cs:111-118`
+  (`StoreScope`, used pervasively), `RemoteStoreToolTests.cs:106,118,173,180`,
+  `ConsolidateReembedTests.cs:46,89`, and `MemoryEventSinkContextInstallDefaultTests.cs:19-41`.
+  Three of the four sites are outside any `[Collection]`: `TestHelpers.cs`'s `StoreScope` helper,
+  `RemoteStoreToolTests.cs`, and `MemoryEventSinkContextInstallDefaultTests.cs` are all
+  uncollected. `ConsolidateReembedTests.cs` is the exception — it carries
+  `[Collection(GlobalWorkspaceConfigCollection.Name)]` (`:26`) — but that collection's
+  `[CollectionDefinition(..., DisableParallelization = true)]` (`:129`) exists to serialise
+  `WorkspaceSetup`'s global static config, not `MemoryEventSinkContext.Default`; its own doc
+  comment (`:120-127`) says `StoreScope` is already `AsyncLocal`-safe and out of scope for that
+  collection. Membership in a `[Collection]` only serialises a test against other tests in the
+  *same* collection (here: `BundleGitIgnoreTests`, `ConsolidateTests`, `MigrationTests`) — it does
+  nothing against the uncollected `RemoteStoreToolTests` and
+  `MemoryEventSinkContextInstallDefaultTests` mutators running in parallel. The race on
+  `MemoryEventSinkContext.Default` survives regardless of that one collection membership. It
+  surfaced once during Task 6 of `the-sweep` and did not reproduce across three full reruns. Not
+  fixed here — both real fixes have costs outside that branch's scope: serialising every mutator
+  means putting `StoreScope`, used by most of the suite, into a non-parallel collection, which
+  would serialise a large fraction of the run; making `Default` `AsyncLocal` is a production
+  change with its own semantics to settle. This becomes **one specced item** — a dedicated design
+  choosing between serialising `StoreScope`'s mutators and making
+  `MemoryEventSinkContext.Default` `AsyncLocal` — not a `/findings/` chunk.
 - Whether `WorkspaceRoot` still bypasses the layout-migration latch (recorded as harmless at the
   time, with the reasoning noted as incomplete).
 - The `WithInfo` prepend→append ordering concern. The original claim ("provably unreachable

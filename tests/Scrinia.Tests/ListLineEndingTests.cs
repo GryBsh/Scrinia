@@ -16,6 +16,17 @@ namespace Scrinia.Tests;
 /// every <c>\r</c> unconditionally (deliberately, for cross-platform golden stability — see
 /// its own comment), so a golden-based test can never see this defect. Calling the builders
 /// directly is the only way to observe the raw, unnormalized output.
+///
+/// <para><b>This guard binds only on a host where <c>Environment.NewLine</c> is <c>\r\n</c>
+/// (Windows).</b> <c>AppendLine</c> emits the platform's <c>Environment.NewLine</c>, which is
+/// <c>\n</c> on Linux, so on Linux there is no stray <c>\r</c> for <c>NotContain("\r")</c> to
+/// catch even if the builders regressed back to <c>AppendLine</c>. CI runs on
+/// <c>ubuntu-latest</c> (<c>.github/workflows/ci.yml</c>), so CI does NOT enforce this guard —
+/// a regression here can reintroduce the defect and stay green. No Linux-hosted test can detect
+/// a Windows-only defect, so this is not "fixed" by making the assertion cross-platform; the
+/// goldens can't cover the gap either, since <c>GoldenNormalizer</c> strips <c>\r</c> on the
+/// write path before a fixture is ever compared. This test is a Windows-only regression guard,
+/// known and accepted as such.</para>
 /// </summary>
 public sealed class ListLineEndingTests : IDisposable
 {

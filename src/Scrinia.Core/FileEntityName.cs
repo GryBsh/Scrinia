@@ -9,15 +9,16 @@ namespace Scrinia.Core;
 /// </summary>
 public static class FileEntityName
 {
-    // Ruling: !Path.IsPathRooted(name) is unreachable given the checks that precede it. On
-    // Windows, "rooted" needs either a leading separator (already barred by the IndexOfAny
-    // check above) or a drive-relative form like "C:foo" (barred by the char whitelist below,
-    // which admits no ':'). On POSIX, "rooted" needs a leading '/' (also barred by IndexOfAny).
-    // No string can be rooted while passing both sibling checks, so this clause never fires —
-    // verified by running Path.IsPathRooted against representative inputs, not by inspection
-    // alone. It is kept as defence-in-depth against a future reordering of these clauses:
-    // anyone relaxing the slash check must NOT assume IsPathRooted still covers rooted paths,
-    // because as written it never gets the chance to run first.
+    // Ruling: !Path.IsPathRooted(name) is redundant, not unreachable, given the checks around
+    // it. It DOES run and it DOES reject inputs: "C:foo" passes the IndexOfAny and ".." checks
+    // above (no slash, no "..") and reaches this clause, which rejects it because
+    // Path.IsPathRooted("C:foo") is true on Windows (drive-relative rooted form). The clause is
+    // redundant only in the sense that the char whitelist below would also have rejected
+    // "C:foo" (it admits no ':') had this clause not fired first — verified by running
+    // Path.IsPathRooted against representative inputs, not by inspection alone. It is kept as
+    // defence-in-depth: if the slash check above is ever relaxed, this is precisely the clause
+    // that starts catching rooted forms like "/foo" or "C:\foo" that the slash check no longer
+    // does.
     public static bool IsValid(string? name) =>
         !string.IsNullOrWhiteSpace(name)
         && name.IndexOfAny(['/', '\\']) < 0

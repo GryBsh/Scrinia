@@ -6,8 +6,6 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Core;
-using Scrinia.Core.Models;
-using Scrinia.Core.Search;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
 using Scrinia.TestDoubles;
