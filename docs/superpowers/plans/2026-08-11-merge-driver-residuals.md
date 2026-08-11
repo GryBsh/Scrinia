@@ -582,9 +582,17 @@ Then state the caveat plainly: until those committed copies are removed, `reconc
 
 Write it as fact, not as a warning about hypothetical future work. **No "for now", no "TODO".**
 
-- [ ] **Step 3: CHANGELOG**
+- [ ] **Step 3: CHANGELOG — correct the stale entry first, then add the new one**
 
-Add entries under `## [Unreleased]` for the two user-visible changes in this branch:
+**First, fix the contradiction.** `CHANGELOG.md:378-381` sits under `## [Unreleased]` and still describes the deleted behaviour as current:
+
+> "A conflicted `.nmp2` now stops the merge... marks the sidecar `"conflicted": true`, and leaves markers for `reconcile()` to find."
+
+Task 3 removed that write. The entry is unshipped, so amending it corrects a draft rather than rewriting history — the same call made on the previous branch. Strike the `marks the sidecar "conflicted": true` clause and leave the rest of the sentence (stopping the merge and leaving markers are both still true — **verify that before editing**).
+
+Found by Task 3's review, not by this plan. Line numbers will have shifted; find it by content.
+
+**Then** add entries under `## [Unreleased]` for the two user-visible changes in this branch:
 
 - The `ConflictDir` containment tightening (Task 1): a `merge.config` whose `ConflictDir` resolves to the artifact directory itself — `"."` or `""` — is now **rejected** rather than accepted. Previously the driver wrote a `.gitignore` of `*` into the artifact directory, silently untracking every memory at and below it. Reaching this required hand-editing `merge.config`, since `scri setup` hard-codes `"conflict"`.
 - The `"conflicted"` flag removal (Task 3): the driver no longer writes a `conflicted: true` property into `.meta.json` on a conflicted merge. Nothing read it, and `WriteSidecarCore` dropped it on the next write; its only effect was a spurious diff.
