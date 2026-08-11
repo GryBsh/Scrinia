@@ -371,9 +371,22 @@ rtk dotnet build Scrinia.sln && rtk dotnet test tests/Scrinia.Server.Tests
 
 Expected: new test passes, 0 build errors. Report any other test that changed status.
 
-- [ ] **Step 5: Add the CHANGELOG entry**
+- [ ] **Step 5: Add the CHANGELOG entry — and correct the entry Task 1 falsified**
 
-Insert a new subsection into `CHANGELOG.md` under `## [Unreleased]`, after the existing `### Changed (breaking) — the HTTP store request and response shapes` block:
+**First, fix the contradiction.** `CHANGELOG.md:265` currently ends an `[Unreleased]` bullet with:
+
+> An import matching no topics still exits 0: that response is a `warning`, not an error.
+
+Task 1 made that false. The entry is unshipped (`[Unreleased]`), so amending it corrects a draft rather than rewriting history. Replace that trailing sentence with:
+
+```markdown
+  their exit code was not gated. Both now read the typed status, and an import matching no topics
+  exits 1 — see "matched nothing is no longer reported as success" below.
+```
+
+This was found by Task 1's review, not by the plan. Task 1's new test doc comment asserts "recorded in CHANGELOG.md"; this step is what makes that true.
+
+**Then** insert a new subsection under `## [Unreleased]`, after the existing `### Changed (breaking) — the HTTP store request and response shapes` block:
 
 ```markdown
 ### Changed (breaking) — "matched nothing" is no longer reported as success
