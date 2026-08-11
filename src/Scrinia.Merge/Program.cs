@@ -35,16 +35,16 @@ try
             _ => $"unknown driver kind '{kind}'"
         };
         string otherKind = kind == "meta" ? "nmp2" : "meta";
-        string otherMessage = kind == "meta" ? nmp2Message : metaMessage;
 
-        // Report the invoked key's outcome. The other key is repaired too — a legacy workspace
-        // registered both at four arguments — but `git config --get` exits 1 with empty stderr on a
-        // key that was simply never registered, so its message cannot distinguish "absent" from
-        // "failed". Stating it as a plain note rather than an error stops a single-driver workspace
-        // being told something is broken when nothing is.
+        // Report the invoked key's outcome only. The other key is repaired too — a legacy
+        // workspace registered both at four arguments — but `git config --get` exits 1 with
+        // empty stderr both when the key was simply never registered and when it genuinely
+        // failed to read (F4), so its message text cannot be trusted to say which case this is.
+        // Naming that a repair was attempted, without characterising a result we don't actually
+        // know, is deliberate: do not "helpfully" reattach the other key's message here.
         Console.Error.WriteLine(invokedRepaired
             ? $"[scrinia] merge driver invoked without %P — {invokedMessage}; " +
-              $"also attempted {otherKind}: {otherMessage}; re-run your merge"
+              $"{otherKind} repair also attempted; re-run your merge"
             : $"[scrinia:error] merge driver invoked without %P — {invokedMessage}. " +
               "Re-run: scri setup --multi-user");
         return 1;

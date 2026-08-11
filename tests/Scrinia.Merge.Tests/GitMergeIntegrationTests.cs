@@ -173,14 +173,19 @@ public sealed class GitMergeIntegrationTests
 
         result.StdErr.Should().NotContain("[scrinia:error]",
             because: "the invoked key (nmp2) repaired successfully; the merge must not be framed as a failure");
+        // The old fixed "meta: X; nmp2: Y" pairing read the invoked key's own success as if it were
+        // just one half of a two-key failure report.
+        result.StdErr.Should().NotContain("could not read merge.scrinia-meta.driver from local git config; nmp2:",
+            because: "meta's status must not be paired ahead of the invoked key's outcome as if both " +
+                     "keys carried equal weight");
         // `git config --get` on merge.scrinia-meta.driver exits 1 with empty stderr because the key was
         // never registered, not because anything failed — GitConfigRepair.TryAppendPathname cannot tell
-        // the difference (F4), so its "could not read" text for meta is unavoidable. What must not happen
-        // is the old fixed "meta: X; nmp2: Y" pairing, which read the invoked key's own success as if it
-        // were just one half of a two-key failure report.
-        result.StdErr.Should().NotContain("could not read merge.scrinia-meta.driver from local git config; nmp2:",
-            because: "meta's unavoidable \"could not read\" text must not be paired ahead of the invoked " +
-                     "key's outcome as if both keys carried equal weight");
+        // the difference (F4), so Program.cs must not surface its "could not read" text at all when the
+        // invoked key succeeded; it can only assert that a repair was attempted, not characterise a
+        // result it doesn't actually know.
+        result.StdErr.Should().NotContain("could not read",
+            because: "the invoked key succeeded; the other key's unreadable-vs-failed ambiguity must " +
+                     "not be surfaced as failure language when nothing is known to have failed");
     }
 
     [Fact]
@@ -278,11 +283,13 @@ public sealed class GitMergeIntegrationTests
         int tryIndex = source.IndexOf("\ntry", StringComparison.Ordinal);
         int legacyGuardIndex = source.IndexOf("if (args.Length < 5)", StringComparison.Ordinal);
         int repairCallIndex = source.IndexOf("GitConfigRepair.TryAppendPathname", StringComparison.Ordinal);
+        int catchIndex = source.IndexOf("catch (Exception ex)", StringComparison.Ordinal);
 
         usageGuardIndex.Should().BeGreaterThan(-1, because: "the usage guard must still exist");
         tryIndex.Should().BeGreaterThan(-1, because: "Program.cs must open a top-level try block");
         legacyGuardIndex.Should().BeGreaterThan(-1, because: "the legacy four-argument branch must still exist");
         repairCallIndex.Should().BeGreaterThan(-1, because: "the legacy branch must still repair via GitConfigRepair");
+        catchIndex.Should().BeGreaterThan(-1, because: "the top-level catch must still exist");
 
         usageGuardIndex.Should().BeLessThan(tryIndex,
             because: "the < 4 argument usage guard makes no git call and stays outside the try");
@@ -291,6 +298,9 @@ public sealed class GitMergeIntegrationTests
                 because: "the legacy branch's length check and its two GitConfigRepair.TryAppendPathname " +
                          "calls must sit inside the try, so an IOException escaping TryGit is caught here " +
                          "rather than reaching git as a raw stack trace");
+        repairCallIndex.Should().BeLessThan(catchIndex,
+            because: "the catch must close over the repair calls too -- moving the try's opening brace " +
+                     "without the catch still covering this code would leave the exception uncaught again");
     }
 
     private static string FindProgramCs()
