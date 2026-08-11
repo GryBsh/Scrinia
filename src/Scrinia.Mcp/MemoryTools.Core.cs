@@ -472,147 +472,170 @@ public sealed partial class ScriniaMcpTools
                 "remember({ path: '...', content: [...] }) — overwrites an existing ephemeral entry"));
 
         var (scope, subject) = store.ParseQualifiedName(name);
-
-        var entries = store.LoadIndex(scope);
-        var entry = entries.FirstOrDefault(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-        if (entry is null)
-        {
-            string qualName = store.FormatQualifiedName(scope, subject);
-            return Task.FromResult(ResponseBuilder.Error(
-                $"Memory '{qualName}' not found.",
-                ErrorCodes.NotFound,
-                "list() to see available memories",
-                "remember({ path: '...', content: [...] }) to create it"));
-        }
+        string qualifiedName = store.FormatQualifiedName(scope, subject);
 
         // Track what changed for the response message
         var changes = new List<string>();
+        bool found = false;
 
-        // Route key:value-shaped additions into Attributes; only plain ones merge into Keywords.
-        var (routedAttributes, plainAdds) = AttributeExtractor.RouteKeywords(keywords);
-
-        string[]? mergedKeywords = entry.Keywords;
-        int addedCount = 0;
-        if (plainAdds is { Length: > 0 })
+        // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
+        // used to have. Remotely, Upsert is a deliberate no-op, so that shape mutated a copy,
+        // handed it to a method that discards it, and still reported "updated" — link() said
+        // "Linked 'a' <-> 'b'" while the `ref` attribute never reached the server. TryUpdateEntry
+        // is the seam that already fails closed there (HttpMemoryStore overrides it precisely so a
+        // mutation it cannot persist is refused rather than silently dropped), and locally it
+        // additionally runs under FileMemoryStore's per-scope write lock, so load→mutate→persist
+        // is atomic instead of a racy read-modify-write. `found`/`changes` are captured out of the
+        // callback because a false return has three distinct causes the caller must tell apart:
+        // no such entry, nothing to change, and "found but not persistable".
+        bool persisted = store.TryUpdateEntry(subject, scope, entry =>
         {
-            var existing = entry.Keywords ?? [];
-            mergedKeywords = existing.Union(plainAdds, StringComparer.OrdinalIgnoreCase).ToArray();
-            addedCount = mergedKeywords.Length - existing.Length;
-            if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
-        }
+            found = true;
 
-        Dictionary<string, string[]>? mergedAttributes = entry.Attributes;
-        if (routedAttributes is not null)
-        {
-            mergedAttributes = KnownAttributes.Merge(entry.Attributes, routedAttributes);
-            changes.Add($"{routedAttributes.Count} attribute(s) merged");
-        }
+            // Route key:value-shaped additions into Attributes; only plain ones merge into Keywords.
+            var (routedAttributes, plainAdds) = AttributeExtractor.RouteKeywords(keywords);
 
-        // Replace description if provided — displayed via ContentPreview (updatedContentPreview
-        // below); this block only tracks the "changes" message.
-        if (!string.IsNullOrWhiteSpace(description))
-        {
-            changes.Add("description updated");
-        }
-
-        // Carry-forward defaults for review sourced from Attributes["review"] (the successor
-        // carrier) rather than the legacy ReviewAfter/ReviewWhen members.
-        AttributeReaders.TryReadReview(entry.Attributes, out var existingReviewDate, out var existingReviewWhen);
-
-        // Parse reviewAfter if provided
-        DateTimeOffset? parsedReviewAfter = existingReviewDate;
-        if (!string.IsNullOrWhiteSpace(reviewAfter))
-        {
-            if (DateTimeOffset.TryParse(reviewAfter, out var ra))
+            string[]? mergedKeywords = entry.Keywords;
+            int addedCount = 0;
+            if (plainAdds is { Length: > 0 })
             {
-                parsedReviewAfter = ra;
-                changes.Add($"reviewAfter set to {ra:yyyy-MM-dd}");
+                var existing = entry.Keywords ?? [];
+                mergedKeywords = existing.Union(plainAdds, StringComparer.OrdinalIgnoreCase).ToArray();
+                addedCount = mergedKeywords.Length - existing.Length;
+                if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
             }
-            else
-            {
-                changes.Add("reviewAfter ignored (invalid date)");
-            }
-        }
 
-        // Replace reviewWhen if provided
-        string? updatedReviewWhen = existingReviewWhen;
-        if (reviewWhen is not null)
-        {
-            updatedReviewWhen = string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen;
-            changes.Add(updatedReviewWhen is not null ? "reviewWhen updated" : "reviewWhen cleared");
-        }
+            Dictionary<string, string[]>? mergedAttributes = entry.Attributes;
+            if (routedAttributes is not null)
+            {
+                mergedAttributes = KnownAttributes.Merge(entry.Attributes, routedAttributes);
+                changes.Add($"{routedAttributes.Count} attribute(s) merged");
+            }
+
+            // Replace description if provided — displayed via ContentPreview (updatedContentPreview
+            // below); this block only tracks the "changes" message.
+            if (!string.IsNullOrWhiteSpace(description))
+            {
+                changes.Add("description updated");
+            }
+
+            // Carry-forward defaults for review sourced from Attributes["review"] (the successor
+            // carrier) rather than the legacy ReviewAfter/ReviewWhen members.
+            AttributeReaders.TryReadReview(entry.Attributes, out var existingReviewDate, out var existingReviewWhen);
+
+            // Parse reviewAfter if provided
+            DateTimeOffset? parsedReviewAfter = existingReviewDate;
+            if (!string.IsNullOrWhiteSpace(reviewAfter))
+            {
+                if (DateTimeOffset.TryParse(reviewAfter, out var ra))
+                {
+                    parsedReviewAfter = ra;
+                    changes.Add($"reviewAfter set to {ra:yyyy-MM-dd}");
+                }
+                else
+                {
+                    changes.Add("reviewAfter ignored (invalid date)");
+                }
+            }
+
+            // Replace reviewWhen if provided
+            string? updatedReviewWhen = existingReviewWhen;
+            if (reviewWhen is not null)
+            {
+                updatedReviewWhen = string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen;
+                changes.Add(updatedReviewWhen is not null ? "reviewWhen updated" : "reviewWhen cleared");
+            }
+
+            // Null means "no write" to TryUpdateEntry; the caller reports it as the warning below.
+            if (changes.Count == 0) return null;
+
+            // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
+            // members below + the Forward call at the end of this callback). ADD/REPLACE ONLY — no
+            // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
+            // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
+            // key, so KnownAttributes.Merge PRESERVES any existing Attributes["review"] rather than
+            // clearing it. KnownAttributes.Merge always returns a NEW dictionary, so this never mutates
+            // entry.Attributes (== mergedAttributes when routedAttributes is null) in place.
+            var reviewParts = new List<string>(2);
+            if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
+            if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
+            if (reviewParts.Count > 0)
+                mergedAttributes = KnownAttributes.Merge(mergedAttributes,
+                    new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.ReviewKey] = reviewParts.ToArray() });
+
+            // ContentPreview direct write — Merge 3 Task 2b option A: an explicit new description
+            // wins and becomes the displayed ContentPreview; otherwise the existing ContentPreview
+            // is preserved (superseding the old Merge-2 null-only backfill).
+            string? updatedContentPreview = !string.IsNullOrWhiteSpace(description)
+                ? description
+                : entry.ContentPreview;
+
+            // Build the updated entry via term frequencies merge
+            var updatedTf = entry.TermFrequencies;
+            if (plainAdds is { Length: > 0 } && addedCount > 0)
+            {
+                var tf = entry.TermFrequencies is not null
+                    ? new Dictionary<string, int>(entry.TermFrequencies)
+                    : new Dictionary<string, int>();
+                var existing = entry.Keywords ?? [];
+                foreach (string kw in plainAdds)
+                {
+                    if (!existing.Contains(kw, StringComparer.OrdinalIgnoreCase))
+                    {
+                        tf.TryGetValue(kw, out int count);
+                        tf[kw] = count + 5;
+                    }
+                }
+                updatedTf = tf;
+            }
+
+            if (routedAttributes is not null)
+            {
+                var tfForAttributes = updatedTf is not null
+                    ? new Dictionary<string, int>(updatedTf) : new Dictionary<string, int>();
+                // Agent-curated attributes seed at +5, matching agent keywords (not the +3 auto rate).
+                foreach (var kv in routedAttributes)
+                    foreach (string v in kv.Value)
+                        foreach (string token in TextAnalysis.Tokenize(v))
+                        {
+                            tfForAttributes.TryGetValue(token, out int c);
+                            tfForAttributes[token] = c + 5;
+                        }
+                updatedTf = tfForAttributes;
+            }
+
+            var updated = entry with
+            {
+                Keywords = mergedKeywords,
+                TermFrequencies = updatedTf,
+                Attributes = mergedAttributes,
+                ContentPreview = updatedContentPreview,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            return AttributeMigration.Forward(updated);
+        });
+
+        if (!found)
+            return Task.FromResult(ResponseBuilder.Error(
+                $"Memory '{qualifiedName}' not found.",
+                ErrorCodes.NotFound,
+                "list() to see available memories",
+                "remember({ path: '...', content: [...] }) to create it"));
 
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen."));
 
-        // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
-        // members below + the Forward call at the end of this method). ADD/REPLACE ONLY — no
-        // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
-        // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
-        // key, so KnownAttributes.Merge PRESERVES any existing Attributes["review"] rather than
-        // clearing it. KnownAttributes.Merge always returns a NEW dictionary, so this never mutates
-        // entry.Attributes (== mergedAttributes when routedAttributes is null) in place.
-        var reviewParts = new List<string>(2);
-        if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
-        if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
-        if (reviewParts.Count > 0)
-            mergedAttributes = KnownAttributes.Merge(mergedAttributes,
-                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.ReviewKey] = reviewParts.ToArray() });
+        // Found, had something to change, and the store still could not persist it — remotely,
+        // where a metadata-only mutation has no channel (Upsert is a no-op and there is no
+        // attributes-only PATCH endpoint yet). Reporting success here is the defect this branch
+        // exists to close, so say so plainly instead.
+        if (!persisted)
+            return Task.FromResult(ResponseBuilder.Error(
+                $"Metadata for '{qualifiedName}' was not updated: the active store cannot persist a " +
+                "metadata-only change (a remote store has no attributes-only update endpoint yet).",
+                ErrorCodes.NotSupported,
+                "remember({ path: '...', content: [...] }) — a full write does carry attributes, keywords and description to a remote store"));
 
-        // ContentPreview direct write — Merge 3 Task 2b option A: an explicit new description
-        // wins and becomes the displayed ContentPreview; otherwise the existing ContentPreview
-        // is preserved (superseding the old Merge-2 null-only backfill).
-        string? updatedContentPreview = !string.IsNullOrWhiteSpace(description)
-            ? description
-            : entry.ContentPreview;
-
-        // Build the updated entry via term frequencies merge
-        var updatedTf = entry.TermFrequencies;
-        if (plainAdds is { Length: > 0 } && addedCount > 0)
-        {
-            var tf = entry.TermFrequencies is not null
-                ? new Dictionary<string, int>(entry.TermFrequencies)
-                : new Dictionary<string, int>();
-            var existing = entry.Keywords ?? [];
-            foreach (string kw in plainAdds)
-            {
-                if (!existing.Contains(kw, StringComparer.OrdinalIgnoreCase))
-                {
-                    tf.TryGetValue(kw, out int count);
-                    tf[kw] = count + 5;
-                }
-            }
-            updatedTf = tf;
-        }
-
-        if (routedAttributes is not null)
-        {
-            var tfForAttributes = updatedTf is not null
-                ? new Dictionary<string, int>(updatedTf) : new Dictionary<string, int>();
-            // Agent-curated attributes seed at +5, matching agent keywords (not the +3 auto rate).
-            foreach (var kv in routedAttributes)
-                foreach (string v in kv.Value)
-                    foreach (string token in TextAnalysis.Tokenize(v))
-                    {
-                        tfForAttributes.TryGetValue(token, out int c);
-                        tfForAttributes[token] = c + 5;
-                    }
-            updatedTf = tfForAttributes;
-        }
-
-        var updated = entry with
-        {
-            Keywords = mergedKeywords,
-            TermFrequencies = updatedTf,
-            Attributes = mergedAttributes,
-            ContentPreview = updatedContentPreview,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        updated = AttributeMigration.Forward(updated);
-
-        store.Upsert(updated, scope);
-
-        string qualifiedName = store.FormatQualifiedName(scope, subject);
         return Task.FromResult(
             ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.")
                 .WithFileChanges().WithAction("updated"));
@@ -1159,22 +1182,36 @@ public sealed partial class ScriniaMcpTools
             if (existingEntry is not null)
                 store.ArchiveVersion(subject, scope);
 
-            await store.WriteArtifactAsync(subject, scope, newArtifact, ct: cancellationToken);
-
-            string uri = store.ArtifactUri(subject, scope);
-            qualifiedName = store.FormatQualifiedName(scope, subject);
-            sinkQualifiedName = store.FormatQualifiedName(scope, subject);
-
             // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Attributes, but
             // review/file aren't available there — they come from existingEntry, which is only a
             // local at this construction site. Fold them here so Attributes carries the full
             // legacy carrier set even though tags/anchors are already in meta.Attributes (passed null
             // below to avoid double-folding them).
+            //
+            // Hoisted above the write (was after it), for the same reason remember()'s carrier fold
+            // was: remotely, WriteArtifactAsync re-runs the server's whole store path and replaces
+            // the entry with server-extracted attributes only, and the Upsert below is a no-op — so
+            // this map has to travel WITH the write or it is destroyed by it. Measured before the
+            // hoist: an append to a memory holding tag/anchor/person left only the freshly extracted
+            // mention values behind. Nothing in this block reads a value produced by the write: it
+            // reads existingEntry (loaded above) and meta (built above) and nothing else, and
+            // `uri`/`qualifiedName` — the only post-write locals — are not referenced here.
             AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
             var carrier = AttributeMigration.BuildCarrierAttributes(
                 tags: null, existingEntry?.FileHashes?.Keys, existingReviewDate,
                 existingReviewWhen, anchors: null);
             var appendAttrs = carrier.Count > 0 ? KnownAttributes.Merge(meta.Attributes, carrier) : meta.Attributes;
+
+            await store.WriteArtifactAsync(subject, scope, newArtifact,
+                new ArtifactWriteMetadata(
+                    Attributes: appendAttrs,
+                    Keywords: meta.Keywords,
+                    Description: contentPreview),
+                cancellationToken);
+
+            string uri = store.ArtifactUri(subject, scope);
+            qualifiedName = store.FormatQualifiedName(scope, subject);
+            sinkQualifiedName = store.FormatQualifiedName(scope, subject);
 
             var entry = new ArtifactEntry(
                 Name: subject,

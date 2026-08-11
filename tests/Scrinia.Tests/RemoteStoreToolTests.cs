@@ -462,6 +462,60 @@ public sealed class RemoteStoreToolTests
         }
     }
 
+    // ── Final review, Critical 1: UpdateMeta must not report an unpersisted write ──
+
+    /// <summary>
+    /// <c>UpdateMeta</c> — reached by <c>update()</c> and by both halves of <c>link()</c> — used to
+    /// go LoadIndex → mutate → <c>Upsert</c> → <c>ResponseBuilder.Success</c>. Remotely
+    /// <c>Upsert</c> is a deliberate no-op, so once <c>LoadIndex</c> was fixed to return the real
+    /// listing, the entry was found, mutated, dropped, and reported as updated. Measured against a
+    /// Kestrel host: <c>link()</c> answered <c>status: success / action: linked</c> while the target
+    /// entry gained no <c>ref</c> attribute. It now routes through <c>TryUpdateEntry</c>, whose
+    /// remote override already fails closed, and reports that refusal.
+    /// <para>The list JSON here makes the entry EXIST, which is what separates this from an
+    /// ordinary "not found": the answer must be NOT_SUPPORTED, not NOT_FOUND.</para>
+    /// </summary>
+    [Fact]
+    public async Task UpdateMeta_RemoteStore_ReportsNotSupported_RatherThanAFabricatedSuccess()
+    {
+        using var scope = new RemoteStoreScope(OneEntryListJson);
+
+        var response = await Tools().UpdateMeta("alpha", keywords: ["curated"]);
+
+        response.Status.Should().Be("error",
+            because: "a remote store has no channel for a metadata-only write, so success would " +
+                     "be a report of something that did not happen");
+        response.ErrorCode.Should().Be(ErrorCodes.NotSupported,
+            because: "the entry exists — this is a missing capability, not a missing memory");
+        response.ActionNeeded.Should().NotBeNullOrEmpty(
+            because: "a refusal without a next step leaves the caller stuck");
+    }
+
+    /// <summary>The pre-existing NOT_FOUND case must still answer NOT_FOUND: the fail-closed path
+    /// above must not swallow the ordinary "no such memory" answer.</summary>
+    [Fact]
+    public async Task UpdateMeta_RemoteStore_StillReportsNotFound_WhenTheEntryDoesNotExist()
+    {
+        using var scope = new RemoteStoreScope(EmptyListJson);
+
+        var response = await Tools().UpdateMeta("absent", keywords: ["curated"]);
+
+        response.ErrorCode.Should().Be(ErrorCodes.NotFound);
+    }
+
+    /// <summary>And the "nothing to change" case must still be the warning it was, not an error:
+    /// TryUpdateEntry returns false for a null mutation too, and the three causes have to stay
+    /// distinguishable.</summary>
+    [Fact]
+    public async Task UpdateMeta_RemoteStore_StillWarns_WhenNothingWasSpecified()
+    {
+        using var scope = new RemoteStoreScope(OneEntryListJson);
+
+        var response = await Tools().UpdateMeta("alpha");
+
+        response.Status.Should().Be("warning");
+    }
+
     // ── Task 3: the narrowed optional site in Recall ─────────────────────────
 
     [Fact]

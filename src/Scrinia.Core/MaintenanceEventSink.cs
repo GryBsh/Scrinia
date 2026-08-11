@@ -53,22 +53,25 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             try
             {
                 var (targetScope, targetSubject) = store.ParseQualifiedName(refName);
-                var targetEntries = store.LoadIndex(targetScope);
-                var targetEntry = targetEntries.FirstOrDefault(e =>
-                    e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
 
-                if (targetEntry is null) continue; // referenced memory doesn't exist
+                // TryUpdateEntry, not LoadIndex → mutate → Upsert: remotely Upsert is a no-op, so
+                // that shape discarded the link silently; TryUpdateEntry fails closed there and runs
+                // under the per-scope write lock locally. Doing the "already linked?" check inside
+                // the callback also keeps this to ONE index read — hoisting it back out would cost a
+                // second network round trip per referenced memory on a remote store.
+                store.TryUpdateEntry(targetSubject, targetScope, targetEntry =>
+                {
+                    // Write the ref attribute (unified attributes) — no more ref: keyword emission.
+                    string[] existingRefs = targetEntry.Attributes is not null
+                        && targetEntry.Attributes.TryGetValue("ref", out var r) ? r : [];
+                    if (existingRefs.Contains(qualifiedName, StringComparer.OrdinalIgnoreCase)
+                        || targetEntry.Keywords?.Contains($"ref:{qualifiedName}", StringComparer.OrdinalIgnoreCase) == true)
+                        return null; // already linked (either shape) — no write
 
-                // Write the ref attribute (unified attributes) — no more ref: keyword emission.
-                string[] existingRefs = targetEntry.Attributes is not null
-                    && targetEntry.Attributes.TryGetValue("ref", out var r) ? r : [];
-                if (existingRefs.Contains(qualifiedName, StringComparer.OrdinalIgnoreCase)
-                    || targetEntry.Keywords?.Contains($"ref:{qualifiedName}", StringComparer.OrdinalIgnoreCase) == true)
-                    continue; // already linked (either shape)
-
-                var updatedAttributes = KnownAttributes.Merge(
-                    targetEntry.Attributes, new() { ["ref"] = [qualifiedName] });
-                store.Upsert(targetEntry with { Attributes = updatedAttributes }, targetScope);
+                    var updatedAttributes = KnownAttributes.Merge(
+                        targetEntry.Attributes, new() { ["ref"] = [qualifiedName] });
+                    return targetEntry with { Attributes = updatedAttributes };
+                });
             }
             catch
             {
@@ -80,15 +83,13 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
         try
         {
             var (sourceScope, sourceSubject) = store.ParseQualifiedName(qualifiedName);
-            var sourceEntries = store.LoadIndex(sourceScope);
-            var sourceEntry = sourceEntries.FirstOrDefault(e =>
-                e.Name.Equals(sourceSubject, StringComparison.OrdinalIgnoreCase));
-
-            if (sourceEntry is null) return Task.CompletedTask;
 
             string sourceQualified = store.FormatQualifiedName(sourceScope, sourceSubject);
             string inboundRefKey = $"ref:{sourceQualified}";
 
+            // Computed before the update rather than after a separate LoadIndex: neither this nor
+            // the qualified name needs the source entry itself, and TryUpdateEntry below reads the
+            // entry once, atomically, instead of the old racy load → mutate → Upsert.
             var allEntries = store.ListScoped(null);
             bool hasInboundRefs = allEntries.Any(sa =>
                 (sa.Entry.Keywords?.Any(k => k.Equals(inboundRefKey, StringComparison.OrdinalIgnoreCase)) == true)
@@ -96,21 +97,23 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                     && sa.Entry.Attributes.TryGetValue("ref", out var refs)
                     && refs.Any(v => v.Equals(sourceQualified, StringComparison.OrdinalIgnoreCase))));
 
-            var currentKw = sourceEntry.Keywords?.ToList() ?? [];
-            bool isOrphan = currentKw.Any(k => k.Equals("orphan", StringComparison.OrdinalIgnoreCase));
+            store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
+            {
+                var currentKw = sourceEntry.Keywords?.ToList() ?? [];
+                bool isOrphan = currentKw.Any(k => k.Equals("orphan", StringComparison.OrdinalIgnoreCase));
 
-            if (!hasInboundRefs && !isOrphan)
-            {
-                currentKw.Add("orphan");
-                var updated = sourceEntry with { Keywords = currentKw.ToArray() };
-                store.Upsert(updated, sourceScope);
-            }
-            else if (hasInboundRefs && isOrphan)
-            {
-                currentKw.RemoveAll(k => k.Equals("orphan", StringComparison.OrdinalIgnoreCase));
-                var updated = sourceEntry with { Keywords = currentKw.ToArray() };
-                store.Upsert(updated, sourceScope);
-            }
+                if (!hasInboundRefs && !isOrphan)
+                {
+                    currentKw.Add("orphan");
+                    return sourceEntry with { Keywords = currentKw.ToArray() };
+                }
+                if (hasInboundRefs && isOrphan)
+                {
+                    currentKw.RemoveAll(k => k.Equals("orphan", StringComparison.OrdinalIgnoreCase));
+                    return sourceEntry with { Keywords = currentKw.ToArray() };
+                }
+                return null; // nothing to change
+            });
         }
         catch
         {
