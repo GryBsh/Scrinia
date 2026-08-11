@@ -199,6 +199,42 @@ public sealed class FileMemoryStoreTests : IDisposable
         dstEntries.Should().Contain(e => e.Name == "dst");
     }
 
+    /// <summary>
+    /// <c>CopyMemory</c> resolves the source artifact through the filesystem (case-insensitive on
+    /// NTFS) but looked its index entry up with an ordinal <c>e.Name == srcSubject</c>
+    /// (<c>FileMemoryStore.cs:1540</c>). A source named "SrcMixed" copied as "srcmixed" therefore
+    /// found its file and not its entry, and the copy silently fell through to the
+    /// synthesized-defaults branch: the destination kept the bytes and lost the attributes,
+    /// keywords and curated preview the source carried. The pre-existing
+    /// <see cref="CopyMemory_persistent_to_persistent"/> uses one casing throughout and asserts
+    /// only that the destination exists, so it cannot see this.
+    /// </summary>
+    [Fact]
+    public async Task CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("Copy content");
+        await _store.WriteArtifactAsync("SrcMixed", "local", artifact);
+        _store.Upsert(new ArtifactEntry("SrcMixed", "", 100, 1, DateTimeOffset.UtcNow,
+            ContentPreview: "a curated description",
+            Keywords: ["portcullis"],
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["person"] = ["maria"],
+            }));
+
+        bool ok = _store.CopyMemory("srcmixed", "dst-mixed", false, out string msg);
+        ok.Should().BeTrue(because: msg);
+
+        var copied = _store.LoadIndex().Single(e => e.Name == "dst-mixed");
+        copied.Attributes.Should().ContainKey("person",
+            because: "the copy carries the source entry's metadata; falling back to defaults means " +
+                     "the source entry was never found");
+        copied.Attributes!["person"].Should().Contain("maria");
+        copied.Keywords.Should().Contain("portcullis");
+        copied.ContentPreview.Should().Be("a curated description");
+        copied.OriginalBytes.Should().Be(100);
+    }
+
     [Fact]
     public void DiscoverTopics_finds_topic_dirs()
     {

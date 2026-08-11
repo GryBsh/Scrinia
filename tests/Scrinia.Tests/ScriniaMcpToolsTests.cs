@@ -1498,6 +1498,40 @@ public sealed class ScriniaMcpToolsTests
             because: "overwriting must preserve the original CreatedAt");
     }
 
+    /// <summary>
+    /// The same two guarantees as the two tests above, for a re-store whose casing differs from
+    /// the one the memory was created with. remember()'s existing-entry lookup
+    /// (<c>MemoryTools.Core.cs:320</c>) used an ordinal <c>e.Name == subject</c> while the write
+    /// path underneath it is case-insensitive on NTFS — so the second remember() overwrote the
+    /// artifact while reporting the memory as new: no archive, and CreatedAt reset. The prior
+    /// content was unrecoverable.
+    /// </summary>
+    [Fact]
+    public async Task Store_OverwriteUnderADifferentCasing_ArchivesAndPreservesCreatedAt()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(["v1 content"], "CasingArchive");
+        var entries1 = MemoryStoreContext.Current!.LoadIndex();
+        entries1.Should().ContainSingle(because: "precondition: one memory exists");
+        var originalCreatedAt = entries1[0].CreatedAt;
+
+        await Task.Delay(50); // ensure different timestamp
+        await Tools().Remember(["v2 content"], "casingarchive");
+
+        string versionsDir = Path.Combine(scope.TempDir, "versions");
+        Directory.Exists(versionsDir).Should().BeTrue(
+            because: "the second remember() overwrote the artifact, so the first version had to " +
+                     "be archived before it — a case-mismatched name does not make it a new memory");
+        Directory.GetFiles(versionsDir, "*.nmp2").Should().HaveCount(1);
+
+        var entries2 = MemoryStoreContext.Current!.LoadIndex();
+        entries2.Should().ContainSingle(
+            because: "the re-store updates the existing memory rather than adding a second one");
+        entries2[0].CreatedAt.Should().Be(originalCreatedAt,
+            because: "overwriting must preserve the original CreatedAt, casing notwithstanding");
+        entries2[0].UpdatedAt.Should().NotBeNull();
+    }
+
     // ── List output (2 tests) ────────────────────────────────────────────────
 
     [Fact]

@@ -173,4 +173,33 @@ public class RememberWriteMetadataTests
         recording.LastMeta.Keywords.Should().Contain("portcullis");
         recording.LastMeta.Description.Should().Be("a curated description");
     }
+
+    /// <summary>
+    /// The same seam, reached under a casing the entry was not stored with. <c>compact()</c>'s
+    /// existing-entry lookup (<c>MemoryTools.Lifecycle.cs:579</c>) compared <c>e.Name</c> against
+    /// <c>ParseQualifiedName</c>'s subject with an ordinal <c>==</c>, so "Note" found nothing for a
+    /// memory stored as "note" — and the write it guards went out with <c>meta: null</c>, which is
+    /// exactly the metadata reset the comment at <c>:571-578</c> says the read exists to prevent.
+    /// The compaction still landed on the same artifact file (NTFS is case-insensitive), so this is
+    /// silent loss, not a failed call.
+    /// </summary>
+    [Fact]
+    public async Task Compact_UnderADifferentCasing_StillHandsTheExistingEntrysMetadataToTheWriteSeam()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var recording = new SeededRecordingStore();
+        MemoryStoreContext.Current = recording;
+
+        // The seeded entry is named "note"; this asks for it as "Note".
+        await new ScriniaMcpTools().MemoryCompact(path: "Note");
+
+        recording.WriteHappened.Should().BeTrue("precondition: the compaction write ran");
+        recording.LastMeta.Should().NotBeNull(
+            because: "the entry exists under a different casing — failing to find it turns the " +
+                     "compaction into a metadata reset on a store whose Upsert is a no-op");
+        recording.LastMeta!.Attributes.Should().ContainKey("tag");
+        recording.LastMeta.Attributes!["person"].Should().Contain("maria");
+        recording.LastMeta.Keywords.Should().Contain("portcullis");
+        recording.LastMeta.Description.Should().Be("a curated description");
+    }
 }

@@ -575,8 +575,15 @@ public sealed partial class ScriniaMcpTools
         // is the only channel it has; reading after would sample the already-clobbered entry.
         // Locally this reads the same values either way: FileMemoryStore.WriteArtifactAsync touches
         // the artifact file only and leaves the sidecar alone.
+        // Case-insensitive match plus canonical-casing carry-forward — see
+        // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
+        // the whole class's reasoning. Here an ordinal match sent the write below out with
+        // meta: null, which is precisely the metadata reset the comment above exists to prevent.
         var entries = store.LoadIndex(scope);
-        var existingEntry = entries.FirstOrDefault(e => e.Name == subject);
+        var existingEntry = entries.FirstOrDefault(
+            e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (existingEntry is not null)
+            subject = existingEntry.Name;
 
         await store.WriteArtifactAsync(subject, scope, compacted,
             existingEntry is null

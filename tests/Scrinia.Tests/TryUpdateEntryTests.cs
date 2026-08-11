@@ -102,13 +102,16 @@ public class TryUpdateEntryTests
 
     /// <summary>
     /// Regression guard: the entry lookup inside TryUpdateEntry must match names
-    /// case-insensitively, the way <see cref="FileMemoryStore.Remove"/>'s <c>File.Exists</c> guard
-    /// already does on Windows (NTFS is case-insensitive) and the way <c>UpdateMeta</c> matched
-    /// before it was rerouted through TryUpdateEntry. A prior fix wave changed the name match from
+    /// case-insensitively, the way <c>UpdateMeta</c> matched before it was rerouted through
+    /// TryUpdateEntry. A prior fix wave changed the name match from
     /// <c>e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase)</c> to an ordinal
     /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, which silently broke update()/link() for
-    /// any case-mismatched name — stored as "MixedCase", looked up as "mixedcase" — even though the
-    /// method's own <c>File.Exists(metaPath)</c> guard reports the entry present.
+    /// any case-mismatched name — stored as "MixedCase", looked up as "mixedcase".
+    /// <para>This test passes on Windows for a second, weaker reason as well, which is worth
+    /// knowing when reading it: NTFS folds case, so the <c>File.Exists(metaPath)</c> fast path the
+    /// method used to open with also reported the entry present. That gate has since been removed —
+    /// it was the same defect one line up, and on a case-sensitive filesystem it made THIS test
+    /// fail. See the ruling comment at <see cref="FileMemoryStore.TryUpdateEntry"/>.</para>
     /// </summary>
     [Fact]
     public void MutateWithDifferentCasing_StillFindsAndUpdatesTheEntry()

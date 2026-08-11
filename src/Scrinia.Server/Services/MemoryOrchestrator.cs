@@ -110,7 +110,22 @@ public static class MemoryOrchestrator
         var (scope, subject) = store.ParseQualifiedName(req.Name);
 
         var existingEntries = store.LoadIndex(scope);
-        var existingEntry = existingEntries.FirstOrDefault(e => e.Name == subject);
+        // Case-insensitive: `subject` comes from ParseQualifiedName and `e.Name` from the index,
+        // and neither folds case. An ordinal match here reported "new memory" for a re-store under
+        // different casing, which skipped ArchiveVersion below and reset CreatedAt — while the
+        // write still landed on the same file on a case-insensitive filesystem, losing the prior
+        // version with no archive. The same shape existed at six other sites; all are fixed.
+        //
+        // Matching the name is only half of it. Everything below turns `subject` back into a file
+        // path — ArchiveVersion, WriteArtifactAsync, and the sidecar Upsert writes — so a resolved
+        // entry has to hand its own casing forward too. Leaving the caller's casing here would
+        // leave the fix depending on the filesystem to fold case on its behalf: right on NTFS,
+        // and a second entry alongside the first anywhere case-sensitive.
+        var existingEntry = existingEntries.FirstOrDefault(
+            e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (existingEntry is not null)
+            subject = existingEntry.Name;
+
         DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
         DateTimeOffset? updatedAt = existingEntry is not null ? DateTimeOffset.UtcNow : null;
 
@@ -254,7 +269,14 @@ public static class MemoryOrchestrator
         {
             var (scope, subject) = store.ParseQualifiedName(name);
             var existingEntries = store.LoadIndex(scope);
-            var existingEntry = existingEntries.FirstOrDefault(e => e.Name == subject);
+            // Case-insensitive match plus canonical-casing carry-forward — see StoreAsync above
+            // for why both halves are needed. Here the loss was every value the append carries
+            // over: the prior chunk entries, the merged attributes, the curated preview.
+            var existingEntry = existingEntries.FirstOrDefault(
+                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            if (existingEntry is not null)
+                subject = existingEntry.Name;
+
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
             ChunkEntry[] updatedChunks = existingEntry?.ChunkEntries is not null
                 ? [.. existingEntry.ChunkEntries, newChunkEntry]

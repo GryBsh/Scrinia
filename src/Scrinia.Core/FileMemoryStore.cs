@@ -1004,7 +1004,32 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             string metaPath = Path.Combine(storeDir, SanitizeName(name) + ".meta.json");
 
             if (!File.Exists(metaPath))
-                return false;
+            {
+                // RULING (remote-mode-leftovers, Task 2): this fallback is deliberately NOT pinned
+                // by a test, and nothing on this host can pin it.
+                //
+                // SanitizeName does not fold case, so on a case-sensitive filesystem the exact-name
+                // probe above answers "no such memory" for a sidecar that differs only in casing —
+                // forget("mixedcase") reporting not-found for a memory stored as "MixedCase", while
+                // every name match around it (LoadIndex, TryUpdateEntry, the write paths) is
+                // case-insensitive. This scan restores the agreement. NTFS folds case itself, so on
+                // Windows the probe above always succeeds and this branch is never entered: a test
+                // written here would pass for the filesystem's reasons rather than this code's.
+                // What would observe it is running the suite on a case-sensitive filesystem — the
+                // same instrument that proved the sibling defect in TryUpdateEntry below.
+                //
+                // Kept as a fallback rather than replacing the probe: the exact-name hit is the
+                // overwhelmingly common case and costs one stat, where this costs a directory
+                // enumeration. Nothing about the found path changes.
+                string wanted = Path.GetFileName(metaPath);
+                string? actual = Directory.Exists(storeDir)
+                    ? Directory.EnumerateFiles(storeDir, "*.meta.json").FirstOrDefault(
+                        p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
+                    : null;
+                if (actual is null)
+                    return false;
+                metaPath = actual;
+            }
 
             // Delete the sidecar file
             File.Delete(metaPath);
@@ -1034,17 +1059,37 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// name="scope"/> under a single acquisition of the per-scope write lock. Returns false when
     /// the entry is missing or <paramref name="mutate"/> returns null (no write). This is the seam
     /// the async typing sink uses to write attribute promotions back — it fires NO event sinks.
-    /// Mirrors <see cref="Remove"/>'s identity resolution (meta path) and <see cref="Upsert"/>'s
-    /// persist/invalidate tail.
+    /// Resolves identity from the sidecars themselves (case-insensitively, like every other name
+    /// match in this type) and reuses <see cref="Upsert"/>'s persist/invalidate tail.
     /// </summary>
     public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
         return WithExclusiveLock(scope, () =>
         {
             string storeDir = GetStoreDirForScope(scope);
-            string metaPath = Path.Combine(storeDir, SanitizeName(subject) + ".meta.json");
-            if (!File.Exists(metaPath)) return false;
 
+            // RULING (remote-mode-leftovers, Task 2): the `File.Exists(SanitizeName(subject) +
+            // ".meta.json")` fast path that used to stand here is gone, deliberately, and no test
+            // on this host can observe its removal.
+            //
+            // What it did: SanitizeName does not fold case, so on a case-sensitive filesystem the
+            // gate answered "no such entry" for a subject whose sidecar differs only in casing, and
+            // TryUpdateEntry returned false for an entry that exists — without invoking mutate, so
+            // the caller could not tell it apart from a genuine miss. The lookup immediately below
+            // is already case-insensitive and is the authority; the gate was an optimization that
+            // could only ever disagree with it by being wrong.
+            //
+            // Why nothing here can pin it: NTFS is case-insensitive, so File.Exists succeeded on
+            // this host either way. What proved it was simulating a case-sensitive filesystem —
+            // with the gate restored, MutateWithDifferentCasing_StillFindsAndUpdatesTheEntry
+            // (tests/Scrinia.Tests/TryUpdateEntryTests.cs) fails. Running the suite on a
+            // case-sensitive filesystem is what would observe this; a green test written here
+            // would be green for the filesystem's reasons, not this code's.
+            //
+            // What is unchanged: "entry genuinely missing -> false, and mutate never runs".
+            // LoadEntriesFromSidecars returns [] for a directory that does not exist, so the
+            // `current is null` guard below answers that case exactly as the gate did. Pinned by
+            // MissingEntry_ReturnsFalse in the same file.
             var current = LoadEntriesFromSidecars(storeDir)
                 .Select(e => e.NormalizeAttributesKey())
                 .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
@@ -1493,6 +1538,19 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             }
         }
 
+        // Resolve the source entry ONCE, case-insensitively, before the artifact path is built
+        // from its name. Both branches below used to run this lookup themselves with an ordinal
+        // `e.Name == srcSubject`, so a source stored as "SrcMixed" and copied as "srcmixed" found
+        // its file (NTFS folds case) and not its entry — and the copy silently fell through to the
+        // synthesized-defaults branch, carrying the bytes and dropping the attributes, keywords and
+        // curated preview. Adopting the entry's own casing here fixes the path as well as the
+        // match: FindArtifactPath below is a plain Path.Combine over SanitizeName, and would
+        // otherwise still be relying on the filesystem to fold case on this code's behalf.
+        ArtifactEntry? sourceEntry = LoadIndex(srcScope).FirstOrDefault(
+            e => e.Name.Equals(srcSubject, StringComparison.OrdinalIgnoreCase));
+        if (sourceEntry is not null)
+            srcSubject = sourceEntry.Name;
+
         string sourcePath = FindArtifactPath(srcSubject, srcScope);
         if (!File.Exists(sourcePath))
         {
@@ -1509,17 +1567,16 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             }
 
             string artifact = File.ReadAllText(sourcePath);
-            ArtifactEntry? srcEntry = LoadIndex(srcScope).FirstOrDefault(e => e.Name == srcSubject);
 
             var ephEntry = new EphemeralEntry(
                 Name: dstKey,
                 Artifact: artifact,
-                OriginalBytes: srcEntry?.OriginalBytes ?? 0,
-                ChunkCount: srcEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
+                OriginalBytes: sourceEntry?.OriginalBytes ?? 0,
+                ChunkCount: sourceEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
                 CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: srcEntry?.ContentPreview ?? $"Loaded from {sourceName}",
-                ChunkEntries: srcEntry?.ChunkEntries,
-                Attributes: srcEntry?.Attributes);
+                ContentPreview: sourceEntry?.ContentPreview ?? $"Loaded from {sourceName}",
+                ChunkEntries: sourceEntry?.ChunkEntries,
+                Attributes: sourceEntry?.Attributes);
             RememberEphemeral(dstKey, ephEntry);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
@@ -1537,7 +1594,6 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(destPathP)!);
         AtomicFileCopy(sourcePath, destPathP, overwrite);
 
-        ArtifactEntry? sourceEntry = LoadIndex(srcScope).FirstOrDefault(e => e.Name == srcSubject);
         ArtifactEntry destinationEntry;
 
         if (sourceEntry is not null)

@@ -134,6 +134,33 @@ and all assembly attributes.
   `HttpErrorBody`) in the exception it throws for a failed write. A `400` naming the exact bound it
   refused used to reach the caller as a bare "400 BadRequest".
 
+### Fixed — a re-store under a different casing discarded the prior version
+
+- Memory-name lookups are now case-insensitive across the write paths. Re-storing a memory under a
+  different casing than it was created with (`MixedCase` then `mixedcase`) was treated as a brand
+  new memory: the previous version was not archived and `CreatedAt` was reset, while the write
+  still landed on the same file on a case-insensitive filesystem — the prior version was lost with
+  no archive. Appending under a mismatched casing dropped everything the entry carried forward
+  (its attributes, its curated preview, its per-chunk entries), and compacting under one dropped
+  the memory's attributes and keywords. Ten call sites in total.
+- A resolved entry now also hands its own casing forward. Matching the name is only half the fix:
+  every one of these paths turns the subject back into a file path afterwards, so leaving the
+  caller's casing in place would have left the fix relying on the filesystem to fold case on its
+  behalf — right on NTFS, and a second entry alongside the first anywhere case-sensitive.
+- `copy()` from a source named in a different casing now carries the source's metadata. It resolved
+  the source *file* case-insensitively (the filesystem did it) but its *entry* ordinally, so the
+  copy silently took the synthesized-defaults branch: destination created, bytes intact, attributes
+  and keywords and curated preview gone. Its two lookups are now one, taken before the path is
+  built. Covered by `CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata`; the
+  pre-existing `CopyMemory_persistent_to_persistent` uses one casing throughout and asserts only
+  that the destination exists, so it could not see this.
+- Two remaining filesystem-case dependencies in `FileMemoryStore` are closed for
+  case-sensitive filesystems: `TryUpdateEntry`'s `File.Exists` fast path (which reported "no such
+  entry" for an entry its own authoritative lookup finds, without invoking the mutation) is gone,
+  and `Remove` falls back to a case-insensitive sidecar scan when the exact name misses. Neither is
+  observable on Windows, where NTFS folds case for both — each carries a ruling comment at the site
+  saying so and naming what would observe it.
+
 ### Added — the client refuses an unrecognised server API version
 
 - Remote search filter parameters (`excludeTopics`, `pathPrefix`, and friends) were sent as

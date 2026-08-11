@@ -315,9 +315,16 @@ public sealed partial class ScriniaMcpTools
         // ── Persistent path ──────────────────────────────────────────────
         var (scope, subject) = store.ParseQualifiedName(name);
 
-        // Check if entry already exists (for versioning + UpdatedAt)
+        // Check if entry already exists (for versioning + UpdatedAt).
+        // Case-insensitive match plus canonical-casing carry-forward — see
+        // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
+        // the whole class's reasoning; this is the same defect on the MCP side of the same write.
         var existingEntries = store.LoadIndex(scope);
-        var existingEntry = existingEntries.FirstOrDefault(e => e.Name == subject);
+        var existingEntry = existingEntries.FirstOrDefault(
+            e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (existingEntry is not null)
+            subject = existingEntry.Name;
+
         DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
         DateTimeOffset? updatedAt = existingEntry is not null ? DateTimeOffset.UtcNow : null;
 
@@ -1158,9 +1165,15 @@ public sealed partial class ScriniaMcpTools
         {
             var (scope, subject) = store.ParseQualifiedName(name);
 
-            // Check existing entry for versioning + timestamps
+            // Check existing entry for versioning + timestamps.
+            // Case-insensitive match plus canonical-casing carry-forward — same class as the
+            // remember() path above.
             var existingEntries = store.LoadIndex(scope);
-            var existingEntry = existingEntries.FirstOrDefault(e => e.Name == subject);
+            var existingEntry = existingEntries.FirstOrDefault(
+                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            if (existingEntry is not null)
+                subject = existingEntry.Name;
+
             DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
 
             // Merge 3 Task 2b: new description wins; otherwise preserve the existing entry's
