@@ -348,9 +348,7 @@ public partial class ScriniaCommands
         // 3. Create .scrinia/merge.config
         string resolverValue = resolver ?? "none";
         string mergeConfigPath = Path.Combine(scriniaDir, "merge.config");
-        string mergeConfigJson = JsonSerializer.Serialize(
-            new MergeConfig(JaccardThreshold: 0.7, Resolver: resolverValue, ConflictDir: "conflict"),
-            CliJsonContext.Default.MergeConfig);
+        string mergeConfigJson = SerializeMergeConfig(0.7, resolverValue, "conflict");
         File.WriteAllText(mergeConfigPath, mergeConfigJson + "\n");
         AnsiConsole.MarkupLine($"[green]  Created:[/] {Markup.Escape(mergeConfigPath)}");
 
@@ -359,6 +357,17 @@ public partial class ScriniaCommands
         AnsiConsole.MarkupLine(
             $"[bold]Multi-user merge driver configured.[/] Git will invoke [blue]{Markup.Escape(driver)}[/].");
     }
+
+    /// <summary>
+    /// Produces the exact merge.config JSON that `scri setup --multi-user` writes. Extracted so a
+    /// test can drive the real writer: the contract is declared twice — here and as
+    /// Scrinia.Merge.MergeConfig — in two assemblies with two independent camelCase policies, and
+    /// a divergence between them is a shipped bug that no reader-side test can see.
+    /// </summary>
+    internal static string SerializeMergeConfig(double jaccardThreshold, string resolver, string conflictDir) =>
+        JsonSerializer.Serialize(
+            new MergeConfig(JaccardThreshold: jaccardThreshold, Resolver: resolver, ConflictDir: conflictDir),
+            CliJsonContext.Default.MergeConfig);
 
     /// <summary>
     /// Path git should invoke for the merge driver. scri-merge is published beside scri, so
