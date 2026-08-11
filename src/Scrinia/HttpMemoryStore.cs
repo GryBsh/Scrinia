@@ -75,6 +75,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             throw;
         }
 
+        // Fail closed against a server that doesn't speak this client's version contract, before
+        // any status-code-based handling below gets a chance to treat its response as trustworthy
+        // (see RemoteApiVersionGuard — this covers the synchronous send path; the async path is
+        // covered at each of its two call sites below).
+        RemoteApiVersionGuard.Validate(response);
+
         if (response.IsSuccessStatusCode)
             _circuitBreaker.RecordSuccess();
         else if (TransientDetector.IsTransient(response))
@@ -238,6 +244,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             () => _http.GetAsync($"{BaseUrl}/memories/{encoded}", ct),
             r => TransientDetector.IsTransient(r),
             _retryOptions, logger: null, ct);
+        // Fail closed on the async send path too — see the sync-path comment in SendSync above.
+        RemoteApiVersionGuard.Validate(resp);
         if (resp.IsSuccessStatusCode)
             _circuitBreaker.RecordSuccess();
         else
@@ -675,6 +683,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             },
             r => TransientDetector.IsTransient(r),
             _retryOptions, logger: null, ct);
+        // Fail closed on this second async send path too — see the sync-path comment in SendSync.
+        RemoteApiVersionGuard.Validate(resp);
         if (resp.IsSuccessStatusCode)
         {
             _circuitBreaker.RecordSuccess();

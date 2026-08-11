@@ -17,7 +17,7 @@ public class HttpMemoryStoreWriteFailureTests
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Calls++;
-            return Task.FromResult(new HttpResponseMessage(status));
+            return Task.FromResult(Stamped());
         }
 
         // Both overrides are required: LoadIndex goes through SendSync, which calls the
@@ -29,7 +29,17 @@ public class HttpMemoryStoreWriteFailureTests
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Calls++;
-            return new HttpResponseMessage(status);
+            return Stamped();
+        }
+
+        // Stamped with a matching API version header (remote-write-correctness Task 7):
+        // HttpMemoryStore now fails closed on a response missing this header, and these tests are
+        // about the status-code behaviour below that check, not about the check itself.
+        private HttpResponseMessage Stamped()
+        {
+            var response = new HttpResponseMessage(status);
+            response.Headers.TryAddWithoutValidation(RemoteApiVersion.HeaderName, RemoteApiVersion.Current);
+            return response;
         }
     }
 

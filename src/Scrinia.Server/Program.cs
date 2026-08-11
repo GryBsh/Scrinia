@@ -8,6 +8,7 @@ using ModelContextProtocol.Server;
 using Scalar.AspNetCore;
 using Scrinia.Core;
 using Scrinia.Core.Embeddings;
+using Scrinia.Core.Resilience;
 using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.Plugin.Abstractions;
@@ -374,6 +375,22 @@ app.Use(async (context, next) =>
     context.Response.Headers.XFrameOptions = "DENY";
     context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
     context.Response.Headers.XXSSProtection = "0"; // modern browsers: CSP preferred
+    await next();
+});
+
+// API version — stamped on every response under /api/v1/stores (MemoryEndpoints' group and its
+// nested ChatEndpoints group) so HttpMemoryStore can fail closed against a server it doesn't
+// recognise: an old/unversioned server ignores an unknown filter param (excludeTopics,
+// pathPrefix, …) instead of rejecting it, silently returning an unfiltered result set that looks
+// filtered. Deliberately middleware, not an endpoint filter: an endpoint filter only runs once
+// UseAuthorization has already let a request through to the matched endpoint, so it would miss
+// the header on a 401/403 — and the client must recognise a real server on those responses too.
+// This runs early enough (before auth, rate limiting, and store resolution below) that the header
+// lands on literally every response this prefix can produce, success or failure.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/v1/stores"))
+        context.Response.Headers[RemoteApiVersion.HeaderName] = RemoteApiVersion.Current;
     await next();
 });
 

@@ -32,7 +32,11 @@ public class HttpMemoryStoreWriteRequestTests
         {
             if (request.Content is not null)
                 Body = await request.Content.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(HttpStatusCode.Created);
+            // Stamped with a matching API version header (remote-write-correctness Task 7) — this
+            // fixture is about the request body HttpMemoryStore sends, not the version check.
+            var response = new HttpResponseMessage(HttpStatusCode.Created);
+            response.Headers.TryAddWithoutValidation(RemoteApiVersion.HeaderName, RemoteApiVersion.Current);
+            return response;
         }
     }
 

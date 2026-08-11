@@ -57,26 +57,35 @@ public sealed class RemoteStoreToolTests
             bool isMemoriesCollection =
                 request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal);
 
+            HttpResponseMessage response;
             if (request.Method == HttpMethod.Get && isMemoriesCollection)
             {
-                return new HttpResponseMessage(HttpStatusCode.OK)
+                response = new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(listJson, Encoding.UTF8, "application/json"),
                 };
             }
-
             // A persistent remote remember() writes through here. The body is ignored by the
             // caller — only the status matters — but it must be a success status or
             // WriteArtifactAsync throws before the code under test is ever reached.
-            if (request.Method == HttpMethod.Post && isMemoriesCollection)
+            else if (request.Method == HttpMethod.Post && isMemoriesCollection)
             {
-                return new HttpResponseMessage(HttpStatusCode.OK)
+                response = new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent("{}", Encoding.UTF8, "application/json"),
                 };
             }
+            else
+            {
+                response = new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
 
-            return new HttpResponseMessage(HttpStatusCode.NotFound);
+            // Stamped with a matching API version header (remote-write-correctness Task 7) on
+            // every response, including the 404 fallback above — HttpMemoryStore now fails closed
+            // on any response missing this header, and this fixture is about tool behaviour over
+            // an already-recognised remote store, not about the version check itself.
+            response.Headers.TryAddWithoutValidation(RemoteApiVersion.HeaderName, RemoteApiVersion.Current);
+            return response;
         }
     }
 
