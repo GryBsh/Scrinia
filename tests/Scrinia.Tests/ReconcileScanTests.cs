@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Scrinia.Core.Encoding;
 using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
@@ -80,5 +81,70 @@ public sealed class ReconcileScanTests
             because: "applying the auto-merge must remove conflict markers from disk");
         after.Should().Contain("\"alpha\"").And.Contain("\"beta\"").And.Contain("\"common\"",
             because: "the auto-merge unions keywords from both sides");
+    }
+
+    /// <summary>
+    /// ScanForConflicts passes "current" and "incoming" to TryReadConflictCopy
+    /// (MemoryTools.Lifecycle.cs:250-251). A swapped pair produces a conflict report with the two
+    /// sides transposed, which reads as plausible output rather than as an error — so this
+    /// distinguishes the sides by content, not by both being non-empty.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_NoArgs_ReportsNmp2ConflictSidesUnswapped()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string artifactDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(artifactDir);
+
+        const string fileName = "conflict.nmp2";
+        string artifactPath = Path.Combine(artifactDir, fileName);
+
+        // The raw marker bodies only need to extract successfully (TryExtractConflictSide must
+        // find well-formed markers) — TryReadConflictCopy takes precedence over this fallback
+        // text once the conflict/current and conflict/incoming copies below exist.
+        const string conflictedContent =
+            "<<<<<<< HEAD\n" +
+            "ours-placeholder\n" +
+            "=======\n" +
+            "theirs-placeholder\n" +
+            ">>>>>>> branch-x\n";
+        await File.WriteAllTextAsync(artifactPath, conflictedContent);
+
+        // The current/incoming conflict copies carry content that is distinguishable by side, so
+        // a transposed report (current shown as incoming, or vice versa) is detectable from the
+        // marker text itself rather than merely by both sides being present.
+        string currentDir = Path.Combine(artifactDir, "conflict", "current");
+        string incomingDir = Path.Combine(artifactDir, "conflict", "incoming");
+        Directory.CreateDirectory(currentDir);
+        Directory.CreateDirectory(incomingDir);
+        await File.WriteAllTextAsync(Path.Combine(currentDir, fileName), Nmp2ChunkedEncoder.Encode("OURS-SIDE-MARKER"));
+        await File.WriteAllTextAsync(Path.Combine(incomingDir, fileName), Nmp2ChunkedEncoder.Encode("THEIRS-SIDE-MARKER"));
+
+        string result = await Tools().MemoryReconcile(); // no-arg call: scan only
+
+        var parsed = ResponseParser.Parse(result);
+        string content = parsed.Content ?? "";
+
+        int oursLabel = content.IndexOf("OURS:", StringComparison.Ordinal);
+        int theirsLabel = content.IndexOf("THEIRS:", StringComparison.Ordinal);
+        oursLabel.Should().BeGreaterThan(-1,
+            because: "the scan report must include an OURS section for the .nmp2 conflict");
+        theirsLabel.Should().BeGreaterThan(oursLabel,
+            because: "THEIRS must follow OURS in the report layout");
+
+        string oursSection = content[oursLabel..theirsLabel];
+        string theirsSection = content[theirsLabel..];
+
+        oursSection.Should().Contain("OURS-SIDE-MARKER",
+            because: "TryReadConflictCopy(filePath, \"current\") must supply the OURS section content");
+        oursSection.Should().NotContain("THEIRS-SIDE-MARKER",
+            because: "a swapped current/incoming pair would leak the incoming marker into the OURS section");
+
+        theirsSection.Should().Contain("THEIRS-SIDE-MARKER",
+            because: "TryReadConflictCopy(filePath, \"incoming\") must supply the THEIRS section content");
+        theirsSection.Should().NotContain("OURS-SIDE-MARKER",
+            because: "a swapped current/incoming pair would leak the current marker into the THEIRS section");
     }
 }

@@ -41,13 +41,31 @@ internal sealed class GitMergeHarness : IDisposable
         if (!Directory.Exists(bin))
             throw new InvalidOperationException($"{bin} does not exist. Build Scrinia.sln first.");
 
-        string? exe = Directory.EnumerateFiles(bin, "scri-merge*", SearchOption.AllDirectories)
-            .Where(p => Path.GetFileName(p) is "scri-merge.exe" or "scri-merge")
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
+        // Select by the configuration the TEST ASSEMBLY was built in, not by mtime. A stale
+        // Release build sitting next to a fresh Debug one would otherwise get picked by
+        // OrderByDescending(GetLastWriteTimeUtc) whenever it happens to be newer, and the
+        // resulting failure would read as a driver bug rather than a harness bug. Release can
+        // still produce multiple candidates (native/, publish/, plain) — that's fine, since test
+        // runs default to Debug; we just must not silently trust "exactly one match".
+#if DEBUG
+        const string Configuration = "Debug";
+#else
+        const string Configuration = "Release";
+#endif
+        string configSegment = Path.DirectorySeparatorChar + Configuration + Path.DirectorySeparatorChar;
 
-        return exe ?? throw new InvalidOperationException(
-            $"No scri-merge executable under {bin}. Build Scrinia.sln first.");
+        var allCandidates = Directory.EnumerateFiles(bin, "scri-merge*", SearchOption.AllDirectories)
+            .Where(p => Path.GetFileName(p) is "scri-merge.exe" or "scri-merge")
+            .ToList();
+
+        var configCandidates = allCandidates
+            .Where(p => p.Contains(configSegment, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return configCandidates.FirstOrDefault() ?? throw new InvalidOperationException(
+            $"No scri-merge executable built for configuration '{Configuration}' under {bin}. " +
+            $"Searched: {(allCandidates.Count == 0 ? "(no scri-merge executables found at all)" : string.Join(", ", allCandidates))}. " +
+            "Build Scrinia.sln in this configuration first.");
     }
 
     /// <summary>
