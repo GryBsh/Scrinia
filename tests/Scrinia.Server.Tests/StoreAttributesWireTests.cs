@@ -140,12 +140,13 @@ public sealed class StoreAttributesWireTests
     }
 
     [Fact]
-    public async Task Store_rejects_more_than_64_values_on_a_single_attribute_key()
+    public async Task Store_rejects_more_values_on_a_single_key_than_the_shared_bound()
     {
         using var factory = new ScriniaServerFactory();
         var client = factory.CreateAuthenticatedClient();
 
-        var values = Enumerable.Range(0, 65).Select(i => $"\"v{i}\"");
+        var values = Enumerable.Range(0, Scrinia.Core.Search.KnownAttributes.MaxValuesPerKey + 1)
+            .Select(i => $"\"v{i}\"");
         var resp = await client.PostAsync(
             $"/api/v1/stores/{factory.PrimaryStore}/memories",
             Json($$"""
@@ -158,6 +159,36 @@ public sealed class StoreAttributesWireTests
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
-        body!.Error.Should().Contain("64 values per key");
+        body!.Error.Should().Contain(
+            $"{Scrinia.Core.Search.KnownAttributes.MaxValuesPerKey} values per key");
+    }
+
+    /// <summary>
+    /// The bound used to be 64, remote-only, and reachable from ROUTINE auto-extraction rather than
+    /// from a caller deliberately supplying too many values: nothing caps <c>file</c>/<c>ref</c>
+    /// values locally, so a file-reference-heavy memory citing 70 distinct paths stored fine
+    /// in-process and came back <c>400 attributes may not exceed 64 values per key</c> over HTTP.
+    /// 70 is the measured repro count. It must now store, on both sides of the wire.
+    /// </summary>
+    [Fact]
+    public async Task Store_accepts_seventy_file_refs_the_local_path_also_accepts()
+    {
+        using var factory = new ScriniaServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+
+        var values = Enumerable.Range(0, 70).Select(i => $"\"src/Scrinia/File{i}.cs\"");
+        var resp = await client.PostAsync(
+            $"/api/v1/stores/{factory.PrimaryStore}/memories",
+            Json($$"""
+                  {
+                    "content": ["file-reference-heavy probe"],
+                    "name": "wire-attributes-seventy-file-refs",
+                    "attributes": { "file": [{{string.Join(",", values)}}] }
+                  }
+                  """));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Created,
+            because: "70 distinct file refs is an ordinary auto-extraction result, not abuse — " +
+                     "rejecting it made remote reject content the local store accepts");
     }
 }

@@ -74,15 +74,18 @@ public static class MemoryEndpoints
         if (req.Attributes is { Count: > KnownAttributes.MaxAttributes })
             return Results.BadRequest(new ErrorResponse(
                 $"attributes may not exceed {KnownAttributes.MaxAttributes} keys."));
-        // Values-per-key cap: mirrors the attributeFilter precedent below. Unlike the key cap this
-        // one IS a remote-only limit — nothing validates per-key value counts on the local MCP path,
-        // so remember({ person: [65 values] }) succeeds in-process and 400s here. That asymmetry is
-        // deliberate rather than an oversight: an unbounded map arriving over HTTP is a
-        // storage-growth vector in a way an in-process call from the agent itself is not. The
-        // divergence is loud (a 400 naming the bound), never a silent truncation.
-        if (req.Attributes is not null && req.Attributes.Any(kv => kv.Value is { Length: > 64 }))
+        // Values-per-key cap. This used to be a remote-ONLY bound of 64, justified as a deliberate
+        // asymmetry — but it was reachable from routine auto-extraction, not just from a caller
+        // deliberately supplying 65 values: nothing caps `file`/`ref` values locally, so a memory
+        // citing 70 distinct paths stored fine in-process and 400'd here. The bound now lives in
+        // KnownAttributes.MaxValuesPerKey and is enforced by KnownAttributes.Merge, which every
+        // write path funnels through, so this check can no longer fire for a map produced by
+        // Scrinia's own code — local and remote accept the same input. It stays as the wire guard
+        // for a hand-rolled client that never went through Merge, and, like the key cap above, says
+        // no rather than truncating quietly.
+        if (req.Attributes is not null && req.Attributes.Any(kv => kv.Value is { Length: > KnownAttributes.MaxValuesPerKey }))
             return Results.BadRequest(
-                new ErrorResponse("attributes may not exceed 64 values per key."));
+                new ErrorResponse($"attributes may not exceed {KnownAttributes.MaxValuesPerKey} values per key."));
 
         try
         {
