@@ -216,8 +216,8 @@ public class RememberWriteMetadataTests
     /// rollback-capture read further down to overwrite <c>ReadSubject</c> with the corrected
     /// casing, so nothing here masks the discriminator the way it does on the server side (see
     /// <see cref="Scrinia.Server.Tests.MemoryOrchestratorAttributesTests"/> for that contrast). That
-    /// split is the whole point: on NTFS the outcome is unchanged and only the ordering is
-    /// observable.</para>
+    /// split is the whole point: on an ordinary NTFS volume the outcome is unchanged and only the
+    /// ordering is observable.</para>
     /// </summary>
     [Fact]
     public async Task Append_UnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing()

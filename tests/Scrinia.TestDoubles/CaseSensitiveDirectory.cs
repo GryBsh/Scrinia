@@ -62,8 +62,17 @@ public sealed class CaseSensitiveDirectory : IDisposable
                 CreateNoWindow = true,
             });
             if (proc is null) return false;
+
+            // Drain both redirected streams concurrently with WaitForExit: fsutil can print a
+            // line on success, and an unread pipe fills its OS buffer and deadlocks the child
+            // once it's full — WaitForExit alone would then never return.
+            Task<string> stdOut = proc.StandardOutput.ReadToEndAsync();
+            Task<string> stdErr = proc.StandardError.ReadToEndAsync();
+
             proc.WaitForExit(30_000);
             if (!proc.HasExited) { try { proc.Kill(entireProcessTree: true); } catch { } }
+            else { Task.WaitAll(stdOut, stdErr); }
+
             return proc.HasExited && proc.ExitCode == 0;
         }
         catch

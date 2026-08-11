@@ -10,8 +10,8 @@ namespace Scrinia.Server.Tests;
 /// <summary>
 /// Behavioural counterpart to <see cref="MemoryOrchestratorAttributesTests.AppendUnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing"/>,
 /// which pins the ORDER of the index-lookup-before-read hoist in
-/// <see cref="MemoryOrchestrator.AppendAsync"/>. That test cannot observe the OUTCOME on NTFS,
-/// because <c>File.Exists</c> folds case there. <see cref="CaseSensitiveDirectory"/> makes the
+/// <see cref="MemoryOrchestrator.AppendAsync"/>. That test cannot observe the OUTCOME on an
+/// ordinary NTFS volume, because <c>File.Exists</c> folds case there. <see cref="CaseSensitiveDirectory"/> makes the
 /// outcome observable too: before the hoist, <c>append("mixedcase", …)</c> against a memory stored
 /// as "MixedCase" missed the read, fell through to <see cref="MemoryOrchestrator.StoreAsync"/>, and
 /// that path's case-insensitive lookup found "MixedCase" and overwrote it with the appended chunk
