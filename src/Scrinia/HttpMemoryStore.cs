@@ -258,58 +258,80 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// Proxies to the same listing endpoint <see cref="ListScoped(string?)"/> already uses,
     /// filtered to <paramref name="scope"/>.
     ///
-    /// <para><b>This is a blocking network round trip, deliberately.</b> <c>LoadIndex</c> is
-    /// declared synchronous on <see cref="IMemoryStore"/> (mirroring <see cref="FileMemoryStore"/>'s
-    /// free, in-process cache read), so there is no async seam to hide the cost behind — every
-    /// call here really does block the calling thread on <see cref="SendSync"/>. That trade was
-    /// chosen over the alternative of overriding <c>TryUpdateEntry</c> to PATCH server-side: that
-    /// needs a brand-new endpoint and DTO and would still leave every other caller — the async
-    /// entity-typing sink, the maintenance sink, and every MCP tool's "does this entry already
-    /// exist" lookup — reading an empty list. Proxying here fixes the read for all of them in one
-    /// change. See the cost audit in
+    /// <para><b>This is a blocking network round trip, deliberately — and for a scope with more
+    /// entries than the server's page size, more than one.</b> <c>LoadIndex</c> is declared
+    /// synchronous on <see cref="IMemoryStore"/> (mirroring <see cref="FileMemoryStore"/>'s free,
+    /// in-process cache read), so there is no async seam to hide the cost behind — every call
+    /// here really does block the calling thread on <see cref="SendSync"/>, once per page. That
+    /// trade was chosen over the alternative of overriding <c>TryUpdateEntry</c> to PATCH
+    /// server-side: that needs a brand-new endpoint and DTO and would still leave every other
+    /// caller — the async entity-typing sink, the maintenance sink, and every MCP tool's "does
+    /// this entry already exist" lookup — reading an empty (or, pre-pagination-fix, truncated)
+    /// list. Proxying here fixes the read for all of them in one change. See the cost audit in
     /// docs/superpowers/sdd/2026-08-10-remote-write-correctness/task-6-report.md for which
     /// production call sites can actually reach an <see cref="HttpMemoryStore"/> and confirmation
-    /// that none of them call this in a loop.</para>
+    /// that none of them call this in a loop themselves (this method's own internal paging loop is
+    /// a different thing — one logical call, not a caller looping over <c>LoadIndex</c>).</para>
     /// </summary>
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
-        string url = $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scope)}";
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        using var resp = SendSync(req);
+        var result = new List<ArtifactEntry>();
+        int offset = 0;
+        // 1000 is MaxListLimit server-side (MemoryEndpoints.cs) — the largest page the server
+        // will honour, so paging at this size minimizes round trips for a large scope. The
+        // server's default page size (200) is what silently truncated LoadIndex before this loop
+        // existed: a caller who asked for "the scope" got the first page and no signal that more
+        // existed. The loop below keeps requesting pages until it has collected every entry the
+        // server reports via ListApiResponse.Total, so a scope of any size comes back whole.
+        const int pageSize = 1000;
 
-        if (!resp.IsSuccessStatusCode)
+        while (true)
         {
-            // Returning [] here would look exactly like "this scope has no entries" — the same
-            // lie LoadIndex told unconditionally before this fix, just gated behind a failed
-            // request instead of always. A caller (TryUpdateEntry's default implementation among
-            // them) must not conclude "not found" from a server that is unreachable or erroring;
-            // that is a materially different condition and losing the distinction is how the
-            // original defect happened. Throwing matches WriteArtifactAsync's existing
-            // throw-on-failure contract elsewhere in this type.
-            throw new HttpRequestException(
-                $"Remote store listing failed for scope '{scope}': {(int)resp.StatusCode} {resp.StatusCode}.",
-                inner: null,
-                statusCode: resp.StatusCode);
+            string url = $"{BaseUrl}/memories?scopes={Uri.EscapeDataString(scope)}&offset={offset}&limit={pageSize}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var resp = SendSync(req);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                // Returning [] here would look exactly like "this scope has no entries" — the
+                // same lie LoadIndex told unconditionally before this fix, just gated behind a
+                // failed request instead of always. A caller (TryUpdateEntry's default
+                // implementation among them) must not conclude "not found" from a server that is
+                // unreachable or erroring; that is a materially different condition and losing
+                // the distinction is how the original defect happened. Throwing matches
+                // WriteArtifactAsync's existing throw-on-failure contract elsewhere in this type.
+                // The status code is included in the message specifically so a 403 here reads as
+                // a permission problem (this endpoint requires the "search" permission, distinct
+                // from "store") rather than an opaque server fault.
+                throw new HttpRequestException(
+                    $"Remote store listing failed for scope '{scope}': {(int)resp.StatusCode} {resp.StatusCode}.",
+                    inner: null,
+                    statusCode: resp.StatusCode);
+            }
+
+            using var stream = resp.Content.ReadAsStream();
+            var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
+            if (list?.Memories is null || list.Memories.Length == 0)
+                break;
+
+            foreach (var item in list.Memories)
+            {
+                result.Add(new ArtifactEntry(
+                    Name: item.Name,
+                    Uri: "",
+                    OriginalBytes: item.OriginalBytes,
+                    ChunkCount: item.ChunkCount,
+                    CreatedAt: item.CreatedAt,
+                    ContentPreview: item.Description,
+                    UpdatedAt: item.UpdatedAt,
+                    Attributes: item.Attributes));
+            }
+
+            offset += list.Memories.Length;
+            if (offset >= list.Total)
+                break;
         }
 
-        using var stream = resp.Content.ReadAsStream();
-        var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
-        if (list?.Memories is null)
-            return [];
-
-        var result = new List<ArtifactEntry>(list.Memories.Length);
-        foreach (var item in list.Memories)
-        {
-            result.Add(new ArtifactEntry(
-                Name: item.Name,
-                Uri: "",
-                OriginalBytes: item.OriginalBytes,
-                ChunkCount: item.ChunkCount,
-                CreatedAt: item.CreatedAt,
-                ContentPreview: item.Description,
-                UpdatedAt: item.UpdatedAt,
-                Attributes: item.Attributes));
-        }
         return result;
     }
 
@@ -327,10 +349,16 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// <para>Now that <see cref="LoadIndex"/> proxies to the real listing endpoint rather than
     /// unconditionally returning <c>[]</c>, the inherited default would find the entry, apply the
     /// caller's mutation, hand it to the no-op <c>Upsert</c>, and still return <c>true</c> —
-    /// reporting a successful write that never reached the server. That is a strictly worse lie
-    /// than the pre-fix "not found": a caller like the entity-typing sink treats <c>true</c> as
-    /// "the promotion is now durable" and stops retrying, so the metadata is lost with an even
-    /// higher-confidence signal that it wasn't.</para>
+    /// reporting a successful write that never reached the server. That is a contract violation
+    /// regardless of who currently reads it: <see cref="IMemoryStore.TryUpdateEntry"/>'s own doc
+    /// promises the return value means the mutation was persisted, and <c>true</c> here would
+    /// make that promise false. To be precise about what this fixes today rather than overstate
+    /// it: the one production caller, <c>EntityTypingEventHandler.PromoteAsync</c>, calls this
+    /// as a discarded statement and does not branch on the result or retry either way — so
+    /// <c>true</c> vs. <c>false</c> is currently unobservable in production, and this override is
+    /// a correctness fix for the contract itself (for whichever future caller does read the
+    /// result — the interface's own doc already promises one exists), not a fix for an observed
+    /// live bug.</para>
     ///
     /// <para>The correct fix is a dedicated attributes-only PATCH endpoint, so a metadata-only
     /// mutation does not have to replay the whole artifact through <c>WriteArtifactAsync</c>
@@ -347,11 +375,18 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     {
         var current = LoadIndex(scope).FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
         if (current is null) return false;
+        // From here to the end of the method, this is deliberately dead work: `updated` and the
+        // `null` branch below can only ever produce `return false`, same as skipping straight to
+        // `return false` after the LoadIndex check above. It is kept anyway — spending the
+        // LoadIndex round trip above and running `mutate` for real, not stubbing it out — as
+        // documentation-by-code: it proves this override honours the same "find, then apply the
+        // caller's mutation" contract the default implementation does, up to the point where a
+        // remote store has no channel left to persist the result. Do NOT delete this and jump
+        // straight to `return false`: that would silently reintroduce ambiguity about whether a
+        // "not found" and a "found but cannot persist" case are being told apart, which is the
+        // exact distinction the LoadIndex fix exists to preserve for every other caller.
         var updated = mutate(current);
         if (updated is null) return false;
-        // `updated` is discarded even when non-null: there is no remote channel that can persist
-        // a metadata-only mutation (see the class doc above). Returning false — not true — here
-        // is the entire point of this override.
         return false;
     }
 

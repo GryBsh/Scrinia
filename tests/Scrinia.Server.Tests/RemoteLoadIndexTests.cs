@@ -1,7 +1,10 @@
 using System.Linq;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Scrinia;
+using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
 using Xunit;
 
@@ -18,10 +21,14 @@ namespace Scrinia.Server.Tests;
 /// inheriting the default: <c>Upsert</c> is a deliberate no-op remotely (writes go through
 /// <c>WriteArtifactAsync</c> instead), so once <c>LoadIndex</c> stops lying, the inherited
 /// default would find the entry, apply the mutation, hand it to the no-op <c>Upsert</c>, and
-/// still report <c>true</c> — a success report for a write that never reached the server. That is
-/// a strictly worse defect than the one this task set out to fix, so the override fails closed:
-/// it returns <c>false</c> whenever it cannot actually persist, rather than trading "reports
-/// failure for a memory that exists" for "reports success for a write that didn't happen".</para>
+/// still report <c>true</c> — a success report for a write that never reached the server. That
+/// violates the contract <c>IMemoryStore.TryUpdateEntry</c>'s own doc states (the return value
+/// means the mutation was persisted), regardless of who currently reads it: the one production
+/// caller, <c>EntityTypingEventHandler.PromoteAsync</c>, calls this as a discarded statement and
+/// does not branch on the result or retry either way, so this is a correctness fix for the
+/// contract rather than a fix for an observed live bug. The override fails closed: it returns
+/// <c>false</c> whenever it cannot actually persist, rather than trading "reports failure for a
+/// memory that exists" for "reports success for a write that didn't happen".</para>
 ///
 /// <para>Must be driven over a real Kestrel socket, not <c>TestServer</c>'s in-memory handler:
 /// <c>HttpMemoryStore</c> sends synchronously (<c>HttpClient.Send</c>), and
@@ -91,16 +98,28 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         await StoreAsync("tryupdate-probe", "probe body for TryUpdateEntry",
             attributes: new Dictionary<string, string[]> { ["mention"] = ["acme"] });
 
+        // Captured so the assertions below can tell "TryUpdateEntry genuinely found the entry and
+        // ran the mutation, then refused to persist it" apart from a stub that always returns
+        // false without consulting LoadIndex at all — both would satisfy `updated.Should().BeFalse()`
+        // alone.
+        bool mutateRan = false;
         bool updated = _remote.TryUpdateEntry("tryupdate-probe", "local", entry =>
-            entry with
+        {
+            mutateRan = true;
+            return entry with
             {
                 Attributes = new Dictionary<string, string[]>(entry.Attributes!) { ["person"] = ["acme"] },
-            });
+            };
+        });
 
         updated.Should().BeFalse(
             because: "HttpMemoryStore.Upsert cannot persist a metadata-only mutation remotely, " +
                      "so reporting true here would be a success report for a write that never " +
                      "happened — a worse defect than the \"not found\" this task fixed");
+        mutateRan.Should().BeTrue(
+            because: "the entry must actually have been found via LoadIndex and handed to the " +
+                     "mutation callback — a constant `=> false` override would also satisfy the " +
+                     "assertion above without exercising either");
 
         // A fresh, independent LoadIndex call — not the in-memory 'entry' local — so this can
         // only pass if the (refused) mutation genuinely never reached the server.
@@ -114,14 +133,81 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
 
     /// <summary>
     /// The pre-existing "not found" case must still behave exactly as before: LoadIndex correctly
-    /// reports no such entry, and TryUpdateEntry returns false for the ordinary reason, not
-    /// because of the fail-closed override above.
+    /// reports no such entry, and TryUpdateEntry returns false for the ordinary reason (nothing to
+    /// mutate), not because of the fail-closed override above.
     /// </summary>
     [Fact]
     public void TryUpdateEntry_ReturnsFalse_WhenTheEntryDoesNotExist()
     {
-        bool updated = _remote.TryUpdateEntry("does-not-exist", "local", entry => entry);
+        bool mutateRan = false;
+        bool updated = _remote.TryUpdateEntry("does-not-exist", "local", entry =>
+        {
+            mutateRan = true;
+            return entry;
+        });
 
         updated.Should().BeFalse(because: "no such memory was ever stored");
+        mutateRan.Should().BeFalse(
+            because: "TryUpdateEntry must short-circuit on LoadIndex finding nothing, not invoke " +
+                     "the mutation callback and then discard its result — that would make this " +
+                     "case indistinguishable from the fail-closed one above for the wrong reason");
+    }
+
+    /// <summary>
+    /// Reviewer-measured repro: seeding 205 entries over a Kestrel loopback and calling
+    /// <c>LoadIndex("local")</c> returned 200, with "probe-0204" absent, because the proxy sent no
+    /// <c>limit</c>/<c>offset</c> and the server's default list page size
+    /// (<c>DefaultListLimit = 200</c>, <c>MemoryEndpoints.cs</c>) silently truncated it. That
+    /// reproduces this task's own defect class above the pagination boundary: a scope this large
+    /// would make <c>remember()</c>'s existing-entry lookup (<c>MemoryTools.Core.cs</c>) report
+    /// "not found" for a memory that exists, skipping <c>ArchiveVersion</c> and resetting
+    /// <c>CreatedAt</c> — silent data loss, just gated behind a size threshold instead of always.
+    /// Seeded just over the boundary (205, not an arbitrarily larger number) to keep this fast.
+    ///
+    /// <para>Uses its own factory rather than the class's shared <see cref="_remote"/>: 205
+    /// sequential writes plus the paged reads exceed the server's default rate limit (100
+    /// requests/60s), which the fixture's other, much smaller tests don't need raised. Same
+    /// override mechanism as <c>RateLimitTests.RateLimit_PartitionsByUser_NotSharedIp</c>.</para>
+    /// </summary>
+    [Fact]
+    public async Task LoadIndex_ReturnsEveryEntry_AboveTheServersDefaultPageSize()
+    {
+        const int total = 205;
+
+        // WithWebHostBuilder returns a WebApplicationFactory<Program> wrapper (a
+        // DelegatedWebApplicationFactory), not a ScriniaServerFactory — so this cannot use
+        // baseFactory's CreateAuthenticatedClient()/PrimaryStore-typed conveniences after the
+        // clone. Build the client the same way RateLimitTests.RateLimit_PartitionsByUser_NotSharedIp
+        // does: create a key directly against the clone's own ApiKeyStore.
+        using var baseFactory = new ScriniaServerFactory();
+        using var factory = baseFactory.WithWebHostBuilder(
+            b => b.UseSetting("Scrinia:RateLimit:PermitLimit", (total * 2).ToString()));
+        factory.UseKestrel(0);
+        factory.StartServer();
+
+        var keyStore = factory.Services.GetRequiredService<ApiKeyStore>();
+        var (rawKey, _, _) = keyStore.CreateKey(
+            "pagination-test-user", [baseFactory.PrimaryStore], ["search", "store"], "pagination-test");
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rawKey);
+        // HttpMemoryStore owns client's disposal (see DisposeAsync above for the same pattern).
+        using var remote = new HttpMemoryStore(client, baseFactory.PrimaryStore);
+
+        for (int i = 0; i < total; i++)
+        {
+            var resp = await client.PostAsJsonAsync(
+                $"/api/v1/stores/{baseFactory.PrimaryStore}/memories",
+                new StoreRequest([$"pagination probe body {i}"], $"probe-{i:D4}", $"pagination probe body {i}"));
+            resp.EnsureSuccessStatusCode();
+        }
+
+        var entries = remote.LoadIndex("local");
+
+        entries.Should().HaveCount(total,
+            because: "a scope with more entries than the server's default list page size (200) " +
+                     "must still come back whole, not silently truncated at the first page");
+        entries.Should().Contain(e => e.Name == "probe-0204",
+            because: "the last entry seeded — the one a first-page-only read would have dropped " +
+                     "— must be present");
     }
 }

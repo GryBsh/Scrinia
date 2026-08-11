@@ -19,6 +19,18 @@ public class HttpMemoryStoreWriteFailureTests
             Calls++;
             return Task.FromResult(new HttpResponseMessage(status));
         }
+
+        // Both overrides are required: LoadIndex goes through SendSync, which calls the
+        // synchronous HttpClient.Send. A handler that only overrides SendAsync throws
+        // NotSupportedException from HttpMessageHandler's own Send default — which would look
+        // exactly like the regression the LoadIndex test below exists to catch. Same note as
+        // tests/Scrinia.Tests/RemoteStoreToolTests.cs's StubBackendHandler.
+        protected override HttpResponseMessage Send(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return new HttpResponseMessage(status);
+        }
     }
 
     private static HttpMemoryStore MakeStore(HttpStatusCode status, out FixedStatusHandler handler)
@@ -60,5 +72,24 @@ public class HttpMemoryStoreWriteFailureTests
         var act = async () => await store.WriteArtifactAsync("note", "local", Artifact());
 
         await act.Should().NotThrowAsync();
+    }
+
+    /// <summary>
+    /// Pins the deliberate design decision in HttpMemoryStore.LoadIndex (remote-write-correctness
+    /// Task 6): a non-2xx response from the listing endpoint must throw, not return <c>[]</c>.
+    /// Returning <c>[]</c> on failure would look exactly like "this scope has no entries" — the
+    /// same lie LoadIndex told unconditionally before that task, just gated behind a failed
+    /// request instead of always. Without this test, a future refactor back to <c>return []</c>
+    /// on failure — the original defect, reintroduced — would leave the whole suite green.
+    /// </summary>
+    [Fact]
+    public void LoadIndex_NonSuccessStatus_Throws()
+    {
+        using var store = MakeStore(HttpStatusCode.Forbidden, out _);
+
+        var act = () => store.LoadIndex("local");
+
+        act.Should().Throw<HttpRequestException>()
+            .Which.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 }

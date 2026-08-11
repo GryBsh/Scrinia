@@ -21,7 +21,10 @@ namespace Scrinia.Tests;
 /// it is neither a throw nor a silent success — <c>HttpMemoryStore</c> overrides the default
 /// (LoadIndex + mutate + Upsert) to fail closed, because the fixed <c>LoadIndex</c> would
 /// otherwise let it find an entry, discard the mutation into the no-op <c>Upsert</c>, and still
-/// report <c>true</c>.</para>
+/// report <c>true</c>. That override corrects the contract but does not make remote
+/// <c>TryUpdateEntry</c> actually persist anything — doing that needs a dedicated attributes-only
+/// PATCH endpoint, which is out of scope here. The gap is recorded in this branch's residuals:
+/// <c>.superpowers/sdd/2026-08-10-remote-write-correctness/task-6-report.md</c>.</para>
 /// </summary>
 public sealed class StoreBoundaryTests
 {
