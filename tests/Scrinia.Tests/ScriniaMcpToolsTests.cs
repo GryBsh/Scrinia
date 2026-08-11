@@ -2569,6 +2569,32 @@ public sealed class ScriniaMcpToolsTests
         entries.Single(e => e.Name == "um-beta").Attributes!["ref"].Should().Contain(v => v.Contains("um-alpha"));
     }
 
+    /// <summary>
+    /// Regression guard for the local-store lookup inside <c>TryUpdateEntry</c>
+    /// (<c>FileMemoryStore.cs</c>): it used to compare names with an ordinal
+    /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, which the earlier
+    /// <c>e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase)</c> lookup in <c>UpdateMeta</c>
+    /// never did. Once <c>UpdateMeta</c> was rerouted through <c>TryUpdateEntry</c> to fix the
+    /// remote fabricated-success bug, that ordinal comparison silently narrowed the local path too:
+    /// <c>update()</c> and both halves of <c>link()</c> would answer NOT_FOUND for a case-mismatched
+    /// name that previously updated fine. This pins the user-visible symptom at the tool level, not
+    /// just the store method.
+    /// </summary>
+    [Fact]
+    public async Task UpdateMeta_MatchesEntryName_RegardlessOfCasing()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(["mixed case body"], "MixedCaseName");
+
+        var response = await Tools().UpdateMeta("mixedcasename", keywords: ["curated"]);
+
+        response.Status.Should().Be("success",
+            because: "the entry exists under different casing — NTFS's File.Exists guard already " +
+                     "agrees it exists, so the name-match lookup inside TryUpdateEntry must too");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "MixedCaseName");
+        entry.Keywords.Should().Contain("curated");
+    }
+
     // ── UpdateMeta review-state / ContentPreview direct write (P6.6b Task 4 / Task 2b) ────
     // These are VALUE regression-locks on the RAW persisted entry. Because AttributeMigration.Forward
     // still runs after UpdateMeta's own write in this merge step, they cannot by themselves prove the

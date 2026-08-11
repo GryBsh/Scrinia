@@ -1040,7 +1040,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
             var current = LoadEntriesFromSidecars(storeDir)
                 .Select(e => e.NormalizeAttributesKey())
-                .FirstOrDefault(e => SanitizeName(e.Name) == SanitizeName(subject));
+                .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
             if (current is null) return false;
 
             var updated = mutate(current);

@@ -98,4 +98,30 @@ public class TryUpdateEntryTests
         var store = (FileMemoryStore)MemoryStoreContext.Current!;
         store.TryUpdateEntry("nope", "local:findings", e => e).Should().BeFalse();
     }
+
+    /// <summary>
+    /// Regression guard: the entry lookup inside TryUpdateEntry must match names
+    /// case-insensitively, the way <see cref="FileMemoryStore.Remove"/>'s <c>File.Exists</c> guard
+    /// already does on Windows (NTFS is case-insensitive) and the way <c>UpdateMeta</c> matched
+    /// before it was rerouted through TryUpdateEntry. A prior fix wave changed the name match from
+    /// <c>e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase)</c> to an ordinal
+    /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, which silently broke update()/link() for
+    /// any case-mismatched name — stored as "MixedCase", looked up as "mixedcase" — even though the
+    /// method's own <c>File.Exists(metaPath)</c> guard reports the entry present.
+    /// </summary>
+    [Fact]
+    public void MutateWithDifferentCasing_StillFindsAndUpdatesTheEntry()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        var store = (FileMemoryStore)MemoryStoreContext.Current!;
+        store.Upsert(new ArtifactEntry("MixedCase", "uri", 1, 1, DateTimeOffset.UtcNow,
+            Attributes: new() { ["mention"] = ["seraphim"] }), "local:findings");
+
+        bool changed = store.TryUpdateEntry("mixedcase", "local:findings", e =>
+            e with { Attributes = new(e.Attributes!, StringComparer.OrdinalIgnoreCase) { ["thing"] = ["seraphim"] } });
+
+        changed.Should().BeTrue();
+        var reloaded = store.LoadIndex("local:findings").Single(x => x.Name == "MixedCase");
+        reloaded.Attributes!.Should().ContainKey("thing");
+    }
 }
