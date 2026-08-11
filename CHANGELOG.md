@@ -147,6 +147,13 @@ and all assembly attributes.
   every one of these paths turns the subject back into a file path afterwards, so leaving the
   caller's casing in place would have left the fix relying on the filesystem to fold case on its
   behalf — right on NTFS, and a second entry alongside the first anywhere case-sensitive.
+  **Visible consequence:** `remember({ path: 'mixedcase' })` against a memory created as
+  `MixedCase` leaves it named `MixedCase`, and the response reports `MixedCase` rather than what
+  the caller typed. On a case-insensitive filesystem the old code silently renamed the memory to
+  the caller's casing.
+  *Ruling: re-storing under a different casing is an update, so there is no longer any route to
+  change a memory's name casing through `remember()`. That is intended — casing renames are not a
+  `remember()` capability, and the old behaviour was an accident of the defect, not a feature.*
 - `copy()` from a source named in a different casing now carries the source's metadata. It resolved
   the source *file* case-insensitively (the filesystem did it) but its *entry* ordinally, so the
   copy silently took the synthesized-defaults branch: destination created, bytes intact, attributes

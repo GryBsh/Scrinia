@@ -37,9 +37,8 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
 
         // Case-insensitive to match IMemoryStore's default TryUpdateEntry: SanitizeName does not
         // fold case, so an ordinal match here gated a case-mismatched name out of promotion
-        // entirely, above and independent of the store's own lookup. (FileMemoryStore's own
-        // TryUpdateEntry gate is case-insensitive only on case-insensitive filesystems — see the
-        // entry.Name fix below for why this method does not rely on that.)
+        // entirely, above and independent of the store's own lookup. Every store's own lookup is
+        // case-insensitive too, on every filesystem — but this one runs first, so it has to be.
         var entry = store.LoadIndex(scope)
             .FirstOrDefault(e => store.SanitizeName(e.Name)
                 .Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
@@ -66,11 +65,12 @@ public sealed class EntityTypingEventHandler(IEmbeddingProvider provider) : IMem
         if (moves.Count == 0) return;
 
         // Apply under the store lock; move only values STILL under mention: on the current entry.
-        // Pass entry.Name (the resolved entry's own casing), not the event's subject: FileMemoryStore's
-        // TryUpdateEntry gates on File.Exists(SanitizeName(subject) + ".meta.json"), which is
-        // case-sensitive on Linux/macOS -- SanitizeName does not fold case. Handing back the
-        // event's casing would pass the read-side gate above but fail this write-side one on a
-        // case-mismatched name, on any filesystem where File.Exists is case-sensitive.
+        // Pass entry.Name (the resolved entry's own casing), not the event's subject. This is the
+        // convention across every name-resolving write path in the codebase: once a lookup has
+        // resolved an entry case-insensitively, the entry's OWN casing is what travels onward,
+        // because the write paths rebuild filesystem paths out of that name (sidecars, artifacts,
+        // version archives) and a name is only as good as the file it names. Handing the event's
+        // casing back instead would resolve one entry and write against another's path.
         store.TryUpdateEntry(entry.Name, scope, current =>
         {
             if (current.Attributes is null ||

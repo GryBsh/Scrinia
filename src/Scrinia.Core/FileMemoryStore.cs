@@ -1021,10 +1021,23 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 // Kept as a fallback rather than replacing the probe: the exact-name hit is the
                 // overwhelmingly common case and costs one stat, where this costs a directory
                 // enumeration. Nothing about the found path changes.
+                //
+                // Tie-break, and it matters because this is a delete: a case-sensitive filesystem
+                // holding pre-branch data can have BOTH "Note.meta.json" and "note.meta.json", and
+                // this branch is only entered when the caller asked for neither exactly (an exact
+                // name would have hit the probe above). Directory enumeration order is not
+                // guaranteed — notably on ext4 — so the candidates are sorted ordinally and the
+                // first is taken, making the choice deterministic rather than arbitrary. Ordinal
+                // sort puts uppercase first, so "Note.meta.json" wins over "note.meta.json". That
+                // is a coin toss decided consistently, not a claim about which one is meant; the
+                // alternative considered was refusing on ambiguity, rejected because it would make
+                // forget() fail with no name the caller could give it instead.
                 string wanted = Path.GetFileName(metaPath);
                 string? actual = Directory.Exists(storeDir)
-                    ? Directory.EnumerateFiles(storeDir, "*.meta.json").FirstOrDefault(
-                        p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
+                    ? Directory.EnumerateFiles(storeDir, "*.meta.json")
+                        .Where(p => Path.GetFileName(p).Equals(wanted, StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(p => p, StringComparer.Ordinal)
+                        .FirstOrDefault()
                     : null;
                 if (actual is null)
                     return false;
@@ -1090,6 +1103,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // LoadEntriesFromSidecars returns [] for a directory that does not exist, so the
             // `current is null` guard below answers that case exactly as the gate did. Pinned by
             // MissingEntry_ReturnsFalse in the same file.
+            //
+            // What it cost, since the gate was not free: it was the only thing keeping a MISS from
+            // paying a full LoadEntriesFromSidecars scan, which a miss now always pays. Judged
+            // fine, and deliberately so — a hit already paid that identical scan (the lookup below
+            // is unchanged), and the sole production caller is EntityTypingEventHandler.PromoteAsync
+            // on a detached background task, one call per write event, never in a loop. Trading a
+            // correct answer for a stat on the rare path is the wrong way round.
             var current = LoadEntriesFromSidecars(storeDir)
                 .Select(e => e.NormalizeAttributesKey())
                 .FirstOrDefault(e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));

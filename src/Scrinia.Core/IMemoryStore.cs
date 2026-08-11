@@ -35,14 +35,14 @@ public interface IMemoryStore
     /// <para>Default implementation is a non-atomic load→mutate→Upsert, adequate for in-memory/test
     /// stores with no concurrent writers. FileMemoryStore overrides it to run under its per-scope
     /// write lock.</para>
-    /// <para>Name matching is case-insensitive here, matching how <c>Remove</c>'s
-    /// <c>File.Exists</c> guard and <c>FileMemoryStore.TryUpdateEntry</c> behave on
-    /// case-insensitive filesystems (Windows/NTFS) — <c>SanitizeName</c> does not fold case, so an
-    /// ordinal comparison here silently reported "not found" for an entry stored under a different
-    /// casing. On case-sensitive filesystems, <c>File.Exists</c> and
-    /// <c>FileMemoryStore.TryUpdateEntry</c>'s own gate remain case-sensitive regardless of this
-    /// fix; that mismatch is a pre-existing, separately tracked defect in
-    /// <c>FileMemoryStore</c> itself.</para>
+    /// <para>Name matching is case-insensitive here — <c>SanitizeName</c> does not fold case, so an
+    /// ordinal comparison silently reported "not found" for an entry stored under a different
+    /// casing. Every implementation now agrees, on every filesystem: this default,
+    /// <c>FileMemoryStore.TryUpdateEntry</c> (which resolves identity from the sidecars themselves,
+    /// with no <c>File.Exists</c> gate in front of it), <c>FileMemoryStore.Remove</c> (whose
+    /// exact-name probe falls back to a case-insensitive sidecar scan), and
+    /// <c>HttpMemoryStore.TryUpdateEntry</c>. No case-sensitive gate remains on any of these
+    /// paths.</para>
     /// </summary>
     bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
