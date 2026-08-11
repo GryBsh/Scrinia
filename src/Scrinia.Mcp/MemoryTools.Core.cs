@@ -702,9 +702,12 @@ public sealed partial class ScriniaMcpTools
 
         int topicCount = grouped.Count(g => g.Key != "local");
 
+        // Every terminator below is an explicit '\n', not AppendLine: AppendLine emits \r\n on
+        // Windows, but ToYaml later splits this builder's return value on '\n' only — a \r\n
+        // terminator here leaves a stray \r on every rendered line.
         var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"## Memory Summary");
-        sb.AppendLine($"**{entries.Count} memories** — {FormatBytes(totalBytes)} (~{totalTokens:N0} tokens)");
+        sb.Append($"## Memory Summary").Append('\n');
+        sb.Append($"**{entries.Count} memories** — {FormatBytes(totalBytes)} (~{totalTokens:N0} tokens)").Append('\n');
         if (topicCount > 0 || ephemeralCount > 0 || staleCount > 0 || reviewCount > 0)
         {
             var parts = new List<string>();
@@ -712,21 +715,21 @@ public sealed partial class ScriniaMcpTools
             if (ephemeralCount > 0) parts.Add($"{ephemeralCount} ephemeral");
             if (staleCount > 0) parts.Add($"{staleCount} stale");
             if (reviewCount > 0) parts.Add($"{reviewCount} need review");
-            sb.AppendLine(string.Join(" · ", parts));
+            sb.Append(string.Join(" · ", parts)).Append('\n');
         }
-        sb.AppendLine();
+        sb.Append('\n');
 
         // Topics with entry counts and total size
-        sb.AppendLine("### Scopes");
+        sb.Append("### Scopes").Append('\n');
         foreach (var group in grouped)
         {
             string label = group.Key == "local" ? "local" : $"/{group.Key}";
             long groupBytes = group.Sum(e => e.Entry.OriginalBytes);
-            sb.AppendLine($"- **{label}** — {group.Count()} {(group.Count() == 1 ? "memory" : "memories")}, {FormatBytes(groupBytes)}");
+            sb.Append($"- **{label}** — {group.Count()} {(group.Count() == 1 ? "memory" : "memories")}, {FormatBytes(groupBytes)}").Append('\n');
         }
         if (ephemeralCount > 0)
-            sb.AppendLine($"- **ephemeral** — {ephemeralCount} {(ephemeralCount == 1 ? "memory" : "memories")}");
-        sb.AppendLine();
+            sb.Append($"- **ephemeral** — {ephemeralCount} {(ephemeralCount == 1 ? "memory" : "memories")}").Append('\n');
+        sb.Append('\n');
 
         // Top keywords + top attributes — computed by the shared aggregator that also backs
         // `scri list --summary`, so the two surfaces never diverge (they used to: the MCP side
@@ -735,15 +738,15 @@ public sealed partial class ScriniaMcpTools
         var (topKeywords, topAttributes) = AggregateSummaryFacets(entries);
         if (topKeywords.Length > 0)
         {
-            sb.AppendLine("### Top keywords");
-            sb.AppendLine(string.Join(", ", topKeywords));
-            sb.AppendLine();
+            sb.Append("### Top keywords").Append('\n');
+            sb.Append(string.Join(", ", topKeywords)).Append('\n');
+            sb.Append('\n');
         }
         if (topAttributes.Length > 0)
         {
-            sb.AppendLine("### Top attributes");
-            sb.AppendLine(string.Join(", ", topAttributes.Select(a => $"{a.Key} ({a.Count})")));
-            sb.AppendLine();
+            sb.Append("### Top attributes").Append('\n');
+            sb.Append(string.Join(", ", topAttributes.Select(a => $"{a.Key} ({a.Count})"))).Append('\n');
+            sb.Append('\n');
         }
 
         sb.Append("Use `list({ mode: 'full' })` to see all entries, or `search({ query: '...' })` to find specific memories.");
@@ -828,17 +831,20 @@ public sealed partial class ScriniaMcpTools
         const int tokensW = 8;
         const int dateW = 17;
 
+        // Every terminator below is an explicit '\n', not AppendLine: AppendLine emits \r\n on
+        // Windows, but ToYaml later splits this builder's return value on '\n' only — a \r\n
+        // terminator here leaves a stray \r on every rendered line.
         var sb = new System.Text.StringBuilder();
 
         // Pagination header
         int showing = offset + 1;
         int showingEnd = offset + page.Count;
-        sb.AppendLine($"Showing {showing}-{showingEnd} of {total} memories.");
-        sb.AppendLine();
+        sb.Append($"Showing {showing}-{showingEnd} of {total} memories.").Append('\n');
+        sb.Append('\n');
 
-        sb.AppendLine(
-            $"{"name".PadRight(nameW)}  {"chunks",chunkW}  {"bytes",bytesW}  {"~tokens",tokensW}  {"created",dateW}  description");
-        sb.AppendLine(new string('-', nameW + chunkW + bytesW + tokensW + dateW + 18));
+        sb.Append(
+            $"{"name".PadRight(nameW)}  {"chunks",chunkW}  {"bytes",bytesW}  {"~tokens",tokensW}  {"created",dateW}  description").Append('\n');
+        sb.Append(new string('-', nameW + chunkW + bytesW + tokensW + dateW + 18)).Append('\n');
 
         foreach (var (qualifiedName, e) in rows)
         {
@@ -878,12 +884,12 @@ public sealed partial class ScriniaMcpTools
             string fullDesc = reviewPrefix + driftPrefix + desc;
             if (fullDesc.Length > 60) fullDesc = fullDesc[..57] + "...";
 
-            sb.AppendLine(
-                $"{qualifiedName.PadRight(nameW)}  {e.ChunkCount,chunkW}  {sizeStr,bytesW}  {estTokens,tokensW}  {dateStr,-dateW}  {fullDesc}");
+            sb.Append(
+                $"{qualifiedName.PadRight(nameW)}  {e.ChunkCount,chunkW}  {sizeStr,bytesW}  {estTokens,tokensW}  {dateStr,-dateW}  {fullDesc}").Append('\n');
         }
 
         if (showingEnd < total)
-            sb.AppendLine($"\nUse list(mode=\"full\", offset={showingEnd}) for more.");
+            sb.Append($"\nUse list(mode=\"full\", offset={showingEnd}) for more.").Append('\n');
 
         return sb.ToString().TrimEnd();
     }
