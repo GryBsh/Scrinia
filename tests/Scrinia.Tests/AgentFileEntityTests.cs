@@ -1,5 +1,7 @@
+using System.IO.Compression;
 using FluentAssertions;
 using Scrinia.Core;
+using Scrinia.Core.Bundles;
 using Scrinia.Core.Models;
 using Scrinia.Mcp;
 using Xunit;
@@ -60,7 +62,11 @@ public class AgentFileEntityTests
 
         try
         {
-            StoreLayoutMigration.Migrate(root, dryRun: false, backup: false);
+            StoreLayoutMigration.Result result =
+                StoreLayoutMigration.Migrate(root, dryRun: false, backup: false);
+
+            result.Ran.Should().BeTrue(
+                because: "if migration short-circuits, the assertions below pass vacuously");
 
             File.Exists(Path.Combine(agentDir, "profile.md")).Should().BeTrue(
                 because: "agent is a hand-authored file entity and is never swept");
@@ -79,18 +85,69 @@ public class AgentFileEntityTests
         using var scope = new TestHelpers.StoreScope();
         var store = (FileMemoryStore)MemoryStoreContext.Current!;
 
-        await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
-        string agentDir = PathRouter.ToFileEntityDir("agent", store.WorkspaceRoot);
-        string sidecar = Path.Combine(agentDir, "profile.meta.json");
-        File.Exists(sidecar).Should().BeTrue("precondition: the agent write produced a sidecar");
+        // Seed a real NMP/2 topic literally named "agent" on the SOURCE — the collision case
+        // this test guards against. BuildScopedTopicScope("agent") resolves to scope
+        // "local:agent", a store-side directory (.scrinia/memories/agent/) distinct from the
+        // top-level file-entity agent dir (.scrinia/agent/) only by construction, not by any
+        // runtime check — see PathRouter's FileEntityDirs doc comment. Deliberately no agent
+        // file entity on the SOURCE: if the exported bundle carried one, ImportFileEntities
+        // (which runs unconditionally AFTER the topics loop below) would rewrite the sidecar
+        // moments after any sweep deleted it, masking exactly the failure this test exists to
+        // catch.
+        string topicScope = MemoryNaming.BuildScopedTopicScope(store.SanitizeName("agent"));
+        store.Upsert(
+            new ArtifactEntry("note", "", 5, 1, DateTimeOffset.UtcNow, "an agent-topic note"),
+            topicScope);
+        await store.WriteArtifactAsync("note", topicScope, "agent topic content");
 
-        // SaveIndex's orphan sweep deletes every *.meta.json it does not recognise in the
-        // scope directory. Before this change agent configs lived there and were destroyed.
-        store.SaveIndex(
-            [new ArtifactEntry("unrelated", "file:///x.nmp2", 10, 1, DateTimeOffset.UtcNow)],
-            "local:agent");
+        byte[] zipBytes;
+        using (var ms = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+                BundleFormatService.ExportTopicsToZip(zip, store, ["agent"]);
+            zipBytes = ms.ToArray();
+        }
 
-        File.Exists(sidecar).Should().BeTrue(
-            because: "agent metadata lives outside every store scope directory");
+        // Act — import into a workspace that ALREADY has an agent config sidecar, the realistic
+        // case: `scri bundle import` into an existing workspace, not a fresh one. Seeded BEFORE
+        // ImportTopicsFromZip runs so the pre-existing sidecar is on disk when the topics loop's
+        // SaveIndex orphan sweep executes — that ordering is what lets the sweep actually find
+        // it, which importing into an empty workspace could not (Task 1 review, Critical 2).
+        string importRoot = Path.Combine(Path.GetTempPath(), $"scrinia_bundleagent_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(importRoot);
+        try
+        {
+            using var importStore = new FileMemoryStore(importRoot);
+
+            IMemoryStore? previous = MemoryStoreContext.Current;
+            MemoryStoreContext.Current = importStore;
+            try
+            {
+                await Tools().MemoryRemember(path: "/agent/profile", content: ["you are helpful"]);
+            }
+            finally
+            {
+                MemoryStoreContext.Current = previous;
+            }
+
+            string importAgentDir = PathRouter.ToFileEntityDir("agent", importStore.WorkspaceRoot);
+            string importSidecar = Path.Combine(importAgentDir, "profile.meta.json");
+            File.Exists(importSidecar).Should().BeTrue(
+                "precondition: the destination workspace already has agent config metadata");
+
+            using var importMs = new MemoryStream(zipBytes);
+            using var importZip = new ZipArchive(importMs, ZipArchiveMode.Read);
+            BundleFormatService.ImportTopicsFromZip(importZip, importStore, filterTopics: null, overwrite: true);
+
+            // Assert — the pre-existing agent config sidecar survived, never swept by
+            // SaveIndex's orphan sweep against the "agent" topic's own scope directory.
+            File.Exists(importSidecar).Should().BeTrue(
+                because: "agent metadata lives outside every store scope directory, so importing " +
+                         "a bundle containing a topic literally named \"agent\" must not sweep it away");
+        }
+        finally
+        {
+            try { Directory.Delete(importRoot, recursive: true); } catch { }
+        }
     }
 }

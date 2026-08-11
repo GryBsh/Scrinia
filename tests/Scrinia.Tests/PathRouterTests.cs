@@ -201,6 +201,8 @@ public class PathRouterTests : IDisposable
     [InlineData("sub\\dir")]
     [InlineData("")]
     [InlineData("  ")]
+    [InlineData("C:\\foo")]
+    [InlineData("/foo")]
     public void TryToFileEntityPath_RejectsUnsafeNames(string name)
     {
         PathRouter.TryToFileEntityPath("skill", name, _root, out string path)

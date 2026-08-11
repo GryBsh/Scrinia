@@ -1,0 +1,5 @@
+status: success
+action: compacted
+content: |
+  Compacted /findings/multi-note: 3 -> 1 chunk (2 dropped). Original archived.
+  Files in .scrinia/ were updated — these are your changes.

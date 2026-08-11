@@ -573,6 +573,11 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   because the scope was pre-stripped of its `local:` prefix before formatting.
   It now passes the scope straight to `FormatQualifiedName`, so topic-scoped
   drift rows keep their `/topic/` path.
+- The MCP `list` tool's summary and full-list output (`BuildSummary`/`BuildFullList` in
+  `MemoryTools.Core.cs`) carried a stray carriage return on every line. Both builders used
+  `StringBuilder.AppendLine`, which emits `\r\n` on Windows, while `ToYaml` renders the result
+  by splitting on `\n` only — leaving a `\r` baked into each line. All 20 call sites now use
+  `Append(...).Append('\n')` so the line terminator is explicit and platform-independent.
 
 ### Changed (breaking) — path-only memory names
 - **The `topic:subject` colon naming syntax was removed; names are paths.**
@@ -586,8 +591,10 @@ leaves the path unmerged with `ours`' content and no conflict markers. Re-run
   `local-topic:{topic}` (`.scrinia/topics/{topic}/`), not
   `local-topic:memory/{topic}`. This fixes `--scopes {topic}` / `Export([{topic}])`
   not matching path-stored memories. Data under the old `.scrinia/topics/memory/`
-  layout is still read via fallback. `skill` (entity) and `agent` scopes are
-  unchanged.
+  layout is still read via fallback. `skill` (entity) and `agent` scopes are not
+  part of this rename — they resolve separately through `PathRouter.ToFileEntityDir`
+  to a top-level `.scrinia/{skills,agent}/` directory outside `memories/` entirely
+  (see "file-entity unification" and "store unification and the v3 memory layout" above).
 - Agent-config resolution moved from `agent:{name}` to the `/agent/{name}` path,
   which also repairs `restore`'s `/agent/**`, `/patterns/**`, `/checkpoint/latest`,
   and `/sessions/{today}` follow-ups (they were reading legacy colon-scoped dirs

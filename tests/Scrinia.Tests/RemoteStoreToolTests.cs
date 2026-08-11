@@ -6,6 +6,7 @@ using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
 using Scrinia.Mcp;
+using Scrinia.TestDoubles;
 using Xunit;
 
 namespace Scrinia.Tests;
@@ -429,14 +430,23 @@ public sealed class RemoteStoreToolTests
         // HttpMemoryStore.Upsert is a no-op. A double's Upsert is the only seam where the stored
         // entry can actually be inspected.
         //
-        // The probe file lives in the CWD deliberately. The failure this guards against is
-        // fabricating a root — `?? Directory.GetCurrentDirectory()` — which would silently hash
-        // arbitrary files off the server's working directory. With the probe present, that
-        // implementation populates FileHashes and this test fails.
+        // Probe files sit at CWD (`?? Directory.GetCurrentDirectory()`) and
+        // `AppContext.BaseDirectory` (the executable's own directory, a common "give me *some*
+        // path" fallback) — the two roots a regression is plausible enough to fabricate. Under
+        // VSTest these are the same directory, so the second write lands on top of the first and
+        // the pair adds no discriminating power beyond either alone. The test still catches a
+        // regression that resolves to that directory, which is what makes it a real guard — it
+        // just does not additionally prove anything about CWD vs. BaseDirectory as distinct
+        // roots. A regression that falls back to an arbitrary hardcoded literal path (neither of
+        // the above) is NOT covered — there is no finite set of locations that discriminates
+        // every possible literal, so widening stops here; see Task 1 report for why this is the
+        // accepted limit.
         using var scope = new DoubleStoreScope(new RecordingRemoteStore());
         string probeName = $"drift-probe-{Guid.NewGuid():N}.txt";
-        string probePath = Path.Combine(Directory.GetCurrentDirectory(), probeName);
-        await File.WriteAllTextAsync(probePath, "contents that would hash to something");
+        string probePathCwd = Path.Combine(Directory.GetCurrentDirectory(), probeName);
+        string probePathBaseDir = Path.Combine(AppContext.BaseDirectory, probeName);
+        await File.WriteAllTextAsync(probePathCwd, "contents that would hash to something");
+        await File.WriteAllTextAsync(probePathBaseDir, "contents that would hash to something");
 
         try
         {
@@ -451,14 +461,16 @@ public sealed class RemoteStoreToolTests
             stored.Should().ContainSingle(because: "the memory must still be persisted");
             stored[0].FileHashes.Should().BeNull(
                 because: "with no local workspace there is no root to resolve refs against, and " +
-                         "a fabricated one would hash whatever happens to sit in the CWD");
+                         "a fabricated one — CWD or AppContext.BaseDirectory — would hash the probe " +
+                         "planted at that root");
             stored[0].Attributes.Should().NotBeNull().And.ContainKey("file",
                 because: "the reference itself is the user's data and must survive; only the " +
                          "derived hashes are dropped");
         }
         finally
         {
-            File.Delete(probePath);
+            File.Delete(probePathCwd);
+            File.Delete(probePathBaseDir);
         }
     }
 

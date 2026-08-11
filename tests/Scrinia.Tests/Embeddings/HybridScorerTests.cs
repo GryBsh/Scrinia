@@ -4,6 +4,7 @@ using Scrinia.Core.Embeddings;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
+using Scrinia.TestDoubles;
 
 namespace Scrinia.Tests.Embeddings;
 

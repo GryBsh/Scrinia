@@ -2,7 +2,7 @@ using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Core.Search;
 
-namespace Scrinia.Tests;
+namespace Scrinia.TestDoubles;
 
 /// <summary>
 /// A do-nothing <see cref="IMemoryStore"/> — every member returns an empty or default result.
@@ -12,8 +12,10 @@ namespace Scrinia.Tests;
 /// local filesystem member has to deal with its absence, and a test can pin what it does.</para>
 /// <para>Members are <c>virtual</c> so a test can subclass and override just the one or two it
 /// cares about, rather than hand-writing 23 member bodies per double.</para>
+/// <para>Shared by <c>Scrinia.Tests</c> and <c>Scrinia.Server.Tests</c> — both reference this
+/// project so neither has to keep its own copy in sync with the other.</para>
 /// </summary>
-internal class FakeMemoryStore : IMemoryStore
+public class FakeMemoryStore : IMemoryStore
 {
     public virtual (string Scope, string Subject) ParseQualifiedName(string name) => ("local", name);
     public virtual string FormatQualifiedName(string scope, string subject) => $"{scope}:{subject}";
