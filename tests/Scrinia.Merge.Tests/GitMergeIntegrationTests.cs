@@ -161,6 +161,29 @@ public sealed class GitMergeIntegrationTests
     }
 
     [Fact]
+    public void LegacyFourArgumentConfig_DoesNotReportUnregisteredKeyAsFailure()
+    {
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("nmp2", passPathname: false);   // meta is never registered at all
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.WriteFile(Sidecar, "{\"name\":\"auth-flow\"}\n");
+        repo.SeedThreeWay(Artifact, Nmp2("YmFzZQ"), Nmp2("b3Vycw"), Nmp2("dGhlaXJz"));
+
+        var result = repo.Merge("other");
+
+        result.StdErr.Should().NotContain("[scrinia:error]",
+            because: "the invoked key (nmp2) repaired successfully; the merge must not be framed as a failure");
+        // `git config --get` on merge.scrinia-meta.driver exits 1 with empty stderr because the key was
+        // never registered, not because anything failed — GitConfigRepair.TryAppendPathname cannot tell
+        // the difference (F4), so its "could not read" text for meta is unavoidable. What must not happen
+        // is the old fixed "meta: X; nmp2: Y" pairing, which read the invoked key's own success as if it
+        // were just one half of a two-key failure report.
+        result.StdErr.Should().NotContain("could not read merge.scrinia-meta.driver from local git config; nmp2:",
+            because: "meta's unavoidable \"could not read\" text must not be paired ahead of the invoked " +
+                     "key's outcome as if both keys carried equal weight");
+    }
+
+    [Fact]
     public void ConflictCopies_AreIgnoredByGitSoTheyCannotBeCommitted()
     {
         using var repo = new GitMergeHarness();
@@ -231,5 +254,53 @@ public sealed class GitMergeIntegrationTests
 
         repo.FileExists(".scrinia/memories/local/disputes/current/auth-flow.nmp2").Should().BeTrue(
             because: "MergeConfig must be loaded and its ConflictDir honoured");
+    }
+
+    [Fact]
+    public void LegacyBranch_IsInsideTheTopLevelTryCatch()
+    {
+        // GitConfigRepair.TryGit's catch filter covers only Win32Exception and
+        // InvalidOperationException (GitConfigRepair.cs); an IOException from reading git's stdout
+        // escapes uncaught. The legacy four-argument branch makes two TryGit calls (one per key via
+        // TryAppendPathname), so it must run inside Program.cs's own top-level try/catch to turn an
+        // escaping IOException into a "[scrinia:error]" diagnostic instead of a raw stack trace
+        // reaching git's merge output.
+        //
+        // Driving an actual IOException out of TryGit deterministically would require replacing the
+        // real `git` process it shells out to with one that fails mid-read in a controlled, portable
+        // way -- not achievable without restructuring TryGit to accept an injected process runner,
+        // which is beyond this task's scope. This test instead pins the structural guarantee directly
+        // from source: the legacy branch's git-calling code sits after the try's opening brace, and
+        // nothing above the try can return once inside it.
+        string source = File.ReadAllText(FindProgramCs());
+
+        int usageGuardIndex = source.IndexOf("if (args.Length < 4)", StringComparison.Ordinal);
+        int tryIndex = source.IndexOf("\ntry", StringComparison.Ordinal);
+        int legacyGuardIndex = source.IndexOf("if (args.Length < 5)", StringComparison.Ordinal);
+        int repairCallIndex = source.IndexOf("GitConfigRepair.TryAppendPathname", StringComparison.Ordinal);
+
+        usageGuardIndex.Should().BeGreaterThan(-1, because: "the usage guard must still exist");
+        tryIndex.Should().BeGreaterThan(-1, because: "Program.cs must open a top-level try block");
+        legacyGuardIndex.Should().BeGreaterThan(-1, because: "the legacy four-argument branch must still exist");
+        repairCallIndex.Should().BeGreaterThan(-1, because: "the legacy branch must still repair via GitConfigRepair");
+
+        usageGuardIndex.Should().BeLessThan(tryIndex,
+            because: "the < 4 argument usage guard makes no git call and stays outside the try");
+        tryIndex.Should().BeLessThan(legacyGuardIndex)
+            .And.BeLessThan(repairCallIndex,
+                because: "the legacy branch's length check and its two GitConfigRepair.TryAppendPathname " +
+                         "calls must sit inside the try, so an IOException escaping TryGit is caught here " +
+                         "rather than reaching git as a raw stack trace");
+    }
+
+    private static string FindProgramCs()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Scrinia.sln")))
+            dir = dir.Parent;
+        if (dir is null)
+            throw new InvalidOperationException(
+                $"Could not find Scrinia.sln walking up from {AppContext.BaseDirectory}.");
+        return Path.Combine(dir.FullName, "src", "Scrinia.Merge", "Program.cs");
     }
 }
