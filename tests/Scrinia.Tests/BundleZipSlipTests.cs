@@ -34,9 +34,11 @@ public sealed class BundleZipSlipTests : IDisposable
     [Fact]
     public void ImportBundle_WithTraversalCategoryKey_WritesNothingOutsideStore()
     {
-        // The store's base dir is {_workspaceRoot}/.scrinia (see GetScriniaBaseDir).
-        // A category key of "../outside" resolves to {_workspaceRoot}/outside,
-        // which is a sibling of .scrinia — outside the store's base dir.
+        // The real gate is BundleFormatService.CategoryToKind, an allowlist of known
+        // category keys ("skills", "agent") checked in ImportFileEntities before any
+        // path resolution happens. "../outside" is not a key, so it is skipped there —
+        // Path.Combine is never reached, so this test does not depend on any
+        // base-directory computation at all.
         string sentinelDir = Path.Combine(_workspaceRoot, "outside");
         Directory.CreateDirectory(sentinelDir);
 

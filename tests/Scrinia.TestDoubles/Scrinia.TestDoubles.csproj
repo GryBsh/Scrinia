@@ -7,6 +7,14 @@
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+    <!--
+      This project's name doesn't end in .Tests or .Benchmarks, so Directory.Build.props'
+      suffix match (see its :17-19 comment) puts it in the strict TreatWarningsAsErrors
+      branch by accident — even though it exists purely to host test doubles and should get
+      the same advisory-only treatment as Scrinia.Tests and Scrinia.Server.Tests. Opting out
+      explicitly here so the next added double gets a warning, not a hard build break.
+    -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>

@@ -50,30 +50,51 @@ See commits `4ff61d0`, `ddfdf0c`, `715ae37`, `d49521c`, `783f8a6`, `384166a`, `f
 `7745c22`, `af84907`, `ccd247f` on `merge-driver-residuals`, and the plan at
 `docs/superpowers/plans/2026-08-11-merge-driver-residuals.md`.
 
-## Group B — the sweep (SPECCED, 11 items + 5 inherited)
+## Group B — CLOSED on `the-sweep`, 2026-08-11.
 
-Design: `2026-08-08-store-read-path-and-sweep-design.md`, **Part B**. Split out when Part A ran,
-for reasons that were good then and have expired now: Part A is merged, so nothing gates this.
+Design: `2026-08-08-store-read-path-and-sweep-design.md`, **Part B**.
 
-Contains B1–B8 (test-coverage gaps), the `MemoryList` `AppendLine`/`\r` formatting defect masked
-by `GoldenNormalizer`'s blanket `\r` strip, and two docs corrections.
+All items closed: the two cannot-fail tests were repaired
+(`Migration_DoesNotSweepTheAgentDirectory` now captures and asserts `Migrate()`'s `Result.Ran`;
+the remote file-refs mutation test now plants its probe at both `CWD` and
+`AppContext.BaseDirectory` so a fabricated root can't hide from it), plus the bundle-import
+agent-metadata test (B5) widened into a real export/import round trip and the lock-file
+precondition test (G5) now asserts the lock file existed before deleting it. B1 (transient 503 →
+breaker), G1 (`MaxValuesPerKey` cap), G2 (`ListScoped` non-2xx throw), and G3 (error-body text in
+the exception message) all got new tests. The `StorePurityInvariantTests` now assert the
+invariant its own doc states, via a cold-load second store. Four golden fixtures were added
+(`update-warning`, `recall-truncated`, `compact-multichunk`, `link-partial-failure`), taking the
+snapshot count from 14 to 18. The `MemoryTools.Core.cs` `AppendLine`/`\r` formatting defect is
+fixed — all 20 `AppendLine` calls in `BuildSummary`/`BuildFullList` now use
+`Append(...).Append('\n')` — the only production change in this branch. `Scrinia.TestDoubles` now
+holds one shared set of memory-store doubles instead of a duplicated fake store.
 
-**Two items in it are the ones worth ranking first** — `Migration_DoesNotSweepTheAgentDirectory`
-discards `Migrate()`'s result, and the remote file-refs mutation test only discriminates a
-CWD-shaped root. Both are tests that **cannot fail** under the regression they exist to catch,
-which is worse than no test because the suite reports coverage that is not there.
+**Two spec corrections this branch found, both load-bearing enough to record:**
+- **B6's fixture count was 14, not 16.** The design spec's inventory overcounted the existing
+  `tests/Scrinia.Tests/Golden/__snapshots__/` fixtures.
+- **F1's blast radius was 2 goldens, not "every golden."** The design spec's Risks section
+  claimed the `AppendLine`/`\r` fix would move every golden fixture. It moves none:
+  `GoldenNormalizer` strips `\r` unconditionally before persisting, so committed fixtures
+  structurally cannot show the defect — confirmed by regenerating `list-summary.yaml` and
+  `list-full.yaml` (the only two fixtures downstream of the fixed builders) and getting a
+  byte-identical diff.
 
-**Resolved while Part A ran, fold in:** the `link.yaml` golden covers the success envelope only,
-not partial failure. Part B's B6 lists that as an open question; it is answered.
+**B2 was redefined, not implemented as specced.** The proposed test (rooted-path names rejected
+by `FileEntityName.IsValid`) could never fail: `IsValid` short-circuits on
+`IndexOfAny(['/','\\'])` before reaching `!Path.IsPathRooted(name)`, and no input can be rooted
+while passing the sibling checks — verified by running `Path.IsPathRooted` against
+representative inputs, not by inspection alone. B2 now adds the reachable cases and records the
+unreachability as a ruling in `FileEntityName.cs` (`IsValid`'s doc comment), the same defect
+class the two cannot-fail tests above exist to remove.
 
-**New coverage gaps from this sequence to fold into the same branch:**
-- The local `MaxValuesPerKey` cap in `KnownAttributes.Merge` has **no test**, so the "local and
-  remote accept the same input by construction" property is unpinned.
-- `ListScoped`'s new throw-on-non-2xx is unguarded.
-- The error-body text in `WriteArtifactAsync`'s exception is unguarded.
-- No test pins the fast-path `EnterReadLock` in `LoadIndex` (all four tests are single-threaded
-  and would pass with it deleted).
-- `LoadIndexCacheHitTests`' `File.Delete` is not self-guarding.
+**G4 was ruled closed in writing, not pinned by a test.** The fast-path `EnterReadLock` in
+`FileMemoryStore.LoadIndex` got a real 300-round stress test; it never failed with or without the
+lock, so the lock is unpinnable by a black-box test. The ruling is in
+`src/Scrinia.Core/FileMemoryStore.cs` immediately above the lock (`// RULING (the-sweep, Task 1,
+G4)`), explaining what the lock protects and why nothing here can pin it.
+
+See commits `20a14dd`, `4bd2436`, `3ae44b6`, `7eab8d9`, `2ebd54a`, `32bc5fe`, `692cae0`, `767dc7a`,
+`f0184da` on `the-sweep`, and the plan at `docs/superpowers/plans/2026-08-11-the-sweep.md`.
 
 ## Group C — remote-mode leftovers (OPEN, 4 items)
 
@@ -162,11 +183,12 @@ them, not deleted from the record:
 See commits `0f46797`, `f943f8e` on `closure-hygiene-rulings`, and the plan at
 `docs/superpowers/plans/2026-08-10-closure-hygiene-rulings.md`.
 
-## Group G — 1 verified and specced, 2 still genuinely unverified
+## Group G — 2 verified and specced, 2 still genuinely unverified
 
 Carried as "unverified" since the original triage. **Verify first; a ruling on an unverified
 claim is a guess.** The first item below was verified on `merge-driver-residuals`, 2026-08-11;
-the remaining two still need to be checked before ruling.
+the second was surfaced and verified on `the-sweep`, 2026-08-11; the remaining two still need to
+be checked before ruling.
 
 - **VERIFIED TRUE, `merge-driver-residuals`, 2026-08-11.** `reconcile()`'s resolution path
   writes via a raw `File.WriteAllText` (`src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:199-212`, meta
@@ -176,6 +198,19 @@ the remaining two still need to be checked before ruling.
   resolution path needs its own design, per the merge-driver spec's Out of Scope section. This
   becomes **one specced item** — a dedicated design for reindexing after `reconcile()`'s
   resolution writes — not a `/findings/` chunk.
+- **VERIFIED TRUE, `the-sweep`, 2026-08-11.** `MemoryEventSinkContext.Default`
+  (`src/Scrinia.Core/IMemoryEventSink.cs:27,33`) is a bare mutable static with no lock, mutated
+  by many uncoordinated fixtures — `TestHelpers.cs:111-118` (`StoreScope`, used pervasively),
+  `RemoteStoreToolTests.cs:106,118,173,180`, `ConsolidateReembedTests.cs:46,89`, and
+  `MemoryEventSinkContextInstallDefaultTests.cs:19-41` — none of which sit in a `[Collection]`,
+  though the suite uses `DisableParallelization` collections elsewhere. It surfaced once during
+  Task 6 of `the-sweep` and did not reproduce across three full reruns. Not fixed here — both
+  real fixes have costs outside that branch's scope: serialising every mutator means putting
+  `StoreScope`, used by most of the suite, into a non-parallel collection, which would serialise
+  a large fraction of the run; making `Default` `AsyncLocal` is a production change with its own
+  semantics to settle. This becomes **one specced item** — a dedicated design choosing between
+  serialising `StoreScope`'s mutators and making `MemoryEventSinkContext.Default` `AsyncLocal` —
+  not a `/findings/` chunk.
 - Whether `WorkspaceRoot` still bypasses the layout-migration latch (recorded as harmless at the
   time, with the reasoning noted as incomplete).
 - The `WithInfo` prepend→append ordering concern. The original claim ("provably unreachable
@@ -206,19 +241,18 @@ them.
 - ~~Group F + Group D + E1~~ — closed on `closure-hygiene-rulings`, 2026-08-10. See the group
   sections above.
 - ~~Group A~~ — closed on `merge-driver-residuals`, 2026-08-11. See the group section above.
+- ~~Group B~~ — closed on `the-sweep`, 2026-08-11. See the group section above.
 
 **Ready to execute (specs exist or none needed):**
 
-1. **Group B — the sweep.** Spec exists (Part B of the store-read-path design), plus the five
-   coverage gaps this sequence added. Ranks the two cannot-fail tests first.
-2. **Group C** — folds into whichever remote branch runs first, or stands alone if none does soon.
+1. **Group C** — folds into whichever remote branch runs first, or stands alone if none does soon.
 
 **Needs a spec before a plan:**
 
-3. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
+2. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
    the wire. One spec, for the reason given above.
-4. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
-5. **Remote scoring surface (E3)** — start from the trust question.
+3. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
+4. **Remote scoring surface (E3)** — start from the trust question.
 
 **Group G** gets verified inside whichever branch touches its area. Each result either closes the
 item or produces exactly one new specced item — not a `/findings/` chunk.
