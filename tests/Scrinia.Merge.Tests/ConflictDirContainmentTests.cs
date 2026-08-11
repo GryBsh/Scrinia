@@ -4,15 +4,28 @@ using Xunit;
 
 namespace Scrinia.Merge.Tests;
 
-public sealed class ConflictDirContainmentTests
+public sealed class ConflictDirContainmentTests : IDisposable
 {
+    private readonly string _tempDir;
+
+    public ConflictDirContainmentTests()
+    {
+        _tempDir = Path.Combine(Path.GetTempPath(), "cd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_tempDir);
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_tempDir))
+            Directory.Delete(_tempDir, recursive: true);
+    }
+
     [Theory]
     [InlineData("../../../escape")]
     [InlineData("/abs/escape")]
     public void OutOfBoundsConflictDir_Throws(string conflictDir)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "cd-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
+        string dir = _tempDir;
         // Three distinct files so neither trivial-merge branch short-circuits.
         string ancestor = Path.Combine(dir, "a.nmp2"); File.WriteAllText(ancestor, "ANC");
         string ours = Path.Combine(dir, "ours.nmp2"); File.WriteAllText(ours, "OURS");
@@ -20,7 +33,7 @@ public sealed class ConflictDirContainmentTests
         var config = new MergeConfig(ConflictDir: conflictDir);
 
         Action act = () => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, ours, config);
-        act.Should().Throw<InvalidOperationException>();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*escapes the artifact directory*");
     }
 
     // "./" and ".//" (and their backslash equivalents on Windows) don't string-equal dirFull the
@@ -44,12 +57,14 @@ public sealed class ConflictDirContainmentTests
     {
         // "." and "" both resolve Path.Combine(dirFull, x) back to dirFull. IsWithin treated
         // equality as containment, so the guard passed and the driver wrote a .gitignore of "*"
-        // into the artifact directory — silently untracking every memory at and below it.
+        // into the artifact directory. Git does not retroactively untrack files already tracked,
+        // so this did not untrack existing memories — but it clobbered any .gitignore the user
+        // already had there, and every memory written afterwards became invisible to git
+        // status/add and was silently lost on a fresh clone.
         // Asserting the absence matters more than the throw: the .gitignore write is the harm.
         // "./" resolves to dirFull + separator instead — a distinct string from dirFull — and
         // must be caught by trimming the trailing separator before the equality check.
-        string dir = Path.Combine(Path.GetTempPath(), "cd-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
+        string dir = _tempDir;
         string ancestor = Path.Combine(dir, "a.nmp2"); File.WriteAllText(ancestor, "ANC");
         string ours = Path.Combine(dir, "ours.nmp2"); File.WriteAllText(ours, "OURS");
         string theirs = Path.Combine(dir, "theirs.nmp2"); File.WriteAllText(theirs, "THEIRS");
@@ -60,7 +75,8 @@ public sealed class ConflictDirContainmentTests
 
         Action act = () => Nmp2ConflictHandler.Handle(ancestor, ours, theirs, ours, config);
 
-        act.Should().Throw<InvalidOperationException>().WithMessage("*ConflictDir*");
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*resolves to the artifact directory itself*");
         File.ReadAllText(gitignorePath).Should().Be(preexistingContent);
         Directory.Exists(Path.Combine(dir, "current")).Should().BeFalse();
         Directory.Exists(Path.Combine(dir, "incoming")).Should().BeFalse();
@@ -69,8 +85,7 @@ public sealed class ConflictDirContainmentTests
     [Fact]
     public void RelativeConflictDir_IsAllowed()
     {
-        string dir = Path.Combine(Path.GetTempPath(), "cd-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
+        string dir = _tempDir;
         string ancestor = Path.Combine(dir, "a.nmp2"); File.WriteAllText(ancestor, "ANC");
         string ours = Path.Combine(dir, "ours.nmp2"); File.WriteAllText(ours, "OURS");
         string theirs = Path.Combine(dir, "theirs.nmp2"); File.WriteAllText(theirs, "THEIRS");
@@ -90,8 +105,7 @@ public sealed class ConflictDirContainmentTests
     [InlineData("conflict/.")]
     public void AllowedConflictDir_IsAccepted(string conflictDir)
     {
-        string dir = Path.Combine(Path.GetTempPath(), "cd-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
+        string dir = _tempDir;
         string ancestor = Path.Combine(dir, "a.nmp2"); File.WriteAllText(ancestor, "ANC");
         string ours = Path.Combine(dir, "ours.nmp2"); File.WriteAllText(ours, "OURS");
         string theirs = Path.Combine(dir, "theirs.nmp2"); File.WriteAllText(theirs, "THEIRS");

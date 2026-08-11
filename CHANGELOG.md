@@ -390,11 +390,15 @@ and all assembly attributes.
   into the conflict directory as it creates it. Committed copies persisted after
   `git merge --abort` and were preferred by `reconcile()` on every later conflict, resolving
   from stale bytes instead of the actual merge.
-- A `merge.config` whose `ConflictDir` resolves to the artifact directory itself — `"."` or
-  `""` — is now **rejected** with an `InvalidOperationException` rather than accepted.
-  Previously the driver wrote the `.gitignore` of `*` above into the artifact directory
-  itself, silently untracking every memory at and below it. Reaching this required
-  hand-editing `merge.config`, since `scri setup --multi-user` hard-codes `"conflict"`.
+- A `merge.config` whose `ConflictDir` resolves to the artifact directory itself — `"."`,
+  `""`, `"./"`, `".//"`, or `"." + separator` — is now **rejected** with an
+  `InvalidOperationException` rather than accepted. Previously the driver wrote the
+  `.gitignore` of `*` above into the artifact directory itself. Git does not retroactively
+  untrack files already tracked, so this did not silently untrack existing memories — but it
+  did clobber any `.gitignore` the user already had there, and every memory written into the
+  directory afterwards became invisible to `git status`/`git add` and was silently lost on a
+  fresh clone. Reaching this required hand-editing `merge.config`, since `scri setup
+  --multi-user` hard-codes `"conflict"`.
 - The driver no longer writes a `"conflicted": true` property into a conflicted artifact's
   `.meta.json`. Nothing read it, and the next legitimate sidecar write dropped it again
   (`WriteSidecarCore` serializes the typed `ArtifactEntry`, which has no such field); its

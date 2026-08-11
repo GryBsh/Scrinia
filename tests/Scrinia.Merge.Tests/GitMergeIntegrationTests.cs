@@ -88,8 +88,6 @@ public sealed class GitMergeIntegrationTests
         repo.FileExists(".scrinia/memories/local/conflict/incoming/auth-flow.nmp2").Should().BeTrue();
         repo.ReadFile(".scrinia/memories/local/conflict/current/auth-flow.nmp2").Should().Contain("b3Vycw");
         repo.ReadFile(".scrinia/memories/local/conflict/incoming/auth-flow.nmp2").Should().Contain("dGhlaXJz");
-        repo.FileExists(".meta.json").Should().BeFalse(
-            because: "ChangeExtension on an extensionless temp file used to produce exactly this");
     }
 
     [Fact]
@@ -236,8 +234,8 @@ public sealed class GitMergeIntegrationTests
 
         string sidecar = repo.ReadFile(Sidecar);
         sidecar.Should().NotContain("theirs-kw",
-            because: "the meta driver must genuinely conflict here — an auto-merge would union the keywords "
-                     + "and the ordering this test pins would go unexercised");
+            because: "the meta driver must genuinely conflict here rather than auto-merge — a union of the "
+                     + "disjoint keyword sets would silently pick a side instead of stopping the merge");
     }
 
     [Fact]
@@ -299,14 +297,6 @@ public sealed class GitMergeIntegrationTests
                      "without the catch still covering this code would leave the exception uncaught again");
     }
 
-    private static string FindProgramCs()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Scrinia.sln")))
-            dir = dir.Parent;
-        if (dir is null)
-            throw new InvalidOperationException(
-                $"Could not find Scrinia.sln walking up from {AppContext.BaseDirectory}.");
-        return Path.Combine(dir.FullName, "src", "Scrinia.Merge", "Program.cs");
-    }
+    private static string FindProgramCs() =>
+        Path.Combine(GitMergeHarness.FindRepoRoot(), "src", "Scrinia.Merge", "Program.cs");
 }

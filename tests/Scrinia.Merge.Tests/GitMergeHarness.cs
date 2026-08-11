@@ -27,8 +27,11 @@ internal sealed class GitMergeHarness : IDisposable
         Git("config core.autocrlf false");
     }
 
-    /// <summary>Absolute path to the built scri-merge executable.</summary>
-    internal static string LocateDriver()
+    /// <summary>
+    /// Walks up from the test assembly's output directory to the repo root — the directory
+    /// containing Scrinia.sln.
+    /// </summary>
+    internal static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Scrinia.sln")))
@@ -36,8 +39,14 @@ internal sealed class GitMergeHarness : IDisposable
         if (dir is null)
             throw new InvalidOperationException(
                 $"Could not find Scrinia.sln walking up from {AppContext.BaseDirectory}.");
+        return dir.FullName;
+    }
 
-        string bin = Path.Combine(dir.FullName, "src", "Scrinia.Merge", "bin");
+    /// <summary>Absolute path to the built scri-merge executable.</summary>
+    internal static string LocateDriver()
+    {
+        string repoRoot = FindRepoRoot();
+        string bin = Path.Combine(repoRoot, "src", "Scrinia.Merge", "bin");
         if (!Directory.Exists(bin))
             throw new InvalidOperationException($"{bin} does not exist. Build Scrinia.sln first.");
 

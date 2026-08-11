@@ -35,7 +35,10 @@ deleting the entry is closure.
 All 8 items fixed. `ConflictDir` values that resolve to the artifact directory itself
 (`"."`, `""`, `"./"`, `".//"`, or a bare trailing separator) are now **rejected** rather than
 accepted, closing the hole where the driver wrote a `.gitignore` of `*` into the artifact
-directory and silently untracked every memory at and below it. The legacy four-argument
+directory itself. Git does not retroactively untrack files it already tracks, so this did not
+untrack existing memories — but it clobbered any `.gitignore` the user already had there, and
+every memory written into the directory afterwards became invisible to `git status`/`git add`
+and was silently lost on a fresh clone. The legacy four-argument
 invocation branch moved inside the top-level try (closing an unguarded-exception gap) and no
 longer describes an unregistered driver key with failure language. The `"conflicted": true`
 sidecar flag that nothing ever read was deleted. A `merge.config` round-trip test now pins the
