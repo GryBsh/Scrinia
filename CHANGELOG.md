@@ -40,6 +40,25 @@ and all assembly attributes.
   change and now gets a `403` from inside the write. This coupling is a consequence of proxying the
   listing rather than adding a dedicated existence-check endpoint; decoupling them needs one.
 
+### Changed (breaking) — "matched nothing" is no longer reported as success
+
+- An operation that completed without doing what was asked now reports a non-success outcome on
+  every surface. Previously the `warning` envelope rendered in green, exited `0`, and returned
+  `200` — so a CI step gating on the exit code or the status code passed while nothing had
+  happened. Three call sites produce this envelope: an empty or fully-filtered bundle import, a
+  `facts` entity argument that matched nothing, and an update specifying no changes.
+- **CLI:** `scri bundle import`, `scri bundle export`, `scri store` and `scri forget` exit `1` on a
+  warning envelope and print it in yellow. Concretely,
+  `scri bundle import --topics doesnotexist` now exits `1`.
+- **HTTP:** `POST /api/v1/stores/{store}/import` returns `422 Unprocessable Content`
+  instead of `200` when no topics were imported. `422` rather than `400`, because the request was
+  well-formed and authorised — it simply yielded nothing to import.
+- **Also fixed:** `scri store` had no error guard at all and returned `0` unconditionally, so a
+  genuinely failed store reported success. This is the same dead-guard defect previously fixed at
+  `scri show`, `scri forget`, `scri bundle export` and `scri bundle import`; `store` was missed.
+- Anything gating on exit `0` or HTTP `200` from these paths will now see a failure where it
+  previously saw success. That is the point of the change, but it is breaking.
+
 ### Fixed — remote writes silently discarded the agent's metadata
 
 - The write seam (`IMemoryStore.WriteArtifactAsync`) carried only the artifact text, and
@@ -261,8 +280,8 @@ and all assembly attributes.
 - `scri bundle export` and `scri bundle import` exited 0 on genuine failure, via the same dead
   `result.StartsWith("Error:")` guard fixed above for `show`/`forget` — a shape the renderer has
   never emitted, since every envelope opens with `status: `. Any CI step or script gating on
-  their exit code was not gated. Both now read the typed status. An import matching no topics
-  still exits 0: that response is a `warning`, not an error.
+  their exit code was not gated. Both now read the typed status, and an import matching no topics
+  exits 1 — see "matched nothing is no longer reported as success" below.
 - **`--json` shape change on that same path.** `scri bundle export --json` and `scri bundle
   import --json` previously fell through the same dead guard into the success path and emitted
   `CliExportOutput{path, message}` / `CliImportOutput{message}` with exit `0` on genuine failure.
