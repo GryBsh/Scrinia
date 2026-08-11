@@ -1501,7 +1501,7 @@ public sealed class ScriniaMcpToolsTests
     /// <summary>
     /// The same two guarantees as the two tests above, for a re-store whose casing differs from
     /// the one the memory was created with. remember()'s existing-entry lookup
-    /// (<c>MemoryTools.Core.cs:320</c>) used an ordinal <c>e.Name == subject</c> while the write
+    /// (<c>MemoryTools.Core.cs:323-324</c>) used an ordinal <c>e.Name == subject</c> while the write
     /// path underneath it is case-insensitive on NTFS — so the second remember() overwrote the
     /// artifact while reporting the memory as new: no archive, and CreatedAt reset. The prior
     /// content was unrecoverable.
@@ -1534,7 +1534,7 @@ public sealed class ScriniaMcpToolsTests
 
     /// <summary>
     /// The MCP <c>append()</c> persistent branch, under a casing the memory was not created with.
-    /// Its existing-entry lookup (<c>MemoryTools.Core.cs:1213-1216</c>) is the same defect class as
+    /// Its existing-entry lookup (<c>MemoryTools.Core.cs:1096-1099</c>) is the same defect class as
     /// the remember() one above: an ordinal <c>e.Name == subject</c> made a case-mismatched append
     /// read as a brand-new memory, so everything the entry carried forward was dropped —
     /// <c>CreatedAt</c> reset, the prior <c>ChunkEntries</c> discarded, no version archived — while

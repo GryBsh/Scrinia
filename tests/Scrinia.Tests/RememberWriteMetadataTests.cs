@@ -260,10 +260,10 @@ public class RememberWriteMetadataTests
 
     /// <summary>
     /// The same seam, reached under a casing the entry was not stored with. <c>compact()</c>'s
-    /// existing-entry lookup (<c>MemoryTools.Lifecycle.cs:579</c>) compared <c>e.Name</c> against
+    /// existing-entry lookup (<c>MemoryTools.Lifecycle.cs:583-584</c>) compared <c>e.Name</c> against
     /// <c>ParseQualifiedName</c>'s subject with an ordinal <c>==</c>, so "Note" found nothing for a
     /// memory stored as "note" — and the write it guards went out with <c>meta: null</c>, which is
-    /// exactly the metadata reset the comment at <c>:571-578</c> says the read exists to prevent.
+    /// exactly the metadata reset the comment at <c>:571-577</c> says the read exists to prevent.
     /// The compaction still landed on the same artifact file (NTFS is case-insensitive), so this is
     /// silent loss, not a failed call.
     /// </summary>

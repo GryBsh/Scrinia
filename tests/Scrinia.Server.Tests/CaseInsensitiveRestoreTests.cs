@@ -89,10 +89,10 @@ public sealed class CaseInsensitiveRestoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// <c>MemoryOrchestrator.cs:113</c>. Two assertions, both directly observable: the version
+    /// <c>MemoryOrchestrator.cs:124-125</c>. Two assertions, both directly observable: the version
     /// archive on disk (the data that was actually lost) and <c>CreatedAt</c>/<c>UpdatedAt</c> on
-    /// the wire (the visible symptom, derived from the same <c>existingEntry</c> lookup at
-    /// <c>:114-115</c>).
+    /// the wire (the visible symptom, derived from that same <c>existingEntry</c> lookup, at
+    /// <c>:129-130</c>).
     /// </summary>
     [Fact]
     public async Task ReStoringUnderADifferentCasing_ArchivesThePriorVersion_AndKeepsCreatedAt()
@@ -122,12 +122,12 @@ public sealed class CaseInsensitiveRestoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// <c>MemoryOrchestrator.cs:257</c>, the append path. With <c>existingEntry</c> null every
+    /// <c>MemoryOrchestrator.cs:228-229</c>, the append path. With <c>existingEntry</c> null every
     /// value carried forward from the prior entry is lost: the caller's attribute map, the curated
     /// content preview, <c>CreatedAt</c>, and the version archive.
     /// <para><c>ChunkCount</c> is deliberately NOT the assertion here even though it is a wire
     /// field: it is computed from the appended artifact (<c>Nmp2ChunkedEncoder.GetChunkCount</c>,
-    /// <c>MemoryOrchestrator.cs:194</c>), never from <c>existingEntry</c>, so it reads 2 both
+    /// <c>MemoryOrchestrator.cs:256</c>), never from <c>existingEntry</c>, so it reads 2 both
     /// before and after this fix. Measured, not assumed — see the task report.</para>
     /// </summary>
     [Fact]
