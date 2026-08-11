@@ -39,7 +39,7 @@ scrinia/
     Scrinia/                      <- CLI + MCP server (net10.0 exe, AssemblyName: scri)
       Program.cs                  <- ConsoleAppFramework v5 host
       Commands/ScriniaCommands.cs <- CLI commands (serve, list, search, store, show, forget, append, copy, export, import, setup, config)
-      Mcp/ScriniaArtifactStore.cs <- CLI store wrapper (static, delegates to FileMemoryStore)
+      Commands/WorkspaceSetup.cs <- configures the store per command (Configure/Store/LocalStore), plugin discovery
     Scrinia.Server/               <- HTTP API server (net10.0 web, refs Core + Mcp)
       Endpoints/MemoryEndpoints.cs <- REST: store, list, show, append, search, export, import
       Endpoints/HealthEndpoints.cs <- /health, /health/live, /health/ready, /health/details

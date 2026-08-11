@@ -10,11 +10,9 @@ src/Scrinia/
   Program.cs                Entry point (ConsoleAppFramework host)
   Commands/
     ScriniaCommands.cs      11 public methods (CLI commands)
-    WorkspaceSetup.cs       Workspace init + plugin discovery
+    WorkspaceSetup.cs       Workspace init, store configuration (Store/LocalStore), plugin discovery
     WorkspaceConfig.cs      .scrinia/config.json management
     ConfigJsonContext.cs     Source-gen JSON for config
-  Mcp/
-    ScriniaArtifactStore.cs CLI-specific static store implementation
   Services/
     McpPluginHost.cs        MCP client for child-process plugins
     PluginClientJsonContext.cs  Source-gen JSON for plugin comms
@@ -57,22 +55,25 @@ app.Run(args);
 This mirrors `git`'s own `.git/` discovery, bounded the same way `git` bounds it: at the
 first repository found, not the first `.scrinia/` found.
 
-## ScriniaArtifactStore (CLI Store)
+## WorkspaceSetup (CLI Store Access)
 
-The CLI uses `ScriniaArtifactStore`, a static class that wraps a `FileMemoryStore` instance. It's set up during workspace initialization and accessed statically from both CLI commands and MCP tool handlers.
+The CLI uses `WorkspaceSetup`, a static class that configures the active store for the process. `WorkspaceSetup.Configure(workspaceRoot)` runs at the top of every CLI command; it resolves the workspace root, builds ranker weights from config, and sets `MemoryStoreContext.Current` to a new `FileMemoryStore`. Commands that also need embeddings/search plugins additionally call `WorkspaceSetup.LoadPluginsAsync()` right after.
 
 ```
-ScriniaCommands
+ScriniaCommands.<Command>
       |
-WorkspaceSetup.InitAsync()
+WorkspaceSetup.Configure(workspaceRoot)
       |
-      +-- Creates FileMemoryStore(workspaceRoot)
+      +-- Resolves workspace root (WorkspaceRoot.Resolve)
+      +-- Creates FileMemoryStore(root, rankerOptions)
       +-- Sets MemoryStoreContext.Current
-      +-- Sets ScriniaArtifactStore static fields
-      +-- Calls LoadPluginsAsync()
+      |
+WorkspaceSetup.LoadPluginsAsync()  (commands that need search/embeddings)
+      |
+      +-- Wires embeddings provider, plugin host
 ```
 
-`ScriniaArtifactStore` provides compatibility shims and formatting utilities used by the Spectre.Console-based CLI output. It delegates all storage operations to the underlying `FileMemoryStore`.
+Once configured, code reads the store back through two static properties: `WorkspaceSetup.Store` (the `IMemoryStore` interface, backed by `MemoryStoreContext.Current`) and `WorkspaceSetup.LocalStore` (narrowed to `ILocalMemoryStore`, for commands that read or write workspace files directly — it throws if the process is in remote mode, i.e. `scri serve --remote`). Both CLI commands and MCP tool handlers reach the store through `MemoryStoreContext.Current`; `WorkspaceSetup` is what populates it.
 
 ## MCP Server Mode
 
