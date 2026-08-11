@@ -288,11 +288,17 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// server-side: that needs a brand-new endpoint and DTO and would still leave every other
     /// caller — the async entity-typing sink, the maintenance sink, and every MCP tool's "does
     /// this entry already exist" lookup — reading an empty (or, pre-pagination-fix, truncated)
-    /// list. Proxying here fixes the read for all of them in one change. See the cost audit in
-    /// docs/superpowers/sdd/2026-08-10-remote-write-correctness/task-6-report.md for which
-    /// production call sites can actually reach an <see cref="HttpMemoryStore"/> and confirmation
-    /// that none of them call this in a loop themselves (this method's own internal paging loop is
-    /// a different thing — one logical call, not a caller looping over <c>LoadIndex</c>).</para>
+    /// list. Proxying here fixes the read for all of them in one change.</para>
+    ///
+    /// <para>The call sites that can reach this store, and their cost: <c>MemoryTools.Core</c>'s
+    /// remember and append existing-entry lookups, <c>MemoryTools.Lifecycle</c>'s compact and
+    /// restore lookups, <c>BundleFormatService</c>'s per-topic export read,
+    /// <c>EntityTypingEventHandler.PromoteAsync</c>, <c>MaintenanceEventSink</c> (through
+    /// <see cref="TryUpdateEntry"/>), and <see cref="TryUpdateEntry"/> itself. Each spends one
+    /// logical call — none of them loops over <c>LoadIndex</c> per entry, so the round trips are
+    /// bounded by the number of tool invocations, not by corpus size. <c>MemoryOrchestrator</c>'s
+    /// two call sites are server-side and always hold a <c>FileMemoryStore</c>. (This method's own
+    /// internal paging loop is a different thing — one logical call, several pages.)</para>
     /// </summary>
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
@@ -443,33 +449,43 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         using var resp = SendSync(req);
-        if (resp.IsSuccessStatusCode)
-        {
-            using var stream = resp.Content.ReadAsStream();
-            var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
-            if (list?.Memories is not null)
-            {
-                foreach (var item in list.Memories)
-                {
-                    // Reconstruct scope from the qualified name
-                    string scope = item.Scope switch
-                    {
-                        "local" => "local",
-                        "ephemeral" => "ephemeral",
-                        _ => $"local:{item.Scope}"
-                    };
 
-                    var entry = new ArtifactEntry(
-                        Name: item.Name,
-                        Uri: "",
-                        OriginalBytes: item.OriginalBytes,
-                        ChunkCount: item.ChunkCount,
-                        CreatedAt: item.CreatedAt,
-                        ContentPreview: item.Description,
-                        UpdatedAt: item.UpdatedAt,
-                        Attributes: item.Attributes);
-                    result.Add(new ScopedArtifact(scope, entry));
-                }
+        // Same endpoint, same permission, so the same honesty as LoadIndex above: a non-2xx here
+        // used to fall through to `return result`, which for the common case (no ephemeral entries)
+        // is an empty list — indistinguishable from "this store has nothing in it". A 403 from the
+        // "search" permission gate made list() answer "No memories stored." for a store full of
+        // them. Throwing keeps "cannot read the listing" apart from "the listing is empty".
+        if (!resp.IsSuccessStatusCode)
+            throw new HttpRequestException(
+                $"Remote store listing failed{(scopes is null ? "" : $" for scopes '{scopes}'")}: " +
+                $"{(int)resp.StatusCode} {resp.StatusCode}.",
+                inner: null,
+                statusCode: resp.StatusCode);
+
+        using var stream = resp.Content.ReadAsStream();
+        var list = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.ListApiResponse);
+        if (list?.Memories is not null)
+        {
+            foreach (var item in list.Memories)
+            {
+                // Reconstruct scope from the qualified name
+                string scope = item.Scope switch
+                {
+                    "local" => "local",
+                    "ephemeral" => "ephemeral",
+                    _ => $"local:{item.Scope}"
+                };
+
+                var entry = new ArtifactEntry(
+                    Name: item.Name,
+                    Uri: "",
+                    OriginalBytes: item.OriginalBytes,
+                    ChunkCount: item.ChunkCount,
+                    CreatedAt: item.CreatedAt,
+                    ContentPreview: item.Description,
+                    UpdatedAt: item.UpdatedAt,
+                    Attributes: item.Attributes);
+                result.Add(new ScopedArtifact(scope, entry));
             }
         }
 
@@ -708,8 +724,25 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             // successful store to callers (matches FileMemoryStore's throw-on-failure contract).
             if (TransientDetector.IsTransient(resp))
                 _circuitBreaker.RecordFailure();
+            // Read the body: the server's 4xx responses carry an ErrorResponse whose message names
+            // the exact bound or field that was refused ("attributes may not exceed N values per
+            // key", "Permission 'store' required"). Without it a fixable, self-describing rejection
+            // reached the agent as a bare "400 BadRequest" — a mystery instead of an instruction.
+            // HttpErrorBody.Truncate is the repo's one place for this: bodies can be megabytes of
+            // proxy HTML. ReadAsStringAsync is best-effort — a failure to read the body must not
+            // replace the status-code exception with a different one.
+            string body;
+            try
+            {
+                body = HttpErrorBody.Truncate(await resp.Content.ReadAsStringAsync(ct));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                body = "";
+            }
+            string detail = string.IsNullOrWhiteSpace(body) ? "" : $" {body}";
             throw new HttpRequestException(
-                $"Remote store write failed for '{qualifiedName}': {(int)resp.StatusCode} {resp.StatusCode}.",
+                $"Remote store write failed for '{qualifiedName}': {(int)resp.StatusCode} {resp.StatusCode}.{detail}",
                 inner: null,
                 statusCode: resp.StatusCode);
         }

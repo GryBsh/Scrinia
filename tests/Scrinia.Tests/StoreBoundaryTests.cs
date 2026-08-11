@@ -23,8 +23,13 @@ namespace Scrinia.Tests;
 /// otherwise let it find an entry, discard the mutation into the no-op <c>Upsert</c>, and still
 /// report <c>true</c>. That override corrects the contract but does not make remote
 /// <c>TryUpdateEntry</c> actually persist anything — doing that needs a dedicated attributes-only
-/// PATCH endpoint, which is out of scope here. The gap is recorded in this branch's residuals:
-/// <c>.superpowers/sdd/2026-08-10-remote-write-correctness/task-6-report.md</c>.</para>
+/// PATCH endpoint (so a metadata-only mutation need not replay the whole artifact through
+/// <c>WriteArtifactAsync</c>, which would also trigger a spurious version-archive on every
+/// mutation), which is out of scope here. Until that endpoint exists, the MCP tools that need a
+/// metadata-only write — <c>update()</c> and <c>link()</c>, both via <c>MemoryTools.UpdateMeta</c>
+/// — report an honest NOT_SUPPORTED remotely rather than a success they cannot back up. Recorded
+/// here rather than in a planning document because <c>.superpowers/</c> is gitignored: a path
+/// under it does not exist for anyone who clones this repo.</para>
 /// </summary>
 public sealed class StoreBoundaryTests
 {
