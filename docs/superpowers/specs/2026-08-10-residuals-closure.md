@@ -250,14 +250,29 @@ feature. In CHANGELOG.md.
   which is not a wire field at all. The implementer caught this by measuring rather than working
   around it, and re-aimed the guard at `Attributes` and `CreatedAt`, which do fail pre-fix.
 
-**One same-class site deliberately not fixed. It is an open decision awaiting an answer, not a
-deferral** — this branch's standing rule forbids writing new deferred followups, and this is not
-one:
+**Both open decisions this section recorded are now closed. Neither became a deferral.**
 
-1. **`CopyMemory`'s *destination* existence check is still filesystem-case-dependent**
-   (`src/Scrinia.Core/FileMemoryStore.cs:1659`). There is no existing case-insensitive lookup to
-   align it with, and the right answer is a product call, not an implementer's: is a
-   case-differing destination "already exists", or a distinct memory? **Needs a decision.**
+1. **`CopyMemory`'s *destination* existence check — CLOSED by fixing it, 2026-08-11, on
+   `copy-destination-casing`.** It asked the filesystem (`File.Exists(ArtifactPath(...))`), which
+   folds case on an ordinary NTFS volume and not elsewhere, so on a case-sensitive filesystem a
+   copy onto `Archive` while `archive` existed reported no collision and wrote a second memory —
+   and with `overwrite: true` wrote a twin rather than replacing. The destination is now resolved
+   through the index and adopts the existing memory's casing, mirroring the source-side resolution
+   directly above it. Fixing only the comparison would have left the twin: the resolved name also
+   decides where the bytes land and what the new entry is called.
+
+   The question it was waiting on — **is a case-differing destination "already exists", or a
+   distinct memory?** — was answered as *one memory*, matching every other name lookup in the
+   store. The record should not overstate how forced that was. Two memories differing only in case
+   **are** representable on Windows: a per-directory case-sensitive volume holds both, which is
+   exactly how this branch's own tests run. Case-sensitive names throughout is a coherent
+   alternative, and it is a storage-format decision rather than a change to this check — two such
+   names need two files, which an ordinary NTFS volume cannot hold, so it would need either the
+   per-directory flag set on every store (fragile: it must be set at creation and may not survive
+   sync, backup, or a non-NTFS volume) or an on-disk name encoding, which would mangle the
+   human-readable sidecar filenames. What settled it was the product semantic for human-authored
+   paths, plus the roughly twelve name-resolution sites already swept the other way. Pinned by two
+   tests in `CaseSensitiveFileStoreTests`, both verified to fail before the fix.
 
 **A second open decision was recorded here and has since been closed by fixing it, because the
 claim underneath it was false.** It read: "`Compact` and `AppendAsync` resolve the artifact on the
@@ -488,9 +503,9 @@ them. **All of the closure work has now landed — the three designs are all tha
   `case-sensitive-guards`, 2026-08-11. Five behaviours had shipped as rulings claiming NTFS could
   not observe them and that only a `ubuntu-latest` CI leg could; that was false, and all five are
   now pinned by tests running on Windows against a per-directory case-sensitive volume. **Nothing
-  in Group C is waiting on a CI leg to be verified.** See the group section above, which also
-  carries one open decision it deliberately did not close (`CopyMemory`'s destination existence
-  check — the second recorded decision was closed by fixing it).
+  in Group C is waiting on a CI leg to be verified.** Its last open decision — `CopyMemory`'s
+  destination existence check — was closed by fixing it on `copy-destination-casing`, 2026-08-11,
+  which ends the case-sensitivity class: **no site of it remains open.**
 
 **Needs a spec before a plan:**
 
