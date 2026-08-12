@@ -120,7 +120,9 @@ public sealed class StoreBoundaryTests
                 .First(l => l.Contains("    public ")))
             .ToList();
 
-        owners.Should().AllSatisfy(o => o.Should().MatchRegex("StoreAsync|AppendAsync"),
+        // Anchored on the declaration, not merely on the substring: an unanchored match would be
+        // satisfied by a future member whose name happens to CONTAIN one of these.
+        owners.Should().AllSatisfy(o => o.Should().MatchRegex(@"\b(StoreAsync|AppendAsync)\("),
             because: "the write surface is the only thing the current wire cannot serve; a refusal " +
                      "anywhere else is a capability this store is dropping");
     }

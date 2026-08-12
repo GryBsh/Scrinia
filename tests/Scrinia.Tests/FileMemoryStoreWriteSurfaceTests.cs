@@ -202,6 +202,53 @@ public class FileMemoryStoreWriteSurfaceTests
             because: "a resolved re-store archives the version it is about to overwrite");
     }
 
+    // ── Rollback ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A re-store whose sidecar write fails must leave the memory's PREVIOUS content on disk.
+    ///
+    /// <para>Leaving the new bytes there is not a benign no-op: the artifact would hold the new
+    /// content while the index entry still described the old, and the divergence propagates — the
+    /// next <c>AppendAsync</c> reads the stale entry's <c>ChunkEntries</c> but numbers the appended
+    /// one from the artifact's real chunk count, producing a non-contiguous set. Deleting instead
+    /// (which is what <c>MemoryOrchestrator.StoreAsync</c> does today) is worse still: nothing reads
+    /// <c>versions/</c> back, so a transient sidecar failure would destroy a memory the caller only
+    /// asked to overwrite, with no recovery path.</para>
+    ///
+    /// <para>The failure is forced by putting a DIRECTORY where the sidecar file belongs, so
+    /// <c>WriteSidecar</c>'s atomic temp-then-move cannot land — a rename onto a directory fails on
+    /// every filesystem this runs on. The artifact path is untouched, so the write that must be
+    /// rolled back still succeeds first. The archive assertion is load-bearing as a PRECONDITION
+    /// check: <c>ArchiveVersion</c> runs only when the existing entry actually resolved, so if it
+    /// ever stopped resolving this test would fail there rather than passing vacuously.</para>
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_RestoresThePreviousContentWhenPersistingTheEntryFails()
+    {
+        using var tmp = new TempWorkspace();
+        await tmp.Store.StoreAsync(new MemoryWrite("target", "local", ["the original body"]));
+
+        string storeDir = tmp.Store.GetStoreDirForScope("local");
+        string sidecar = Path.Combine(storeDir, "target.meta.json");
+        File.Delete(sidecar);
+        Directory.CreateDirectory(sidecar);
+
+        var restore = async () => await tmp.Store.StoreAsync(
+            new MemoryWrite("target", "local", ["the replacement body"]));
+
+        await restore.Should().ThrowAsync<Exception>(
+            because: "a store that could not persist its entry must not report success");
+
+        Directory.GetFiles(Path.Combine(storeDir, "versions"), "target_*.nmp2").Should().ContainSingle(
+            because: "the existing entry resolved and its version was archived — without that this " +
+                     "test would be asserting the brand-new-memory path instead");
+        (await DecodeAsync(tmp.Store, "target")).Should().Be("the original body",
+            because: "the failed re-store must leave the memory exactly as it was, not holding new " +
+                     "content its index entry does not describe");
+
+        Directory.Delete(sidecar);
+    }
+
     /// <summary>
     /// The append counterpart, and the more destructive half: identity is resolved from the index
     /// BEFORE the artifact is read, so the read succeeds under the memory's own casing. Reading under

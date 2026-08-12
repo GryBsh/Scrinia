@@ -1190,8 +1190,20 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
         DateTimeOffset? updatedAt = existingEntry is not null ? DateTimeOffset.UtcNow : null;
 
+        // Captured BEFORE the overwrite so a failed Upsert can put the memory's previous content
+        // back. Leaving the new bytes in place instead is not a benign no-op: the artifact would
+        // hold the new content while the sidecar still described the old, and that divergence
+        // propagates — a later AppendAsync reads the stale entry's ChunkEntries but numbers the
+        // appended one from the real chunk count, yielding a non-contiguous [1, 4]. Usually free:
+        // ReadArtifactAsync is served by _artifactCache, and on a re-store the artifact is
+        // typically already resident.
+        string? previousArtifact = null;
         if (existingEntry is not null)
+        {
+            try { previousArtifact = await ReadArtifactAsync(subject, scope, ct); }
+            catch (FileNotFoundException) { /* index knows the entry but the file is gone */ }
             ArchiveVersion(subject, scope);
+        }
 
         await WriteArtifactAsync(subject, scope, artifact, ct: ct);
 
@@ -1203,14 +1215,21 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         }
         catch
         {
-            // Only a BRAND-NEW memory is rolled back, and the rollback is removing the artifact
-            // nothing points at. An existing memory is left alone: its prior content is in
-            // versions/ and its sidecar still describes it, whereas deleting on a transient sidecar
-            // write failure would destroy a memory the caller only asked to overwrite.
-            if (existingEntry is null)
+            // A brand-new memory leaves an orphaned artifact, so removing it is the revert. An
+            // existing one is RESTORED instead: Upsert does real file I/O and can fail transiently,
+            // and deleting would make that permanent — nothing reads versions/ back, so the user
+            // would have no recovery path for a memory they only asked to overwrite. Same rule as
+            // AppendAsync below, and deliberately NOT MemoryOrchestrator.StoreAsync's unconditional
+            // delete, which is the destructive form of this block.
+            // CancellationToken.None: a cancelled store must still be rolled back.
+            try
             {
-                try { DeleteArtifact(subject, scope); } catch { /* best-effort rollback */ }
+                if (previousArtifact is not null)
+                    await WriteArtifactAsync(subject, scope, previousArtifact, ct: CancellationToken.None);
+                else
+                    DeleteArtifact(subject, scope);
             }
+            catch { /* best-effort rollback */ }
             throw;
         }
 

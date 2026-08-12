@@ -45,6 +45,11 @@ public interface IMemoryStore
     /// baseline, its earlier chunk entries and its curated preview. Each of those was lost by one of
     /// the four hand-rolled implementations this replaces.</para>
     /// </summary>
+    /// <exception cref="ArgumentException">Thrown when <c>write.Content</c> does not hold exactly
+    /// one element. The derivation pipeline can express only one appended chunk — it reads the last
+    /// element for the appended chunk's attributes and builds one chunk entry for it — so a
+    /// multi-element append would silently lose every chunk between the first and the last. It is
+    /// refused rather than merged.</exception>
     Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default);
 
     // Neither member has a default implementation, deliberately: every store implements both, so a
