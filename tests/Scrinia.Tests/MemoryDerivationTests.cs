@@ -108,15 +108,39 @@ public sealed class MemoryDerivationTests
         // is scalar, so the canonical value REPLACES the raw one.
         string[] review = derived.Attributes!["review"];
         review.Should().HaveCount(1);
-        DateTimeOffset.TryParseExact(review[0], "o", CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind, out var parsed)
-            .Should().BeTrue("the persisted review date must be in round-trip \"o\" form");
-        parsed.Date.Should().Be(new DateTime(2026, 1, 1));
 
-        // D-06 × D-08: because seeding now runs after the canonicalization, the ISO form's junk
-        // tokens seed locally too. Accepted as ranking noise (AttributeExtractor.cs:111-115) and
-        // identical on both paths — which is the point.
+        // The canonical form is byte-exact and MACHINE-INDEPENDENT. A bare date is parsed under
+        // the invariant culture and assumed UTC, so a store in UTC and a client in UTC+10 persist
+        // the same string. Parsing under CurrentCulture/local zone — what MCP does — embeds the
+        // writer's offset here and reopens the very divergence D-06 exists to close.
+        review[0].Should().Be("2026-01-01T00:00:00.0000000+00:00");
+
+        DateTimeOffset.TryParseExact(review[0], "o", CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind, out _)
+            .Should().BeTrue("AttributeReaders.TryReadReview only recognizes round-trip \"o\" form");
+
+        // D-08. "0000000" is the ISO form's fractional-seconds token: it exists ONLY in the
+        // canonicalized value the carrier fold produces, so it can only be in the index if seeding
+        // ran AFTER that fold. Under MCP's order — seed, then fold the carrier — the seeded value
+        // is the raw "2026-01-01" and this key is absent. tf["2026"] does NOT discriminate: the
+        // raw value contains it too.
+        derived.TermFrequencies.Should().ContainKey("0000000",
+            "D-08: the carrier's canonicalized review value is seeded because seeding runs last");
         derived.TermFrequencies["2026"].Should().Be(3);
+    }
+
+    [Fact]
+    public void ForStore_SeedsTheAutoDerivedReviewConditionBecauseSeedingRunsLast()
+    {
+        var derived = MemoryDerivation.ForStore(["this workspace has 835 tests today"]);
+
+        // D-08, on the output of D-05. The auto-derived condition is produced by the carrier fold
+        // and exists nowhere in the content, so its tokens reach the index only if seeding is the
+        // last step of attribute handling. Under MCP's order the attribute map is empty at seed
+        // time and none of these tokens appear. This is the pin that a Task 4/5 port restoring
+        // MCP's ordering — the natural thing to do when moving Remember — has to trip over.
+        derived.TermFrequencies.Should().ContainKey("counts");
+        derived.TermFrequencies["counts"].Should().Be(3);
     }
 
     [Fact]
@@ -186,6 +210,14 @@ public sealed class MemoryDerivationTests
         derived.FileHashes.Should().ContainKey("src/Foo.cs");
         derived.FileHashes!["src/Foo.cs"].Should().Be("sha-foo");
         derived.FileHashes.Should().NotContainKey("src/Gone.cs");
+
+        // The invariant the carrier's file re-fold exists to hold: every hashed path is also a
+        // searchable `file` value, so the private baseline and the public key cannot drift apart.
+        // Honest note: on the STORE path this assertion is not mutation-killable — HashFileRefs
+        // sources its paths from attributes["file"], so the keys are a subset of what is already
+        // there and removing the re-fold changes nothing. It pins the invariant, not the line.
+        // The append path is where that fold does real work, and it is killed there (D-21/D-08).
+        derived.Attributes!["file"].Should().Contain(derived.FileHashes.Keys);
     }
 
     [Fact]
@@ -284,19 +316,46 @@ public sealed class MemoryDerivationTests
     }
 
     [Fact]
+    public void ForAppend_UnionsATagThatCameFromTheAppendedContent()
+    {
+        var derived = MemoryDerivation.ForAppend(
+            fullContent: ["original body\n", "tag: beta"],
+            existing: new ExistingMetadata(Attributes: new Dictionary<string, string[]>
+            {
+                ["tag"] = ["alpha"],
+            }));
+
+        // D-17 through the other channel. MCP unioned only the tags it received as a PARAMETER and
+        // let that union replace whatever a `tag:` line in the content had produced, so a tag
+        // written in prose could wipe the curated set. Under one flat map there is no parameter
+        // channel left, so the union rule applies to every source of the key — which is stricter
+        // than MCP was, and is the reading of D-17 that never loses a tag.
+        derived.Attributes!["tag"].Should().BeEquivalentTo(new[] { "alpha", "beta" });
+    }
+
+    [Fact]
     public void ForAppend_CarriesTheDriftBaselineForward()
     {
         var derived = MemoryDerivation.ForAppend(
             fullContent: ["original body\n", "appended body"],
             existing: new ExistingMetadata(
-                FileHashes: new Dictionary<string, string> { ["src/Foo.cs"] = "sha-foo" }));
+                // A path whose stem appears nowhere else, so the term-frequency assertion below
+                // can only be satisfied by the carrier fold.
+                FileHashes: new Dictionary<string, string> { ["src/Zzyzx.cs"] = "sha-zzyzx" }));
 
         // D-21, the second data-loss fix: the server's append built its entry with no FileHashes
         // at all, so a REST append destroyed the memory's drift baseline. The hashes carry
         // forward, and their path keys are re-folded into the searchable `file` attribute so the
         // two cannot fall out of step.
-        derived.FileHashes.Should().ContainKey("src/Foo.cs");
-        derived.Attributes!["file"].Should().Contain("src/Foo.cs");
+        derived.FileHashes.Should().ContainKey("src/Zzyzx.cs");
+        derived.Attributes!["file"].Should().Contain("src/Zzyzx.cs");
+
+        // D-08 on the append path. The `file` key here is produced by the carrier fold and by
+        // nothing else — the appended content mentions no path — so its tokens are in the index
+        // only because seeding runs after that fold. MCP's append seeded BEFORE folding its
+        // review/file carrier, which is exactly the ordering this fails against.
+        derived.TermFrequencies.Should().ContainKey("zzyzx",
+            "D-08: the file keys re-folded from FileHashes seed because seeding runs last");
     }
 
     [Fact]
@@ -321,15 +380,66 @@ public sealed class MemoryDerivationTests
         var derived = MemoryDerivation.ForAppend(
             fullContent: ["original body\n", "appended body"],
             description: null,
-            attributes: new Dictionary<string, string[]> { ["status"] = ["shipped"] },
+            attributes: new Dictionary<string, string[]>
+            {
+                ["status"] = ["shipped"],
+                ["review"] = ["2027-01-01"],
+            },
             keywords: null,
             existing: new ExistingMetadata(Attributes: new Dictionary<string, string[]>
             {
                 ["status"] = ["draft"],
+                ["review"] = ["2026-06-01"],
             }));
 
         // D-18: AppendRequest carried no attributes at all server-side. Scalar keys are
         // newer-wins, so an explicit caller value replaces the entry's.
+        derived.Attributes!["status"].Should().BeEquivalentTo(new[] { "shipped" });
+
+        // D-18 × D-06, and the one place this pipeline chose against all four originals. MCP's
+        // append re-emitted the EXISTING entry's review through its carrier AFTER the caller's
+        // attributes had merged, so a caller-supplied review on an append was silently clobbered
+        // by the old one. That is an accident of the two-channel carrier mechanism, which does not
+        // exist under one flat map; keeping it would make D-18 conditional on the key and leave
+        // the bare-date divergence open on append. The canonicalization therefore runs over the
+        // MERGED review. Revert it to `existing?.Attributes` and this returns the 2026 date.
+        derived.Attributes["review"].Should().BeEquivalentTo(
+            new[] { "2027-01-01T00:00:00.0000000+00:00" },
+            "the caller's review must win on append (D-18) and be canonicalized (D-06)");
+    }
+
+    [Fact]
+    public void ForStore_DropsAMentionShadowedByATypedKey()
+    {
+        var derived = MemoryDerivation.ForStore(
+            content: ["Jolene shipped it"],
+            description: null,
+            attributes: null,
+            keywords: ["person:jolene"]);
+
+        // D-09. The typed key is authoritative: a routed "person:jolene" collides with the
+        // mention:jolene span the extractor finds in the same content, and the untyped duplicate
+        // would double-count the entity in the graph and the top-attribute facets. The inventory
+        // recorded D-09 as "no difference — recorded so Task 2 does not fix it", which left the
+        // drop itself unguarded: it reads as a no-op, and a no-op is what gets deleted.
+        derived.Attributes!["person"].Should().Contain("jolene");
+        derived.Attributes.Should().NotContainKey("mention",
+            "the shadowed mention was the only one, so the key goes with it");
+    }
+
+    [Fact]
+    public void ForStore_AgentAttributesWinScalarCollisionsWithExtractedOnes()
+    {
+        var derived = MemoryDerivation.ForStore(
+            content: ["Status: draft"],
+            description: null,
+            attributes: new Dictionary<string, string[]> { ["status"] = ["shipped"] },
+            keywords: null);
+
+        // Explicit agent attributes fold in LAST, so they win scalar collisions against anything
+        // mechanically extracted from the content — here a literal `Status:` line saying the
+        // opposite. Swap the two arguments of that merge and the content wins instead, which is
+        // how a caller's correction would silently lose to the text it was correcting.
         derived.Attributes!["status"].Should().BeEquivalentTo(new[] { "shipped" });
     }
 

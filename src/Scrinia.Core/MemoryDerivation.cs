@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Scrinia.Core.Migration;
 using Scrinia.Core.Models;
@@ -293,17 +294,33 @@ public static partial class MemoryDerivation
         var conditions = new List<string>(values.Length);
         foreach (string value in values)
         {
-            if (rawDate is null && DateTimeOffset.TryParse(value, out _))
+            if (rawDate is null && TryParseReviewDate(value, out _))
                 rawDate = value;
             else if (!string.IsNullOrWhiteSpace(value))
                 conditions.Add(value);
         }
 
-        DateTimeOffset? parsed = rawDate is not null && DateTimeOffset.TryParse(rawDate, out var date)
+        DateTimeOffset? parsed = rawDate is not null && TryParseReviewDate(rawDate, out var date)
             ? date
             : null;
         return (parsed, conditions.Count > 0 ? string.Join("; ", conditions) : null);
     }
+
+    /// <summary>
+    /// Parses a review value to an instant, zone- and culture-independently.
+    ///
+    /// <para>RULING (Task 2 review, 2026-08-12): invariant culture, and a bare date is UTC. MCP
+    /// used a bare <c>DateTimeOffset.TryParse</c>, which reads under <c>CurrentCulture</c> and
+    /// assumes the machine's LOCAL zone — so <c>ToString("o")</c> embedded the writer's UTC offset
+    /// and a store in UTC and a client in UTC+10 persisted different strings for the same
+    /// <c>"2026-01-01"</c>. D-06 exists to close "MCP and REST disagree on a bare date in a review
+    /// attribute"; keeping local-zone parsing would reopen it in a new coat, one machine at a time.
+    /// This technically departs from D-06's "keep MCP", on the grounds that MCP's output is
+    /// machine-dependent and therefore not a well-defined target to keep.</para>
+    /// </summary>
+    private static bool TryParseReviewDate(string value, out DateTimeOffset parsed) =>
+        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsed);
 
     /// <summary>Hashes every <c>file</c> attribute value through the caller's resolver, keeping
     /// only the ones it could hash (D-04). Null when there is no resolver or nothing hashed.</summary>
