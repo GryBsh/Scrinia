@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Scrinia.Core;
@@ -198,16 +199,24 @@ public static class MemoryEndpoints
             entry.FileHashes);
 
     /// <summary>Attribute-map bounds shared by every wire path that accepts a caller-supplied
-    /// attribute dictionary post-Merge: at most 64 keys, at most 64 values per key. Returns an
-    /// error message, or null when within bounds. <paramref name="fieldName"/> lets each caller's
-    /// error text name its own field (<c>attributeFilter</c> for search, <c>attributes</c> for a
-    /// PATCH body) without duplicating the check itself.</summary>
-    private static string? ValidateAttributeBounds(Dictionary<string, string[]>? attributes, string fieldName = "attributes")
+    /// attribute dictionary. Returns an error message, or null when within bounds.
+    /// <paramref name="fieldName"/> lets each caller's error text name its own field
+    /// (<c>attributeFilter</c> for search, <c>attributes</c> for a PATCH body) without duplicating
+    /// the check itself. <paramref name="maxKeys"/>/<paramref name="maxValuesPerKey"/> are NOT one
+    /// shared number: the search filter's 64/64 is a request-shape bound with no relationship to
+    /// storage, while a PATCH body must accept whatever <see cref="KnownAttributes.MaxAttributes"/>/
+    /// <see cref="KnownAttributes.MaxValuesPerKey"/> the store itself would accept — a validator
+    /// using the search filter's tighter numbers rejects entries the server's own write path
+    /// produces (I-1: a memory legitimately stored with 70 <c>file</c> values 400s on an unchanged
+    /// PATCH round-trip under a 64 bound), breaking the round-trip the complete-entry wire shape
+    /// exists for.</summary>
+    private static string? ValidateAttributeBounds(
+        Dictionary<string, string[]>? attributes, int maxKeys, int maxValuesPerKey, string fieldName = "attributes")
     {
-        if (attributes is { Count: > 64 })
-            return $"{fieldName} may not exceed 64 keys.";
-        if (attributes is not null && attributes.Any(kv => kv.Value is { Length: > 64 }))
-            return $"{fieldName} may not exceed 64 values per key.";
+        if (attributes is { Count: int count } && count > maxKeys)
+            return $"{fieldName} may not exceed {maxKeys} keys.";
+        if (attributes is not null && attributes.Any(kv => kv.Value is { Length: int len } && len > maxValuesPerKey))
+            return $"{fieldName} may not exceed {maxValuesPerKey} values per key.";
         return null;
     }
 
@@ -228,14 +237,47 @@ public static class MemoryEndpoints
         return Task.FromResult<IResult>(Results.Ok(ToEntryDto(ctx.Store!, entry, scope)));
     }
 
+    /// <summary>True when <paramref name="patched"/> is null, or is the same sequence as
+    /// <paramref name="stored"/> (order-sensitive — a caller only ever gets <paramref name="stored"/>
+    /// from a prior GET, so an unedited round-trip compares byte-for-byte identical). Used to allow
+    /// a complete-entry round-trip that leaves <c>Keywords</c> alone while refusing one that tries to
+    /// change it (I-3, see <see cref="PatchEntry"/>'s doc comment for why a change is refused rather
+    /// than applied).</summary>
+    private static bool KeywordsUnchanged(string[]? patched, string[]? stored) =>
+        patched is null || (patched ?? []).SequenceEqual(stored ?? [], StringComparer.Ordinal);
+
     /// <summary>
-    /// PATCH is metadata-only: <c>Description</c>/<c>Attributes</c>/<c>Keywords</c> from the body
-    /// replace the stored values; everything else the store derived — <c>TermFrequencies</c>,
-    /// <c>ChunkEntries</c>, <c>FileHashes</c>, content, timestamps — is untouched, even though the
-    /// body carries a complete <see cref="MemoryEntry"/> including those fields. That is the whole
-    /// reason the wire uses one complete-entry shape instead of a field-scoped patch DTO: a caller
-    /// round-trips a GET, edits one field, and PATCHes the lot back, and the server must not let the
-    /// derived fields riding along in that body clobber what it alone is allowed to compute.
+    /// PATCH is metadata-only over a **complete** entry body: the whole point of this wire shape is
+    /// that a caller GETs the full entry, edits one field, and PATCHes the lot back — so every field
+    /// the store alone derives must survive untouched no matter what the body carries for it, and
+    /// every field the caller does own must actually be present, or an incomplete body silently
+    /// wipes curated data (I-4) instead of being rejected.
+    ///
+    /// <para><b>What the body may change:</b> <c>Description</c> (→ <c>ContentPreview</c>) and
+    /// <c>Attributes</c> (canonicalized via <see cref="KnownAttributes.Normalize"/> — the same
+    /// canonicalizer every other write path funnels through, so a PATCH-written key doesn't persist
+    /// with different casing/whitespace than a locally-written one; see I-2). Both are read
+    /// straight off the parsed body — <see cref="Results.BadRequest(object?)"/> below rejects the
+    /// request outright if either key is missing from the raw JSON, since a missing key binds to
+    /// null/default just as readily as an explicit "clear this" and the two must not be confused
+    /// (I-4). <c>Name</c>/<c>QualifiedName</c>/<c>Scope</c> are resolved from the route, never the
+    /// body.</para>
+    ///
+    /// <para><b>What the body may NOT change:</b> <c>TermFrequencies</c>, <c>ChunkEntries</c>,
+    /// <c>FileHashes</c>, <c>ChunkCount</c>, <c>OriginalBytes</c>, <c>CreatedAt</c> are never
+    /// assigned from the body even though it carries values for all of them (I-5's mutation-tested
+    /// guard: wiring any of these through must fail the derived-fields test). <c>Keywords</c> is the
+    /// one field that looks caller-owned but is not: <see cref="IMemoryStore"/>'s own contract says
+    /// a caller that computes keywords "has re-created the defect this branch exists to remove," and
+    /// unlike <c>Description</c>/<c>Attributes</c>, the store's actual keyword pipeline
+    /// (<see cref="MemoryDerivation.ForStore"/>) needs the memory's CONTENT to run — it classifies
+    /// agent-vs-auto terms and computes BM25 boosts off <c>TextAnalysis.AnalyzeText</c>, which PATCH
+    /// has no content to feed. Re-deriving from the stored artifact here would make PATCH a second,
+    /// content-reading derivation entry point — exactly what this branch collapsed away. So: a body
+    /// whose <c>Keywords</c> is null or identical to the stored value (the only way to genuinely
+    /// leave it alone in a complete-entry body) is accepted and the stored value is kept verbatim; a
+    /// body that tries to actually CHANGE <c>Keywords</c> is refused with <c>400</c> — that change
+    /// must go through <c>StoreAsync</c>/<c>AppendAsync</c>, which have content to derive from.</para>
     ///
     /// <para>Routes through <see cref="IMemoryStore.TryUpdateEntry"/>, never <see cref="PluginPipeline"/>
     /// — that fires no event sinks, which matters because the entity-typing sink writes promotions
@@ -247,27 +289,76 @@ public static class MemoryEndpoints
     /// value inside the same atomic load-mutate-persist <c>TryUpdateEntry</c> already performs (under
     /// <c>FileMemoryStore</c>'s per-scope write lock), so the compare-and-write cannot race a
     /// concurrent writer. A mismatch returns <c>409</c> and leaves the stored entry untouched.</para>
+    ///
+    /// <para><b>Not re-derived here (M-3):</b> <c>FileHashes</c> is left exactly as stored even when
+    /// the patched <c>Attributes["file"]</c> differs from what produced it, so the two can disagree
+    /// after a PATCH that edits <c>file</c> values. Deliberate, not an oversight: re-hashing needs
+    /// filesystem access PATCH has no reason to assume is available (a store-derived hasher is a
+    /// <c>StoreAsync</c>-time concern — see <c>MemoryDerivation.ForStore</c>'s <c>fileHasher</c>
+    /// delegate), and doing it here would be a second drift-baseline computation site. A caller that
+    /// changes <c>file</c> references and wants a fresh baseline re-stores the content instead.</para>
     /// </summary>
-    private static Task<IResult> PatchEntry(
+    private static async Task<IResult> PatchEntry(
         string store,
         string name,
-        MemoryEntry req,
+        HttpRequest request,
         RequestContext ctx)
     {
         if (!ctx.HasPermission("store"))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403));
+            return Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403);
 
         if (!IsWritable(ctx, store))
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
+            return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
-        if (ValidateAttributeBounds(req.Attributes) is { } boundsError)
-            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(boundsError)));
+        MemoryEntry req;
+        try
+        {
+            using var doc = await JsonDocument.ParseAsync(request.Body, cancellationToken: request.HttpContext.RequestAborted);
+            var rootEl = doc.RootElement;
+
+            // I-4: the wire is a COMPLETE-entry contract — the body IS the entry. A key missing
+            // from the raw JSON binds to null/default exactly like an explicit "clear this field"
+            // would, so without this check an incomplete body silently wipes curated metadata
+            // (proven: {"name":"…","updatedAt":"<current>"} alone returned 200 and erased the
+            // description, every keyword, and every attribute). Checking key PRESENCE rather than
+            // value keeps a legitimate "this field is genuinely null" round-trip working — only an
+            // omitted key is rejected, not an explicit null.
+            if (!rootEl.TryGetProperty("description", out _)
+                || !rootEl.TryGetProperty("attributes", out _)
+                || !rootEl.TryGetProperty("keywords", out _))
+                return Results.BadRequest(new ErrorResponse(
+                    "PATCH requires a complete entry body — \"description\", \"attributes\" and " +
+                    "\"keywords\" must all be present (explicit null is fine; an omitted key is not), " +
+                    "or an incomplete body would silently erase curated metadata."));
+
+            req = rootEl.Deserialize(ServerJsonContext.Default.MemoryEntry)
+                ?? throw new JsonException("PATCH body deserialized to null.");
+        }
+        catch (JsonException)
+        {
+            return Results.BadRequest(new ErrorResponse("Malformed request body."));
+        }
+
+        // I-1: the write-path bound (KnownAttributes.MaxAttributes / MaxValuesPerKey), not the
+        // search filter's tighter 64/64 — see ValidateAttributeBounds's doc comment for why using
+        // the search bound here broke the round-trip this wire shape exists for.
+        if (ValidateAttributeBounds(req.Attributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
+            is { } boundsError)
+            return Results.BadRequest(new ErrorResponse(boundsError));
+
+        // I-2: canonicalize before persisting — the same call every other write path makes, so a
+        // PATCH-written key/value doesn't persist with different casing/whitespace than a local
+        // write of the same map would. Replace semantics, not KnownAttributes.Merge: the body is
+        // the caller's complete, already-edited attribute map (read via GET, edited, sent back),
+        // not a delta to fold over what's already stored.
+        Dictionary<string, string[]>? normalizedAttributes = KnownAttributes.Normalize(req.Attributes);
 
         string decoded = Uri.UnescapeDataString(name);
         var (scope, subject) = ctx.Store!.ParseQualifiedName(decoded);
 
         bool found = false;
         bool conflict = false;
+        bool keywordsRejected = false;
         ArtifactEntry? persisted = null;
 
         bool ok = ctx.Store!.TryUpdateEntry(subject, scope, current =>
@@ -279,11 +370,21 @@ public static class MemoryEndpoints
                 return null;
             }
 
+            // I-3: a genuine Keywords CHANGE has no content here to re-derive against, so it is
+            // refused rather than persisted raw (which would let a remote client write a keyword
+            // list no local path could ever produce). An unedited round-trip (null, or identical to
+            // what's stored) is not a "change" and is allowed through.
+            if (!KeywordsUnchanged(req.Keywords, current.Keywords))
+            {
+                keywordsRejected = true;
+                return null;
+            }
+
             var next = current with
             {
                 ContentPreview = req.Description,
-                Attributes = req.Attributes,
-                Keywords = req.Keywords,
+                Attributes = normalizedAttributes,
+                Keywords = current.Keywords, // never taken from the wire — see I-3 above
                 UpdatedAt = DateTimeOffset.UtcNow,
             };
             persisted = next;
@@ -291,17 +392,22 @@ public static class MemoryEndpoints
         });
 
         if (!found)
-            return Task.FromResult<IResult>(Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found.")));
+            return Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found."));
 
         if (conflict)
-            return Task.FromResult<IResult>(Results.Json(
+            return Results.Json(
                 new ErrorResponse("UpdatedAt does not match the stored value — the entry was modified concurrently."),
-                statusCode: StatusCodes.Status409Conflict));
+                statusCode: StatusCodes.Status409Conflict);
+
+        if (keywordsRejected)
+            return Results.BadRequest(new ErrorResponse(
+                "keywords may not be changed by PATCH — it requires content to re-derive against, " +
+                "which this endpoint does not have. Re-store or append to change keywords."));
 
         if (!ok || persisted is null)
-            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Update failed."), statusCode: 500));
+            return Results.Json(new ErrorResponse("Update failed."), statusCode: 500);
 
-        return Task.FromResult<IResult>(Results.Ok(ToEntryDto(ctx.Store!, persisted, scope)));
+        return Results.Ok(ToEntryDto(ctx.Store!, persisted, scope));
     }
 
     private static async Task<IResult> ForgetMemory(
@@ -468,7 +574,7 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse("excludeTopics parameter too long (max 1KB)."));
         if (pathPrefix is { Length: > 1024 })
             return Results.BadRequest(new ErrorResponse("pathPrefix parameter too long (max 1KB)."));
-        if (ValidateAttributeBounds(attributeFilter, "attributeFilter") is { } filterBoundsError)
+        if (ValidateAttributeBounds(attributeFilter, 64, 64, "attributeFilter") is { } filterBoundsError)
             return Results.BadRequest(new ErrorResponse(filterBoundsError));
         limit = Math.Clamp(limit, 1, 1000);
 

@@ -1,7 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using FluentAssertions;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Scrinia.Core;
 using Scrinia.Server.Auth;
@@ -17,6 +21,13 @@ namespace Scrinia.Server.Tests;
 /// Kestrel socket, mirroring <c>RemoteLoadIndexTests</c>, for consistency with this branch's other
 /// server-endpoint suites — even though these tests use plain async <c>HttpClient</c> calls rather
 /// than <c>HttpMemoryStore.Send</c>, which is the specific reason that suite needs Kestrel.
+///
+/// <para>Findings I-1 through I-5 and M-1 through M-3 below come from the controller's review of
+/// the first version of this file and <c>MemoryEndpoints.PatchEntry</c>: the original tests proved
+/// PATCH could not DESTROY derived data but never proved it could not be TRICKED into accepting
+/// caller-forged data, and the endpoint's bounds/normalization/completeness rules were either wrong
+/// (I-1), missing (I-2, I-4) or unspecified (I-3, M-3). Each finding has a dedicated test below,
+/// named after it.</para>
 /// </summary>
 public sealed class PatchEndpointTests : IAsyncLifetime
 {
@@ -89,12 +100,14 @@ public sealed class PatchEndpointTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// THE load-bearing guard. Stores a memory that has <c>TermFrequencies</c>,
-    /// <c>ChunkEntries</c> and <c>FileHashes</c>; PATCHes one attribute; re-reads; asserts all
-    /// three are unchanged. This is the entire reason the wire uses one complete-entry PATCH body
-    /// instead of a field-scoped patch DTO: the body the client sends back necessarily carries
-    /// these three fields too (it round-tripped them from the GET), and the server must not let
-    /// them overwrite what it alone derives.
+    /// THE load-bearing guard, rewritten per I-5. The original version of this test round-tripped
+    /// the GET body unedited for the derived fields, so it could only catch the server NULLING them
+    /// — mutation-proven blind to the server HONOURING caller-forged values (adding
+    /// <c>TermFrequencies = req.TermFrequencies, FileHashes = req.FileHashes</c> to the handler's
+    /// <c>with</c> expression compiled clean and left all four tests green). This version PATCHes a
+    /// body that forges <c>TermFrequencies</c>, <c>FileHashes</c> and <c>ChunkEntries</c> to
+    /// obviously-wrong values alongside a legitimate attribute change, and asserts the store's real,
+    /// pre-patch values win — the only version of this guard that catches both directions.
     /// </summary>
     [Fact]
     public async Task Patch_LeavesDerivedFieldsIntact()
@@ -126,28 +139,39 @@ public sealed class PatchEndpointTests : IAsyncLifetime
         entry.FileHashes.Should().NotBeNull().And.ContainKey(fileRelativePath,
             because: "the `file` attribute must have resolved against the planted file");
 
-        var patched = entry with
+        // Act: PATCH a body carrying a legitimate attribute change ALONGSIDE forged derived values.
+        var forged = entry with
         {
             Attributes = new Dictionary<string, string[]>(entry.Attributes ?? [])
             {
                 ["mention"] = ["survives-the-patch"],
             },
+            TermFrequencies = new Dictionary<string, int> { ["poison"] = 9999 },
+            FileHashes = new Dictionary<string, string> { ["x"] = "deadbeef" },
+            ChunkEntries =
+            [
+                new ChunkEntryDto(1, "forged chunk", ["forged"], new Dictionary<string, int> { ["forged"] = 1 }),
+            ],
         };
         var patchResp = await _client.PatchAsJsonAsync(
-            $"{_base}/memories/patch-derived-survival-probe", patched);
+            $"{_base}/memories/patch-derived-survival-probe", forged);
         patchResp.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var reGet = await _client.GetAsync($"{_base}/memories/patch-derived-survival-probe/entry");
         var reread = await reGet.Content.ReadFromJsonAsync<MemoryEntry>();
 
         reread!.TermFrequencies.Should().BeEquivalentTo(entry.TermFrequencies,
-            because: "a metadata-only PATCH must not touch the BM25 term-frequency weights the store derived");
+            because: "the server must keep its own derived term frequencies, not the caller-forged ones");
+        reread.TermFrequencies.Should().NotContainKey("poison",
+            because: "the forged key must never reach storage — this is what a round-trip-only test cannot catch");
         reread.ChunkEntries.Should().BeEquivalentTo(entry.ChunkEntries,
-            because: "a metadata-only PATCH must not touch the per-chunk entries the store derived");
+            because: "the server must keep its own derived chunk entries, not the caller-forged ones");
         reread.FileHashes.Should().BeEquivalentTo(entry.FileHashes,
-            because: "a metadata-only PATCH must not touch the file attribute's drift baseline");
+            because: "the server must keep its own derived drift baseline, not the caller-forged one");
+        reread.FileHashes.Should().NotContainKey("x",
+            because: "the forged FileHashes key must never reach storage");
 
-        // The attribute promotion this test carries alongside the guard did apply.
+        // The legitimate attribute promotion this test carries alongside the guard did apply.
         reread.Attributes!.Should().ContainKey("mention");
     }
 
@@ -210,5 +234,348 @@ public sealed class PatchEndpointTests : IAsyncLifetime
 
         patchResp.StatusCode.Should().Be(HttpStatusCode.Forbidden,
             because: "the key has 'read' but not 'store', and PatchEntry requires 'store'");
+
+        // M-2: match the house pattern (SearchAttributeFilterBoundsTests) of asserting the message
+        // too — a bare 403 would also pass for an unrelated lockout.
+        var body = await patchResp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("store",
+            because: "the error must name the missing permission, not just report failure");
+    }
+
+    /// <summary>
+    /// I-1. 70 <c>file</c> values is within <see cref="KnownAttributes.MaxValuesPerKey"/> (256 —
+    /// the write-path bound <c>RememberMemory</c> enforces, and <c>KnownAttributes.cs</c>'s own doc
+    /// comment names "a memory citing 70 distinct paths" as the exact case that bound exists for)
+    /// but outside the search filter's 64. Before the fix, a byte-identical PATCH round-trip of
+    /// such an entry 400'd — proving the validator was reusing the wrong bound. This pins that the
+    /// write-path bound is what PATCH actually applies.
+    /// </summary>
+    [Fact]
+    public async Task Patch_AcceptsTheWritePathAttributeBound_NotTheTighterSearchFilterBound()
+    {
+        var fileValues = Enumerable.Range(0, 70).Select(i => $"src/File{i:D3}.cs").ToArray();
+        var entry = await StoreAndGetEntryAsync("patch-bounds-probe", ["bounds probe body"],
+            attributes: new Dictionary<string, string[]> { ["file"] = fileValues });
+        entry.Attributes!["file"].Should().HaveCount(70,
+            because: "the store itself must have accepted 70 file values for the PATCH round-trip " +
+                     "below to be a meaningful test of PATCH's own bound, not RememberMemory's");
+
+        // Act: PATCH the entry back completely unchanged.
+        var patchResp = await _client.PatchAsJsonAsync($"{_base}/memories/patch-bounds-probe", entry);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.OK,
+            because: "PatchEntry must apply KnownAttributes.MaxValuesPerKey (256), not the search " +
+                     "filter's 64 — a validator using 64 here rejects entries the server's own " +
+                     "write path produces, breaking the round-trip this wire shape exists for");
+    }
+
+    /// <summary>
+    /// I-2. <see cref="KnownAttributes.Normalize"/> is the canonicalizer every other write path
+    /// funnels through (lowercase+trim keys, trim values, drop blanks); before the fix, PATCH
+    /// assigned the body's attributes verbatim, so a PATCH-written "Person"/"  spaced  "/blank
+    /// key persisted un-canonicalized — invisible to ordinal readers like
+    /// <c>AttributeReaders.DisplayTags</c> that match against <c>KnownAttributes.TagKey</c>.
+    /// </summary>
+    [Fact]
+    public async Task Patch_NormalizesAttributeCasingWhitespaceAndBlanks()
+    {
+        var entry = await StoreAndGetEntryAsync("patch-normalize-probe", ["normalize probe body"]);
+
+        var messyAttributes = new Dictionary<string, string[]>(entry.Attributes ?? [])
+        {
+            ["Person"] = ["  Alice  "],
+            ["  spaced  "] = ["x"],
+            ["blank"] = ["   "],
+        };
+        var patched = entry with { Attributes = messyAttributes };
+
+        var patchResp = await _client.PatchAsJsonAsync($"{_base}/memories/patch-normalize-probe", patched);
+        patchResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var reGet = await _client.GetAsync($"{_base}/memories/patch-normalize-probe/entry");
+        var reread = await reGet.Content.ReadFromJsonAsync<MemoryEntry>();
+
+        reread!.Attributes.Should().NotBeNull();
+        reread.Attributes!.Should().ContainKey("person",
+            because: "KnownAttributes.Normalize lowercases keys, matching every other write path");
+        reread.Attributes!["person"].Should().Contain("Alice",
+            because: "Normalize trims values but does not change their case");
+        reread.Attributes!["person"].Should().NotContain("  Alice  ",
+            because: "the untrimmed raw value must not survive alongside the trimmed one");
+        reread.Attributes!.Should().NotContainKey("Person",
+            because: "the raw-cased key must not persist alongside the normalized \"person\" key");
+        reread.Attributes!.Should().ContainKey("spaced",
+            because: "Normalize trims keys, so \"  spaced  \" persists as \"spaced\"");
+        reread.Attributes!.Should().NotContainKey("blank",
+            because: "Normalize drops a key whose only value is blank after trimming");
+    }
+
+    /// <summary>
+    /// I-3 (rejection side). PATCH has no memory content to re-run the store's keyword derivation
+    /// (agent/auto classification + BM25 boosts) against, so a genuine attempt to CHANGE
+    /// <c>Keywords</c> is refused with <c>400</c> rather than persisted raw — persisting it raw
+    /// would let a remote client write a keyword list no local path could ever produce.
+    /// </summary>
+    [Fact]
+    public async Task Patch_RejectsAChangedKeywordsWith400()
+    {
+        var entry = await StoreAndGetEntryAsync("patch-keywords-probe", ["keywords probe body about apricots"]);
+
+        var patched = entry with { Keywords = ["not-a-real-derived-keyword"] };
+        var patchResp = await _client.PatchAsJsonAsync($"{_base}/memories/patch-keywords-probe", patched);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            because: "PATCH has no content to re-derive keywords against, so a changed Keywords " +
+                     "value must be refused rather than persisted raw");
+
+        var reGet = await _client.GetAsync($"{_base}/memories/patch-keywords-probe/entry");
+        var reread = await reGet.Content.ReadFromJsonAsync<MemoryEntry>();
+        reread!.Keywords.Should().BeEquivalentTo(entry.Keywords,
+            because: "a rejected keyword change must leave the stored keywords exactly as they were");
+    }
+
+    /// <summary>
+    /// I-3 (round-trip side) — the necessary companion to the rejection test above. A complete-entry
+    /// PATCH body naturally carries whatever <c>Keywords</c> the prior GET returned; if PATCH
+    /// refused every non-null <c>Keywords</c> value outright, it would refuse virtually every real
+    /// metadata edit (almost every stored memory has auto-extracted keywords), which is not what
+    /// I-3 asks for — only an actual CHANGE is refused.
+    /// </summary>
+    [Fact]
+    public async Task Patch_AllowsAnUnchangedKeywordsRoundTrip()
+    {
+        var entry = await StoreAndGetEntryAsync(
+            "patch-keywords-roundtrip-probe", ["keywords roundtrip probe body"]);
+
+        var patched = entry with
+        {
+            Attributes = new Dictionary<string, string[]>(entry.Attributes ?? [])
+            {
+                ["mention"] = ["unrelated-change"],
+            },
+        };
+        var patchResp = await _client.PatchAsJsonAsync(
+            $"{_base}/memories/patch-keywords-roundtrip-probe", patched);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.OK,
+            because: "echoing back the same Keywords the entry already carries is not a change and " +
+                     "must not be refused just because the field is present and non-null");
+    }
+
+    /// <summary>
+    /// I-4. Before the fix, a body carrying only <c>name</c>/<c>updatedAt</c> returned <c>200</c>
+    /// and silently erased the description, every keyword, and every attribute — the omitted
+    /// <c>description</c>/<c>attributes</c>/<c>keywords</c> keys bound to null/default exactly as
+    /// readily as an explicit "clear this field" would. The wire is a complete-entry contract; an
+    /// incomplete body must be rejected, not treated as "set to empty."
+    /// </summary>
+    [Fact]
+    public async Task Patch_RejectsAnIncompleteBodyWith400_AndLeavesMetadataIntact()
+    {
+        var entry = await StoreAndGetEntryAsync("patch-incomplete-probe", ["incomplete probe body"],
+            attributes: new Dictionary<string, string[]> { ["person"] = ["dana"] });
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!.Should().ContainKey("person");
+
+        // Exactly the shape that silently wiped curated metadata before this fix: name + updatedAt,
+        // nothing else.
+        var partial = new { name = "patch-incomplete-probe", updatedAt = entry.UpdatedAt };
+        var patchResp = await _client.PatchAsJsonAsync(
+            $"{_base}/memories/patch-incomplete-probe", partial);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            because: "a body missing description/attributes/keywords must be rejected outright, " +
+                     "not treated as \"clear these fields\"");
+
+        var reGet = await _client.GetAsync($"{_base}/memories/patch-incomplete-probe/entry");
+        var reread = await reGet.Content.ReadFromJsonAsync<MemoryEntry>();
+        reread!.Attributes.Should().NotBeNull();
+        reread.Attributes!.Should().ContainKey("person",
+            because: "the rejected incomplete PATCH must not have touched the stored attributes — " +
+                     "proving the reject happens before any write, not just that the response is 400");
+    }
+
+    /// <summary>
+    /// M-3. <c>FileHashes</c> and <c>Attributes["file"]</c> are two views of one thing
+    /// (<c>ArtifactEntry.cs:16-21</c>), so a PATCH that edits <c>file</c> values without
+    /// re-deriving <c>FileHashes</c> can leave them disagreeing. Deliberate, documented in
+    /// <c>PatchEntry</c>'s doc comment: re-hashing needs filesystem access that is a
+    /// <c>StoreAsync</c>-time concern, and doing it here would be a second drift-baseline
+    /// computation site. Pinned here so the behaviour cannot silently change to "sometimes
+    /// re-derives" without a test noticing.
+    /// </summary>
+    [Fact]
+    public async Task Patch_DoesNotRederiveFileHashesWhenAttributesFileChanges()
+    {
+        const string fileRelativePath = "patch-m3-drift-probe.txt";
+        const string fileContents = "m3 drift baseline contents";
+
+        var store = (FileMemoryStore)_factory.Services.GetRequiredService<StoreManager>()
+            .GetStore(_factory.PrimaryStore);
+        string fullPath = Path.Combine(store.WorkspaceRoot, fileRelativePath);
+        await File.WriteAllTextAsync(fullPath, fileContents);
+
+        var entry = await StoreAndGetEntryAsync("patch-m3-probe", ["m3 probe body"],
+            attributes: new Dictionary<string, string[]> { ["file"] = [fileRelativePath] });
+        entry.FileHashes.Should().NotBeNull().And.ContainKey(fileRelativePath);
+
+        var patched = entry with
+        {
+            Attributes = new Dictionary<string, string[]>(entry.Attributes ?? [])
+            {
+                ["file"] = ["a-completely-different-path.txt"],
+            },
+        };
+        var patchResp = await _client.PatchAsJsonAsync($"{_base}/memories/patch-m3-probe", patched);
+        patchResp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var reGet = await _client.GetAsync($"{_base}/memories/patch-m3-probe/entry");
+        var reread = await reGet.Content.ReadFromJsonAsync<MemoryEntry>();
+
+        reread!.Attributes!["file"].Should().BeEquivalentTo(["a-completely-different-path.txt"],
+            because: "the attribute write itself must have applied");
+        reread.FileHashes.Should().BeEquivalentTo(entry.FileHashes,
+            because: "PatchEntry deliberately does not re-derive FileHashes — the drift baseline " +
+                     "stays exactly as it was, even though Attributes[\"file\"] now points elsewhere, " +
+                     "until the memory is re-stored");
+    }
+
+    /// <summary>
+    /// M-1. <c>PatchEntry</c>'s <c>IsWritable</c> check had no endpoint-level coverage anywhere in
+    /// this codebase — deleting it would leave the whole suite green, the exact "new road inherits
+    /// no guard coverage" pattern flagged against this branch before. <c>ReadOnlyAccessTests.cs</c>
+    /// only unit-tests the <c>IsWritable</c> helper directly, because no API key issued by
+    /// <c>ApiKeyAuthHandler</c> ever carries the <c>store_access</c> claim the check reads — that
+    /// claim is documented (<c>IsWritable</c>'s own doc comment) as arriving from SSO, and this repo
+    /// has no SSO authentication path today (confirmed: no <c>IClaimsTransformation</c> is
+    /// registered anywhere, and <c>ApiKeyAuthHandler</c> only ever emits <c>store</c>/<c>permission</c>
+    /// claims). This test builds the smallest real stand-in: an <c>IClaimsTransformation</c> — the
+    /// actual extension point real SSO claims would arrive through — registered by
+    /// <see cref="ReadOnlyClaimsServerFactory"/>, marking one specific test identity's stores
+    /// read-only so <c>PatchEntry</c>'s <c>IsWritable</c> branch is exercised through a genuine HTTP
+    /// request. Mutation-verified: commenting out the <c>IsWritable</c> check in <c>PatchEntry</c>
+    /// makes this test fail (200 instead of 403) while every other test in this file stays green.
+    ///
+    /// <para>Uses a dedicated <see cref="WebApplicationFactory{TEntryPoint}"/> subclass (mirroring
+    /// <c>ThrowingStoreServerFactory</c> in <c>ApiVersionHeaderOn500Tests.cs</c>) rather than
+    /// <c>ScriniaServerFactory.WithWebHostBuilder</c> — empirically, <c>WithWebHostBuilder</c>'s
+    /// clone combined with an extra <c>ConfigureServices</c>/<c>ConfigureTestServices</c> call made
+    /// <c>UseKestrel(0)</c> stop binding an ephemeral port and fall back to Kestrel's hard-coded
+    /// default (<c>http://127.0.0.1:5000</c>), colliding with every other Kestrel-backed test in the
+    /// suite. A factory that does its extra DI registration inside its own
+    /// <c>ConfigureWebHost</c> override, with <c>UseKestrel(0)</c> called directly on the instance,
+    /// does not hit that failure — the same shape every other custom-backend Kestrel fixture in this
+    /// project (<c>ThrowingStoreServerFactory</c>, <c>BundleEndpointTests</c>'
+    /// <c>NonLocalStoreServerFactory</c>) already uses.</para>
+    /// </summary>
+    [Fact]
+    public async Task Patch_DeniedWhenStoreIsReadOnlyForThisKey()
+    {
+        using var factory = new ReadOnlyClaimsServerFactory();
+        factory.UseKestrel(0);
+        factory.StartServer();
+
+        string baseUrl = $"/api/v1/stores/{factory.PrimaryStore}";
+        var writableClient = factory.CreateAuthenticatedClient();
+
+        var storeResp = await writableClient.PostAsJsonAsync($"{baseUrl}/memories",
+            new StoreRequest(["read-only probe body"], "patch-readonly-probe", "read-only probe body"));
+        storeResp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var entryResp = await writableClient.GetAsync($"{baseUrl}/memories/patch-readonly-probe/entry");
+        var entry = await entryResp.Content.ReadFromJsonAsync<MemoryEntry>();
+
+        // A second client, under the identity ReadOnlyClaimsServerFactory's transform singles out,
+        // scoped to the same store with "store" permission — so the 403 below is provably
+        // IsWritable's, not the permission check's.
+        using var readOnlyClient = factory.CreateReadOnlyTargetClient();
+
+        var patchResp = await readOnlyClient.PatchAsJsonAsync($"{baseUrl}/memories/patch-readonly-probe", entry);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.Forbidden,
+            because: "IsWritable must deny a PATCH against a store the caller's claims mark read-only");
+        var body = await patchResp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("read-only",
+            because: "the 403 must genuinely be IsWritable's rejection, not an unrelated lockout");
+    }
+}
+
+/// <summary>
+/// Provisions two API keys against one store: the factory's default (writable) test key, and a
+/// second key under <see cref="ReadOnlyTargetUserId"/> whose <c>store_access</c> claim is stamped
+/// read-only by <see cref="MarkTargetUserReadOnlyTransform"/> — the smallest real stand-in for an
+/// SSO claims transformer this repo has, since none exists in production code yet.
+/// </summary>
+public sealed class ReadOnlyClaimsServerFactory : WebApplicationFactory<Program>
+{
+    private readonly string _tempDir;
+    public const string ReadOnlyTargetUserId = "patch-readonly-probe-user";
+    public string PrimaryStore { get; } = "test-store";
+    private string TestApiKey { get; set; } = "";
+    private string ReadOnlyTargetApiKey { get; set; } = "";
+
+    public ReadOnlyClaimsServerFactory()
+    {
+        _tempDir = Path.Combine(Path.GetTempPath(), "scrinium-tests-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(_tempDir);
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseSetting("Scrinia:DataDir", _tempDir);
+        builder.UseSetting($"Scrinia:Stores:{PrimaryStore}", Path.Combine(_tempDir, "stores", PrimaryStore));
+
+        builder.ConfigureServices(services =>
+        {
+            services.AddScoped<IClaimsTransformation, MarkTargetUserReadOnlyTransform>();
+
+            var sp = services.BuildServiceProvider();
+            var keyStore = sp.GetRequiredService<ApiKeyStore>();
+            var (rawKey, _, _) = keyStore.CreateKey(
+                "readonly-test-seed-user", [PrimaryStore], ["store", "read"], "writable-seed-key");
+            TestApiKey = rawKey;
+            var (readOnlyRawKey, _, _) = keyStore.CreateKey(
+                ReadOnlyTargetUserId, [PrimaryStore], ["store"], "readonly-probe-key");
+            ReadOnlyTargetApiKey = readOnlyRawKey;
+        });
+    }
+
+    public HttpClient CreateAuthenticatedClient()
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", TestApiKey);
+        return client;
+    }
+
+    public HttpClient CreateReadOnlyTargetClient()
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ReadOnlyTargetApiKey);
+        return client;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            try { Directory.Delete(_tempDir, recursive: true); } catch { }
+        }
+    }
+}
+
+/// <summary>Test-only stand-in for an SSO claims transformer: marks every <c>store</c> claim on
+/// <see cref="ReadOnlyClaimsServerFactory.ReadOnlyTargetUserId"/>'s principal read-only, and leaves
+/// every other identity (including the factory's own writable seed key) untouched.</summary>
+public sealed class MarkTargetUserReadOnlyTransform : IClaimsTransformation
+{
+    public Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
+    {
+        if (principal.Identity is ClaimsIdentity identity
+            && identity.FindFirst(ClaimTypes.NameIdentifier)?.Value == ReadOnlyClaimsServerFactory.ReadOnlyTargetUserId)
+        {
+            foreach (var storeClaim in principal.FindAll("store").ToList())
+                identity.AddClaim(new Claim("store_access", $"{storeClaim.Value}:read-only"));
+        }
+        return Task.FromResult(principal);
     }
 }
