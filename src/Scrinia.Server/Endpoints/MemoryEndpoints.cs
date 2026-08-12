@@ -21,6 +21,8 @@ public static class MemoryEndpoints
         group.MapPost("/memories", RememberMemory);
         group.MapGet("/memories", ListMemory);
         group.MapGet("/memories/{name}", RecallMemory);
+        group.MapGet("/memories/{name}/entry", GetEntry);
+        group.MapPatch("/memories/{name}", PatchEntry);
         group.MapDelete("/memories/{name}", ForgetMemory);
         group.MapPost("/memories/{name}/append", AppendMemory);
         group.MapPost("/memories/{name}/copy", CopyMemory);
@@ -165,6 +167,141 @@ public static class MemoryEndpoints
         if (result is null)
             return Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found."));
         return Results.Ok(result);
+    }
+
+    /// <summary>Case-insensitive single-entry lookup — the same resolution every store-side lookup
+    /// in this codebase already agrees on (mirrors <see cref="IMemoryStore.TryUpdateEntry"/>'s
+    /// default: <c>SanitizeName</c> compared with <see cref="StringComparison.OrdinalIgnoreCase"/>),
+    /// so "archive" and "Archive" resolve to the one memory here too.</summary>
+    private static ArtifactEntry? FindEntry(IMemoryStore store, string scope, string subject) =>
+        store.LoadIndex(scope).FirstOrDefault(
+            e => store.SanitizeName(e.Name).Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Builds the one complete <see cref="MemoryEntry"/> wire shape from a store-derived
+    /// <see cref="ArtifactEntry"/> — the same field mapping <c>ListMemory</c> uses, factored out so
+    /// <c>GetEntry</c> and <c>PatchEntry</c> do not each grow their own copy.</summary>
+    private static MemoryEntry ToEntryDto(IMemoryStore store, ArtifactEntry entry, string scope) =>
+        new(
+            entry.Name,
+            store.FormatQualifiedName(scope, entry.Name),
+            MemoryNaming.FormatScopeLabel(scope),
+            entry.ChunkCount,
+            entry.OriginalBytes,
+            entry.CreatedAt,
+            entry.UpdatedAt,
+            AttributeReaders.PreviewText(entry.ContentPreview),
+            entry.Attributes,
+            entry.Keywords,
+            entry.TermFrequencies,
+            entry.ChunkEntries?.Select(c => new ChunkEntryDto(
+                c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies)).ToArray(),
+            entry.FileHashes);
+
+    /// <summary>Attribute-map bounds shared by every wire path that accepts a caller-supplied
+    /// attribute dictionary post-Merge: at most 64 keys, at most 64 values per key. Returns an
+    /// error message, or null when within bounds. <paramref name="fieldName"/> lets each caller's
+    /// error text name its own field (<c>attributeFilter</c> for search, <c>attributes</c> for a
+    /// PATCH body) without duplicating the check itself.</summary>
+    private static string? ValidateAttributeBounds(Dictionary<string, string[]>? attributes, string fieldName = "attributes")
+    {
+        if (attributes is { Count: > 64 })
+            return $"{fieldName} may not exceed 64 keys.";
+        if (attributes is not null && attributes.Any(kv => kv.Value is { Length: > 64 }))
+            return $"{fieldName} may not exceed 64 values per key.";
+        return null;
+    }
+
+    private static Task<IResult> GetEntry(
+        string store,
+        string name,
+        RequestContext ctx)
+    {
+        if (!ctx.HasPermission("read"))
+            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403));
+
+        string decoded = Uri.UnescapeDataString(name);
+        var (scope, subject) = ctx.Store!.ParseQualifiedName(decoded);
+        var entry = FindEntry(ctx.Store!, scope, subject);
+        if (entry is null)
+            return Task.FromResult<IResult>(Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found.")));
+
+        return Task.FromResult<IResult>(Results.Ok(ToEntryDto(ctx.Store!, entry, scope)));
+    }
+
+    /// <summary>
+    /// PATCH is metadata-only: <c>Description</c>/<c>Attributes</c>/<c>Keywords</c> from the body
+    /// replace the stored values; everything else the store derived — <c>TermFrequencies</c>,
+    /// <c>ChunkEntries</c>, <c>FileHashes</c>, content, timestamps — is untouched, even though the
+    /// body carries a complete <see cref="MemoryEntry"/> including those fields. That is the whole
+    /// reason the wire uses one complete-entry shape instead of a field-scoped patch DTO: a caller
+    /// round-trips a GET, edits one field, and PATCHes the lot back, and the server must not let the
+    /// derived fields riding along in that body clobber what it alone is allowed to compute.
+    ///
+    /// <para>Routes through <see cref="IMemoryStore.TryUpdateEntry"/>, never <see cref="PluginPipeline"/>
+    /// — that fires no event sinks, which matters because the entity-typing sink writes promotions
+    /// back through this exact seam; going through the pipeline would let a remote metadata patch
+    /// re-enter the sink that produced it. No <c>ArchiveVersion</c> call either: this is a metadata
+    /// write, not a content write.</para>
+    ///
+    /// <para>Optimistic concurrency: the body's <c>UpdatedAt</c> is compared against the stored
+    /// value inside the same atomic load-mutate-persist <c>TryUpdateEntry</c> already performs (under
+    /// <c>FileMemoryStore</c>'s per-scope write lock), so the compare-and-write cannot race a
+    /// concurrent writer. A mismatch returns <c>409</c> and leaves the stored entry untouched.</para>
+    /// </summary>
+    private static Task<IResult> PatchEntry(
+        string store,
+        string name,
+        MemoryEntry req,
+        RequestContext ctx)
+    {
+        if (!ctx.HasPermission("store"))
+            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'store' required."), statusCode: 403));
+
+        if (!IsWritable(ctx, store))
+            return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
+
+        if (ValidateAttributeBounds(req.Attributes) is { } boundsError)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(boundsError)));
+
+        string decoded = Uri.UnescapeDataString(name);
+        var (scope, subject) = ctx.Store!.ParseQualifiedName(decoded);
+
+        bool found = false;
+        bool conflict = false;
+        ArtifactEntry? persisted = null;
+
+        bool ok = ctx.Store!.TryUpdateEntry(subject, scope, current =>
+        {
+            found = true;
+            if (current.UpdatedAt != req.UpdatedAt)
+            {
+                conflict = true;
+                return null;
+            }
+
+            var next = current with
+            {
+                ContentPreview = req.Description,
+                Attributes = req.Attributes,
+                Keywords = req.Keywords,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+            persisted = next;
+            return next;
+        });
+
+        if (!found)
+            return Task.FromResult<IResult>(Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found.")));
+
+        if (conflict)
+            return Task.FromResult<IResult>(Results.Json(
+                new ErrorResponse("UpdatedAt does not match the stored value — the entry was modified concurrently."),
+                statusCode: StatusCodes.Status409Conflict));
+
+        if (!ok || persisted is null)
+            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Update failed."), statusCode: 500));
+
+        return Task.FromResult<IResult>(Results.Ok(ToEntryDto(ctx.Store!, persisted, scope)));
     }
 
     private static async Task<IResult> ForgetMemory(
@@ -331,11 +468,8 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse("excludeTopics parameter too long (max 1KB)."));
         if (pathPrefix is { Length: > 1024 })
             return Results.BadRequest(new ErrorResponse("pathPrefix parameter too long (max 1KB)."));
-        if (attributeFilter is { Count: > 64 })
-            return Results.BadRequest(new ErrorResponse("attributeFilter may not exceed 64 keys."));
-        if (attributeFilter is not null && attributeFilter.Any(kv => kv.Value is { Length: > 64 }))
-            return Results.BadRequest(
-                new ErrorResponse("attributeFilter may not exceed 64 values per key."));
+        if (ValidateAttributeBounds(attributeFilter, "attributeFilter") is { } filterBoundsError)
+            return Results.BadRequest(new ErrorResponse(filterBoundsError));
         limit = Math.Clamp(limit, 1, 1000);
 
         var results = await pipeline.SearchAsync(ctx.Store!, q, scopes, limit,
