@@ -482,15 +482,22 @@ now in scope of `docs/superpowers/specs/2026-08-11-store-owned-derivation-design
 removes their cause rather than documenting them.
 
 - **BM25 term frequencies differ by store mode**, so search ranking differs local vs remote. The
-  explanation recorded here — "not fixable by moving the merge; the wire carries one flat map and
-  the server cannot distinguish agent attributes from carrier attributes" — **is false.** Deriving a
-  memory's metadata is implemented four times (MCP store/append/compact and the server's three), and
-  on append the server passes `null` for agent keywords, boosts everything `+2` instead of agent
-  `+5`, and boosts the raw keyword rather than its index tokens
-  (`src/Scrinia.Server/Services/MemoryOrchestrator.cs:269-275` against
-  `src/Scrinia.Mcp/MemoryTools.Core.cs:1322-1341`). The server is not failing to distinguish agent
-  terms — on that path it is not trying. This is duplication drift, not a wire limitation, which is
-  why changing the wire looked hopeless.
+  explanation recorded here was **accurate but incomplete**, and it described only one of two
+  independent causes.
+  - *The one it named, on the store path:* locally `SeedTermFrequencies` runs before the carrier
+    merge so carrier keys are never seeded, while over the wire they arrive in one flat map and get
+    seeded; and a flat map cannot tell an agent-supplied attribute from a carrier one. Documented in
+    full at `src/Scrinia.Server/Services/MemoryOrchestrator.cs:57-66`, which also names the fix —
+    "sending the two maps separately, which is a wire-shape change." That is exactly what the new
+    spec does.
+  - *The one nobody recorded, on the append path:* the server passes `null` for agent keywords,
+    boosts everything `+2` instead of agent `+5`, and boosts the raw keyword rather than its index
+    tokens (`MemoryOrchestrator.cs:269-275` against `src/Scrinia.Mcp/MemoryTools.Core.cs:1322-1341`).
+    Pure duplication drift, on a path the recorded note never mentions.
+
+  An earlier revision of this section claimed the recorded explanation was false. It was not; it was
+  a correct diagnosis of a different code path. Both causes are closed by the same design, because
+  both are consequences of the derivation existing more than once.
 - **MCP and REST disagree on a bare date in a `review` attribute.** `remember()` routes it through
   a lenient parse and stores a round-tripped date that goes stale; a direct `POST` stores it
   verbatim, so it reads as a *condition* and the memory reports `needsReview=true` forever. Same

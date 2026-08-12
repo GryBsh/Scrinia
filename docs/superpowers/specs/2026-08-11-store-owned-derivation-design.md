@@ -36,12 +36,22 @@ not a shared routine. It is written out in two files, twice each:
 The server's append does not even match the server's own store path, which uses
 `MergeKeywordsWithSource` at `:27`. Of four implementations of one contract, it is the outlier.
 
-**This falsifies the recorded explanation for the BM25 divergence.** The closure document says
-ranking differs because "the wire carries one flat map and the server cannot distinguish agent
-attributes from carrier attributes." That is not the cause. On append the server passes `null` for
-agent keywords — it is not failing to distinguish, it is not trying. The divergence was filed as a
-wire limitation when it is duplication drift, which is why it looked unfixable: you cannot fix drift
-between two implementations by changing the wire between them.
+**The BM25 divergence has two independent causes, and only one was recorded.**
+
+The recorded one is real and correctly diagnosed, in a comment at
+`src/Scrinia.Server/Services/MemoryOrchestrator.cs:57-66`: locally `SeedTermFrequencies` runs
+*before* the carrier merge so carrier keys are never seeded, while over the wire those keys arrive
+inside one flat map and get seeded here — and a flat map cannot distinguish an agent-supplied
+attribute from a carrier one. That comment also names the fix: *"sending the two maps separately,
+which is a wire-shape change, not a reordering here."* This design is that wire-shape change.
+
+The second cause is undocumented and lives on a different path: the append drift in the table above.
+The server is not failing to distinguish agent terms there — it passes `null` and does not try.
+
+They are separate faults with separate mechanisms, and one design closes both, because both exist
+only because the derivation exists more than once. (An earlier draft of this spec claimed the
+recorded explanation was false. It was not — it was a correct account of the store path that says
+nothing about append.)
 
 ### Two: the wire loses things the local path keeps
 
