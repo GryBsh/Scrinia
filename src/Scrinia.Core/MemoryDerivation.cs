@@ -261,6 +261,100 @@ public static partial class MemoryDerivation
         return new DerivedMetadata(mergedKeywords, tf, attrs, chunkEntries, preview, fileHashes);
     }
 
+    /// <summary>
+    /// Re-derives an entry's term frequencies after a METADATA-ONLY change — an attribute or
+    /// keyword edit applied through <see cref="IMemoryStore.TryUpdateEntry"/>, with no new content.
+    ///
+    /// <para><b>Why this exists.</b> Attribute values feed the BM25 index (D-08:
+    /// <see cref="AttributeExtractor.SeedTermFrequencies"/> seeds keys and value tokens at +3), so
+    /// an attribute change that leaves term frequencies alone silently makes the entry unfindable
+    /// by its own new attribute. <c>MemoryTools.UpdateMeta</c> used to compute that boost for
+    /// itself — caller-side derivation, at a weight (+5) that disagreed with the store path's, and
+    /// invisible to every other mutation route. <c>EntityTypingEventHandler.PromoteAsync</c> and
+    /// <c>MaintenanceEventSink</c>'s ref-linking change attributes too and computed nothing, so
+    /// whether an attribute reached the index depended on which caller you came through. Worse,
+    /// over HTTP the caller-computed map could not travel at all — <c>PATCH</c> refuses
+    /// <c>TermFrequencies</c> from a body, correctly — so the same edit indexed locally and did not
+    /// index remotely, with a success reported both times.</para>
+    ///
+    /// <para><b>The rule is here and applied by whichever side holds the store</b>, i.e. inside
+    /// <see cref="IMemoryStore.TryUpdateEntry"/>. A local session applies it in
+    /// <c>FileMemoryStore</c>; a remote one sends only the attributes, and the server applies it in
+    /// the <c>FileMemoryStore</c> behind <c>PATCH</c>. No derived value crosses the wire, one
+    /// implementation serves both, and every mutation route gets it.</para>
+    ///
+    /// <para><b>Only the DELTA seeds.</b> Term frequencies are cumulative, so re-seeding the whole
+    /// attribute map on every update would inflate every token without bound and make an unedited
+    /// complete-entry round-trip — which the PATCH contract depends on being a no-op — change the
+    /// index. Only values not already present under that key are seeded. The corollary is that
+    /// REMOVING an attribute does not remove its boost: undoing a seed needs the content-derived
+    /// baseline this call does not have, and re-deriving that needs the memory's content, which a
+    /// metadata update has none of. A re-store rebuilds term frequencies from scratch and clears
+    /// it. Pre-existing behaviour, preserved deliberately rather than half-fixed here.</para>
+    /// </summary>
+    /// <returns><paramref name="updated"/> unchanged when nothing seed-worthy changed — including
+    /// the same <c>TermFrequencies</c> reference, so a caller can tell a no-op apart.</returns>
+    public static ArtifactEntry ForMetadataUpdate(ArtifactEntry current, ArtifactEntry updated)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        ArgumentNullException.ThrowIfNull(updated);
+
+        var addedAttributes = NewAttributeValues(current.Attributes, updated.Attributes);
+        string[] addedKeywords = NewKeywords(current.Keywords, updated.Keywords);
+
+        if (addedAttributes is null && addedKeywords.Length == 0)
+            return updated;
+
+        var tf = updated.TermFrequencies is not null
+            ? new Dictionary<string, int>(updated.TermFrequencies, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        // The same +3 seeding every write path uses — the function itself, not a copy of its rule.
+        AttributeExtractor.SeedTermFrequencies(addedAttributes, tf);
+
+        // A keyword added by a caller is agent-supplied by definition (+5, D-13), and it seeds its
+        // INDEX TOKENS rather than the raw string (D-14) — UpdateMeta seeded the raw string, which
+        // no tokenized query term can ever equal for a prefixed keyword.
+        if (addedKeywords.Length > 0)
+            BoostKeywords(addedKeywords, [.. addedKeywords], tf);
+
+        return updated with { TermFrequencies = tf };
+    }
+
+    /// <summary>The attribute values in <paramref name="next"/> that <paramref name="previous"/>
+    /// did not already carry under the same key, or null when there are none.</summary>
+    private static Dictionary<string, string[]>? NewAttributeValues(
+        Dictionary<string, string[]>? previous, Dictionary<string, string[]>? next)
+    {
+        if (next is not { Count: > 0 }) return null;
+
+        Dictionary<string, string[]>? added = null;
+        foreach (var (key, values) in next)
+        {
+            string[] existing = previous is not null && previous.TryGetValue(key, out var v) ? v : [];
+            string[] fresh = values
+                .Where(value => !string.IsNullOrWhiteSpace(value)
+                             && !existing.Contains(value, StringComparer.OrdinalIgnoreCase))
+                .ToArray();
+            if (fresh.Length == 0) continue;
+            added ??= new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            added[key] = fresh;
+        }
+        return added;
+    }
+
+    /// <summary>The keywords in <paramref name="next"/> that <paramref name="previous"/> did not
+    /// already carry.</summary>
+    private static string[] NewKeywords(string[]? previous, string[]? next)
+    {
+        if (next is not { Length: > 0 }) return [];
+        var existing = previous ?? [];
+        return next
+            .Where(k => !string.IsNullOrWhiteSpace(k)
+                     && !existing.Contains(k, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+    }
+
     /// <summary>Seeds each keyword's index tokens into <paramref name="tf"/> — agent terms at
     /// <see cref="AgentKeywordBoost"/>, auto-extracted terms at <see cref="AutoKeywordBoost"/>
     /// (D-13). A <c>prefix:value</c> keyword seeds its tokenized VALUE, never the monolithic

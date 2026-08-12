@@ -215,14 +215,6 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         FileHashes: item.FileHashes,
         Attributes: item.Attributes);
 
-    private static readonly JsonSerializerOptions _jsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        TypeInfoResolver = HttpStoreJsonContext.Default,
-    };
-
     public HttpMemoryStore(HttpClient http, string store = "default", TimeSpan? timeout = null,
         CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
     {

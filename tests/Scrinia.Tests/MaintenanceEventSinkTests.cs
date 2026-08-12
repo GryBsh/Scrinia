@@ -47,10 +47,23 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         targetEntry.Attributes.Should().NotBeNull();
         targetEntry.Attributes!["ref"].Should().Contain("/test/source",
             "auto-linking should add the source to the ref FIELD on the referenced target entry");
+
+        // Closes a pre-existing LOCAL inconsistency, not just the remote one: whether an attribute
+        // change reached the BM25 index used to depend on which caller made it. UpdateMeta computed
+        // a boost for itself; this sink and EntityTypingEventHandler changed attributes and computed
+        // nothing, so a ref-link was invisible to search. The rule lives in
+        // MemoryDerivation.ForMetadataUpdate now and TryUpdateEntry applies it for every route.
+        targetEntry.TermFrequencies.Should().NotBeNull()
+            .And.ContainKey("source",
+                "the ref attribute's value tokens must reach the index — the store re-derives them " +
+                "on any mutation that changes attributes, whichever caller made it");
     }
 
+    /// <summary>The orphan marker is an <c>orphan</c> ATTRIBUTE, not a keyword — see
+    /// <see cref="MaintenanceEventSink"/> for why the keyword form made this sink a no-op against
+    /// a remote store while succeeding locally.</summary>
     [Fact]
-    public async Task OrphanDetection_AddsOrphanKeyword()
+    public async Task OrphanDetection_AddsOrphanAttribute()
     {
         // Arrange — create an entry with no inbound refs from any other entry
         var store = MemoryStoreContext.Current!;
@@ -69,8 +82,13 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var entry = entries.First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        entry.Keywords.Should().Contain("orphan",
-            "an entry with no inbound references should be flagged as orphan");
+        entry.Attributes.Should().NotBeNull()
+            .And.ContainKey("orphan",
+                "an entry with no inbound references should be flagged as orphan");
+        entry.Keywords.Should().NotContain("orphan",
+            "the marker moved off the keyword list entirely — writing it there is what PATCH " +
+            "refuses, so a sink that still did it would work locally and silently do nothing " +
+            "against a remote store");
     }
 
     [Fact]
@@ -96,7 +114,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var entry = entries.First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        entry.Keywords.Should().NotContain("orphan",
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
             "an entry with inbound references should not be flagged as orphan");
     }
 
@@ -219,7 +237,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var entries = store.LoadIndex(scope);
         var entry = entries.First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-        entry.Keywords.Should().Contain("orphan", "entry should initially be flagged as orphan");
+        entry.Attributes.Should().NotBeNull().And.ContainKey("orphan",
+            "entry should initially be flagged as orphan");
 
         // Act — create a referrer and fire sink for the orphan again
         await _tools.Remember(["References [[/test/wasorphan]] here."], "/test/referrer2", keywords: ["ref:/test/wasorphan"]);
@@ -235,8 +254,8 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         entry = entries.First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        entry.Keywords.Should().NotContain("orphan",
-            "orphan keyword should be removed when inbound references exist");
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
+            "the orphan attribute should be removed when inbound references exist");
     }
 
     [Fact]
@@ -302,7 +321,7 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         var entry = entries.First(e =>
             e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
-        entry.Keywords.Should().NotContain("orphan",
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
             "an entry with an inbound ref FIELD (no legacy keyword) should not be flagged as orphan");
     }
 }

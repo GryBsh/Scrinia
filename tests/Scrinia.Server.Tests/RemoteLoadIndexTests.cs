@@ -63,6 +63,19 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         return Task.CompletedTask;
     }
 
+    /// <summary>A store client whose key carries exactly <paramref name="permissions"/> — the seam
+    /// for asserting which permissions a member actually requires, rather than discovering it in a
+    /// deployment.</summary>
+    private HttpMemoryStore NarrowKeyStore(params string[] permissions)
+    {
+        var keyStore = _factory.Services.GetRequiredService<ApiKeyStore>();
+        var (rawKey, _, _) = keyStore.CreateKey(
+            $"narrow-{Guid.NewGuid():N}", [_factory.PrimaryStore], permissions, "narrow");
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rawKey);
+        return new HttpMemoryStore(client, _factory.PrimaryStore);
+    }
+
     private async Task StoreAsync(string name, string body,
         Dictionary<string, string[]>? attributes = null, string[]? keywords = null)
     {
@@ -183,6 +196,185 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         reloaded.Attributes.Should().ContainKey("mention",
             because: "a PATCH replaces the attribute map with the caller's edited copy — it must " +
                      "not drop the keys the caller left alone");
+    }
+
+    /// <summary>
+    /// The measured Critical this task's first pass shipped: <c>update()</c> and <c>link()</c>
+    /// reported full success remotely while silently discarding the BM25 boost they had computed
+    /// for the attribute they just added — measured <c>returned=True; attributesPersisted=True;
+    /// tfHasAcme=False</c>. Term frequencies are what BM25 scores against, so the entry became
+    /// permanently unfindable by its own new attribute, and a remote corpus ranked differently from
+    /// a local one forever, with nothing anywhere to say so.
+    ///
+    /// <para>It could not be fixed by letting the boost travel: <c>PATCH</c> refuses
+    /// <c>TermFrequencies</c> from a body, deliberately and correctly, so a client must not be
+    /// computing one at all. The rule moved into <c>MemoryDerivation.ForMetadataUpdate</c> and is
+    /// applied inside <c>TryUpdateEntry</c> by whichever side holds the store — here, the server's
+    /// own <c>FileMemoryStore</c> behind the PATCH handler.</para>
+    ///
+    /// <para>Read back with a fresh <c>LoadIndex</c>, never the returned value: the whole failure
+    /// mode was a truthful-looking return over a write that had not fully happened.</para>
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEntry_ReDerivesTermFrequencies_WhenAMutationAddsAnAttribute()
+    {
+        await StoreAsync("tf-rederive-probe", "probe body for term frequency re-derivation");
+
+        bool updated = _remote.TryUpdateEntry("tf-rederive-probe", "local", entry => entry with
+        {
+            Attributes = new Dictionary<string, string[]>(
+                entry.Attributes ?? [], StringComparer.OrdinalIgnoreCase) { ["person"] = ["zanzibar"] },
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        updated.Should().BeTrue();
+
+        var reloaded = _remote.LoadIndex("local").Single(e => e.Name == "tf-rederive-probe");
+        reloaded.Attributes.Should().ContainKey("person");
+        reloaded.TermFrequencies.Should().NotBeNull()
+            .And.ContainKey("zanzibar",
+                because: "the attribute's value tokens must reach the BM25 index. Reporting the " +
+                         "write as successful while the index never learned the term is the " +
+                         "silent divergence this closes — the entry would be unfindable by the " +
+                         "very attribute the caller just added");
+    }
+
+    /// <summary>
+    /// The same mutation, on a local <c>FileMemoryStore</c> and on the remote store, must produce
+    /// the same term-frequency delta. Asserting the remote side alone would pass against a remote
+    /// store that seeded at some other weight than the local one — which is exactly what the code
+    /// this replaced did (<c>UpdateMeta</c> seeded attributes at +5 while every store write path
+    /// seeded at +3), so "it indexes something" is not the property worth pinning. "Both backends
+    /// agree" is.
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEntry_TermFrequencyReDerivation_AgreesWithTheLocalStore()
+    {
+        const string body = "probe body for local/remote term frequency parity";
+        await StoreAsync("tf-parity-probe", body);
+
+        using var localDir = new TempStoreDir();
+        using var local = new Scrinia.Core.FileMemoryStore(localDir.Path);
+        await local.StoreAsync(new MemoryWrite("tf-parity-probe", "local", [body], body));
+
+        static ArtifactEntry Mutate(ArtifactEntry entry) => entry with
+        {
+            Attributes = new Dictionary<string, string[]>(
+                entry.Attributes ?? [], StringComparer.OrdinalIgnoreCase) { ["person"] = ["zanzibar"] },
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+
+        var before = local.LoadIndex("local").Single(e => e.Name == "tf-parity-probe");
+        local.TryUpdateEntry("tf-parity-probe", "local", Mutate).Should().BeTrue();
+        _remote.TryUpdateEntry("tf-parity-probe", "local", Mutate).Should().BeTrue();
+
+        var localAfter = local.LoadIndex("local").Single(e => e.Name == "tf-parity-probe");
+        var remoteAfter = _remote.LoadIndex("local").Single(e => e.Name == "tf-parity-probe");
+
+        // Asserted before the arithmetic below so a store that derives nothing fails as a stated
+        // expectation rather than as a KeyNotFoundException out of the indexer.
+        localAfter.TermFrequencies.Should().NotBeNull().And.ContainKey("zanzibar",
+            because: "the local store must seed the new attribute value — if it does not, there is " +
+                     "no baseline to compare the remote one against and this test proves nothing");
+        remoteAfter.TermFrequencies.Should().NotBeNull().And.ContainKey("zanzibar");
+
+        // The delta, not the absolute map: the two stores derived their baselines from the same
+        // content but the fixture's remote write went through a different entry point, so only the
+        // change this mutation caused is meaningfully comparable.
+        int localDelta = localAfter.TermFrequencies!["zanzibar"]
+            - (before.TermFrequencies?.TryGetValue("zanzibar", out int b) == true ? b : 0);
+        remoteAfter.TermFrequencies!["zanzibar"].Should().Be(localDelta,
+            because: "one rule, one implementation, applied by whichever side holds the store — a " +
+                     "remote metadata write must weight the index exactly as the local one does");
+    }
+
+    /// <summary>
+    /// <c>MaintenanceEventSink</c>'s orphan branch was a silent no-op against a remote store: both
+    /// of its sub-branches returned <c>Keywords = …</c>, <c>PATCH</c> refuses a keyword change,
+    /// <c>TryUpdateEntry</c> returned <c>false</c>, and the call site discarded it. Locally the
+    /// entry got marked; remotely it never did, so <c>search</c>/<c>list</c> answered differently
+    /// on the two backends with nothing to explain why.
+    ///
+    /// <para>Closed by moving the marker to an <c>orphan</c> ATTRIBUTE — see the sink's own doc for
+    /// why that is the right carrier and not a workaround. This drives the real sink against the
+    /// real remote store and asserts the marker on a fresh read, which is the only thing that can
+    /// tell "it works remotely" apart from "it returned without complaining".</para>
+    /// </summary>
+    [Fact]
+    public async Task MaintenanceSink_MarksAnOrphan_ThroughTheRemoteStore()
+    {
+        const string body = "isolated content with no inbound references";
+        await StoreAsync("orphan-remote-probe", body);
+
+        await new MaintenanceEventSink().OnStoredAsync(
+            "orphan-remote-probe", [body], _remote, CancellationToken.None);
+
+        var entry = _remote.LoadIndex("local").Single(e => e.Name == "orphan-remote-probe");
+        entry.Attributes.Should().NotBeNull().And.ContainKey("orphan",
+            because: "the marker must reach the server. As a keyword it could not: PATCH refuses a " +
+                     "keyword change, so this write 400'd and was discarded while the identical " +
+                     "local write succeeded");
+        entry.Keywords.Should().NotContain("orphan",
+            because: "the sink must not be writing keywords at all — that is the carrier the wire " +
+                     "correctly refuses, and using it is what made this remote-only dead code");
+    }
+
+    /// <summary>
+    /// <c>TryUpdateEntry</c> changed which permissions it needs, and that is a deployment-visible
+    /// fact worth stating in the suite rather than leaving to be discovered. It used to read
+    /// through <c>LoadIndex</c>, which needs <c>search</c>; it now uses
+    /// <c>GET /memories/{name}/entry</c> (<c>read</c>) and <c>PATCH /memories/{name}</c>
+    /// (<c>store</c>). The new requirements are the correct semantics — a metadata WRITE should
+    /// need a write permission — and nothing depended on the old ones, because the whole remote
+    /// metadata write was refused before this branch.
+    ///
+    /// <para>It <b>throws</b> rather than returning <c>false</c>, deliberately: a caller must not
+    /// read "you are not allowed to do this" as "the entry was not there" or "the mutation was
+    /// refused". That is the same distinction <c>LoadIndex</c> throws to preserve, and this method
+    /// inherited the obligation when it took over that read.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("search", "store")]  // no `read` — the GET is refused
+    [InlineData("read", "search")]   // no `store` — the PATCH is refused
+    public async Task TryUpdateEntry_ThrowsOnAKeyMissingAPermissionItNeeds(params string[] permissions)
+    {
+        await StoreAsync("permission-probe", "probe body for permissions");
+        using var narrow = NarrowKeyStore(permissions);
+
+        var act = () => narrow.TryUpdateEntry("permission-probe", "local", e => e with
+        {
+            Attributes = new Dictionary<string, string[]>(
+                e.Attributes ?? [], StringComparer.OrdinalIgnoreCase) { ["person"] = ["nobody"] },
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        act.Should().Throw<HttpRequestException>()
+            .Which.StatusCode.Should().Be(System.Net.HttpStatusCode.Forbidden,
+                because: "a permission failure is not a refusal of the mutation and must not be " +
+                         "reported as one — returning false here would make a misconfigured key " +
+                         "look like a store that declined the write");
+    }
+
+    /// <summary>The positive half: a key carrying exactly <c>read</c> + <c>store</c> — and NOT
+    /// <c>search</c>, which the replaced <c>LoadIndex</c> read required — completes the update.
+    /// Without this, the theory above is satisfied by an implementation that throws for every key.
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEntry_SucceedsWithReadAndStoreAlone()
+    {
+        await StoreAsync("permission-sufficient-probe", "probe body for sufficient permissions");
+        using var narrow = NarrowKeyStore("read", "store");
+
+        bool updated = narrow.TryUpdateEntry("permission-sufficient-probe", "local", e => e with
+        {
+            Attributes = new Dictionary<string, string[]>(
+                e.Attributes ?? [], StringComparer.OrdinalIgnoreCase) { ["person"] = ["somebody"] },
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        updated.Should().BeTrue(
+            because: "read + store is the complete set this member needs — `search` is no longer " +
+                     "among them, and requiring it would be a permission this path does not use");
     }
 
     /// <summary>
@@ -514,6 +706,21 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         // Contain, not equality — same reasoning as LoadIndex_CarriesKeywords: MemoryOrchestrator
         // merges agent keywords with auto-extracted ones, so the stored set is a superset.
         scoped.Entry.Keywords!.Should().Contain("zebra");
+    }
+}
+
+/// <summary>A self-deleting temp directory for a local <c>FileMemoryStore</c> used as the
+/// comparison side of a local/remote parity assertion.</summary>
+internal sealed class TempStoreDir : IDisposable
+{
+    public string Path { get; } = System.IO.Path.Combine(
+        System.IO.Path.GetTempPath(), "scrinia-parity-" + Guid.NewGuid().ToString("N")[..8]);
+
+    public TempStoreDir() => Directory.CreateDirectory(Path);
+
+    public void Dispose()
+    {
+        try { Directory.Delete(Path, recursive: true); } catch { /* best-effort cleanup */ }
     }
 }
 

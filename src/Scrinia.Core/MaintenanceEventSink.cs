@@ -7,9 +7,36 @@ namespace Scrinia.Core;
 /// Automatic memory maintenance: creates bidirectional ref links (via <c>Attributes["ref"]</c>)
 /// when content references other memories, and flags orphan memories with no inbound
 /// references (dual-reading legacy <c>ref:</c> keywords alongside the ref attribute).
+///
+/// <para><b>The orphan marker is an ATTRIBUTE, not a keyword.</b> It used to be the bare keyword
+/// <c>"orphan"</c>, which made this sink unable to do half its job against a remote store:
+/// <c>PATCH /memories/{name}</c> refuses a body that changes <c>Keywords</c> — deliberately, and
+/// that refusal stays, because keywords are derived from a memory's CONTENT and a metadata
+/// endpoint has none to re-derive from — so every orphan write over HTTP came back 400 and was
+/// discarded, while the identical local write succeeded. Same tool, same input, two corpora that
+/// disagree, with nothing to explain why.</para>
+///
+/// <para>Orphan-ness is not content-derived; it is a corpus-level fact about inbound references,
+/// and it was only ever in the keyword list because that list happened to be searchable. As an
+/// attribute it is caller-owned metadata that <c>PATCH</c> accepts, so local and remote now behave
+/// identically — and it gains an <c>attributeFilter</c> the magic keyword never had. It stays
+/// searchable by the word "orphan" because attribute keys and values seed the term-frequency index
+/// (D-08), which a metadata update now re-derives (<see cref="MemoryDerivation.ForMetadataUpdate"/>).</para>
+/// <para>Entries written before this carry the legacy <c>orphan</c> KEYWORD. It is not read and not
+/// removed — removing it needs a keyword write, which is exactly what neither backend should be
+/// doing here. It decays on the entry's next re-store, and until then it is stale search noise on
+/// BOTH backends equally: a pre-existing data artifact, not a local/remote divergence.</para>
 /// </summary>
 public sealed class MaintenanceEventSink : IMemoryEventSink
 {
+    /// <summary>Attribute key carrying the orphan marker. Scalar (not in
+    /// <c>KnownAttributes</c>'s multi-valued set), so marking replaces rather than accumulates.</summary>
+    internal const string OrphanKey = "orphan";
+
+    /// <summary>The marker's only value. Presence of the key is what makes an entry an orphan; the
+    /// value exists so the attribute has something to match in an <c>attributeFilter</c>.</summary>
+    internal const string OrphanValue = "true";
+
     public async Task OnStoredAsync(string qualifiedName, string[] content, IMemoryStore store, CancellationToken ct)
     {
         try
@@ -97,23 +124,40 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                     && sa.Entry.Attributes.TryGetValue("ref", out var refs)
                     && refs.Any(v => v.Equals(sourceQualified, StringComparison.OrdinalIgnoreCase))));
 
-            store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
+            bool orphanWriteAttempted = false;
+            bool orphanWritePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
             {
-                var currentKw = sourceEntry.Keywords?.ToList() ?? [];
-                bool isOrphan = currentKw.Any(k => k.Equals("orphan", StringComparison.OrdinalIgnoreCase));
+                bool isOrphan = sourceEntry.Attributes is not null
+                    && sourceEntry.Attributes.ContainsKey(OrphanKey);
 
                 if (!hasInboundRefs && !isOrphan)
                 {
-                    currentKw.Add("orphan");
-                    return sourceEntry with { Keywords = currentKw.ToArray() };
+                    orphanWriteAttempted = true;
+                    return sourceEntry with
+                    {
+                        Attributes = KnownAttributes.Merge(
+                            sourceEntry.Attributes, new() { [OrphanKey] = [OrphanValue] }),
+                    };
                 }
                 if (hasInboundRefs && isOrphan)
                 {
-                    currentKw.RemoveAll(k => k.Equals("orphan", StringComparison.OrdinalIgnoreCase));
-                    return sourceEntry with { Keywords = currentKw.ToArray() };
+                    orphanWriteAttempted = true;
+                    var cleared = new Dictionary<string, string[]>(
+                        sourceEntry.Attributes!, StringComparer.OrdinalIgnoreCase);
+                    cleared.Remove(OrphanKey);
+                    return sourceEntry with { Attributes = cleared.Count > 0 ? cleared : null };
                 }
                 return null; // nothing to change
             });
+
+            // A refusal must not be silent. Everything else this sink does is best-effort by
+            // design, but "the store would not take the write" is a different thing from "there
+            // was nothing to write", and the two used to be indistinguishable because the result
+            // was discarded. Same channel this class already reports its own failures on.
+            if (orphanWriteAttempted && !orphanWritePersisted)
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] MaintenanceEventSink: the store refused the orphan marker for " +
+                    $"'{sourceQualified}'. Its '{OrphanKey}' attribute is now out of date.");
         }
         catch
         {

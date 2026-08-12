@@ -162,10 +162,39 @@ public sealed class PatchEndpointTests : IAsyncLifetime
         var reGet = await _client.GetAsync($"{_base}/memories/patch-derived-survival-probe/entry");
         var reread = await reGet.Content.ReadFromJsonAsync<MemoryEntry>();
 
-        reread!.TermFrequencies.Should().BeEquivalentTo(entry.TermFrequencies,
-            because: "the server must keep its own derived term frequencies, not the caller-forged ones");
-        reread.TermFrequencies.Should().NotContainKey("poison",
+        reread!.TermFrequencies.Should().NotContainKey("poison",
             because: "the forged key must never reach storage — this is what a round-trip-only test cannot catch");
+
+        // Every term the store had derived for itself survives, and never loses weight. This used
+        // to be a whole-map equality assertion, which can no longer hold: a legitimate attribute
+        // change now legitimately re-seeds the affected key and its new values
+        // (MemoryDerivation.ForMetadataUpdate), so "mention" gains +3. Survival-with-no-loss is the
+        // form that still fails if the handler adopts the body's map, because the forged map
+        // contains none of these terms at all.
+        foreach (var (term, count) in entry.TermFrequencies!)
+        {
+            reread.TermFrequencies.Should().ContainKey(term,
+                because: "the server's own derived term frequencies must survive a metadata patch " +
+                         "— the caller's map must not replace them");
+            reread.TermFrequencies![term].Should().BeGreaterOrEqualTo(count,
+                because: "a metadata update only ever ADDS weight for what it changed; nothing it " +
+                         "does may take weight away from a term derived from the content");
+        }
+
+        // A content term untouched by the patch keeps its EXACT count. Without this the assertion
+        // above would tolerate a handler that rebuilt the whole map from something else and merely
+        // happened to score higher everywhere.
+        reread.TermFrequencies!["apricot"].Should().Be(entry.TermFrequencies["apricot"],
+            because: "the patch changed an attribute, not the content — a term the change does not " +
+                     "touch must come back bit-for-bit");
+
+        // And the legitimate attribute change DID re-seed, server-side. Without this the test
+        // passes just as well against a server that ignores attributes for indexing entirely,
+        // which is the defect that made a remote update() silently unfindable by its own new
+        // attribute while reporting success.
+        reread.TermFrequencies.Should().ContainKey("survives",
+            because: "the promoted attribute's value tokens must reach the BM25 index, and only " +
+                     "the store can put them there — the wire refuses TermFrequencies from a body");
         reread.ChunkEntries.Should().BeEquivalentTo(entry.ChunkEntries,
             because: "the server must keep its own derived chunk entries, not the caller-forged ones");
         reread.FileHashes.Should().BeEquivalentTo(entry.FileHashes,

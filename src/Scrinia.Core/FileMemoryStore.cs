@@ -1121,6 +1121,12 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             var updated = mutate(current);
             if (updated is null) return false;
 
+            // The store owns derivation, including on a metadata-only write — see
+            // IMemoryStore.TryUpdateEntry. This is the local half of "whichever side holds the
+            // store applies it"; the remote half is this same call, reached through the server's
+            // PATCH handler, on the server's own FileMemoryStore.
+            updated = MemoryDerivation.ForMetadataUpdate(current, updated);
+
             WriteSidecar(updated, storeDir);
 
             _indexCache.TryRemove(scope, out _);

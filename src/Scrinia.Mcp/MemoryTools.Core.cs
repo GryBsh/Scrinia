@@ -577,44 +577,19 @@ public sealed partial class ScriniaMcpTools
                 ? description
                 : entry.ContentPreview;
 
-            // Build the updated entry via term frequencies merge
-            var updatedTf = entry.TermFrequencies;
-            if (plainAdds is { Length: > 0 } && addedCount > 0)
-            {
-                var tf = entry.TermFrequencies is not null
-                    ? new Dictionary<string, int>(entry.TermFrequencies)
-                    : new Dictionary<string, int>();
-                var existing = entry.Keywords ?? [];
-                foreach (string kw in plainAdds)
-                {
-                    if (!existing.Contains(kw, StringComparer.OrdinalIgnoreCase))
-                    {
-                        tf.TryGetValue(kw, out int count);
-                        tf[kw] = count + 5;
-                    }
-                }
-                updatedTf = tf;
-            }
-
-            if (routedAttributes is not null)
-            {
-                var tfForAttributes = updatedTf is not null
-                    ? new Dictionary<string, int>(updatedTf) : new Dictionary<string, int>();
-                // Agent-curated attributes seed at +5, matching agent keywords (not the +3 auto rate).
-                foreach (var kv in routedAttributes)
-                    foreach (string v in kv.Value)
-                        foreach (string token in TextAnalysis.Tokenize(v))
-                        {
-                            tfForAttributes.TryGetValue(token, out int c);
-                            tfForAttributes[token] = c + 5;
-                        }
-                updatedTf = tfForAttributes;
-            }
-
+            // TermFrequencies is deliberately NOT set here. This block used to compute the BM25
+            // boost for the added keywords and attributes itself — caller-side derivation, at a
+            // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
+            // strings rather than index tokens (against D-14), and reachable only through this one
+            // tool. Over HTTP it could not persist at all: PATCH refuses TermFrequencies from a
+            // body, correctly, so update() and link() reported full success while silently
+            // discarding the boost, and a remote corpus ranked differently from a local one
+            // forever. The store re-derives it now, in MemoryDerivation.ForMetadataUpdate, applied
+            // inside TryUpdateEntry by whichever side holds the store — so every mutation route
+            // gets it and nothing derived crosses the wire.
             var updated = entry with
             {
                 Keywords = mergedKeywords,
-                TermFrequencies = updatedTf,
                 Attributes = mergedAttributes,
                 ContentPreview = updatedContentPreview,
                 UpdatedAt = DateTimeOffset.UtcNow

@@ -72,6 +72,16 @@ public interface IMemoryStore
     /// <paramref name="mutate"/>, and persist the result. Returns false when the entry is missing or
     /// <paramref name="mutate"/> returns null (no write). Fires NO event sinks — it is the seam the
     /// async typing sink uses to write promotions back without re-entering the sink pipeline.
+    ///
+    /// <para><b>The store re-derives term frequencies from the mutation; the caller must not.</b>
+    /// Attribute values feed the BM25 index, so a mutation that adds one and leaves
+    /// <c>TermFrequencies</c> alone makes the entry unfindable by its own new attribute. Every
+    /// implementation runs <see cref="MemoryDerivation.ForMetadataUpdate"/> over
+    /// <c>(current, mutated)</c> before persisting — which is what makes this member behave the
+    /// same however the mutation arrived, and the same whether the store is local or remote (a
+    /// remote store sends the attributes and the server's store derives). A caller that computes
+    /// the boost itself has re-created the defect this branch exists to remove; three of them did,
+    /// each differently, and one of the three could not persist it over HTTP at all.</para>
     /// <para>Default implementation is a non-atomic load→mutate→Upsert, adequate for in-memory/test
     /// stores with no concurrent writers. FileMemoryStore overrides it to run under its per-scope
     /// write lock.</para>
@@ -91,7 +101,7 @@ public interface IMemoryStore
         if (current is null) return false;
         var updated = mutate(current);
         if (updated is null) return false;
-        Upsert(updated, scope);
+        Upsert(MemoryDerivation.ForMetadataUpdate(current, updated), scope);
         return true;
     }
 

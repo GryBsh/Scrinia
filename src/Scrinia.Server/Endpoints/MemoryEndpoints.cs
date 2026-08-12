@@ -93,7 +93,16 @@ public static class MemoryEndpoints
         // Both bounds run through the shared ValidateAttributeBounds rather than a private copy, so
         // the append path below — which now carries an attribute map too — cannot drift into a
         // laxer version of the same guard.
-        if (ValidateAttributeBounds(req.Attributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
+        //
+        // Normalized first, matching PatchEntry (R-6). Normalize can only ever SHRINK a map
+        // (case-insensitive key dedupe, trimming, dropping blanks), so a body that is over-bounds
+        // raw but within bounds normalized — two keys differing only by case, right at the cap —
+        // was rejected here and accepted by PATCH. The store would have accepted either; a bound
+        // that refuses a map the server's own write path produces is I-1's lesson, and the two
+        // endpoints disagreeing about the same map is the same defect wearing a second hat.
+        if (ValidateAttributeBounds(
+                KnownAttributes.Normalize(req.Attributes),
+                KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
             is { } storeBoundsError)
             return Results.BadRequest(new ErrorResponse(storeBoundsError));
 
@@ -235,7 +244,13 @@ public static class MemoryEndpoints
     /// <para><b>What the body may NOT change:</b> <c>TermFrequencies</c>, <c>ChunkEntries</c>,
     /// <c>FileHashes</c>, <c>ChunkCount</c>, <c>OriginalBytes</c>, <c>CreatedAt</c> are never
     /// assigned from the body even though it carries values for all of them (I-5's mutation-tested
-    /// guard: wiring any of these through must fail the derived-fields test). <c>Keywords</c> is the
+    /// guard: wiring any of these through must fail the derived-fields test).
+    /// <b><c>TermFrequencies</c> does still CHANGE here</b> — just not from the body: attribute
+    /// values feed the BM25 index, so <see cref="IMemoryStore.TryUpdateEntry"/> re-derives them
+    /// from the attributes accepted above, via <see cref="MemoryDerivation.ForMetadataUpdate"/>.
+    /// That is the store deriving, not the caller dictating, and it is what stops a remote
+    /// <c>update()</c> from succeeding while leaving the entry unfindable by the attribute it just
+    /// added. A caller-supplied map is still discarded whole. <c>Keywords</c> is the
     /// one field that looks caller-owned but is not: <see cref="IMemoryStore"/>'s own contract says
     /// a caller that computes keywords "has re-created the defect this branch exists to remove," and
     /// unlike <c>Description</c>/<c>Attributes</c>, the store's actual keyword pipeline
@@ -456,11 +471,14 @@ public static class MemoryEndpoints
         if (System.Text.Encoding.UTF8.GetByteCount(req.Content) > MaxContentBytes)
             return Results.BadRequest(new ErrorResponse($"Content must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
-        // The same attribute bounds POST /memories enforces. AppendRequest carries an attribute map
-        // now (it used to carry Content alone), and an unbounded map on this path would be a hole
-        // straight around the guard on the other one — the append endpoint reaches the identical
-        // KnownAttributes.Merge, which truncates past MaxAttributes with no signal.
-        if (ValidateAttributeBounds(req.Attributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
+        // The same attribute bounds POST /memories enforces, normalized first for the same reason.
+        // AppendRequest carries an attribute map now (it used to carry Content alone), and an
+        // unbounded map on this path would be a hole straight around the guard on the other one —
+        // the append endpoint reaches the identical KnownAttributes.Merge, which truncates past
+        // MaxAttributes with no signal.
+        if (ValidateAttributeBounds(
+                KnownAttributes.Normalize(req.Attributes),
+                KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
             is { } appendBoundsError)
             return Results.BadRequest(new ErrorResponse(appendBoundsError));
 

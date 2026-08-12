@@ -526,4 +526,103 @@ public sealed class MemoryDerivationTests
         // applies to the appended chunk too — null, not "".
         derived.ChunkEntries![^1].ContentPreview.Should().BeNull();
     }
+
+    // ── ForMetadataUpdate: the metadata-only write, with no content to derive from ──────────
+
+    private static ArtifactEntry Entry(
+        Dictionary<string, string[]>? attributes = null,
+        string[]? keywords = null,
+        Dictionary<string, int>? termFrequencies = null) =>
+        new("probe", "", 10, 1, DateTimeOffset.UnixEpoch,
+            Keywords: keywords,
+            TermFrequencies: termFrequencies,
+            Attributes: attributes);
+
+    /// <summary>The Critical this exists to close: an attribute added by a metadata-only mutation
+    /// must reach the BM25 index, or the entry becomes unfindable by the very attribute the caller
+    /// just added — silently, since the write itself succeeds.</summary>
+    [Fact]
+    public void ForMetadataUpdate_SeedsAValueAddedByTheMutation()
+    {
+        var current = Entry(termFrequencies: new() { ["body"] = 4 });
+        var updated = Entry(
+            attributes: new() { ["person"] = ["zanzibar"] },
+            termFrequencies: new() { ["body"] = 4 });
+
+        var result = MemoryDerivation.ForMetadataUpdate(current, updated);
+
+        result.TermFrequencies.Should().ContainKey("zanzibar");
+        result.TermFrequencies!["body"].Should().Be(4,
+            because: "seeding the change must not disturb what the content derived");
+    }
+
+    /// <summary>At the SAME weight every write path uses (D-08's +3 via
+    /// <c>AttributeExtractor.SeedTermFrequencies</c>), not a second number. <c>UpdateMeta</c> used
+    /// +5 here, so the identical attribute ranked differently depending on whether it arrived
+    /// through <c>update()</c> or through <c>remember()</c>.</summary>
+    [Fact]
+    public void ForMetadataUpdate_SeedsAtTheSameWeightTheWritePathsUse()
+    {
+        var current = Entry();
+        var updated = Entry(attributes: new() { ["person"] = ["zanzibar"] });
+
+        var result = MemoryDerivation.ForMetadataUpdate(current, updated);
+
+        // The key seeds too, exactly as SeedTermFrequencies does on a store write.
+        result.TermFrequencies!["zanzibar"].Should().Be(3);
+        result.TermFrequencies["person"].Should().Be(3);
+    }
+
+    /// <summary>
+    /// The invariant the whole PATCH contract rests on: an unedited complete-entry round-trip is a
+    /// no-op. Term frequencies are cumulative, so re-seeding the whole attribute map on every
+    /// update would inflate every token without bound — a caller who GETs an entry and PATCHes it
+    /// back unchanged, which the wire shape exists to make safe, would silently re-rank it.
+    /// </summary>
+    [Fact]
+    public void ForMetadataUpdate_IsANoOp_WhenNothingChanged()
+    {
+        var attributes = new Dictionary<string, string[]> { ["person"] = ["zanzibar"] };
+        var tf = new Dictionary<string, int> { ["zanzibar"] = 3 };
+        var current = Entry(attributes: attributes, termFrequencies: tf);
+        var updated = Entry(attributes: attributes, termFrequencies: tf);
+
+        var result = MemoryDerivation.ForMetadataUpdate(current, updated);
+
+        result.TermFrequencies.Should().BeSameAs(tf,
+            because: "an unchanged round-trip must not even rebuild the map, let alone re-seed it");
+    }
+
+    /// <summary>A mutation that changes something else entirely — the orphan marker's removal, a
+    /// preview edit — must not touch the index either.</summary>
+    [Fact]
+    public void ForMetadataUpdate_IgnoresAChangeThatRemovesAValue()
+    {
+        var tf = new Dictionary<string, int> { ["zanzibar"] = 3 };
+        var current = Entry(attributes: new() { ["person"] = ["zanzibar"] }, termFrequencies: tf);
+        var updated = Entry(termFrequencies: tf);
+
+        var result = MemoryDerivation.ForMetadataUpdate(current, updated);
+
+        // Documented, not accidental: undoing a seed needs the content-derived baseline this call
+        // does not have. A re-store rebuilds term frequencies from scratch and clears it.
+        result.TermFrequencies.Should().BeSameAs(tf);
+    }
+
+    /// <summary>A keyword added by a caller is agent-supplied by definition (+5, D-13), and seeds
+    /// its INDEX TOKENS rather than the raw string (D-14) — <c>UpdateMeta</c> seeded the raw
+    /// string, which no tokenized query term can equal for a prefixed keyword.</summary>
+    [Fact]
+    public void ForMetadataUpdate_BoostsAnAddedKeywordsIndexTokens()
+    {
+        var current = Entry(keywords: ["alpha"]);
+        var updated = Entry(keywords: ["alpha", "bravo"]);
+
+        var result = MemoryDerivation.ForMetadataUpdate(current, updated);
+
+        result.TermFrequencies!["bravo"].Should().Be(5);
+        result.TermFrequencies.Should().NotContainKey("alpha",
+            because: "only the DELTA seeds — a keyword the entry already carried was already " +
+                     "counted when it arrived");
+    }
 }

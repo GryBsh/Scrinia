@@ -191,6 +191,41 @@ public sealed class StoreAttributesWireTests
                      "rejecting it made remote reject content the local store accepts");
     }
 
+    /// <summary>
+    /// <c>POST</c> and <c>PATCH</c> must agree about the same map. <c>PatchEntry</c> normalizes
+    /// before bounds-checking (R-6) and this path did not, so a body carrying two keys that differ
+    /// only by case, right at the cap, was rejected here and accepted there — the same map, two
+    /// answers. Normalize can only ever SHRINK a map (case-insensitive key dedupe, trimming,
+    /// dropping blanks), so checking the raw form rejects maps the server's own write path would
+    /// happily produce, which is I-1's lesson wearing a second hat.
+    /// </summary>
+    [Fact]
+    public async Task Store_accepts_a_map_that_is_only_over_the_key_cap_before_normalization()
+    {
+        using var factory = new ScriniaServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+
+        // Exactly MaxAttributes distinct keys, plus a case-variant duplicate of one of them:
+        // MaxAttributes + 1 raw, MaxAttributes after normalization.
+        int max = Scrinia.Core.Search.KnownAttributes.MaxAttributes;
+        var pairs = Enumerable.Range(0, max).Select(i => $"\"k{i}\":[\"v\"]").ToList();
+        pairs.Add("\"K0\":[\"v2\"]");
+
+        var resp = await client.PostAsync(
+            $"/api/v1/stores/{factory.PrimaryStore}/memories",
+            Json($$"""
+                  {
+                    "content": ["case-variant key probe"],
+                    "name": "wire-attributes-case-variant-key",
+                    "attributes": { {{string.Join(",", pairs)}} }
+                  }
+                  """));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Created,
+            because: "the map normalizes to exactly the cap, and PATCH accepts the identical body " +
+                     "— the two endpoints must not disagree about what fits");
+    }
+
     // ── The append path, which grew an attribute map of its own ────────────────
 
     /// <summary>
