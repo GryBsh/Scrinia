@@ -262,6 +262,48 @@ public static partial class MemoryDerivation
     }
 
     /// <summary>
+    /// The subset of <paramref name="keywords"/> that is PROVABLY agent-supplied, recovered by
+    /// subtracting what <see cref="TextAnalysis.AnalyzeText"/> extracts from the content the list
+    /// was derived over. For a rewrite of a memory's own content — compaction — this is the answer
+    /// to "which of these did the agent actually give me?", and it is the FIRST option D-29 names
+    /// ("only the memory's genuinely-curated keywords, or none").
+    ///
+    /// <para><b>Why a caller cannot just hand its stored list back.</b> A persisted
+    /// <c>Keywords</c> array is the MERGE of the agent's list with the auto-extracted terms, with
+    /// no record of which was which. Re-entering it as <see cref="MemoryWrite.Keywords"/>
+    /// reclassifies every auto term as agent-supplied and seeds it at +5 instead of +2 — on every
+    /// rewrite, compounding (D-01). Passing nothing avoids that but drops the curated terms
+    /// outright. This is the third answer: hand back only what is provably not auto.</para>
+    ///
+    /// <para><b>What it recovers, exactly.</b> Every returned keyword is certainly curated: a term
+    /// <see cref="TextAnalysis.AnalyzeText"/> does not extract from this content cannot have
+    /// entered the list any other way. The converse does NOT hold, and this is the limit worth
+    /// knowing: a curated keyword that is ALSO one of the content's top-ranked terms is
+    /// indistinguishable from an auto one and is not returned, so it keeps its place in the
+    /// rewritten list (the content still yields it) but at auto weight. The provenance to do
+    /// better was destroyed when the merged list was persisted; recovering it would need a stored
+    /// agent-set flag, not a cleverer subtraction. Reconstructing the boost arithmetically from
+    /// <c>TermFrequencies</c> is NOT a sound instrument either — attribute seeding (+3) lands in
+    /// the same dictionary, and a multi-word keyword seeds its index tokens rather than itself.</para>
+    /// </summary>
+    /// <param name="keywords">The entry's persisted keyword list.</param>
+    /// <param name="content">The chunks the list was derived over — for a compaction, the memory's
+    /// content BEFORE it is rewritten. Joined the way <see cref="ForStore"/> joins it.</param>
+    public static string[] CuratedKeywords(string[]? keywords, string[] content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        if (keywords is not { Length: > 0 })
+            return [];
+
+        var (autoKeywords, _) = TextAnalysis.AnalyzeText(string.Concat(content));
+        var auto = new HashSet<string>(autoKeywords, StringComparer.OrdinalIgnoreCase);
+
+        return [.. keywords
+            .Where(k => !string.IsNullOrWhiteSpace(k) && !auto.Contains(k.Trim()))
+            .Select(k => k.Trim())];
+    }
+
+    /// <summary>
     /// Re-derives an entry's term frequencies after a METADATA-ONLY change — an attribute or
     /// keyword edit applied through <see cref="IMemoryStore.TryUpdateEntry"/>, with no new content.
     ///
@@ -411,8 +453,16 @@ public static partial class MemoryDerivation
     /// attribute"; keeping local-zone parsing would reopen it in a new coat, one machine at a time.
     /// This technically departs from D-06's "keep MCP", on the grounds that MCP's output is
     /// machine-dependent and therefore not a well-defined target to keep.</para>
+    ///
+    /// <para><b>Public because a review date has one parse, not one per writer.</b> Every path
+    /// that turns caller text into a persisted <c>review</c> value calls this: the two derivation
+    /// entry points above, and <c>MemoryTools.UpdateMeta</c>, which is the metadata-only writer and
+    /// therefore reaches none of them. It kept its own <c>DateTimeOffset.TryParse</c> for one task
+    /// longer than the rest, which meant the same <c>"2026-08-01"</c> persisted as UTC through
+    /// <c>remember()</c> and as the machine's local zone through <c>update()</c> — the same defect
+    /// this ruling exists to remove, one caller over.</para>
     /// </summary>
-    private static bool TryParseReviewDate(string value, out DateTimeOffset parsed) =>
+    public static bool TryParseReviewDate(string value, out DateTimeOffset parsed) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsed);
 

@@ -2759,8 +2759,47 @@ public sealed class ScriniaMcpToolsTests
         review.Should().HaveCount(2);
         AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out _).Should().BeTrue();
         reviewDate.Should().NotBeNull();
-        DateTimeOffset.Parse(review[0]).Should().Be(DateTimeOffset.Parse("2026-08-01"));
+        // UTC, on every machine — update() parses a review date through the same
+        // MemoryDerivation.TryParseReviewDate rule the write paths use. This assertion used to read
+        // DateTimeOffset.Parse("2026-08-01"), which resolves in the machine's LOCAL zone and so
+        // matched update()'s own local-zone parse: it passed by agreeing with the defect, and it
+        // would have passed just as happily with the two writers disagreeing about the same input.
+        DateTimeOffset.Parse(review[0]).Should().Be(
+            new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero));
         review[1].Should().Be("when the auth system changes");
+    }
+
+    /// <summary>
+    /// The two writers of a <c>review</c> date persist the same STRING for the same input. D-06
+    /// exists to stop MCP and REST disagreeing about a bare date; the same disagreement is possible
+    /// between two tools in one process, because <c>update()</c> is a metadata-only write and
+    /// reaches neither derivation entry point. It kept its own <c>DateTimeOffset.TryParse</c> —
+    /// <c>CurrentCulture</c>, local zone — for one task after the write paths adopted the invariant
+    /// UTC rule, so on any machine off UTC the same <c>"2026-08-01"</c> persisted two different
+    /// values depending on which tool wrote it.
+    /// <para>Asserted on the raw persisted strings rather than on parsed instants, deliberately: a
+    /// comparison of parsed values would pass even while the two writers stored different text,
+    /// and the text is what a sidecar diff, an export and every other reader sees.</para>
+    /// </summary>
+    [Fact]
+    public async Task ReviewDate_PersistsIdentically_WhicheverToolWroteIt()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Remember(["stored with a review date"], "review-via-remember",
+            reviewAfter: "2026-08-01");
+        await Tools().Remember(["updated with a review date"], "review-via-update");
+        await Tools().UpdateMeta("review-via-update", reviewAfter: "2026-08-01");
+
+        var index = MemoryStoreContext.Current!.LoadIndex();
+        string stored = index.Single(e => e.Name == "review-via-remember").Attributes!["review"][0];
+        string updated = index.Single(e => e.Name == "review-via-update").Attributes!["review"][0];
+
+        updated.Should().Be(stored,
+            because: "one date, one parse — whichever tool the agent reached for");
+        stored.Should().StartWith("2026-08-01T00:00:00.0000000+00:00",
+            because: "and the one they agree on is the zone-independent reading, not the writing " +
+                     "machine's local one");
     }
 
     [Fact]

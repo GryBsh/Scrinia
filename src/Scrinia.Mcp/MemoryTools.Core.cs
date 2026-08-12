@@ -370,11 +370,16 @@ public sealed partial class ScriniaMcpTools
             // carrier) rather than the legacy ReviewAfter/ReviewWhen members.
             AttributeReaders.TryReadReview(entry.Attributes, out var existingReviewDate, out var existingReviewWhen);
 
-            // Parse reviewAfter if provided
+            // Parse reviewAfter if provided — through the store's own rule (invariant culture, a
+            // bare date is UTC), not a bare DateTimeOffset.TryParse. This is a metadata-only write,
+            // so it reaches neither derivation entry point and had kept its own parse: the same
+            // "2026-08-01" persisted as UTC through remember() and as the writer's local zone
+            // through update(), which is D-06's defect surviving one caller past the ruling that
+            // removed it everywhere else.
             DateTimeOffset? parsedReviewAfter = existingReviewDate;
             if (!string.IsNullOrWhiteSpace(reviewAfter))
             {
-                if (DateTimeOffset.TryParse(reviewAfter, out var ra))
+                if (MemoryDerivation.TryParseReviewDate(reviewAfter, out var ra))
                 {
                     parsedReviewAfter = ra;
                     changes.Add($"reviewAfter set to {ra:yyyy-MM-dd}");

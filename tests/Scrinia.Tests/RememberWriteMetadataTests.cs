@@ -152,7 +152,7 @@ public class RememberWriteMetadataTests
     /// <summary>A store that already holds one curated entry, and records the writes it receives.
     /// Its <c>ReadArtifactAsync</c> returns a real two-chunk NMP/2 artifact so <c>compact()</c> gets
     /// past its "already a single chunk" early return.</summary>
-    private sealed class SeededRecordingStore : RecordingStore
+    private class SeededRecordingStore : RecordingStore
     {
         public static readonly ArtifactEntry Seeded = new(
             Name: "note",
@@ -161,7 +161,11 @@ public class RememberWriteMetadataTests
             ChunkCount: 2,
             CreatedAt: DateTimeOffset.UnixEpoch,
             ContentPreview: "a curated description",
-            Keywords: ["portcullis"],
+            // Two keywords with different provenance, because the compaction seam has to treat
+            // them differently: "portcullis" appears nowhere in TwoChunks() below, so it is
+            // provably the agent's; "chunk" is a word of that very text and is therefore
+            // indistinguishable from an auto-extracted term once merged into this list.
+            Keywords: ["portcullis", "chunk"],
             Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
             {
                 ["tag"] = ["alpha", "beta"],
@@ -189,10 +193,12 @@ public class RememberWriteMetadataTests
     /// entry's attributes and curated description must travel INTO the write, because a re-store
     /// derives its whole metadata half from what it is handed and would otherwise reset them. It
     /// also has to READ that entry before the write, for the same reason it always did.
-    /// <para>Its keywords deliberately do NOT travel (D-29): the entry's <c>Keywords</c> are a
-    /// derived list with no record of which terms the agent supplied, so handing them back in would
-    /// promote every auto-extracted term to agent weight. They are re-derived from the compacted
-    /// text instead (D-27).</para>
+    /// <para>Its keywords travel only in part, and which part is the point (D-29). The entry's
+    /// <c>Keywords</c> are the merge of the agent's list with the auto-extracted terms, so handing
+    /// the whole thing back would promote every auto term to agent weight; handing nothing back
+    /// would drop the agent's. What crosses is the subset that is provably the agent's —
+    /// <c>MemoryDerivation.CuratedKeywords</c>, subtracting what the pre-compact text itself
+    /// yields. The rest is re-derived from the compacted text (D-27).</para>
     /// </summary>
     [Fact]
     public async Task Compact_HandsTheExistingEntrysMetadataToTheStore()
@@ -207,8 +213,10 @@ public class RememberWriteMetadataTests
         recording.LastStore!.Attributes.Should().ContainKey("tag");
         recording.LastStore.Attributes!["person"].Should().Contain("maria");
         recording.LastStore.Description.Should().Be("a curated description");
-        recording.LastStore.Keywords.Should().BeNull(
-            because: "a derived keyword list must never be handed back in as input (D-29)");
+        recording.LastStore.Keywords.Should().Equal(["portcullis"],
+            because: "the provably-curated half crosses so the compaction cannot drop it, and the " +
+                     "half the text itself yields does not, because handing a derived term back " +
+                     "in as input is what promotes it to agent weight (D-01/D-29)");
     }
 
     /// <summary>
@@ -236,6 +244,38 @@ public class RememberWriteMetadataTests
         recording.LastStore.Attributes.Should().ContainKey("tag");
         recording.LastStore.Attributes!["person"].Should().Contain("maria");
         recording.LastStore.Description.Should().Be("a curated description");
+    }
+
+    /// <summary>A store holding the artifact but no index entry for it. Reachable in practice
+    /// through a sidecar that failed to parse, or a memory whose index row was swept.</summary>
+    private sealed class UnindexedRecordingStore : SeededRecordingStore
+    {
+        public override IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local") => [];
+    }
+
+    /// <summary>
+    /// The compaction message may only claim an archive that happened. <c>StoreAsync</c> archives
+    /// the previous version when the memory is already in the index and treats it as a first write
+    /// when it is not, so an artifact with no index entry is compacted without one — and
+    /// "Original archived." would be a report a user might act on before deleting something.
+    /// </summary>
+    [Fact]
+    public async Task Compact_WithNoIndexedEntry_DoesNotClaimAnArchive()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        MemoryStoreContext.Current = new UnindexedRecordingStore();
+
+        var unindexed = await new ScriniaMcpTools().Compact("note");
+        unindexed.Content.Should().NotContain("Original archived.");
+        unindexed.Content.Should().Contain("Compacted",
+            because: "precondition: the compaction itself still ran — this is about what it says, " +
+                     "not about refusing the work");
+
+        // The other side of the branch, so the assertion above cannot pass by the message losing
+        // that sentence altogether.
+        MemoryStoreContext.Current = new SeededRecordingStore();
+        var indexed = await new ScriniaMcpTools().Compact("note");
+        indexed.Content.Should().Contain("Original archived.");
     }
 
     // DELETED WITH THE SEAM IT WATCHED: Append_UnderADifferentCasing_ReadsTheArtifactUnderThe

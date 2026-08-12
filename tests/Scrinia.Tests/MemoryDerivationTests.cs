@@ -625,4 +625,68 @@ public sealed class MemoryDerivationTests
             because: "only the DELTA seeds — a keyword the entry already carried was already " +
                      "counted when it arrived");
     }
+
+    // ── Curated-keyword recovery (D-29's first option) ───────────────────────
+
+    /// <summary>
+    /// A persisted keyword list is the merge of the agent's with the auto-extracted terms, and the
+    /// provenance is not stored. Subtracting what the content itself yields recovers the half that
+    /// is certainly the agent's — which is what lets a content rewrite hand keywords back in
+    /// without committing the D-01 mistake of re-entering derived terms as input.
+    /// </summary>
+    [Fact]
+    public void CuratedKeywords_RecoversWhatTheContentCannotHaveProduced()
+    {
+        string[] content = ["the quick brown fox jumps over the lazy dog"];
+        var derived = MemoryDerivation.ForStore(content, keywords: ["vulpine"]);
+
+        // Precondition, not decoration: the assertion below is only meaningful if the merged list
+        // really does carry auto terms alongside the agent's one.
+        derived.Keywords.Should().Contain("vulpine").And.Contain("quick");
+
+        MemoryDerivation.CuratedKeywords(derived.Keywords, content)
+            .Should().Equal(["vulpine"],
+                because: "\"quick\" is extractable from this content and \"vulpine\" is not — that " +
+                         "is the whole of what can be proved after the merge");
+    }
+
+    /// <summary>The converse case, and the limit worth naming: a curated keyword that the content
+    /// ALSO yields is indistinguishable from an auto term once merged, so it is not recovered.
+    /// Recovering it would need a stored agent-set flag, not a cleverer subtraction.</summary>
+    [Fact]
+    public void CuratedKeywords_CannotRecoverATermTheContentAlsoYields()
+    {
+        string[] content = ["the quick brown fox jumps over the lazy dog"];
+        var derived = MemoryDerivation.ForStore(content, keywords: ["quick"]);
+
+        derived.TermFrequencies["quick"].Should().Be(6,
+            because: "precondition: it really was treated as agent-supplied when it was written " +
+                     "(one occurrence of the token plus the +5 agent boost)");
+
+        MemoryDerivation.CuratedKeywords(derived.Keywords, content)
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public void CuratedKeywords_EmptyForNoKeywords()
+    {
+        MemoryDerivation.CuratedKeywords(null, ["some content"]).Should().BeEmpty();
+        MemoryDerivation.CuratedKeywords([], ["some content"]).Should().BeEmpty();
+    }
+
+    /// <summary>The review date parses the same way for every writer — the store's two derivation
+    /// entry points and the metadata-only update path, which reaches neither. A bare date is UTC,
+    /// under invariant culture, on every machine (D-06 / the Task 2 ruling): a local-zone parse
+    /// makes the persisted string depend on where the client is sitting.</summary>
+    [Theory]
+    [InlineData("2026-08-01")]
+    [InlineData("2026-08-01T00:00:00Z")]
+    public void TryParseReviewDate_ReadsABareDateAsUtc(string value)
+    {
+        MemoryDerivation.TryParseReviewDate(value, out var parsed).Should().BeTrue();
+        parsed.Should().Be(new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero));
+        parsed.Offset.Should().Be(TimeSpan.Zero,
+            because: "the persisted ISO-8601 round-trip form embeds this offset, so a local one " +
+                     "makes two machines disagree about the same input");
+    }
 }

@@ -542,11 +542,18 @@ public sealed partial class ScriniaMcpTools
         string[] compacted;
         int newChunkCount;
 
+        // The memory's content BEFORE the rewrite, decoded once. Two things need it: the
+        // merge-everything branch below, and the curated-keyword recovery at the write — which has
+        // to analyze the text the existing keyword list was derived over, not the surviving
+        // fragment of it. Decoded even when only some chunks are kept, which is work the old
+        // per-chunk decode did not do; it is the price of not throwing the curated keywords away.
+        string preCompactText = System.Text.Encoding.UTF8.GetString(
+            Nmp2Strategy.Instance.Decode(artifact));
+
         if (keepRecent <= 0)
         {
-            // Merge all chunks into one: decode the entire artifact, store it as a single chunk
-            byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
-            compacted = [System.Text.Encoding.UTF8.GetString(allBytes)];
+            // Merge all chunks into one
+            compacted = [preCompactText];
             newChunkCount = 1;
         }
         else if (keepRecent == 1)
@@ -586,27 +593,37 @@ public sealed partial class ScriniaMcpTools
         // previous version, writes the artifact and upserts the entry, all of which this method
         // used to do for itself.
         //
-        // KEYWORDS ARE DELIBERATELY NOT CARRIED FORWARD (D-29). The entry's Keywords are a DERIVED
-        // list — auto-extracted terms merged with whatever the agent supplied, with no surviving
-        // record of which was which — and handing a derived list back in as MemoryWrite.Keywords
-        // reclassifies every auto term as agent-supplied and boosts it +5 instead of +2. That is
-        // the one mistake MemoryWrite's shape exists to make hard, so compact passes none and the
-        // keywords are re-derived from the compacted text (D-27). A curated keyword that appears
-        // nowhere in the surviving content is dropped by this; the inventory ruled that the
-        // acceptable half of the trade, because the alternative silently corrupts every ranking.
+        // ONLY THE PROVABLY-CURATED KEYWORDS TRAVEL (D-29). The entry's Keywords are the MERGE of
+        // the agent's list with the auto-extracted terms, with no record of which was which, so
+        // handing the whole thing back in as MemoryWrite.Keywords would reclassify every auto term
+        // as agent-supplied and boost it +5 instead of +2 — on every compaction, compounding.
+        // MemoryDerivation.CuratedKeywords recovers the half that is certainly the agent's by
+        // subtracting what the PRE-COMPACT content itself yields, which is D-29's first option
+        // ("only the memory's genuinely-curated keywords, or none") rather than its last. Passing
+        // none would drop a curated keyword whose text lives in a chunk this compaction discards.
+        // The recovery is one-sided by construction — see CuratedKeywords for what it cannot
+        // recover and why nothing else can either.
         //
-        // Attributes and the curated description DO travel: they are caller-supplied state, not
-        // derivation output, and the pipeline merges them over what it extracts.
+        // Attributes and the curated description DO travel whole: they are caller-supplied state,
+        // not derivation output. Note that they are MERGED OVER what the compacted text yields,
+        // not simply restored, so a compaction inherits the whole store path — including D-05: if
+        // the surviving text is count-shaped, the memory gains
+        // review: "when counts in this memory change" that it did not have before.
         var stored = await store.StoreAsync(
             new MemoryWrite(subject, scope, compacted,
                 Description: existingEntry?.ContentPreview,
                 Attributes: existingEntry?.Attributes,
-                Keywords: null),
+                Keywords: MemoryDerivation.CuratedKeywords(existingEntry?.Keywords, [preCompactText])),
             cancellationToken);
 
         string qualifiedName = store.FormatQualifiedName(scope, stored.Name);
         int dropped = chunkCount - newChunkCount;
-        return ResponseBuilder.Success($"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived.")
+        // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
+        // the previous version when the memory is already in the index, and an artifact with no
+        // index entry is a first write as far as it is concerned. Claiming an archive that did not
+        // happen is the kind of report a user acts on before deleting something.
+        string archived = existingEntry is not null ? " Original archived." : "";
+        return ResponseBuilder.Success($"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped).{archived}")
             .WithFileChanges().WithAction("compacted");
     }
 

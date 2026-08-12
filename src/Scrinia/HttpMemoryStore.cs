@@ -224,7 +224,13 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
         _retryOptions = retryOptions ?? new RetryOptions();
         CircuitBreakerRegistry.Register($"http-memory-store:{_store}", _circuitBreaker);
-        // Use a temp dir for the helper — we only use it for naming/parsing
+        // A temp dir for the helper, which serves two purposes: the pure string operations (naming,
+        // parsing, sanitizing) that a remote store answers locally, and — see
+        // WriteEphemeralInProcessAsync — ephemeral writes, which are addressed to this process and
+        // must be derived by a real store rather than sent to one. Neither touches this directory:
+        // the string operations are static in all but name, and an ephemeral write returns from
+        // FileMemoryStore.StoreAsync before any path is resolved. It exists because
+        // FileMemoryStore's constructor takes a root, not because anything is written under it.
         _tempDir = Path.Combine(Path.GetTempPath(), $"scrinia-http-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
         _localHelper = new FileMemoryStore(_tempDir);

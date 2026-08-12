@@ -12,10 +12,15 @@ namespace Scrinia.Tests;
 /// <see cref="FileMemoryStore"/> rooted in a <see cref="CaseSensitiveDirectory"/> rather than
 /// <see cref="TestHelpers.StoreScope"/>'s ordinary temp directory (which is case-insensitive on
 /// Windows, where the defect this guards cannot occur). Complements — does not replace —
-/// <see cref="RememberWriteMetadataTests.Append_UnderADifferentCasing_ReadsTheArtifactUnderTheEntrysOwnCasing"/>,
-/// which pins the ORDER of the index-lookup-before-read hoist and is the only guard that fires on
-/// an ordinary (case-insensitive) host; this test pins the OUTCOME, observable only here. If the
-/// host cannot provide a case-sensitive directory, this test SKIPS rather than silently passing.
+/// <see cref="FileMemoryStoreWriteSurfaceTests.AppendAsync_ResolvesAMismatchedCasingRatherThanReplacingTheMemory"/>,
+/// which pins the same rule directly against the store and fires on every host; this test pins the
+/// OUTCOME through the TOOL, observable only here. If the host cannot provide a case-sensitive
+/// directory, this test SKIPS rather than silently passing.
+/// <para>It used to complement an ordering guard in <c>RememberWriteMetadataTests</c> instead —
+/// that <c>append()</c> resolved the entry's casing from the index BEFORE reading the artifact.
+/// The resolution moved into <c>IMemoryStore.AppendAsync</c> when the MCP tools stopped deriving,
+/// and the ordering assertion went with the seam it watched; the store-level guard named above
+/// replaced it, asserting the outcome rather than the order.</para>
 /// <see cref="MemoryStoreContext.Current"/> is an <c>AsyncLocal&lt;IMemoryStore?&gt;</c>, so pointing
 /// it at this store is parallel-safe alongside every other test in the suite.
 /// </summary>
