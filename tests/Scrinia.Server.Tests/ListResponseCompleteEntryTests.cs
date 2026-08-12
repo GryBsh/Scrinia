@@ -51,7 +51,8 @@ public sealed class ListResponseCompleteEntryTests
             new StoreRequest(
                 [Chunk1, Chunk2],
                 "wire-complete-entry-probe",
-                Attributes: new Dictionary<string, string[]> { ["file"] = [FileRelativePath] }));
+                Attributes: new Dictionary<string, string[]> { ["file"] = [FileRelativePath] },
+                Keywords: ["portcullis"]));
         storeResp.StatusCode.Should().Be(HttpStatusCode.Created);
 
         var listResp = await client.GetAsync(
@@ -110,5 +111,18 @@ public sealed class ListResponseCompleteEntryTests
         fileHashes.GetProperty(FileRelativePath).GetString().Should().Be(expectedHash,
             because: "the persisted SHA-256 baseline for the referenced file must reach the wire " +
                      "unchanged, keyed by the exact attribute value");
+
+        // ── agentKeywords: which of the keywords the caller supplied ────────────────────────
+        // The list on the wire is the merge of the caller's with the auto-extracted terms, and a
+        // compaction on the client side reads this field to decide which of them keep agent
+        // weight. Absent, every remote memory falls back to a heuristic that cannot recover a
+        // curated term the content also yields — so the store mode would decide the ranking.
+        item.TryGetProperty("agentKeywords", out var agentKeywords).Should().BeTrue(
+            because: "provenance is derived state like the three fields above, and travels whole");
+        agentKeywords.EnumerateArray().Select(e => e.GetString()).Should().Equal(["portcullis"]);
+        item.GetProperty("keywords").EnumerateArray().Select(e => e.GetString())
+            .Should().Contain("apricot",
+                because: "precondition: the keyword list really does hold auto-extracted terms " +
+                         "alongside the curated one, or the assertion above proves nothing");
     }
 }

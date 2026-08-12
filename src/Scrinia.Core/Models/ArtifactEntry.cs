@@ -28,7 +28,29 @@ public sealed record ArtifactEntry(
     /// and Search.KnownAttributes. Null for pre-attributes entries (graceful degradation).
     /// </summary>
     [property: System.Text.Json.Serialization.JsonPropertyName("attributes")]
-    Dictionary<string, string[]>? Attributes = null)
+    Dictionary<string, string[]>? Attributes = null,
+    /// <summary>
+    /// Which of <see cref="Keywords"/> the CALLER supplied, as opposed to the ones derivation
+    /// extracted from the content. Recorded at write time, because that is the only moment it is
+    /// known: <see cref="Keywords"/> is the merge of the two and the merge erases the difference.
+    ///
+    /// <para><b>Null means UNKNOWN, not "none".</b> An entry written before this field existed
+    /// carries null, and a reader must fall back
+    /// (<see cref="MemoryDerivation.CuratedKeywords"/>) rather than conclude that nothing was
+    /// curated. An empty array means the caller supplied no keywords, which is a different fact.
+    /// Any store, append or compact writes the field, so an entry stops being unknown the first
+    /// time it is rewritten.</para>
+    ///
+    /// <para><b>Why it has to be stored.</b> Agent keywords seed BM25 at +5 and auto-extracted
+    /// ones at +2 (D-13). Every rewrite of a memory's content re-runs that classification, and
+    /// with the provenance gone the rewrite has to guess — either promoting every auto term to
+    /// curated weight, or demoting every curated term to auto. Both were tried on this branch;
+    /// both are wrong. Subtracting the content's own terms recovers only part of it and cannot be
+    /// made exact, because a curated keyword that the content also yields is genuinely
+    /// indistinguishable after the merge.</para>
+    /// </summary>
+    [property: System.Text.Json.Serialization.JsonPropertyName("agentKeywords")]
+    string[]? AgentKeywords = null)
 {
     // Back-compat ingest: sidecars written before the Fields→Attributes rename stored the
     // dict under JSON key "fields". Deserialization routes that key here so old sidecars load

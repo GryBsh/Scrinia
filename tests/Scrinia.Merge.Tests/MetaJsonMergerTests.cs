@@ -167,6 +167,59 @@ public sealed class MetaJsonMergerTests : IDisposable
         root.GetProperty("updatedAt").GetString().Should().Be("2026-01-03T00:00:00Z");
     }
 
+    /// <summary>
+    /// <c>agentKeywords</c> is unioned with <c>keywords</c>, not preserved from ours like the other
+    /// unknown fields. It NAMES members of the keyword list, so taking ours whole while the union
+    /// pulls in theirs leaves a branch's curated keyword recorded as auto-extracted — and a
+    /// compaction reads exactly this field to decide what keeps agent weight. A field that
+    /// cross-references another cannot ride along as an opaque blob.
+    /// </summary>
+    [Fact]
+    public void Merge_UnionsAgentKeywordsAlongsideKeywords()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json");
+        string ours = Path.Combine(dir, "ours.meta.json");
+        string theirs = Path.Combine(dir, "theirs.meta.json");
+
+        File.WriteAllText(a, """{"name":"m","keywords":["auth","jwt"],"agentKeywords":["auth"]}""");
+        File.WriteAllText(ours, """{"name":"m","keywords":["auth","jwt","local"],"agentKeywords":["auth","local"]}""");
+        File.WriteAllText(theirs, """{"name":"m","keywords":["auth","jwt","remote"],"agentKeywords":["auth","remote"]}""");
+
+        MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig(JaccardThreshold: 0.5))
+            .Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(ours));
+        doc.RootElement.GetProperty("agentKeywords").EnumerateArray().Select(e => e.GetString())
+            .Should().BeEquivalentTo(["auth", "local", "remote"],
+                because: "both branches' curated keywords survived into the merged keyword list, " +
+                         "so both must survive into the record of which ones are curated");
+    }
+
+    /// <summary>Two pre-provenance sidecars merge to a pre-provenance sidecar. Emitting an empty
+    /// array would assert "nothing was curated" for a memory where nobody wrote it down, which is
+    /// the one claim the null state exists to avoid making.</summary>
+    [Fact]
+    public void Merge_LeavesAgentKeywordsAbsentWhenNeitherSideRecordedIt()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json");
+        string ours = Path.Combine(dir, "ours.meta.json");
+        string theirs = Path.Combine(dir, "theirs.meta.json");
+
+        File.WriteAllText(a, """{"name":"m","keywords":["auth"]}""");
+        File.WriteAllText(ours, """{"name":"m","keywords":["auth","jwt"]}""");
+        File.WriteAllText(theirs, """{"name":"m","keywords":["auth","oauth"]}""");
+
+        MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig(JaccardThreshold: 0.3))
+            .Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(ours));
+        doc.RootElement.TryGetProperty("agentKeywords", out _).Should().BeFalse();
+    }
+
     [Fact]
     public void Merge_DissimilarKeywords_IsConflict_FileUntouched()
     {

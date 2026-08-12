@@ -149,6 +149,39 @@ public sealed class RemoteWritePathMetadataTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Keyword provenance survives the whole remote loop: derived by the server on the write,
+    /// carried back on the wire, read by the client's compaction, and sent forward again as the
+    /// caller's keyword list — so a curated keyword keeps agent weight across a remote compaction
+    /// exactly as it does locally.
+    ///
+    /// <para>This is the assertion that would fail if <c>agentKeywords</c> were left off the wire.
+    /// Everything would still work — the client would fall back to the subtraction heuristic — but
+    /// <c>harbour</c> is a term the surviving content itself yields, which is precisely what that
+    /// heuristic cannot recover. The memory would rank differently depending on which store mode
+    /// compacted it, which is the divergence this branch exists to remove.</para>
+    /// </summary>
+    [Fact]
+    public async Task Compact_RemoteStore_KeepsAgentWeightForACuratedKeyword()
+    {
+        await Tools().MemoryRemember(
+            path: "/probe/remoteprov",
+            content: ["a harbour full of boats", " more about the harbour"],
+            keywords: ["harbour"]);
+
+        Reload("/probe/remoteprov").AgentKeywords.Should().Equal(["harbour"],
+            because: "precondition: the server recorded the provenance and the wire carried it back");
+
+        string compacted = await Tools().MemoryCompact(path: "/probe/remoteprov");
+        compacted.Should().Contain("2 -> 1");
+
+        var after = Reload("/probe/remoteprov");
+        after.TermFrequencies!["harbour"].Should().Be(7,
+            because: "two occurrences plus the +5 agent boost — demoting it to 4 is what happens " +
+                     "when the compaction has to guess, and the guess is what the wire field avoids");
+        after.AgentKeywords.Should().Equal(["harbour"]);
+    }
+
+    /// <summary>
     /// <c>link()</c> against a remote store, end to end. Its history is the reason this assertion is
     /// worth having and why it is two-sided:
     /// <list type="number">

@@ -150,7 +150,13 @@ public static partial class MemoryDerivation
             ? description
             : ContentPreview.Generate(joined);
 
-        return new DerivedMetadata(mergedKeywords, tf, attrs, chunkEntries, preview, fileHashes);
+        // The provenance, recorded rather than left to be guessed at later. This is the one moment
+        // it is known for free — `keywords` is the caller's own list by contract — and a later
+        // content rewrite has no way to reconstruct it from the merged result (ArtifactEntry
+        // .AgentKeywords). Key:value keywords are absent by construction: RouteKeywords sent them
+        // to attributes before the merge, so they are not in `mergedKeywords` to be marked.
+        return new DerivedMetadata(mergedKeywords, tf, attrs, chunkEntries, preview, fileHashes,
+            AgentKeywords: [.. mergedKeywords.Where(agentKeywordSet.Contains)]);
     }
 
     /// <summary>
@@ -186,12 +192,27 @@ public static partial class MemoryDerivation
 
         // D-12 — a data-loss fix, not a ranking tweak. The server's append passed null here, so
         // every curated keyword on the memory was destroyed by a REST append. The memory's own
-        // keywords plus the caller's additions are the agent set; auto terms from the full text
-        // fill the rest. A previously-auto keyword folded into the curated set gets the agent
-        // boost too — an intentional over-weight, in exchange for never losing a curated term.
-        string[] curatedKeywords = UnionDistinct(existing?.Keywords, plainNewKeywords);
-        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(
-            curatedKeywords.Length > 0 ? curatedKeywords : null, autoKeywords);
+        // keywords plus the caller's additions lead the merged list, so nothing the memory carried
+        // can be crowded out of it by an auto term; that is the whole of what D-12 guarantees.
+        string[] carriedKeywords = UnionDistinct(existing?.Keywords, plainNewKeywords);
+        var (mergedKeywords, _) = TextAnalysis.MergeKeywordsWithSource(
+            carriedKeywords.Length > 0 ? carriedKeywords : null, autoKeywords);
+
+        // The agent set is the RECORDED provenance plus this append's own keywords — not the whole
+        // carried list. Leading the list and being agent-supplied are different facts, and
+        // conflating them is what re-boosted every auto-extracted keyword to +5 on every append,
+        // compounding: three appends made an incidental content term outrank a curated one. D-12's
+        // membership guarantee is untouched by separating them; only the weight moves.
+        //
+        // UNKNOWN provenance (a pre-provenance entry) falls back to treating every carried keyword
+        // as agent-supplied, which is exactly what this path did before the field existed. That
+        // keeps an old entry's behaviour identical until something rewrites it, rather than
+        // silently demoting a curated keyword the moment this code ships.
+        var agentKeywordSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string kw in existing?.AgentKeywords ?? existing?.Keywords ?? [])
+            if (!string.IsNullOrWhiteSpace(kw)) agentKeywordSet.Add(kw.Trim());
+        foreach (string kw in plainNewKeywords ?? [])
+            if (!string.IsNullOrWhiteSpace(kw)) agentKeywordSet.Add(kw.Trim());
 
         // D-13 (agent +5, auto +2) and D-14 (boost the INDEX TOKENS of the keyword, not the raw
         // string). D-14 only becomes observable once D-12 lands: before it, every append keyword
@@ -258,45 +279,58 @@ public static partial class MemoryDerivation
             ? description
             : existing?.ContentPreview ?? ContentPreview.Generate(joined);
 
-        return new DerivedMetadata(mergedKeywords, tf, attrs, chunkEntries, preview, fileHashes);
+        return new DerivedMetadata(mergedKeywords, tf, attrs, chunkEntries, preview, fileHashes,
+            AgentKeywords: [.. mergedKeywords.Where(agentKeywordSet.Contains)]);
     }
 
     /// <summary>
-    /// The subset of <paramref name="keywords"/> that is PROVABLY agent-supplied, recovered by
-    /// subtracting what <see cref="TextAnalysis.AnalyzeText"/> extracts from the content the list
-    /// was derived over. For a rewrite of a memory's own content — compaction — this is the answer
-    /// to "which of these did the agent actually give me?", and it is the FIRST option D-29 names
-    /// ("only the memory's genuinely-curated keywords, or none").
+    /// <b>A HEURISTIC, for entries whose <see cref="ArtifactEntry.AgentKeywords"/> is null only.</b>
+    /// Guesses which of <paramref name="keywords"/> the agent supplied, by subtracting the terms
+    /// the content itself yields. Provenance is RECORDED now (see
+    /// <see cref="ArtifactEntry.AgentKeywords"/>) and any store, append or compact writes it, so
+    /// this exists for one thing: an entry last written before that field existed, which must not
+    /// have its curated keywords thrown away just because nobody wrote down which they were.
     ///
-    /// <para><b>Why a caller cannot just hand its stored list back.</b> A persisted
-    /// <c>Keywords</c> array is the MERGE of the agent's list with the auto-extracted terms, with
-    /// no record of which was which. Re-entering it as <see cref="MemoryWrite.Keywords"/>
-    /// reclassifies every auto term as agent-supplied and seeds it at +5 instead of +2 — on every
-    /// rewrite, compounding (D-01). Passing nothing avoids that but drops the curated terms
-    /// outright. This is the third answer: hand back only what is provably not auto.</para>
-    ///
-    /// <para><b>What it recovers, exactly.</b> Every returned keyword is certainly curated: a term
-    /// <see cref="TextAnalysis.AnalyzeText"/> does not extract from this content cannot have
-    /// entered the list any other way. The converse does NOT hold, and this is the limit worth
-    /// knowing: a curated keyword that is ALSO one of the content's top-ranked terms is
-    /// indistinguishable from an auto one and is not returned, so it keeps its place in the
-    /// rewritten list (the content still yields it) but at auto weight. The provenance to do
-    /// better was destroyed when the merged list was persisted; recovering it would need a stored
-    /// agent-set flag, not a cleverer subtraction. Reconstructing the boost arithmetically from
-    /// <c>TermFrequencies</c> is NOT a sound instrument either — attribute seeding (+3) lands in
-    /// the same dictionary, and a multi-word keyword seeds its index tokens rather than itself.</para>
+    /// <para><b>It is not exact, in either direction, and no subtraction can be.</b>
+    /// <list type="bullet">
+    /// <item><b>It under-recovers, usually a lot.</b> <see cref="TextAnalysis.AnalyzeText"/> takes
+    /// the top 25 terms, so in a memory with 25 or fewer distinct tokens EVERY term is an auto
+    /// keyword and nothing is recovered at all. A curated keyword the content also contains is
+    /// indistinguishable from an auto one after the merge, so it is not returned — it keeps its
+    /// place in the rewritten list, but at auto weight.</item>
+    /// <item><b>It can over-recover.</b> A term this content does not yield is not necessarily the
+    /// agent's: an entry that was APPENDED to before the provenance field existed had its whole
+    /// keyword list re-boosted to agent weight by the old union, and an auto keyword whose text is
+    /// no longer top-ranked in the joined content looks curated here. The subtraction below is
+    /// therefore over the joined text AND over each chunk separately — a strictly larger subtracted
+    /// set, which cannot recover less than the caller's real list contains and closes the case
+    /// where an appended chunk's terms crowd the earlier chunks' out of the joined top 25.</item>
+    /// </list>
+    /// Reconstructing the boost arithmetically from <c>TermFrequencies</c> instead is not sound
+    /// either: attribute seeding (+3) lands in the same dictionary, and a multi-word keyword seeds
+    /// its index tokens rather than itself.</para>
     /// </summary>
     /// <param name="keywords">The entry's persisted keyword list.</param>
     /// <param name="content">The chunks the list was derived over — for a compaction, the memory's
-    /// content BEFORE it is rewritten. Joined the way <see cref="ForStore"/> joins it.</param>
+    /// content BEFORE it is rewritten, one element per chunk. Pass the real chunks: collapsing
+    /// them into one element loses the per-chunk half of the subtraction.</param>
     public static string[] CuratedKeywords(string[]? keywords, string[] content)
     {
         ArgumentNullException.ThrowIfNull(content);
         if (keywords is not { Length: > 0 })
             return [];
 
-        var (autoKeywords, _) = TextAnalysis.AnalyzeText(string.Concat(content));
-        var auto = new HashSet<string>(autoKeywords, StringComparer.OrdinalIgnoreCase);
+        var auto = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Subtract(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+            var (extracted, _) = TextAnalysis.AnalyzeText(text);
+            foreach (string term in extracted) auto.Add(term);
+        }
+
+        Subtract(string.Concat(content));
+        if (content.Length > 1)
+            foreach (string chunk in content) Subtract(chunk);
 
         return [.. keywords
             .Where(k => !string.IsNullOrWhiteSpace(k) && !auto.Contains(k.Trim()))
@@ -360,7 +394,15 @@ public static partial class MemoryDerivation
         if (addedKeywords.Length > 0)
             BoostKeywords(addedKeywords, [.. addedKeywords], tf);
 
-        return updated with { TermFrequencies = tf };
+        // ...and it is recorded as such, or the next content rewrite has to guess at it. Only when
+        // the entry already knows its provenance: promoting a null (UNKNOWN) to a list naming just
+        // these would assert that everything else was auto-extracted, which is precisely the thing
+        // nobody wrote down. An unknown entry stays unknown and keeps the heuristic.
+        string[]? agentKeywords = updated.AgentKeywords is not null && addedKeywords.Length > 0
+            ? UnionDistinct(updated.AgentKeywords, addedKeywords)
+            : updated.AgentKeywords;
+
+        return updated with { TermFrequencies = tf, AgentKeywords = agentKeywords };
     }
 
     /// <summary>The attribute values in <paramref name="next"/> that <paramref name="previous"/>
@@ -523,7 +565,9 @@ public sealed record ExistingMetadata(
     string[]? Keywords = null,
     string? ContentPreview = null,
     ChunkEntry[]? ChunkEntries = null,
-    Dictionary<string, string>? FileHashes = null);
+    Dictionary<string, string>? FileHashes = null,
+    /// <inheritdoc cref="ArtifactEntry.AgentKeywords"/>
+    string[]? AgentKeywords = null);
 
 /// <summary>
 /// The derived half of a memory entry: everything the write paths used to compute for themselves.
@@ -536,4 +580,8 @@ public sealed record DerivedMetadata(
     Dictionary<string, string[]>? Attributes,
     ChunkEntry[]? ChunkEntries,
     string ContentPreview,
-    Dictionary<string, string>? FileHashes = null);
+    Dictionary<string, string>? FileHashes = null,
+    /// <summary>Which of <see cref="Keywords"/> were caller-supplied. Never null out of the
+    /// pipeline — it always knows — so a null on a persisted entry means the entry predates the
+    /// field. See <see cref="ArtifactEntry.AgentKeywords"/>.</summary>
+    string[]? AgentKeywords = null);

@@ -63,6 +63,42 @@ public sealed partial class ArtifactEntrySerializationTests
         round.Should().NotContain("\"fields\":");
     }
 
+    /// <summary>
+    /// The provenance field round-trips, and — the part that matters — ABSENT reads back as null.
+    /// Null is "unknown", the state every sidecar written before this field existed is in, and the
+    /// readers branch on it: a compaction falls back to a heuristic for null and trusts the list
+    /// otherwise. An absent key deserializing to an empty array instead would tell every one of
+    /// those readers that the memory had no curated keywords at all.
+    /// </summary>
+    [Fact]
+    public void Round_trips_agent_keywords_and_reads_an_absent_key_as_unknown()
+    {
+        var entry = Sample(null) with { Keywords = ["alpha", "beta"], AgentKeywords = ["alpha"] };
+
+        string json = JsonSerializer.Serialize(entry, TestCtx.Default.ArtifactEntry);
+        json.Should().Contain("\"agentKeywords\":[\"alpha\"]");
+
+        var round = JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!;
+        round.AgentKeywords.Should().Equal(["alpha"]);
+
+        const string legacy = """{"name":"n","uri":"mem://n","originalBytes":10,"chunkCount":1,"createdAt":"1970-01-01T00:00:00+00:00","keywords":["alpha"]}""";
+        JsonSerializer.Deserialize(legacy, TestCtx.Default.ArtifactEntry)!.AgentKeywords
+            .Should().BeNull(because: "a pre-provenance sidecar is UNKNOWN, not \"nothing curated\"");
+    }
+
+    /// <summary>An entry that genuinely had no caller keywords records an EMPTY array, which is a
+    /// different fact from unknown and must survive the round trip as one.</summary>
+    [Fact]
+    public void Distinguishes_no_curated_keywords_from_unknown()
+    {
+        string json = JsonSerializer.Serialize(
+            Sample(null) with { Keywords = ["alpha"], AgentKeywords = [] },
+            TestCtx.Default.ArtifactEntry);
+
+        JsonSerializer.Deserialize(json, TestCtx.Default.ArtifactEntry)!.AgentKeywords
+            .Should().NotBeNull().And.BeEmpty();
+    }
+
     [Fact]
     public void SourceGen_resolves_ArtifactEntry_and_attributes_dictionary()
     {

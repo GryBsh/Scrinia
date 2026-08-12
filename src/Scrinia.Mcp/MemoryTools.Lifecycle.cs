@@ -542,34 +542,28 @@ public sealed partial class ScriniaMcpTools
         string[] compacted;
         int newChunkCount;
 
-        // The memory's content BEFORE the rewrite, decoded once. Two things need it: the
-        // merge-everything branch below, and the curated-keyword recovery at the write — which has
-        // to analyze the text the existing keyword list was derived over, not the surviving
-        // fragment of it. Decoded even when only some chunks are kept, which is work the old
-        // per-chunk decode did not do; it is the price of not throwing the curated keywords away.
-        string preCompactText = System.Text.Encoding.UTF8.GetString(
-            Nmp2Strategy.Instance.Decode(artifact));
+        // Every chunk as it stands BEFORE the rewrite, decoded once — one pass, CRC-checked per
+        // chunk, rather than a whole-artifact decode plus a per-chunk decode of the survivors.
+        // The pre-compact chunks are needed in their own right and not just as a source of the
+        // kept ones: the legacy keyword fallback below analyzes them.
+        (string[] priorChunks, _) = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact);
 
         if (keepRecent <= 0)
         {
             // Merge all chunks into one
-            compacted = [preCompactText];
+            compacted = [string.Concat(priorChunks)];
             newChunkCount = 1;
         }
         else if (keepRecent == 1)
         {
             // Keep only the last chunk as a single-chunk memory
-            compacted = [Nmp2ChunkedEncoder.DecodeChunk(artifact, chunkCount)];
+            compacted = [priorChunks[^1]];
             newChunkCount = 1;
         }
         else
         {
             // Keep the N most recent chunks
-            int startChunk = chunkCount - keepRecent + 1;
-            compacted = new string[keepRecent];
-            for (int i = 0; i < keepRecent; i++)
-                compacted[i] = Nmp2ChunkedEncoder.DecodeChunk(artifact, startChunk + i);
-
+            compacted = priorChunks[^keepRecent..];
             newChunkCount = keepRecent;
         }
 
@@ -593,27 +587,33 @@ public sealed partial class ScriniaMcpTools
         // previous version, writes the artifact and upserts the entry, all of which this method
         // used to do for itself.
         //
-        // ONLY THE PROVABLY-CURATED KEYWORDS TRAVEL (D-29). The entry's Keywords are the MERGE of
-        // the agent's list with the auto-extracted terms, with no record of which was which, so
-        // handing the whole thing back in as MemoryWrite.Keywords would reclassify every auto term
-        // as agent-supplied and boost it +5 instead of +2 — on every compaction, compounding.
-        // MemoryDerivation.CuratedKeywords recovers the half that is certainly the agent's by
-        // subtracting what the PRE-COMPACT content itself yields, which is D-29's first option
-        // ("only the memory's genuinely-curated keywords, or none") rather than its last. Passing
-        // none would drop a curated keyword whose text lives in a chunk this compaction discards.
-        // The recovery is one-sided by construction — see CuratedKeywords for what it cannot
-        // recover and why nothing else can either.
+        // ONLY THE AGENT'S OWN KEYWORDS TRAVEL (D-29). The entry's Keywords are the MERGE of the
+        // agent's list with the auto-extracted terms, so handing the whole thing back in as
+        // MemoryWrite.Keywords would reclassify every auto term as agent-supplied and boost it +5
+        // instead of +2 — on every compaction, compounding. Handing back none loses the agent's
+        // keywords instead. The entry records which were the agent's (ArtifactEntry.AgentKeywords),
+        // written by every store and append, so for anything written since that field arrived this
+        // is not a guess: it is D-29's first option — "only the memory's genuinely-curated
+        // keywords" — read off the entry rather than reconstructed.
+        //
+        // For an entry that predates the field (null, meaning UNKNOWN — not "none") the fallback
+        // is a documented HEURISTIC over the pre-compact chunks. It under-recovers and can
+        // over-recover; see CuratedKeywords. The entry stops being unknown as soon as this
+        // compaction writes it.
         //
         // Attributes and the curated description DO travel whole: they are caller-supplied state,
         // not derivation output. Note that they are MERGED OVER what the compacted text yields,
         // not simply restored, so a compaction inherits the whole store path — including D-05: if
         // the surviving text is count-shaped, the memory gains
         // review: "when counts in this memory change" that it did not have before.
+        string[]? curatedKeywords = existingEntry?.AgentKeywords
+            ?? MemoryDerivation.CuratedKeywords(existingEntry?.Keywords, priorChunks);
+
         var stored = await store.StoreAsync(
             new MemoryWrite(subject, scope, compacted,
                 Description: existingEntry?.ContentPreview,
                 Attributes: existingEntry?.Attributes,
-                Keywords: MemoryDerivation.CuratedKeywords(existingEntry?.Keywords, [preCompactText])),
+                Keywords: curatedKeywords),
             cancellationToken);
 
         string qualifiedName = store.FormatQualifiedName(scope, stored.Name);

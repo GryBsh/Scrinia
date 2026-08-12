@@ -57,7 +57,16 @@ public sealed record MemoryEntry(
     string[]? Keywords,
     Dictionary<string, int>? TermFrequencies,
     ChunkEntryDto[]? ChunkEntries,
-    Dictionary<string, string>? FileHashes)
+    Dictionary<string, string>? FileHashes,
+    /// <summary>Which of <see cref="Keywords"/> the caller supplied. Additive and OPTIONAL on this
+    /// wire, which is why it did not need an API version bump: an older client ignores the key, and
+    /// a newer client reading an older server sees it absent — which is null, which already means
+    /// "unknown" (<see cref="ArtifactEntry.AgentKeywords"/>) rather than "none".
+    /// <para>It travels because the alternative is a store-mode divergence: a compaction reads the
+    /// provenance to decide which keywords to hand back, so a remote client that could not see it
+    /// would fall back to the heuristic for every memory — including the ones the server knows the
+    /// real answer for.</para></summary>
+    string[]? AgentKeywords = null)
 {
     /// <summary>The one place a store-derived <see cref="ArtifactEntry"/> becomes this wire shape.
     /// Every endpoint that emits an entry — list, get-one, patch — and every write response goes
@@ -88,7 +97,8 @@ public sealed record MemoryEntry(
             entry.TermFrequencies,
             entry.ChunkEntries?.Select(c => new ChunkEntryDto(
                 c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies)).ToArray(),
-            entry.FileHashes);
+            entry.FileHashes,
+            entry.AgentKeywords);
     }
 }
 

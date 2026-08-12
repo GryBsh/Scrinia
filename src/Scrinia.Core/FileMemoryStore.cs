@@ -1303,7 +1303,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             Keywords: existingEntry?.Keywords ?? existingEph?.Keywords,
             ContentPreview: existingEntry?.ContentPreview ?? existingEph?.ContentPreview,
             ChunkEntries: existingEntry?.ChunkEntries ?? existingEph?.ChunkEntries,
-            FileHashes: existingEntry?.FileHashes);
+            FileHashes: existingEntry?.FileHashes,
+            // Null here is UNKNOWN, and ForAppend reads it that way: a memory last written before
+            // the field existed keeps the old blanket carry-forward until this append rewrites it.
+            AgentKeywords: existingEntry?.AgentKeywords ?? existingEph?.AgentKeywords);
 
         var derived = MemoryDerivation.ForAppend(
             fullContent, write.Description, write.Attributes, write.Keywords, existing);
@@ -1366,7 +1369,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             UpdatedAt: updatedAt,
             ChunkEntries: derived.ChunkEntries,
             FileHashes: derived.FileHashes,
-            Attributes: derived.Attributes));
+            Attributes: derived.Attributes,
+            AgentKeywords: derived.AgentKeywords));
 
     /// <summary>Persists an ephemeral write and projects it back as an <see cref="ArtifactEntry"/>,
     /// the way <see cref="ListEphemeral"/> does.
@@ -1393,7 +1397,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             TermFrequencies: tf,
             UpdatedAt: updatedAt,
             ChunkEntries: derived.ChunkEntries,
-            Attributes: derived.Attributes));
+            Attributes: derived.Attributes,
+            AgentKeywords: derived.AgentKeywords));
 
         return new ArtifactEntry(
             Name: key,
@@ -1406,7 +1411,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             TermFrequencies: tf,
             UpdatedAt: updatedAt,
             ChunkEntries: derived.ChunkEntries,
-            Attributes: derived.Attributes);
+            Attributes: derived.Attributes,
+            AgentKeywords: derived.AgentKeywords);
     }
 
     /// <summary>

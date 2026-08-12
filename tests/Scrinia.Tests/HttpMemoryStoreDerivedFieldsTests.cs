@@ -44,7 +44,8 @@ public sealed class HttpMemoryStoreDerivedFieldsTests
             {"chunkIndex":1,"contentPreview":"first","keywords":["one"],"termFrequencies":{"one":3}},
             {"chunkIndex":2,"contentPreview":"second","keywords":["two"],"termFrequencies":{"two":4}}
           ],
-          "fileHashes":{"src/widget.cs":"deadbeef"}
+          "fileHashes":{"src/widget.cs":"deadbeef"},
+          "agentKeywords":["zebra"]
         }],"total":1}
         """;
 
@@ -108,6 +109,11 @@ public sealed class HttpMemoryStoreDerivedFieldsTests
 
         // The fields that were already read — asserted so a regression that swaps the mapper for
         // something narrower cannot pass by satisfying only the three above.
+        entry.AgentKeywords.Should().Equal(["zebra"],
+            because: "which keywords the caller supplied is on the wire too, and a compaction on " +
+                     "this side reads it to decide what keeps agent weight — dropping it on " +
+                     "arrival sends every remote memory down the legacy guess instead");
+
         entry.Keywords.Should().Equal(["zebra"]);
         entry.Attributes.Should().NotBeNull().And.ContainKey("tag");
         entry.ChunkCount.Should().Be(2);

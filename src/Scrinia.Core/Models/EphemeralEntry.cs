@@ -19,4 +19,7 @@ public sealed record EphemeralEntry(
     /// and Search.KnownAttributes. Null for pre-attributes entries (graceful degradation).
     /// </summary>
     [property: System.Text.Json.Serialization.JsonPropertyName("attributes")]
-    Dictionary<string, string[]>? Attributes = null);
+    Dictionary<string, string[]>? Attributes = null,
+    /// <inheritdoc cref="ArtifactEntry.AgentKeywords"/>
+    [property: System.Text.Json.Serialization.JsonPropertyName("agentKeywords")]
+    string[]? AgentKeywords = null);

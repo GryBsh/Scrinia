@@ -37,6 +37,24 @@ public static class MetaJsonMerger
         var keywords = new HashSet<string>(GetStrings(ours, "keywords") ?? [], StringComparer.OrdinalIgnoreCase);
         foreach (var kw in GetStrings(theirs, "keywords") ?? []) keywords.Add(kw);
 
+        // ...and union their provenance with them, on the same rule and for the same reason. This
+        // is not an "unknown property preserved verbatim" like the ones the overlay below keeps:
+        // `agentKeywords` names members of `keywords`, so taking ours whole while the union pulls
+        // in theirs would leave a branch's curated keyword recorded as auto-extracted — and a later
+        // compaction reads exactly this field to decide what to keep at agent weight.
+        //
+        // Absent on BOTH sides means neither entry knows its provenance (a pre-field sidecar), and
+        // the key stays absent: writing an empty array would assert "nothing was curated", which is
+        // a different claim from "nobody wrote it down". Absent on ONE side is the union of what is
+        // known, which can only under-claim.
+        string[]? oursAgent = GetStrings(ours, "agentKeywords");
+        string[]? theirsAgent = GetStrings(theirs, "agentKeywords");
+        HashSet<string>? agentKeywords = oursAgent is null && theirsAgent is null
+            ? null
+            : new HashSet<string>(oursAgent ?? [], StringComparer.OrdinalIgnoreCase);
+        if (agentKeywords is not null)
+            foreach (var kw in theirsAgent ?? []) agentKeywords.Add(kw);
+
         string? oursUpdated = GetString(ours, "updatedAt"), theirsUpdated = GetString(theirs, "updatedAt");
         string? updatedAt = CompareTimestamps(oursUpdated, theirsUpdated) > 0 ? oursUpdated : theirsUpdated;
         string? oursCreated = GetString(ours, "createdAt"), theirsCreated = GetString(theirs, "createdAt");
@@ -54,6 +72,11 @@ public static class MetaJsonMerger
                 .Select(k => (JsonNode?)JsonValue.Create(k)).ToArray());
         else
             ours.Remove("keywords");
+        if (agentKeywords is null)
+            ours.Remove("agentKeywords");
+        else
+            ours["agentKeywords"] = new JsonArray(agentKeywords.Order(StringComparer.OrdinalIgnoreCase)
+                .Select(k => (JsonNode?)JsonValue.Create(k)).ToArray());
         SetString(ours, "updatedAt", updatedAt);
         SetString(ours, "createdAt", createdAt);
 

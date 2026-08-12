@@ -159,7 +159,10 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         string[]? Keywords,
         Dictionary<string, int>? TermFrequencies,
         ChunkEntryDto[]? ChunkEntries,
-        Dictionary<string, string>? FileHashes);
+        Dictionary<string, string>? FileHashes,
+        /// <summary>Which of <see cref="Keywords"/> the caller supplied — additive and optional on
+        /// this wire, so an older server simply omits it and it reads as null (UNKNOWN).</summary>
+        string[]? AgentKeywords = null);
     internal sealed record ChunkEntryDto(
         int ChunkIndex, string? ContentPreview, string[]? Keywords,
         Dictionary<string, int>? TermFrequencies);
@@ -213,7 +216,11 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             .Select(c => new ChunkEntry(c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies))
             .ToArray(),
         FileHashes: item.FileHashes,
-        Attributes: item.Attributes);
+        Attributes: item.Attributes,
+        // Absent from an older server's response, which deserializes to null — and null already
+        // means UNKNOWN, so a client talking to one degrades to the documented fallback rather
+        // than to a wrong answer.
+        AgentKeywords: item.AgentKeywords);
 
     public HttpMemoryStore(HttpClient http, string store = "default", TimeSpan? timeout = null,
         CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)

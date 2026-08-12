@@ -162,10 +162,12 @@ public class RememberWriteMetadataTests
             CreatedAt: DateTimeOffset.UnixEpoch,
             ContentPreview: "a curated description",
             // Two keywords with different provenance, because the compaction seam has to treat
-            // them differently: "portcullis" appears nowhere in TwoChunks() below, so it is
-            // provably the agent's; "chunk" is a word of that very text and is therefore
-            // indistinguishable from an auto-extracted term once merged into this list.
+            // them differently — and the entry RECORDS which is which, as every entry written
+            // since AgentKeywords landed does. "chunk" is also a word of TwoChunks() below, so a
+            // seam that read the keyword list instead of the provenance would hand it back as
+            // curated and promote an auto term to +5 on every compaction.
             Keywords: ["portcullis", "chunk"],
+            AgentKeywords: ["portcullis"],
             Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
             {
                 ["tag"] = ["alpha", "beta"],
