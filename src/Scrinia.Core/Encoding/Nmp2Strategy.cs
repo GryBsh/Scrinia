@@ -183,8 +183,11 @@ public sealed class Nmp2Strategy : IEncodingStrategy
     }
 
     /// <summary>Verifies decoded output against the header's declared length and CRC32.
-    /// Length is checked when the header declares one (&gt; 0); CRC when present.</summary>
-    private static void VerifyIntegrity(string artifact, byte[] decoded)
+    /// Length is checked when the header declares one (&gt; 0); CRC when present.
+    /// Internal (not private) so <see cref="Nmp2ChunkedEncoder.DecodeAllChunksVerified"/> can run
+    /// the same check against a per-chunk-assembled buffer without a second whole-artifact
+    /// decompression pass.</summary>
+    internal static void VerifyIntegrity(string artifact, byte[] decoded)
     {
         var meta = Instance.ParseHeader(artifact);
         if (meta.OriginalBytes > 0 && decoded.Length != meta.OriginalBytes)

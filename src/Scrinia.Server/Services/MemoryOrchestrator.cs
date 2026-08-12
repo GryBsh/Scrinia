@@ -99,13 +99,13 @@ public static class MemoryOrchestrator
         if (!artifact.TrimStart().StartsWith("NMP/2 ", StringComparison.Ordinal))
             return null;
 
-        byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
-        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
-        var content = new string[chunkCount];
-        for (int i = 1; i <= chunkCount; i++)
-            content[i - 1] = Nmp2ChunkedEncoder.DecodeChunk(artifact, i);
+        // One decompression pass per chunk, not two: DecodeAllChunksVerified decodes each
+        // ##CHUNK: section exactly once and still runs the same length/CRC32 check
+        // Nmp2Strategy.Decode performs on the whole artifact (see its doc for why a naive
+        // Decode() + per-index DecodeChunk() loop double-decompresses every chunk).
+        (string[] content, long totalBytes) = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact);
 
-        return new ShowResponse(name, content, bytes.LongLength);
+        return new ShowResponse(name, content, totalBytes);
     }
 
     public static async Task<bool> ForgetAsync(

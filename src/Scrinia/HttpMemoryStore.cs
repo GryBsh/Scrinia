@@ -729,12 +729,16 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// <para>The remote half of this surface is the client change in the same plan: the client POSTs
     /// the raw <see cref="MemoryWrite"/> and the SERVER derives — that is what "the client defers to
     /// the server" means concretely, and it is why no derivation may appear in this file. It cannot
-    /// be served by the v1 wire that exists today, because <c>POST /memories</c> answers with a
-    /// <c>StoreResponse</c> (name, counts, message) and <c>GET /memories</c> with a list item
-    /// carrying neither <c>TermFrequencies</c>, <c>ChunkEntries</c> nor <c>FileHashes</c>. Returning
-    /// an entry assembled from either would be a partial entry presented as a complete one — the
-    /// exact defect the complete-entry wire contract exists to remove, and worse than refusing,
-    /// because a caller would persist it.</para>
+    /// be served by the wire that exists today: <c>POST /memories</c> and
+    /// <c>POST /memories/{name}/append</c> still answer with today's <c>StoreResponse</c> /
+    /// <c>AppendResponse</c> (name, counts, message), not the complete entry a caller here would
+    /// need to return. <c>GET /memories</c>'s list item is no longer the other missing half of that
+    /// story — it now carries <c>TermFrequencies</c>, <c>ChunkEntries</c> and <c>FileHashes</c> — but
+    /// nothing routes a write through it, and re-fetching the whole listing to recover the one entry
+    /// this call just wrote is not the shape this surface wants. Returning an entry assembled from
+    /// the write response alone would be a partial entry presented as a complete one — the exact
+    /// defect the complete-entry wire contract exists to remove, and worse than refusing, because a
+    /// caller would persist it.</para>
     ///
     /// <para>Nothing calls this yet: every write path still runs its own derivation, and the
     /// server's own store is a <see cref="FileMemoryStore"/> reached in-process.</para>

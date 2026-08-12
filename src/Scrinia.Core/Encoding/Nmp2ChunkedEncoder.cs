@@ -308,4 +308,61 @@ public static class Nmp2ChunkedEncoder
         return System.Text.Encoding.UTF8.GetString(bytes);
     }
 
+    /// <summary>
+    /// Decodes every chunk of an artifact in a single pass and verifies the header's declared
+    /// length and CRC32 against the concatenated result — the same check
+    /// <see cref="Nmp2Strategy.Decode"/> performs for the whole artifact.
+    ///
+    /// <para>Exists because calling <see cref="Nmp2Strategy.Decode"/> for the verified byte count
+    /// and then <see cref="DecodeChunk"/> once per index for the per-chunk text decompresses every
+    /// chunk twice: <c>Decode</c>'s multi-chunk path already walks and decompresses each
+    /// <c>##CHUNK:</c> section internally but only returns the concatenated bytes, discarding the
+    /// per-chunk boundaries a caller like <c>MemoryOrchestrator.ShowAsync</c> needs. This method
+    /// does that same per-chunk decompression exactly once, keeps the boundaries, and runs the
+    /// identical integrity check against the assembled buffer — nothing is decompressed twice and
+    /// nothing about the check is weakened.</para>
+    /// </summary>
+    /// <exception cref="InvalidDataException">The header's declared length or CRC32 does not
+    /// match the concatenated decoded bytes.</exception>
+    internal static (string[] Chunks, long TotalBytes) DecodeAllChunksVerified(string artifact)
+    {
+        if (!Nmp2Strategy.IsMultiChunk(artifact))
+        {
+            // Single-chunk: there is no ##CHUNK: marker to decode a section against, so
+            // Nmp2Strategy.Decode is already the one-and-only decompression pass, integrity
+            // check included.
+            byte[] decoded = Nmp2Strategy.Instance.Decode(artifact);
+            return ([System.Text.Encoding.UTF8.GetString(decoded)], decoded.LongLength);
+        }
+
+        int count = Nmp2Strategy.ParseChunkCount(artifact);
+        long maxBytes = Nmp2Strategy.MaxDecodedBytes;
+        var chunkBytes = new byte[count][];
+        long total = 0;
+        for (int i = 1; i <= count; i++)
+        {
+            chunkBytes[i - 1] = Nmp2Strategy.DecodeChunkSection(artifact, i, maxBytes - total);
+            total += chunkBytes[i - 1].Length;
+            if (total > maxBytes)
+                throw new InvalidDataException(
+                    $"NMP/2 decoded size exceeds MaxDecodedBytes={maxBytes} bytes (after chunk {i}).");
+        }
+
+        byte[] all = new byte[total];
+        int offset = 0;
+        foreach (var cb in chunkBytes)
+        {
+            cb.CopyTo(all, offset);
+            offset += cb.Length;
+        }
+        // Same check Decode() runs on its own concatenated result — reused rather than
+        // duplicated so this can never drift from what a whole-artifact decode verifies.
+        Nmp2Strategy.VerifyIntegrity(artifact, all);
+
+        var chunks = new string[count];
+        for (int i = 0; i < count; i++)
+            chunks[i] = System.Text.Encoding.UTF8.GetString(chunkBytes[i]);
+
+        return (chunks, total);
+    }
 }
