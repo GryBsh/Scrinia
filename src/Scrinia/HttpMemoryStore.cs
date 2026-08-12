@@ -111,7 +111,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     [JsonSerializable(typeof(StoreApiResponse))]
     [JsonSerializable(typeof(ShowApiResponse))]
     [JsonSerializable(typeof(ListApiResponse))]
-    [JsonSerializable(typeof(ListApiItem))]
+    [JsonSerializable(typeof(MemoryEntry))]
+    [JsonSerializable(typeof(ChunkEntryDto))]
     [JsonSerializable(typeof(SearchApiResponse))]
     [JsonSerializable(typeof(SearchApiItem))]
     [JsonSerializable(typeof(SearchApiRequest))]
@@ -125,11 +126,24 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     internal sealed record StoreApiRequest(string[] Content, string Name, string? Description = null,
         Dictionary<string, string[]>? Attributes = null, string[]? Keywords = null);
     internal sealed record StoreApiResponse(string Name, string QualifiedName, int ChunkCount, long OriginalBytes, string Message);
-    internal sealed record ShowApiResponse(string Name, string Content, int ChunkCount, long OriginalBytes);
-    internal sealed record ListApiResponse(ListApiItem[] Memories, int Total);
-    internal sealed record ListApiItem(string Name, string QualifiedName, string Scope, int ChunkCount,
-        long OriginalBytes, DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt, string Description,
-        Dictionary<string, string[]>? Attributes, string[]? Keywords = null);
+    /// <summary><c>ChunkCount</c> is deleted, not retained: it is <c>Content.Length</c>.</summary>
+    internal sealed record ShowApiResponse(string Name, string[] Content, long OriginalBytes);
+    internal sealed record ListApiResponse(MemoryEntry[] Memories, int Total);
+    /// <summary>The one complete entry shape mirrored from <c>Scrinia.Server.Models.MemoryEntry</c>
+    /// — always complete; a null field means genuinely absent, never "not requested".</summary>
+    internal sealed record MemoryEntry(
+        string Name, string QualifiedName, string Scope,
+        int ChunkCount, long OriginalBytes,
+        DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt,
+        string Description,
+        Dictionary<string, string[]>? Attributes,
+        string[]? Keywords,
+        Dictionary<string, int>? TermFrequencies,
+        ChunkEntryDto[]? ChunkEntries,
+        Dictionary<string, string>? FileHashes);
+    internal sealed record ChunkEntryDto(
+        int ChunkIndex, string? ContentPreview, string[]? Keywords,
+        Dictionary<string, int>? TermFrequencies);
     internal sealed record SearchApiResponse(SearchApiItem[] Results);
     internal sealed record SearchApiItem(string Type, string Name, double Score, string? Description,
         int? ChunkIndex = null, int? TotalChunks = null,
@@ -274,8 +288,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         if (show is null)
             throw new FileNotFoundException($"Memory '{nameOrArtifact}' not found.");
 
-        // Re-encode the decoded content back to NMP/2 for callers that need it
-        return Nmp2ChunkedEncoder.Encode(show.Content);
+        // Re-encode the decoded chunks back to NMP/2 for callers that need it
+        return Nmp2ChunkedEncoder.EncodeChunks(show.Content);
     }
 
     /// <summary>

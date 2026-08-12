@@ -29,25 +29,29 @@ public sealed record AppendResponse(
     long OriginalBytes,
     string Message);
 
-public sealed record ListResponse(MemoryListItem[] Memories, int Total);
+public sealed record ListResponse(MemoryEntry[] Memories, int Total);
 
-public sealed record MemoryListItem(
-    string Name,
-    string QualifiedName,
-    string Scope,
-    int ChunkCount,
-    long OriginalBytes,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset? UpdatedAt,
+/// <summary>The one complete entry shape — a null field means genuinely absent, never "not
+/// requested". Produced by the store-owned derivation pipeline and carried whole over the
+/// wire.</summary>
+public sealed record MemoryEntry(
+    string Name, string QualifiedName, string Scope,
+    int ChunkCount, long OriginalBytes,
+    DateTimeOffset CreatedAt, DateTimeOffset? UpdatedAt,
     string Description,
     Dictionary<string, string[]>? Attributes,
-    string[]? Keywords = null);
+    string[]? Keywords,
+    Dictionary<string, int>? TermFrequencies,
+    ChunkEntryDto[]? ChunkEntries,
+    Dictionary<string, string>? FileHashes);
 
-public sealed record ShowResponse(
-    string Name,
-    string Content,
-    int ChunkCount,
-    long OriginalBytes);
+public sealed record ChunkEntryDto(
+    int ChunkIndex, string? ContentPreview, string[]? Keywords,
+    Dictionary<string, int>? TermFrequencies);
+
+/// <summary><c>ChunkCount</c> is deleted, not retained: it is <c>Content.Length</c>, and a
+/// derivable field that can disagree with its payload is the defect this shape fixes.</summary>
+public sealed record ShowResponse(string Name, string[] Content, long OriginalBytes);
 
 /// <summary>Body of POST /search. Exists because attributeFilter is a dictionary of arrays and
 /// does not belong in a query string. Mirrors the GET parameters exactly otherwise.</summary>

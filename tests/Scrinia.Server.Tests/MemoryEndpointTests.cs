@@ -36,7 +36,7 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
 
         var showBody = await showResp.Content.ReadFromJsonAsync<ShowResponse>();
         showBody.Should().NotBeNull();
-        showBody!.Content.Should().Be("Hello, World!");
+        showBody!.Content.Should().Equal("Hello, World!");
     }
 
     [Fact]
@@ -152,7 +152,7 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
         showResp.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var showBody = await showResp.Content.ReadFromJsonAsync<ShowResponse>();
-        showBody!.Content.Should().Be("Copy source");
+        showBody!.Content.Should().Equal("Copy source");
     }
 
     [Fact]

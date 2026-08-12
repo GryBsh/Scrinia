@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
 import { FileText } from 'lucide-react'
-import type { MemoryListItem } from '../api/types'
+import type { MemoryEntry } from '../api/types'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -21,7 +21,7 @@ export default function MemoryList({
   memories,
   store,
 }: {
-  memories: MemoryListItem[]
+  memories: MemoryEntry[]
   store: string
 }) {
   if (memories.length === 0) {

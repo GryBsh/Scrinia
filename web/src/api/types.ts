@@ -28,11 +28,13 @@ export interface AppendResponse {
 }
 
 export interface ListResponse {
-  memories: MemoryListItem[];
+  memories: MemoryEntry[];
   total: number;
 }
 
-export interface MemoryListItem {
+// The one complete entry shape — always complete; a null/absent field means genuinely absent,
+// never "not requested". Mirrors Scrinia.Server.Models.MemoryEntry.
+export interface MemoryEntry {
   name: string;
   qualifiedName: string;
   scope: string;
@@ -42,12 +44,24 @@ export interface MemoryListItem {
   updatedAt?: string;
   description: string;
   attributes?: Record<string, string[]>;
+  keywords?: string[];
+  termFrequencies?: Record<string, number>;
+  chunkEntries?: ChunkEntryDto[];
+  fileHashes?: Record<string, string>;
 }
 
+export interface ChunkEntryDto {
+  chunkIndex: number;
+  contentPreview?: string;
+  keywords?: string[];
+  termFrequencies?: Record<string, number>;
+}
+
+// chunkCount is deleted, not retained: it is content.length, and a derivable field that can
+// disagree with its payload is the defect this shape fixes.
 export interface ShowResponse {
   name: string;
-  content: string;
-  chunkCount: number;
+  content: string[];
   originalBytes: number;
 }
 

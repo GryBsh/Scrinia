@@ -183,7 +183,7 @@ public sealed class MemoryOrchestratorWriteSurfaceTests : IDisposable
         shown.Should().NotBeNull(
             because: "the unconditional rollback delete left the memory unreadable through show() — " +
                      "and nothing reads versions/ back, so there was no way to get it back");
-        shown!.Content.Should().Be("the original body",
+        shown!.Content.Should().Equal(["the original body"],
             because: "a failed re-store must leave the memory exactly as it was");
     }
 }

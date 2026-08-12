@@ -120,14 +120,18 @@ public static class MemoryEndpoints
         var sourceList = items as List<ScopedArtifact> ?? items.ToList();
         int total = sourceList.Count;
 
-        var paged = new List<MemoryListItem>(Math.Min(limit, Math.Max(0, total - offset)));
+        var paged = new List<MemoryEntry>(Math.Min(limit, Math.Max(0, total - offset)));
         for (int i = offset; i < total && paged.Count < limit; i++)
         {
             var item = sourceList[i];
             string qualifiedName = item.Scope == "ephemeral"
                 ? $"~{item.Entry.Name}"
                 : ctx.Store!.FormatQualifiedName(item.Scope, item.Entry.Name);
-            paged.Add(new MemoryListItem(
+            // Every field below comes from the ArtifactEntry the store already handed back —
+            // TermFrequencies/ChunkEntries/FileHashes are populated here whenever the store had
+            // them in hand (a local, file-backed store always does), never fabricated for a store
+            // that doesn't.
+            paged.Add(new MemoryEntry(
                 item.Entry.Name,
                 qualifiedName,
                 MemoryNaming.FormatScopeLabel(item.Scope),
@@ -137,7 +141,11 @@ public static class MemoryEndpoints
                 item.Entry.UpdatedAt,
                 AttributeReaders.PreviewText(item.Entry.ContentPreview),
                 item.Entry.Attributes,
-                item.Entry.Keywords));
+                item.Entry.Keywords,
+                item.Entry.TermFrequencies,
+                item.Entry.ChunkEntries?.Select(c => new ChunkEntryDto(
+                    c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies)).ToArray(),
+                item.Entry.FileHashes));
         }
 
         return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));

@@ -57,7 +57,7 @@ public sealed class ApiVersionAssertionTests
                 request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal);
             string body = isMemoriesCollection
                 ? """{"memories":[],"total":0}"""
-                : """{"name":"note","content":"hello world","chunkCount":1,"originalBytes":11}""";
+                : """{"name":"note","content":["hello world"],"originalBytes":11}""";
 
             var response = new HttpResponseMessage(status)
             {

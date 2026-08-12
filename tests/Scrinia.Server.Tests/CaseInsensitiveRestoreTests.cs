@@ -60,7 +60,7 @@ public sealed class CaseInsensitiveRestoreTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
     }
 
-    private async Task<MemoryListItem> ListEntryAsync(string name)
+    private async Task<MemoryEntry> ListEntryAsync(string name)
     {
         var list = await _client.GetFromJsonAsync<ListResponse>(
             $"/api/v1/stores/{_factory.PrimaryStore}/memories");

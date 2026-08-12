@@ -19,7 +19,7 @@ public static class RemoteApiVersion
     public const string HeaderName = "X-Scrinia-Api-Version";
 
     /// <summary>The version this build of client and server both speak.</summary>
-    public const string Current = "1";
+    public const string Current = "2";
 }
 
 /// <summary>

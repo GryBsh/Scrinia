@@ -100,10 +100,12 @@ public static class MemoryOrchestrator
             return null;
 
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifact);
-        string decoded = System.Text.Encoding.UTF8.GetString(bytes);
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+        var content = new string[chunkCount];
+        for (int i = 1; i <= chunkCount; i++)
+            content[i - 1] = Nmp2ChunkedEncoder.DecodeChunk(artifact, i);
 
-        return new ShowResponse(name, decoded, chunkCount, bytes.LongLength);
+        return new ShowResponse(name, content, bytes.LongLength);
     }
 
     public static async Task<bool> ForgetAsync(

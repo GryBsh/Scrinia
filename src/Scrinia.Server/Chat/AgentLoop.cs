@@ -204,8 +204,10 @@ public static class AgentLoop
         if (result is null)
             return $"Memory '{name}' not found.";
 
-        // Truncate very large memories to avoid overwhelming the LLM context
-        string content = result.Content;
+        // Truncate very large memories to avoid overwhelming the LLM context. Concatenated with
+        // no separator: chunk boundaries carry no semantic delimiter (Nmp2Strategy.Decode joins
+        // multi-chunk artifacts the same way), so this reconstructs the exact original text.
+        string content = string.Concat(result.Content);
         if (content.Length > MaxRecallCharsPerTool)
             content = content[..MaxRecallCharsPerTool] + "\n[... truncated]";
 

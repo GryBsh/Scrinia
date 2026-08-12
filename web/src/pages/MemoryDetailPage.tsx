@@ -63,7 +63,7 @@ export default function MemoryDetailPage() {
           <div className="grid grid-cols-3 gap-4 text-sm">
             <div>
               <span className="text-gray-500">Chunks</span>
-              <p className="font-mono">{data.chunkCount}</p>
+              <p className="font-mono">{data.content.length}</p>
             </div>
             <div>
               <span className="text-gray-500">Original size</span>
@@ -89,10 +89,10 @@ export default function MemoryDetailPage() {
       {data && (
         <div className="bg-white rounded-lg border p-4">
           <h3 className="text-sm font-medium text-gray-500 mb-3">Content</h3>
-          {data.chunkCount > 1 ? (
-            <ChunkViewer store={store} name={decodedName} totalChunks={data.chunkCount} />
+          {data.content.length > 1 ? (
+            <ChunkViewer store={store} name={decodedName} totalChunks={data.content.length} />
           ) : (
-            <MemoryContent content={data.content} />
+            <MemoryContent content={data.content[0] ?? ''} />
           )}
         </div>
       )}
