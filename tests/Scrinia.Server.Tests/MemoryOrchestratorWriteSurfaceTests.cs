@@ -112,6 +112,35 @@ public sealed class MemoryOrchestratorWriteSurfaceTests : IDisposable
     }
 
     /// <summary>
+    /// The other side of that branch, and the reason it needs its own guard. Appending to a memory
+    /// that does not exist yet is a store, and the STORE performs it — so the orchestrator no longer
+    /// knows which happened from its own control flow and reads it back off the returned entry
+    /// (<c>UpdatedAt</c> is null only for a first write). That inference selects between two
+    /// different wire responses, so it is a behaviour of this class rather than something inherited
+    /// from the code it replaced: a create-via-append answers the way a store does — an unqualified
+    /// <c>Name</c> and a "Remembered:" message — which is also what MCP's <c>Append</c> returns for
+    /// the same input, because it hands off to <c>Remember</c>.
+    /// <para>Runs against the real <see cref="FileMemoryStore"/>, not the recording double: the
+    /// double answers every call with the same echo entry and so cannot reach one branch rather than
+    /// the other.</para>
+    /// </summary>
+    [Fact]
+    public async Task AppendAsync_OnAMemoryThatDoesNotExistYet_AnswersTheWayAStoreDoes()
+    {
+        var result = await MemoryOrchestrator.AppendAsync(_store, "never-stored", "the only body");
+
+        result.Name.Should().Be("never-stored",
+            because: "a create-via-append reports the store's unqualified name, as StoreAsync does");
+        result.Message.Should().StartWith("Remembered:",
+            because: "nothing was appended to — the memory was created, and saying otherwise " +
+                     "reports a chunk count as a position in a memory that had none");
+        result.ChunkCount.Should().Be(1);
+
+        _store.LoadIndex("local").Should().ContainSingle(e => e.Name == "never-stored",
+            because: "the store created it — the response is not describing a write that did not happen");
+    }
+
+    /// <summary>
     /// The live defect this repoint removes. <c>MemoryOrchestrator.StoreAsync</c> used to catch a
     /// failed <c>Upsert</c> and call <c>DeleteArtifact</c> UNCONDITIONALLY — but on a re-store the
     /// archive and the artifact write have already run, so that delete removed the memory's only live
