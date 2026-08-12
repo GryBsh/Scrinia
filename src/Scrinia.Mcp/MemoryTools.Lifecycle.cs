@@ -9,7 +9,6 @@ using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
-using Scrinia.Core.Search;
 
 namespace Scrinia.Mcp;
 
@@ -535,80 +534,77 @@ public sealed partial class ScriniaMcpTools
         if (keepRecent > 0 && keepRecent >= chunkCount)
             return ResponseBuilder.Success($"Nothing to compact — keepRecent ({keepRecent}) >= chunk count ({chunkCount}).").WithAction("compacted");
 
-        // Archive the original before modifying
-        store.ArchiveVersion(subject, scope);
-
-        string compacted;
+        // The compacted CHUNKS, not a re-encoded artifact: the store encodes what it is given, and
+        // handing it the chunk array is what keeps the chunk boundaries a caller asked to keep
+        // (keepRecent > 1) from being flattened into one on the way through. It also archives the
+        // previous version itself, so the explicit ArchiveVersion this method used to make first is
+        // gone — making it here as well would archive twice.
+        string[] compacted;
         int newChunkCount;
 
         if (keepRecent <= 0)
         {
-            // Merge all chunks into one: decode entire artifact, re-encode as single chunk
+            // Merge all chunks into one: decode the entire artifact, store it as a single chunk
             byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
-            string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
-            compacted = Nmp2ChunkedEncoder.Encode(fullText);
+            compacted = [System.Text.Encoding.UTF8.GetString(allBytes)];
             newChunkCount = 1;
         }
         else if (keepRecent == 1)
         {
-            // Keep only the last chunk as a single-chunk artifact
-            string lastChunk = Nmp2ChunkedEncoder.DecodeChunk(artifact, chunkCount);
-            compacted = Nmp2ChunkedEncoder.Encode(lastChunk);
+            // Keep only the last chunk as a single-chunk memory
+            compacted = [Nmp2ChunkedEncoder.DecodeChunk(artifact, chunkCount)];
             newChunkCount = 1;
         }
         else
         {
             // Keep the N most recent chunks
             int startChunk = chunkCount - keepRecent + 1;
-            var keptChunks = new string[keepRecent];
+            compacted = new string[keepRecent];
             for (int i = 0; i < keepRecent; i++)
-                keptChunks[i] = Nmp2ChunkedEncoder.DecodeChunk(artifact, startChunk + i);
+                compacted[i] = Nmp2ChunkedEncoder.DecodeChunk(artifact, startChunk + i);
 
-            compacted = Nmp2ChunkedEncoder.EncodeChunks(keptChunks);
             newChunkCount = keepRecent;
         }
 
         // Read the existing entry BEFORE the write, not after. Compaction rewrites content, not
-        // metadata, so the entry's attributes/keywords/description must survive it — and remotely
-        // the write is a full re-store that replaces the entry with server-extracted attributes
-        // only, with the Upsert below a no-op. Reading first and handing the metadata to the write
-        // is the only channel it has; reading after would sample the already-clobbered entry.
-        // Locally this reads the same values either way: FileMemoryStore.WriteArtifactAsync touches
-        // the artifact file only and leaves the sidecar alone.
+        // metadata, so the entry's attributes and curated description must survive it — and they
+        // survive by travelling INTO the write as caller input, because a re-store derives its
+        // whole metadata half from what it is handed. Reading after the write would sample the
+        // already-rewritten entry.
         // Case-insensitive match plus canonical-casing carry-forward — see
         // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
-        // the whole class's reasoning. Here an ordinal match sent the write below out with
-        // meta: null, which is precisely the metadata reset the comment above exists to prevent.
+        // the whole class's reasoning. Here an ordinal match sent the write out with no metadata at
+        // all, which is precisely the reset this read exists to prevent.
         var entries = store.LoadIndex(scope);
         var existingEntry = entries.FirstOrDefault(
             e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
         if (existingEntry is not null)
             subject = existingEntry.Name;
 
-        await store.WriteArtifactAsync(subject, scope, compacted,
-            existingEntry is null
-                ? null
-                : new ArtifactWriteMetadata(
-                    Attributes: existingEntry.Attributes,
-                    Keywords: existingEntry.Keywords,
-                    Description: existingEntry.ContentPreview),
+        // Compaction is a whole-memory rewrite, so it is a StoreAsync over the compacted chunks —
+        // the spec's "compact needs no third derivation entry point". The store archives the
+        // previous version, writes the artifact and upserts the entry, all of which this method
+        // used to do for itself.
+        //
+        // KEYWORDS ARE DELIBERATELY NOT CARRIED FORWARD (D-29). The entry's Keywords are a DERIVED
+        // list — auto-extracted terms merged with whatever the agent supplied, with no surviving
+        // record of which was which — and handing a derived list back in as MemoryWrite.Keywords
+        // reclassifies every auto term as agent-supplied and boosts it +5 instead of +2. That is
+        // the one mistake MemoryWrite's shape exists to make hard, so compact passes none and the
+        // keywords are re-derived from the compacted text (D-27). A curated keyword that appears
+        // nowhere in the surviving content is dropped by this; the inventory ruled that the
+        // acceptable half of the trade, because the alternative silently corrupts every ranking.
+        //
+        // Attributes and the curated description DO travel: they are caller-supplied state, not
+        // derivation output, and the pipeline merges them over what it extracts.
+        var stored = await store.StoreAsync(
+            new MemoryWrite(subject, scope, compacted,
+                Description: existingEntry?.ContentPreview,
+                Attributes: existingEntry?.Attributes,
+                Keywords: null),
             cancellationToken);
 
-        if (existingEntry is not null)
-        {
-            long newBytes = System.Text.Encoding.UTF8.GetByteCount(
-                System.Text.Encoding.UTF8.GetString(Nmp2Strategy.Instance.Decode(compacted)));
-            var updatedEntry = existingEntry with
-            {
-                ChunkCount = newChunkCount,
-                OriginalBytes = newBytes,
-                UpdatedAt = DateTimeOffset.UtcNow,
-                ChunkEntries = null  // chunk-level entries no longer valid after compaction
-            };
-            store.Upsert(updatedEntry, scope);
-        }
-
-        string qualifiedName = store.FormatQualifiedName(scope, subject);
+        string qualifiedName = store.FormatQualifiedName(scope, stored.Name);
         int dropped = chunkCount - newChunkCount;
         return ResponseBuilder.Success($"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped). Original archived.")
             .WithFileChanges().WithAction("compacted");

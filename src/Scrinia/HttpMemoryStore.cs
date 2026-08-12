@@ -818,6 +818,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         if (write.Content is null || write.Content.Length == 0)
             throw new ArgumentException("A store writes at least one chunk.", nameof(write));
 
+        if (IsEphemeral(write.Name))
+            return await WriteEphemeralInProcessAsync(write, append: false, ct);
+
         string name = WireName(write);
         var body = new StoreApiRequest(
             write.Content, name, write.Description, write.Attributes, write.Keywords);
@@ -844,6 +847,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 "An append adds exactly one chunk, so MemoryWrite.Content must hold one element.",
                 nameof(write));
 
+        if (IsEphemeral(write.Name))
+            return await WriteEphemeralInProcessAsync(write, append: true, ct);
+
         string name = WireName(write);
         var body = new AppendApiRequest(
             write.Content[0], write.Description, write.Attributes, write.Keywords);
@@ -860,22 +866,65 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// <summary>The address the server knows a write by. <see cref="MemoryWrite"/> carries the
     /// resolved <c>(Name, Scope)</c> pair every store member takes; the REST API takes the single
     /// user-facing path, which is what <see cref="FormatQualifiedName"/> reassembles. An ephemeral
-    /// <c>~name</c> is already its own whole address and its scope is ignored.
-    ///
-    /// <para><b>An ephemeral write is sent to the server like any other, and that has a known
-    /// asymmetry.</b> This store's ephemeral surface (<see cref="RememberEphemeral"/>,
-    /// <see cref="GetEphemeral"/>, and the short-circuit at the top of
-    /// <see cref="ResolveArtifactAsync"/>) is client-side, but a store cannot serve an ephemeral
-    /// write itself without DERIVING the entry to return — the one thing this file may not do. So
-    /// the write goes over the wire, lands in the SERVER's in-memory ephemeral map, and a
-    /// subsequent read through <see cref="ResolveArtifactAsync"/> will not find it, because that
-    /// method answers <c>~</c>-prefixed names from the client's own map without asking the server.
-    /// Unreachable today — every ephemeral path in <c>MemoryTools</c> calls
-    /// <see cref="RememberEphemeral"/> directly and never reaches this write surface — and closing
-    /// it properly is an ephemeral-addressing question (does <c>~name</c> mean "this process" or
-    /// "this store"?) rather than something to settle inside a name helper.</para></summary>
+    /// name never reaches this method — see <see cref="WriteEphemeralInProcessAsync"/>.</summary>
     private string WireName(MemoryWrite write) =>
-        IsEphemeral(write.Name) ? write.Name : FormatQualifiedName(write.Scope, write.Name);
+        FormatQualifiedName(write.Scope, write.Name);
+
+    /// <summary>
+    /// Serves an ephemeral write HERE rather than over the wire, because in this store a
+    /// <c>~name</c> addresses THIS PROCESS and not the store behind it. Every ephemeral read on
+    /// this side — <see cref="GetEphemeral"/>, <see cref="ListEphemeral"/>, and the short-circuit at
+    /// the top of <see cref="ResolveArtifactAsync"/> — is answered from the in-process map without
+    /// asking the server. POSTing the write instead would land the memory in the SERVER's ephemeral
+    /// map, where nothing on this side can ever read it back: <c>remember({ path: '/temp/x' })</c>
+    /// would report success and <c>recall</c> would answer "not found". That hazard was recorded as
+    /// latent when this write surface landed — every ephemeral path called
+    /// <see cref="RememberEphemeral"/> directly and never reached a write member — and repointing
+    /// the MCP tools onto <see cref="StoreAsync"/>/<see cref="AppendAsync"/> is what made it
+    /// reachable. Answering it here preserves the addressing this store already had, rather than
+    /// changing what <c>~name</c> means.
+    ///
+    /// <para><b>The derivation is still a store's, not this file's.</b> The local helper is a real
+    /// <see cref="FileMemoryStore"/> running the same <c>MemoryDerivation</c> pass the server would
+    /// run — nothing about the contract is re-implemented on this side, which is the rule this file
+    /// exists under. The helper's own ephemeral map is only a scratch space for the one call: the
+    /// memory is seeded into it, written through the store, and lifted back out into
+    /// <see cref="_ephemeral"/>, which is the map every ephemeral read here consults. It is cleared
+    /// afterwards so a memory is never resident in two maps.</para>
+    ///
+    /// <para>Concurrent writes to the SAME ephemeral key are not serialized, matching what this
+    /// store already offered — <see cref="_ephemeral"/> is a concurrent dictionary but an append has
+    /// always been a read-modify-write over it.</para>
+    /// </summary>
+    private async Task<ArtifactEntry> WriteEphemeralInProcessAsync(
+        MemoryWrite write, bool append, CancellationToken ct)
+    {
+        string key = MemoryNaming.StripEphemeralPrefix(write.Name);
+        var current = GetEphemeral(key);
+        if (current is not null)
+            _localHelper.RememberEphemeral(key, current);
+        else
+            _localHelper.ForgetEphemeral(key);
+
+        try
+        {
+            var entry = append
+                ? await _localHelper.AppendAsync(write, ct)
+                : await _localHelper.StoreAsync(write, ct);
+
+            // The stored EphemeralEntry, not a projection of it: the artifact bytes live only on
+            // that record, and ResolveArtifactAsync serves reads straight out of it.
+            var stored = _localHelper.GetEphemeral(key)
+                ?? throw new InvalidOperationException(
+                    $"The local store did not persist ephemeral memory '~{key}'.");
+            RememberEphemeral(key, stored);
+            return entry;
+        }
+        finally
+        {
+            _localHelper.ForgetEphemeral(key);
+        }
+    }
 
     /// <summary>Guards the one thing a 2xx write response can still get wrong: a body that is
     /// absent or carries no entry. Returning a fabricated entry there would hand a caller a

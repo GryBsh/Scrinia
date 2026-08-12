@@ -103,33 +103,49 @@ public sealed class RemoteWritePathMetadataTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// <c>compact()</c> had the same missing-<c>meta</c> defect, but it is NOT provable end-to-end
-    /// here, and this pins why rather than pretending otherwise: a remote <c>compact()</c> never
-    /// reaches its write at all. Multi-element content is flattened on the way back —
-    /// <c>HttpMemoryStore.ResolveArtifactAsync</c> re-encodes the server's joined content as a
-    /// single chunk — so a memory stored as two chunks reads back as one and compact returns
-    /// "already a single chunk" before writing anything. An earlier version of this test asserted
-    /// the attributes survived and passed against the UNFIXED code for exactly that reason.
-    /// <para>The flattening is a separate, recorded residual. The compact metadata contract is
-    /// pinned at the write seam instead, in
-    /// <c>Scrinia.Tests.RememberWriteMetadataTests.Compact_HandsTheExistingEntrysMetadataToTheWriteSeam</c>,
-    /// which does fail without the fix.</para>
+    /// The chunk-fidelity guarantee on the WRITE half, and the end-to-end compact contract that was
+    /// unreachable until it landed — one test, because the second only becomes possible once the
+    /// first holds.
+    ///
+    /// <para><b>What this replaces.</b> Its predecessor asserted the opposite and was right to at
+    /// the time: <c>Compact_RemoteStore_ShortCircuits_BecauseTheArtifactReadsBackAsOneChunk</c>. A
+    /// remote <c>remember()</c> went through <c>HttpMemoryStore.WriteArtifactAsync</c>, which decoded
+    /// the artifact and POSTed the whole text as ONE element, so a memory stored as two chunks
+    /// really did come back as one and <c>compact()</c> answered "already a single chunk" before
+    /// writing anything. The read half was fixed first, which left the flattening on the write half
+    /// alone and the guarantee holding in only one direction. Repointing the MCP tools onto
+    /// <c>IMemoryStore.StoreAsync</c> — which POSTs the caller's chunk array as it stands — closes
+    /// it by construction, and this is the proof: through the MCP tool path, not a direct POST.</para>
+    ///
+    /// <para>The compact assertions are the ones that could not be made before. Compaction rewrites
+    /// content and must not reset metadata: remotely the write REPLACES the entry, so the curated
+    /// attributes survive only because compact reads them first and hands them to the write.</para>
     /// </summary>
     [Fact]
-    public async Task Compact_RemoteStore_ShortCircuits_BecauseTheArtifactReadsBackAsOneChunk()
+    public async Task Remember_RemoteStore_KeepsChunkBoundaries_AndCompactMergesThemPreservingMetadata()
     {
         await Tools().MemoryRemember(
             path: "/probe/compactmeta",
             content: ["first chunk", "second chunk"],
             attributes: new Dictionary<string, string[]> { ["tag"] = ["gamma"] });
 
-        string compacted = await Tools().MemoryCompact(path: "/probe/compactmeta");
+        Reload("/probe/compactmeta").ChunkCount.Should().Be(2,
+            because: "the caller asked for two independently retrievable chunks, and a remote write " +
+                     "must not flatten them into one on the way out");
 
-        compacted.Should().Contain("Already a single chunk",
-            because: "a remote read flattens multi-element content, so compact has nothing to do — " +
-                     "the residual that makes an end-to-end compact assertion here vacuous");
-        Values(Reload("/probe/compactmeta"), "tag").Should().Contain("gamma",
-            because: "a no-op compact must at least leave the entry alone");
+        string recalled = await Tools().MemoryRecall(path: "/probe/compactmeta");
+        recalled.Should().Contain("(2 chunks)",
+            because: "the boundaries have to survive the round trip, not merely the write");
+
+        string compacted = await Tools().MemoryCompact(path: "/probe/compactmeta");
+        compacted.Should().Contain("2 -> 1",
+            because: "compact really runs now — there is something to compact");
+
+        var after = Reload("/probe/compactmeta");
+        after.ChunkCount.Should().Be(1);
+        Values(after, "tag").Should().Contain("gamma",
+            because: "compaction rewrites content, not curated metadata — and remotely the write " +
+                     "replaces the entry, so the attributes survive only by travelling with it");
     }
 
     /// <summary>

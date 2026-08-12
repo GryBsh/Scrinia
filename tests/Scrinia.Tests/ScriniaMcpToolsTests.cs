@@ -1647,6 +1647,55 @@ public sealed class ScriniaMcpToolsTests
         ResponseParser.Parse(result).Content.Should().Be("brand new content");
     }
 
+    /// <summary>
+    /// A create-via-append answers the way a STORE does, not the way an append does. It used to say
+    /// so by construction — the branch called <c>Remember</c> and returned its response — and says
+    /// so now by reading <c>UpdatedAt</c> off the entry the store returned, because appending to a
+    /// memory that does not exist is a store the STORE performs, without handing the decision back.
+    /// <c>MemoryOrchestrator.AppendAsync</c> makes the same call for the same reason, and its own
+    /// guard (<c>MemoryOrchestratorWriteSurfaceTests</c>) cites this behaviour as the one it
+    /// matches — so the two answers cannot be allowed to drift apart silently.
+    /// </summary>
+    [Fact]
+    public async Task Append_NonexistentMemory_AnswersAsAStore()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string created = (await Tools().Append("brand new content", "append-new-msg")).ToYaml();
+        ResponseParser.Parse(created).Content.Should().StartWith("Remembered:",
+            because: "nothing was appended to — this call created the memory");
+
+        string appended = (await Tools().Append("a second chunk", "append-new-msg")).ToYaml();
+        ResponseParser.Parse(appended).Content.Should().StartWith("Appended chunk 2",
+            because: "the discriminator has to distinguish the two, not just favour one");
+    }
+
+    /// <summary>
+    /// <c>/temp/</c> means ephemeral on <c>append</c> exactly as it does on <c>remember</c>.
+    /// <para>It only half did before: <c>append</c> tested the RAW name for the <c>~</c> prefix, so
+    /// a <c>/temp/</c> path took the persistent branch and appended to a <c>local:temp</c> memory —
+    /// unless the memory did not exist, in which case the create branch called <c>Remember</c>,
+    /// which DID normalize, and produced an ephemeral one. The same path meant two different
+    /// memories depending on whether it already existed. The create branch is gone (the store
+    /// performs the create), so the normalization is done here, once, for both cases.</para>
+    /// </summary>
+    [Fact]
+    public async Task Append_TempPath_IsEphemeral_WhetherOrNotTheMemoryExists()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        await Tools().Append("the first line", "/temp/appendtemp");
+        MemoryStoreContext.Current!.GetEphemeral("appendtemp").Should().NotBeNull(
+            because: "a /temp/ path names an ephemeral memory even when the append creates it");
+
+        await Tools().Append("the second line", "/temp/appendtemp");
+
+        var content = ResponseParser.Parse((await Tools().Recall("~appendtemp")).ToYaml()).Content!;
+        content.Should().Contain("the first line").And.Contain("the second line",
+            because: "the second call must find the memory the first one made, not a persistent " +
+                     "twin under local:temp");
+    }
+
     [Fact]
     public async Task Append_Ephemeral_Works()
     {
@@ -2729,7 +2778,16 @@ public sealed class ScriniaMcpToolsTests
         review.Should().HaveCount(1);
         AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out _).Should().BeTrue();
         reviewDate.Should().NotBeNull();
-        DateTimeOffset.Parse(review[0]).Should().Be(DateTimeOffset.Parse("2026-08-01"));
+        // A bare review date written through remember() persists as UTC, not as the writing
+        // machine's local zone. RULING, Task 2 of store-owned-derivation (see
+        // MemoryDerivation.TryParseReviewDate): MCP used a bare DateTimeOffset.TryParse, which
+        // reads under CurrentCulture and assumes the LOCAL zone, so a store in UTC and a client in
+        // UTC+10 persisted different strings for the same "2026-08-01" — reopening, one machine at
+        // a time, the very MCP/REST disagreement D-06 exists to close. This assertion used to read
+        // DateTimeOffset.Parse("2026-08-01"), which is itself local-zone and therefore passed only
+        // by matching the defect. The expected instant is now stated outright.
+        DateTimeOffset.Parse(review[0]).Should().Be(
+            new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero));
     }
 
     [Fact]

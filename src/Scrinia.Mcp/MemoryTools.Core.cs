@@ -131,135 +131,15 @@ public sealed partial class ScriniaMcpTools
         string actionLabel = "stored",
         CancellationToken cancellationToken = default)
     {
-        // The whole store, not a narrowed one: the ephemeral branch below returns before any layout
-        // member is read, and a remote store implements ephemeral storage for real. Narrowing
-        // here would break remember({ path: '/temp/...' }) in remote mode.
+        // The whole store, not a narrowed one: only the /agent/ branch below needs local files, and
+        // it is guarded where it is reached. A remote store implements everything else — ephemeral
+        // storage included — so narrowing here would break remember() in remote mode.
         var store = CurrentStore;
-        string joined = string.Concat(content);
 
-        // Compute text analysis: keywords + term frequencies (single-pass)
-        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(joined);
-
-        // Unified attributes: key:value-shaped agent keywords route to Attributes; only plain
-        // keywords participate in the keyword merge. Prefixed-keyword writes are retired.
-        var (routedAttributes, plainKeywords) = AttributeExtractor.RouteKeywords(keywords);
-        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(plainKeywords, autoKeywords);
-
-        // References land in Attributes (file/ref), not as prefixed keywords.
-        string rawContent = string.Join("\n", content);
-        var refAttributes = AttributeExtractor.ExtractRefAttributes(rawContent);
-
-        // Boost keywords in TF: agent keywords +5, auto-extracted +2. Key:value keywords
-        // (prefix:value) seed their tokenized VALUE so the parts are BM25-matchable — the
-        // monolithic "prefix:value" string is never a tokenized query term, so seeding it
-        // as-is is dead weight. See TextAnalysis.IndexTokensForKeyword.
-        foreach (string kw in mergedKeywords)
-        {
-            int boost = agentKeywordSet.Contains(kw) ? 5 : 2;
-            foreach (string token in TextAnalysis.IndexTokensForKeyword(kw))
-            {
-                tf.TryGetValue(token, out int count);
-                tf[token] = count + boost;
-            }
-        }
-
-        // Seed agent-supplied retrieval anchors into the TF dict so BM25 picks up
-        // anchor-derived tokens. Each token gets +2 — the same weight auto-extracted
-        // keywords get; the attribute-score branch (+15) carries the agent-curated boost.
-        // Empty/whitespace anchors are dropped here; null is treated the same as [].
-        string[]? cleanedAnchors = null;
-        if (anchors is { Length: > 0 })
-        {
-            cleanedAnchors = anchors
-                .Where(a => !string.IsNullOrWhiteSpace(a))
-                .ToArray();
-            if (cleanedAnchors.Length == 0)
-                cleanedAnchors = null;
-            else
-            {
-                foreach (string anchor in cleanedAnchors)
-                {
-                    foreach (string token in TextAnalysis.Tokenize(anchor))
-                    {
-                        tf.TryGetValue(token, out int count);
-                        tf[token] = count + 2;
-                    }
-                }
-            }
-        }
-
-        // Assemble unified attributes: routed keywords ∪ content extraction ∪ references ∪ prose
-        // mention spans, then fold in explicit agent attributes (they win scalar collisions), then
-        // seed key/value tokens into TF.
-        var entryAttributes = KnownAttributes.Merge(
-            KnownAttributes.Merge(
-                KnownAttributes.Merge(routedAttributes, AttributeExtractor.Extract(joined)),
-                refAttributes),
-            AttributeExtractor.ExtractMentionSpans(joined));
-        entryAttributes = KnownAttributes.Merge(entryAttributes, KnownAttributes.Normalize(attributes));
-        entryAttributes = AttributeExtractor.DropMentionsShadowedByTypedKeys(entryAttributes);
-        AttributeExtractor.SeedTermFrequencies(entryAttributes, tf);
-
-        ChunkEntry[]? chunkEntries = content.Length > 1
-            ? TextAnalysis.ComputeChunkEntries(content)
-            : null;
-
-        // ── Ephemeral path (/temp/...) ──────────────────────────
+        // ── Ephemeral naming (/temp/... is spelled ~... below this line) ────
         if (name.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase))
             name = "~" + name["/temp/".Length..];
-        if (store.IsEphemeral(name))
-        {
-            string key = MemoryNaming.StripEphemeralPrefix(name);
-            string ephArtifact = content.Length == 1
-                ? Nmp2ChunkedEncoder.Encode(content[0])
-                : Nmp2ChunkedEncoder.EncodeChunks(content);
-            int ephChunkCount = Nmp2ChunkedEncoder.GetChunkCount(ephArtifact);
-            long ephBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-            // Merge 3 Task 2b: an explicit curated description becomes the displayed
-            // ContentPreview (option A) — it wins over the auto content snippet.
-            string ephPreview = !string.IsNullOrWhiteSpace(description)
-                ? description
-                : ContentPreview.Generate(joined);
 
-            // Check if updating existing ephemeral entry
-            var existingEph = store.GetEphemeral(key);
-            DateTimeOffset ephCreatedAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
-            DateTimeOffset? ephUpdatedAt = existingEph is not null ? DateTimeOffset.UtcNow : null;
-
-            // Dual-write: fold tag/anchor into Attributes at write time, mirroring how
-            // AttributeMigration.Forward populates the persistent path's Attributes (Task 1).
-            // EphemeralEntry carries only Tags/RetrievalAnchors as legacy attribute-attributes
-            // (no ReviewAfter/ReviewWhen/FileHashes), so only tag/anchor route here.
-            var ephIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-            if (tags is { Length: > 0 }) ephIncoming[KnownAttributes.TagKey] = tags;
-            if (cleanedAnchors is { Length: > 0 }) ephIncoming[KnownAttributes.AnchorKey] = cleanedAnchors;
-            var ephAttributes = ephIncoming.Count > 0 ? KnownAttributes.Merge(entryAttributes, ephIncoming) : entryAttributes;
-
-            var ephEntry = new EphemeralEntry(
-                Name: key,
-                Artifact: ephArtifact,
-                OriginalBytes: ephBytes,
-                ChunkCount: ephChunkCount,
-                CreatedAt: ephCreatedAt,
-                ContentPreview: ephPreview,
-                Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
-                TermFrequencies: tf.Count > 0 ? tf : null,
-                UpdatedAt: ephUpdatedAt,
-                ChunkEntries: chunkEntries,
-                Attributes: ephAttributes);
-
-            store.RememberEphemeral(key, ephEntry);
-
-            // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
-            // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-            // CancellationToken.None: the sink runs detached on a background Task —
-            // propagating the per-request CT would abort it the moment the user-facing
-            // response returns, leaving importance unscored or vectors half-written.
-            FireEventSinkAsync(sink => sink.OnStoredAsync($"~{key}", content, store, CancellationToken.None));
-
-            return ResponseBuilder.Success($"Remembered: ~{key} ({ephChunkCount} {(ephChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(ephBytes)}) [ephemeral]")
-                .WithAction(actionLabel);
-        }
 
         // ── Agent config path (/agent/* → .scrinia/agent/{name}.md) ──
         if (name.StartsWith("/agent/", StringComparison.OrdinalIgnoreCase))
@@ -312,153 +192,113 @@ public sealed partial class ScriniaMcpTools
                 .WithFileChanges().WithAction(actionLabel);
         }
 
-        // ── Persistent path ──────────────────────────────────────────────
-        var (scope, subject) = store.ParseQualifiedName(name);
+        // ── Every other path: the STORE derives, this tool does not ──────
+        //
+        // Everything that used to stand here — AnalyzeText, the keyword merge and its TF boosts,
+        // the anchor seeding, the attribute assembly, the chunk entries, the file hashing, the
+        // auto-derived review condition, the carrier fold and the two hand-built entries — was one
+        // of four copies of the same contract, and they had drifted. The one implementation is
+        // MemoryDerivation, reached through IMemoryStore.StoreAsync; the rulings each behaviour
+        // rests on are in docs/superpowers/analysis/2026-08-11-derivation-inventory.md.
+        //
+        // The ephemeral branch is gone with it: the store routes a ~name to ephemeral storage
+        // itself, so there is no second write path here to keep in step with the first.
+        var (ephemeral, scope, subject) = Resolve(store, name);
 
-        // Check if entry already exists (for versioning + UpdatedAt).
-        // Case-insensitive match plus canonical-casing carry-forward — see
-        // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
-        // the whole class's reasoning; this is the same defect on the MCP side of the same write.
-        var existingEntries = store.LoadIndex(scope);
-        var existingEntry = existingEntries.FirstOrDefault(
-            e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-        if (existingEntry is not null)
-            subject = existingEntry.Name;
-
-        DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
-        DateTimeOffset? updatedAt = existingEntry is not null ? DateTimeOffset.UtcNow : null;
-
-        // Archive previous version before overwriting
-        if (existingEntry is not null)
-            store.ArchiveVersion(subject, scope);
-
-        string artifact = content.Length == 1
-            ? Nmp2ChunkedEncoder.Encode(content[0])
-            : Nmp2ChunkedEncoder.EncodeChunks(content);
-
-        // Merge 3 Task 2b: an explicit curated description becomes the displayed
-        // ContentPreview (option A) — it wins over the auto content snippet.
-        string contentPreview = !string.IsNullOrWhiteSpace(description)
-            ? description
-            : ContentPreview.Generate(joined);
-
-        // New model: the `review` attribute carries review dates and/or free-text conditions.
-        // Feed date-parseable values into the existing reviewAfter parse (first wins); join the
-        // rest into reviewWhen. Only when the legacy params weren't explicitly supplied.
-        if (reviewAfter is null && reviewWhen is null
-            && entryAttributes is not null && entryAttributes.TryGetValue(KnownAttributes.ReviewKey, out var reviewVals))
-        {
-            var whenParts = new List<string>();
-            foreach (string v in reviewVals)
-            {
-                if (reviewAfter is null && DateTimeOffset.TryParse(v, out _))
-                    reviewAfter = v;
-                else
-                    whenParts.Add(v);
-            }
-            if (whenParts.Count > 0)
-                reviewWhen = string.Join("; ", whenParts);
-        }
-
-        // Parse reviewAfter
-        DateTimeOffset? parsedReviewAfter = null;
-        if (!string.IsNullOrWhiteSpace(reviewAfter) && DateTimeOffset.TryParse(reviewAfter, out var ra))
-            parsedReviewAfter = ra;
-
-        // Auto-set reviewWhen for content with count patterns (unless explicit reviewWhen provided)
-        if (string.IsNullOrWhiteSpace(reviewWhen) && !store.IsEphemeral(name))
-        {
-            if (CountPattern.IsMatch(joined))
-                reviewWhen = "when counts in this memory change";
-        }
-
-        // Compute code-reference hashes from the `file` attribute values (drift detection). File
-        // dependencies flow in exclusively via attributes.file now — the legacy codeRefs parameter
-        // was retired.
-        var allRefPaths = (entryAttributes is not null && entryAttributes.TryGetValue("file", out var fileRefs)
-                ? fileRefs : [])
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        // Drift detection hashes files on disk, so it needs a local workspace. A remote store has
-        // none; the memory is stored without file hashes rather than the whole call failing. The
-        // root is resolved lazily so a remember() with no file refs never asks for one at all.
-        // .ToList() above is required: allRefPaths is read twice now and Distinct is lazy.
-        string? workspaceRoot = allRefPaths.Count > 0
-            ? (store as ILocalMemoryStore)?.WorkspaceRoot
-            : null;
-
-        Dictionary<string, string>? codeRefDict = null;
-        if (workspaceRoot is not null)
-        {
-            foreach (var refPath in allRefPaths)
-            {
-                var fullPath = ResolveWorkspacePath(workspaceRoot, refPath);
-                if (fullPath is null || !File.Exists(fullPath)) continue;
-                var hash = ComputeFileHash(fullPath);
-                if (hash is not null)
-                {
-                    codeRefDict ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    codeRefDict[refPath.Trim()] = hash;
-                }
-            }
-        }
-
-        // Dual-write: fold tag/anchor/review/file into Attributes at write time — the attributes-native
-        // write path (byte-identical to AttributeMigration.Forward's fold, Task 1). Inserted here,
-        // immediately before the write, so it captures the auto-derived reviewWhen (above) and
-        // the completed codeRefDict (above) — inserting any earlier would fold stale/empty values.
-        // It has to precede the *write*, not merely the ArtifactEntry construction below: a remote
-        // store's Upsert is a no-op, so WriteArtifactAsync is the only channel these attributes
-        // have. Nothing between here and the construction reassigns entryAttributes, so the entry
-        // still sees exactly this merged map.
-        var carrier = AttributeMigration.BuildCarrierAttributes(
-            tags, codeRefDict?.Keys, parsedReviewAfter,
-            string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen, cleanedAnchors);
-        if (carrier.Count > 0)
-            entryAttributes = KnownAttributes.Merge(entryAttributes, carrier);
-
-        await store.WriteArtifactAsync(subject, scope, artifact,
-            new ArtifactWriteMetadata(
-                Attributes: entryAttributes,
-                Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
-                Description: contentPreview),
+        var entry = await store.StoreAsync(
+            // The `keywords` argument is the CALLER's raw list (D-01). Nothing derived is ever
+            // handed back in as input — which is why this method now computes nothing to hand it.
+            new MemoryWrite(subject, scope, content, description,
+                WriteAttributes(attributes, tags, anchors, reviewAfter, reviewWhen), keywords),
             cancellationToken);
 
-        string uri = store.ArtifactUri(subject, scope);
-
-        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
-        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(joined);
-        string qualifiedName = store.FormatQualifiedName(scope, subject);
-
-        var entry = new ArtifactEntry(
-            Name: subject,
-            Uri: uri,
-            OriginalBytes: originalBytes,
-            ChunkCount: chunkCount,
-            CreatedAt: createdAt,
-            ContentPreview: contentPreview,
-            Keywords: mergedKeywords.Length > 0 ? mergedKeywords : null,
-            TermFrequencies: tf.Count > 0 ? tf : null,
-            UpdatedAt: updatedAt,
-            ChunkEntries: chunkEntries,
-            FileHashes: codeRefDict,
-            Attributes: entryAttributes);
-        entry = AttributeMigration.Forward(entry);
-
-        store.Upsert(entry, scope);
+        string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
 
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        // CancellationToken.None — see the ephemeral path above for rationale.
-        // The sink re-parses this to decide which scope to embed under; under v3
-        // FormatQualifiedName is round-trip-safe for every scope (no more namespace-prefix
-        // stripping), so this is the same value as the display `qualifiedName` above.
-        string sinkQualifiedName = store.FormatQualifiedName(scope, subject);
-        FireEventSinkAsync(sink => sink.OnStoredAsync(sinkQualifiedName, content, store, CancellationToken.None));
+        // CancellationToken.None: the sink runs detached on a background Task —
+        // propagating the per-request CT would abort it the moment the user-facing
+        // response returns, leaving importance unscored or vectors half-written.
+        // The sink re-parses this name to decide which scope to embed under; under v3
+        // FormatQualifiedName is round-trip-safe for every scope, so it is the same value the
+        // response displays.
+        FireEventSinkAsync(sink => sink.OnStoredAsync(qualifiedName, content, store, CancellationToken.None));
 
-        return ResponseBuilder.Success($"Remembered: {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
-            .WithFileChanges().WithAction(actionLabel);
+        return StoredResponse(entry, qualifiedName, ephemeral, actionLabel);
+    }
+
+    /// <summary>Splits a user-facing name into the resolved <c>(scope, subject)</c> pair every
+    /// store member takes. An ephemeral <c>~name</c> is its own whole address and keeps its prefix
+    /// — the store routes it to ephemeral storage itself. Mirrors
+    /// <c>MemoryOrchestrator.Resolve</c>, deliberately: the two tool surfaces over the same store
+    /// must resolve a name the same way.</summary>
+    private static (bool Ephemeral, string Scope, string Subject) Resolve(IMemoryStore store, string name)
+    {
+        if (store.IsEphemeral(name))
+            return (true, "", name);
+        var (scope, subject) = store.ParseQualifiedName(name);
+        return (false, scope, subject);
+    }
+
+    /// <summary>The address a written entry is reported and embedded under. Reads the name off the
+    /// ENTRY, not off the caller's input, so a write that landed on a memory stored under a
+    /// different casing reports the memory's own name.</summary>
+    private static string QualifiedName(
+        IMemoryStore store, ArtifactEntry entry, bool ephemeral, string scope) =>
+        ephemeral ? $"~{entry.Name}" : store.FormatQualifiedName(scope, entry.Name);
+
+    /// <summary>The response shape a whole-memory write answers with, shared by <c>remember</c> and
+    /// by the create-via-append case so the two cannot drift. An ephemeral write reports no file
+    /// changes because it made none.</summary>
+    private static McpResponse StoredResponse(
+        ArtifactEntry entry, string qualifiedName, bool ephemeral, string actionLabel)
+    {
+        string counts = $"{entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, "
+                      + FormatBytes(entry.OriginalBytes);
+        return ephemeral
+            ? ResponseBuilder.Success($"Remembered: {qualifiedName} ({counts}) [ephemeral]")
+                .WithAction(actionLabel)
+            : ResponseBuilder.Success($"Remembered: {qualifiedName} ({counts}).")
+                .WithFileChanges().WithAction(actionLabel);
+    }
+
+    /// <summary>
+    /// Folds the tool surface's separate carrier parameters — tags, anchors and the two review
+    /// halves — into the one flat attribute map <see cref="MemoryWrite"/> carries.
+    ///
+    /// <para>Input mapping, not derivation. Under the single pipeline <c>tag</c>, <c>anchor</c> and
+    /// <c>review</c> are ordinary attribute keys (D-03, D-07, D-08): there is no separate carrier
+    /// to re-fold after the fact, and no second seeding pass. The review halves travel as the
+    /// caller wrote them — the store canonicalizes a bare date into ISO-8601 round-trip form
+    /// (D-06), which is precisely the step that must not be duplicated out here.</para>
+    ///
+    /// <para>The carrier folds in LAST so an explicit <c>tags:</c>/<c>anchors:</c>/<c>reviewAfter:</c>
+    /// argument wins a collision with the same key in <paramref name="attributes"/>, which is the
+    /// order the pre-collapse write used.</para>
+    /// </summary>
+    private static Dictionary<string, string[]>? WriteAttributes(
+        IReadOnlyDictionary<string, string[]>? attributes,
+        string[]? tags, string[]? anchors, string? reviewAfter = null, string? reviewWhen = null)
+    {
+        var carrier = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (tags is { Length: > 0 })
+            carrier[KnownAttributes.TagKey] = tags;
+        if (anchors is { Length: > 0 })
+            carrier[KnownAttributes.AnchorKey] = anchors;
+        string[] review = new[] { reviewAfter, reviewWhen }
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v!)
+            .ToArray();
+        if (review.Length > 0)
+            carrier[KnownAttributes.ReviewKey] = review;
+
+        // Normalize handles the blank-value and blank-key dropping both halves used to do by hand;
+        // the store normalizes again on the way in, so this is only about getting the two maps into
+        // one comparable shape before the merge.
+        var explicitAttributes = KnownAttributes.Normalize(attributes);
+        return carrier.Count == 0
+            ? explicitAttributes
+            : KnownAttributes.Merge(explicitAttributes, KnownAttributes.Normalize(carrier));
     }
 
     /// <summary>Update metadata on an existing memory without re-encoding its content.</summary>
@@ -1035,358 +875,55 @@ public sealed partial class ScriniaMcpTools
     {
         var store = CurrentStore;
 
-        bool ephemeral = store.IsEphemeral(name);
-
-        // RULING (remote-mode-leftovers, final fixes, Finding 1): the index lookup below is
-        // HOISTED ABOVE the artifact read deliberately, and the ORDER is the fix.
+        // ── The STORE derives, and the store also resolves ───────────────
         //
-        // What it prevents: the read used to run on the caller's casing. SanitizeName does not fold
-        // case, so on a case-sensitive filesystem append("mixedcase", ...) against a memory stored
-        // as "MixedCase" got FileNotFoundException, fell through to the Remember() create path
-        // below, and remember()'s own lookup — which this branch made case-insensitive — then found
-        // "MixedCase", archived it, and replaced its content with the appended chunk alone.
-        // append() silently behaving as replace(). Resolving identity from the index FIRST and
-        // reading with the entry's own casing means the read succeeds and the real append runs.
+        // What stood here was the fourth copy of the derivation contract (BuildAppendMetadata plus
+        // its two per-branch write sites) wrapped around a hand-rolled read-decode-re-encode. All
+        // of it is IMemoryStore.AppendAsync's now: the artifact read under the entry's own casing,
+        // the chunk decode, the carry-forward of everything the memory already holds — its curated
+        // keywords (D-12), its drift baseline (D-21), its earlier chunk entries and its preview
+        // (D-20) — the tag/anchor union (D-17), and the single seeding pass (D-08).
         //
-        // How it's pinned: this is no longer an unpinnable ruling — NTFS supports per-directory case
-        // sensitivity, and tests/Scrinia.Tests/CaseSensitiveMcpAppendTests.cs points
-        // MemoryStoreContext.Current at a FileMemoryStore rooted in a CaseSensitiveDirectory and
-        // asserts the OUTCOME directly: after MemoryAppend("mixedcase", ...) against a memory stored
-        // as "MixedCase", the resulting content contains both the original body and the appended
-        // body. With this hoist reverted, that assertion fails — the content becomes the appended
-        // body alone, reproducing the defect exactly. That test SKIPS rather than silently passing
-        // on a host that cannot provide a case-sensitive directory. Complementing it, the
-        // pre-existing ORDERING guard — Append_UnderADifferentCasing_ReadsTheArtifactUnderThe
-        // EntrysOwnCasing (tests/Scrinia.Tests/RememberWriteMetadataTests.cs) — runs on every host,
-        // case-sensitive filesystem or not, and records the subject handed to ReadArtifactAsync,
-        // failing if the hoist is removed. The two guards are complementary, not redundant: the
-        // ordering guard fires everywhere but only proves the order; the outcome guard proves the
-        // fix actually prevents content loss, but only where a case-sensitive directory is
-        // available.
+        // The casing ruling that used to live here lives there too, with the same reasoning and
+        // its own guards (FileMemoryStore.AppendAsync resolves identity from the index BEFORE the
+        // artifact read, so an append under a mismatched casing stays an append instead of
+        // replacing the memory with the appended chunk alone). CaseSensitiveMcpAppendTests still
+        // proves the outcome end-to-end through this tool.
         //
-        // Ephemeral names keep ResolveArtifactAsync: they live in an in-memory dictionary, not on
-        // disk, there is no index entry to resolve identity from, and its "~key" branch is the only
-        // thing that reads them. Non-ephemeral names now take ReadArtifactAsync(subject, scope) so
-        // the canonical name travels as (scope, subject) rather than through a FormatQualifiedName
-        // round trip; HttpMemoryStore.ReadArtifactAsync is a thin wrapper over ResolveArtifactAsync,
-        // so remote behaviour is unchanged.
-        string scope = "";
-        string subject = "";
-        ArtifactEntry? existingEntry = null;
-        if (!ephemeral)
-        {
-            (scope, subject) = store.ParseQualifiedName(name);
-            existingEntry = store.LoadIndex(scope).FirstOrDefault(
-                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-            if (existingEntry is not null)
-                subject = existingEntry.Name;
-        }
+        // Appending to a memory that does not exist yet is a store, and AppendAsync performs it
+        // itself rather than handing the decision back — which is why there is no create branch
+        // here and no second call into Remember.
+        if (name.StartsWith("/temp/", StringComparison.OrdinalIgnoreCase))
+            name = "~" + name["/temp/".Length..];
 
-        string? existingArtifact = null;
-        try
-        {
-            existingArtifact = ephemeral
-                ? await store.ResolveArtifactAsync(name, cancellationToken)
-                : await store.ReadArtifactAsync(subject, scope, cancellationToken);
-        }
-        catch (FileNotFoundException)
-        {
-            // Will create new
-        }
+        var (ephemeral, scope, subject) = Resolve(store, name);
 
-        if (existingArtifact is null)
-        {
-            // Non-existent → create as single-chunk (same as Store). Forward any
-            // caller-supplied metadata so a create-via-append is not lossy.
-            return await this.Remember([content], name,
-                description: description ?? "",
-                tags: tags,
-                keywords: keywords,
-                anchors: anchors,
-                attributes: attributes,
-                cancellationToken: cancellationToken);
-        }
+        var entry = await store.AppendAsync(
+            new MemoryWrite(subject, scope, [content], description,
+                WriteAttributes(attributes, tags, anchors), keywords),
+            cancellationToken);
 
-        // Append as new chunk
-        string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, content);
-
-        // Decode full result for metadata
-        byte[] fullBytes = Nmp2Strategy.Instance.Decode(newArtifact);
-        string fullText = System.Text.Encoding.UTF8.GetString(fullBytes);
-        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
-        long originalBytes = fullBytes.LongLength;
-
-        // Merge 3 Task 2b: entry-level ContentPreview is computed per-branch below (option A —
-        // new description wins; otherwise PRESERVE the existing entry's ContentPreview rather
-        // than regenerating from content, which would silently drop a curated description).
-
-        // Build chunk entry for the newly appended content (single-pass)
-        var (newKw, newTf) = TextAnalysis.AnalyzeText(content);
-        foreach (string k in newKw) { newTf.TryGetValue(k, out int c); newTf[k] = c + 2; }
-
-        // Unified attributes: key:value-shaped agent keywords route to Attributes, same as Store.
-        // Only the plain remainder participates in the entry-level keyword merge below.
-        var (routedNewAttributes, plainNewKeywords) = AttributeExtractor.RouteKeywords(keywords);
-
-        // Ref/file references are no longer folded into chunk-level keywords — they land in
-        // Attributes via the entry-level merge in BuildAppendMetadata.
-        var newChunkEntry = new ChunkEntry(
-            ChunkIndex: chunkCount,
-            ContentPreview: ContentPreview.Generate(content),
-            Keywords: newKw.Length > 0 ? newKw : null,
-            TermFrequencies: newTf.Count > 0 ? newTf : null);
-
-        string qualifiedName;
-        // Round-trip-safe form handed to the event sink — see the matching comment on the
-        // Remember/Store sink dispatch. Kept distinct from `qualifiedName` (display) because
-        // FormatQualifiedName's display form strips the "memory/"/"entity/" namespace prefix,
-        // which would reparse to the wrong scope for any v1-namespaced topic.
-        string sinkQualifiedName;
-
-        if (ephemeral)
-        {
-            string key = MemoryNaming.StripEphemeralPrefix(name);
-            var existingEph = store.GetEphemeral(key);
-            DateTimeOffset createdAt = existingEph?.CreatedAt ?? DateTimeOffset.UtcNow;
-
-            // Merge 3 Task 2b: new description wins; otherwise preserve the existing entry's
-            // ContentPreview (which now carries either a prior curated description or the prior
-            // auto preview) rather than regenerating from content — that would drop a curated
-            // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
-            string contentPreview = !string.IsNullOrWhiteSpace(description)
-                ? description
-                : (existingEph?.ContentPreview ?? ContentPreview.Generate(fullText));
-
-            // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
-            // removed); ContentPreview (computed above) is the surviving display carrier.
-            var meta = BuildAppendMetadata(
-                fullText, description, tags, plainNewKeywords, anchors,
-                existingEph?.ContentPreview, AttributeReaders.DisplayTags(existingEph?.Attributes).ToArray(),
-                existingEph?.Keywords, AttributeReaders.DisplayAnchors(existingEph?.Attributes).ToArray(),
-                content, routedNewAttributes, existingEph?.Attributes, attributes);
-
-            ChunkEntry[]? existingChunks = existingEph?.ChunkEntries;
-            ChunkEntry[] updatedChunks = existingChunks is not null
-                ? [.. existingChunks, newChunkEntry]
-                : [newChunkEntry];
-
-            var ephEntry = new EphemeralEntry(
-                Name: key,
-                Artifact: newArtifact,
-                OriginalBytes: originalBytes,
-                ChunkCount: chunkCount,
-                CreatedAt: createdAt,
-                ContentPreview: contentPreview,
-                Keywords: meta.Keywords,
-                TermFrequencies: meta.Tf,
-                UpdatedAt: DateTimeOffset.UtcNow,
-                ChunkEntries: updatedChunks,
-                Attributes: meta.Attributes);
-
-            store.RememberEphemeral(key, ephEntry);
-            qualifiedName = $"~{key}";
-            sinkQualifiedName = qualifiedName;
-        }
-        else
-        {
-            // `scope`, `subject` and `existingEntry` were resolved at the top of this method — the
-            // case-insensitive match and the canonical-casing carry-forward both live there now,
-            // because the artifact read needs the canonical name too. Same class as the remember()
-            // path above; the entry supplies versioning + timestamps below.
-            DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
-
-            // Merge 3 Task 2b: new description wins; otherwise preserve the existing entry's
-            // ContentPreview (which now carries either a prior curated description or the prior
-            // auto preview) rather than regenerating from content — that would drop a curated
-            // description on a no-op append. See Append_PreservesCuratedAnchorsTagsAndDescription.
-            string contentPreview = !string.IsNullOrWhiteSpace(description)
-                ? description
-                : (existingEntry?.ContentPreview ?? ContentPreview.Generate(fullText));
-
-            // meta.Description is unused post-Merge-3 (the legacy Description member it fed is
-            // removed); ContentPreview (computed above) is the surviving display carrier.
-            var meta = BuildAppendMetadata(
-                fullText, description, tags, plainNewKeywords, anchors,
-                existingEntry?.ContentPreview, AttributeReaders.DisplayTags(existingEntry?.Attributes).ToArray(),
-                existingEntry?.Keywords, AttributeReaders.DisplayAnchors(existingEntry?.Attributes).ToArray(),
-                content, routedNewAttributes, existingEntry?.Attributes, attributes);
-
-            ChunkEntry[]? existingChunks = existingEntry?.ChunkEntries;
-            ChunkEntry[] updatedChunks = existingChunks is not null
-                ? [.. existingChunks, newChunkEntry]
-                : [newChunkEntry];
-
-            // Archive previous version
-            if (existingEntry is not null)
-                store.ArchiveVersion(subject, scope);
-
-            // Dual-write gap: BuildAppendMetadata already folds tag/anchor into meta.Attributes, but
-            // review/file aren't available there — they come from existingEntry, which is only a
-            // local at this construction site. Fold them here so Attributes carries the full
-            // legacy carrier set even though tags/anchors are already in meta.Attributes (passed null
-            // below to avoid double-folding them).
-            //
-            // Hoisted above the write (was after it), for the same reason remember()'s carrier fold
-            // was: remotely, WriteArtifactAsync re-runs the server's whole store path and replaces
-            // the entry with server-extracted attributes only, and the Upsert below is a no-op — so
-            // this map has to travel WITH the write or it is destroyed by it. Measured before the
-            // hoist: an append to a memory holding tag/anchor/person left only the freshly extracted
-            // mention values behind. Nothing in this block reads a value produced by the write: it
-            // reads existingEntry (loaded above) and meta (built above) and nothing else, and
-            // `uri`/`qualifiedName` — the only post-write locals — are not referenced here.
-            AttributeReaders.TryReadReview(existingEntry?.Attributes, out var existingReviewDate, out var existingReviewWhen);
-            var carrier = AttributeMigration.BuildCarrierAttributes(
-                tags: null, existingEntry?.FileHashes?.Keys, existingReviewDate,
-                existingReviewWhen, anchors: null);
-            var appendAttrs = carrier.Count > 0 ? KnownAttributes.Merge(meta.Attributes, carrier) : meta.Attributes;
-
-            await store.WriteArtifactAsync(subject, scope, newArtifact,
-                new ArtifactWriteMetadata(
-                    Attributes: appendAttrs,
-                    Keywords: meta.Keywords,
-                    Description: contentPreview),
-                cancellationToken);
-
-            string uri = store.ArtifactUri(subject, scope);
-            qualifiedName = store.FormatQualifiedName(scope, subject);
-            sinkQualifiedName = store.FormatQualifiedName(scope, subject);
-
-            var entry = new ArtifactEntry(
-                Name: subject,
-                Uri: uri,
-                OriginalBytes: originalBytes,
-                ChunkCount: chunkCount,
-                CreatedAt: createdAt,
-                ContentPreview: contentPreview,
-                Keywords: meta.Keywords,
-                TermFrequencies: meta.Tf,
-                UpdatedAt: DateTimeOffset.UtcNow,
-                ChunkEntries: updatedChunks,
-                FileHashes: existingEntry?.FileHashes,
-                Attributes: appendAttrs);
-            entry = AttributeMigration.Forward(entry);
-
-            store.Upsert(entry, scope);
-        }
+        string qualifiedName = QualifiedName(store, entry, ephemeral, scope);
 
         // Fire event sink (embeddings, etc.) — fire-and-forget so embedding latency
         // never blocks the response. Failure logged to stderr; the artifact is already on disk.
-        // CancellationToken.None — see the ephemeral path above for rationale.
-        FireEventSinkAsync(sink => sink.OnAppendedAsync(sinkQualifiedName, content, store, CancellationToken.None));
+        // CancellationToken.None — see the Remember path above for rationale.
+        //
+        // UpdatedAt is the create-vs-append discriminator, the same one MemoryOrchestrator.
+        // AppendAsync uses for the same decision: a real append always sets it, and it is null only
+        // for a first write. A create answers as a store — the "Remembered:" message and the
+        // OnStored sink — which is what append() has always returned for that case, when it
+        // returned Remember()'s own response.
+        bool created = entry.UpdatedAt is null;
+        FireEventSinkAsync(sink => created
+            ? sink.OnStoredAsync(qualifiedName, [content], store, CancellationToken.None)
+            : sink.OnAppendedAsync(qualifiedName, content, store, CancellationToken.None));
 
-        return ResponseBuilder.Success($"Appended chunk {chunkCount} to {qualifiedName} ({chunkCount} {(chunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(originalBytes)}).")
+        if (created)
+            return StoredResponse(entry, qualifiedName, ephemeral, "stored");
+
+        return ResponseBuilder.Success($"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} {(entry.ChunkCount == 1 ? "chunk" : "chunks")}, {FormatBytes(entry.OriginalBytes)}).")
             .WithFileChanges().WithAction("appended");
-    }
-
-    /// <summary>
-    /// Computes the entry-level metadata for an append: re-indexes auto-keywords + term
-    /// frequencies over the full post-append text, then merges the memory's existing curated
-    /// metadata with any caller-supplied additions. This is the carry-forward that keeps
-    /// <c>append</c> from discarding what <c>remember</c> set — the appended content is
-    /// re-indexed, but anchors, tags, description, and curated keywords survive and grow.
-    /// The returned <c>Description</c> is unused post-Merge-3 (it fed the now-removed legacy
-    /// Description member); <paramref name="existingDescription"/> is sourced from the caller's
-    /// <c>ContentPreview</c>, the surviving curated-description carrier.
-    /// </summary>
-    private (string Description, string[]? Tags, string[]? Keywords, Dictionary<string, int>? Tf, string[]? Anchors, Dictionary<string, string[]>? Attributes)
-        BuildAppendMetadata(
-            string fullText,
-            string? newDescription, string[]? newTags, string[]? newKeywords, string[]? newAnchors,
-            string? existingDescription, string[]? existingTags, string[]? existingKeywords, string[]? existingAnchors,
-            string appendedContent, Dictionary<string, string[]>? routedNewAttributes, Dictionary<string, string[]>? existingAttributes,
-            IReadOnlyDictionary<string, string[]>? attributes)
-    {
-        var (autoKeywords, tf) = TextAnalysis.AnalyzeText(fullText);
-
-        // Existing curated keywords + caller additions are treated as "agent" terms so they
-        // survive and keep the +5 TF boost; auto-extracted terms from the full text fill the
-        // rest at +2. (Previously-auto keywords folded into the curated set get the agent
-        // boost too — a negligible, intentional over-weight in exchange for never losing a
-        // curated term.) Mirrors Store's keyword/TF contract.
-        // Ref/file references are no longer concatenated in here as prefixed keywords —
-        // they land in Attributes via the merge below. Dropping the concat here is intentional:
-        // entry-level keywords no longer carry file:/ref: entries.
-        string[] curatedKeywords = UnionDistinct(existingKeywords, newKeywords);
-        var (mergedKeywords, agentKeywordSet) = TextAnalysis.MergeKeywordsWithSource(
-            curatedKeywords.Length > 0 ? curatedKeywords : null, autoKeywords);
-        foreach (string kw in mergedKeywords)
-        {
-            int boost = agentKeywordSet.Contains(kw) ? 5 : 2;
-            foreach (string token in TextAnalysis.IndexTokensForKeyword(kw))
-            {
-                tf.TryGetValue(token, out int count);
-                tf[token] = count + boost;
-            }
-        }
-
-        // Anchors: union of existing + new (whitespace-dropped, deduped). Seed anchor tokens
-        // into TF at +2 so BM25 picks up anchor vocabulary not present in the content —
-        // same contract as Store.
-        string[]? mergedAnchors = MergeAnchors(existingAnchors, newAnchors);
-        if (mergedAnchors is not null)
-        {
-            foreach (string anchor in mergedAnchors)
-                foreach (string token in TextAnalysis.Tokenize(anchor))
-                {
-                    tf.TryGetValue(token, out int count);
-                    tf[token] = count + 2;
-                }
-        }
-
-        string[] mergedTags = UnionDistinct(existingTags, newTags);
-
-        // Explicit new description wins; otherwise preserve the existing one; the content
-        // slice is only reached when neither the memory nor the caller supplied a description.
-        string desc = !string.IsNullOrWhiteSpace(newDescription)
-            ? newDescription!
-            : !string.IsNullOrWhiteSpace(existingDescription)
-                ? existingDescription!
-                : fullText[..Math.Min(200, fullText.Length)];
-
-        // Unified attributes: incoming = routed new keywords ∪ content extraction ∪ references
-        // from the appended chunk; merged per KnownAttributes (entity/ref union, scalar
-        // newer-wins). Seed the merged set at +3 — TF is rebuilt from scratch per append,
-        // so carried-forward attributes must re-seed (same contract as merged anchors).
-        var incoming = KnownAttributes.Merge(
-            KnownAttributes.Merge(routedNewAttributes, AttributeExtractor.Extract(appendedContent)),
-            AttributeExtractor.ExtractRefAttributes(appendedContent));
-        incoming = KnownAttributes.Merge(incoming, KnownAttributes.Normalize(attributes));   // explicit agent attributes
-        var mergedAttributes = KnownAttributes.Merge(existingAttributes, incoming);
-
-        // Dual-write: fold the fully-merged tag/anchor set into Attributes at write time —
-        // same mechanism as Store, mirroring AttributeMigration.Forward for the persistent
-        // path (Task 1). Uses the already-merged mergedTags/mergedAnchors (existing ∪ new)
-        // so Attributes carries the same values that land in Tags/RetrievalAnchors below.
-        var tagAnchorIncoming = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-        if (mergedTags.Length > 0) tagAnchorIncoming[KnownAttributes.TagKey] = mergedTags;
-        if (mergedAnchors is { Length: > 0 }) tagAnchorIncoming[KnownAttributes.AnchorKey] = mergedAnchors;
-        if (tagAnchorIncoming.Count > 0)
-            mergedAttributes = KnownAttributes.Merge(mergedAttributes, tagAnchorIncoming);
-
-        AttributeExtractor.SeedTermFrequencies(mergedAttributes, tf);
-
-        return (
-            desc,
-            mergedTags.Length > 0 ? mergedTags : null,
-            mergedKeywords.Length > 0 ? mergedKeywords : null,
-            tf.Count > 0 ? tf : null,
-            mergedAnchors,
-            mergedAttributes);
-    }
-
-    /// <summary>Case-insensitive union of two optional string arrays, preserving first-seen casing and order; drops null/whitespace.</summary>
-    private static string[] UnionDistinct(string[]? existing, string[]? added) =>
-        (existing ?? []).Concat(added ?? [])
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Select(s => s.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-    /// <summary>Merges anchor phrases (existing + new), trimming and deduplicating case-insensitively; null when empty.</summary>
-    private static string[]? MergeAnchors(string[]? existing, string[]? added)
-    {
-        string[] merged = UnionDistinct(existing, added);
-        return merged.Length > 0 ? merged : null;
     }
 
     // kt removed — knowledge transfer is a learnable goal, not a fixed tool.

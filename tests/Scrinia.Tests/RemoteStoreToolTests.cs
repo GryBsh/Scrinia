@@ -56,6 +56,11 @@ public sealed class RemoteStoreToolTests
     private sealed class StubBackendHandler(
         string listJson, HttpStatusCode patchStatus = HttpStatusCode.OK) : HttpMessageHandler
     {
+        /// <summary>Every request that reached the wire, as "METHOD path". Lets a test assert that
+        /// an operation made NO network call — which no status-code fixture can show, because a
+        /// call that should not have happened still gets a plausible answer here.</summary>
+        public List<string> Requests { get; } = [];
+
         // Both overrides are required: HttpMemoryStore.ListScoped goes through SendSync, which
         // calls the synchronous HttpClient.Send. A handler that only overrides SendAsync throws
         // NotSupportedException from inside HttpMessageHandler — which would have looked exactly
@@ -89,9 +94,33 @@ public sealed class RemoteStoreToolTests
             return null;
         }
 
+        /// <summary>The <c>StoreResponse</c> a POST to <c>.../memories</c> answers with, echoing the
+        /// posted name and chunk count back. Derived fields are all null: this stub is a transport,
+        /// not a second derivation pipeline, and no test in this file reads them. What it must get
+        /// right is the SHAPE — an <c>entry</c> object is present, because the client refuses a
+        /// write response without one.</summary>
+        private static string StoredEntryJson(HttpRequestMessage request)
+        {
+            string body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            string name = doc.RootElement.GetProperty("name").GetString() ?? "";
+            var chunks = doc.RootElement.GetProperty("content").EnumerateArray().ToList();
+            long bytes = chunks.Sum(c => (long)Encoding.UTF8.GetByteCount(c.GetString() ?? ""));
+            string quoted = System.Text.Json.JsonSerializer.Serialize(name);
+
+            return $$"""
+                {"entry":{"name":{{quoted}},"qualifiedName":{{quoted}},"scope":"local",
+                "chunkCount":{{chunks.Count}},"originalBytes":{{bytes}},
+                "createdAt":"2026-01-01T00:00:00+00:00","updatedAt":null,"description":"",
+                "attributes":null,"keywords":null,"termFrequencies":null,"chunkEntries":null,
+                "fileHashes":null},"message":"Remembered"}
+                """;
+        }
+
         private HttpResponseMessage Respond(HttpRequestMessage request)
         {
             string path = request.RequestUri!.AbsolutePath;
+            Requests.Add($"{request.Method} {path}");
             bool isMemoriesCollection = path.EndsWith("/memories", StringComparison.Ordinal);
 
             HttpResponseMessage response;
@@ -102,14 +131,18 @@ public sealed class RemoteStoreToolTests
                     Content = new StringContent(listJson, Encoding.UTF8, "application/json"),
                 };
             }
-            // A persistent remote remember() writes through here. The body is ignored by the
-            // caller — only the status matters — but it must be a success status or
-            // WriteArtifactAsync throws before the code under test is ever reached.
+            // A persistent remote remember() writes through here. The body is NOT ignored: a write
+            // answers with the complete entry the server derived, and HttpMemoryStore.StoreAsync
+            // refuses a 2xx that carries none rather than completing it on the client side — which
+            // would mean deriving. A "{}" body was enough while the tools wrote through
+            // WriteArtifactAsync, which read only the status; it is not enough now, and the shape
+            // below is the one Scrinia.Server.Models.StoreResponse really sends (pinned byte-for-
+            // byte in Scrinia.Server.Tests.ApiVersionAssertionTests).
             else if (request.Method == HttpMethod.Post && isMemoriesCollection)
             {
                 response = new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+                    Content = new StringContent(StoredEntryJson(request), Encoding.UTF8, "application/json"),
                 };
             }
             else if (request.Method == HttpMethod.Get && path.EndsWith("/entry", StringComparison.Ordinal))
@@ -150,11 +183,16 @@ public sealed class RemoteStoreToolTests
         private readonly IMemoryStore? _previous;
         public HttpMemoryStore Store { get; }
 
+        /// <summary>The backend the store talks to, exposed so a test can assert what did — or did
+        /// not — reach it.</summary>
+        public StubBackendHandler Handler { get; }
+
         public RemoteStoreScope(string listJson = EmptyListJson, HttpStatusCode patchStatus = HttpStatusCode.OK)
         {
             _previous = MemoryStoreContext.Current;
             MemoryEventSinkContext.Default = null;
-            var http = new HttpClient(new StubBackendHandler(listJson, patchStatus))
+            Handler = new StubBackendHandler(listJson, patchStatus);
+            var http = new HttpClient(Handler)
             {
                 BaseAddress = new Uri("http://localhost:5000"),
             };
@@ -172,16 +210,22 @@ public sealed class RemoteStoreToolTests
     }
 
     /// <summary>
-    /// A non-local store that records what was written to it. Subclasses <see cref="FakeMemoryStore"/>
-    /// and overrides one member, rather than hand-writing 23. Its value over the
-    /// <see cref="HttpMemoryStore"/> fixture is that <see cref="Upsert"/> is observable — over
-    /// HTTP the stored entry's <c>FileHashes</c> simply never leaves the process.
+    /// A non-local store that records the <see cref="MemoryWrite"/>s handed to it. Subclasses
+    /// <see cref="FakeMemoryStore"/> and overrides one member, rather than hand-writing 23.
+    /// <para>It used to record <c>Upsert</c>, because the tools built the entry themselves and
+    /// handed it over. They hand over the raw write now, so the write is the seam — and it is the
+    /// better one for this test: it shows exactly what the tool asked the store to persist, with no
+    /// derivation in between to attribute a value to.</para>
     /// </summary>
     private sealed class RecordingRemoteStore : FakeMemoryStore
     {
-        public List<ArtifactEntry> Stored { get; } = [];
+        public List<MemoryWrite> Writes { get; } = [];
 
-        public override void Upsert(ArtifactEntry entry, string scope = "local") => Stored.Add(entry);
+        public override Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
+        {
+            Writes.Add(write);
+            return base.StoreAsync(write, ct);
+        }
     }
 
     /// <summary>
@@ -277,6 +321,70 @@ public sealed class RemoteStoreToolTests
         yaml.Should().Contain("ephemeral",
             because: "a remote store implements ephemeral storage for real, so /temp/ writes work");
         scope.Store.GetEphemeral("scratch").Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// The half the assertion above cannot make, and the one that matters: the memory can be READ
+    /// BACK.
+    ///
+    /// <para>In this store a <c>~name</c> addresses THIS PROCESS. Every ephemeral read here —
+    /// <c>GetEphemeral</c>, the listing, and the short-circuit at the top of
+    /// <c>ResolveArtifactAsync</c> — is answered from the in-process map without asking the server,
+    /// so an ephemeral write that went over the wire would land in the SERVER's ephemeral map and
+    /// be unreadable from this side forever: <c>remember</c> reporting success and <c>recall</c>
+    /// answering "not found", with no error anywhere in between. That hazard was recorded as latent
+    /// when <c>StoreAsync</c>/<c>AppendAsync</c> landed, because every ephemeral path called
+    /// <c>RememberEphemeral</c> directly and never reached a write member. Repointing the MCP tools
+    /// onto the write surface is what made it reachable, so this is the guard that goes with it:
+    /// <c>HttpMemoryStore</c> serves an ephemeral write in process, through its local helper store.
+    ///
+    /// <para>Written as a round trip through the TOOLS rather than as an assertion about which
+    /// store member ran, because "readable afterwards" is the actual guarantee — a future change
+    /// that moves ephemeral storage server-side legitimately may, as long as reads follow it.</para>
+    /// </summary>
+    [Fact]
+    public async Task Remember_EphemeralPath_RemoteStore_IsReadableAfterwards()
+    {
+        using var scope = new RemoteStoreScope();
+
+        await Tools().MemoryRemember(path: "/temp/scratch", content: ["an ephemeral note"]);
+        string recalled = await Tools().MemoryRecall(path: "~scratch");
+
+        recalled.Should().Contain("an ephemeral note",
+            because: "a write this store cannot serve a read for is silent data loss, whatever it " +
+                     "reported at the time");
+    }
+
+    /// <summary>The same guarantee for the other write member: an ephemeral append reads back with
+    /// BOTH chunks. It also pins that the append found the existing memory at all — an append that
+    /// reached the server would find nothing there and create a fresh one-chunk memory.</summary>
+    [Fact]
+    public async Task Append_EphemeralPath_RemoteStore_IsReadableAfterwards()
+    {
+        using var scope = new RemoteStoreScope();
+
+        await Tools().MemoryRemember(path: "/temp/scratch", content: ["the first line"]);
+        string appended = await Tools().MemoryAppend(path: "~scratch", content: "the second line");
+        appended.Should().Contain("Appended chunk 2",
+            because: "the memory the append is adding to has to be the one just written");
+
+        string recalled = await Tools().MemoryRecall(path: "~scratch");
+        recalled.Should().Contain("the first line").And.Contain("the second line");
+    }
+
+    /// <summary>An ephemeral write must not reach the network at all. Complements the two round
+    /// trips above: they would still pass if the write were POSTed AND mirrored locally, which
+    /// would put the memory in two places and leak scratch content to the server.</summary>
+    [Fact]
+    public async Task Remember_EphemeralPath_RemoteStore_SendsNothingOverTheWire()
+    {
+        using var scope = new RemoteStoreScope();
+
+        await Tools().MemoryRemember(path: "/temp/scratch", content: ["an ephemeral note"]);
+
+        scope.Handler.Requests.Should().BeEmpty(
+            because: "a ~name addresses this process; sending it to the server both leaks it and " +
+                     "puts it where no read on this side will look");
     }
 
     // ── I4: list() in every mode ─────────────────────────────────────────────
@@ -470,15 +578,20 @@ public sealed class RemoteStoreToolTests
     [Fact]
     public async Task Remember_PersistentPath_WithFileRefs_RemoteStore_StoresWithoutHashes()
     {
-        // With `file` refs there IS something to hash, and remotely there is no disk to hash it
-        // from. Degrade rather than refuse: the memory is stored, the drift hashes are simply
-        // absent.
+        // With `file` refs there IS something to hash, and the tool has no disk to hash it from.
+        // Degrade rather than refuse: the memory is stored, the reference survives, and no hash is
+        // fabricated on the way.
         //
-        // Asserted through a recording double rather than the HttpMemoryStore fixture, because
-        // FileHashes is unobservable over the wire: StoreApiRequest carries content, name,
-        // description, attributes and keywords — the path->hash map is not among them — and
-        // HttpMemoryStore.Upsert is a no-op. A double's Upsert is the only seam where the stored
-        // entry can actually be inspected.
+        // WHAT CHANGED, AND WHY THIS IS NOW THE WEAKER HALF OF THE GUARANTEE. Hashing moved into
+        // the store (D-04): whichever store holds the workspace supplies the hasher, so a remote
+        // write finally gets a real drift baseline computed by the SERVER instead of none at all,
+        // and the tool cannot compute one either way. MemoryWrite has no field a hash could travel
+        // in — asserted directly below — so a regression that resolves a fabricated workspace root
+        // out here has nothing to put the result in. That is a structural guarantee where this used
+        // to be a behavioural one.
+        //
+        // The probe files stay: they are what a fabricated-root regression would hash, and the
+        // assertions below would still be reached if MemoryWrite ever grew a place to put it.
         //
         // Probe files sit at CWD (`?? Directory.GetCurrentDirectory()`) and
         // `AppContext.BaseDirectory` (the executable's own directory, a common "give me *some*
@@ -507,15 +620,17 @@ public sealed class RemoteStoreToolTests
 
             yaml.Should().Contain("status: success");
 
-            var stored = ((RecordingRemoteStore)scope.Store).Stored;
-            stored.Should().ContainSingle(because: "the memory must still be persisted");
-            stored[0].FileHashes.Should().BeNull(
-                because: "with no local workspace there is no root to resolve refs against, and " +
-                         "a fabricated one — CWD or AppContext.BaseDirectory — would hash the probe " +
-                         "planted at that root");
-            stored[0].Attributes.Should().NotBeNull().And.ContainKey("file",
+            var writes = ((RecordingRemoteStore)scope.Store).Writes;
+            writes.Should().ContainSingle(because: "the memory must still be persisted");
+            writes[0].Attributes.Should().NotBeNull().And.ContainKey("file",
                 because: "the reference itself is the user's data and must survive; only the " +
-                         "derived hashes are dropped");
+                         "derived hashes are the store's to compute");
+
+            typeof(MemoryWrite).GetProperties().Select(p => p.Name)
+                .Should().NotContain(n => n.Contains("Hash", StringComparison.OrdinalIgnoreCase),
+                    because: "the write surface carries raw input only — a caller that could hand " +
+                             "over a hash could hand over one it fabricated from a guessed root, " +
+                             "which is the defect this test was written against");
         }
         finally
         {
