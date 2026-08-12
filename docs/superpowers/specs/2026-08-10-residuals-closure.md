@@ -475,17 +475,26 @@ be checked before ruling.
   sites, two of which append to an existing `Info`. The reachability argument no longer holds and
   the ordering needs re-deciding.
 
-## Two known divergences, recorded and not in any group
+## Two known divergences — NO LONGER PERMANENT, 2026-08-11
 
-Neither is closeable as a defect; both are consequences of decisions already made, and both are in
-the CHANGELOG. Listed so nobody rediscovers them as bugs.
+Both were recorded here as consequences of decisions already made, closeable by nobody. **Both are
+now in scope of `docs/superpowers/specs/2026-08-11-store-owned-derivation-design.md`**, which
+removes their cause rather than documenting them.
 
-- **BM25 term frequencies differ by store mode**, so search ranking differs local vs remote. Not
-  fixable by moving the merge — the wire carries one flat map and the server cannot distinguish
-  agent attributes from carrier attributes.
+- **BM25 term frequencies differ by store mode**, so search ranking differs local vs remote. The
+  explanation recorded here — "not fixable by moving the merge; the wire carries one flat map and
+  the server cannot distinguish agent attributes from carrier attributes" — **is false.** Deriving a
+  memory's metadata is implemented four times (MCP store/append/compact and the server's three), and
+  on append the server passes `null` for agent keywords, boosts everything `+2` instead of agent
+  `+5`, and boosts the raw keyword rather than its index tokens
+  (`src/Scrinia.Server/Services/MemoryOrchestrator.cs:269-275` against
+  `src/Scrinia.Mcp/MemoryTools.Core.cs:1322-1341`). The server is not failing to distinguish agent
+  terms — on that path it is not trying. This is duplication drift, not a wire limitation, which is
+  why changing the wire looked hopeless.
 - **MCP and REST disagree on a bare date in a `review` attribute.** `remember()` routes it through
   a lenient parse and stores a round-tripped date that goes stale; a direct `POST` stores it
-  verbatim, so it reads as a *condition* and the memory reports `needsReview=true` forever.
+  verbatim, so it reads as a *condition* and the memory reports `needsReview=true` forever. Same
+  cause: two implementations of one contract.
 
 ## Closure order — revised after the Group E rulings
 
@@ -507,10 +516,18 @@ them. **All of the closure work has now landed — the three designs are all tha
   destination existence check — was closed by fixing it on `copy-destination-casing`, 2026-08-11,
   which ends the case-sensitivity class: **no site of it remains open.**
 
+**Specced, ready for a plan:**
+
+1. ~~**Remote wire parity (E4 + E5)**~~ — **specced 2026-08-11** as
+   `docs/superpowers/specs/2026-08-11-store-owned-derivation-design.md`. The spec came out wider
+   than the ruling: brainstorming established that the goal is MCP and HTTP being *effectively the
+   same*, and that the wire gaps are downstream of derivation being implemented four times. So the
+   spec moves derivation to the store boundary — the local store derives, the remote store defers to
+   the server — and E4's PATCH and E5's chunk array fall out of it. It also closes both "known
+   divergences" above.
+
 **Needs a spec before a plan:**
 
-1. **Remote wire parity (E4 + E5)** — the PATCH endpoint for entry metadata and chunk structure on
-   the wire. One spec, for the reason given above.
 2. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
 3. **Remote scoring surface (E3)** — start from the trust question.
 
