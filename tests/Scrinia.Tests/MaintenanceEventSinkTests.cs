@@ -364,6 +364,41 @@ public sealed class MaintenanceEventSinkTests : IDisposable
             "and it must not gain the attribute form of a marker it no longer qualifies for");
     }
 
+    /// <summary>
+    /// The local half of the two-write split. A dual-marked entry — the normal outcome of migration,
+    /// since marking adds the attribute and leaves the keyword — must come out of a clear with
+    /// BOTH carriers gone when the store can take both writes. The remote half, where the keyword
+    /// write is refused and the attribute clear must land anyway, is pinned in
+    /// <c>Scrinia.Server.Tests.RemoteLoadIndexTests.MaintenanceSink_ClearsTheOrphanAttributeRemotely_…</c>.
+    /// </summary>
+    [Fact]
+    public async Task DualMarkedEntry_HasBothCarriersCleared_WhenTheStoreTakesBothWrites()
+    {
+        var store = MemoryStoreContext.Current!;
+        await _tools.Remember(["Content of the dual-marked entry."], "/test/dualmarked");
+        await _tools.Remember(["References [[/test/dualmarked]] here."], "/test/dualreferrer",
+            keywords: ["ref:/test/dualmarked"]);
+
+        var (scope, subject) = store.ParseQualifiedName("/test/dualmarked");
+        store.TryUpdateEntry(subject, scope, e => e with
+        {
+            Attributes = KnownAttributes.Merge(e.Attributes, new() { ["orphan"] = ["true"] }),
+            Keywords = [.. e.Keywords ?? [], "orphan"],
+        }).Should().BeTrue();
+
+        await _sink.OnStoredAsync(
+            "/test/dualmarked", ["Content of the dual-marked entry."], store, CancellationToken.None);
+
+        var entry = store.LoadIndex(scope).First(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
+            "the attribute clear is the first write and must always land");
+        entry.Keywords.Should().NotContain("orphan",
+            "and the second write cleans up the legacy carrier — locally both succeed, so splitting " +
+            "them costs nothing here while being the only thing that works remotely");
+    }
+
     /// <summary>The other half, so the clearing above cannot be implemented as "always strip the
     /// keyword": a legacy entry that is STILL an orphan keeps its marker and gains the attribute,
     /// migrating onto the new carrier rather than being silently unmarked.</summary>

@@ -139,11 +139,14 @@ public sealed class PatchEndpointTests : IAsyncLifetime
             because: "the store re-derived the new attribute's term as part of the very write this " +
                      "response is reporting — omitting it makes the body describe an entry that " +
                      "never existed");
-        body.TermFrequencies.Should().BeEquivalentTo(reread!.TermFrequencies,
+
+        // The WHOLE entry, not a chosen subset. The complete-entry wire shape's claim is that one
+        // of these is the entry, so an assertion that named only the fields the current defect
+        // touched would have to be widened by hand every time the shape grows a field — and the
+        // next stale one would sit in whatever was left out.
+        body.Should().BeEquivalentTo(reread,
             because: "the write response and an immediate read of the same entry must not disagree " +
-                     "about a derived field");
-        body.Attributes.Should().BeEquivalentTo(reread.Attributes);
-        body.UpdatedAt.Should().Be(reread.UpdatedAt);
+                     "about ANY field, derived or otherwise");
     }
 
     /// <summary>

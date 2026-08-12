@@ -320,6 +320,60 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The clear must be TWO writes, and this is why. Marking leaves a legacy entry's <c>orphan</c>
+    /// keyword alone, so dual-marked entries are the normal migration outcome — which makes this
+    /// the common path, not a corner. Clearing both carriers in one <c>TryUpdateEntry</c> made a
+    /// remote store refuse the whole mutation (<c>PATCH</c> rejects a <c>Keywords</c> change), so
+    /// NEITHER was cleared and a memory with demonstrable inbound refs kept <c>orphan:true</c>
+    /// indefinitely — strictly worse than clearing the attribute and leaving the keyword, which is
+    /// what the code did one commit earlier.
+    ///
+    /// <para>Both halves are asserted deliberately. The attribute assertion is the floor that was
+    /// lost; the keyword assertion records what a remote store genuinely cannot do, so a future
+    /// reader does not "fix" the split back into one write on the assumption both should land.</para>
+    /// </summary>
+    [Fact]
+    public async Task MaintenanceSink_ClearsTheOrphanAttributeRemotely_EvenWhenTheLegacyKeywordCannotBeRemoved()
+    {
+        const string body = "the once-orphaned entry";
+        await StoreAsync("orphan-remote-clear-probe", body);
+
+        // Dual-marked, exactly as migration leaves an entry written before the marker moved: the
+        // attribute (written by the sink) alongside the legacy keyword.
+        _remote.TryUpdateEntry("orphan-remote-clear-probe", "local", e => e with
+        {
+            Attributes = new Dictionary<string, string[]>(
+                e.Attributes ?? [], StringComparer.OrdinalIgnoreCase) { ["orphan"] = ["true"] },
+            UpdatedAt = DateTimeOffset.UtcNow,
+        }).Should().BeTrue();
+
+        // Planted through the server's own store: the wire refuses a keyword change, which is the
+        // whole point — a legacy entry cannot be CREATED over the wire either.
+        var serverStore = (Scrinia.Core.FileMemoryStore)_factory.Services
+            .GetRequiredService<Scrinia.Server.Services.StoreManager>().GetStore(_factory.PrimaryStore);
+        serverStore.TryUpdateEntry("orphan-remote-clear-probe", "local", e => e with
+        {
+            Keywords = [.. e.Keywords ?? [], "orphan"],
+        }).Should().BeTrue();
+
+        // Give it an inbound reference, so the sink must now clear rather than mark.
+        await StoreAsync("orphan-remote-referrer", $"points at [[orphan-remote-clear-probe]]");
+
+        await new MaintenanceEventSink().OnStoredAsync(
+            "orphan-remote-clear-probe", [body], _remote, CancellationToken.None);
+
+        var entry = _remote.LoadIndex("local").Single(e => e.Name == "orphan-remote-clear-probe");
+
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
+            because: "the attribute clear must land remotely. Bundling it with the keyword removal " +
+                     "made PATCH refuse both, so a non-orphan kept orphan:true forever and the " +
+                     "sink retried and warned on every later store event");
+        entry.Keywords.Should().Contain("orphan",
+            because: "the legacy keyword genuinely cannot be removed over this wire — recorded so " +
+                     "the two writes are not merged back together on the assumption both land");
+    }
+
+    /// <summary>
     /// <c>TryUpdateEntry</c> changed which permissions it needs, and that is a deployment-visible
     /// fact worth stating in the suite rather than leaving to be discovered. It used to read
     /// through <c>LoadIndex</c>, which needs <c>search</c>; it now uses

@@ -12,7 +12,27 @@ namespace Scrinia.Core.Search;
 /// </summary>
 public static class EntityFactSidecar
 {
-    public const int Version = 2;
+    /// <summary>
+    /// Bumped whenever the DERIVATION RULE changes, not only when the file's shape does — that is
+    /// the whole reason this constant exists, and the only thing standing between a rule change and
+    /// a cache that predates it.
+    ///
+    /// <para><b>2 → 3:</b> state-marker attributes (<see cref="KnownAttributes.StateMarkerKeys"/>)
+    /// stopped being entities. The validity <see cref="ComputeToken">token</see> is content-only —
+    /// id, effective date and entity signature — so it says nothing about which RULES produced the
+    /// facts. A sidecar written by the previous build therefore validated against a scope whose
+    /// entries had not changed, and handed <c>orphan:true</c> straight back as a graph node: the hub
+    /// reinstated on the unfiltered <c>SearchPipeline</c> path, persisting until something in that
+    /// scope mutated. Verified by loading a pre-fix sidecar — <c>entityToDocs.Keys</c> came back
+    /// carrying <c>orphan:true</c>.</para>
+    ///
+    /// <para>The general lesson, worth more than this instance: a cache that predates a rule change
+    /// is a path around the new rule. <see cref="TryLoad"/> is a second route into
+    /// <see cref="EntityFactStore"/> that bypasses <c>EntityGraph.ParseEntityAttributes</c>
+    /// entirely, so a filter added there governs derivation and nothing else. Any future change to
+    /// what <c>ParseEntityAttributes</c>/<c>ParseEntityKeywords</c> yield must bump this too.</para>
+    /// </summary>
+    public const int Version = 3;
 
     /// <summary>Order-independent, content-sensitive token over a scope's (id, effective-date,
     /// content-signature) triples. Effective date = <c>UpdatedAt ?? CreatedAt</c>; the content
