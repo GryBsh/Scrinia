@@ -42,8 +42,23 @@ The recorded one is real and correctly diagnosed, in a comment at
 `src/Scrinia.Server/Services/MemoryOrchestrator.cs:57-66`: locally `SeedTermFrequencies` runs
 *before* the carrier merge so carrier keys are never seeded, while over the wire those keys arrive
 inside one flat map and get seeded here — and a flat map cannot distinguish an agent-supplied
-attribute from a carrier one. That comment also names the fix: *"sending the two maps separately,
-which is a wire-shape change, not a reordering here."* This design is that wire-shape change.
+attribute from a carrier one. That comment names one possible fix: *"sending the two maps
+separately, which is a wire-shape change, not a reordering here."*
+
+**This design takes the other fix, deliberately.** `MemoryWrite` carries a single flat `Attributes`
+map, so MCP's split is not expressible under it — the divergence closes by making both paths adopt
+the server's order (assemble the complete map, then seed once, last) rather than by preserving
+local's. Ruled 2026-08-12 after the Task 1 inventory surfaced the contradiction; recorded as D-08 in
+`docs/superpowers/analysis/2026-08-11-derivation-inventory.md`.
+
+**This is a deliberate, user-visible ranking change.** Values under `tag`, `review` and `file`
+currently seed `0` locally and `+3` remotely; after, `+3` on both. `anchor` seeds `+2` locally,
+`+3` remotely; after, `+3` on both. Term frequencies are persisted rather than recomputed at query
+time, so a memory's ranking shifts the first time it is rewritten, not on deploy. The semantic being
+dropped is weakly held: MCP's own comment says a curated anchor's real boost lives in the
+attribute-score branch at `+15`, not in term frequency. The rejected alternative — a second map on
+`MemoryWrite` — would encode a legacy internal distinction on the wire that no REST client could
+sensibly populate.
 
 The second cause is undocumented and lives on a different path: the append drift in the table above.
 The server is not failing to distinguish agent terms there — it passes `null` and does not try.
