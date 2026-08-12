@@ -169,34 +169,48 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     /// requests/60s), which the fixture's other, much smaller tests don't need raised. Same
     /// override mechanism as <c>RateLimitTests.RateLimit_PartitionsByUser_NotSharedIp</c>.</para>
     /// </summary>
+    /// <summary>
+    /// R-4: previously built via <c>ScriniaServerFactory.WithWebHostBuilder(b =>
+    /// b.UseSetting("Scrinia:RateLimit:PermitLimit", ...))</c> + <c>UseKestrel(0)</c> — the exact
+    /// shape measured (during PatchEndpointTests' M-1 investigation) to bind Kestrel's hard-coded
+    /// default address (<c>127.0.0.1:5000</c>) instead of an ephemeral port, a pre-existing latent
+    /// full-suite port collision this test happened not to trigger only because nothing else in the
+    /// suite raced it onto the same port at the same moment. <see cref="PagingRateLimitServerFactory"/>
+    /// is the same dedicated-<c>WebApplicationFactory{TEntryPoint}</c>-subclass fix
+    /// <c>PatchEndpointTests.ReadOnlyClaimsServerFactory</c> uses; the assertion right after
+    /// <c>StartServer()</c> below is the "verify by measurement" step — it fails if this ever
+    /// regresses back to <c>:5000</c>.
+    /// </summary>
     [Fact]
     public async Task LoadIndex_ReturnsEveryEntry_AboveTheServersDefaultPageSize()
     {
         const int total = 205;
 
-        // WithWebHostBuilder returns a WebApplicationFactory<Program> wrapper (a
-        // DelegatedWebApplicationFactory), not a ScriniaServerFactory — so this cannot use
-        // baseFactory's CreateAuthenticatedClient()/PrimaryStore-typed conveniences after the
-        // clone. Build the client the same way RateLimitTests.RateLimit_PartitionsByUser_NotSharedIp
-        // does: create a key directly against the clone's own ApiKeyStore.
-        using var baseFactory = new ScriniaServerFactory();
-        using var factory = baseFactory.WithWebHostBuilder(
-            b => b.UseSetting("Scrinia:RateLimit:PermitLimit", (total * 2).ToString()));
+        using var factory = new PagingRateLimitServerFactory(total * 2);
         factory.UseKestrel(0);
         factory.StartServer();
 
-        var keyStore = factory.Services.GetRequiredService<ApiKeyStore>();
-        var (rawKey, _, _) = keyStore.CreateKey(
-            "pagination-test-user", [baseFactory.PrimaryStore], ["search", "store"], "pagination-test");
-        var client = factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rawKey);
+        // Measured, not assumed: confirm this genuinely bound an ephemeral port rather than
+        // falling back to Kestrel's hard-coded default, which is exactly what the WithWebHostBuilder
+        // shape this replaced was silently doing.
+        var addressesFeature = factory.Services
+            .GetRequiredService<Microsoft.AspNetCore.Hosting.Server.IServer>()
+            .Features.Get<Microsoft.AspNetCore.Hosting.Server.Features.IServerAddressesFeature>();
+        addressesFeature.Should().NotBeNull();
+        addressesFeature!.Addresses.Should().NotContain(a => a.EndsWith(":5000"),
+            because: "a dedicated WebApplicationFactory subclass with UseKestrel(0) called directly " +
+                     "on the instance (no WithWebHostBuilder in the chain) must bind an ephemeral " +
+                     "port, not fall back to Kestrel's hard-coded default and collide with every " +
+                     "other Kestrel-backed test in the suite");
+
+        var client = factory.CreateAuthenticatedClient();
         // HttpMemoryStore owns client's disposal (see DisposeAsync above for the same pattern).
-        using var remote = new HttpMemoryStore(client, baseFactory.PrimaryStore);
+        using var remote = new HttpMemoryStore(client, factory.PrimaryStore);
 
         for (int i = 0; i < total; i++)
         {
             var resp = await client.PostAsJsonAsync(
-                $"/api/v1/stores/{baseFactory.PrimaryStore}/memories",
+                $"/api/v1/stores/{factory.PrimaryStore}/memories",
                 new StoreRequest([$"pagination probe body {i}"], $"probe-{i:D4}", $"pagination probe body {i}"));
             resp.EnsureSuccessStatusCode();
         }
@@ -286,5 +300,62 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         // Contain, not equality — same reasoning as LoadIndex_CarriesKeywords: MemoryOrchestrator
         // merges agent keywords with auto-extracted ones, so the stored set is a superset.
         scoped.Entry.Keywords!.Should().Contain("zebra");
+    }
+}
+
+/// <summary>
+/// A store with a raised rate limit, provisioned via its own <c>ConfigureWebHost</c> override
+/// rather than <c>ScriniaServerFactory.WithWebHostBuilder</c> (R-4: <c>WithWebHostBuilder</c> itself
+/// — not any extra service registration riding along with it — is what makes <c>UseKestrel(0)</c>
+/// bind Kestrel's hard-coded default address instead of an ephemeral port; measured, not assumed —
+/// see the assertion in <see cref="RemoteLoadIndexTests.LoadIndex_ReturnsEveryEntry_AboveTheServersDefaultPageSize"/>).
+/// Mirrors <c>ThrowingStoreServerFactory</c> in <c>ApiVersionHeaderOn500Tests.cs</c> and
+/// <c>PatchEndpointTests.ReadOnlyClaimsServerFactory</c>.
+/// </summary>
+public sealed class PagingRateLimitServerFactory : Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program>
+{
+    private readonly string _tempDir;
+    public string PrimaryStore { get; } = "test-store";
+    private string TestApiKey { get; set; } = "";
+
+    public PagingRateLimitServerFactory(int permitLimit)
+    {
+        _permitLimit = permitLimit;
+        _tempDir = Path.Combine(Path.GetTempPath(), "scrinium-tests-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(_tempDir);
+    }
+
+    private readonly int _permitLimit;
+
+    protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
+    {
+        builder.UseSetting("Scrinia:DataDir", _tempDir);
+        builder.UseSetting($"Scrinia:Stores:{PrimaryStore}", Path.Combine(_tempDir, "stores", PrimaryStore));
+        builder.UseSetting("Scrinia:RateLimit:PermitLimit", _permitLimit.ToString());
+
+        builder.ConfigureServices(services =>
+        {
+            var sp = services.BuildServiceProvider();
+            var keyStore = sp.GetRequiredService<ApiKeyStore>();
+            var (rawKey, _, _) = keyStore.CreateKey(
+                "pagination-test-user", [PrimaryStore], ["search", "store"], "pagination-test");
+            TestApiKey = rawKey;
+        });
+    }
+
+    public HttpClient CreateAuthenticatedClient()
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", TestApiKey);
+        return client;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            try { Directory.Delete(_tempDir, recursive: true); } catch { }
+        }
     }
 }

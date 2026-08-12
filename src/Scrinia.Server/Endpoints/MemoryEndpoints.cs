@@ -23,7 +23,10 @@ public static class MemoryEndpoints
         group.MapGet("/memories", ListMemory);
         group.MapGet("/memories/{name}", RecallMemory);
         group.MapGet("/memories/{name}/entry", GetEntry);
-        group.MapPatch("/memories/{name}", PatchEntry);
+        // R-2: PatchEntry takes HttpRequest (it parses the body manually — see its own doc comment),
+        // not a typed parameter, which otherwise strips the request body from the generated OpenAPI
+        // document (a generated client would see a PATCH that accepts no body). .Accepts restores it.
+        group.MapPatch("/memories/{name}", PatchEntry).Accepts<MemoryEntry>("application/json");
         group.MapDelete("/memories/{name}", ForgetMemory);
         group.MapPost("/memories/{name}/append", AppendMemory);
         group.MapPost("/memories/{name}/copy", CopyMemory);
@@ -310,11 +313,28 @@ public static class MemoryEndpoints
         if (!IsWritable(ctx, store))
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
+        // R-3: taking HttpRequest instead of a typed parameter took ASP.NET's model binding out of
+        // the path, and model binding was also enforcing Content-Type — a text/plain body containing
+        // valid JSON used to 415, and silently started 200-ing once binding was bypassed. Restore it
+        // explicitly before touching the body.
+        if (!request.HasJsonContentType())
+            return Results.Json(new ErrorResponse("Content-Type must be application/json."),
+                statusCode: StatusCodes.Status415UnsupportedMediaType);
+
         MemoryEntry req;
         try
         {
             using var doc = await JsonDocument.ParseAsync(request.Body, cancellationToken: request.HttpContext.RequestAborted);
             var rootEl = doc.RootElement;
+
+            // R-1: a well-formed but non-object JSON root ("[]", "123", "\"hello\"", "true", "null")
+            // parses fine — JsonDocument.ParseAsync never throws for it — but TryGetProperty below
+            // throws InvalidOperationException on a non-object element, which the catch(JsonException)
+            // does not see, turning a malformed request into an unhandled 500 for an authenticated
+            // caller. Model binding used to reject all of these with 400; reject them the same way,
+            // explicitly, before the first TryGetProperty call.
+            if (rootEl.ValueKind != JsonValueKind.Object)
+                return Results.BadRequest(new ErrorResponse("PATCH body must be a JSON object."));
 
             // I-4: the wire is a COMPLETE-entry contract — the body IS the entry. A key missing
             // from the raw JSON binds to null/default exactly like an explicit "clear this field"
@@ -339,19 +359,25 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse("Malformed request body."));
         }
 
-        // I-1: the write-path bound (KnownAttributes.MaxAttributes / MaxValuesPerKey), not the
-        // search filter's tighter 64/64 — see ValidateAttributeBounds's doc comment for why using
-        // the search bound here broke the round-trip this wire shape exists for.
-        if (ValidateAttributeBounds(req.Attributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
-            is { } boundsError)
-            return Results.BadRequest(new ErrorResponse(boundsError));
-
         // I-2: canonicalize before persisting — the same call every other write path makes, so a
         // PATCH-written key/value doesn't persist with different casing/whitespace than a local
         // write of the same map would. Replace semantics, not KnownAttributes.Merge: the body is
         // the caller's complete, already-edited attribute map (read via GET, edited, sent back),
         // not a delta to fold over what's already stored.
+        //
+        // R-6: normalize BEFORE bounds-checking (I-1's lesson again — never reject an attribute map
+        // the server itself could legitimately produce). Normalize can only ever shrink a map
+        // (case-insensitive key dedupe, trimming, dropping blanks), so a raw body that is over-bounds
+        // before normalization but within bounds after (e.g. two keys differing only by case) must
+        // not be rejected — checking the raw map first did exactly that.
         Dictionary<string, string[]>? normalizedAttributes = KnownAttributes.Normalize(req.Attributes);
+
+        // I-1: the write-path bound (KnownAttributes.MaxAttributes / MaxValuesPerKey), not the
+        // search filter's tighter 64/64 — see ValidateAttributeBounds's doc comment for why using
+        // the search bound here broke the round-trip this wire shape exists for.
+        if (ValidateAttributeBounds(normalizedAttributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
+            is { } boundsError)
+            return Results.BadRequest(new ErrorResponse(boundsError));
 
         string decoded = Uri.UnescapeDataString(name);
         var (scope, subject) = ctx.Store!.ParseQualifiedName(decoded);

@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
@@ -270,6 +272,40 @@ public sealed class PatchEndpointTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// R-6. I-1's lesson in miniature: bounds were checked against the RAW body before
+    /// <see cref="KnownAttributes.Normalize"/> ran, so a 33-key body that collapses to 32 distinct
+    /// keys under Normalize's case-insensitive dedupe (two keys differing only by case) was rejected
+    /// — even though the server's own write path (<c>RememberMemory</c> → <c>MemoryDerivation</c>)
+    /// would happily fold the same 33 raw keys down to 32 and accept them. Bounds must be checked
+    /// against what actually gets persisted.
+    /// </summary>
+    [Fact]
+    public async Task Patch_ValidatesAttributeBounds_AfterNormalization_NotBefore()
+    {
+        var entry = await StoreAndGetEntryAsync("patch-bounds-order-probe", ["bounds order probe body"]);
+
+        // 33 raw dictionary keys, but "Dup0"/"dup0" differ only by case — Normalize's
+        // case-insensitive dedupe collapses them into one, leaving exactly 32 distinct keys
+        // post-normalization (KnownAttributes.MaxAttributes), not 33.
+        var rawAttributes = new Dictionary<string, string[]>();
+        for (int i = 1; i < 32; i++)
+            rawAttributes[$"key{i}"] = ["v"];
+        rawAttributes["Dup0"] = ["v"];
+        rawAttributes["dup0"] = ["v"];
+        rawAttributes.Should().HaveCount(33,
+            because: "the raw body must genuinely carry 33 distinct dictionary keys for this test " +
+                     "to exercise the pre- vs. post-normalization distinction");
+
+        var patched = entry with { Attributes = rawAttributes };
+        var patchResp = await _client.PatchAsJsonAsync($"{_base}/memories/patch-bounds-order-probe", patched);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.OK,
+            because: "the body collapses to 32 distinct keys after KnownAttributes.Normalize — " +
+                     "bounds must be checked against that, not the raw 33, or the server would " +
+                     "reject an attribute map it could legitimately produce itself");
+    }
+
+    /// <summary>
     /// I-2. <see cref="KnownAttributes.Normalize"/> is the canonicalizer every other write path
     /// funnels through (lowercase+trim keys, trim values, drop blanks); before the fix, PATCH
     /// assigned the body's attributes verbatim, so a PATCH-written "Person"/"  spaced  "/blank
@@ -396,6 +432,92 @@ public sealed class PatchEndpointTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// R-5. The round-1 completeness test above only covered the all-three-missing case
+    /// (<c>{"name":...,"updatedAt":...}</c>) — a mutant disabling just the <c>description</c> clause
+    /// of the three-way <c>||</c> check survived all 11 round-1/round-2 tests, because nothing PATCHed
+    /// a body missing exactly one field. This covers each of the three required fields individually,
+    /// via one shared code path (a dictionary with all fields present, one key removed) so a mutant
+    /// targeting any single field's presence check is caught regardless of which one.
+    /// </summary>
+    [Theory]
+    [InlineData("description")]
+    [InlineData("attributes")]
+    [InlineData("keywords")]
+    public async Task Patch_RejectsABodyMissingAnySingleRequiredFieldWith400(string omittedField)
+    {
+        var entry = await StoreAndGetEntryAsync($"patch-missing-{omittedField}-probe",
+            ["missing single field probe body"],
+            attributes: new Dictionary<string, string[]> { ["person"] = ["dana"] });
+
+        var fields = new Dictionary<string, object?>
+        {
+            ["name"] = entry.Name,
+            ["updatedAt"] = entry.UpdatedAt,
+            ["description"] = entry.Description,
+            ["attributes"] = entry.Attributes,
+            ["keywords"] = entry.Keywords,
+        };
+        fields.Remove(omittedField);
+        string json = JsonSerializer.Serialize(fields,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var patchResp = await _client.PatchAsync($"{_base}/memories/patch-missing-{omittedField}-probe", content);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            because: $"a body missing only \"{omittedField}\" must still be rejected as incomplete, " +
+                     "not accepted because the other two required fields are present");
+    }
+
+    /// <summary>
+    /// R-1. A well-formed but non-object JSON root ("[]", "123", "\"hello\"", "true", "null") parses
+    /// fine — <c>JsonDocument.ParseAsync</c> never throws for it — but <c>TryGetProperty</c> throws
+    /// <c>InvalidOperationException</c> on a non-object element, which <c>catch (JsonException)</c>
+    /// does not see. Measured before the fix: all five of these returned <c>500</c>, letting an
+    /// authenticated caller spam unhandled-exception logs with a one-byte body. Model binding used to
+    /// reject all of these with <c>400</c>; this pins that PatchEntry's own manual parsing does too.
+    /// </summary>
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("123")]
+    [InlineData("\"hello\"")]
+    [InlineData("true")]
+    [InlineData("null")]
+    public async Task Patch_RejectsANonObjectJsonBodyWith400_NotA500(string nonObjectJson)
+    {
+        var entry = await StoreAndGetEntryAsync("patch-nonobject-probe", ["non-object body probe"]);
+
+        using var content = new StringContent(nonObjectJson, Encoding.UTF8, "application/json");
+        var patchResp = await _client.PatchAsync($"{_base}/memories/patch-nonobject-probe", content);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            because: $"a well-formed but non-object JSON root (\"{nonObjectJson}\") must be rejected " +
+                     "as a 400, the same way model binding used to — not surface as an unhandled 500");
+    }
+
+    /// <summary>
+    /// R-3. Taking <c>HttpRequest</c> instead of a typed parameter took ASP.NET's model binding out
+    /// of the path, and model binding was also enforcing Content-Type — before this fix, a
+    /// <c>text/plain</c> body containing perfectly valid JSON returned <c>200</c> instead of the
+    /// <c>415</c> model binding used to return.
+    /// </summary>
+    [Fact]
+    public async Task Patch_RejectsANonJsonContentTypeWith415()
+    {
+        var entry = await StoreAndGetEntryAsync("patch-contenttype-probe", ["content type probe body"]);
+
+        string json = JsonSerializer.Serialize(entry,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var content = new StringContent(json, Encoding.UTF8, "text/plain");
+        var patchResp = await _client.PatchAsync($"{_base}/memories/patch-contenttype-probe", content);
+
+        patchResp.StatusCode.Should().Be(HttpStatusCode.UnsupportedMediaType,
+            because: "a text/plain body — even one carrying perfectly valid JSON — must be rejected " +
+                     "the same way model binding used to (415), not silently accepted now that " +
+                     "PatchEntry parses the body manually");
+    }
+
+    /// <summary>
     /// M-3. <c>FileHashes</c> and <c>Attributes["file"]</c> are two views of one thing
     /// (<c>ArtifactEntry.cs:16-21</c>), so a PATCH that edits <c>file</c> values without
     /// re-deriving <c>FileHashes</c> can leave them disagreeing. Deliberate, documented in
@@ -458,15 +580,22 @@ public sealed class PatchEndpointTests : IAsyncLifetime
     ///
     /// <para>Uses a dedicated <see cref="WebApplicationFactory{TEntryPoint}"/> subclass (mirroring
     /// <c>ThrowingStoreServerFactory</c> in <c>ApiVersionHeaderOn500Tests.cs</c>) rather than
-    /// <c>ScriniaServerFactory.WithWebHostBuilder</c> — empirically, <c>WithWebHostBuilder</c>'s
-    /// clone combined with an extra <c>ConfigureServices</c>/<c>ConfigureTestServices</c> call made
-    /// <c>UseKestrel(0)</c> stop binding an ephemeral port and fall back to Kestrel's hard-coded
-    /// default (<c>http://127.0.0.1:5000</c>), colliding with every other Kestrel-backed test in the
-    /// suite. A factory that does its extra DI registration inside its own
-    /// <c>ConfigureWebHost</c> override, with <c>UseKestrel(0)</c> called directly on the instance,
-    /// does not hit that failure — the same shape every other custom-backend Kestrel fixture in this
-    /// project (<c>ThrowingStoreServerFactory</c>, <c>BundleEndpointTests</c>'
-    /// <c>NonLocalStoreServerFactory</c>) already uses.</para>
+    /// <c>ScriniaServerFactory.WithWebHostBuilder</c> — measured (R-4): <c>WithWebHostBuilder</c>
+    /// ITSELF is what makes <c>UseKestrel(0)</c> stop binding an ephemeral port and fall back to
+    /// Kestrel's hard-coded default (<c>http://127.0.0.1:5000</c>), colliding with every other
+    /// Kestrel-backed test in the suite — an EARLIER version of this comment blamed the extra
+    /// <c>ConfigureServices</c>/<c>ConfigureTestServices</c> call specifically, which is wrong: a
+    /// bare <c>WithWebHostBuilder(b => b.UseSetting(...))</c> clone with no extra service
+    /// registration ALSO binds <c>:5000</c> (measured base addresses: plain factory →
+    /// <c>127.0.0.1:&lt;ephemeral&gt;</c>; any <c>WithWebHostBuilder</c> clone, config or no config →
+    /// <c>localhost:5000</c>; this factory → <c>127.0.0.1:&lt;ephemeral&gt;</c>). A factory that does
+    /// its extra DI registration inside its own <c>ConfigureWebHost</c> override, with
+    /// <c>UseKestrel(0)</c> called directly on the instance and no <c>WithWebHostBuilder</c> in the
+    /// chain at all, does not hit that failure — the same shape every other custom-backend Kestrel
+    /// fixture in this project (<c>ThrowingStoreServerFactory</c>, <c>BundleEndpointTests</c>'
+    /// <c>NonLocalStoreServerFactory</c>) already uses. See
+    /// <c>RemoteLoadIndexTests.PagingRateLimitServerFactory</c> for the same fix applied to a
+    /// pre-existing <c>WithWebHostBuilder</c> use this bug also affected.</para>
     /// </summary>
     [Fact]
     public async Task Patch_DeniedWhenStoreIsReadOnlyForThisKey()
@@ -496,6 +625,37 @@ public sealed class PatchEndpointTests : IAsyncLifetime
         var body = await patchResp.Content.ReadFromJsonAsync<ErrorResponse>();
         body!.Error.Should().Contain("read-only",
             because: "the 403 must genuinely be IsWritable's rejection, not an unrelated lockout");
+    }
+
+    /// <summary>
+    /// R-7. <see cref="IClaimsTransformation"/>'s documented contract is that it may run more than
+    /// once per request; the original <see cref="MarkTargetUserReadOnlyTransform"/> called
+    /// <c>identity.AddClaim</c> directly on the incoming <see cref="ClaimsIdentity"/>, which would
+    /// accumulate a duplicate <c>store_access</c> claim on a second invocation and mutate a principal
+    /// object the transform does not own. This is a unit-level test of the transform itself (no HTTP
+    /// needed) proving two invocations against the SAME principal instance leave it with exactly one
+    /// <c>store_access</c> claim, and that the ORIGINAL principal instance is untouched (the returned
+    /// principal is a different object).
+    /// </summary>
+    [Fact]
+    public async Task MarkTargetUserReadOnlyTransform_IsIdempotent_AndDoesNotMutateTheIncomingPrincipal()
+    {
+        var identity = new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.NameIdentifier, ReadOnlyClaimsServerFactory.ReadOnlyTargetUserId),
+            new Claim("store", "test-store"),
+        ], "test-scheme");
+        var original = new ClaimsPrincipal(identity);
+
+        var transform = new MarkTargetUserReadOnlyTransform();
+        var firstPass = await transform.TransformAsync(original);
+        var secondPass = await transform.TransformAsync(firstPass);
+
+        secondPass.FindAll("store_access").Should().ContainSingle(
+            because: "two TransformAsync invocations must not accumulate a duplicate store_access claim");
+        original.FindAll("store_access").Should().BeEmpty(
+            because: "the original principal instance passed in must not have been mutated — the " +
+                     "transform must clone rather than call AddClaim on the incoming identity");
     }
 }
 
@@ -568,14 +728,25 @@ public sealed class ReadOnlyClaimsServerFactory : WebApplicationFactory<Program>
 /// every other identity (including the factory's own writable seed key) untouched.</summary>
 public sealed class MarkTargetUserReadOnlyTransform : IClaimsTransformation
 {
+    /// <summary>R-7: <see cref="IClaimsTransformation"/>'s documented contract is that it may run
+    /// more than once per request, and implementations must not mutate the incoming principal — the
+    /// original shape called <c>identity.AddClaim</c> directly on the passed-in
+    /// <see cref="ClaimsIdentity"/>, which would accumulate duplicate <c>store_access</c> claims
+    /// across repeated invocations. This clones the identity and skips adding a claim that is
+    /// already present, so a double-invocation is a no-op rather than a duplicate.</summary>
     public Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
     {
-        if (principal.Identity is ClaimsIdentity identity
-            && identity.FindFirst(ClaimTypes.NameIdentifier)?.Value == ReadOnlyClaimsServerFactory.ReadOnlyTargetUserId)
+        if (principal.Identity is not ClaimsIdentity identity
+            || identity.FindFirst(ClaimTypes.NameIdentifier)?.Value != ReadOnlyClaimsServerFactory.ReadOnlyTargetUserId)
+            return Task.FromResult(principal);
+
+        var clonedIdentity = (ClaimsIdentity)identity.Clone();
+        foreach (var storeClaim in identity.FindAll("store").ToList())
         {
-            foreach (var storeClaim in principal.FindAll("store").ToList())
-                identity.AddClaim(new Claim("store_access", $"{storeClaim.Value}:read-only"));
+            string accessClaimValue = $"{storeClaim.Value}:read-only";
+            if (!clonedIdentity.HasClaim("store_access", accessClaimValue))
+                clonedIdentity.AddClaim(new Claim("store_access", accessClaimValue));
         }
-        return Task.FromResult(principal);
+        return Task.FromResult(new ClaimsPrincipal(clonedIdentity));
     }
 }
