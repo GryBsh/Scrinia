@@ -43,7 +43,7 @@ public sealed class CaseSensitiveAppendTests : IDisposable
         await MemoryOrchestrator.StoreAsync(store,
             new StoreRequest(["the original body"], "MixedCase"));
 
-        await MemoryOrchestrator.AppendAsync(store, "mixedcase", "the appended body");
+        await MemoryOrchestrator.AppendAsync(store, "mixedcase", new AppendRequest("the appended body"));
 
         // The discriminator: with the bug present, the append falls through to the create-new path
         // and REPLACES the content with "the appended body" alone — the original is gone. Assert

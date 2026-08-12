@@ -233,7 +233,7 @@ public sealed class PluginPipeline
 
     // Each method: run before hooks → execute operation → run after hooks
     public async Task<StoreResponse> StoreAsync(IMemoryStore store, StoreRequest req);
-    public async Task<AppendResponse> AppendAsync(IMemoryStore store, string name, string content);
+    public async Task<AppendResponse> AppendAsync(IMemoryStore store, string name, AppendRequest req);
     public async Task ForgetAsync(IMemoryStore store, string name);
 }
 ```

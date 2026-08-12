@@ -190,4 +190,111 @@ public sealed class StoreAttributesWireTests
             because: "70 distinct file refs is an ordinary auto-extraction result, not abuse — " +
                      "rejecting it made remote reject content the local store accepts");
     }
+
+    // ── The append path, which grew an attribute map of its own ────────────────
+
+    /// <summary>
+    /// <c>AppendRequest</c> used to be <c>(string Content)</c> — no attributes at all — so the two
+    /// bounds above lived only on <c>POST /memories</c> and there was nothing on the append path
+    /// for them to guard. Widening it to mirror <c>MemoryWrite</c> opens a second door to the exact
+    /// same <c>KnownAttributes.Merge</c>, which truncates past <c>MaxAttributes</c> with NO signal.
+    /// A bound enforced on one door and not the other is not a bound.
+    /// <para>Both caps are asserted, not just one: they are separate checks, and a copy of the guard
+    /// that enforced only the key cap would satisfy a single-case test while leaving the values cap
+    /// open on this path.</para>
+    /// </summary>
+    [Fact]
+    public async Task Append_rejects_more_attribute_keys_than_the_store_path_does()
+    {
+        using var factory = new ScriniaServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+        string basePath = $"/api/v1/stores/{factory.PrimaryStore}/memories";
+
+        (await client.PostAsync(basePath, Json("""
+            {"content": ["seed"], "name": "wire-append-attr-bounds"}
+            """))).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var pairs = Enumerable.Range(0, Scrinia.Core.Search.KnownAttributes.MaxAttributes + 1)
+            .Select(i => $"\"k{i}\":[\"v\"]");
+        var resp = await client.PostAsync(
+            $"{basePath}/wire-append-attr-bounds/append",
+            Json($$"""
+                  {
+                    "content": "over-cap probe",
+                    "attributes": { {{string.Join(",", pairs)}} }
+                  }
+                  """));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain($"{Scrinia.Core.Search.KnownAttributes.MaxAttributes} keys");
+    }
+
+    /// <inheritdoc cref="Append_rejects_more_attribute_keys_than_the_store_path_does"/>
+    [Fact]
+    public async Task Append_rejects_more_values_on_a_single_key_than_the_store_path_does()
+    {
+        using var factory = new ScriniaServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+        string basePath = $"/api/v1/stores/{factory.PrimaryStore}/memories";
+
+        (await client.PostAsync(basePath, Json("""
+            {"content": ["seed"], "name": "wire-append-value-bounds"}
+            """))).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var values = Enumerable.Range(0, Scrinia.Core.Search.KnownAttributes.MaxValuesPerKey + 1)
+            .Select(i => $"\"v{i}\"");
+        var resp = await client.PostAsync(
+            $"{basePath}/wire-append-value-bounds/append",
+            Json($$"""
+                  {
+                    "content": "over-cap probe",
+                    "attributes": { "person": [{{string.Join(",", values)}}] }
+                  }
+                  """));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain(
+            $"{Scrinia.Core.Search.KnownAttributes.MaxValuesPerKey} values per key");
+    }
+
+    /// <summary>
+    /// The other half of the widening, over the wire: an append that carries a description,
+    /// attributes and keywords must have all three reach the stored entry. They had no wire field
+    /// at all before, so an append made remotely silently kept none of them while the identical
+    /// local call kept all three (D-18).
+    /// </summary>
+    [Fact]
+    public async Task Append_carries_description_attributes_and_keywords_to_the_stored_entry()
+    {
+        using var factory = new ScriniaServerFactory();
+        var client = factory.CreateAuthenticatedClient();
+        string basePath = $"/api/v1/stores/{factory.PrimaryStore}/memories";
+
+        (await client.PostAsync(basePath, Json("""
+            {"content": ["seed body"], "name": "wire-append-metadata"}
+            """))).StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var resp = await client.PostAsync(
+            $"{basePath}/wire-append-metadata/append",
+            Json("""
+                 {
+                   "content": "appended body",
+                   "description": "a description supplied at append time",
+                   "attributes": { "person": ["maria"] },
+                   "keywords": ["zebra"]
+                 }
+                 """));
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await resp.Content.ReadFromJsonAsync<AppendResponse>();
+        body.Should().NotBeNull();
+        body!.Entry.Description.Should().Be("a description supplied at append time");
+        body.Entry.Attributes.Should().NotBeNull().And.ContainKey("person");
+        body.Entry.Keywords.Should().NotBeNull().And.Contain("zebra");
+        body.Entry.ChunkCount.Should().Be(2,
+            because: "it was an append, not a replace — a metadata assertion on a memory that got " +
+                     "silently overwritten would pass for the wrong reason");
+    }
 }

@@ -133,30 +133,40 @@ public sealed class RemoteWritePathMetadataTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Measured before the fix: <c>link()</c> answered
-    /// <c>status: success / action: linked / Linked '/probe/doc' &lt;-&gt; '/probe/other'</c> while the
-    /// entry gained no <c>ref</c> attribute at all. <c>UpdateMeta</c> reached the no-op
-    /// <c>Upsert</c> directly, bypassing the <c>TryUpdateEntry</c> override that fails closed. It
-    /// now routes through <c>TryUpdateEntry</c>, so the refusal is reported instead of invented.
-    /// <para>The assertion is deliberately two-sided: the response must be an error AND the entry
-    /// must be unchanged. Either alone would pass for the wrong reason.</para>
+    /// <c>link()</c> against a remote store, end to end. Its history is the reason this assertion is
+    /// worth having and why it is two-sided:
+    /// <list type="number">
+    /// <item>It answered <c>status: success / action: linked</c> while the entry gained no
+    /// <c>ref</c> attribute at all — <c>UpdateMeta</c> wrote into the no-op <c>Upsert</c>.</item>
+    /// <item>Routing it through <c>TryUpdateEntry</c> made the report honest, but honest about a
+    /// refusal: there was no remote channel for a metadata-only write, so it reported an error and
+    /// the entries stayed bare.</item>
+    /// <item>There is a channel now (<c>GET .../entry</c> + <c>PATCH</c>), and this asserts the
+    /// third state — success reported AND the <c>ref</c> attribute actually on both entries,
+    /// re-read from the server. Claiming success without the re-read is exactly state 1.</item>
+    /// </list>
+    /// <c>link</c> is the interesting mutation to pin here because it routes its <c>ref:</c> input
+    /// into ATTRIBUTES and leaves <c>Keywords</c> alone — which is what PATCH accepts. A mutation
+    /// that changed keywords is refused, pinned in
+    /// <c>RemoteLoadIndexTests.TryUpdateEntry_ReturnsFalse_WhenTheMutationChangesKeywords</c>.
     /// </summary>
     [Fact]
-    public async Task Link_RemoteStore_ReportsFailure_RatherThanClaimingASuccessItCannotBack()
+    public async Task Link_RemoteStore_PersistsTheRefAttributeOnBothEntries()
     {
         await Tools().MemoryRemember(path: "/probe/doc", content: ["the source memory"]);
         await Tools().MemoryRemember(path: "/probe/other", content: ["the target memory"]);
 
         string yaml = await Tools().MemoryLink(path: "/probe/doc", destination: "/probe/other");
 
-        yaml.Should().NotContain("status: success",
-            because: "nothing was persisted, so reporting a link is a lie — the precise defect " +
-                     "this branch exists to close, reintroduced by fixing LoadIndex");
-        yaml.Should().Contain("status: error");
+        yaml.Should().Contain("status: success",
+            because: "the metadata write reached the server — reporting an error now would be the " +
+                     "mirror image of the original defect");
+        yaml.Should().NotContain("status: error");
 
-        Values(Reload("/probe/doc"), "ref").Should().BeEmpty(
-            because: "the honest report must match reality: no ref attribute reached the server");
-        Values(Reload("/probe/other"), "ref").Should().BeEmpty();
+        Values(Reload("/probe/doc"), "ref").Should().Contain("/probe/other",
+            because: "the report must match reality, and only a fresh read off the server can " +
+                     "show that it does");
+        Values(Reload("/probe/other"), "ref").Should().Contain("/probe/doc");
     }
 
 }

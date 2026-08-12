@@ -1,3 +1,7 @@
+using Scrinia.Core;
+using Scrinia.Core.Models;
+using Scrinia.Core.Search;
+
 namespace Scrinia.Server.Models;
 
 // ── Memory CRUD ──────────────────────────────────────────────────────────────
@@ -14,20 +18,30 @@ public sealed record StoreRequest(
     Dictionary<string, string[]>? Attributes = null,
     string[]? Keywords = null);
 
-public sealed record StoreResponse(
-    string Name,
-    string QualifiedName,
-    int ChunkCount,
-    long OriginalBytes,
-    string Message);
+/// <summary>Response to POST /memories: the complete entry the STORE derived, plus the
+/// human-facing message.
+/// <para><c>Name</c>, <c>QualifiedName</c>, <c>ChunkCount</c> and <c>OriginalBytes</c> are deleted,
+/// not retained: <see cref="MemoryEntry"/> already carries all four, and a derivable field that can
+/// disagree with its payload is the defect this branch removes (same reasoning that deleted
+/// <c>ShowResponse.ChunkCount</c>). A caller that needs the counts reads <c>Entry</c>.</para></summary>
+public sealed record StoreResponse(MemoryEntry Entry, string Message);
 
-public sealed record AppendRequest(string Content);
+/// <summary>Body of POST /memories/{name}/append. Mirrors <see cref="Core.Models.MemoryWrite"/>'s
+/// append shape — it used to carry <c>Content</c> alone, so an append made over the wire silently
+/// dropped the description, attributes and keywords a local append carries (D-18).
+/// <para><c>Content</c> is a single <c>string</c>, not a <c>string[]</c> like
+/// <see cref="StoreRequest.Content"/>: <see cref="IMemoryStore.AppendAsync"/> refuses any count but
+/// one (the derivation pipeline can express exactly one appended chunk), and a scalar makes that
+/// constraint unrepresentable-otherwise rather than a validation rule the endpoint has to enforce
+/// and a client has to remember. There is no "wrong number of chunks" request to reject.</para></summary>
+public sealed record AppendRequest(
+    string Content,
+    string? Description = null,
+    Dictionary<string, string[]>? Attributes = null,
+    string[]? Keywords = null);
 
-public sealed record AppendResponse(
-    string Name,
-    int ChunkCount,
-    long OriginalBytes,
-    string Message);
+/// <inheritdoc cref="StoreResponse"/>
+public sealed record AppendResponse(MemoryEntry Entry, string Message);
 
 public sealed record ListResponse(MemoryEntry[] Memories, int Total);
 
@@ -43,7 +57,40 @@ public sealed record MemoryEntry(
     string[]? Keywords,
     Dictionary<string, int>? TermFrequencies,
     ChunkEntryDto[]? ChunkEntries,
-    Dictionary<string, string>? FileHashes);
+    Dictionary<string, string>? FileHashes)
+{
+    /// <summary>The one place a store-derived <see cref="ArtifactEntry"/> becomes this wire shape.
+    /// Every endpoint that emits an entry — list, get-one, patch — and every write response goes
+    /// through here, so none of them can grow a private copy that projects a different subset.
+    /// <para><paramref name="scope"/> is the store's internal scope (<c>"local"</c>,
+    /// <c>"local:topic"</c>, <c>"ephemeral"</c>), not a display label. An ephemeral entry's whole
+    /// address is its <c>~name</c>, which is why it does not go through
+    /// <see cref="IMemoryStore.FormatQualifiedName"/>.</para></summary>
+    public static MemoryEntry From(IMemoryStore store, ArtifactEntry entry, string scope)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(entry);
+
+        bool ephemeral = string.Equals(scope, "ephemeral", StringComparison.Ordinal);
+        return new MemoryEntry(
+            entry.Name,
+            ephemeral ? $"~{entry.Name}" : store.FormatQualifiedName(scope, entry.Name),
+            MemoryNaming.FormatScopeLabel(scope),
+            entry.ChunkCount,
+            entry.OriginalBytes,
+            entry.CreatedAt,
+            entry.UpdatedAt,
+            AttributeReaders.PreviewText(entry.ContentPreview),
+            entry.Attributes,
+            entry.Keywords,
+            // Populated whenever the store had them in hand (a local, file-backed store always
+            // does), never fabricated for a store that doesn't.
+            entry.TermFrequencies,
+            entry.ChunkEntries?.Select(c => new ChunkEntryDto(
+                c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies)).ToArray(),
+            entry.FileHashes);
+    }
+}
 
 public sealed record ChunkEntryDto(
     int ChunkIndex, string? ContentPreview, string[]? Keywords,

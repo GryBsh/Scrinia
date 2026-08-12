@@ -29,8 +29,8 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
 
         var result = await pipeline.StoreAsync(store, new StoreRequest(["hello"], "pipeline-test-1"));
         result.Should().NotBeNull();
-        result.Name.Should().Be("pipeline-test-1");
-        result.ChunkCount.Should().BeGreaterThan(0);
+        result.Entry.Name.Should().Be("pipeline-test-1");
+        result.Entry.ChunkCount.Should().BeGreaterThan(0);
     }
 
     [Fact]
@@ -41,9 +41,9 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
 
         // Store first so append can find it
         await pipeline.StoreAsync(store, new StoreRequest(["seed"], "pipeline-append-1"));
-        var result = await pipeline.AppendAsync(store, "pipeline-append-1", "more data");
+        var result = await pipeline.AppendAsync(store, "pipeline-append-1", new AppendRequest("more data"));
         result.Should().NotBeNull();
-        result.ChunkCount.Should().BeGreaterOrEqualTo(2);
+        result.Entry.ChunkCount.Should().BeGreaterOrEqualTo(2);
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
         var store = GetStore();
 
         await pipeline.StoreAsync(store, new StoreRequest(["seed"], "hook-before-append-1"));
-        await pipeline.AppendAsync(store, "hook-before-append-1", "appended-content");
+        await pipeline.AppendAsync(store, "hook-before-append-1", new AppendRequest("appended-content"));
         capturedContent.Should().Be("appended-content");
     }
 
@@ -135,7 +135,7 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
         var store = GetStore();
 
         await pipeline.StoreAsync(store, new StoreRequest(["seed"], "hook-after-append-1"));
-        await pipeline.AppendAsync(store, "hook-after-append-1", "more");
+        await pipeline.AppendAsync(store, "hook-after-append-1", new AppendRequest("more"));
         capturedChunks.Should().BeGreaterOrEqualTo(2);
     }
 
@@ -202,7 +202,7 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
         var store = GetStore();
 
         await pipeline.StoreAsync(store, new StoreRequest(["seed"], "/api/hook-ns-append-1"));
-        await pipeline.AppendAsync(store, "/api/hook-ns-append-1", "more data");
+        await pipeline.AppendAsync(store, "/api/hook-ns-append-1", new AppendRequest("more data"));
 
         captured.Should().NotBeNull();
         var (scope, subject) = store.ParseQualifiedName(captured!.Name);
@@ -266,7 +266,7 @@ public sealed class PluginPipelineTests : IClassFixture<ScriniaServerFactory>
         var store = GetStore();
 
         await MemoryOrchestrator.StoreAsync(store, new StoreRequest(["seed"], "cancel-append-1"));
-        var act = () => pipeline.AppendAsync(store, "cancel-append-1", "more");
+        var act = () => pipeline.AppendAsync(store, "cancel-append-1", new AppendRequest("more"));
         await act.Should().ThrowAsync<OperationCanceledException>()
             .WithMessage("append blocked");
     }

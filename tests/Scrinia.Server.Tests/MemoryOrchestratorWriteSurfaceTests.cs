@@ -82,11 +82,11 @@ public sealed class MemoryOrchestratorWriteSurfaceTests : IDisposable
             because: "D-01: the write carries the CALLER's raw keyword list, never a derived one — " +
                      "the orchestrator derives nothing to merge into it");
 
-        result.Name.Should().Be("MixedCase",
+        result.Entry.Name.Should().Be("MixedCase",
             because: "the response reports the name the store resolved, not the one the caller sent");
-        result.QualifiedName.Should().Be("local:MixedCase");
-        result.ChunkCount.Should().Be(1);
-        result.OriginalBytes.Should().Be(24);
+        result.Entry.QualifiedName.Should().Be("local:MixedCase");
+        result.Entry.ChunkCount.Should().Be(1);
+        result.Entry.OriginalBytes.Should().Be(24);
     }
 
     [Fact]
@@ -94,20 +94,29 @@ public sealed class MemoryOrchestratorWriteSurfaceTests : IDisposable
     {
         var recording = new RecordingWriteStore();
 
-        var result = await MemoryOrchestrator.AppendAsync(recording, "mixedcase", "the appended body");
+        var result = await MemoryOrchestrator.AppendAsync(
+            recording, "mixedcase",
+            new AppendRequest("the appended body", Description: "curated", Keywords: ["vulpine"]));
 
         recording.AppendWrite.Should().NotBeNull();
         recording.AppendWrite!.Content.Should().Equal(["the appended body"],
             because: "an append writes exactly one chunk; the store refuses any other count");
         recording.AppendWrite.Name.Should().Be("mixedcase");
         recording.AppendWrite.Scope.Should().Be("local");
+        recording.AppendWrite.Description.Should().Be("curated",
+            because: "AppendRequest carries a description now, and it must reach the store — the " +
+                     "wire used to carry Content alone and drop it (D-18)");
+        recording.AppendWrite.Keywords.Should().Equal(["vulpine"],
+            because: "D-01 again: the caller's RAW keyword list reaches the store's derivation, and " +
+                     "an append that never carried it lost it silently");
         recording.StoreWrite.Should().BeNull(
             because: "the append surface handles a missing memory itself — the orchestrator must not " +
                      "probe for one and route around it");
 
-        result.Name.Should().Be("local:MixedCase",
+        result.Entry.Name.Should().Be("MixedCase",
             because: "the response reports the name the store resolved, not the one the caller sent");
-        result.ChunkCount.Should().Be(2);
+        result.Entry.QualifiedName.Should().Be("local:MixedCase");
+        result.Entry.ChunkCount.Should().Be(2);
         result.Message.Should().StartWith("Appended chunk 2 to local:MixedCase");
     }
 
@@ -117,9 +126,14 @@ public sealed class MemoryOrchestratorWriteSurfaceTests : IDisposable
     /// knows which happened from its own control flow and reads it back off the returned entry
     /// (<c>UpdatedAt</c> is null only for a first write). That inference selects between two
     /// different wire responses, so it is a behaviour of this class rather than something inherited
-    /// from the code it replaced: a create-via-append answers the way a store does — an unqualified
-    /// <c>Name</c> and a "Remembered:" message — which is also what MCP's <c>Append</c> returns for
+    /// from the code it replaced: a create-via-append answers the way a store does — a "Remembered:"
+    /// message rather than "Appended chunk N" — which is also what MCP's <c>Append</c> returns for
     /// the same input, because it hands off to <c>Remember</c>.
+    /// <para><b>The message is now the only discriminator, deliberately.</b> The two branches used
+    /// to differ in <c>Name</c> as well (unqualified for a create, qualified for a real append) —
+    /// an asymmetry that made a caller's parse of the same field mean different things. Both
+    /// branches now carry the complete entry, which has both names on it unconditionally, so that
+    /// wart is gone and this asserts what genuinely still distinguishes them.</para>
     /// <para>Runs against the real <see cref="FileMemoryStore"/>, not the recording double: the
     /// double answers every call with the same echo entry and so cannot reach one branch rather than
     /// the other.</para>
@@ -127,14 +141,18 @@ public sealed class MemoryOrchestratorWriteSurfaceTests : IDisposable
     [Fact]
     public async Task AppendAsync_OnAMemoryThatDoesNotExistYet_AnswersTheWayAStoreDoes()
     {
-        var result = await MemoryOrchestrator.AppendAsync(_store, "never-stored", "the only body");
+        var result = await MemoryOrchestrator.AppendAsync(
+            _store, "never-stored", new AppendRequest("the only body"));
 
-        result.Name.Should().Be("never-stored",
+        result.Entry.Name.Should().Be("never-stored",
             because: "a create-via-append reports the store's unqualified name, as StoreAsync does");
         result.Message.Should().StartWith("Remembered:",
             because: "nothing was appended to — the memory was created, and saying otherwise " +
                      "reports a chunk count as a position in a memory that had none");
-        result.ChunkCount.Should().Be(1);
+        result.Entry.ChunkCount.Should().Be(1);
+        result.Entry.UpdatedAt.Should().BeNull(
+            because: "UpdatedAt null is the discriminator this branch is selected by — asserting it " +
+                     "here keeps the test honest about WHY the message differs");
 
         _store.LoadIndex("local").Should().ContainSingle(e => e.Name == "never-stored",
             because: "the store created it — the response is not describing a write that did not happen");

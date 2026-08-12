@@ -77,8 +77,9 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
         // Fail closed against a server that doesn't speak this client's version contract, before
         // any status-code-based handling below gets a chance to treat its response as trustworthy
-        // (see RemoteApiVersionGuard — this covers the synchronous send path; the async path is
-        // covered at each of its two call sites below).
+        // (see RemoteApiVersionGuard — this covers the synchronous send path; the asynchronous
+        // paths are covered by ResolveArtifactAsync's own Validate call and by PostCheckedAsync,
+        // which every asynchronous write goes through).
         //
         // Every caller of SendSync does `using var resp = SendSync(req)`, so before this guard
         // existed, the response always reached that `using`. A throw from here skips the handoff,
@@ -122,10 +123,28 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     [JsonSerializable(typeof(ChunkApiResponse))]
     private partial class HttpStoreJsonContext : JsonSerializerContext;
 
+    /// <summary>
+    /// Serializes a PATCH body. Identical to <see cref="HttpStoreJsonContext"/> except that it
+    /// WRITES nulls — deliberately, and it is the only reason this second context exists.
+    /// <para><c>PATCH /memories/{name}</c> requires a complete entry and checks for the PRESENCE of
+    /// the <c>description</c>, <c>attributes</c> and <c>keywords</c> keys, rejecting a body that
+    /// omits any of them with a 400: a missing key binds exactly like an explicit "clear this
+    /// field", and confusing the two silently erases curated metadata. Under
+    /// <c>WhenWritingNull</c> an entry that genuinely has no attributes would serialize without the
+    /// key and be refused — an explicit <c>null</c> is what the contract wants.</para>
+    /// </summary>
+    [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+    [JsonSerializable(typeof(MemoryEntry))]
+    private partial class PatchBodyJsonContext : JsonSerializerContext;
+
     // Internal DTOs for the REST API
     internal sealed record StoreApiRequest(string[] Content, string Name, string? Description = null,
         Dictionary<string, string[]>? Attributes = null, string[]? Keywords = null);
-    internal sealed record StoreApiResponse(string Name, string QualifiedName, int ChunkCount, long OriginalBytes, string Message);
+    /// <summary>Mirrors <c>Scrinia.Server.Models.StoreResponse</c>: the complete entry the SERVER
+    /// derived, plus its message. The name and the two counts are read off <c>Entry</c> — they were
+    /// deleted from the response rather than kept alongside it, because a derivable field that can
+    /// disagree with its payload is the defect this contract removes.</summary>
+    internal sealed record StoreApiResponse(MemoryEntry Entry, string Message);
     /// <summary><c>ChunkCount</c> is deleted, not retained: it is <c>Content.Length</c>.</summary>
     internal sealed record ShowApiResponse(string Name, string[] Content, long OriginalBytes);
     internal sealed record ListApiResponse(MemoryEntry[] Memories, int Total);
@@ -152,10 +171,49 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         long? OriginalBytes = null, DateTimeOffset? CreatedAt = null);
     internal sealed record SearchApiRequest(string Q, string? Scopes, int Limit, string? ExcludeTopics,
         string? PathPrefix, Dictionary<string, string[]>? AttributeFilter);
-    internal sealed record AppendApiRequest(string Content);
-    internal sealed record AppendApiResponse(string Name, int ChunkCount, long OriginalBytes, string Message);
+    /// <summary>Mirrors <c>Scrinia.Server.Models.AppendRequest</c>. <c>Content</c> is a single
+    /// string because an append writes exactly one chunk (<see cref="IMemoryStore.AppendAsync"/>);
+    /// the other three used to be absent from the wire entirely, which silently dropped them.</summary>
+    internal sealed record AppendApiRequest(string Content, string? Description = null,
+        Dictionary<string, string[]>? Attributes = null, string[]? Keywords = null);
+    /// <inheritdoc cref="StoreApiResponse"/>
+    internal sealed record AppendApiResponse(MemoryEntry Entry, string Message);
     internal sealed record CopyApiRequest(string Destination, bool Overwrite = false);
     internal sealed record ChunkApiResponse(string Content, int ChunkIndex, int TotalChunks);
+
+    /// <summary>
+    /// The one place a wire <see cref="MemoryEntry"/> becomes an <see cref="ArtifactEntry"/> — used
+    /// by the listing reads and by the write surface, so a field the server sends cannot be read
+    /// back in one place and dropped in another.
+    ///
+    /// <para><b>Every derived field is read, deliberately.</b> The two hand-written copies this
+    /// replaces built the entry from name/bytes/count/createdAt/description/updatedAt/attributes/
+    /// keywords and silently discarded <c>TermFrequencies</c>, <c>ChunkEntries</c> and
+    /// <c>FileHashes</c> — which the server puts on the wire for every entry of every page. That is
+    /// not a cosmetic loss: <c>TermFrequencies</c> is what BM25 scores against, <c>ChunkEntries</c>
+    /// is what an append must not destroy, and <c>FileHashes</c> is the drift baseline
+    /// <c>list(mode:"drift")</c> reads.</para>
+    ///
+    /// <para><c>Uri</c> is the one field with nothing to read: the wire carries no address, and a
+    /// dereferenceable <c>remote://</c> scheme is a ruled-but-unbuilt addressing design (see the
+    /// note at <see cref="BuildArtifactEntry"/>, which owns that decision). It stays the empty
+    /// placeholder both copies already used rather than being invented here.</para>
+    /// </summary>
+    private static ArtifactEntry ToArtifactEntry(MemoryEntry item) => new(
+        Name: item.Name,
+        Uri: "",
+        OriginalBytes: item.OriginalBytes,
+        ChunkCount: item.ChunkCount,
+        CreatedAt: item.CreatedAt,
+        ContentPreview: item.Description,
+        Keywords: item.Keywords,
+        TermFrequencies: item.TermFrequencies,
+        UpdatedAt: item.UpdatedAt,
+        ChunkEntries: item.ChunkEntries?
+            .Select(c => new ChunkEntry(c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies))
+            .ToArray(),
+        FileHashes: item.FileHashes,
+        Attributes: item.Attributes);
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -301,21 +359,24 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// synchronous on <see cref="IMemoryStore"/> (mirroring <see cref="FileMemoryStore"/>'s free,
     /// in-process cache read), so there is no async seam to hide the cost behind — every call
     /// here really does block the calling thread on <see cref="SendSync"/>, once per page. That
-    /// trade was chosen over the alternative of overriding <c>TryUpdateEntry</c> to PATCH
-    /// server-side: that needs a brand-new endpoint and DTO and would still leave every other
-    /// caller — the async entity-typing sink, the maintenance sink, and every MCP tool's "does
-    /// this entry already exist" lookup — reading an empty (or, pre-pagination-fix, truncated)
-    /// list. Proxying here fixes the read for all of them in one change.</para>
+    /// trade was chosen over the alternative of serving only <c>TryUpdateEntry</c> from a
+    /// server-side PATCH: that endpoint exists now and <see cref="TryUpdateEntry"/> does use it,
+    /// but it would still have left every OTHER caller — the async entity-typing sink, the
+    /// maintenance sink, and every MCP tool's "does this entry already exist" lookup — reading an
+    /// empty (or, pre-pagination-fix, truncated) list. Proxying here fixes the read for all of
+    /// them in one change.</para>
     ///
     /// <para>The call sites that can reach this store, and their cost: <c>MemoryTools.Core</c>'s
     /// remember and append existing-entry lookups, <c>MemoryTools.Lifecycle</c>'s compact and
     /// restore lookups, <c>BundleFormatService</c>'s per-topic export read,
-    /// <c>EntityTypingEventHandler.PromoteAsync</c>, <c>MaintenanceEventSink</c> (through
-    /// <see cref="TryUpdateEntry"/>), and <see cref="TryUpdateEntry"/> itself. Each spends one
-    /// logical call — none of them loops over <c>LoadIndex</c> per entry, so the round trips are
-    /// bounded by the number of tool invocations, not by corpus size. <c>MemoryOrchestrator</c>'s
-    /// two call sites are server-side and always hold a <c>FileMemoryStore</c>. (This method's own
-    /// internal paging loop is a different thing — one logical call, several pages.)</para>
+    /// <c>EntityTypingEventHandler.PromoteAsync</c>, and <c>MaintenanceEventSink</c>. Each spends
+    /// one logical call — none of them loops over <c>LoadIndex</c> per entry, so the round trips
+    /// are bounded by the number of tool invocations, not by corpus size.
+    /// <see cref="TryUpdateEntry"/> no longer reads through here at all: it fetches the single
+    /// entry it is about to write, which is one small response instead of a whole scope.
+    /// <c>MemoryOrchestrator</c>'s two call sites are server-side and always hold a
+    /// <c>FileMemoryStore</c>. (This method's own internal paging loop is a different thing — one
+    /// logical call, several pages.)</para>
     /// </summary>
     public IReadOnlyList<ArtifactEntry> LoadIndex(string scope = "local")
     {
@@ -359,21 +420,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 break;
 
             foreach (var item in list.Memories)
-            {
-                // Uri is a placeholder on the remote path — see the note at BuildArtifactEntry
-                // for the capability decision that owns it. ChunkCount is not: item.ChunkCount is
-                // a real wire field, populated server-side (see MemoryEndpoints.cs).
-                result.Add(new ArtifactEntry(
-                    Name: item.Name,
-                    Uri: "",
-                    OriginalBytes: item.OriginalBytes,
-                    ChunkCount: item.ChunkCount,
-                    CreatedAt: item.CreatedAt,
-                    ContentPreview: item.Description,
-                    UpdatedAt: item.UpdatedAt,
-                    Attributes: item.Attributes,
-                    Keywords: item.Keywords));
-            }
+                result.Add(ToArtifactEntry(item));
 
             offset += list.Memories.Length;
             if (offset >= list.Total)
@@ -390,53 +437,102 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <summary>
-    /// Overrides <see cref="IMemoryStore"/>'s default implementation, which ends with
-    /// <c>Upsert(updated, scope)</c>. <see cref="Upsert"/> is a deliberate no-op here — see its
-    /// comment — because persistent writes go through <see cref="WriteArtifactAsync"/> instead.
+    /// Overrides <see cref="IMemoryStore"/>'s default implementation (LoadIndex → mutate →
+    /// <c>Upsert</c>), which cannot work here: <see cref="Upsert"/> is a deliberate no-op remotely,
+    /// so the default would find the entry, apply the mutation, discard it into a method that
+    /// persists nothing, and still return <c>true</c>. This one uses the real metadata channel
+    /// instead: <c>GET /memories/{name}/entry</c>, the caller's mutation, then
+    /// <c>PATCH /memories/{name}</c>.
     ///
-    /// <para>Now that <see cref="LoadIndex"/> proxies to the real listing endpoint rather than
-    /// unconditionally returning <c>[]</c>, the inherited default would find the entry, apply the
-    /// caller's mutation, hand it to the no-op <c>Upsert</c>, and still return <c>true</c> —
-    /// reporting a successful write that never reached the server. That is a contract violation
-    /// regardless of who currently reads it: <see cref="IMemoryStore.TryUpdateEntry"/>'s own doc
-    /// promises the return value means the mutation was persisted, and <c>true</c> here would
-    /// make that promise false. To be precise about what this fixes today rather than overstate
-    /// it: the one production caller, <c>EntityTypingEventHandler.PromoteAsync</c>, calls this
-    /// as a discarded statement and does not branch on the result or retry either way — so
-    /// <c>true</c> vs. <c>false</c> is currently unobservable in production, and this override is
-    /// a correctness fix for the contract itself (for whichever future caller does read the
-    /// result — the interface's own doc already promises one exists), not a fix for an observed
-    /// live bug.</para>
+    /// <para><b>The body is a COMPLETE entry, and its <c>UpdatedAt</c> is the stored one.</b> The
+    /// PATCH contract rejects a body missing <c>description</c>, <c>attributes</c> or
+    /// <c>keywords</c> (an incomplete body would silently erase curated metadata), and compares the
+    /// body's <c>UpdatedAt</c> against the stored value as an optimistic-concurrency token. So the
+    /// value sent is the one this method just read, NOT whatever timestamp the caller's mutation
+    /// stamped on its copy — sending the mutated one makes every PATCH a guaranteed 409.</para>
     ///
-    /// <para>The correct fix is a dedicated attributes-only PATCH endpoint, so a metadata-only
-    /// mutation does not have to replay the whole artifact through <c>WriteArtifactAsync</c>
-    /// (which would also trigger a spurious version-archive on every mutation — unlike
-    /// <c>FileMemoryStore.TryUpdateEntry</c>'s atomic, sidecar-only write, this store has no
-    /// remote equivalent). That endpoint and DTO are out of scope for the change that added this
-    /// override — seeded remotely, LoadIndex used to make the "not found" case lie in one
-    /// direction (found nothing existing); without this override, fixing LoadIndex would only
-    /// move the lie to the other, worse direction. Until the endpoint exists, this fails closed:
-    /// a mutation that would have applied is refused, not silently dropped while reporting
-    /// success.</para>
+    /// <para><b>Return value.</b> <c>true</c> only on a 200, i.e. the server persisted it.
+    /// <c>false</c> for the three definite refusals: 404 (gone between the read and the write),
+    /// 409 (a concurrent writer won), and 400 — which a mutation that CHANGES <c>Keywords</c> earns,
+    /// because keywords are re-derived from content and PATCH has no content to derive against;
+    /// that change has to go through <see cref="StoreAsync"/>/<see cref="AppendAsync"/>. Anything
+    /// else (403, 5xx, unreachable) throws rather than returning <c>false</c>: a caller must not
+    /// read "the server is broken" as "the mutation was refused", the same distinction
+    /// <see cref="LoadIndex"/> throws to preserve — and this method's own read used to BE a
+    /// <c>LoadIndex</c> call, so losing that guarantee here is how a fixed path quietly regresses.
+    /// The "found" versus "not found" distinction the previous, deliberately-dead implementation
+    /// protected is kept the same way it was: <paramref name="mutate"/> runs if and only if the
+    /// entry exists.</para>
     /// </summary>
     public bool TryUpdateEntry(string subject, string scope, Func<ArtifactEntry, ArtifactEntry?> mutate)
     {
-        var current = LoadIndex(scope).FirstOrDefault(
-            e => SanitizeName(e.Name).Equals(SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
-        if (current is null) return false;
-        // From here to the end of the method, this is deliberately dead work: `updated` and the
-        // `null` branch below can only ever produce `return false`, same as skipping straight to
-        // `return false` after the LoadIndex check above. It is kept anyway — spending the
-        // LoadIndex round trip above and running `mutate` for real, not stubbing it out — as
-        // documentation-by-code: it proves this override honours the same "find, then apply the
-        // caller's mutation" contract the default implementation does, up to the point where a
-        // remote store has no channel left to persist the result. Do NOT delete this and jump
-        // straight to `return false`: that would silently reintroduce ambiguity about whether a
-        // "not found" and a "found but cannot persist" case are being told apart, which is the
-        // exact distinction the LoadIndex fix exists to preserve for every other caller.
-        var updated = mutate(current);
+        ArgumentNullException.ThrowIfNull(mutate);
+
+        string qualifiedName = FormatQualifiedName(scope, subject);
+        string encoded = Uri.EscapeDataString(qualifiedName);
+
+        MemoryEntry? stored;
+        using (var getReq = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/memories/{encoded}/entry"))
+        using (var getResp = SendSync(getReq))
+        {
+            if (getResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return false;
+            if (!getResp.IsSuccessStatusCode)
+                throw new HttpRequestException(
+                    $"Remote entry read failed for '{qualifiedName}': " +
+                    $"{(int)getResp.StatusCode} {getResp.StatusCode}.",
+                    inner: null,
+                    statusCode: getResp.StatusCode);
+
+            using var stream = getResp.Content.ReadAsStream();
+            stored = JsonSerializer.Deserialize(stream, HttpStoreJsonContext.Default.MemoryEntry);
+        }
+
+        if (stored is null)
+            throw new HttpRequestException(
+                $"Remote entry read for '{qualifiedName}' returned a 2xx with no entry body.");
+
+        var updated = mutate(ToArtifactEntry(stored));
         if (updated is null) return false;
-        return false;
+
+        // The complete entry back, with the fields the caller owns taken from the mutation and the
+        // rest echoed from what was read. The server ignores every store-derived field on the body
+        // (ChunkCount, OriginalBytes, CreatedAt, TermFrequencies, ChunkEntries, FileHashes) — they
+        // are sent because the contract is a complete entry, not because they can change anything.
+        var body = stored with
+        {
+            Description = AttributeReaders.PreviewText(updated.ContentPreview),
+            Attributes = updated.Attributes,
+            Keywords = updated.Keywords,
+            UpdatedAt = stored.UpdatedAt,
+        };
+
+        using var patchReq = new HttpRequestMessage(HttpMethod.Patch, $"{BaseUrl}/memories/{encoded}")
+        {
+            // PatchBodyJsonContext, not HttpStoreJsonContext: the latter omits null properties, and
+            // the PATCH contract rejects a body whose "attributes" or "keywords" KEY is missing —
+            // an omitted key is indistinguishable from an explicit "clear this field", so the server
+            // refuses it rather than guess. A null-omitting serializer would turn every entry with
+            // no attributes into a 400.
+            Content = new StringContent(
+                JsonSerializer.Serialize(body, PatchBodyJsonContext.Default.MemoryEntry),
+                System.Text.Encoding.UTF8, "application/json"),
+        };
+        using var patchResp = SendSync(patchReq);
+
+        if (patchResp.IsSuccessStatusCode) return true;
+
+        return patchResp.StatusCode switch
+        {
+            System.Net.HttpStatusCode.NotFound => false,
+            System.Net.HttpStatusCode.Conflict => false,
+            System.Net.HttpStatusCode.BadRequest => false,
+            _ => throw new HttpRequestException(
+                $"Remote entry update failed for '{qualifiedName}': " +
+                $"{(int)patchResp.StatusCode} {patchResp.StatusCode}.",
+                inner: null,
+                statusCode: patchResp.StatusCode),
+        };
     }
 
     public bool Remove(string name, string scope = "local")
@@ -506,20 +602,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                     _ => $"local:{item.Scope}"
                 };
 
-                // Uri is a placeholder on the remote path — see the note at BuildArtifactEntry
-                // for the capability decision that owns it. ChunkCount is not: item.ChunkCount is
-                // a real wire field, populated server-side (see MemoryEndpoints.cs).
-                var entry = new ArtifactEntry(
-                    Name: item.Name,
-                    Uri: "",
-                    OriginalBytes: item.OriginalBytes,
-                    ChunkCount: item.ChunkCount,
-                    CreatedAt: item.CreatedAt,
-                    ContentPreview: item.Description,
-                    UpdatedAt: item.UpdatedAt,
-                    Attributes: item.Attributes,
-                    Keywords: item.Keywords);
-                result.Add(new ScopedArtifact(scope, entry));
+                result.Add(new ScopedArtifact(scope, ToArtifactEntry(item)));
             }
         }
 
@@ -724,37 +807,163 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     // ── The write surface: raw input in, derived entry out ───────────────────
 
     /// <summary>
-    /// Not yet reachable over the wire, and it fails closed rather than approximating.
+    /// Pure deferral: POST the raw <see cref="MemoryWrite"/>, return the entry the SERVER derived.
     ///
-    /// <para>The remote half of this surface is the client change in the same plan: the client POSTs
-    /// the raw <see cref="MemoryWrite"/> and the SERVER derives — that is what "the client defers to
-    /// the server" means concretely, and it is why no derivation may appear in this file. It cannot
-    /// be served by the wire that exists today: <c>POST /memories</c> and
-    /// <c>POST /memories/{name}/append</c> still answer with today's <c>StoreResponse</c> /
-    /// <c>AppendResponse</c> (name, counts, message), not the complete entry a caller here would
-    /// need to return. <c>GET /memories</c>'s list item is no longer the other missing half of that
-    /// story — it now carries <c>TermFrequencies</c>, <c>ChunkEntries</c> and <c>FileHashes</c> — but
-    /// nothing routes a write through it, and re-fetching the whole listing to recover the one entry
-    /// this call just wrote is not the shape this surface wants. Returning an entry assembled from
-    /// the write response alone would be a partial entry presented as a complete one — the exact
-    /// defect the complete-entry wire contract exists to remove, and worse than refusing, because a
-    /// caller would persist it.</para>
+    /// <para><b>Nothing here derives, and nothing here may.</b> The response is the complete entry
+    /// the server's own <see cref="MemoryDerivation"/> pass produced, mapped whole through
+    /// <see cref="ToArtifactEntry"/> — keywords, term frequencies, chunk entries, attributes, the
+    /// preview and the drift baseline all come back as the store computed them. Assembling any of
+    /// them on this side would re-create the four-copies-of-the-contract defect this branch
+    /// removed; there is no <c>TextAnalysis</c> call in this file and there must not be one.</para>
     ///
-    /// <para>Nothing calls this yet: every write path still runs its own derivation, and the
-    /// server's own store is a <see cref="FileMemoryStore"/> reached in-process.</para>
+    /// <para>The write response carries the entry rather than this method POSTing and then GETting
+    /// it: two round trips are racy — another writer can change the entry in between — so the
+    /// second one could hand back an entry that is not the one this call produced.</para>
     /// </summary>
-    public Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default) =>
-        throw new NotSupportedException(
-            "The remote store cannot yet return a derived entry: the write surface needs the " +
-            "complete-entry wire contract, which lands with the client changes. Nothing calls this yet.");
+    public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        if (write.Content is null || write.Content.Length == 0)
+            throw new ArgumentException("A store writes at least one chunk.", nameof(write));
+
+        string name = WireName(write);
+        var body = new StoreApiRequest(
+            write.Content, name, write.Description, write.Attributes, write.Keywords);
+
+        using var resp = await PostCheckedAsync(
+            $"{BaseUrl}/memories",
+            () => JsonContent.Create(body, HttpStoreJsonContext.Default.StoreApiRequest),
+            name, ct);
+
+        var stored = await resp.Content.ReadFromJsonAsync(HttpStoreJsonContext.Default.StoreApiResponse, ct);
+        return EntryOf(stored?.Entry, name);
+    }
 
     /// <inheritdoc cref="StoreAsync"/>
-    public Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default) =>
-        throw new NotSupportedException(
-            "The remote store cannot yet return a derived entry: the write surface needs the " +
-            "complete-entry wire contract, which lands with the client changes. Nothing calls this yet.");
+    public async Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        // Same refusal FileMemoryStore makes, for the same reason (the derivation pipeline can
+        // express exactly one appended chunk). Enforced here as well as on the wire — the wire's
+        // scalar Content field cannot even express a second chunk, but the interface contract is
+        // what callers program against, so both implementations must reject the same input.
+        if (write.Content is null || write.Content.Length != 1)
+            throw new ArgumentException(
+                "An append adds exactly one chunk, so MemoryWrite.Content must hold one element.",
+                nameof(write));
+
+        string name = WireName(write);
+        var body = new AppendApiRequest(
+            write.Content[0], write.Description, write.Attributes, write.Keywords);
+
+        using var resp = await PostCheckedAsync(
+            $"{BaseUrl}/memories/{Uri.EscapeDataString(name)}/append",
+            () => JsonContent.Create(body, HttpStoreJsonContext.Default.AppendApiRequest),
+            name, ct);
+
+        var appended = await resp.Content.ReadFromJsonAsync(HttpStoreJsonContext.Default.AppendApiResponse, ct);
+        return EntryOf(appended?.Entry, name);
+    }
+
+    /// <summary>The address the server knows a write by. <see cref="MemoryWrite"/> carries the
+    /// resolved <c>(Name, Scope)</c> pair every store member takes; the REST API takes the single
+    /// user-facing path, which is what <see cref="FormatQualifiedName"/> reassembles. An ephemeral
+    /// <c>~name</c> is already its own whole address and its scope is ignored.
+    ///
+    /// <para><b>An ephemeral write is sent to the server like any other, and that has a known
+    /// asymmetry.</b> This store's ephemeral surface (<see cref="RememberEphemeral"/>,
+    /// <see cref="GetEphemeral"/>, and the short-circuit at the top of
+    /// <see cref="ResolveArtifactAsync"/>) is client-side, but a store cannot serve an ephemeral
+    /// write itself without DERIVING the entry to return — the one thing this file may not do. So
+    /// the write goes over the wire, lands in the SERVER's in-memory ephemeral map, and a
+    /// subsequent read through <see cref="ResolveArtifactAsync"/> will not find it, because that
+    /// method answers <c>~</c>-prefixed names from the client's own map without asking the server.
+    /// Unreachable today — every ephemeral path in <c>MemoryTools</c> calls
+    /// <see cref="RememberEphemeral"/> directly and never reaches this write surface — and closing
+    /// it properly is an ephemeral-addressing question (does <c>~name</c> mean "this process" or
+    /// "this store"?) rather than something to settle inside a name helper.</para></summary>
+    private string WireName(MemoryWrite write) =>
+        IsEphemeral(write.Name) ? write.Name : FormatQualifiedName(write.Scope, write.Name);
+
+    /// <summary>Guards the one thing a 2xx write response can still get wrong: a body that is
+    /// absent or carries no entry. Returning a fabricated entry there would hand a caller a
+    /// zero-byte, keyword-less memory that looks successfully stored.</summary>
+    private static ArtifactEntry EntryOf(MemoryEntry? entry, string name) =>
+        entry is null
+            ? throw new HttpRequestException(
+                $"Remote store write for '{name}' succeeded but returned no entry. The server must " +
+                "answer a write with the complete entry it derived; a response without one cannot " +
+                "be completed on this side without deriving.")
+            : ToArtifactEntry(entry);
 
     // ── Artifact file I/O via REST API ──────────────────────────────────────
+
+    /// <summary>
+    /// The one asynchronous POST path, and the one place its failure contract lives. Mirrors
+    /// <see cref="SendSync"/> for the async side: fresh content per attempt (HttpContent is
+    /// consumed after send — SEC-029/QAL-017), the version guard applied BEFORE any status-code
+    /// handling can treat the response as trustworthy, circuit-breaker bookkeeping, and — on a
+    /// non-2xx — an <see cref="HttpRequestException"/> carrying the server's own error body.
+    ///
+    /// <para>That body matters and is not decoration: the server's 4xx responses carry an
+    /// <c>ErrorResponse</c> naming the exact bound or field refused ("attributes may not exceed N
+    /// values per key", "Permission 'store' required"). Without it, a fixable, self-describing
+    /// rejection reached the agent as a bare "400 BadRequest". <c>HttpErrorBody.Truncate</c> is the
+    /// repo's one place for this — bodies can be megabytes of proxy HTML — and reading it is
+    /// best-effort, so a failure to read must not replace the status-code exception with a
+    /// different one.</para>
+    ///
+    /// <para>The caller owns the returned response and must dispose it. Every throwing path here
+    /// disposes it first: before this helper existed, a version-guard throw leaked the response and
+    /// its content stream on every call against a misversioned server.</para>
+    /// </summary>
+    private async Task<HttpResponseMessage> PostCheckedAsync(
+        string url, Func<HttpContent> content, string subject, CancellationToken ct)
+    {
+        _circuitBreaker.EnsureClosed();
+        var resp = await RetryPolicy.ExecuteAsync(
+            () => _http.PostAsync(url, content(), ct),
+            r => TransientDetector.IsTransient(r),
+            _retryOptions, logger: null, ct);
+
+        try
+        {
+            RemoteApiVersionGuard.Validate(resp);
+        }
+        catch
+        {
+            resp.Dispose();
+            throw;
+        }
+
+        if (resp.IsSuccessStatusCode)
+        {
+            _circuitBreaker.RecordSuccess();
+            return resp;
+        }
+
+        // A reachable server that answered with a failure status must not look like a successful
+        // store to callers (matches FileMemoryStore's throw-on-failure contract).
+        if (TransientDetector.IsTransient(resp))
+            _circuitBreaker.RecordFailure();
+
+        string body;
+        try
+        {
+            body = HttpErrorBody.Truncate(await resp.Content.ReadAsStringAsync(ct));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            body = "";
+        }
+        string detail = string.IsNullOrWhiteSpace(body) ? "" : $" {body}";
+        var failure = new HttpRequestException(
+            $"Remote store write failed for '{subject}': {(int)resp.StatusCode} {resp.StatusCode}.{detail}",
+            inner: null,
+            statusCode: resp.StatusCode);
+        resp.Dispose();
+        throw failure;
+    }
 
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
         ArtifactWriteMetadata? meta = null, CancellationToken ct = default)
@@ -775,50 +984,13 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             Description: meta?.Description,
             Attributes: meta?.Attributes?.ToDictionary(kv => kv.Key, kv => kv.Value),
             Keywords: meta?.Keywords);
-        _circuitBreaker.EnsureClosed();
-        var resp = await RetryPolicy.ExecuteAsync(
-            () =>
-            {
-                // Create fresh content per attempt — HttpContent is consumed after send (SEC-029/QAL-017)
-                var content = JsonContent.Create(req, HttpStoreJsonContext.Default.StoreApiRequest);
-                return _http.PostAsync($"{BaseUrl}/memories", content, ct);
-            },
-            r => TransientDetector.IsTransient(r),
-            _retryOptions, logger: null, ct);
-        // Fail closed on this second async send path too — see the sync-path comment in SendSync.
-        RemoteApiVersionGuard.Validate(resp);
-        if (resp.IsSuccessStatusCode)
-        {
-            _circuitBreaker.RecordSuccess();
-        }
-        else
-        {
-            // A reachable server that answered with a failure status must not look like a
-            // successful store to callers (matches FileMemoryStore's throw-on-failure contract).
-            if (TransientDetector.IsTransient(resp))
-                _circuitBreaker.RecordFailure();
-            // Read the body: the server's 4xx responses carry an ErrorResponse whose message names
-            // the exact bound or field that was refused ("attributes may not exceed N values per
-            // key", "Permission 'store' required"). Without it a fixable, self-describing rejection
-            // reached the agent as a bare "400 BadRequest" — a mystery instead of an instruction.
-            // HttpErrorBody.Truncate is the repo's one place for this: bodies can be megabytes of
-            // proxy HTML. ReadAsStringAsync is best-effort — a failure to read the body must not
-            // replace the status-code exception with a different one.
-            string body;
-            try
-            {
-                body = HttpErrorBody.Truncate(await resp.Content.ReadAsStringAsync(ct));
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                body = "";
-            }
-            string detail = string.IsNullOrWhiteSpace(body) ? "" : $" {body}";
-            throw new HttpRequestException(
-                $"Remote store write failed for '{qualifiedName}': {(int)resp.StatusCode} {resp.StatusCode}.{detail}",
-                inner: null,
-                statusCode: resp.StatusCode);
-        }
+
+        // Same send path, same failure contract, as StoreAsync above — see PostCheckedAsync. This
+        // method used to carry its own copy of it.
+        using var resp = await PostCheckedAsync(
+            $"{BaseUrl}/memories",
+            () => JsonContent.Create(req, HttpStoreJsonContext.Default.StoreApiRequest),
+            qualifiedName, ct);
     }
 
     public async Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default)

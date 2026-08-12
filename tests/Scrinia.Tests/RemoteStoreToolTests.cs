@@ -34,13 +34,27 @@ public sealed class RemoteStoreToolTests
         """;
 
     /// <summary>
-    /// Serves the two endpoints these tools reach remotely: <c>GET .../memories</c> (used by
-    /// <see cref="HttpMemoryStore.ListScoped(string?)"/>) and <c>POST .../memories</c> (used by
+    /// Serves the endpoints these tools reach remotely: <c>GET .../memories</c> (used by
+    /// <see cref="HttpMemoryStore.ListScoped(string?)"/>), <c>POST .../memories</c> (used by
     /// <see cref="HttpMemoryStore.WriteArtifactAsync"/>, which throws
-    /// <see cref="HttpRequestException"/> on any non-success status). Everything else 404s, which
-    /// is deliberate: if a tool starts making an unexpected call, the test should notice.
+    /// <see cref="HttpRequestException"/> on any non-success status), and the metadata pair
+    /// <c>GET .../memories/{name}/entry</c> + <c>PATCH .../memories/{name}</c> that
+    /// <see cref="HttpMemoryStore.TryUpdateEntry"/> uses. Everything else 404s, which is
+    /// deliberate: if a tool starts making an unexpected call, the test should notice.
+    ///
+    /// <para>The single-entry GET is served BY SELECTING FROM <paramref name="listJson"/> rather
+    /// than from a second literal, so a fixture that says "this store holds one entry called alpha"
+    /// cannot end up saying something different depending on which endpoint is asked.</para>
+    ///
+    /// <para><paramref name="patchStatus"/> is what the real server would answer for the mutation
+    /// under test: <c>200</c> when it accepts the metadata write, <c>400</c> when it refuses one
+    /// (a body that CHANGES <c>Keywords</c> earns that, because PATCH has no content to re-derive
+    /// them from). It is a parameter rather than something inferred from the body because inferring
+    /// it means re-implementing the endpoint's rules here; the rules themselves are pinned against
+    /// a real server in <c>Scrinia.Server.Tests.RemoteLoadIndexTests</c>.</para>
     /// </summary>
-    private sealed class StubBackendHandler(string listJson) : HttpMessageHandler
+    private sealed class StubBackendHandler(
+        string listJson, HttpStatusCode patchStatus = HttpStatusCode.OK) : HttpMessageHandler
     {
         // Both overrides are required: HttpMemoryStore.ListScoped goes through SendSync, which
         // calls the synchronous HttpClient.Send. A handler that only overrides SendAsync throws
@@ -53,10 +67,32 @@ public sealed class RemoteStoreToolTests
             HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(Respond(request));
 
+        /// <summary>The entry named by a <c>.../memories/{name}/entry</c> path, as raw JSON, or
+        /// null when the listing holds no such entry. Case-insensitive, matching every
+        /// name lookup in this codebase.</summary>
+        private string? FindEntryJson(string absolutePath)
+        {
+            const string suffix = "/entry";
+            int lastSlash = absolutePath.LastIndexOf('/', absolutePath.Length - suffix.Length - 1);
+            string name = Uri.UnescapeDataString(
+                absolutePath[(lastSlash + 1)..^suffix.Length]);
+
+            using var doc = System.Text.Json.JsonDocument.Parse(listJson);
+            foreach (var m in doc.RootElement.GetProperty("memories").EnumerateArray())
+            {
+                string? qualified = m.GetProperty("qualifiedName").GetString();
+                string? bare = m.GetProperty("name").GetString();
+                if (string.Equals(qualified, name, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(bare, name, StringComparison.OrdinalIgnoreCase))
+                    return m.GetRawText();
+            }
+            return null;
+        }
+
         private HttpResponseMessage Respond(HttpRequestMessage request)
         {
-            bool isMemoriesCollection =
-                request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal);
+            string path = request.RequestUri!.AbsolutePath;
+            bool isMemoriesCollection = path.EndsWith("/memories", StringComparison.Ordinal);
 
             HttpResponseMessage response;
             if (request.Method == HttpMethod.Get && isMemoriesCollection)
@@ -75,6 +111,20 @@ public sealed class RemoteStoreToolTests
                 {
                     Content = new StringContent("{}", Encoding.UTF8, "application/json"),
                 };
+            }
+            else if (request.Method == HttpMethod.Get && path.EndsWith("/entry", StringComparison.Ordinal))
+            {
+                string? entry = FindEntryJson(path);
+                response = entry is null
+                    ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                    : new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(entry, Encoding.UTF8, "application/json"),
+                    };
+            }
+            else if (request.Method == HttpMethod.Patch)
+            {
+                response = new HttpResponseMessage(patchStatus);
             }
             else
             {
@@ -100,11 +150,11 @@ public sealed class RemoteStoreToolTests
         private readonly IMemoryStore? _previous;
         public HttpMemoryStore Store { get; }
 
-        public RemoteStoreScope(string listJson = EmptyListJson)
+        public RemoteStoreScope(string listJson = EmptyListJson, HttpStatusCode patchStatus = HttpStatusCode.OK)
         {
             _previous = MemoryStoreContext.Current;
             MemoryEventSinkContext.Default = null;
-            var http = new HttpClient(new StubBackendHandler(listJson))
+            var http = new HttpClient(new StubBackendHandler(listJson, patchStatus))
             {
                 BaseAddress = new Uri("http://localhost:5000"),
             };
@@ -480,25 +530,47 @@ public sealed class RemoteStoreToolTests
     /// <c>UpdateMeta</c> — reached by <c>update()</c> and by both halves of <c>link()</c> — used to
     /// go LoadIndex → mutate → <c>Upsert</c> → <c>ResponseBuilder.Success</c>. Remotely
     /// <c>Upsert</c> is a deliberate no-op, so once <c>LoadIndex</c> was fixed to return the real
-    /// listing, the entry was found, mutated, dropped, and reported as updated. Measured against a
-    /// Kestrel host: <c>link()</c> answered <c>status: success / action: linked</c> while the target
-    /// entry gained no <c>ref</c> attribute. It now routes through <c>TryUpdateEntry</c>, whose
-    /// remote override already fails closed, and reports that refusal.
-    /// <para>The list JSON here makes the entry EXIST, which is what separates this from an
-    /// ordinary "not found": the answer must be NOT_SUPPORTED, not NOT_FOUND.</para>
+    /// listing, the entry was found, mutated, dropped, and reported as updated. It routes through
+    /// <c>TryUpdateEntry</c> now, which really does write — over
+    /// <c>GET .../entry</c> + <c>PATCH</c> — so the success it reports is one it can back up.
+    /// <para>The list JSON here makes the entry EXIST, so a NOT_FOUND answer would be wrong for a
+    /// different reason than a fabricated success would be.</para>
     /// </summary>
     [Fact]
-    public async Task UpdateMeta_RemoteStore_ReportsNotSupported_RatherThanAFabricatedSuccess()
+    public async Task UpdateMeta_RemoteStore_ReportsSuccess_WhenTheServerAcceptsTheWrite()
     {
         using var scope = new RemoteStoreScope(OneEntryListJson);
+
+        var response = await Tools().UpdateMeta("alpha", keywords: ["person:maria"]);
+
+        response.Status.Should().Be("success",
+            because: "the PATCH channel accepted it — refusing here would be the mirror image of " +
+                     "the fabricated success this test was originally written against");
+    }
+
+    /// <summary>
+    /// The refusal that survives the channel landing, and why it must not be swallowed: a mutation
+    /// that CHANGES <c>Keywords</c> is rejected by <c>PATCH</c> with a <c>400</c> (keywords are
+    /// derived from content, which that endpoint does not have). The entry EXISTS, so the answer
+    /// must be NOT_SUPPORTED — a missing capability, not a missing memory — and it must carry a
+    /// next step, because "re-store it instead" is not guessable.
+    /// <para>The stub is told to answer <c>400</c> rather than deciding it from the body; that the
+    /// real server genuinely answers <c>400</c> for this input is pinned separately, over a real
+    /// socket, by
+    /// <c>Scrinia.Server.Tests.RemoteLoadIndexTests.TryUpdateEntry_ReturnsFalse_WhenTheMutationChangesKeywords</c>.</para>
+    /// </summary>
+    [Fact]
+    public async Task UpdateMeta_RemoteStore_ReportsNotSupported_WhenTheServerRefusesTheWrite()
+    {
+        using var scope = new RemoteStoreScope(OneEntryListJson, patchStatus: HttpStatusCode.BadRequest);
 
         var response = await Tools().UpdateMeta("alpha", keywords: ["curated"]);
 
         response.Status.Should().Be("error",
-            because: "a remote store has no channel for a metadata-only write, so success would " +
-                     "be a report of something that did not happen");
+            because: "the server refused the write, so reporting success would be a report of " +
+                     "something that did not happen");
         response.ErrorCode.Should().Be(ErrorCodes.NotSupported,
-            because: "the entry exists — this is a missing capability, not a missing memory");
+            because: "the entry exists — this is a refused capability, not a missing memory");
         response.ActionNeeded.Should().NotBeNullOrEmpty(
             because: "a refusal without a next step leaves the caller stuck");
     }

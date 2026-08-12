@@ -8,22 +8,27 @@ export interface StoreRequest {
   keywords?: string[];
 }
 
+// The complete entry the STORE derived, plus the human-facing message. name/qualifiedName/
+// chunkCount/originalBytes are deleted, not retained: MemoryEntry already carries all four, and a
+// derivable field that can disagree with its payload is the defect this shape fixes (same reasoning
+// that removed ShowResponse.chunkCount). Read them off `entry`.
 export interface StoreResponse {
-  name: string;
-  qualifiedName: string;
-  chunkCount: number;
-  originalBytes: number;
+  entry: MemoryEntry;
   message: string;
 }
 
+// Mirrors Scrinia.Server.Models.AppendRequest. `content` is a single string, not an array like
+// StoreRequest.content: an append writes exactly one chunk, and a scalar makes any other count
+// unrepresentable rather than a rule the server has to reject.
 export interface AppendRequest {
   content: string;
+  description?: string;
+  attributes?: Record<string, string[]>;
+  keywords?: string[];
 }
 
 export interface AppendResponse {
-  name: string;
-  chunkCount: number;
-  originalBytes: number;
+  entry: MemoryEntry;
   message: string;
 }
 

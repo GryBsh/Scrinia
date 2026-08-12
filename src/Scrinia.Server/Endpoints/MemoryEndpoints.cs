@@ -67,6 +67,8 @@ public static class MemoryEndpoints
         if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
             return Results.BadRequest(new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
+        // Attribute-map bounds, both of them.
+        //
         // Key cap: KnownAttributes.MaxAttributes, not the search filter's 64. KnownAttributes.Merge
         // caps at MaxAttributes and truncates past it with no signal, so accepting a larger map
         // would drop keys silently. This does NOT diverge from local: Merge caps the map on the MCP
@@ -77,9 +79,7 @@ public static class MemoryEndpoints
         // content yielding 5 extracted keys still loses 3 to truncation, under this bound. Rejecting
         // on the post-merge count would need the merge to have run, which is past the point where a
         // 400 is the right answer. What this bound removes is the grossly-over case, not every case.
-        if (req.Attributes is { Count: > KnownAttributes.MaxAttributes })
-            return Results.BadRequest(new ErrorResponse(
-                $"attributes may not exceed {KnownAttributes.MaxAttributes} keys."));
+        //
         // Values-per-key cap. This used to be a remote-ONLY bound of 64, justified as a deliberate
         // asymmetry — but it was reachable from routine auto-extraction, not just from a caller
         // deliberately supplying 65 values: nothing caps `file`/`ref` values locally, so a memory
@@ -89,14 +89,19 @@ public static class MemoryEndpoints
         // Scrinia's own code — local and remote accept the same input. It stays as the wire guard
         // for a hand-rolled client that never went through Merge, and, like the key cap above, says
         // no rather than truncating quietly.
-        if (req.Attributes is not null && req.Attributes.Any(kv => kv.Value is { Length: > KnownAttributes.MaxValuesPerKey }))
-            return Results.BadRequest(
-                new ErrorResponse($"attributes may not exceed {KnownAttributes.MaxValuesPerKey} values per key."));
+        //
+        // Both bounds run through the shared ValidateAttributeBounds rather than a private copy, so
+        // the append path below — which now carries an attribute map too — cannot drift into a
+        // laxer version of the same guard.
+        if (ValidateAttributeBounds(req.Attributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
+            is { } storeBoundsError)
+            return Results.BadRequest(new ErrorResponse(storeBoundsError));
 
         try
         {
             var result = await pipeline.StoreAsync(ctx.Store!, req, ct);
-            return Results.Created($"/api/v1/stores/{store}/memories/{Uri.EscapeDataString(result.QualifiedName)}", result);
+            return Results.Created(
+                $"/api/v1/stores/{store}/memories/{Uri.EscapeDataString(result.Entry.QualifiedName)}", result);
         }
         catch (OperationCanceledException ex) when (ex.CancellationToken != ct)
         {
@@ -130,28 +135,9 @@ public static class MemoryEndpoints
         for (int i = offset; i < total && paged.Count < limit; i++)
         {
             var item = sourceList[i];
-            string qualifiedName = item.Scope == "ephemeral"
-                ? $"~{item.Entry.Name}"
-                : ctx.Store!.FormatQualifiedName(item.Scope, item.Entry.Name);
-            // Every field below comes from the ArtifactEntry the store already handed back —
-            // TermFrequencies/ChunkEntries/FileHashes are populated here whenever the store had
-            // them in hand (a local, file-backed store always does), never fabricated for a store
-            // that doesn't.
-            paged.Add(new MemoryEntry(
-                item.Entry.Name,
-                qualifiedName,
-                MemoryNaming.FormatScopeLabel(item.Scope),
-                item.Entry.ChunkCount,
-                item.Entry.OriginalBytes,
-                item.Entry.CreatedAt,
-                item.Entry.UpdatedAt,
-                AttributeReaders.PreviewText(item.Entry.ContentPreview),
-                item.Entry.Attributes,
-                item.Entry.Keywords,
-                item.Entry.TermFrequencies,
-                item.Entry.ChunkEntries?.Select(c => new ChunkEntryDto(
-                    c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies)).ToArray(),
-                item.Entry.FileHashes));
+            // Every field comes from the ArtifactEntry the store already handed back, projected by
+            // the one mapper this API has — see MemoryEntry.From.
+            paged.Add(MemoryEntry.From(ctx.Store!, item.Entry, item.Scope));
         }
 
         return Task.FromResult<IResult>(Results.Ok(new ListResponse(paged.ToArray(), total)));
@@ -180,26 +166,6 @@ public static class MemoryEndpoints
     private static ArtifactEntry? FindEntry(IMemoryStore store, string scope, string subject) =>
         store.LoadIndex(scope).FirstOrDefault(
             e => store.SanitizeName(e.Name).Equals(store.SanitizeName(subject), StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>Builds the one complete <see cref="MemoryEntry"/> wire shape from a store-derived
-    /// <see cref="ArtifactEntry"/> — the same field mapping <c>ListMemory</c> uses, factored out so
-    /// <c>GetEntry</c> and <c>PatchEntry</c> do not each grow their own copy.</summary>
-    private static MemoryEntry ToEntryDto(IMemoryStore store, ArtifactEntry entry, string scope) =>
-        new(
-            entry.Name,
-            store.FormatQualifiedName(scope, entry.Name),
-            MemoryNaming.FormatScopeLabel(scope),
-            entry.ChunkCount,
-            entry.OriginalBytes,
-            entry.CreatedAt,
-            entry.UpdatedAt,
-            AttributeReaders.PreviewText(entry.ContentPreview),
-            entry.Attributes,
-            entry.Keywords,
-            entry.TermFrequencies,
-            entry.ChunkEntries?.Select(c => new ChunkEntryDto(
-                c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies)).ToArray(),
-            entry.FileHashes);
 
     /// <summary>Attribute-map bounds shared by every wire path that accepts a caller-supplied
     /// attribute dictionary. Returns an error message, or null when within bounds.
@@ -237,7 +203,7 @@ public static class MemoryEndpoints
         if (entry is null)
             return Task.FromResult<IResult>(Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found.")));
 
-        return Task.FromResult<IResult>(Results.Ok(ToEntryDto(ctx.Store!, entry, scope)));
+        return Task.FromResult<IResult>(Results.Ok(MemoryEntry.From(ctx.Store!, entry, scope)));
     }
 
     /// <summary>True when <paramref name="patched"/> is null, or is the same sequence as
@@ -435,7 +401,7 @@ public static class MemoryEndpoints
         if (!ok || persisted is null)
             return Results.Json(new ErrorResponse("Update failed."), statusCode: 500);
 
-        return Results.Ok(ToEntryDto(ctx.Store!, persisted, scope));
+        return Results.Ok(MemoryEntry.From(ctx.Store!, persisted, scope));
     }
 
     private static async Task<IResult> ForgetMemory(
@@ -490,9 +456,17 @@ public static class MemoryEndpoints
         if (System.Text.Encoding.UTF8.GetByteCount(req.Content) > MaxContentBytes)
             return Results.BadRequest(new ErrorResponse($"Content must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
+        // The same attribute bounds POST /memories enforces. AppendRequest carries an attribute map
+        // now (it used to carry Content alone), and an unbounded map on this path would be a hole
+        // straight around the guard on the other one — the append endpoint reaches the identical
+        // KnownAttributes.Merge, which truncates past MaxAttributes with no signal.
+        if (ValidateAttributeBounds(req.Attributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
+            is { } appendBoundsError)
+            return Results.BadRequest(new ErrorResponse(appendBoundsError));
+
         try
         {
-            var result = await pipeline.AppendAsync(ctx.Store!, decoded, req.Content, ct);
+            var result = await pipeline.AppendAsync(ctx.Store!, decoded, req, ct);
             return Results.Ok(result);
         }
         catch (OperationCanceledException ex) when (ex.CancellationToken != ct)

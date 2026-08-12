@@ -28,8 +28,11 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
 
         var storeBody = await storeResp.Content.ReadFromJsonAsync<StoreResponse>();
         storeBody.Should().NotBeNull();
-        storeBody!.QualifiedName.Should().Be("roundtrip-test");
-        storeBody.ChunkCount.Should().Be(1);
+        storeBody!.Entry.QualifiedName.Should().Be("roundtrip-test");
+        storeBody.Entry.ChunkCount.Should().Be(1);
+        storeBody.Entry.Description.Should().Be("A test memory",
+            because: "the write response carries the complete entry the store derived, not a name " +
+                     "and two counts — a caller must not need a second round trip to see it");
 
         var showResp = await _client.GetAsync($"{_base}/memories/roundtrip-test");
         showResp.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -134,7 +137,7 @@ public sealed class MemoryEndpointTests : IClassFixture<ScriniaServerFactory>
 
         var appendBody = await appendResp.Content.ReadFromJsonAsync<AppendResponse>();
         appendBody.Should().NotBeNull();
-        appendBody!.ChunkCount.Should().Be(2);
+        appendBody!.Entry.ChunkCount.Should().Be(2);
     }
 
     [Fact]

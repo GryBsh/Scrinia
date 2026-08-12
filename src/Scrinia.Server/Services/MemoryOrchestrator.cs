@@ -44,28 +44,36 @@ public static class MemoryOrchestrator
         return (false, scope, subject);
     }
 
-    /// <summary>The display name for a written entry. <paramref name="entry"/> carries the name the
-    /// store resolved, so a memory written under a mismatched casing reports its own.</summary>
-    private static string QualifiedNameOf(IMemoryStore store, ArtifactEntry entry, bool ephemeral, string scope) =>
-        ephemeral ? $"~{entry.Name}" : store.FormatQualifiedName(scope, entry.Name);
+    /// <summary>The scope a written entry is reported under. An ephemeral target has no scope of
+    /// its own — <see cref="Resolve"/> returns <c>""</c> for it — so it is named here, once, rather
+    /// than re-derived by every response builder from an <c>ephemeral</c> flag they would each have
+    /// to be handed.</summary>
+    private static string ScopeOf(bool ephemeral, string scope) => ephemeral ? "ephemeral" : scope;
 
     private static StoreResponse BuildStoreResponse(
         IMemoryStore store, ArtifactEntry entry, bool ephemeral, string scope)
     {
-        string qualifiedName = QualifiedNameOf(store, entry, ephemeral, scope);
-        return new StoreResponse(entry.Name, qualifiedName, entry.ChunkCount, entry.OriginalBytes,
-            $"Remembered: {qualifiedName} ({entry.ChunkCount} chunk(s), {entry.OriginalBytes} B)"
+        // The complete entry, via the one mapper — not a hand-picked subset. `entry` carries the
+        // name the store resolved, so a memory written under a mismatched casing reports its own.
+        var dto = MemoryEntry.From(store, entry, ScopeOf(ephemeral, scope));
+        return new StoreResponse(dto,
+            $"Remembered: {dto.QualifiedName} ({entry.ChunkCount} chunk(s), {entry.OriginalBytes} B)"
                 + (ephemeral ? " [ephemeral]" : ""));
     }
 
     public static async Task<AppendResponse> AppendAsync(
-        IMemoryStore store, string name, string content, CancellationToken ct = default)
+        IMemoryStore store, string name, AppendRequest req, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(req);
         var (ephemeral, scope, subject) = Resolve(store, name);
 
         // Exactly one chunk: the store refuses any other count by design, because the derivation
-        // pipeline can express only one appended chunk.
-        var entry = await store.AppendAsync(new MemoryWrite(subject, scope, [content]), ct);
+        // pipeline can express only one appended chunk — which is why AppendRequest.Content is a
+        // scalar and there is no count to validate here. Description/Attributes/Keywords travel
+        // with it: an append that dropped them was D-18.
+        var entry = await store.AppendAsync(
+            new MemoryWrite(subject, scope, [req.Content], req.Description, req.Attributes, req.Keywords),
+            ct);
 
         // Appending to a memory that does not exist yet is a store, and the store performs it
         // itself rather than handing the decision back. UpdatedAt is the discriminator: a real
@@ -75,12 +83,12 @@ public static class MemoryOrchestrator
         if (entry.UpdatedAt is null)
         {
             var stored = BuildStoreResponse(store, entry, ephemeral, scope);
-            return new AppendResponse(stored.Name, stored.ChunkCount, stored.OriginalBytes, stored.Message);
+            return new AppendResponse(stored.Entry, stored.Message);
         }
 
-        string qualifiedName = QualifiedNameOf(store, entry, ephemeral, scope);
-        return new AppendResponse(qualifiedName, entry.ChunkCount, entry.OriginalBytes,
-            $"Appended chunk {entry.ChunkCount} to {qualifiedName} ({entry.ChunkCount} chunk(s), {entry.OriginalBytes} B)");
+        var dto = MemoryEntry.From(store, entry, ScopeOf(ephemeral, scope));
+        return new AppendResponse(dto,
+            $"Appended chunk {entry.ChunkCount} to {dto.QualifiedName} ({entry.ChunkCount} chunk(s), {entry.OriginalBytes} B)");
     }
 
     public static async Task<ShowResponse?> ShowAsync(

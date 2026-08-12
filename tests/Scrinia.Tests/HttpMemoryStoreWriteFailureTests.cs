@@ -141,4 +141,64 @@ public class HttpMemoryStoreWriteFailureTests
             .Which.Message.Should().Contain(serverMessage,
                 because: "the server's error body must reach the caller, not just the status code");
     }
+
+    // ── The write surface (StoreAsync / AppendAsync) ────────────────────────────
+
+    /// <summary>
+    /// <c>StoreAsync</c> is a NEW code path alongside <c>WriteArtifactAsync</c>, and the tests above
+    /// name that method specifically — so every guarantee it was carrying (throw on non-2xx, the
+    /// server's error body in the message, the version-header check underneath) would have been
+    /// free to go missing here while all of them stayed green. It shares
+    /// <c>PostCheckedAsync</c> with <c>WriteArtifactAsync</c> today, and asserting on it directly is
+    /// what keeps that true: a future implementation that inlines its own send loop has to satisfy
+    /// this too.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_NonTransientFailureWithBody_ThrowsAndCarriesTheBody()
+    {
+        const string serverMessage = "Permission 'store' required.";
+        using var store = MakeStore(HttpStatusCode.Forbidden, out _, body: serverMessage);
+
+        var act = async () => await store.StoreAsync(
+            new Core.Models.MemoryWrite("note", "local", ["the body"]));
+
+        var thrown = await act.Should().ThrowAsync<HttpRequestException>();
+        thrown.Which.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        thrown.Which.Message.Should().Contain(serverMessage);
+    }
+
+    /// <inheritdoc cref="StoreAsync_NonTransientFailureWithBody_ThrowsAndCarriesTheBody"/>
+    [Fact]
+    public async Task AppendAsync_NonTransientFailureWithBody_ThrowsAndCarriesTheBody()
+    {
+        const string serverMessage = "Permission 'append' required.";
+        using var store = MakeStore(HttpStatusCode.Forbidden, out _, body: serverMessage);
+
+        var act = async () => await store.AppendAsync(
+            new Core.Models.MemoryWrite("note", "local", ["the body"]));
+
+        var thrown = await act.Should().ThrowAsync<HttpRequestException>();
+        thrown.Which.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        thrown.Which.Message.Should().Contain(serverMessage);
+    }
+
+    /// <summary>
+    /// A 2xx with no entry in it must throw rather than yield an <c>ArtifactEntry</c> this side
+    /// invented. Completing the entry locally is precisely the derivation this store may not do, and
+    /// the fabricated result — zero bytes, no keywords, no chunk entries — would be indistinguishable
+    /// from a real memory that happens to be empty, then get persisted by whatever consumed it.
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_SuccessWithNoEntryInTheBody_Throws()
+    {
+        using var store = MakeStore(HttpStatusCode.OK, out _, body: "{}");
+
+        var act = async () => await store.StoreAsync(
+            new Core.Models.MemoryWrite("note", "local", ["the body"]));
+
+        (await act.Should().ThrowAsync<HttpRequestException>())
+            .Which.Message.Should().Contain("returned no entry",
+                because: "the alternative is fabricating one, which is the derivation this store " +
+                         "exists not to do");
+    }
 }

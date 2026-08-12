@@ -44,7 +44,8 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
         entry.Attributes["person"].Should().BeEquivalentTo(["Nick"]);
         entry.Keywords.Should().NotContain(k => k.StartsWith("person:"));
 
-        await MemoryOrchestrator.AppendAsync(_store, "server-attributes", "status: done\nperson: Maria\nMore.");
+        await MemoryOrchestrator.AppendAsync(_store, "server-attributes",
+            new AppendRequest("status: done\nperson: Maria\nMore."));
         entry = _store.LoadIndex("local").Single(e => e.Name == "server-attributes");
         entry.Attributes!["status"].Should().BeEquivalentTo(["done"]);
         entry.Attributes["person"].Should().BeEquivalentTo(["Nick", "Maria"]);
@@ -154,7 +155,8 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Body about widgets."], "orch-preview-preserve-persistent",
                 Description: "curated widget notes"));
-        await MemoryOrchestrator.AppendAsync(_store, "orch-preview-preserve-persistent", "More about widgets.");
+        await MemoryOrchestrator.AppendAsync(_store, "orch-preview-preserve-persistent",
+            new AppendRequest("More about widgets."));
 
         var entry = _store.LoadIndex("local").Single(e => e.Name == "orch-preview-preserve-persistent");
         entry.ContentPreview.Should().Be("curated widget notes",
@@ -163,7 +165,8 @@ public sealed class MemoryOrchestratorAttributesTests : IDisposable
         await MemoryOrchestrator.StoreAsync(_store,
             new StoreRequest(["Ephemeral body about widgets."], "~orch-preview-preserve-eph",
                 Description: "curated eph notes"));
-        await MemoryOrchestrator.AppendAsync(_store, "~orch-preview-preserve-eph", "More ephemeral notes.");
+        await MemoryOrchestrator.AppendAsync(_store, "~orch-preview-preserve-eph",
+            new AppendRequest("More ephemeral notes."));
 
         var ephEntry = _store.GetEphemeral("orch-preview-preserve-eph");
         ephEntry.Should().NotBeNull();

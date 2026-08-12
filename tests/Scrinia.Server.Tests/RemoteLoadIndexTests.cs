@@ -4,6 +4,9 @@ using System.Net.Http.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Scrinia;
+using Scrinia.Core;
+using Scrinia.Core.Encoding;
+using Scrinia.Core.Models;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
 
@@ -69,6 +72,53 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         resp.EnsureSuccessStatusCode();
     }
 
+    /// <summary>Stores a genuinely multi-chunk memory — one wire element per chunk. The sibling
+    /// helper above always sends a single element, so nothing it stores can distinguish a client
+    /// that preserves chunk boundaries from one that flattens them.</summary>
+    private async Task StoreChunksAsync(string name, string[] chunks)
+    {
+        var resp = await _client.PostAsJsonAsync(
+            $"/api/v1/stores/{_factory.PrimaryStore}/memories",
+            new StoreRequest(chunks, name, chunks[0]));
+        resp.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// The read-side half of the complete-entry wire contract: <c>ShowResponse.Content</c> is a
+    /// chunk ARRAY, and the client must re-encode it as one NMP/2 chunk per element. It used to
+    /// send joined text that the client re-encoded as a single chunk while the response claimed
+    /// five — the flattening recorded as a residual in
+    /// <c>RemoteWritePathMetadataTests.Compact_RemoteStore_ShortCircuits_...</c>.
+    /// <para>Nothing else pins this. The chunk array landed with the wire reshape (Task 6), which
+    /// forced <c>EncodeChunks</c> at the call site because <c>Encode</c> takes a <c>string</c> —
+    /// so the fix is already in place and this test is green on arrival. That makes it a
+    /// regression guard rather than a red-green step, and it is a real one: measured by reverting
+    /// the call to <c>Encode(string.Concat(show.Content))</c>, which compiles and fails only
+    /// this test and its sibling's five-chunk assertion.</para>
+    /// </summary>
+    [Fact]
+    public async Task Remote_FiveChunkMemory_KeepsItsChunkBoundaries()
+    {
+        await StoreChunksAsync("chunky", ["alpha", "bravo", "charlie", "delta", "echo"]);
+
+        string artifact = await _remote.ReadArtifactAsync("chunky", "local");
+
+        Nmp2ChunkedEncoder.GetChunkCount(artifact).Should().Be(5,
+            because: "the wire carries the chunk array now; it used to send joined text that the " +
+                     "client re-encoded as a single chunk while the response claimed five");
+        Nmp2ChunkedEncoder.DecodeChunk(artifact, 3).Should().Contain("charlie");
+    }
+
+    /// <summary>The single-chunk case is not implied by the five-chunk one: a client that always
+    /// re-encoded the array as N chunks would satisfy the test above and could still mis-handle
+    /// the one-element array every ordinary memory in this suite produces.</summary>
+    [Fact]
+    public async Task Remote_SingleChunkMemory_StillRoundTrips()
+    {
+        await StoreChunksAsync("solo", ["only"]);
+        Nmp2ChunkedEncoder.GetChunkCount(await _remote.ReadArtifactAsync("solo", "local")).Should().Be(1);
+    }
+
     [Fact]
     public async Task LoadIndex_ReturnsTheStoredEntry()
     {
@@ -82,26 +132,23 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The load-bearing assertion. A test that only checked LoadIndex was non-empty would pass
-    /// against a proxy whose entries the update path still cannot use — measured directly: before
-    /// the <c>TryUpdateEntry</c> override was added, this exact scenario returned <c>true</c>
-    /// while <c>reloaded.Attributes</c> never gained the "person" key, i.e. it reported success
-    /// for a write that silently discarded the mutation. The override closes that by refusing
-    /// to report success it cannot back up: the entry is found (LoadIndex works), the mutation
-    /// callback is invoked, and the result is still refused because there is no remote channel
-    /// that can persist a metadata-only change — proven here by asserting the entry is
-    /// byte-for-byte unchanged afterward, not merely that the call returned <c>false</c>.
+    /// The load-bearing assertion, and the one this task inverts. <c>TryUpdateEntry</c> used to
+    /// fail closed — find the entry, run the mutation, then refuse — because a remote store had no
+    /// channel that could persist a metadata-only change. It has one now
+    /// (<c>GET /memories/{name}/entry</c> + <c>PATCH /memories/{name}</c>), so refusing would be
+    /// the new lie: a caller told "not persisted" about a change the server would happily accept.
+    ///
+    /// <para>The assertion that carries the weight is the re-read, not the return value: it is made
+    /// with a fresh, independent <c>LoadIndex</c> call rather than the in-memory <c>entry</c> local,
+    /// so it can only pass if the mutation genuinely reached the server. A <c>=> true</c> stub
+    /// satisfies <c>updated.Should().BeTrue()</c> and fails this.</para>
     /// </summary>
     [Fact]
-    public async Task TryUpdateEntry_FailsClosed_RatherThanReportSuccessForADiscardedMutation()
+    public async Task TryUpdateEntry_PersistsTheMutation_ThroughThePatchChannel()
     {
         await StoreAsync("tryupdate-probe", "probe body for TryUpdateEntry",
             attributes: new Dictionary<string, string[]> { ["mention"] = ["acme"] });
 
-        // Captured so the assertions below can tell "TryUpdateEntry genuinely found the entry and
-        // ran the mutation, then refused to persist it" apart from a stub that always returns
-        // false without consulting LoadIndex at all — both would satisfy `updated.Should().BeFalse()`
-        // alone.
         bool mutateRan = false;
         bool updated = _remote.TryUpdateEntry("tryupdate-probe", "local", entry =>
         {
@@ -109,26 +156,79 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
             return entry with
             {
                 Attributes = new Dictionary<string, string[]>(entry.Attributes!) { ["person"] = ["acme"] },
+                // Stamped deliberately, mirroring MemoryTools.UpdateMeta, the real caller. The
+                // PATCH body's UpdatedAt is an optimistic-concurrency TOKEN compared against the
+                // stored value, so it must carry what the client READ, not what the mutation wrote
+                // — send the mutated one and every PATCH is a guaranteed 409. A mutation that
+                // leaves UpdatedAt alone cannot tell those two apart.
+                UpdatedAt = DateTimeOffset.UtcNow,
             };
         });
 
-        updated.Should().BeFalse(
-            because: "HttpMemoryStore.Upsert cannot persist a metadata-only mutation remotely, " +
-                     "so reporting true here would be a success report for a write that never " +
-                     "happened — a worse defect than the \"not found\" this task fixed");
         mutateRan.Should().BeTrue(
-            because: "the entry must actually have been found via LoadIndex and handed to the " +
-                     "mutation callback — a constant `=> false` override would also satisfy the " +
-                     "assertion above without exercising either");
+            because: "the entry must actually have been read back and handed to the mutation " +
+                     "callback — a constant override would satisfy the return-value assertion " +
+                     "below without exercising either");
+        updated.Should().BeTrue(
+            because: "the PATCH channel exists now, so a mutation the server accepts must be " +
+                     "reported as persisted — the fail-closed refusal was honest only while there " +
+                     "was nothing to persist through");
 
-        // A fresh, independent LoadIndex call — not the in-memory 'entry' local — so this can
-        // only pass if the (refused) mutation genuinely never reached the server.
         var reloaded = _remote.LoadIndex("local").FirstOrDefault(e => e.Name == "tryupdate-probe");
-        reloaded.Should().NotBeNull(because: "the entry must still exist — TryUpdateEntry must " +
-                                              "not have deleted or corrupted it while refusing");
-        reloaded!.Attributes.Should().NotContainKey("person",
+        reloaded.Should().NotBeNull();
+        reloaded!.Attributes.Should().ContainKey("person",
+            because: "the return value means the mutation was PERSISTED, and the only way to " +
+                     "prove that is to read the entry back off the server");
+        reloaded.Attributes!["person"].Should().BeEquivalentTo(["acme"]);
+        reloaded.Attributes.Should().ContainKey("mention",
+            because: "a PATCH replaces the attribute map with the caller's edited copy — it must " +
+                     "not drop the keys the caller left alone");
+    }
+
+    /// <summary>
+    /// The refusal that survives, and it is a different one: <c>PATCH</c> rejects a body that
+    /// CHANGES <c>Keywords</c> with a <c>400</c>, because keywords are derived from content and
+    /// that endpoint has no content to derive against. The client must report that as "not
+    /// persisted" rather than swallowing it — and must leave the entry untouched, which is the half
+    /// a return-value-only assertion cannot see.
+    /// <para>Without this, nothing on the client side distinguishes "the server accepted it" from
+    /// "the server refused it and we returned true anyway".</para>
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEntry_ReturnsFalse_WhenTheMutationChangesKeywords()
+    {
+        await StoreAsync("keyword-change-probe", "probe body for keyword changes", keywords: ["zebra"]);
+
+        bool updated = _remote.TryUpdateEntry("keyword-change-probe", "local", entry =>
+            entry with { Keywords = [.. entry.Keywords ?? [], "aardvark"] });
+
+        updated.Should().BeFalse(
+            because: "PATCH refuses a keyword change (it has no content to re-derive against), so " +
+                     "the honest answer is 'not persisted' — that change must go through a store " +
+                     "or an append");
+
+        var reloaded = _remote.LoadIndex("local").Single(e => e.Name == "keyword-change-probe");
+        reloaded.Keywords.Should().NotContain("aardvark",
             because: "a refused mutation must leave the remote entry exactly as it was, not " +
                      "partially applied");
+    }
+
+    /// <summary>A mutation that returns <c>null</c> means "nothing to change". It must not reach
+    /// the wire at all: a PATCH here would bump <c>UpdatedAt</c> on an entry nobody edited, and
+    /// would report <c>true</c> for a write that had no content.</summary>
+    [Fact]
+    public async Task TryUpdateEntry_ReturnsFalse_AndWritesNothing_WhenTheMutationDeclines()
+    {
+        await StoreAsync("decline-probe", "probe body for a declined mutation");
+        var before = _remote.LoadIndex("local").Single(e => e.Name == "decline-probe");
+
+        bool updated = _remote.TryUpdateEntry("decline-probe", "local", _ => null);
+
+        updated.Should().BeFalse(because: "the caller declined to change anything");
+        var after = _remote.LoadIndex("local").Single(e => e.Name == "decline-probe");
+        after.UpdatedAt.Should().Be(before.UpdatedAt,
+            because: "a declined mutation must not reach the server — a PATCH would stamp a new " +
+                     "UpdatedAt on an entry nobody edited");
     }
 
     /// <summary>
@@ -226,13 +326,12 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// <c>HttpMemoryStore.TryUpdateEntry</c>'s own lookup used an ordinal
-    /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, so a case-mismatched subject fell out
-    /// at the <c>current is null</c> guard and returned <c>false</c> WITHOUT invoking the mutation
-    /// — collapsing "no such entry" back into "found it, cannot persist", the exact distinction
-    /// this override exists to keep apart (the two sibling tests above pin each side of it). The
-    /// return value is <c>false</c> in both cases by design, so <c>mutateRan</c> is the only thing
-    /// that can tell them apart.
+    /// A case-mismatched subject must still resolve to the one memory. The lookup moved from a
+    /// client-side <c>LoadIndex</c> scan to the server's <c>GET /memories/{name}/entry</c>, so this
+    /// now pins that the SERVER's resolution is case-insensitive too — a guarantee the client-side
+    /// scan used to provide and which a new endpoint could silently have dropped. Falling out as
+    /// "not found" would collapse two conditions the rest of this file exists to keep apart, and
+    /// <c>mutateRan</c> is what tells them apart.
     /// </summary>
     [Fact]
     public async Task TryUpdateEntry_FindsTheEntry_WhenTheSubjectCasingDiffers()
@@ -248,10 +347,10 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
 
         mutateRan.Should().BeTrue(
             because: "the entry exists under a different casing and must be found — falling out at " +
-                     "the null guard would report it absent, which is a different condition");
-        updated.Should().BeFalse(
-            because: "finding the entry changes nothing about this store's inability to persist a " +
-                     "metadata-only mutation — the fail-closed contract is unchanged by this fix");
+                     "the not-found guard would report it absent, which is a different condition");
+        updated.Should().BeTrue(
+            because: "an unedited complete-entry round trip is a legal PATCH, so the persist half " +
+                     "of the case-insensitive path is exercised too, not just the lookup");
     }
 
     /// <summary>
@@ -276,6 +375,121 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
         // Contain, not equality: MemoryOrchestrator merges agent keywords with auto-extracted ones,
         // so the stored set is a superset (measured: [body, keywords, probe, zebra]).
         entry.Keywords!.Should().Contain("zebra");
+    }
+
+    // ── The write surface: raw input in, SERVER-derived entry out ───────────────
+
+    /// <summary>
+    /// The task's thesis, end to end: the client hands the server a raw <see cref="MemoryWrite"/>
+    /// and gets back the entry the SERVER derived — no <c>TextAnalysis</c> call, no assembled
+    /// subset, no second round trip.
+    /// <para>The assertions are chosen to be unsatisfiable by anything the client could have made
+    /// up. <c>TermFrequencies</c> and <c>ChunkEntries</c> are pure derivation output — the request
+    /// carries neither, and <see cref="MemoryWrite"/> has no field through which they could be
+    /// supplied — so their presence proves the entry came from the store's pipeline. The keyword
+    /// set proves the merge happened server-side: the caller sent one word and the entry comes back
+    /// carrying it ALONGSIDE terms extracted from the content, which is something only the
+    /// derivation pass produces.</para>
+    /// </summary>
+    [Fact]
+    public async Task StoreAsync_ReturnsTheEntryTheServerDerived()
+    {
+        var entry = await _remote.StoreAsync(new MemoryWrite(
+            "write-surface-probe", "local",
+            ["widgets and gizmos in the first chunk", "more widgets in the second"],
+            Description: "a curated description",
+            Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] },
+            Keywords: ["zebra"]));
+
+        entry.Name.Should().Be("write-surface-probe");
+        entry.ChunkCount.Should().Be(2,
+            because: "the wire carries the chunk array, so a two-element write is two chunks — it " +
+                     "used to be joined into one on the way out");
+        entry.ContentPreview.Should().Be("a curated description");
+        entry.Attributes.Should().NotBeNull().And.ContainKey("person");
+
+        entry.Keywords.Should().NotBeNull().And.Contain("zebra",
+            because: "the caller's raw keyword survives the server's merge");
+        entry.Keywords!.Should().Contain("widgets",
+            because: "and the merge itself happened server-side — a term extracted from the CONTENT " +
+                     "can only have come from the store's derivation pass, which is the whole claim");
+
+        entry.TermFrequencies.Should().NotBeNull(
+            because: "MemoryWrite has no field through which term frequencies could be supplied, so " +
+                     "a populated map here is proof the entry was derived by the store and carried " +
+                     "back whole");
+        entry.ChunkEntries.Should().NotBeNull().And.HaveCount(2,
+            because: "per-chunk derivation output, likewise unsuppliable by the caller");
+
+        // Read back independently: the returned entry must describe a memory that genuinely exists,
+        // not merely a well-formed response.
+        _remote.LoadIndex("local").Should().Contain(e => e.Name == "write-surface-probe");
+    }
+
+    /// <summary>
+    /// <c>AppendRequest</c> used to be <c>record AppendRequest(string Content)</c> — no description,
+    /// no attributes, no keywords — so an append made over the wire silently dropped all three
+    /// while the identical local call kept them (D-18). This pins the widened shape end to end: the
+    /// values must reach the server's derivation and come back on the entry.
+    /// </summary>
+    [Fact]
+    public async Task AppendAsync_CarriesTheDescriptionAttributesAndKeywordsToTheServer()
+    {
+        await _remote.StoreAsync(new MemoryWrite(
+            "append-surface-probe", "local", ["the original body"]));
+
+        var entry = await _remote.AppendAsync(new MemoryWrite(
+            "append-surface-probe", "local", ["the appended body"],
+            Description: "a description supplied at append time",
+            Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"] },
+            Keywords: ["zebra"]));
+
+        entry.ChunkCount.Should().Be(2, because: "the append added a chunk rather than replacing");
+        entry.UpdatedAt.Should().NotBeNull(
+            because: "an append to an existing memory sets it — null would mean this silently " +
+                     "became a create");
+        entry.ContentPreview.Should().Be("a description supplied at append time");
+        entry.Attributes.Should().NotBeNull().And.ContainKey("person");
+        entry.Keywords.Should().NotBeNull().And.Contain("zebra");
+    }
+
+    /// <summary>The contract <see cref="IMemoryStore.AppendAsync"/> states and
+    /// <c>FileMemoryStore</c> enforces: exactly one chunk, refused rather than merged, because the
+    /// derivation pipeline reads only the last element and everything between the first and the
+    /// last would vanish. The wire's scalar <c>Content</c> field cannot express a second chunk at
+    /// all, but callers program against the interface, so the remote implementation has to refuse
+    /// the same input the local one does — otherwise the two stores disagree about what is legal.
+    /// </summary>
+    [Fact]
+    public async Task AppendAsync_RefusesMoreThanOneChunk()
+    {
+        var refuse = async () => await _remote.AppendAsync(
+            new MemoryWrite("append-refusal-probe", "local", ["one", "two"]));
+
+        await refuse.Should().ThrowAsync<ArgumentException>();
+    }
+
+    /// <summary>
+    /// The three fields the listing wire carries and the client used to discard, asserted against a
+    /// REAL server rather than a stub: this is what proves the server actually populates them, which
+    /// <c>Scrinia.Tests.HttpMemoryStoreDerivedFieldsTests</c> can only assume.
+    /// <para><c>FileHashes</c> is deliberately absent from these assertions — provoking it needs a
+    /// real file under a real workspace root for the server's hasher to resolve, which this fixture
+    /// has no business planting. The client's side of that field is pinned in the stub-driven test
+    /// named above.</para>
+    /// </summary>
+    [Fact]
+    public async Task LoadIndex_CarriesTermFrequenciesAndChunkEntries()
+    {
+        await StoreChunksAsync("derived-probe", ["widgets in the first chunk", "gizmos in the second"]);
+
+        var entry = _remote.LoadIndex("local").Single(e => e.Name == "derived-probe");
+
+        entry.TermFrequencies.Should().NotBeNull(
+            because: "the server holds this entry's term frequencies and the listing endpoint " +
+                     "projects them — a null here is the client throwing away what it was sent");
+        entry.ChunkEntries.Should().NotBeNull().And.HaveCount(2,
+            because: "two chunks were stored, and their per-chunk metadata crosses the wire too");
     }
 
     /// <summary>

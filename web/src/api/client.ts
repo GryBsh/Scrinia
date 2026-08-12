@@ -5,6 +5,7 @@ import type {
   SearchResponse,
   StoreRequest,
   StoreResponse,
+  AppendRequest,
   AppendResponse,
   HealthResponse,
   CreateKeyRequest,
@@ -195,9 +196,13 @@ export function storeMemory(store: string, req: StoreRequest) {
 }
 
 export function appendMemory(store: string, name: string, content: string) {
+  // Typed as the DTO rather than an inline object literal: the request grew optional
+  // description/attributes/keywords fields, and an untyped body would keep compiling if the
+  // required field were ever renamed out from under it.
+  const body: AppendRequest = { content };
   return apiFetch<AppendResponse>(
     `${API_BASE}/stores/${store}/memories/${encodeURIComponent(name)}/append`,
-    { method: 'POST', body: JSON.stringify({ content }) }
+    { method: 'POST', body: JSON.stringify(body) }
   );
 }
 

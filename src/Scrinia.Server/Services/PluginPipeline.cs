@@ -59,10 +59,10 @@ public sealed class PluginPipeline
             var afterCtx = new AfterStoreContext
             {
                 Store = store,
-                Name = result.Name,
-                QualifiedName = BuildRoutingQualifiedName(store, req.Name, result.QualifiedName),
-                ChunkCount = result.ChunkCount,
-                OriginalBytes = result.OriginalBytes,
+                Name = result.Entry.Name,
+                QualifiedName = BuildRoutingQualifiedName(store, req.Name, result.Entry.QualifiedName),
+                ChunkCount = result.Entry.ChunkCount,
+                OriginalBytes = result.Entry.OriginalBytes,
                 Content = req.Content,
             };
 
@@ -95,15 +95,21 @@ public sealed class PluginPipeline
     }
 
     public async Task<AppendResponse> AppendAsync(
-        IMemoryStore store, string name, string content, CancellationToken ct = default)
+        IMemoryStore store, string name, AppendRequest req, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(req);
+
         if (_hooks.Length > 0)
         {
+            // BeforeAppendContext is the plugin-facing contract and is out of this change's scope,
+            // so it keeps being fed exactly what it always got — the appended chunk's text. The
+            // description/attributes/keywords the request now also carries travel to the store,
+            // which derives from them.
             var ctx = new BeforeAppendContext
             {
                 Store = store,
                 Name = name,
-                Content = content,
+                Content = req.Content,
             };
 
             foreach (var hook in _hooks)
@@ -114,17 +120,17 @@ public sealed class PluginPipeline
             }
         }
 
-        var result = await MemoryOrchestrator.AppendAsync(store, name, content, ct);
+        var result = await MemoryOrchestrator.AppendAsync(store, name, req, ct);
 
         if (_hooks.Length > 0)
         {
             var afterCtx = new AfterAppendContext
             {
                 Store = store,
-                Name = BuildRoutingQualifiedName(store, name, result.Name),
-                ChunkCount = result.ChunkCount,
-                OriginalBytes = result.OriginalBytes,
-                Content = content,
+                Name = BuildRoutingQualifiedName(store, name, result.Entry.QualifiedName),
+                ChunkCount = result.Entry.ChunkCount,
+                OriginalBytes = result.Entry.OriginalBytes,
+                Content = req.Content,
             };
 
             foreach (var hook in _hooks)

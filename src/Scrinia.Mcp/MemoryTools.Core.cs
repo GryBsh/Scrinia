@@ -632,14 +632,16 @@ public sealed partial class ScriniaMcpTools
         if (changes.Count == 0)
             return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen."));
 
-        // Found, had something to change, and the store still could not persist it — remotely,
-        // where a metadata-only mutation has no channel (Upsert is a no-op and there is no
-        // attributes-only PATCH endpoint yet). Reporting success here is the defect this branch
-        // exists to close, so say so plainly instead.
+        // Found, had something to change, and the store still would not persist it. Remotely that
+        // now means the server REFUSED the metadata write rather than that no channel exists —
+        // most often because the change touches keywords, which are derived from content the
+        // metadata endpoint does not have. Reporting success here is the defect this branch exists
+        // to close, so say so plainly instead.
         if (!persisted)
             return Task.FromResult(ResponseBuilder.Error(
-                $"Metadata for '{qualifiedName}' was not updated: the active store cannot persist a " +
-                "metadata-only change (a remote store has no attributes-only update endpoint yet).",
+                $"Metadata for '{qualifiedName}' was not updated: the active store refused a " +
+                "metadata-only change. Changing keywords is the usual cause — they are derived " +
+                "from the memory's content, so they can only change through a write that carries it.",
                 ErrorCodes.NotSupported,
                 "remember({ path: '...', content: [...] }) — a full write does carry attributes, keywords and description to a remote store"));
 

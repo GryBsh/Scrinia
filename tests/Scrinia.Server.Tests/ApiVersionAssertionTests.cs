@@ -15,13 +15,17 @@ namespace Scrinia.Server.Tests;
 /// old/unversioned server represents (it would ignore filter params like excludeTopics/pathPrefix
 /// instead of rejecting them, so the client would present an unfiltered result set as filtered).
 ///
-/// <para>Each case drives all three of <c>HttpMemoryStore</c>'s guarded send call sites — <see
+/// <para>Each case drives every guarded send call site <c>HttpMemoryStore</c> has — <see
 /// cref="HttpMemoryStore.LoadIndex"/> (the one synchronous path, via <c>HttpClient.Send</c>),
-/// <see cref="HttpMemoryStore.WriteArtifactAsync"/>, and <see cref="HttpMemoryStore.ResolveArtifactAsync"/>
-/// (two independent asynchronous paths, each with its own <c>RetryPolicy.ExecuteAsync</c> call and
-/// its own <c>Validate</c> call site — neither is a helper the other routes through) — in one
-/// test, so a check missing from any one of the three cannot pass this suite while leaving that
-/// site unguarded.</para>
+/// <see cref="HttpMemoryStore.ResolveArtifactAsync"/> (its own <c>RetryPolicy.ExecuteAsync</c> and
+/// its own <c>Validate</c> call, not routed through anything else), and the write surface —
+/// <see cref="HttpMemoryStore.WriteArtifactAsync"/>, <see cref="HttpMemoryStore.StoreAsync"/> and
+/// <see cref="HttpMemoryStore.AppendAsync"/>, which share the <c>PostCheckedAsync</c> helper —
+/// in one test, so a check missing from any one of them cannot pass this suite while leaving that
+/// site unguarded. The three write members are asserted individually rather than trusting the
+/// shared helper: a future implementation that stops sharing it must still satisfy this.
+/// <see cref="HttpMemoryStore.TryUpdateEntry"/> is deliberately absent — both of its sends go
+/// through <c>SendSync</c>, the same call site <c>LoadIndex</c> exercises here.</para>
 ///
 /// <para>Uses an in-process stub handler rather than a real Kestrel server (contrast
 /// <c>RemoteLoadIndexTests</c>/<c>StoreConformanceFixture</c>): the real server always stamps a
@@ -30,6 +34,15 @@ namespace Scrinia.Server.Tests;
 /// </summary>
 public sealed class ApiVersionAssertionTests
 {
+    /// <summary>What a write endpoint answers with: the complete entry plus a message. Shared by
+    /// the store and append responses, which are the same shape.</summary>
+    private const string WriteResponseJson = """
+        {"entry":{"name":"note","qualifiedName":"note","scope":"local","chunkCount":1,
+        "originalBytes":11,"createdAt":"2026-01-01T00:00:00+00:00","updatedAt":null,
+        "description":"a note","attributes":null,"keywords":null,"termFrequencies":null,
+        "chunkEntries":null,"fileHashes":null},"message":"Remembered: note"}
+        """;
+
     /// <summary>Answers every request with a fixed status and, when <paramref name="headerValue"/>
     /// is non-null, the given API version header value. A null <paramref name="headerValue"/>
     /// simulates a server that never learned about the version contract at all.</summary>
@@ -48,16 +61,23 @@ public sealed class ApiVersionAssertionTests
 
         private HttpResponseMessage Respond(HttpRequestMessage request)
         {
-            // GET/POST .../memories (LoadIndex, WriteArtifactAsync) need a body that deserializes
-            // as an empty ListApiResponse (WriteArtifactAsync only reads the status, but an empty
-            // list body is harmless there too). GET .../memories/{name} (ResolveArtifactAsync's
-            // Show lookup) needs a ShowApiResponse-shaped body, or the matching-version case would
-            // throw from JSON/NMP2 decoding instead of exercising the version guard at all.
-            bool isMemoriesCollection =
-                request.RequestUri!.AbsolutePath.EndsWith("/memories", StringComparison.Ordinal);
-            string body = isMemoriesCollection
-                ? """{"memories":[],"total":0}"""
-                : """{"name":"note","content":["hello world"],"originalBytes":11}""";
+            // Each path needs a body its caller can actually parse, or the matching-version case
+            // would throw from JSON/NMP2 decoding instead of exercising the version guard at all:
+            //   GET  .../memories        → an empty ListApiResponse (LoadIndex)
+            //   POST .../memories        → a StoreApiResponse carrying a complete entry
+            //                              (WriteArtifactAsync reads only the status; StoreAsync
+            //                              refuses a 2xx that carries no entry)
+            //   POST .../memories/x/append → an AppendApiResponse, same shape
+            //   GET  .../memories/{name} → a ShowApiResponse (ResolveArtifactAsync's Show lookup)
+            string path = request.RequestUri!.AbsolutePath;
+            bool isMemoriesCollection = path.EndsWith("/memories", StringComparison.Ordinal);
+            string body =
+                request.Method == HttpMethod.Post
+                    && (isMemoriesCollection || path.EndsWith("/append", StringComparison.Ordinal))
+                    ? WriteResponseJson
+                : isMemoriesCollection
+                    ? """{"memories":[],"total":0}"""
+                    : """{"name":"note","content":["hello world"],"originalBytes":11}""";
 
             var response = new HttpResponseMessage(status)
             {
@@ -79,6 +99,10 @@ public sealed class ApiVersionAssertionTests
 
     private static string Artifact() => Nmp2ChunkedEncoder.Encode("hello world");
 
+    /// <summary>One chunk, so the same value serves both StoreAsync and AppendAsync (an append
+    /// refuses any other count).</summary>
+    private static Scrinia.Core.Models.MemoryWrite Write() => new("note", "local", ["hello world"]);
+
     [Fact]
     public async Task UnrecognisedVersion_SyncAndAsyncPaths_Throw()
     {
@@ -99,6 +123,14 @@ public sealed class ApiVersionAssertionTests
         var asyncResolveAct = async () => await store.ResolveArtifactAsync("note");
         (await asyncResolveAct.Should().ThrowAsync<RemoteApiVersionMismatchException>())
             .Which.Message.Should().Contain("999");
+
+        var storeAct = async () => await store.StoreAsync(Write());
+        (await storeAct.Should().ThrowAsync<RemoteApiVersionMismatchException>())
+            .Which.Message.Should().Contain("999");
+
+        var appendAct = async () => await store.AppendAsync(Write());
+        (await appendAct.Should().ThrowAsync<RemoteApiVersionMismatchException>())
+            .Which.Message.Should().Contain("999");
     }
 
     [Fact]
@@ -116,6 +148,12 @@ public sealed class ApiVersionAssertionTests
 
         var asyncResolveAct = async () => await store.ResolveArtifactAsync("note");
         await asyncResolveAct.Should().ThrowAsync<RemoteApiVersionMismatchException>();
+
+        var storeAct = async () => await store.StoreAsync(Write());
+        await storeAct.Should().ThrowAsync<RemoteApiVersionMismatchException>();
+
+        var appendAct = async () => await store.AppendAsync(Write());
+        await appendAct.Should().ThrowAsync<RemoteApiVersionMismatchException>();
     }
 
     [Fact]
@@ -132,5 +170,11 @@ public sealed class ApiVersionAssertionTests
 
         var asyncResolveAct = async () => await store.ResolveArtifactAsync("note");
         await asyncResolveAct.Should().NotThrowAsync();
+
+        var storeAct = async () => await store.StoreAsync(Write());
+        await storeAct.Should().NotThrowAsync();
+
+        var appendAct = async () => await store.AppendAsync(Write());
+        await appendAct.Should().NotThrowAsync();
     }
 }
