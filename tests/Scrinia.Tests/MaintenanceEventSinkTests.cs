@@ -324,4 +324,113 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
             "an entry with an inbound ref FIELD (no legacy keyword) should not be flagged as orphan");
     }
+
+    // ── The legacy keyword carrier ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Entries written before the marker moved to an attribute carry the bare <c>orphan</c>
+    /// KEYWORD. Clearing it was removed when the marker moved, on the reasoning that it was inert
+    /// stale noise. It is not inert: <c>WeightedAttributeScorer.ScoreEntryTerm</c> matches attribute
+    /// VALUES and never keys, so a bare "orphan" query scores the keyword form (40.00 measured)
+    /// ABOVE a genuine attribute-era orphan (27.27) — an entry with demonstrable inbound refs
+    /// outranking the real orphans. The clearing is restored: marking still keys off the attribute
+    /// alone, so a legacy orphan migrates onto the new carrier; clearing keys off either.
+    /// </summary>
+    [Fact]
+    public async Task LegacyOrphanKeyword_IsCleared_WhenTheEntryGainsAnInboundRef()
+    {
+        var store = MemoryStoreContext.Current!;
+        await _tools.Remember(["Content of the once-orphaned entry."], "/test/legacyorphan");
+        await _tools.Remember(["References [[/test/legacyorphan]] here."], "/test/legacyreferrer",
+            keywords: ["ref:/test/legacyorphan"]);
+
+        // Plant the pre-change shape: the marker as a bare keyword, with no orphan attribute.
+        var (scope, subject) = store.ParseQualifiedName("/test/legacyorphan");
+        store.TryUpdateEntry(subject, scope, e => e with
+        {
+            Keywords = [.. e.Keywords ?? [], "orphan"],
+        }).Should().BeTrue();
+
+        await _sink.OnStoredAsync(
+            "/test/legacyorphan", ["Content of the once-orphaned entry."], store, CancellationToken.None);
+
+        var entry = store.LoadIndex(scope).First(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        entry.Keywords.Should().NotContain("orphan",
+            "the entry has an inbound ref, so the stale legacy marker must go — leaving it lets a " +
+            "demonstrably non-orphan entry outrank the real orphans on an \"orphan\" query");
+        (entry.Attributes?.ContainsKey("orphan") ?? false).Should().BeFalse(
+            "and it must not gain the attribute form of a marker it no longer qualifies for");
+    }
+
+    /// <summary>The other half, so the clearing above cannot be implemented as "always strip the
+    /// keyword": a legacy entry that is STILL an orphan keeps its marker and gains the attribute,
+    /// migrating onto the new carrier rather than being silently unmarked.</summary>
+    [Fact]
+    public async Task LegacyOrphanKeyword_MigratesToTheAttribute_WhenTheEntryIsStillAnOrphan()
+    {
+        var store = MemoryStoreContext.Current!;
+        await _tools.Remember(["Isolated content, nothing points at it."], "/test/legacystillorphan");
+
+        var (scope, subject) = store.ParseQualifiedName("/test/legacystillorphan");
+        store.TryUpdateEntry(subject, scope, e => e with
+        {
+            Keywords = [.. e.Keywords ?? [], "orphan"],
+        }).Should().BeTrue();
+
+        await _sink.OnStoredAsync(
+            "/test/legacystillorphan", ["Isolated content, nothing points at it."], store, CancellationToken.None);
+
+        var entry = store.LoadIndex(scope).First(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        entry.Attributes.Should().NotBeNull().And.ContainKey("orphan",
+            "marking keys off the ATTRIBUTE, so a legacy entry that is genuinely still an orphan " +
+            "migrates onto the carrier both backends can write");
+    }
+
+    /// <summary>
+    /// <c>KnownAttributes.Merge</c> caps at <see cref="KnownAttributes.MaxAttributes"/> and
+    /// truncates past it with no signal, so an entry already at the cap lost the orphan marker
+    /// while <c>TryUpdateEntry</c> still returned <c>true</c> — the sink's own "did it persist?"
+    /// check read success. It declines the write and says so instead.
+    /// </summary>
+    [Fact]
+    public async Task OrphanMarker_AtTheAttributeKeyCap_IsReportedRatherThanSilentlyDropped()
+    {
+        var store = MemoryStoreContext.Current!;
+        await _tools.Remember(["Isolated content at the attribute cap."], "/test/cappedorphan");
+
+        var (scope, subject) = store.ParseQualifiedName("/test/cappedorphan");
+        var full = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < KnownAttributes.MaxAttributes; i++) full[$"k{i}"] = ["v"];
+        store.TryUpdateEntry(subject, scope, e => e with { Attributes = full }).Should().BeTrue();
+
+        var captured = new StringWriter();
+        var previous = Console.Error;
+        try
+        {
+            Console.SetError(captured);
+            await _sink.OnStoredAsync(
+                "/test/cappedorphan", ["Isolated content at the attribute cap."], store, CancellationToken.None);
+        }
+        finally
+        {
+            Console.SetError(previous);
+        }
+
+        var entry = store.LoadIndex(scope).First(e =>
+            e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!.ContainsKey("orphan").Should().BeFalse(
+            "the cap genuinely prevents it — this test proves nothing if the marker fits");
+
+        captured.ToString().Should().Contain("orphan",
+            "the marker could not be applied, and the whole point of checking the result is that " +
+            "such a case is reported rather than counted as a success");
+        captured.ToString().Should().Contain(KnownAttributes.MaxAttributes.ToString(
+            System.Globalization.CultureInfo.InvariantCulture),
+            "and the report must name the cap, or it sends the reader looking for a store fault");
+    }
 }

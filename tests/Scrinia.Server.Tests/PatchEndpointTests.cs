@@ -102,6 +102,51 @@ public sealed class PatchEndpointTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The 200 body must describe the entry as STORED, derived fields included. It did not: the
+    /// handler captured the entry inside the mutate callback, one step before
+    /// <c>TryUpdateEntry</c> re-derives <c>TermFrequencies</c> from the attributes it just
+    /// accepted, so the response reported the new attribute's term as absent while an immediate
+    /// re-GET reported it present. <c>HttpMemoryStore</c> ignores this body, so nothing was
+    /// mis-persisted — but <c>web/</c> and any other REST client reads it, and a derived field that
+    /// can disagree with its payload is the exact defect the complete-entry wire shape exists to
+    /// remove.
+    /// <para>Asserted as equality against the re-GET rather than as "contains the term": the point
+    /// is that the two agree, not that either one is individually right, and a response rebuilt
+    /// from anything other than what was stored fails on some field or other.</para>
+    /// </summary>
+    [Fact]
+    public async Task Patch_ResponseBody_MatchesWhatTheStoreActuallyPersisted()
+    {
+        var entry = await StoreAndGetEntryAsync("patch-response-freshness-probe", ["response freshness body"]);
+
+        var patched = entry with
+        {
+            Attributes = new Dictionary<string, string[]>(entry.Attributes ?? [])
+            {
+                ["person"] = ["zanzibar"],
+            },
+        };
+
+        var patchResp = await _client.PatchAsJsonAsync(
+            $"{_base}/memories/patch-response-freshness-probe", patched);
+        patchResp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await patchResp.Content.ReadFromJsonAsync<MemoryEntry>();
+
+        var reGet = await _client.GetAsync($"{_base}/memories/patch-response-freshness-probe/entry");
+        var reread = await reGet.Content.ReadFromJsonAsync<MemoryEntry>();
+
+        body!.TermFrequencies.Should().ContainKey("zanzibar",
+            because: "the store re-derived the new attribute's term as part of the very write this " +
+                     "response is reporting — omitting it makes the body describe an entry that " +
+                     "never existed");
+        body.TermFrequencies.Should().BeEquivalentTo(reread!.TermFrequencies,
+            because: "the write response and an immediate read of the same entry must not disagree " +
+                     "about a derived field");
+        body.Attributes.Should().BeEquivalentTo(reread.Attributes);
+        body.UpdatedAt.Should().Be(reread.UpdatedAt);
+    }
+
+    /// <summary>
     /// THE load-bearing guard, rewritten per I-5. The original version of this test round-tripped
     /// the GET body unedited for the derived fields, so it could only catch the server NULLING them
     /// — mutation-proven blind to the server HONOURING caller-forged values (adding

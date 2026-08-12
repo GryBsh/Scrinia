@@ -368,7 +368,7 @@ public static class MemoryEndpoints
         bool found = false;
         bool conflict = false;
         bool keywordsRejected = false;
-        ArtifactEntry? persisted = null;
+        bool written = false;
 
         bool ok = ctx.Store!.TryUpdateEntry(subject, scope, current =>
         {
@@ -389,15 +389,22 @@ public static class MemoryEndpoints
                 return null;
             }
 
-            var next = current with
+            // NOT captured for the response. TryUpdateEntry re-derives TermFrequencies from these
+            // attributes AFTER this callback returns (MemoryDerivation.ForMetadataUpdate), so this
+            // value is the entry one step before what actually gets stored. Answering with it put a
+            // stale derived field in a 200 body — measured: the response said the new attribute's
+            // term was absent while an immediate re-GET said it was present. That is exactly the
+            // "a derivable field that can disagree with its payload" defect the complete-entry wire
+            // shape exists to remove, so the response is read back from the store below instead.
+            // `written` only records THAT a write happened, for the 500 guard.
+            written = true;
+            return current with
             {
                 ContentPreview = req.Description,
                 Attributes = normalizedAttributes,
                 Keywords = current.Keywords, // never taken from the wire — see I-3 above
                 UpdatedAt = DateTimeOffset.UtcNow,
             };
-            persisted = next;
-            return next;
         });
 
         if (!found)
@@ -413,8 +420,21 @@ public static class MemoryEndpoints
                 "keywords may not be changed by PATCH — it requires content to re-derive against, " +
                 "which this endpoint does not have. Re-store or append to change keywords."));
 
-        if (!ok || persisted is null)
+        if (!ok || !written)
             return Results.Json(new ErrorResponse("Update failed."), statusCode: 500);
+
+        // Read back rather than echo what the mutation built: TryUpdateEntry re-derives
+        // TermFrequencies after the callback returns, so the only way to answer with the entry as
+        // STORED — every derived field included, none of them one step stale — is to ask the store.
+        // In-process and served from the index cache TryUpdateEntry just refreshed, so this is not
+        // a second round trip in any deployment that reaches this handler.
+        var persisted = FindEntry(ctx.Store!, scope, subject);
+        if (persisted is null)
+            // The write succeeded and the entry is already gone, i.e. a concurrent delete landed
+            // between the two. Reporting 200 with the pre-write copy would describe a memory that
+            // no longer exists; 404 is the honest answer about the state the caller can observe.
+            return Results.NotFound(new ErrorResponse(
+                $"Memory '{decoded}' was updated but no longer exists — it was deleted concurrently."));
 
         return Results.Ok(MemoryEntry.From(ctx.Store!, persisted, scope));
     }

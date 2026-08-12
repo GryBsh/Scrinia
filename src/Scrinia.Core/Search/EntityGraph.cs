@@ -111,6 +111,17 @@ public sealed class EntityGraph
     /// <para><see cref="Build"/> gives each of these (type, value) tuples its own <c>type:value</c>
     /// node, so arbitrary keys never cross-link on a shared value (<c>status:done</c> and
     /// <c>outcome:done</c> are distinct nodes; so are <c>tag:paris</c> and <c>place:paris</c>).</para>
+    ///
+    /// <para><b>Every key except a state marker.</b> "Uniformly, not just the blessed entity keys"
+    /// is right for keys whose values NAME something — two memories sharing <c>status:done</c> are
+    /// genuinely related by it. A boolean marker is the case where it breaks down: every entry
+    /// carrying <see cref="KnownAttributes.OrphanKey"/> shares the one value, so it forms a single
+    /// hub node linking every unrelated entry that has it, and the hub grows with the corpus.
+    /// <see cref="KnownAttributes.StateMarkerKeys"/> is the one place that distinction is drawn —
+    /// see it for the measurements. This function is the choke point the graph,
+    /// <c>EntityQuerySeeder</c>'s node keys and <c>EntityFactDerivation</c> all read through, so
+    /// excluding here covers all three. It does not touch BM25: a state marker still seeds the
+    /// term-frequency index and still answers an <c>attributeFilter</c>.</para>
     /// </summary>
     public static IEnumerable<(string Type, string Value)> ParseEntityAttributes(
         IReadOnlyDictionary<string, string[]>? attributes)
@@ -118,6 +129,7 @@ public sealed class EntityGraph
         if (attributes is null) yield break;
         foreach (var kv in attributes)
         {
+            if (KnownAttributes.IsStateMarker(kv.Key)) continue;
             string type = kv.Key.ToLowerInvariant();
             foreach (string raw in kv.Value)
             {

@@ -44,6 +44,41 @@ public static class KnownAttributes
 
     public const string ReviewKey = "review";
 
+    /// <summary>The attribute key carrying the "no inbound references" marker
+    /// (<c>MaintenanceEventSink</c>). Lives here, with the other named keys, because this is the
+    /// schema point — the sink writes it but does not own what it means.</summary>
+    public const string OrphanKey = "orphan";
+
+    /// <summary>
+    /// Attribute keys whose value is machine-set STATE, not the name of a thing.
+    ///
+    /// <para>The distinction is not cosmetic and this set is the one place it is expressed.
+    /// <see cref="EntityGraph.ParseEntityAttributes"/> deliberately yields every attribute key, so
+    /// that arbitrary keys (co-<c>file:</c>, co-<c>status:</c>) can form graph associations rather
+    /// than only the five blessed <see cref="EntityKeys"/>. That is right for keys whose values
+    /// NAME something — two memories sharing <c>status:done</c> really are related by it. It is
+    /// wrong for a boolean marker: every orphan in a corpus shares the single value <c>true</c>, so
+    /// <c>orphan:true</c> becomes one hub node linking every unrelated orphan to every other, and
+    /// the hub grows as the corpus ages. Measured before this set existed: five semantically
+    /// unrelated orphans each collected 12.14 entity-graph points on a query naming none of them,
+    /// and because <c>EntityQuerySeeder</c> seeds on a node's value, the query "is that true" seeded
+    /// the hub and scored every orphan 31.52–50.00 — while the query "orphan" scored nothing,
+    /// because the seeder never looks at the key. Unreachable by its own name, reachable by a
+    /// generic English word.</para>
+    ///
+    /// <para>Excluding them at <see cref="EntityGraph.ParseEntityAttributes"/> covers the graph, the
+    /// PPR seeding built from its node keys, and <c>EntityFactDerivation</c> — all three read
+    /// through that one function. It does NOT affect BM25: attribute keys and values still seed the
+    /// term-frequency index, so a state marker stays searchable and stays available to
+    /// <c>attributeFilter</c>. It is only barred from being treated as an ENTITY.</para>
+    /// </summary>
+    public static readonly IReadOnlySet<string> StateMarkerKeys =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { OrphanKey };
+
+    /// <summary>True when <paramref name="key"/> carries machine-set state rather than the name of
+    /// a thing — see <see cref="StateMarkerKeys"/>.</summary>
+    public static bool IsStateMarker(string key) => StateMarkerKeys.Contains(key);
+
     /// <summary>The attribute key legacy free-form tags migrate to (see AttributeMigration.TagKey).</summary>
     public const string TagKey = "tag";
 

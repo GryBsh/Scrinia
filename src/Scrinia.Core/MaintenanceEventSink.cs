@@ -22,16 +22,27 @@ namespace Scrinia.Core;
 /// identically — and it gains an <c>attributeFilter</c> the magic keyword never had. It stays
 /// searchable by the word "orphan" because attribute keys and values seed the term-frequency index
 /// (D-08), which a metadata update now re-derives (<see cref="MemoryDerivation.ForMetadataUpdate"/>).</para>
-/// <para>Entries written before this carry the legacy <c>orphan</c> KEYWORD. It is not read and not
-/// removed — removing it needs a keyword write, which is exactly what neither backend should be
-/// doing here. It decays on the entry's next re-store, and until then it is stale search noise on
-/// BOTH backends equally: a pre-existing data artifact, not a local/remote divergence.</para>
+/// <para>Entries written before this carry the legacy <c>orphan</c> KEYWORD, and it is dual-read for
+/// CLEARING but not for marking. Marking keys off the attribute alone, so a legacy orphan migrates
+/// onto the new carrier; clearing keys off either, so a stale keyword is removed once the entry
+/// gains an inbound reference. An earlier version of this change left the keyword entirely alone as
+/// "inert stale noise" — it is not inert: a bare <c>orphan</c> query scores the keyword form higher
+/// than a genuine attribute-era orphan (<c>WeightedAttributeScorer.ScoreEntryTerm</c> matches
+/// attribute VALUES, never keys), so an entry with demonstrable inbound refs outranked the real
+/// orphans. The clearing branch is the only place this class writes <c>Keywords</c>, and only for a
+/// legacy entry; a remote store refuses it, which is reported rather than swallowed.</para>
+///
+/// <para>The marker is a <see cref="KnownAttributes.StateMarkerKeys">state marker</see>, so it is
+/// excluded from the entity graph: every entry sharing one boolean value would otherwise form a
+/// hub node linking every unrelated orphan to every other. See that set for the measurements.</para>
 /// </summary>
 public sealed class MaintenanceEventSink : IMemoryEventSink
 {
     /// <summary>Attribute key carrying the orphan marker. Scalar (not in
-    /// <c>KnownAttributes</c>'s multi-valued set), so marking replaces rather than accumulates.</summary>
-    internal const string OrphanKey = "orphan";
+    /// <c>KnownAttributes</c>'s multi-valued set), so marking replaces rather than accumulates.
+    /// Defined at the schema point, not here: this sink writes the marker but does not own what the
+    /// key means, and <see cref="KnownAttributes.StateMarkerKeys"/> has to name it too.</summary>
+    private const string OrphanKey = KnownAttributes.OrphanKey;
 
     /// <summary>The marker's only value. Presence of the key is what makes an entry an orphan; the
     /// value exists so the attribute has something to match in an <c>attributeFilter</c>.</summary>
@@ -125,27 +136,65 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
                     && refs.Any(v => v.Equals(sourceQualified, StringComparison.OrdinalIgnoreCase))));
 
             bool orphanWriteAttempted = false;
+            bool markerDroppedByTheKeyCap = false;
             bool orphanWritePersisted = store.TryUpdateEntry(sourceSubject, sourceScope, sourceEntry =>
             {
-                bool isOrphan = sourceEntry.Attributes is not null
+                bool markedByAttribute = sourceEntry.Attributes is not null
                     && sourceEntry.Attributes.ContainsKey(OrphanKey);
+                // Read-only dual-read of the legacy carrier. Marking below keys off the ATTRIBUTE
+                // alone so a legacy orphan migrates onto it; clearing keys off either, so a stale
+                // legacy keyword is removed rather than left to outrank the truth.
+                bool markedByLegacyKeyword = sourceEntry.Keywords?
+                    .Any(k => k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase)) == true;
 
-                if (!hasInboundRefs && !isOrphan)
+                if (!hasInboundRefs && !markedByAttribute)
                 {
                     orphanWriteAttempted = true;
-                    return sourceEntry with
+                    var merged = KnownAttributes.Merge(
+                        sourceEntry.Attributes, new() { [OrphanKey] = [OrphanValue] });
+
+                    // KnownAttributes.Merge caps at MaxAttributes and truncates past it with NO
+                    // signal, so an entry already at the cap loses the marker while TryUpdateEntry
+                    // still reports success. Detect it and decline the write: persisting an entry
+                    // whose marker was silently dropped buys nothing and reads as a success.
+                    if (merged is null || !merged.ContainsKey(OrphanKey))
                     {
-                        Attributes = KnownAttributes.Merge(
-                            sourceEntry.Attributes, new() { [OrphanKey] = [OrphanValue] }),
-                    };
+                        markerDroppedByTheKeyCap = true;
+                        return null;
+                    }
+                    return sourceEntry with { Attributes = merged };
                 }
-                if (hasInboundRefs && isOrphan)
+
+                if (hasInboundRefs && (markedByAttribute || markedByLegacyKeyword))
                 {
                     orphanWriteAttempted = true;
-                    var cleared = new Dictionary<string, string[]>(
-                        sourceEntry.Attributes!, StringComparer.OrdinalIgnoreCase);
-                    cleared.Remove(OrphanKey);
-                    return sourceEntry with { Attributes = cleared.Count > 0 ? cleared : null };
+                    var next = sourceEntry;
+
+                    if (markedByAttribute)
+                    {
+                        var cleared = new Dictionary<string, string[]>(
+                            sourceEntry.Attributes!, StringComparer.OrdinalIgnoreCase);
+                        cleared.Remove(OrphanKey);
+                        next = next with { Attributes = cleared.Count > 0 ? cleared : null };
+                    }
+
+                    // The legacy carrier is cleared too — restoring behaviour the move to an
+                    // attribute dropped. Leaving it is not inert: a stale "orphan" keyword scores
+                    // HIGHER on a bare "orphan" query than a genuine attribute-era orphan does
+                    // (WeightedAttributeScorer.ScoreEntryTerm matches attribute values, never keys),
+                    // so an entry that demonstrably has inbound refs outranks the real orphans.
+                    // This is the ONLY branch that writes Keywords, and only for a legacy entry —
+                    // a remote store's PATCH refuses a keyword change, so this is refused there and
+                    // reported below rather than failing silently.
+                    if (markedByLegacyKeyword)
+                        next = next with
+                        {
+                            Keywords = sourceEntry.Keywords!
+                                .Where(k => !k.Equals(OrphanKey, StringComparison.OrdinalIgnoreCase))
+                                .ToArray(),
+                        };
+
+                    return next;
                 }
                 return null; // nothing to change
             });
@@ -154,10 +203,15 @@ public sealed class MaintenanceEventSink : IMemoryEventSink
             // design, but "the store would not take the write" is a different thing from "there
             // was nothing to write", and the two used to be indistinguishable because the result
             // was discarded. Same channel this class already reports its own failures on.
-            if (orphanWriteAttempted && !orphanWritePersisted)
+            if (markerDroppedByTheKeyCap)
                 Console.Error.WriteLine(
-                    $"[scrinia:warn] MaintenanceEventSink: the store refused the orphan marker for " +
-                    $"'{sourceQualified}'. Its '{OrphanKey}' attribute is now out of date.");
+                    $"[scrinia:warn] MaintenanceEventSink: '{sourceQualified}' already carries " +
+                    $"{KnownAttributes.MaxAttributes} attribute keys, so its '{OrphanKey}' marker " +
+                    "could not be added.");
+            else if (orphanWriteAttempted && !orphanWritePersisted)
+                Console.Error.WriteLine(
+                    $"[scrinia:warn] MaintenanceEventSink: the store refused the orphan update for " +
+                    $"'{sourceQualified}'. Its '{OrphanKey}' marker is now out of date.");
         }
         catch
         {
