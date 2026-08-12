@@ -15,6 +15,41 @@ public interface IMemoryStore
     bool IsEphemeral(string name);
     string SanitizeName(string name);
 
+    // ── The write surface: raw input in, derived entry out ───────────────────
+
+    /// <summary>
+    /// Writes <paramref name="write"/> as a whole memory — store, re-store or compact — and returns
+    /// the entry the STORE derived from it.
+    ///
+    /// <para><b>The store derives; callers must not.</b> That is the whole contract. Metadata
+    /// derivation used to be written out four times (two MCP paths, two server paths) and had
+    /// drifted, in four places far enough to lose data; the rulings that settled each difference are
+    /// in <c>docs/superpowers/analysis/2026-08-11-derivation-inventory.md</c> and the one surviving
+    /// implementation is <see cref="MemoryDerivation"/>. A caller that computes keywords, term
+    /// frequencies, chunk entries or a preview for itself has re-created the defect, whatever it
+    /// does with the result.</para>
+    ///
+    /// <para>The entry is persisted before it is returned: an existing memory is archived first, the
+    /// artifact is written, and the index entry is upserted. <c>CreatedAt</c> survives a re-store and
+    /// <c>UpdatedAt</c> is set only when the memory already existed.</para>
+    /// </summary>
+    Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default);
+
+    /// <summary>
+    /// Appends <paramref name="write"/>'s single chunk to an existing memory and returns the entry
+    /// the store derived over the memory's full post-append content. Appending to a memory that does
+    /// not exist yet is a <see cref="StoreAsync"/>.
+    ///
+    /// <para>Same contract as <see cref="StoreAsync"/> — the store derives — plus everything the
+    /// memory already carries that an append must not destroy: its curated keywords, its drift
+    /// baseline, its earlier chunk entries and its curated preview. Each of those was lost by one of
+    /// the four hand-rolled implementations this replaces.</para>
+    /// </summary>
+    Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default);
+
+    // Neither member has a default implementation, deliberately: every store implements both, so a
+    // store added later cannot silently inherit a derivation that is wrong for it.
+
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
 

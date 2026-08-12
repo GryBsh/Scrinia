@@ -78,21 +78,51 @@ public sealed class StoreBoundaryTests
                      "throws would simply move back inside the members");
     }
 
+    /// <summary>
+    /// The criterion this test enforces is unchanged: a remote store may not refuse a capability
+    /// for lack of a local filesystem. The only such refusal that was ever legitimate is the
+    /// <c>file://</c> rejection inside <c>ResolveArtifactAsync</c> — a rejection of an input value,
+    /// not of a capability — and it is still the only one.
+    /// <para>The store write surface (<c>StoreAsync</c> / <c>AppendAsync</c>) added two more throws,
+    /// and they are a different kind: not "this needs files I do not have" but "the wire cannot yet
+    /// carry a derived entry back". <c>POST /memories</c> answers with counts and a message, and the
+    /// listing endpoint omits <c>TermFrequencies</c>, <c>ChunkEntries</c> and <c>FileHashes</c>, so
+    /// an entry assembled from either would be a partial entry presented as a complete one — and
+    /// <c>POST /memories/{name}/append</c> carries no attributes or keywords at all, so serving the
+    /// append over it would silently drop them. Refusing is the honest answer until the
+    /// complete-entry wire contract lands, and nothing calls either member yet.</para>
+    /// <para><b>This allowance expires on its own.</b> The assertion pins the count at exactly three
+    /// and pins which members the two extras sit on, so when the wire lands and they become real
+    /// implementations, this test fails and must be tightened back to the single <c>file://</c>
+    /// throw. It cannot quietly become permanent.</para>
+    /// </summary>
     [Fact]
-    public void HttpMemoryStore_ThrowsNotSupported_ForExactlyOneReason()
+    public void HttpMemoryStore_ThrowsNotSupported_OnlyForInputRejectionAndTheUnbuiltWire()
     {
-        // The one legitimate NotSupportedException in remote mode is the file:// rejection
-        // inside ResolveArtifactAsync — a rejection of an input value, not of a capability.
         var sourcePath = Path.Combine(RepoRoot(), "src", "Scrinia", "HttpMemoryStore.cs");
-        var throwLines = File.ReadAllLines(sourcePath)
-            .Select((line, i) => (Line: line, Number: i + 1))
+        var lines = File.ReadAllLines(sourcePath);
+        var throwLines = lines
+            .Select((line, i) => (Line: line, Index: i))
             .Where(x => x.Line.Contains("throw new NotSupportedException"))
             .ToList();
 
-        throwLines.Should().ContainSingle(
-            because: "every other NotSupportedException marked a member that belongs on " +
+        throwLines.Should().HaveCount(3,
+            because: "every NotSupportedException beyond these marked a member that belongs on " +
                      "ILocalMemoryStore, not on the interface a remote store implements");
-        throwLines[0].Line.Should().Contain("file://");
+
+        var capability = throwLines.Where(x => !x.Line.Contains("file://")).ToList();
+        capability.Should().HaveCount(2, because: "exactly one throw rejects an input value");
+
+        // The member each remaining throw sits on, read as the nearest preceding public signature.
+        var owners = capability
+            .Select(x => Enumerable.Range(0, x.Index).Reverse()
+                .Select(i => lines[i])
+                .First(l => l.Contains("    public ")))
+            .ToList();
+
+        owners.Should().AllSatisfy(o => o.Should().MatchRegex("StoreAsync|AppendAsync"),
+            because: "the write surface is the only thing the current wire cannot serve; a refusal " +
+                     "anywhere else is a capability this store is dropping");
     }
 
     [Fact]

@@ -1136,6 +1136,282 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         });
     }
 
+    // ── The write surface: raw input in, derived entry out ───────────────────
+
+    /// <inheritdoc/>
+    public async Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        if (write.Content is null || write.Content.Length == 0)
+            throw new ArgumentException("A store writes at least one chunk.", nameof(write));
+
+        // Ephemerality is the store's question, not the pipeline's — it decides where the memory
+        // lands, and it suppresses the auto-derived review condition (D-05).
+        bool ephemeral = IsEphemeral(write.Name);
+
+        // The one call. `write.Keywords` is the caller's RAW list by MemoryWrite's contract (D-01);
+        // nothing this method computes is ever fed back in as input.
+        var derived = MemoryDerivation.ForStore(
+            write.Content, write.Description, write.Attributes, write.Keywords,
+            isEphemeral: ephemeral,
+            fileHasher: HashWorkspaceFile);
+
+        string artifact = write.Content.Length == 1
+            ? Nmp2ChunkedEncoder.Encode(write.Content[0])
+            : Nmp2ChunkedEncoder.EncodeChunks(write.Content);
+        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
+        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(string.Concat(write.Content));
+
+        if (ephemeral)
+        {
+            var existingEph = GetEphemeral(MemoryNaming.StripEphemeralPrefix(write.Name));
+            return PersistEphemeral(write.Name, artifact, originalBytes, chunkCount, derived,
+                createdAt: existingEph?.CreatedAt ?? DateTimeOffset.UtcNow,
+                updatedAt: existingEph is not null ? DateTimeOffset.UtcNow : null);
+        }
+
+        string scope = write.Scope;
+        string subject = write.Name;
+
+        // Case-insensitive, and the resolved entry's own casing travels forward. SanitizeName does
+        // not fold case, so an ordinal match here reports "new memory" for a re-store under a
+        // different casing — which skips the archive below and resets CreatedAt while the write
+        // still lands on the same file on a case-insensitive filesystem. Matching the name is only
+        // half of it: everything below turns `subject` back into a path (ArchiveVersion,
+        // WriteArtifactAsync, the sidecar written by Upsert, and the entry's own Name), so leaving
+        // the caller's casing here would leave the fix depending on the filesystem to fold case on
+        // its behalf — right on NTFS, and a twin alongside the original anywhere case-sensitive.
+        // Twelve sites of this exact shape were fixed across two earlier branches; this is not one.
+        var existingEntry = LoadIndex(scope).FirstOrDefault(
+            e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        if (existingEntry is not null)
+            subject = existingEntry.Name;
+
+        DateTimeOffset createdAt = existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow;
+        DateTimeOffset? updatedAt = existingEntry is not null ? DateTimeOffset.UtcNow : null;
+
+        if (existingEntry is not null)
+            ArchiveVersion(subject, scope);
+
+        await WriteArtifactAsync(subject, scope, artifact, ct: ct);
+
+        var entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount, createdAt, updatedAt, derived);
+
+        try
+        {
+            Upsert(entry, scope);
+        }
+        catch
+        {
+            // Only a BRAND-NEW memory is rolled back, and the rollback is removing the artifact
+            // nothing points at. An existing memory is left alone: its prior content is in
+            // versions/ and its sidecar still describes it, whereas deleting on a transient sidecar
+            // write failure would destroy a memory the caller only asked to overwrite.
+            if (existingEntry is null)
+            {
+                try { DeleteArtifact(subject, scope); } catch { /* best-effort rollback */ }
+            }
+            throw;
+        }
+
+        return entry;
+    }
+
+    /// <inheritdoc/>
+    public async Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        if (write.Content is null || write.Content.Length != 1)
+            throw new ArgumentException(
+                "An append adds exactly one chunk, so MemoryWrite.Content must hold one element.",
+                nameof(write));
+
+        bool ephemeral = IsEphemeral(write.Name);
+        string scope = write.Scope;
+        string subject = write.Name;
+        ArtifactEntry? existingEntry = null;
+        EphemeralEntry? existingEph = null;
+        string? existingArtifact = null;
+
+        if (ephemeral)
+        {
+            existingEph = GetEphemeral(MemoryNaming.StripEphemeralPrefix(write.Name));
+            existingArtifact = existingEph?.Artifact;
+        }
+        else
+        {
+            // Identity is resolved from the index BEFORE the artifact is read, and the ORDER is the
+            // fix: reading under the caller's casing threw FileNotFoundException on a case-sensitive
+            // filesystem, fell through to the create-new path, and overwrote the memory with the
+            // appended chunk alone — append() silently behaving as replace().
+            existingEntry = LoadIndex(scope).FirstOrDefault(
+                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            if (existingEntry is not null)
+                subject = existingEntry.Name;
+
+            try { existingArtifact = await ReadArtifactAsync(subject, scope, ct); }
+            catch (FileNotFoundException) { /* nothing to append to — created below */ }
+        }
+
+        if (existingArtifact is null)
+            return await StoreAsync(write, ct);
+
+        string appended = write.Content[0];
+        string newArtifact = Nmp2ChunkedEncoder.AppendChunk(existingArtifact, appended);
+
+        // The pipeline derives over the memory's FULL post-append content with the appended chunk
+        // last (D-22 reads only that last element for attributes and the new chunk entry).
+        int priorChunks = Nmp2ChunkedEncoder.GetChunkCount(existingArtifact);
+        string[] fullContent = new string[priorChunks + 1];
+        for (int i = 0; i < priorChunks; i++)
+            fullContent[i] = Nmp2ChunkedEncoder.DecodeChunk(existingArtifact, i + 1);
+        fullContent[priorChunks] = appended;
+
+        int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(newArtifact);
+        long originalBytes = System.Text.Encoding.UTF8.GetByteCount(string.Concat(fullContent));
+
+        // Everything the memory already carries that an append must not destroy. A server-side REST
+        // append used to lose the curated keywords (D-12) and the drift baseline (D-21) outright.
+        // EphemeralEntry has no FileHashes to carry — see PersistEphemeral.
+        var existing = new ExistingMetadata(
+            Attributes: existingEntry?.Attributes ?? existingEph?.Attributes,
+            Keywords: existingEntry?.Keywords ?? existingEph?.Keywords,
+            ContentPreview: existingEntry?.ContentPreview ?? existingEph?.ContentPreview,
+            ChunkEntries: existingEntry?.ChunkEntries ?? existingEph?.ChunkEntries,
+            FileHashes: existingEntry?.FileHashes);
+
+        var derived = MemoryDerivation.ForAppend(
+            fullContent, write.Description, write.Attributes, write.Keywords, existing);
+
+        if (ephemeral)
+            return PersistEphemeral(write.Name, newArtifact, originalBytes, chunkCount, derived,
+                createdAt: existingEph!.CreatedAt, updatedAt: DateTimeOffset.UtcNow);
+
+        // The bytes to revert to, already in hand from the read above: appending to an existing
+        // memory must restore its content on failure, not delete it. Nothing reads versions/ back,
+        // so a delete here would leave the user no way to recover.
+        string? previousArtifact = existingEntry is not null ? existingArtifact : null;
+        if (existingEntry is not null)
+            ArchiveVersion(subject, scope);
+
+        await WriteArtifactAsync(subject, scope, newArtifact, ct: ct);
+
+        var entry = BuildDerivedEntry(subject, scope, originalBytes, chunkCount,
+            createdAt: existingEntry?.CreatedAt ?? DateTimeOffset.UtcNow,
+            updatedAt: DateTimeOffset.UtcNow,
+            derived);
+
+        try
+        {
+            Upsert(entry, scope);
+        }
+        catch
+        {
+            // CancellationToken.None: a cancelled append must still be rolled back.
+            try
+            {
+                if (previousArtifact is not null)
+                    await WriteArtifactAsync(subject, scope, previousArtifact, ct: CancellationToken.None);
+                else
+                    DeleteArtifact(subject, scope);
+            }
+            catch { /* best-effort rollback */ }
+            throw;
+        }
+
+        return entry;
+    }
+
+    /// <summary>Assembles the index entry from the derived half plus the store's own bookkeeping.
+    /// <see cref="AttributeMigration.Forward"/> is the same safety net both pre-collapse write paths
+    /// ran: idempotent here (the pipeline already folds file hashes and routes <c>key:value</c>
+    /// keywords), and load-bearing for a pre-attributes entry appended to for the first time.</summary>
+    private ArtifactEntry BuildDerivedEntry(
+        string subject, string scope, long originalBytes, int chunkCount,
+        DateTimeOffset createdAt, DateTimeOffset? updatedAt, DerivedMetadata derived) =>
+        AttributeMigration.Forward(new ArtifactEntry(
+            Name: subject,
+            Uri: ArtifactUri(subject, scope),
+            OriginalBytes: originalBytes,
+            ChunkCount: chunkCount,
+            CreatedAt: createdAt,
+            ContentPreview: derived.ContentPreview,
+            Keywords: derived.Keywords.Length > 0 ? derived.Keywords : null,
+            TermFrequencies: derived.TermFrequencies.Count > 0 ? derived.TermFrequencies : null,
+            UpdatedAt: updatedAt,
+            ChunkEntries: derived.ChunkEntries,
+            FileHashes: derived.FileHashes,
+            Attributes: derived.Attributes));
+
+    /// <summary>Persists an ephemeral write and projects it back as an <see cref="ArtifactEntry"/>,
+    /// the way <see cref="ListEphemeral"/> does.
+    /// <para><see cref="EphemeralEntry"/> has no <c>FileHashes</c> field, so the projection reports
+    /// none — it describes what was stored, not what was derived. The hashed paths themselves
+    /// survive as the searchable <c>file</c> attribute. Ephemerals had no drift baseline before this
+    /// surface either; giving them one is a storage-model change, not a write-path one.</para></summary>
+    private ArtifactEntry PersistEphemeral(
+        string name, string artifact, long originalBytes, int chunkCount,
+        DerivedMetadata derived, DateTimeOffset createdAt, DateTimeOffset? updatedAt)
+    {
+        string key = MemoryNaming.StripEphemeralPrefix(name);
+        string[]? keywords = derived.Keywords.Length > 0 ? derived.Keywords : null;
+        Dictionary<string, int>? tf = derived.TermFrequencies.Count > 0 ? derived.TermFrequencies : null;
+
+        RememberEphemeral(key, new EphemeralEntry(
+            Name: key,
+            Artifact: artifact,
+            OriginalBytes: originalBytes,
+            ChunkCount: chunkCount,
+            CreatedAt: createdAt,
+            ContentPreview: derived.ContentPreview,
+            Keywords: keywords,
+            TermFrequencies: tf,
+            UpdatedAt: updatedAt,
+            ChunkEntries: derived.ChunkEntries,
+            Attributes: derived.Attributes));
+
+        return new ArtifactEntry(
+            Name: key,
+            Uri: "",
+            OriginalBytes: originalBytes,
+            ChunkCount: chunkCount,
+            CreatedAt: createdAt,
+            ContentPreview: derived.ContentPreview,
+            Keywords: keywords,
+            TermFrequencies: tf,
+            UpdatedAt: updatedAt,
+            ChunkEntries: derived.ChunkEntries,
+            Attributes: derived.Attributes);
+    }
+
+    /// <summary>
+    /// The pipeline's one contact with the filesystem (D-04): resolves a <c>file</c> attribute value
+    /// against this store's workspace root and hashes it, or returns null when it cannot — outside
+    /// the workspace, missing, or unreadable.
+    /// <para>Supplying this is what gives a REMOTE write a drift baseline. The old rule was "hash
+    /// only when the store is local", so a write through <c>HttpMemoryStore</c> got none at all;
+    /// derivation now runs inside whichever store owns the workspace, and the server's own store is
+    /// a <see cref="FileMemoryStore"/> with one.</para>
+    /// </summary>
+    private string? HashWorkspaceFile(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+            return null;
+        try
+        {
+            string full = Path.GetFullPath(Path.Combine(_workspaceRoot, relativePath.Trim()));
+            if (!PathContainment.IsWithin(_workspaceRoot, full) || !File.Exists(full))
+                return null;
+            return Convert.ToHexStringLower(
+                System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(full)));
+        }
+        catch
+        {
+            // An unhashable reference is not a failed write — the memory stores without a baseline.
+            return null;
+        }
+    }
+
     // ── Artifact file I/O ────────────────────────────────────────────────────
 
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText,

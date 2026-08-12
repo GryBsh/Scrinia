@@ -707,6 +707,35 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     public string ArtifactUri(string name, string scope = "local") =>
         $"remote://{_store}/{scope}/{SanitizeName(name)}";
 
+    // ── The write surface: raw input in, derived entry out ───────────────────
+
+    /// <summary>
+    /// Not yet reachable over the wire, and it fails closed rather than approximating.
+    ///
+    /// <para>The remote half of this surface is the client change in the same plan: the client POSTs
+    /// the raw <see cref="MemoryWrite"/> and the SERVER derives — that is what "the client defers to
+    /// the server" means concretely, and it is why no derivation may appear in this file. It cannot
+    /// be served by the v1 wire that exists today, because <c>POST /memories</c> answers with a
+    /// <c>StoreResponse</c> (name, counts, message) and <c>GET /memories</c> with a list item
+    /// carrying neither <c>TermFrequencies</c>, <c>ChunkEntries</c> nor <c>FileHashes</c>. Returning
+    /// an entry assembled from either would be a partial entry presented as a complete one — the
+    /// exact defect the complete-entry wire contract exists to remove, and worse than refusing,
+    /// because a caller would persist it.</para>
+    ///
+    /// <para>Nothing calls this yet: every write path still runs its own derivation, and the
+    /// server's own store is a <see cref="FileMemoryStore"/> reached in-process.</para>
+    /// </summary>
+    public Task<ArtifactEntry> StoreAsync(MemoryWrite write, CancellationToken ct = default) =>
+        throw new NotSupportedException(
+            "The remote store cannot yet return a derived entry: the write surface needs the " +
+            "complete-entry wire contract, which lands with the client changes. Nothing calls this yet.");
+
+    /// <inheritdoc cref="StoreAsync"/>
+    public Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default) =>
+        throw new NotSupportedException(
+            "The remote store cannot yet return a derived entry: the write surface needs the " +
+            "complete-entry wire contract, which lands with the client changes. Nothing calls this yet.");
+
     // ── Artifact file I/O via REST API ──────────────────────────────────────
 
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
