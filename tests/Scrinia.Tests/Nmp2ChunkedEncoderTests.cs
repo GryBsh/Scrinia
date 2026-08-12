@@ -359,4 +359,52 @@ public sealed class Nmp2ChunkedEncoderTests
 
         combined.Should().Be(expected);
     }
+
+    // ── DecodeAllChunksVerified ─────────────────────────────────────────────
+
+    [Fact]
+    public void DecodeAllChunksVerified_MultiChunk_RoundTrips()
+    {
+        string[] chunks = ["Part A: alpha content.", "Part B: bravo content."];
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(chunks);
+
+        var (decodedChunks, totalBytes) = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact);
+
+        decodedChunks.Should().Equal(chunks);
+        totalBytes.Should().Be(Encoding.UTF8.GetByteCount(string.Concat(chunks)));
+    }
+
+    [Fact]
+    public void DecodeAllChunksVerified_SingleChunk_RoundTrips()
+    {
+        string artifact = Nmp2ChunkedEncoder.Encode("Hello, world!");
+
+        var (decodedChunks, totalBytes) = Nmp2ChunkedEncoder.DecodeAllChunksVerified(artifact);
+
+        decodedChunks.Should().Equal("Hello, world!");
+        totalBytes.Should().Be(Encoding.UTF8.GetByteCount("Hello, world!"));
+    }
+
+    /// <summary>
+    /// Review finding (Critical, fix-round 2 on the store-owned-derivation Task 6 fix round):
+    /// <c>DecodeAllChunksVerified</c>'s multi-chunk branch originally went straight to
+    /// <c>new byte[count][]</c> and a decode loop with no upper bound on <c>count</c> — the same
+    /// declared-chunk-count DoS <see cref="Nmp2Strategy.MaxChunkCount"/> exists to close, and which
+    /// <see cref="Nmp2Strategy.Decode"/> already rejects in O(1) via <c>DecodeCore</c>'s own guard
+    /// (pinned by <c>Nmp2StrategyTests.Decode_MultiChunk_DeclaredCountExceedsMaxChunkCount_Throws</c>).
+    /// That existing coverage only proves <c>Decode</c> rejects the forged artifact — it says
+    /// nothing about this method, which is exactly why the guard's absence here slipped through
+    /// review once already. Mirrors the existing test's forged-header shape exactly.
+    /// </summary>
+    [Fact]
+    public void DecodeAllChunksVerified_MultiChunk_DeclaredCountExceedsMaxChunkCount_Throws()
+    {
+        string forged = $"NMP/2 1B CRC32:00000000 BR+B64 C:{Nmp2Strategy.MaxChunkCount + 1}\nNMP/END";
+
+        FluentActions.Invoking(() => Nmp2ChunkedEncoder.DecodeAllChunksVerified(forged))
+            .Should().Throw<InvalidDataException>(
+                because: "an artifact declaring more than MaxChunkCount chunks must be rejected " +
+                         "before any per-chunk decode work runs, not partway through it")
+            .WithMessage("*chunks*");
+    }
 }

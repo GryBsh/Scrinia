@@ -336,6 +336,14 @@ public static class Nmp2ChunkedEncoder
         }
 
         int count = Nmp2Strategy.ParseChunkCount(artifact);
+        // Same guard Nmp2Strategy.DecodeCore runs before any chunk work — prevents trivial DoS
+        // via a tiny artifact that declares millions of chunks. Missing here, this method would
+        // do genuine unbounded O(count) work (a `new byte[count][]` allocation and a decode loop)
+        // before the MaxDecodedBytes budget below ever gets a chance to fire, on an artifact
+        // Decode() rejects in O(1).
+        if (count < 1 || count > Nmp2Strategy.MaxChunkCount)
+            throw new InvalidDataException(
+                $"NMP/2 artifact declares {count} chunks; must be 1..{Nmp2Strategy.MaxChunkCount}.");
         long maxBytes = Nmp2Strategy.MaxDecodedBytes;
         var chunkBytes = new byte[count][];
         long total = 0;
