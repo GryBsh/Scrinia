@@ -496,25 +496,33 @@ public sealed class PatchEndpointTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// R-3. Taking <c>HttpRequest</c> instead of a typed parameter took ASP.NET's model binding out
-    /// of the path, and model binding was also enforcing Content-Type — before this fix, a
-    /// <c>text/plain</c> body containing perfectly valid JSON returned <c>200</c> instead of the
-    /// <c>415</c> model binding used to return.
+    /// R-3, corrected per F-1. Taking <c>HttpRequest</c> instead of a typed parameter took ASP.NET's
+    /// model binding out of the path, and model binding was also enforcing Content-Type. The original
+    /// version of this test sent <c>text/plain</c> — but that case is rejected by the routing-level
+    /// <c>.Accepts&lt;MemoryEntry&gt;("application/json")</c> matcher (added for R-2) BEFORE
+    /// <c>PatchEntry</c> ever runs, so it passed even with <c>HasJsonContentType()</c> deleted from
+    /// the handler — testing R-2's fix a second time, not R-3's. Measured: with <c>.Accepts()</c>
+    /// present and the handler's own guard removed, a <c>text/plain</c> body still 415s (routing
+    /// rejects first), but a body with NO <c>Content-Type</c> header at all returns <c>200</c> — the
+    /// PATCH is silently applied. That is the one case <c>HasJsonContentType()</c> uniquely owns, so
+    /// this now sends exactly that.
     /// </summary>
     [Fact]
-    public async Task Patch_RejectsANonJsonContentTypeWith415()
+    public async Task Patch_RejectsAMissingContentTypeWith415()
     {
         var entry = await StoreAndGetEntryAsync("patch-contenttype-probe", ["content type probe body"]);
 
         string json = JsonSerializer.Serialize(entry,
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
-        using var content = new StringContent(json, Encoding.UTF8, "text/plain");
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        content.Headers.ContentType = null; // no Content-Type header at all — not text/plain
+
         var patchResp = await _client.PatchAsync($"{_base}/memories/patch-contenttype-probe", content);
 
         patchResp.StatusCode.Should().Be(HttpStatusCode.UnsupportedMediaType,
-            because: "a text/plain body — even one carrying perfectly valid JSON — must be rejected " +
-                     "the same way model binding used to (415), not silently accepted now that " +
-                     "PatchEntry parses the body manually");
+            because: "a body with no Content-Type header at all must be rejected (415) the same way " +
+                     "model binding used to — routing's .Accepts() matcher does not reject this case " +
+                     "on its own, so PatchEntry's own HasJsonContentType() guard is what must catch it");
     }
 
     /// <summary>

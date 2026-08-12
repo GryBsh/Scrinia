@@ -314,9 +314,11 @@ public static class MemoryEndpoints
             return Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403);
 
         // R-3: taking HttpRequest instead of a typed parameter took ASP.NET's model binding out of
-        // the path, and model binding was also enforcing Content-Type — a text/plain body containing
-        // valid JSON used to 415, and silently started 200-ing once binding was bypassed. Restore it
-        // explicitly before touching the body.
+        // the path, and model binding was also enforcing Content-Type. The .Accepts<MemoryEntry>
+        // ("application/json") metadata on the MapPatch registration (added for R-2) makes routing
+        // reject a mismatched Content-Type (e.g. text/plain) before this handler ever runs — but a
+        // request with NO Content-Type header at all is not rejected by that matcher (measured: F-1),
+        // so this explicit check is what catches that one case and is not otherwise dead weight.
         if (!request.HasJsonContentType())
             return Results.Json(new ErrorResponse("Content-Type must be application/json."),
                 statusCode: StatusCodes.Status415UnsupportedMediaType);

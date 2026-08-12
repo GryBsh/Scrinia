@@ -169,7 +169,7 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     /// requests/60s), which the fixture's other, much smaller tests don't need raised. Same
     /// override mechanism as <c>RateLimitTests.RateLimit_PartitionsByUser_NotSharedIp</c>.</para>
     /// </summary>
-    /// <summary>
+    /// <remarks>
     /// R-4: previously built via <c>ScriniaServerFactory.WithWebHostBuilder(b =>
     /// b.UseSetting("Scrinia:RateLimit:PermitLimit", ...))</c> + <c>UseKestrel(0)</c> — the exact
     /// shape measured (during PatchEndpointTests' M-1 investigation) to bind Kestrel's hard-coded
@@ -180,7 +180,7 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     /// <c>PatchEndpointTests.ReadOnlyClaimsServerFactory</c> uses; the assertion right after
     /// <c>StartServer()</c> below is the "verify by measurement" step — it fails if this ever
     /// regresses back to <c>:5000</c>.
-    /// </summary>
+    /// </remarks>
     [Fact]
     public async Task LoadIndex_ReturnsEveryEntry_AboveTheServersDefaultPageSize()
     {
