@@ -23,9 +23,10 @@ public sealed class PluginPipeline
     {
         if (_hooks.Length > 0)
         {
-            // Normalize rather than index req.Attributes directly: it is deserialized from JSON with
-            // the default ordinal comparer, so a caller's "Tag" would miss a raw "tag" lookup. This
-            // is the same map the orchestrator goes on to persist.
+            // Not derivation — a case-folded READ of the request so the hook contract below can find
+            // the "tag" key. req.Attributes is deserialized from JSON with the default ordinal
+            // comparer, so a caller's "Tag" would miss a raw "tag" lookup. Nothing here is persisted
+            // or handed on: the raw request travels to the store, which derives from it (D-01).
             var normalized = KnownAttributes.Normalize(req.Attributes);
             var ctx = new BeforeStoreContext
             {

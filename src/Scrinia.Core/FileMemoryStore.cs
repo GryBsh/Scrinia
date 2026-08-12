@@ -1219,8 +1219,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // existing one is RESTORED instead: Upsert does real file I/O and can fail transiently,
             // and deleting would make that permanent — nothing reads versions/ back, so the user
             // would have no recovery path for a memory they only asked to overwrite. Same rule as
-            // AppendAsync below, and deliberately NOT MemoryOrchestrator.StoreAsync's unconditional
-            // delete, which is the destructive form of this block.
+            // AppendAsync below. The destructive form of this block — an unconditional delete — is
+            // what the server's own store path used to do; it was deleted, not ported.
             // CancellationToken.None: a cancelled store must still be rolled back.
             try
             {

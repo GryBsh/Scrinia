@@ -211,9 +211,11 @@ public class FileMemoryStoreWriteSurfaceTests
     /// content while the index entry still described the old, and the divergence propagates — the
     /// next <c>AppendAsync</c> reads the stale entry's <c>ChunkEntries</c> but numbers the appended
     /// one from the artifact's real chunk count, producing a non-contiguous set. Deleting instead
-    /// (which is what <c>MemoryOrchestrator.StoreAsync</c> does today) is worse still: nothing reads
-    /// <c>versions/</c> back, so a transient sidecar failure would destroy a memory the caller only
-    /// asked to overwrite, with no recovery path.</para>
+    /// (which is what <c>MemoryOrchestrator.StoreAsync</c> used to do, before it was repointed here)
+    /// is worse still: nothing reads <c>versions/</c> back, so a transient sidecar failure would
+    /// destroy a memory the caller only asked to overwrite, with no recovery path. The server-path
+    /// counterpart is
+    /// <c>Scrinia.Server.Tests.MemoryOrchestratorWriteSurfaceTests.StoreAsync_FailedReStore_LeavesThePreviousContentReadable</c>.</para>
     ///
     /// <para>The failure is forced by putting a DIRECTORY where the sidecar file belongs, so
     /// <c>WriteSidecar</c>'s atomic temp-then-move cannot land — a rename onto a directory fails on
