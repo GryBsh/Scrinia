@@ -60,9 +60,18 @@ public static class MetaJsonMerger
             foreach (var kw in theirsAgent) if (!string.IsNullOrWhiteSpace(kw)) agentKeywords.Add(kw);
         }
 
-        var (createdAt, updatedAt) = SelectTimestamps(
-            GetString(ours, "createdAt"), GetString(ours, "updatedAt"),
-            GetString(theirs, "createdAt"), GetString(theirs, "updatedAt"));
+        // MALFORMED createdAt/updatedAt (present but not a JSON string) must escalate rather than
+        // be silently treated as absent — see TryGetTimestampString. This is a narrower gate than
+        // GetString's default behaviour, scoped to these two fields only: reconcile()'s auto-
+        // resolver already refuses the same input (a non-string value throws inside
+        // JsonNode.GetValue<string>(), caught and escalated), and the two mergers must agree.
+        if (!TryGetTimestampString(ours, "createdAt", out var oursCreated) ||
+            !TryGetTimestampString(ours, "updatedAt", out var oursUpdated) ||
+            !TryGetTimestampString(theirs, "createdAt", out var theirsCreated) ||
+            !TryGetTimestampString(theirs, "updatedAt", out var theirsUpdated))
+            return MergeResult.Conflict;
+
+        var (createdAt, updatedAt) = SelectTimestamps(oursCreated, oursUpdated, theirsCreated, theirsUpdated);
 
         // Overlay the merged fields onto OURS' full object — preserves every unknown property
         // (contentPreview, chunkEntries, codeRefs, attributes, …) verbatim. termFrequencies is NOT
@@ -135,6 +144,27 @@ public static class MetaJsonMerger
     {
         if (value is null) o.Remove(key);
         else o[key] = value;
+    }
+
+    /// <summary>Reads a createdAt/updatedAt-shaped JSON value into a string. Returns true for
+    /// ABSENT (the key is missing; contributes nothing to <see cref="SelectTimestamps"/>) and for a
+    /// well-formed JSON string. Returns false for MALFORMED input — present but not a JSON string,
+    /// e.g. a numeric epoch from a hand-edited or foreign sidecar — so the caller can escalate to
+    /// conflict instead of what plain <see cref="GetString"/> would do here: silently treat it as
+    /// absent and let the other side's value win with no conflict raised. reconcile()'s auto-
+    /// resolver already refuses this same input (a non-string value throws inside
+    /// <c>JsonNode.GetValue&lt;string&gt;()</c>, and the outer catch escalates); this closes the gap
+    /// on the driver side rather than silently auto-resolving where reconcile() would refuse.
+    /// </summary>
+    private static bool TryGetTimestampString(JsonObject? o, string key, out string? value)
+    {
+        value = null;
+        if (o is null || !o.TryGetPropertyValue(key, out var n))
+            return true; // absent
+        if (n is not JsonValue v || !v.TryGetValue<string>(out var s))
+            return false; // malformed: present but not a JSON string
+        value = s;
+        return true;
     }
 
     /// <summary>Reads a termFrequencies-shaped JSON object into a dictionary. Returns true for

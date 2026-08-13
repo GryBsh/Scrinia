@@ -13,7 +13,7 @@ namespace Scrinia.Core.Merge;
 /// FORWARD, losing when it was actually created.</para>
 ///
 /// <para>Ordinal comparison is independently wrong across offsets:
-/// <c>2026-08-13T10:00:00+10:00</c> and <c>2026-08-13T01:00:00Z</c> are the same instant and do
+/// <c>2026-08-13T10:00:00+10:00</c> and <c>2026-08-13T00:00:00Z</c> are the same instant and do
 /// not compare equal as strings.</para>
 ///
 /// <para><b>One duplicate survives, and it is forced.</b> See
@@ -30,9 +30,12 @@ public static class SidecarTimestampMerge
     /// both updates really happened.</para>
     ///
     /// <para><b>Unparseable values are treated as absent for comparison, and the parseable side
-    /// wins.</b> When neither parses, OURS is returned unchanged — an unrecognized timestamp is
-    /// never invented, reformatted, or destroyed. The returned strings are always one of the four
-    /// inputs verbatim, so a merge cannot silently renormalize a format.</para>
+    /// wins.</b> When neither parses, OURS is returned unchanged — an unrecognized OURS value is
+    /// never invented or reformatted. That guarantee is about OURS specifically, not the input
+    /// pair as a whole: when ours is absent and theirs is unparseable, the result is OURS' absence
+    /// (null), and theirs' unrecognized value is dropped rather than preserved. What always holds
+    /// across all four inputs is narrower — the returned value, whenever non-null, is one of the
+    /// four inputs verbatim, so a merge never silently renormalizes a format it does keep.</para>
     /// </summary>
     public static (string? CreatedAt, string? UpdatedAt) Select(
         string? oursCreated, string? oursUpdated, string? theirsCreated, string? theirsUpdated) =>

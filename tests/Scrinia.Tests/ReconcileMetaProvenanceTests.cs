@@ -260,6 +260,49 @@ public sealed class ReconcileMetaProvenanceTests
                      "here, so this pins that createdAt is corrected independently of that choice");
     }
 
+    private const string OursNumericCreatedAt = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":1735689600,"updatedAt":"2026-01-02T00:00:00Z",
+        "keywords":["auth","local"]}
+        """;
+
+    private const string TheirsValidTimestampsForMalformedPair = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":["auth","local"]}
+        """;
+
+    /// <summary>
+    /// A <c>createdAt</c> that is present but not a JSON string (here, a Unix-epoch number — a
+    /// hand-edited or foreign sidecar) is MALFORMED, not ABSENT. <c>oursNode["createdAt"]
+    /// ?.GetValue&lt;string&gt;()</c> throws for a non-string value, and the outer catch around
+    /// <c>TryComputeAutoResolvedMetaJson</c> turns that into an escalation — so reconcile() already
+    /// refuses this input, even though it does so by falling into a broad catch rather than by an
+    /// intentional MALFORMED check. This pins that refusal explicitly, matching the driver, which
+    /// this fix round taught to refuse the same input via an intentional check instead of silently
+    /// treating a non-string createdAt as absent and auto-resolving on theirs' value.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_MalformedCreatedAt_NonStringValue_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string conflictId = await SeedConflictAsync(
+            scope, OursNumericCreatedAt, TheirsValidTimestampsForMalformedPair);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "a createdAt that isn't a readable JSON string means the auto-resolver cannot " +
+                     "safely interpret one side's intent, so the conflict must escalate to manual " +
+                     "resolution rather than silently resolving on the other side's value");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
+
     /// <summary>
     /// An explicit JSON <c>null</c> is a distinct shape from an absent key: <c>node?[key]</c>
     /// (the indexer) returns a null reference for BOTH, so a naive reader cannot tell "this side

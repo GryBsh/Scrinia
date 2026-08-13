@@ -83,4 +83,42 @@ public sealed class SidecarTimestampMergeParityTests
 
     private static string? ReadString(JsonElement root, string key) =>
         root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>
+    /// A <c>createdAt</c> that is present but not a JSON string (here, a Unix-epoch number — a
+    /// hand-edited or foreign sidecar) is MALFORMED, not ABSENT. Plain <c>GetString</c> cannot tell
+    /// the two apart and would silently treat this as absent, letting theirs' value win with no
+    /// conflict raised — while reconcile()'s auto-resolver already refuses the same input (a
+    /// non-string value throws inside <c>JsonNode.GetValue&lt;string&gt;()</c>, caught and
+    /// escalated). The driver must refuse too, so the two mergers agree on malformed input the same
+    /// way they now agree on well-formed timestamps.
+    /// </summary>
+    [Fact]
+    public void MalformedCreatedAt_NonStringValue_RefusesTheMerge()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "ts-malformed-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string ancestor = Path.Combine(dir, "a.meta.json");
+            string ours = Path.Combine(dir, "ours.meta.json");
+            string theirs = Path.Combine(dir, "theirs.meta.json");
+
+            File.WriteAllText(ancestor, Sidecar(null, null));
+            File.WriteAllText(ours,
+                "{\"name\":\"m\",\"uri\":\"\",\"originalBytes\":100,\"chunkCount\":1," +
+                "\"keywords\":[\"auth\"],\"createdAt\":1735689600,\"updatedAt\":\"2026-01-02T00:00:00Z\"}");
+            File.WriteAllText(theirs, Sidecar("2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z"));
+
+            MetaJsonMerger.Merge(ancestor, ours, theirs, new MergeConfig(JaccardThreshold: 0.0))
+                .Should().Be(MetaJsonMerger.MergeResult.Conflict,
+                    because: "createdAt is present but not a JSON string — the driver cannot safely " +
+                             "interpret one side's intent, so it must escalate rather than silently " +
+                             "treat it as absent and let theirs' value win unchallenged");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

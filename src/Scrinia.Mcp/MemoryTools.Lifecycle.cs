@@ -414,8 +414,8 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Computes the auto-merged JSON for a conflicted .meta.json file (keyword union, latest
-    /// timestamp wins, max term-frequency counts) WITHOUT writing anything to disk. Callers
-    /// decide whether/when to persist <paramref name="resolvedJson"/>.
+    /// <c>updatedAt</c> but EARLIEST <c>createdAt</c>, max term-frequency counts) WITHOUT writing
+    /// anything to disk. Callers decide whether/when to persist <paramref name="resolvedJson"/>.
     /// </summary>
     private static bool TryComputeAutoResolvedMetaJson(string conflictedContent, out string? resolvedJson)
     {
