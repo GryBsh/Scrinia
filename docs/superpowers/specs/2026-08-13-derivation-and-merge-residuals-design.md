@@ -118,7 +118,7 @@ falls through to the conflict path when the auto-resolve returns false), so no r
 changes and no caller needs updating. Some conflicts that resolve automatically today will require
 manual resolution — which is the point: they were being merged on no evidence of similarity.
 
-The threshold is read from `merge.config`, by the same mechanism `GetConflictDir`
+The threshold is read from `merge.config`, by the same mechanism `ReadConflictDirName`
 (`MemoryTools.Lifecycle.cs:396-404`) already uses to read `conflictDir` from that file, with the
 same `0.7` default `MergeConfig.Load` applies. A missing or unparseable config yields the default,
 matching the reader's existing broad-catch behaviour rather than introducing a second policy.

@@ -864,7 +864,7 @@ Closes A2. **This is the plan's one user-visible behaviour change** — some con
 
 **Files:**
 - Create: `src/Scrinia.Core/Merge/SidecarAdmission.cs`
-- Modify: `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs` (`TryComputeAutoResolvedMetaJson`, both call sites at `:125` and `:236`, and a new threshold reader beside `GetConflictDir` at `:396-404`)
+- Modify: `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs` (`TryComputeAutoResolvedMetaJson`, both call sites at `:125` and `:236`, and a new threshold reader beside `ReadConflictDirName` at `:396-404`)
 - Test: `tests/Scrinia.Tests/ReconcileScanTests.cs`, **`tests/Scrinia.Tests/ReconcileMetaProvenanceTests.cs`** (five existing test results regress without Step 0 — see below)
 
 **Read Step 0 first. This task breaks five passing tests unless you do.**
@@ -971,7 +971,7 @@ Read `ReconcileScanTests.cs`'s existing fixtures for how it builds a conflicted 
 
 - [ ] **Step 3: Add the threshold reader**
 
-In `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs`, beside `GetConflictDir`, add a reader using the same shape — same file, same broad catch, same default-on-failure policy as `Scrinia.Merge.MergeConfig.Load`:
+In `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs`, beside `ReadConflictDirName`, add a reader using the same shape — same file, same broad catch, same default-on-failure policy as `Scrinia.Merge.MergeConfig.Load`:
 
 ```csharp
     /// <summary>
