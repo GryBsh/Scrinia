@@ -108,22 +108,35 @@ public sealed partial class ScriniaMcpTools
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
         [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string path,
-        [Description("Content array — each element becomes one independently retrievable chunk. A " +
-                     "'key:value' pair written inline in the prose (e.g. 'file:src/x.cs') is also picked up " +
-                     "as an attribute, but only for the eight recommended keys: person, place, org, thing, " +
-                     "topic, file, ref, review. Any other key in prose is left as plain text.")] string[] content,
-        [Description("Optional typed attributes — a map of key to values. Sets attributes directly, " +
-                     "regardless of what content or keywords contain. Recommended keys: person, place, " +
-                     "org, thing, topic (entities that link related memories); file, ref (dependencies, hashed " +
-                     "for drift detection); review (an ISO 8601 date and/or a free-text condition). Any key is " +
-                     "allowed. Example: { person: ['maria'], org: ['acme'], review: ['2026-08-01'] }.")]
+        [Description("Content array — each element becomes one independently retrievable chunk. Several " +
+                     "things in the text become attributes automatically: a line-start 'key: value' pair or " +
+                     "a '**Key:** value' bold label mints an attribute under ANY key; an inline 'key:value' " +
+                     "with no space (e.g. 'file:src/x.cs') is bounded to the eight recommended keys — person, " +
+                     "place, org, thing, topic, file, ref, review — and left as plain text for any other key; " +
+                     "a bare file path becomes a 'file' attribute, a '[[wiki-link]]' or '~ephemeral' " +
+                     "reference becomes a 'ref' attribute, and a capitalized proper-noun phrase becomes a " +
+                     "'mention' attribute.")] string[] content,
+        [Description("Optional typed attributes — a map of key to values. Combines with what content and " +
+                     "keywords derive: person/place/org/thing/topic/file/ref (and the auto-derived 'mention') " +
+                     "union with the derived value; every other key — including review, anchor, and tag — is " +
+                     "replaced by this value when both sides set it. Recommended keys: person, place, org, " +
+                     "thing, topic — entities that link related memories, so a query naming one entity can " +
+                     "surface a memory via a related entity even with no text overlap; use the same canonical " +
+                     "name for an entity across memories, and the type lets a person and a place that share a " +
+                     "name stay distinct. file — dependencies, hashed for drift detection. ref — a link to " +
+                     "another memory, NOT hashed. review — an ISO 8601 date and/or a free-text condition. " +
+                     "anchor — retrieval-bridging phrases/questions, TF-seeded into search. tag — free-form " +
+                     "categorization. Any key is allowed. Example: { person: ['maria'], org: ['acme'], " +
+                     "review: ['2026-08-01'] }.")]
         Dictionary<string, string[]>? attributes = null,
         [Description("Optional keywords — the distinctive terms AND the phrasings a searcher is likely to use. " +
                      "Merged with auto-extracted terms and seeded into search. A 'key:value' entry (any key, " +
-                     "e.g. 'person:maria', 'sprint:24') is routed into attributes instead of kept as a keyword " +
-                     "— the preferred way to attach a person/place/org/thing/topic/file/ref/review facet, and " +
-                     "any other key works too since every element here was typed on purpose. A plain keyword " +
-                     "(no colon) stays a keyword. Use the same canonical name for an entity across memories.")] string[]? keywords = null,
+                     "e.g. 'person:maria', 'sprint:24') is routed into attributes instead of kept as a keyword, " +
+                     "provided the key starts with a letter (so 'C#:x' and '2024:x' don't qualify) and the " +
+                     "value is 1-120 characters and doesn't start with '//' (a URL) — otherwise it stays a " +
+                     "plain keyword. This is the preferred way to attach a person/place/org/thing/topic/file/" +
+                     "ref/review facet (see attributes for what each means); any other key works too since " +
+                     "every element here was typed on purpose. A plain keyword (no colon) stays a keyword.")] string[]? keywords = null,
         CancellationToken cancellationToken = default)
     {
         // Skill-path routing: '/skill/{name}' → SkillCreate.
@@ -241,14 +254,25 @@ public sealed partial class ScriniaMcpTools
         "content: 'session note', attributes: { topic: ['standup'] } }).")]
     public async Task<string> MemoryAppend(
         [Description("Memory path to append to.")] string path,
-        [Description("Text content for the new chunk. A 'key:value' pair written inline (e.g. " +
-                     "'file:src/x.cs') is also picked up as an attribute, but only for the eight recommended " +
-                     "keys: person, place, org, thing, topic, file, ref, review.")] string content,
-        [Description("Optional attributes merged into the memory's existing attributes (multi-valued keys union, scalar keys newer-wins). Same key vocabulary as remember — sets attributes directly.")]
+        [Description("Text content for the new chunk. A line-start 'key: value' pair or a '**Key:** value' " +
+                     "bold label mints an attribute under ANY key; an inline 'key:value' with no space (e.g. " +
+                     "'file:src/x.cs') is bounded to the eight recommended keys — person, place, org, thing, " +
+                     "topic, file, ref, review — and left as plain text for any other key; a bare file path " +
+                     "becomes a 'file' attribute, and a '[[wiki-link]]' or '~ephemeral' reference becomes a " +
+                     "'ref' attribute. Unlike remember, this text is not scanned for proper-noun 'mention' " +
+                     "spans — only a memory's first write does that.")] string content,
+        [Description("Optional attributes merged into the memory's existing attributes. person/place/org/" +
+                     "thing/topic/file/ref/mention always union with what's already stored. tag and anchor " +
+                     "also union here (append-only: a tag or anchor you pass adds to the existing set rather " +
+                     "than replacing it). Every other key, including review, is replaced by this value when " +
+                     "both sides set it. Same key vocabulary as remember: file is hashed for drift detection; " +
+                     "ref links to another memory and is NOT hashed; anchor is a retrieval-bridging phrase, " +
+                     "TF-seeded into search; tag is free-form categorization.")]
         Dictionary<string, string[]>? attributes = null,
         [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated). " +
-                     "A 'key:value' entry (any key) routes into attributes instead of keywords, same as " +
-                     "remember; a plain keyword (no colon) stays a keyword.")] string[]? keywords = null,
+                     "A 'key:value' entry (any key) routes into attributes instead of keywords, same guard as " +
+                     "remember (key starts with a letter, value is 1-120 characters, not a '//' URL); a plain " +
+                     "keyword (no colon) stays a keyword.")] string[]? keywords = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -313,7 +337,8 @@ public sealed partial class ScriniaMcpTools
 
     [McpServerTool(Name = "link"), Description(
         "Create a bidirectional link between two memories by adding a 'ref' attribute on each pointing " +
-        "at the other — queryable later via search's attributeFilter: { ref: [...] }. " +
+        "at the other — queryable later via search's attributeFilter: { ref: [...] }. Refuses if either " +
+        "side is an ephemeral (~name) memory. " +
         "Example: link({ path: '/findings/SEC-001', destination: '/patterns/auth' }).")]
     public async Task<string> MemoryLink(
         [Description("Source memory path.")] string path,

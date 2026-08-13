@@ -119,7 +119,11 @@ public sealed partial class ScriniaMcpTools
                      "entries route into attributes. This Description is inert — internal helper, not an " +
                      "MCP tool — the guidance callers see is on the public 'remember' tool's keywords " +
                      "parameter in MemoryTools.cs.")] string[]? keywords = null,
-        [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content. Indexed for both attribute-score lookup and BM25 via term-frequency seeding.")]
+        [Description("Optional retrieval anchors, TF-seeded into search. This Description is inert — " +
+                     "internal helper, not an MCP tool. The public 'remember' tool has no dedicated " +
+                     "anchors parameter; a caller reaches this through its attributes parameter " +
+                     "(attributes: { anchor: [...] }) in MemoryTools.cs, which documents what an anchor " +
+                     "is for.")]
         string[]? anchors = null,
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
         [Description("Optional free-text condition describing when this memory should be reviewed (e.g. 'when auth system changes').")] string? reviewWhen = null,
@@ -873,7 +877,11 @@ public sealed partial class ScriniaMcpTools
         [Description("Optional description. Replaces the memory's description; if omitted, the existing description is preserved.")] string? description = null,
         [Description("Optional tags to merge into the memory's existing tags (deduplicated).")] string[]? tags = null,
         [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
-        [Description("Optional retrieval anchors merged into the memory's existing anchors (deduplicated) — phrases/questions that bridge likely user queries to this content. Supply these when the appended content introduces concepts users may search for in different words.")] string[]? anchors = null,
+        [Description("Optional retrieval anchors, merged into the memory's existing anchors. This " +
+                     "Description is inert — internal helper, not an MCP tool. The public 'append' tool " +
+                     "has no dedicated anchors parameter; a caller reaches this through its attributes " +
+                     "parameter (attributes: { anchor: [...] }) in MemoryTools.cs, which documents what " +
+                     "an anchor is for.")] string[]? anchors = null,
         IReadOnlyDictionary<string, string[]>? attributes = null,
         CancellationToken cancellationToken = default)
     {
