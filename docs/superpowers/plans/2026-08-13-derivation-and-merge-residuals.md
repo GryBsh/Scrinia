@@ -1754,6 +1754,146 @@ rtk git commit -m "docs: record the merge-parity behaviour change and the epheme
 
 ---
 
+### Task 10: Reference extraction stops corrupting, and prose `key:value` routes
+
+Closes D-a and D-b. Both pre-existing; neither caused by this branch.
+
+**Files:**
+- Modify: `src/Scrinia.Core/Search/ReferenceExtractor.cs:10` (the pattern)
+- Modify: `src/Scrinia.Core/Search/AttributeExtractor.cs` (prose routing) and
+  `src/Scrinia.Core/Search/KnownAttributes.cs:97-101` (the `RecommendedKeys` doc comment)
+- Test: `tests/Scrinia.Tests/` — follow the existing extractor test files
+
+**Interfaces:**
+- Consumes: `KnownAttributes.RecommendedKeys` — `{ person, place, org, thing, topic, file, ref, review }`.
+- Produces: no new public API. `AttributeExtractor.Extract` gains inline-prose routing; behaviour
+  change only.
+
+- [ ] **Step 1: Write the failing tests**
+
+Three cases, in the file that already covers `ReferenceExtractor`/`AttributeExtractor`:
+
+```csharp
+    [Fact]
+    public void FileRef_AfterAColon_IsNotSilentlyTruncated()
+    {
+        // The lookbehind (?<!["'`=:]) does not suppress the match, it SHIFTS it: the engine fails
+        // at 's' (preceded by ':'), advances one char, and succeeds at 'r' — yielding "rc/new.cs".
+        // That corrupt path is indexed, seeded into term frequencies, and reports a clean drift
+        // baseline because HashWorkspaceFile returns null for a path that does not exist.
+        ReferenceExtractor.ExtractFileRefs("see file:src/new.cs")
+            .Should().NotContain("rc/new.cs");
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_RoutesForARecommendedKey()
+    {
+        AttributeExtractor.Extract("see file:src/new.cs for the detail")!["file"]
+            .Should().Contain("src/new.cs");
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_IsIgnoredForAnUnrecommendedKey()
+    {
+        // Prose is uncontrolled text — pasted logs, quoted code. Only the eight keys the guide
+        // teaches route from prose; the keywords ARGUMENT still routes any key, because every
+        // element there was typed on purpose.
+        AttributeExtractor.Extract("TODO:cleanup the retry path")
+            .Should().BeNull();
+    }
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+```bash
+rtk dotnet build Scrinia.sln && rtk dotnet test tests/Scrinia.Tests --filter "FullyQualifiedName~FileRef_AfterAColon|FullyQualifiedName~InlineProseKeyValue"
+```
+
+Expected: test 1 FAILS (the corrupt path is present), test 2 FAILS (no routing), test 3 passes
+already. Record what you actually saw.
+
+- [ ] **Step 3: Fix the pattern**
+
+`ReferenceExtractor.cs:10` — extend the lookbehind so a match cannot begin mid-token:
+
+```csharp
+    [GeneratedRegex(@"(?<![\w""'`=:./\-\\])(?:\.?/)?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
+```
+
+A legitimate path starts after whitespace, a line start, or punctuation like `(`. If the preceding
+character is a word or path character, the engine is mid-token and must not match. **Re-run the
+existing extractor tests** — this pattern is load-bearing for bare-path extraction, which is the
+mechanism the append path relies on.
+
+- [ ] **Step 4: Add prose routing, bounded**
+
+In `AttributeExtractor`, recognise inline `key:value` in content where `key` is in
+`KnownAttributes.RecommendedKeys`. Reuse `KeywordAttributePattern`'s key charset
+(`[A-Za-z][A-Za-z0-9_-]{0,29}`) rather than inventing a second one, and keep the existing guards:
+skip anything inside a code fence, skip a value starting `//`, respect `MaxValueLength`.
+
+Then update `KnownAttributes.cs:97-98`, which currently reads *"this set is guidance + the
+weight-table seed, not a gate."* It is now a gate for prose routing, and nowhere else. Say exactly
+that — leaving the old sentence would ship a false comment in the same branch that is fixing false
+comments.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+rtk dotnet build Scrinia.sln && rtk dotnet test
+```
+
+Confirm each new test fails when its own fix is reverted — **run it, do not reason it out.**
+
+```bash
+rtk git add src/Scrinia.Core/Search/ReferenceExtractor.cs src/Scrinia.Core/Search/AttributeExtractor.cs src/Scrinia.Core/Search/KnownAttributes.cs tests/Scrinia.Tests/
+rtk git commit -m "fix(core): a path after a colon no longer extracts corrupt; prose routes known keys"
+```
+
+---
+
+### Task 11: The visible tool descriptions become complete and true
+
+Closes D-c.
+
+**Files:**
+- Modify: `src/Scrinia.Mcp/MemoryTools.cs` (the `[McpServerTool]` descriptions),
+  `src/Scrinia.Mcp/MemoryTools.Core.cs:118-125` (the unreachable copy)
+
+- [ ] **Step 1: Establish what callers actually see**
+
+Only `[McpServerTool]`-decorated methods and their parameters reach the MCP schema. `MemoryTools.Core.cs`'s
+`Remember` is `internal` — its `[Description]` attributes are inert. Confirm this for every tool
+before editing: list each `[McpServerTool]` method and whether the guidance for its behaviour lives
+on it or on an internal helper. Report the list.
+
+- [ ] **Step 2: Move the real guidance onto the public surface**
+
+The public `remember` never mentions that `key:value` keywords route to attributes. The text that
+explains it — naming the entity types and telling callers to prefer that form — is at
+`MemoryTools.Core.cs:118-125` where nobody can read it. Move the substance onto the public
+`keywords` parameter description, and **delete the unreachable copy** rather than leaving two
+versions to drift.
+
+State plainly, on the surface callers read: `key:value` keywords become attributes; plain keywords
+stay keywords; `attributes` sets them directly; and — once Task 10 lands — the eight recommended
+keys also route from inline prose.
+
+- [ ] **Step 3: Sweep the other tools**
+
+Check `append`, `update`, `link`, `search`, `list`, `compact`, `reconcile` for the same gap: live
+behaviour undocumented on the public description, or guidance stranded on an internal helper. Fix
+what you find; report what you checked and found clean, so the sweep is auditable.
+
+- [ ] **Step 4: Commit**
+
+```bash
+rtk git add src/Scrinia.Mcp/MemoryTools.cs src/Scrinia.Mcp/MemoryTools.Core.cs
+rtk git commit -m "docs(mcp): the tool descriptions callers actually see describe what the tools do"
+```
+
+---
+
 ## Plan Verification Protocol
 
 **Standing requirement. A verification pass runs before any implementer is dispatched, and again

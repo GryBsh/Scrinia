@@ -245,6 +245,71 @@ having been an indexed entry.
 
 ---
 
+---
+
+## Section D — reference extraction, prose routing, and the visible contract
+
+Added after Task 5, from a defect found via a bad test fixture. Both parts are pre-existing; neither
+was caused by this branch.
+
+### D-a. `word:path.ext` in prose silently corrupts the path
+
+`ReferenceExtractor.FilePathPattern` is:
+
+```
+(?<!["'`=:])(?:\.?/)?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|…)\b
+```
+
+The negative lookbehind is intended to stop a path matching when it follows a quote, `=`, or `:`.
+**It does not suppress the match — it shifts it.** On `see file:src/new.cs` the engine fails at `s`
+(preceded by `:`), advances one character, succeeds at `r`, and yields **`rc/new.cs`**.
+
+That corrupt path is written to the `file` attribute, indexed, and seeded into term frequencies;
+`HashWorkspaceFile` returns null for a path that does not exist, so the memory reports a **clean
+drift baseline** while carrying a reference to nothing. Silent corruption, not a visible failure —
+and it applies to any `word:path.ext`, not just `file:`.
+
+**Fix:** make the lookbehind exclude path and word characters as well, so the engine cannot start
+mid-token. A match must begin at a genuine boundary.
+
+### D-b. Inline `key:value` in prose routes to attributes — bounded to the recommended keys
+
+Today `key:value` routes to attributes only from the **keywords argument**
+(`AttributeExtractor.RouteKeywords`). In content, only line-start `key: value` **with whitespace**
+(`LineStartPairPattern`), frontmatter, and bold labels are recognised. So a caller who writes
+`file:src/new.cs` inline in prose gets nothing — or, before D-a, garbage.
+
+Inline prose `key:value` now routes, **restricted to `KnownAttributes.RecommendedKeys`** —
+`person, place, org, thing, topic, file, ref, review`.
+
+**Why bounded, when keywords are not.** The keywords array is deliberate caller input: every element
+was typed on purpose. Prose is uncontrolled — pasted logs, quoted code, transcripts. Allowing
+arbitrary keys there would let `TODO:fix` in a pasted comment mint an attribute. Restricting to the
+eight keys the guide already teaches keeps the useful case (`file:`, `person:`) and leaves incidental
+colons alone. The existing patterns already encode this instinct: `LineStartPairPattern`'s comment
+says its tight charset exists *"so prose colons don't match."*
+
+**`RecommendedKeys` is currently documented as "guidance + the weight-table seed, not a gate."** This
+change makes it a gate in exactly one place. That doc comment must be updated in the same commit —
+shipping a false comment while Section D's other half fixes false comments would be its own defect.
+
+### D-c. The visible tool descriptions are incomplete and contradict the live behaviour
+
+The public `remember` tool (`MemoryTools.cs:100-116`) documents `attributes` and `keywords` as a
+clean separation and **never mentions that `key:value` keywords route to attributes**. The long
+guidance that does explain it — naming `person:`, `place:`, `org:`, `thing:`, `topic:` and telling
+callers to *prefer* that form — sits on `MemoryTools.Core.cs:118-125`, an **`internal` helper that is
+not an MCP tool**. Its `[Description]` attributes are inert; no caller has ever read them.
+
+So the behaviour is undocumented on the surface that callers see, and the documentation for it is
+unreachable. Fix both: move the real guidance onto the public tool, delete the unreachable copy,
+document prose routing once D-b lands, and sweep every `[McpServerTool]` description for the same
+class of gap.
+
+**Explicitly not in scope:** retiring or narrowing keyword routing itself. Routing `key:value`
+keywords to attributes is correct and stays. The +3 attribute seeding a routed keyword receives is
+**D-08**, already ruled and accepted, not a defect.
+
 ## Testing
 
 **Parity tests**, one per new shared rule, driving both the Core original and the AOT duplicate
