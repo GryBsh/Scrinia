@@ -264,14 +264,12 @@ public static partial class MemoryDerivation
         // already-baselined path from `HashFileRefs` before the hasher ever runs on it. Hashing an
         // already-baselined path and discarding the result would mean every append pays a full
         // file read (`HashWorkspaceFile` is an uncached `File.ReadAllBytes` + SHA-256) for every
-        // path the memory has EVER referenced, to keep at most the handful that are new — and for
-        // an ephemeral append it would be 100% waste, since ephemerals carry no baseline
-        // (`FileMemoryStore.cs` builds `existing` from `existingEntry` only) so every hash computed
-        // would be thrown away. Re-hashing would also re-baseline an existing path to its current
-        // content on every append, so it could never be reported as drifted — the append would
-        // destroy the very signal the baseline exists to provide. A path present in `file` but
-        // absent from the baseline because it was unhashable at store time is hashed here if it
-        // now resolves: it was never baselined, and this is the first opportunity.
+        // path the memory has EVER referenced, to keep at most the handful that are new. Re-hashing
+        // would also re-baseline an existing path to its current content on every append, so it
+        // could never be reported as drifted — the append would destroy the very signal the
+        // baseline exists to provide. A path present in `file` but absent from the baseline because
+        // it was unhashable at store time is hashed here if it now resolves: it was never
+        // baselined, and this is the first opportunity.
         var fileHashes = existing?.FileHashes;
         var newHashes = HashFileRefs(attrs, fileHasher, skip: fileHashes);
         if (newHashes is not null)

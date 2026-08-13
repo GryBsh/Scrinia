@@ -187,7 +187,8 @@ public sealed class RemoteStoreToolTests
         /// not — reach it.</summary>
         public StubBackendHandler Handler { get; }
 
-        public RemoteStoreScope(string listJson = EmptyListJson, HttpStatusCode patchStatus = HttpStatusCode.OK)
+        public RemoteStoreScope(string listJson = EmptyListJson, HttpStatusCode patchStatus = HttpStatusCode.OK,
+            string? workspaceRoot = null)
         {
             _previous = MemoryStoreContext.Current;
             MemoryEventSinkContext.Default = null;
@@ -197,7 +198,8 @@ public sealed class RemoteStoreToolTests
                 BaseAddress = new Uri("http://localhost:5000"),
             };
             // MaxRetries: 0 — no backoff sleeps; nothing here exercises the retry path.
-            Store = new HttpMemoryStore(http, "default", retryOptions: new RetryOptions(MaxRetries: 0));
+            Store = new HttpMemoryStore(http, "default", retryOptions: new RetryOptions(MaxRetries: 0),
+                workspaceRoot: workspaceRoot);
             MemoryStoreContext.Current = Store;
         }
 
@@ -392,6 +394,36 @@ public sealed class RemoteStoreToolTests
         scope.Store.ListScoped(null).Single(s => s.Scope == "ephemeral").Entry.AgentKeywords
             .Should().Equal(["portcullis"],
                 because: "two projections of one record must not disagree about it");
+    }
+
+    /// <summary>
+    /// The same guarantee as the keyword-provenance test above, for the drift baseline:
+    /// <see cref="HttpMemoryStore.ListEphemeral"/> must carry <c>FileHashes</c>, not just
+    /// <c>AgentKeywords</c>, or the same memory reports a baseline through the write response and
+    /// none through <c>list()</c> — the split-view defect this whole feature exists to close.
+    /// </summary>
+    [Fact]
+    public async Task ListScoped_EphemeralPath_RemoteStore_CarriesFileHashes()
+    {
+        string workspace = Path.Combine(Path.GetTempPath(), "scrinia-remote-eph-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(Path.Combine(workspace, "src"));
+        File.WriteAllText(Path.Combine(workspace, "src", "thing.cs"), "// hello");
+        try
+        {
+            using var scope = new RemoteStoreScope(workspaceRoot: workspace);
+
+            await Tools().Remember(["see src/thing.cs"], "~scratch");
+            scope.Store.GetEphemeral("scratch")!.FileHashes.Should().ContainKey("src/thing.cs",
+                because: "precondition: the in-process write recorded a baseline");
+
+            scope.Store.ListScoped(null).Single(s => s.Scope == "ephemeral").Entry.FileHashes
+                .Should().ContainKey("src/thing.cs",
+                    because: "two projections of one record must not disagree about it");
+        }
+        finally
+        {
+            try { Directory.Delete(workspace, recursive: true); } catch { }
+        }
     }
 
     /// <summary>

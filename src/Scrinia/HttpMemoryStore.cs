@@ -247,9 +247,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         // how this stayed hidden.
         //
         // The temp directory remains the fallback for callers with no workspace (tests, and any
-        // construction that predates this parameter), and nothing is ever written under it.
+        // construction that predates this parameter), and nothing is ever written under it. Created
+        // only when it will actually be used: a caller that supplies workspaceRoot should not leave
+        // an empty directory behind for every instance it constructs.
         _tempDir = Path.Combine(Path.GetTempPath(), $"scrinia-http-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(_tempDir);
+        if (workspaceRoot is null)
+            Directory.CreateDirectory(_tempDir);
         _localHelper = new FileMemoryStore(workspaceRoot ?? _tempDir);
     }
 

@@ -84,6 +84,9 @@ public sealed class EphemeralLifecycleTests : IDisposable
         await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"]));
 
         var listed = _store.ListEphemeral().Single().Entry;
+        // ContainKey first: BeEquivalentTo alone passes over two nulls, so it would stay green
+        // with the whole feature (or just this projection) absent.
+        listed.FileHashes.Should().ContainKey("src/thing.cs");
         listed.FileHashes.Should().BeEquivalentTo(_store.GetEphemeral("scratch")!.FileHashes);
     }
 
