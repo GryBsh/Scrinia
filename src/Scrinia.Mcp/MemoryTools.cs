@@ -109,13 +109,17 @@ public sealed partial class ScriniaMcpTools
     public async Task<string> MemoryRemember(
         [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string path,
         [Description("Content array — each element becomes one independently retrievable chunk. Several " +
-                     "things in the text become attributes automatically: a line-start 'key: value' pair or " +
-                     "a '**Key:** value' bold label mints an attribute under ANY key; an inline 'key:value' " +
-                     "with no space (e.g. 'file:src/x.cs') is bounded to the eight recommended keys — person, " +
-                     "place, org, thing, topic, file, ref, review — and left as plain text for any other key; " +
-                     "a bare file path becomes a 'file' attribute, a '[[wiki-link]]' or '~ephemeral' " +
-                     "reference becomes a 'ref' attribute, and a capitalized proper-noun phrase becomes a " +
-                     "'mention' attribute.")] string[] content,
+                     "things in the text become attributes automatically, none of it inside a fenced code " +
+                     "block (```): a line-start 'key: value' pair or a '**Key:** value' bold label mints an " +
+                     "attribute under any key that starts with a letter (so 'C#:' and '2024:' don't route) " +
+                     "— this also runs inside YAML frontmatter, which is otherwise left alone; an inline " +
+                     "'key:value' with no space (e.g. 'file:src/x.cs') additionally requires the key to be " +
+                     "one of the eight recommended keys — person, place, org, thing, topic, file, ref, " +
+                     "review — and is left as plain text for any other key; a file path ending in one of a " +
+                     "fixed set of code/doc extensions (.cs, .md, .json, .yaml and similar — a name with no " +
+                     "matching extension, like 'Dockerfile' or 'app.py', does not qualify) becomes a 'file' " +
+                     "attribute, and a '[[wiki-link]]' or '~ephemeral' reference becomes a 'ref' attribute; " +
+                     "a capitalized proper-noun phrase becomes a 'mention' attribute.")] string[] content,
         [Description("Optional typed attributes — a map of key to values. Combines with what content and " +
                      "keywords derive: person/place/org/thing/topic/file/ref (and the auto-derived 'mention') " +
                      "union with the derived value; every other key — including review, anchor, and tag — is " +
@@ -125,9 +129,10 @@ public sealed partial class ScriniaMcpTools
                      "name for an entity across memories, and the type lets a person and a place that share a " +
                      "name stay distinct. file — dependencies, hashed for drift detection. ref — a link to " +
                      "another memory, NOT hashed. review — an ISO 8601 date and/or a free-text condition. " +
-                     "anchor — retrieval-bridging phrases/questions, TF-seeded into search. tag — free-form " +
-                     "categorization. Any key is allowed. Example: { person: ['maria'], org: ['acme'], " +
-                     "review: ['2026-08-01'] }.")]
+                     "anchor — a retrieval-bridging phrase or question; write vocabulary you expect users to " +
+                     "query with, not vocabulary already in the content — it's indexed for both attribute-" +
+                     "score lookup and BM25 via term-frequency seeding. tag — free-form categorization. Any " +
+                     "key is allowed. Example: { person: ['maria'], org: ['acme'], review: ['2026-08-01'] }.")]
         Dictionary<string, string[]>? attributes = null,
         [Description("Optional keywords — the distinctive terms AND the phrasings a searcher is likely to use. " +
                      "Merged with auto-extracted terms and seeded into search. A 'key:value' entry (any key, " +
@@ -254,20 +259,27 @@ public sealed partial class ScriniaMcpTools
         "content: 'session note', attributes: { topic: ['standup'] } }).")]
     public async Task<string> MemoryAppend(
         [Description("Memory path to append to.")] string path,
-        [Description("Text content for the new chunk. A line-start 'key: value' pair or a '**Key:** value' " +
-                     "bold label mints an attribute under ANY key; an inline 'key:value' with no space (e.g. " +
-                     "'file:src/x.cs') is bounded to the eight recommended keys — person, place, org, thing, " +
-                     "topic, file, ref, review — and left as plain text for any other key; a bare file path " +
-                     "becomes a 'file' attribute, and a '[[wiki-link]]' or '~ephemeral' reference becomes a " +
-                     "'ref' attribute. Unlike remember, this text is not scanned for proper-noun 'mention' " +
-                     "spans — only a memory's first write does that.")] string content,
+        [Description("Text content for the new chunk, none of it inside a fenced code block (```): a " +
+                     "line-start 'key: value' pair or a '**Key:** value' bold label mints an attribute " +
+                     "under any key that starts with a letter (so 'C#:' and '2024:' don't route); an inline " +
+                     "'key:value' with no space (e.g. 'file:src/x.cs') additionally requires the key to be " +
+                     "one of the eight recommended keys — person, place, org, thing, topic, file, ref, " +
+                     "review — and is left as plain text for any other key; a file path ending in one of a " +
+                     "fixed set of code/doc extensions (.cs, .md, .json, .yaml and similar — a name with no " +
+                     "matching extension, like 'Dockerfile' or 'app.py', does not qualify) becomes a 'file' " +
+                     "attribute, and a '[[wiki-link]]' or '~ephemeral' reference becomes a 'ref' attribute. " +
+                     "Unlike remember, this text is not scanned for proper-noun 'mention' spans — only " +
+                     "whole-memory writes (remember, compact) do that; create-via-append is unaffected " +
+                     "since it delegates to a whole-memory write internally.")] string content,
         [Description("Optional attributes merged into the memory's existing attributes. person/place/org/" +
                      "thing/topic/file/ref/mention always union with what's already stored. tag and anchor " +
                      "also union here (append-only: a tag or anchor you pass adds to the existing set rather " +
                      "than replacing it). Every other key, including review, is replaced by this value when " +
                      "both sides set it. Same key vocabulary as remember: file is hashed for drift detection; " +
-                     "ref links to another memory and is NOT hashed; anchor is a retrieval-bridging phrase, " +
-                     "TF-seeded into search; tag is free-form categorization.")]
+                     "ref links to another memory and is NOT hashed; anchor is a retrieval-bridging phrase or " +
+                     "question — write vocabulary you expect users to query with, not vocabulary already in " +
+                     "the content, since it's indexed for both attribute-score lookup and BM25 via term-" +
+                     "frequency seeding; tag is free-form categorization.")]
         Dictionary<string, string[]>? attributes = null,
         [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated). " +
                      "A 'key:value' entry (any key) routes into attributes instead of keywords, same guard as " +
