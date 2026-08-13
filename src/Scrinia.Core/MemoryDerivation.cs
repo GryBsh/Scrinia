@@ -254,25 +254,42 @@ public static partial class MemoryDerivation
         // append destroyed the memory's drift baseline. The baseline is carried forward, and its
         // path keys are re-folded into `file` so the searchable key never falls behind the hashes.
         // This adds to it: a file the appended chunk references for the first time gets hashed
-        // now, because otherwise its path reaches the searchable `file` attribute through the
-        // carrier below while drift detection has nothing to compare it against and reports it
-        // clean forever.
+        // now, because otherwise its path reaches the searchable `file` attribute through
+        // attribute extraction above (`incoming`, folded into `attrs`) — not through the carrier
+        // below, which is built FROM `fileHashes.Keys` and by definition cannot introduce a path
+        // that isn't already in it — while drift detection has nothing to compare the new path
+        // against and reports it clean forever.
         //
-        // ONLY NEW PATHS ARE HASHED. An entry already in the baseline keeps its original hash —
-        // re-hashing would re-baseline the file to its current content on every append, so it
-        // could never be reported as drifted, and the append would destroy the very signal the
-        // baseline exists to provide. A path present in `file` but absent from the baseline
-        // because it was unhashable at store time is hashed here if it now resolves: it was never
-        // baselined, and this is the first opportunity.
+        // ONLY NEW PATHS ARE HASHED — literally, not just kept: `skip` below excludes every
+        // already-baselined path from `HashFileRefs` before the hasher ever runs on it. Hashing an
+        // already-baselined path and discarding the result would mean every append pays a full
+        // file read (`HashWorkspaceFile` is an uncached `File.ReadAllBytes` + SHA-256) for every
+        // path the memory has EVER referenced, to keep at most the handful that are new — and for
+        // an ephemeral append it would be 100% waste, since ephemerals carry no baseline
+        // (`FileMemoryStore.cs` builds `existing` from `existingEntry` only) so every hash computed
+        // would be thrown away. Re-hashing would also re-baseline an existing path to its current
+        // content on every append, so it could never be reported as drifted — the append would
+        // destroy the very signal the baseline exists to provide. A path present in `file` but
+        // absent from the baseline because it was unhashable at store time is hashed here if it
+        // now resolves: it was never baselined, and this is the first opportunity.
         var fileHashes = existing?.FileHashes;
-        var newHashes = HashFileRefs(attrs, fileHasher);
+        var newHashes = HashFileRefs(attrs, fileHasher, skip: fileHashes);
         if (newHashes is not null)
         {
-            var combined = fileHashes is null
-                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                : new Dictionary<string, string>(fileHashes, StringComparer.OrdinalIgnoreCase);
+            // Loop-copy, not `new Dictionary<>(fileHashes, StringComparer.OrdinalIgnoreCase)`: that
+            // constructor throws ArgumentException if `fileHashes` holds two keys differing only in
+            // case — not reachable from what Scrinia writes today, but a hand-edited or legacy
+            // sidecar could hold one, and the constructor throwing would fail every future append
+            // to that memory. The loop is last-wins instead, same as the constructor would be if it
+            // didn't throw.
+            var combined = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (fileHashes is not null)
+                foreach (var (path, hash) in fileHashes)
+                    combined[path] = hash;
+            // No ContainsKey guard needed here: `skip` already kept every already-baselined path
+            // out of `newHashes`, so nothing here can collide with what was just copied in.
             foreach (var (path, hash) in newHashes)
-                if (!combined.ContainsKey(path)) combined[path] = hash;
+                combined[path] = hash;
             fileHashes = combined;
         }
 
@@ -539,9 +556,15 @@ public static partial class MemoryDerivation
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsed);
 
     /// <summary>Hashes every <c>file</c> attribute value through the caller's resolver, keeping
-    /// only the ones it could hash (D-04). Null when there is no resolver or nothing hashed.</summary>
+    /// only the ones it could hash (D-04). Null when there is no resolver or nothing hashed.
+    /// <paramref name="skip"/>, when given, excludes its keys from being hashed AT ALL — not just
+    /// from the returned result — so a caller carrying forward an existing baseline
+    /// (<see cref="ForAppend"/>) never pays a file read for a path it already has a hash for.
+    /// Defaulted null so <see cref="ForStore"/>'s call, which has no baseline to carry, is
+    /// unaffected.</summary>
     private static Dictionary<string, string>? HashFileRefs(
-        Dictionary<string, string[]>? attributes, Func<string, string?>? fileHasher)
+        Dictionary<string, string[]>? attributes, Func<string, string?>? fileHasher,
+        Dictionary<string, string>? skip = null)
     {
         if (fileHasher is null
             || attributes is null
@@ -551,6 +574,7 @@ public static partial class MemoryDerivation
         Dictionary<string, string>? hashes = null;
         foreach (string path in refs.Distinct(StringComparer.OrdinalIgnoreCase))
         {
+            if (skip is not null && skip.ContainsKey(path.Trim())) continue;
             string? hash = fileHasher(path);
             if (hash is null) continue;
             hashes ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
