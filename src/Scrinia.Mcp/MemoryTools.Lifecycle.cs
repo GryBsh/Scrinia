@@ -783,18 +783,40 @@ public sealed partial class ScriniaMcpTools
         var store = CurrentStore;
         var (scope, subject) = store.ParseQualifiedName(name);
 
+        // Ephemerals live in memory, not on disk. ParseQualifiedName still runs above (it does not
+        // strip the '~', so subject stays harmless for this branch) — the read itself has to be
+        // resolved from the ephemeral map instead of the disk-only ReadArtifactAsync.
+        bool ephemeral = store.IsEphemeral(name);
+        string ephemeralKey = ephemeral ? MemoryNaming.StripEphemeralPrefix(name) : name;
+        EphemeralEntry? ephemeralEntry = ephemeral ? store.GetEphemeral(ephemeralKey) : null;
+
         string artifact;
-        try
+        if (ephemeral)
         {
-            artifact = await store.ReadArtifactAsync(subject, scope, cancellationToken);
+            // ReadArtifactAsync is disk-only, so this method used to report a memory list() will
+            // happily show as "not found" — and then suggest running list() to find it.
+            if (ephemeralEntry is null)
+                return ResponseBuilder.Error(
+                    $"Memory '{name}' not found.",
+                    ErrorCodes.NotFound,
+                    "list() to see available memories",
+                    "remember({ path: '...', content: [...] }) to create it");
+            artifact = ephemeralEntry.Artifact;
         }
-        catch (FileNotFoundException)
+        else
         {
-            return ResponseBuilder.Error(
-                $"Memory '{name}' not found.",
-                ErrorCodes.NotFound,
-                "list() to see available memories",
-                "remember({ path: '...', content: [...] }) to create it");
+            try
+            {
+                artifact = await store.ReadArtifactAsync(subject, scope, cancellationToken);
+            }
+            catch (FileNotFoundException)
+            {
+                return ResponseBuilder.Error(
+                    $"Memory '{name}' not found.",
+                    ErrorCodes.NotFound,
+                    "list() to see available memories",
+                    "remember({ path: '...', content: [...] }) to create it");
+            }
         }
         int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(artifact);
 
@@ -842,15 +864,46 @@ public sealed partial class ScriniaMcpTools
         // survive by travelling INTO the write as caller input, because a re-store derives its
         // whole metadata half from what it is handed. Reading after the write would sample the
         // already-rewritten entry.
-        // Case-insensitive match plus canonical-casing carry-forward — see
-        // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
-        // the whole class's reasoning. Here an ordinal match sent the write out with no metadata at
-        // all, which is precisely the reset this read exists to prevent.
-        var entries = store.LoadIndex(scope);
-        var existingEntry = entries.FirstOrDefault(
-            e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
-        if (existingEntry is not null)
-            subject = existingEntry.Name;
+        //
+        // For an ephemeral, that existing entry comes from the map, not the index: an index lookup
+        // finds nothing for a "~name" and would send D-29's provenance read to its fallback
+        // heuristic below with the real answer sitting right there in ephemeralEntry.
+        //
+        // hadIndexedEntry is hoisted alongside the other locals (rather than leaving existingEntry
+        // in scope) because the "Original archived" message below needs it and existingEntry itself
+        // is scoped to the else branch — it means nothing for an ephemeral, which has no versions/
+        // directory to archive into.
+        string? existingPreview;
+        Dictionary<string, string[]>? existingAttributes;
+        string[]? existingAgentKeywords;
+        string[]? existingKeywords;
+        bool hadIndexedEntry;
+
+        if (ephemeral)
+        {
+            existingPreview = ephemeralEntry!.ContentPreview;
+            existingAttributes = ephemeralEntry.Attributes;
+            existingAgentKeywords = ephemeralEntry.AgentKeywords;
+            existingKeywords = ephemeralEntry.Keywords;
+            hadIndexedEntry = false;
+        }
+        else
+        {
+            // Case-insensitive match plus canonical-casing carry-forward — see
+            // MemoryOrchestrator.StoreAsync (src/Scrinia.Server/Services/MemoryOrchestrator.cs) for
+            // the whole class's reasoning. Here an ordinal match sent the write out with no metadata
+            // at all, which is precisely the reset this read exists to prevent.
+            var entries = store.LoadIndex(scope);
+            var existingEntry = entries.FirstOrDefault(
+                e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+            if (existingEntry is not null)
+                subject = existingEntry.Name;
+            existingPreview = existingEntry?.ContentPreview;
+            existingAttributes = existingEntry?.Attributes;
+            existingAgentKeywords = existingEntry?.AgentKeywords;
+            existingKeywords = existingEntry?.Keywords;
+            hadIndexedEntry = existingEntry is not null;
+        }
 
         // Compaction is a whole-memory rewrite, so it is a StoreAsync over the compacted chunks —
         // the spec's "compact needs no third derivation entry point". The store archives the
@@ -876,23 +929,29 @@ public sealed partial class ScriniaMcpTools
         // not simply restored, so a compaction inherits the whole store path — including D-05: if
         // the surviving text is count-shaped, the memory gains
         // review: "when counts in this memory change" that it did not have before.
-        string[]? curatedKeywords = existingEntry?.AgentKeywords
-            ?? MemoryDerivation.CuratedKeywords(existingEntry?.Keywords, priorChunks);
+        string[]? curatedKeywords = existingAgentKeywords
+            ?? MemoryDerivation.CuratedKeywords(existingKeywords, priorChunks);
 
+        // The ORIGINAL name, not `subject`, when ephemeral: StoreAsync's IsEphemeral check reads
+        // MemoryWrite.Name directly, and only the "~"-prefixed original carries that prefix —
+        // `subject` here is a sanitized-but-still-tilde-prefixed value from ParseQualifiedName that
+        // exists only to keep the non-ephemeral branch working.
         var stored = await store.StoreAsync(
-            new MemoryWrite(subject, scope, compacted,
-                Description: existingEntry?.ContentPreview,
-                Attributes: existingEntry?.Attributes,
+            new MemoryWrite(ephemeral ? name : subject, scope, compacted,
+                Description: existingPreview,
+                Attributes: existingAttributes,
                 Keywords: curatedKeywords),
             cancellationToken);
 
-        string qualifiedName = store.FormatQualifiedName(scope, stored.Name);
+        string qualifiedName = ephemeral ? $"~{stored.Name}" : store.FormatQualifiedName(scope, stored.Name);
         int dropped = chunkCount - newChunkCount;
         // "Original archived" only when there was an indexed entry to archive: StoreAsync archives
         // the previous version when the memory is already in the index, and an artifact with no
         // index entry is a first write as far as it is concerned. Claiming an archive that did not
-        // happen is the kind of report a user acts on before deleting something.
-        string archived = existingEntry is not null ? " Original archived." : "";
+        // happen is the kind of report a user acts on before deleting something. An ephemeral never
+        // archives — it has no versions/ directory — so hadIndexedEntry is unconditionally false
+        // for that branch above.
+        string archived = hadIndexedEntry ? " Original archived." : "";
         return ResponseBuilder.Success($"Compacted {qualifiedName}: {chunkCount} -> {newChunkCount} chunk{(newChunkCount == 1 ? "" : "s")} ({dropped} dropped).{archived}")
             .WithFileChanges().WithAction("compacted");
     }

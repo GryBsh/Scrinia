@@ -3,6 +3,7 @@ using Scrinia;
 using Scrinia.Core;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
+using Scrinia.Mcp;
 
 namespace Scrinia.Tests;
 
@@ -24,6 +25,7 @@ public sealed class EphemeralLifecycleTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_workspace, "src"));
         File.WriteAllText(Path.Combine(_workspace, "src", "thing.cs"), "// hello");
         _store = new FileMemoryStore(_workspace);
+        MemoryStoreContext.Current = _store;
     }
 
     public void Dispose()
@@ -110,5 +112,58 @@ public sealed class EphemeralLifecycleTests : IDisposable
 
         written.FileHashes.Should().ContainKey("src/thing.cs")
             .WhoseValue.Should().Be(expectedHash);
+    }
+
+    [Fact]
+    public async Task Compact_OnAMultiChunkEphemeral_MergesItsChunks()
+    {
+        // Compact never checked IsEphemeral and went straight to ReadArtifactAsync, which is
+        // disk-only — so it reported "Memory '~scratch' not found." for a memory list() will show,
+        // and suggested running list() to find it.
+        var tools = new ScriniaMcpTools();
+
+        await tools.Remember(["the first chunk"], "~scratch");
+        await tools.Append(" the second chunk", "~scratch");
+        await tools.Append(" the third chunk", "~scratch");
+
+        _store.GetEphemeral("scratch")!.ChunkCount.Should().Be(3,
+            because: "precondition: three writes, three chunks");
+
+        string result = await tools.MemoryCompact("~scratch");
+
+        ResponseParser.Parse(result).Status.Should().Be("success");
+        _store.GetEphemeral("scratch")!.ChunkCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Compact_OnAnEphemeral_PreservesItsCuratedMetadata()
+    {
+        // Compaction rewrites content, not metadata. The persistent path proves this already;
+        // the ephemeral path must not be a second implementation with different behaviour.
+        //
+        // "vulpine" is kept OUT of the chunk text on purpose: if it appeared in the content,
+        // MemoryDerivation.CuratedKeywords' recovery heuristic would reconstruct it from the text
+        // itself, and this test would pass even with the ephemeral metadata-carrying branch
+        // removed entirely — a vacuity trap the task brief calls out explicitly.
+        var tools = new ScriniaMcpTools();
+
+        await tools.Remember(["a fox jumps"], "~scratch", description: "curated", keywords: ["vulpine"]);
+        await tools.Append(" over a lazy dog", "~scratch");
+        await tools.Append(" and keeps running", "~scratch");
+
+        string result = await tools.MemoryCompact("~scratch");
+
+        // Not just a metadata check: a failed compact() leaves the pre-existing entry (already
+        // carrying "curated"/"vulpine" from the Remember above) untouched, which would satisfy the
+        // assertions below vacuously. Pinning success and the chunk merge first is what makes this
+        // test actually exercise the ephemeral compaction path rather than pass on a no-op.
+        ResponseParser.Parse(result).Status.Should().Be("success");
+
+        var compacted = _store.GetEphemeral("scratch")!;
+        compacted.ChunkCount.Should().Be(1, because: "compaction must actually have run");
+        compacted.ContentPreview.Should().Be("curated");
+        compacted.Keywords.Should().Contain("vulpine");
+        compacted.AgentKeywords.Should().Contain("vulpine",
+            because: "only the agent's own keywords travel back into a rewrite — D-29");
     }
 }
