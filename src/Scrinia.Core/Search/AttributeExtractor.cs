@@ -35,7 +35,13 @@ public static partial class AttributeExtractor
     // KnownAttributes.RecommendedKeys at the call site — prose is uncontrolled text (pasted logs,
     // quoted code, transcripts), so only the eight keys the guide teaches are allowed to mint an
     // attribute from it.
-    [GeneratedRegex(@"(?<![\w-])([A-Za-z][A-Za-z0-9_-]{0,29}):(\S+)")]
+    //
+    // The lookbehind excludes '*' and '_' as well as word/hyphen chars — without that, this pattern
+    // matches "File:" *inside* "**File:** src/x.cs" (the char immediately before 'F' is '*', which
+    // used to be permitted), and the value capture then grabs the closing "**" as if it were the
+    // value, polluting a multi-valued key (file/ref/person/place/org/topic) with a literal "**" on
+    // every bold-labelled line that happens to use a recommended key.
+    [GeneratedRegex(@"(?<![\w*_-])([A-Za-z][A-Za-z0-9_-]{0,29}):(\S+)")]
     private static partial Regex InlineProseKeyValuePattern();
 
     /// <summary>
@@ -369,7 +375,11 @@ public static partial class AttributeExtractor
             string key = m.Groups[1].Value.ToLowerInvariant();
             if (!KnownAttributes.RecommendedKeys.Contains(key)) continue;
 
-            string value = m.Groups[2].Value;
+            // (\S+) has no sense of where prose ends, so it swallows trailing sentence/clause
+            // punctuation the value was never part of ("file:src/thing.cs." -> "src/thing.cs.",
+            // "(file:src/x.cs)" -> "src/x.cs)"). That corrupt suffix defeats a later file-existence
+            // check exactly like D-a did — trim it here, at the one place it's introduced.
+            string value = m.Groups[2].Value.TrimEnd('.', ',', ';', ':', ')', ']', '}', '"', '\'', '`');
             if (value.Length == 0 || value.Length > MaxValueLength) continue;
             if (value.StartsWith("//", StringComparison.Ordinal)) continue; // URL remainder guard
 

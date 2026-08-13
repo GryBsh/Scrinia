@@ -89,6 +89,45 @@ public sealed class AttributeExtractorTests
     }
 
     [Fact]
+    public void Extract_BoldLabel_RecommendedKey_ProducesOneCleanValue()
+    {
+        // The inline-prose pattern is unanchored, so it also fires INSIDE "**File:** src/thing.cs"
+        // (the char right before 'F' is '*', which the lookbehind must treat the same as a word
+        // char) — without excluding '*'/'_' from the lookbehind, this captured the closing "**" as
+        // a second value, polluting a multi-valued key. "why" (the only pre-existing bold-label
+        // test) never caught this because "why" isn't in RecommendedKeys.
+        var attributes = AttributeExtractor.Extract("**File:** src/thing.cs");
+        attributes!["file"].Should().BeEquivalentTo(["src/thing.cs"],
+            because: "a bold label must still produce exactly one clean value for a recommended key");
+    }
+
+    [Fact]
+    public void Extract_ItalicLabel_RecommendedKey_DoesNotMintAsteriskValue()
+    {
+        // Excluding '*' from the inline-prose lookbehind (the bold-label fix, above) also blocks
+        // the single-asterisk italic form from routing at all: no attribute is safer than the
+        // pre-fix "file: [*]" junk value.
+        AttributeExtractor.Extract("*File:* src/thing.cs").Should().BeNull();
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_TrimsSentenceFinalPunctuation()
+    {
+        // (\S+) has no sense of where prose ends, so "file:src/thing.cs." captured the trailing
+        // period as part of the path — the corrupt value then fails a file-existence check exactly
+        // like D-a's original bug, just reached through D-b's new code path instead.
+        AttributeExtractor.Extract("see file:src/thing.cs.")!["file"]
+            .Should().BeEquivalentTo(["src/thing.cs"]);
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_TrimsTrailingParenthesis()
+    {
+        AttributeExtractor.Extract("(file:src/x.cs)")!["file"]
+            .Should().BeEquivalentTo(["src/x.cs"]);
+    }
+
+    [Fact]
     public void RouteKeywords_SplitsAttributeShapedFromPlain()
     {
         var (attributes, keywords) = AttributeExtractor.RouteKeywords(

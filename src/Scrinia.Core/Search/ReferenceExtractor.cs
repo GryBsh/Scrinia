@@ -14,7 +14,13 @@ public static partial class ReferenceExtractor
     // yielding the corrupt path "rc/new.cs". A legitimate path starts after whitespace, a line
     // start, or punctuation like '('; if the preceding character is a word or path character the
     // engine is mid-token and must not match.
-    [GeneratedRegex(@"(?<![\w""'`=:./\-\\])(?:\.?/)?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
+    //
+    // The prefix group allows 0-2 leading dots before the separator (not just one) so a relative
+    // parent-path form ("../src/a.cs", ".\src\a.cs") still matches from its own start: excluding
+    // '.' from the lookbehind above means the engine can no longer coast in from a later restart
+    // position the way the old narrower lookbehind coincidentally allowed, so the prefix group has
+    // to consume the whole ".." (or "..\") itself.
+    [GeneratedRegex(@"(?<![\w""'`=:./\-\\])(?:\.{0,2}[/\\])?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
     private static partial Regex FilePathPattern();
 
     // Memory names: [[wiki-link]] references, e.g. [[/api/auth]], [[session-notes]],
@@ -34,7 +40,7 @@ public static partial class ReferenceExtractor
             return [];
 
         return FilePathPattern().Matches(content)
-            .Select(m => m.Value.TrimStart('.', '/'))
+            .Select(m => m.Value.TrimStart('.', '/', '\\'))
             .Where(p => !string.IsNullOrEmpty(p))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();

@@ -52,8 +52,60 @@ public sealed class ReferenceTests : IDisposable
         // at 's' (preceded by ':'), advances one char, and succeeds at 'r' — yielding "rc/new.cs".
         // That corrupt path is indexed, seeded into term frequencies, and reports a clean drift
         // baseline because HashWorkspaceFile returns null for a path that does not exist.
+        //
+        // A pure negative here would pass with extraction disabled entirely (bare ReferenceExtractor
+        // no longer produces ANYTHING for a path after a colon — that's correct, matching D-a's
+        // fix). The positive half pins that the clean path still surfaces, via AttributeExtractor's
+        // inline prose routing (D-b) — so this fails if either half regresses.
         ReferenceExtractor.ExtractFileRefs("see file:src/new.cs")
             .Should().NotContain("rc/new.cs");
+        AttributeExtractor.Extract("see file:src/new.cs")!["file"]
+            .Should().Contain("src/new.cs");
+    }
+
+    [Fact]
+    public void ExtractFileRefs_RelativeParentPath_StillMatches()
+    {
+        // Widening FilePathPattern's lookbehind to exclude '.' (D-a's fix) means the engine can no
+        // longer coast in from a later restart position the way the old narrower lookbehind
+        // coincidentally allowed for "../..." — the prefix group must consume the whole ".." itself
+        // or this regresses to matching nothing (a silent drift-baseline removal, same harm class
+        // as D-a in the opposite direction).
+        ReferenceExtractor.ExtractFileRefs("See ../src/a/b.cs for context")
+            .Should().Contain("src/a/b.cs");
+    }
+
+    [Fact]
+    public void ExtractFileRefs_WindowsRelativePath_StillMatches()
+    {
+        ReferenceExtractor.ExtractFileRefs(@"See .\src\a\b.cs for context")
+            .Should().Contain(@"src\a\b.cs");
+    }
+
+    [Theory]
+    // Context, then input, then the expected extracted (post-TrimStart) path.
+    [InlineData("start of line", "src/foo.cs is the file", "src/foo.cs")]
+    [InlineData("after whitespace", "see src/foo.cs", "src/foo.cs")]
+    [InlineData("after tab", "\tsrc/foo.cs", "src/foo.cs")]
+    [InlineData("after '>'", ">src/foo.cs", "src/foo.cs")]
+    [InlineData("after '('", "(src/foo.cs)", "src/foo.cs")]
+    [InlineData("after ','", ",src/foo.cs", "src/foo.cs")]
+    [InlineData("after ';'", ";src/foo.cs", "src/foo.cs")]
+    [InlineData("after em dash", "note—src/foo.cs", "src/foo.cs")]
+    [InlineData("markdown list item", "- src/foo.cs", "src/foo.cs")]
+    [InlineData("numbered list item", "1. src/foo.cs", "src/foo.cs")]
+    [InlineData("markdown link target", "[label](src/foo.cs)", "src/foo.cs")]
+    [InlineData("bold-wrapped", "**src/foo.cs**", "src/foo.cs")]
+    [InlineData("end of sentence", "see src/foo.cs.", "src/foo.cs")]
+    [InlineData("'file: ' with space", "file: src/foo.cs", "src/foo.cs")]
+    [InlineData("'/'-prefixed", "/src/foo.cs", "src/foo.cs")]
+    [InlineData("'./'-prefixed", "./src/foo.cs", "src/foo.cs")]
+    [InlineData("'\\'-prefixed", @"\src\foo.cs", @"src\foo.cs")]
+    [InlineData("bare filename, no path", "Program.cs", "Program.cs")]
+    public void ExtractFileRefs_ContextTable(string context, string input, string expected)
+    {
+        ReferenceExtractor.ExtractFileRefs(input)
+            .Should().Contain(expected, because: $"context: {context}");
     }
 
     [Fact]
