@@ -93,7 +93,7 @@ public sealed class AttributeExtractorTests
     {
         // The inline-prose pattern is unanchored, so it also fires INSIDE "**File:** src/thing.cs"
         // (the char right before 'F' is '*', which the lookbehind must treat the same as a word
-        // char) — without excluding '*'/'_' from the lookbehind, this captured the closing "**" as
+        // char) — without excluding '*' from the lookbehind, this captured the closing "**" as
         // a second value, polluting a multi-valued key. "why" (the only pre-existing bold-label
         // test) never caught this because "why" isn't in RecommendedKeys.
         var attributes = AttributeExtractor.Extract("**File:** src/thing.cs");
@@ -125,6 +125,29 @@ public sealed class AttributeExtractorTests
     {
         AttributeExtractor.Extract("(file:src/x.cs)")!["file"]
             .Should().BeEquivalentTo(["src/x.cs"]);
+    }
+
+    [Theory]
+    [InlineData("thing:Foo(bar) is the shape", "thing", "Foo(bar)")]
+    [InlineData("topic:retry(exponential) backoff", "topic", "retry(exponential)")]
+    [InlineData("ref:[[/api/auth]] has details", "ref", "[[/api/auth]]")]
+    public void InlineProseKeyValue_LeavesBalancedDelimitersIntact(string input, string key, string expected)
+    {
+        // The trailing-punctuation trim must not be balance-blind: a closing delimiter that matches
+        // an opener the caller deliberately typed is not swallowed prose, it's part of the value.
+        AttributeExtractor.Extract(input)![key].Should().BeEquivalentTo([expected]);
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_NormalizesLeadingPathPrefix_ToMatchBarePathSpelling()
+    {
+        // Without a matching TrimStart, "file:../src/a.cs" stored "../src/a.cs" while a bare mention
+        // of the same file (ExtractFileRefs) stores "src/a.cs" — two spellings of one path under the
+        // multi-valued "file" key, and HashWorkspaceFile's containment check rejects the
+        // un-normalized spelling, so that half silently gets no drift baseline.
+        string barePathSpelling = ReferenceExtractor.ExtractFileRefs("../src/a.cs").Single();
+        AttributeExtractor.Extract("see file:../src/a.cs for context")!["file"]
+            .Should().BeEquivalentTo([barePathSpelling]);
     }
 
     [Fact]

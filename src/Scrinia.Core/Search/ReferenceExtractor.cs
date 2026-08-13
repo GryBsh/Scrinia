@@ -15,12 +15,20 @@ public static partial class ReferenceExtractor
     // start, or punctuation like '('; if the preceding character is a word or path character the
     // engine is mid-token and must not match.
     //
-    // The prefix group allows 0-2 leading dots before the separator (not just one) so a relative
-    // parent-path form ("../src/a.cs", ".\src\a.cs") still matches from its own start: excluding
-    // '.' from the lookbehind above means the engine can no longer coast in from a later restart
-    // position the way the old narrower lookbehind coincidentally allowed, so the prefix group has
-    // to consume the whole ".." (or "..\") itself.
-    [GeneratedRegex(@"(?<![\w""'`=:./\-\\])(?:\.{0,2}[/\\])?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
+    // The prefix group is two independent widenings, not one:
+    //  - "0-2 leading dots" (not just one) lets a parent-relative form ("../src/a.cs") match from
+    //    its own start. Excluding '.' from the lookbehind above means the engine can no longer coast
+    //    in from a later restart position the way the old narrower lookbehind coincidentally allowed
+    //    (it used to match "../src/a/b.cs" by restarting at index 1, i.e. at the SECOND dot), so the
+    //    prefix group now has to consume the whole ".." itself.
+    //  - "[/\\]" (forward slash OR backslash) is what makes ".\src\a.cs" match at all — a single dot
+    //    would already satisfy the old "at most one dot" limit, but the old prefix only ever accepted
+    //    '/' as the separator, so a backslash-separated path never matched regardless of dot count.
+    //  - The group is a Kleene star ("*"), not "?" (0-or-1): a single optional repetition only ever
+    //    restores ONE level ("../"), so "../../src/a.cs" still matched nothing under an earlier round
+    //    of this fix. The star lets the prefix repeat, so "../../", "..\..\", and deeper chains all
+    //    match their own full prefix, not just the first segment of it.
+    [GeneratedRegex(@"(?<![\w""'`=:./\-\\])(?:\.{0,2}[/\\])*(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
     private static partial Regex FilePathPattern();
 
     // Memory names: [[wiki-link]] references, e.g. [[/api/auth]], [[session-notes]],

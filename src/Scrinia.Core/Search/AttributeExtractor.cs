@@ -36,12 +36,14 @@ public static partial class AttributeExtractor
     // quoted code, transcripts), so only the eight keys the guide teaches are allowed to mint an
     // attribute from it.
     //
-    // The lookbehind excludes '*' and '_' as well as word/hyphen chars — without that, this pattern
-    // matches "File:" *inside* "**File:** src/x.cs" (the char immediately before 'F' is '*', which
-    // used to be permitted), and the value capture then grabs the closing "**" as if it were the
-    // value, polluting a multi-valued key (file/ref/person/place/org/topic) with a literal "**" on
-    // every bold-labelled line that happens to use a recommended key.
-    [GeneratedRegex(@"(?<![\w*_-])([A-Za-z][A-Za-z0-9_-]{0,29}):(\S+)")]
+    // The lookbehind excludes '*' as well as word/hyphen chars — without that, this pattern matches
+    // "File:" *inside* "**File:** src/x.cs" (the char immediately before 'F' is '*', which used to
+    // be permitted), and the value capture then grabs the closing "**" as if it were the value,
+    // polluting a multi-valued key (file/ref/person/place/org/topic) with a literal "**" on every
+    // bold-labelled line that happens to use a recommended key. ('_' needs no separate mention here:
+    // it's already a \w character, so \w already excludes it — writing it a second time would be a
+    // no-op, not a second protection.)
+    [GeneratedRegex(@"(?<![\w*-])([A-Za-z][A-Za-z0-9_-]{0,29}):(\S+)")]
     private static partial Regex InlineProseKeyValuePattern();
 
     /// <summary>
@@ -378,12 +380,65 @@ public static partial class AttributeExtractor
             // (\S+) has no sense of where prose ends, so it swallows trailing sentence/clause
             // punctuation the value was never part of ("file:src/thing.cs." -> "src/thing.cs.",
             // "(file:src/x.cs)" -> "src/x.cs)"). That corrupt suffix defeats a later file-existence
-            // check exactly like D-a did — trim it here, at the one place it's introduced.
-            string value = m.Groups[2].Value.TrimEnd('.', ',', ';', ':', ')', ']', '}', '"', '\'', '`');
+            // check exactly like D-a did. TrimTrailingUnbalancedPunctuation only strips a closing
+            // delimiter when it has no matching opener left in the value, so a deliberately-typed
+            // "thing:Foo(bar)" or "ref:[[/api/auth]]" survives intact.
+            //
+            // TrimStart mirrors ExtractFileRefs' own leading-prefix strip ('.', '/', '\\') so the
+            // bare-path route and this inline-prose route normalize a relative path
+            // ("../src/a.cs") to the SAME spelling. Without it, "file:../src/a.cs" stored
+            // "../src/a.cs" while a bare mention of the same file stored "src/a.cs" — two spellings
+            // of one path under one multi-valued key, and the un-normalized spelling fails
+            // HashWorkspaceFile's containment check, so that half of the pair silently gets no drift
+            // baseline. This applies to every recommended key's value, not just file/ref — the guard
+            // above it (TrimEnd's punctuation strip) is the same way, so a value like "topic:.NET"
+            // loses its leading dot too; accepted for the same reason the URL/length guards below
+            // are generic rather than per-key.
+            string value = TrimTrailingUnbalancedPunctuation(m.Groups[2].Value)
+                .TrimStart('.', '/', '\\');
             if (value.Length == 0 || value.Length > MaxValueLength) continue;
             if (value.StartsWith("//", StringComparison.Ordinal)) continue; // URL remainder guard
 
             yield return (key, value);
         }
+    }
+
+    /// <summary>Strips trailing prose punctuation a <c>(\S+)</c> capture swallows by mistake. Plain
+    /// clause punctuation (<c>. , ; :</c>) has no "opener" concept and is always stripped. A closing
+    /// bracket (<c>) ] }</c>) is stripped only when the value holds more of that closer than its
+    /// matching opener — so "Foo(bar)" and "[[/api/auth]]" survive untouched (opens == closes), but
+    /// the corrupt "src/x.cs)" from "(file:src/x.cs)" is cleaned (a close with no matching open at
+    /// all). A quote/backtick is stripped only when its running count in the value is odd (an
+    /// unmatched trailing instance); an even (balanced) count is left alone.</summary>
+    private static string TrimTrailingUnbalancedPunctuation(string value)
+    {
+        while (value.Length > 0)
+        {
+            char last = value[^1];
+            switch (last)
+            {
+                case '.' or ',' or ';' or ':':
+                    value = value[..^1];
+                    continue;
+                case ')' or ']' or '}':
+                    char opener = last switch { ')' => '(', ']' => '[', _ => '{' };
+                    if (value.Count(c => c == last) > value.Count(c => c == opener))
+                    {
+                        value = value[..^1];
+                        continue;
+                    }
+                    return value;
+                case '"' or '\'' or '`':
+                    if (value.Count(c => c == last) % 2 != 0)
+                    {
+                        value = value[..^1];
+                        continue;
+                    }
+                    return value;
+                default:
+                    return value;
+            }
+        }
+        return value;
     }
 }

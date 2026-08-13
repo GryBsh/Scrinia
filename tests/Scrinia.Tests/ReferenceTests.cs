@@ -82,6 +82,34 @@ public sealed class ReferenceTests : IDisposable
             .Should().Contain(@"src\a\b.cs");
     }
 
+    [Fact]
+    public void ExtractFileRefs_TwoLevelsUpRelativePath_StillMatches()
+    {
+        // The prefix group is a Kleene star, not "?": a single optional repetition only ever
+        // restores ONE "../" level. This is the third round this exact shape has appeared on this
+        // task (each earlier fix restored one level and missed the next) — pin two levels deep so
+        // the class of bug, not just one instance, is covered.
+        ReferenceExtractor.ExtractFileRefs("See ../../src/a.cs for context")
+            .Should().Contain("src/a.cs");
+    }
+
+    [Fact]
+    public void ExtractFileRefs_TwoLevelsUpWindowsRelativePath_StillMatches()
+    {
+        ReferenceExtractor.ExtractFileRefs(@"See ..\..\src\a.cs for context")
+            .Should().Contain(@"src\a.cs");
+    }
+
+    [Fact]
+    public void ExtractFileRefs_UrlWithKnownExtension_StillIgnored()
+    {
+        // The prefix group's widened repetition must not turn into a URL-path recovery mechanism —
+        // a colon-and-slashes URL still has no valid start position for FilePathPattern regardless
+        // of how many times the prefix group can repeat once a start position exists.
+        ReferenceExtractor.ExtractFileRefs("See https://ex.com/a/b.cs for the schema")
+            .Should().NotContain(r => r.Contains("ex.com") || r.Contains("b.cs"));
+    }
+
     [Theory]
     // Context, then input, then the expected extracted (post-TrimStart) path.
     [InlineData("start of line", "src/foo.cs is the file", "src/foo.cs")]
@@ -102,6 +130,8 @@ public sealed class ReferenceTests : IDisposable
     [InlineData("'./'-prefixed", "./src/foo.cs", "src/foo.cs")]
     [InlineData("'\\'-prefixed", @"\src\foo.cs", @"src\foo.cs")]
     [InlineData("bare filename, no path", "Program.cs", "Program.cs")]
+    [InlineData("'../../'-prefixed (two levels up)", "../../src/foo.cs", "src/foo.cs")]
+    [InlineData("'..\\..\\'-prefixed (two levels up, Windows)", @"..\..\src\foo.cs", @"src\foo.cs")]
     public void ExtractFileRefs_ContextTable(string context, string input, string expected)
     {
         ReferenceExtractor.ExtractFileRefs(input)
