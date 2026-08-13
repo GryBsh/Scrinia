@@ -68,6 +68,13 @@ public sealed class ReconcileScanTests
         string metaPath = Path.Combine(metaDir, "conflict.meta.json");
         await File.WriteAllTextAsync(metaPath, ConflictedMetaJson);
 
+        // This test is about auto-merge mechanics (that the write happens on explicit reconcile,
+        // not during scan), not about whether the two sides are similar enough to merge at all —
+        // ConflictedMetaJson's keyword sets are deliberately disjoint (Jaccard 0.333) to keep that
+        // question orthogonal. Drop the admission threshold so this fixture still reaches the
+        // merge rules, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        await File.WriteAllTextAsync(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+
         // The explicit apply path: pass the conflictId with no choice. This is where the write
         // now happens (moved out of the scan path).
         string result = await Tools().MemoryReconcile(conflictId: "local/topics/topic/conflict.meta.json");
@@ -81,6 +88,75 @@ public sealed class ReconcileScanTests
             because: "applying the auto-merge must remove conflict markers from disk");
         after.Should().Contain("\"alpha\"").And.Contain("\"beta\"").And.Contain("\"common\"",
             because: "the auto-merge unions keywords from both sides");
+    }
+
+    [Fact]
+    public async Task AutoResolve_RefusesTwoDissimilarSidecars()
+    {
+        // The defect: reconcile() had no admission gate, so it auto-merged two sidecars with
+        // nothing in common and reported a clean resolve. The git merge driver has always refused
+        // below the configured threshold; this closes the gap between them.
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string metaDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(metaDir);
+        string metaPath = Path.Combine(metaDir, "dissimilar.meta.json");
+        // ours: ["auth", "jwt"], theirs: ["kubernetes", "helm"] — Jaccard 0.0, below the 0.7
+        // default, and no merge.config here, so the default applies.
+        const string conflictedContent =
+            "{\n" +
+            "  \"name\": \"test\",\n" +
+            "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+            "<<<<<<< HEAD\n" +
+            "  \"keywords\": [\"auth\", \"jwt\"]\n" +
+            "=======\n" +
+            "  \"keywords\": [\"kubernetes\", \"helm\"]\n" +
+            ">>>>>>> branch-x\n" +
+            "}";
+        await File.WriteAllTextAsync(metaPath, conflictedContent);
+
+        string result = await Tools().MemoryReconcile(conflictId: "local/topics/topic/dissimilar.meta.json");
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "below the threshold the two are different memories sharing a filename, so " +
+                     "the conflict must reach a human rather than be merged on no evidence");
+        (await File.ReadAllTextAsync(metaPath)).Should().Contain("<<<<<<<",
+            because: "a refused auto-merge must leave the conflicted file untouched");
+    }
+
+    [Fact]
+    public async Task AutoResolve_AdmitsTwoSimilarSidecars()
+    {
+        // The gate must not refuse the ordinary case. ours ["auth","jwt","oidc"], theirs
+        // ["auth","jwt","saml"] — Jaccard 0.5 — with a merge.config setting jaccardThreshold to
+        // 0.4, which also proves the threshold is read from config rather than hard-coded.
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string metaDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(metaDir);
+        string metaPath = Path.Combine(metaDir, "similar.meta.json");
+        const string conflictedContent =
+            "{\n" +
+            "  \"name\": \"test\",\n" +
+            "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+            "<<<<<<< HEAD\n" +
+            "  \"keywords\": [\"auth\", \"jwt\", \"oidc\"]\n" +
+            "=======\n" +
+            "  \"keywords\": [\"auth\", \"jwt\", \"saml\"]\n" +
+            ">>>>>>> branch-x\n" +
+            "}";
+        await File.WriteAllTextAsync(metaPath, conflictedContent);
+        await File.WriteAllTextAsync(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.4}");
+
+        string result = await Tools().MemoryReconcile(conflictId: "local/topics/topic/similar.meta.json");
+
+        ResponseParser.Parse(result).Status.Should().Be("success",
+            because: "a threshold of 0.4 admits a Jaccard-0.5 pair, and the ordinary case must not " +
+                     "be refused");
+        (await File.ReadAllTextAsync(metaPath)).Should().NotContain("<<<<<<<",
+            because: "an admitted auto-merge must resolve and remove the conflict markers");
     }
 
     /// <summary>

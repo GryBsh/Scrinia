@@ -62,6 +62,13 @@ public sealed class ReconcileMetaProvenanceTests
     public async Task Reconcile_AutoMergedMetaJson_UnionsProvenanceWithTheKeywordsItNames()
     {
         using var scope = new TestHelpers.StoreScope();
+        // This test is about what the merge RULES produce, not about whether the two sides are
+        // similar enough to merge at all — its keyword sets are deliberately disjoint to make the
+        // provenance question sharp. Drop the admission threshold so every case reaches the rule
+        // under test, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
         string conflictId = await SeedConflictAsync(scope, OursLater, TheirsEarlier);
 
         string result = await Tools().MemoryReconcile(conflictId: conflictId);
@@ -81,6 +88,13 @@ public sealed class ReconcileMetaProvenanceTests
     public async Task Reconcile_AutoMergedMetaJson_UnionsProvenanceWhicheverSideIsNewer()
     {
         using var scope = new TestHelpers.StoreScope();
+        // This test is about what the merge RULES produce, not about whether the two sides are
+        // similar enough to merge at all — its keyword sets are deliberately disjoint to make the
+        // provenance question sharp. Drop the admission threshold so every case reaches the rule
+        // under test, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
         string conflictId = await SeedConflictAsync(scope, TheirsEarlier, OursLater);
 
         string result = await Tools().MemoryReconcile(conflictId: conflictId);
@@ -104,6 +118,13 @@ public sealed class ReconcileMetaProvenanceTests
         bool unrecordedSideIsOurs)
     {
         using var scope = new TestHelpers.StoreScope();
+        // This test is about what the merge RULES produce, not about whether the two sides are
+        // similar enough to merge at all — its keyword sets are deliberately disjoint to make the
+        // provenance question sharp. Drop the admission threshold so every case reaches the rule
+        // under test, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
 
         const string unrecorded = """
             {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
