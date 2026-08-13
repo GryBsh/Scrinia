@@ -141,6 +141,7 @@ public sealed record EphemeralEntry(
     Dictionary<string, int>? TermFrequencies = null,
     DateTimeOffset? UpdatedAt = null,
     ChunkEntry[]? ChunkEntries = null,
+    Dictionary<string, string>? FileHashes = null,     // JSON "codeRefs": same drift baseline as ArtifactEntry
     Dictionary<string, string[]>? Attributes = null);  // JSON "attributes"
 ```
 
@@ -297,7 +298,7 @@ Every consumer of typed/prefixed data reads **both** shapes so old entries (whic
 - **Scorer** (`WeightedAttributeScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), each × the per-key `AttributeWeight`. It does not re-parse `key:value` `Keywords` — that on-the-fly parse was retired in P6.5; the load-time forward-fill promotes such keywords into `Attributes` first.
 - **Entity graph** (`EntityGraph.Build`): unions `ParseEntityKeywords(keywords)` (legacy `type:value` keywords) with `ParseEntityAttributes(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownAttributes.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
 - **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Attributes["ref"]` for inbound references; new links are written forward-only into the `ref` attribute (no more `ref:` keyword emission) via `KnownAttributes.Merge`.
-- **FileHashes**: the MCP `Store` write path unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `ArtifactEntry.FileHashes`.
+- **FileHashes**: the derivation pipeline (`MemoryDerivation`) unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `FileHashes` — on `ArtifactEntry` for a persistent write and identically on `EphemeralEntry` for an ephemeral one, both local and remote. An append hashes only newly-referenced paths and keeps an already-baselined path's original hash (see CHANGELOG); a plain `remember()`/`Store` hashes every referenced path.
 
 This is a **forward-only migration**: `Attributes` is `null` for entries written before this change and stays `null` — there is no backfill script. Dual-read at the scorer/graph/orphan layers is what keeps old and new entries behaving the same, permanently, without a re-index.
 

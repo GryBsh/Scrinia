@@ -10,6 +10,122 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — `reconcile()` refuses to auto-merge dissimilar sidecars
+
+- `reconcile()`'s automatic `.meta.json` merge now runs the same admission check the git merge
+  driver has always applied (`Scrinia.Core.Merge.SidecarAdmission`, also consumed by
+  `MetaJsonMerger`): it refuses to auto-merge two conflicted sidecars whose keyword sets score
+  below a Jaccard similarity threshold. Default `0.7`; configurable as `jaccardThreshold` in
+  `.scrinia/merge.config`. A conflict that resolved automatically before this change may now
+  require an explicit `choice`.
+- The refusal is reported with its own error naming the threshold (*"cannot be auto-merged: the
+  two sides' keywords are too dissimilar (below the configured similarity threshold of 0.7)"*),
+  not the generic `"'choice' is required"` — the gate is a deliberate decision, not a parse
+  failure, and the message says so instead of reading like one.
+
+### Changed (breaking) — the git merge driver conflicts on a non-string timestamp
+
+- `MetaJsonMerger` now escalates to a conflict when a sidecar's `createdAt`/`updatedAt` is present
+  but not a JSON string — a number, bool, object, array, or an explicit JSON `null` — where it
+  previously read the malformed value as absent and auto-resolved on the other side.
+  `TryGetTimestampString`'s "check presence before inspecting the value" shape is what makes an
+  explicit `null` distinguishable from "missing"; a plain indexer read cannot tell them apart.
+  Requires a hand-edited or foreign-tool sidecar to reach.
+
+### Fixed — merges lost term frequencies and could move a memory's `createdAt` forward
+
+- Term frequencies now merge on both routes. The git merge driver used to require BOTH sides to
+  carry a `termFrequencies` map or it dropped the field entirely; `reconcile()`'s auto-resolver had
+  the identical defect. Both now union whichever side(s) actually carry one, taking the max on a
+  shared term. Term frequencies are what BM25 scores against, so this was a silent ranking loss on
+  every affected merge.
+- Neither merger now moves a memory's `createdAt` forward, and both agree with each other on the
+  result. This closes two independent bugs, not one: the git merge driver compared `createdAt` as
+  ISO **strings** with ordinal comparison, which is wrong across UTC offsets (`10:00+10:00` and
+  `00:00Z` are the same instant and do not compare equal as strings); `reconcile()`'s auto-resolver
+  did not consider `createdAt` at all — it took whichever whole side won on `updatedAt`, so an
+  automatic reconcile could silently move a memory's recorded creation time forward. Both mergers
+  now select the pair once, through one rule: earliest `createdAt`, latest `updatedAt`, each
+  parsed as a `DateTimeOffset` and compared as instants.
+
+### Fixed — an append's drift baseline missed a file its new chunk referenced for the first time
+
+- An append now records a drift baseline for a file its new chunk references for the first time.
+  Previously the path reached the searchable `file` attribute through attribute extraction while
+  drift detection had nothing to compare it against, so it was reported clean forever. Applies to
+  local and remote — the server routes an append through the same store, and therefore the same
+  `MemoryDerivation` pipeline.
+- A file already in the baseline keeps its ORIGINAL hash across appends — only newly-referenced
+  paths are hashed. Re-hashing an already-baselined path on every append would re-baseline it to
+  its current content each time, so it could never be reported as drifted; that is the signal the
+  baseline exists to provide.
+
+### Fixed — ephemeral memories had no drift baseline, and a remote one hashed against nothing
+
+- Ephemeral memories now carry a drift baseline (`EphemeralEntry.FileHashes`, persisted as
+  `codeRefs`), surfaced in write responses and in `list()`.
+- `scri serve --remote` now resolves a workspace root from the current directory. Previously the
+  in-process helper store `HttpMemoryStore` uses to derive ephemeral writes was rooted at a
+  throwaway temporary directory whenever no `workspaceRoot` was supplied, so a `file` reference on
+  a remote ephemeral write hashed against a directory with nothing in it.
+
+### Fixed — copying into or out of ephemeral storage dropped the metadata that makes a memory findable
+
+- Copying a memory into or out of ephemeral storage now keeps its keywords, term frequencies,
+  keyword provenance (`AgentKeywords`) and drift baseline (`FileHashes`). Previously the copy
+  hand-assembled a subset of fields and dropped `TermFrequencies` — what BM25 scores against — so
+  a promoted or demoted memory kept its bytes and preview and became **unfindable by search**.
+  `UpdatedAt` carries across the copy; `CreatedAt` deliberately does not — on both directions of
+  the boundary, a copy is a new memory, created now, not a relocation of the old one.
+  **This fix is local-store only** — see Known Issues below: `HttpMemoryStore.CopyMemory` routes
+  any copy touching a persistent name through the server's copy endpoint, so a remote promotion or
+  demotion still cannot carry these fields.
+- `compact()` now works on ephemeral memories instead of reporting them as not found. It never
+  checked whether the target was ephemeral and went straight to the disk-only artifact read, so
+  compacting an existing multi-chunk ephemeral memory failed even though `list()` showed it and
+  `append()` worked on it without issue.
+
+### Fixed — a path after a colon extracted corrupted, and inline prose `key:value` routed unbounded keys
+
+- A file path written immediately after a colon (`file:src/x.cs`, `ref:docs/a.md`) no longer
+  extracts a silently corrupted path. The extraction pattern's lookbehind excluded `:` itself, so
+  a match starting there failed and restarted one character later, mid-token —
+  `file:src/x.cs` produced `rc/x.cs`, which was indexed, seeded into search, and reported as a
+  clean drift baseline for a file that does not exist.
+- Multi-level relative paths (`../../src/a.cs`, `..\..\src\a.cs`) now extract at all. The prefix
+  group previously restored at most one `../`/`..\` level; a deeper chain matched nothing and the
+  reference was silently dropped rather than hashed or made searchable.
+- Inline prose `key:value` — a pair appearing mid-sentence, not at line start or inside a
+  `**Bold:**` label — now routes to attributes only for the eight recommended keys: `person`,
+  `place`, `org`, `thing`, `topic`, `file`, `ref`, `review`. Any other key found this way stays
+  plain text: prose is uncontrolled (pasted logs, quoted code, transcripts), so only the keys the
+  guide teaches are allowed to mint an attribute from it. The `keywords` argument still routes any
+  `key:value` entry — every element there was typed on purpose — and line-start `key: value` and
+  `**Key:** value` lines still route any key, not just the recommended eight.
+
+### Fixed — tool descriptions now describe what the tools do
+
+- `remember`'s and `append`'s descriptions never documented that `key:value`-shaped keywords route
+  to attributes, or that the same eight recommended keys route from inline content prose. The
+  guidance that did exist sat on an internal, non-MCP helper whose `[Description]` attributes are
+  inert, because no MCP caller has ever read them.
+- `ref`'s description no longer claims it is hashed for drift detection — only `file` is; `ref` is
+  a link to another memory.
+- `link`'s `reason` parameter description no longer reads as though the reason were persisted — it
+  is only echoed into that one call's response text, never written to either memory's sidecar.
+
+### Known Issues
+
+- **Copying to or from ephemeral storage does not work against a remote store.** The client-side
+  copy request (`HttpMemoryStore.CopyApiRequest`) carries only a destination name, and the server
+  runs the copy against its own store, which has never seen the client's in-process ephemeral
+  memories. Symptoms: promoting when the server has no persistent memory of that name returns a
+  **400 Bad Request**; promoting when a same-named persistent memory *does* exist server-side
+  **silently copies the wrong memory** (the client strips the `~` before sending, so the name
+  collides with an unrelated persistent memory); demoting reports success while the copy lands in
+  the server's own ephemeral map, invisible to the client that asked for it. Needs a wire change;
+  not fixed here.
+
 ### Changed (breaking) — one derivation pipeline; the remote wire is API v2
 
 - Metadata derivation for memories was implemented four times — MCP store, MCP append, server
