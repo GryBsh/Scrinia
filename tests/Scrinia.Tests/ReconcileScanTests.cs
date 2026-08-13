@@ -62,8 +62,20 @@ public sealed class ReconcileScanTests
         var parsed = ResponseParser.Parse(result);
         parsed.Status.Should().Be("success",
             because: "scanning a store that only contains an auto-resolvable conflict is not an error");
-        parsed.Content.Should().Contain("conflict.meta.json",
-            because: "the scan report must still list the auto-resolvable conflict by relative path");
+        // A bare Contain("conflict.meta.json") passes whether the scan puts the path in the OK
+        // (auto-resolvable) bucket or the FAIL (needs manual resolution) bucket — the path is a
+        // substring of both report lines. That let this test go on passing vacuously after the
+        // admission gate landed, even when TryComputeAutoResolvedMetaJson was hardcoded to return
+        // false: the byte-equality check holds regardless (the scan never writes either way), and
+        // the path still appears via the FAIL line. Assert the specific "OK <path>" line instead,
+        // and that no FAIL line exists at all — the only conflict in this workspace IS
+        // auto-resolvable at threshold 0.0, so nothing should land in the manual bucket.
+        parsed.Content.Should().Contain("OK local/topics/topic/conflict.meta.json",
+            because: "the fixture is genuinely auto-resolvable at threshold 0.0, and the scan " +
+                     "report must classify it as such, not merely mention its path somewhere");
+        parsed.Content.Should().NotContain("FAIL",
+            because: "the only conflict here is auto-resolvable; a FAIL line would mean the scan " +
+                     "reported it as needing manual resolution despite the dropped threshold");
     }
 
     [Fact]
@@ -250,6 +262,99 @@ public sealed class ReconcileScanTests
                      "the driver would refuse");
         (await File.ReadAllTextAsync(metaPath)).Should().Contain("<<<<<<<",
             because: "a refused auto-merge must leave the conflicted file untouched");
+    }
+
+    // A duplicate case-variant key ("keywords" AND "Keywords" as sibling properties on the same
+    // side) is valid JSON syntax — JSON has no rule against it — so JsonNode.Parse with
+    // PropertyNameCaseInsensitive succeeds. The underlying property dictionary throws
+    // ArgumentException LAZILY, on the first property read, not at parse time. Both fixtures below
+    // put the duplicate on "ours" only; "theirs" is a normal single-keyword object.
+    private const string DuplicateCaseVariantKeyContent =
+        "{\n" +
+        "  \"name\": \"bad\",\n" +
+        "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+        "<<<<<<< HEAD\n" +
+        "  \"keywords\": [\"auth\"],\n" +
+        "  \"Keywords\": [\"duplicate\"]\n" +
+        "=======\n" +
+        "  \"keywords\": [\"theirs\"]\n" +
+        ">>>>>>> branch-x\n" +
+        "}";
+
+    [Fact]
+    public async Task AutoResolve_SurvivesADuplicateCaseVariantKeyOnExplicitResolve()
+    {
+        // Requirement (a): a duplicate case-variant key must not throw out of Reconcile(). It must
+        // escalate to manual resolution instead — the same degraded-but-safe outcome as any other
+        // sidecar this method cannot safely interpret.
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string metaDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(metaDir);
+        string metaPath = Path.Combine(metaDir, "duplicate-key.meta.json");
+        await File.WriteAllTextAsync(metaPath, DuplicateCaseVariantKeyContent);
+
+        // If MetaSidecarsAreSimilarEnough's throw is uncaught, this line throws out of the test
+        // rather than returning a response — the assertions below would never run.
+        string result = await Tools().MemoryReconcile(conflictId: "local/topics/topic/duplicate-key.meta.json");
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "a duplicate case-variant key cannot be safely auto-merged, so this must " +
+                     "escalate to manual resolution rather than either silently resolving or " +
+                     "throwing out of Reconcile() entirely");
+        (await File.ReadAllTextAsync(metaPath)).Should().Contain("<<<<<<<",
+            because: "an escalation must not write anything — the conflict markers stay in place");
+    }
+
+    [Fact]
+    public async Task Reconcile_NoArgs_SurvivesADuplicateCaseVariantKeyWithoutBlindingTheScan()
+    {
+        // Requirement (b), the one that matters: one malformed sidecar must not blind the scan to
+        // every OTHER conflict in the workspace. Before MetaSidecarsAreSimilarEnough was wrapped in
+        // a catch, an uncaught throw here escaped ScanForConflicts entirely — a healthy conflict
+        // sitting right next to the bad file would vanish from the report along with it.
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string metaDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(metaDir);
+
+        // A perfectly healthy, genuinely auto-resolvable conflict sitting alongside the bad one —
+        // identical keywords on both sides, Jaccard 1.0, admitted at any threshold.
+        string healthyPath = Path.Combine(metaDir, "healthy.meta.json");
+        const string healthyContent =
+            "{\n" +
+            "  \"name\": \"healthy\",\n" +
+            "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+            "<<<<<<< HEAD\n" +
+            "  \"keywords\": [\"auth\"]\n" +
+            "=======\n" +
+            "  \"keywords\": [\"auth\"]\n" +
+            ">>>>>>> branch-x\n" +
+            "}";
+        await File.WriteAllTextAsync(healthyPath, healthyContent);
+
+        string badPath = Path.Combine(metaDir, "duplicate-key.meta.json");
+        await File.WriteAllTextAsync(badPath, DuplicateCaseVariantKeyContent);
+
+        // If the throw escapes ScanForConflicts, this line throws out of the test entirely rather
+        // than returning a response.
+        string result = await Tools().MemoryReconcile(); // no-arg call: scan only
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "one malformed sidecar must degrade to a manual-resolution entry, not fail " +
+                     "the whole scan");
+        parsed.Content.Should().Contain("OK local/topics/topic/healthy.meta.json",
+            because: "the healthy conflict must still be reported as auto-resolvable — this is the " +
+                     "assertion that pins the bad file cannot blind the scan to everything else");
+        parsed.Content.Should().Contain("local/topics/topic/duplicate-key.meta.json",
+            because: "the malformed sidecar itself must still be reported, just as needing manual " +
+                     "resolution rather than aborting the report entirely");
+        parsed.Content.Should().NotContain("duplicate-key.meta.json (.meta.json — sides too dissimilar",
+            because: "a duplicate-key throw is a genuine read failure, not a dissimilarity refusal, " +
+                     "so it must be reported as \"auto-resolve failed\"");
     }
 
     /// <summary>

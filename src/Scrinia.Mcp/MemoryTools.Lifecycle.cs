@@ -525,14 +525,39 @@ public sealed partial class ScriniaMcpTools
     /// same way. Content that cannot be parsed returns <c>true</c> here — an unparseable side is a
     /// genuine auto-resolve failure, not a dissimilarity refusal, and <see
     /// cref="TryComputeAutoResolvedMetaJson"/> is the one place that distinction is reported.</para>
+    ///
+    /// <para><b>Wrapped in a catch, and it must stay that way.</b>
+    /// <see cref="TryExtractMetaSides"/> parses with <c>PropertyNameCaseInsensitive</c>, and that
+    /// option does NOT fail at parse time when a side carries two sibling keys differing only by
+    /// case (e.g. both <c>"keywords"</c> and <c>"Keywords"</c>) — <c>JsonNode.Parse</c> succeeds,
+    /// and the property dictionary throws <see cref="ArgumentException"/> ("An item with the same
+    /// key has already been added") LAZILY, on the first property lookup. That lookup is
+    /// <see cref="ReadStrings"/> below, not the parse call above, so <c>TryExtractMetaSides</c>'s
+    /// own try/catch cannot see it — the throw happens strictly after that method has already
+    /// returned. Both callers of this method (<see cref="ResolveConflictByPath"/> and the
+    /// <see cref="ScanForConflicts"/> loop) call it unguarded, so an uncaught throw here would
+    /// abort the whole scan — every OTHER conflict in the workspace would vanish from the report
+    /// because of one bad file — which is strictly worse than the honesty gap this method
+    /// exists to close. Caught here, matching the same "unparseable → true → reported as
+    /// auto-resolve failed, not too dissimilar" convention as an unparseable side above.</para>
     /// </summary>
     private static bool MetaSidecarsAreSimilarEnough(string conflictedContent, double threshold)
     {
         if (!TryExtractMetaSides(conflictedContent, out var oursNode, out var theirsNode))
             return true; // unparseable: a genuine auto-resolve failure, not a gate refusal
 
-        return SidecarAdmission.IsSimilarEnough(
-            ReadStrings(oursNode, "keywords"), ReadStrings(theirsNode, "keywords"), threshold);
+        try
+        {
+            return SidecarAdmission.IsSimilarEnough(
+                ReadStrings(oursNode, "keywords"), ReadStrings(theirsNode, "keywords"), threshold);
+        }
+        catch
+        {
+            // A duplicate case-variant key (e.g. both "keywords" and "Keywords") parses fine under
+            // PropertyNameCaseInsensitive but throws ArgumentException on this first property read
+            // — a genuine auto-resolve failure, not a dissimilarity refusal.
+            return true;
+        }
     }
 
     /// <summary>
