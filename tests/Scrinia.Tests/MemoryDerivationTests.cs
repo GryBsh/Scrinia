@@ -359,6 +359,57 @@ public sealed class MemoryDerivationTests
     }
 
     [Fact]
+    public void ForAppend_HashesAFileTheAppendedChunkReferencesForTheFirstTime()
+    {
+        // D-21 carried the existing baseline forward but never added to it, so a file first cited
+        // by an appended chunk landed in the searchable `file` attribute with no hash behind it —
+        // and list(mode:"drift") then reported it clean forever, having nothing to compare.
+        var derived = MemoryDerivation.ForAppend(
+            ["first chunk", "second chunk, see src/new.cs"],
+            existing: new ExistingMetadata(
+                Attributes: new() { ["file"] = ["src/old.cs"] },
+                FileHashes: new() { ["src/old.cs"] = "aaa" }),
+            // NOT "should-not-be-called": HashFileRefs hashes every `file` value, including
+            // src/old.cs. What protects the existing baseline is the ContainsKey guard in the
+            // merge, not the hasher being skipped — so returning a sentinel here would encode a
+            // false expectation about which paths get hashed.
+            fileHasher: path => path == "src/new.cs" ? "bbb" : "recomputed-but-must-not-win");
+
+        derived.FileHashes.Should().ContainKey("src/new.cs").WhoseValue.Should().Be("bbb",
+            because: "a file first referenced by the appended chunk must gain a drift baseline");
+    }
+
+    [Fact]
+    public void ForAppend_LeavesAnAlreadyBaselinedFileAtItsOriginalHash()
+    {
+        // THE LOAD-BEARING ASSERTION. Re-hashing on every append would re-baseline the file to its
+        // CURRENT content each time, so it could never be reported as drifted — the drift signal
+        // would be destroyed by the very operation meant to maintain it. The hasher here returns a
+        // different value on purpose: if the rule re-hashes, this fails.
+        var derived = MemoryDerivation.ForAppend(
+            ["first chunk", "second chunk mentioning src/old.cs again"],
+            existing: new ExistingMetadata(
+                Attributes: new() { ["file"] = ["src/old.cs"] },
+                FileHashes: new() { ["src/old.cs"] = "original-hash" }),
+            fileHasher: _ => "file-has-since-changed");
+
+        derived.FileHashes.Should().ContainKey("src/old.cs").WhoseValue.Should().Be("original-hash",
+            because: "the baseline is what drift compares AGAINST — re-hashing it on append " +
+                     "silently destroys drift detection");
+    }
+
+    [Fact]
+    public void ForAppend_WithoutAHasherKeepsTheCarriedBaselineUnchanged()
+    {
+        var derived = MemoryDerivation.ForAppend(
+            ["first chunk", "second chunk, see src/new.cs"],
+            existing: new ExistingMetadata(FileHashes: new() { ["src/old.cs"] = "aaa" }));
+
+        derived.FileHashes.Should().BeEquivalentTo(new Dictionary<string, string> { ["src/old.cs"] = "aaa" },
+            because: "no resolver means no baseline can be computed — D-04 — and the carried one survives");
+    }
+
+    [Fact]
     public void ForAppend_RoutesCallerKeywordsIntoAttributes()
     {
         var derived = MemoryDerivation.ForAppend(

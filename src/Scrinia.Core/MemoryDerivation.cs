@@ -174,12 +174,18 @@ public static partial class MemoryDerivation
     /// <param name="attributes">Explicit caller-supplied attributes for this append (D-18).</param>
     /// <param name="keywords">The caller's RAW new keywords (D-19 routes the key:value ones).</param>
     /// <param name="existing">What the memory already carries. Null for an append onto nothing.</param>
+    /// <param name="fileHasher">
+    /// Resolves a <c>file</c> attribute value to a content hash, or null when it cannot be hashed.
+    /// Supplied by the store; null means no new baseline is computed. Same delegate
+    /// <see cref="ForStore"/> takes, and the pipeline's only contact with the filesystem (D-04).
+    /// </param>
     public static DerivedMetadata ForAppend(
         string[] fullContent,
         string? description = null,
         IReadOnlyDictionary<string, string[]>? attributes = null,
         string[]? keywords = null,
-        ExistingMetadata? existing = null)
+        ExistingMetadata? existing = null,
+        Func<string, string?>? fileHasher = null)
     {
         ArgumentNullException.ThrowIfNull(fullContent);
         if (fullContent.Length == 0)
@@ -247,7 +253,28 @@ public static partial class MemoryDerivation
         // D-21 — the second data-loss fix. The server's append had no FileHashes at all: a REST
         // append destroyed the memory's drift baseline. The baseline is carried forward, and its
         // path keys are re-folded into `file` so the searchable key never falls behind the hashes.
+        // This adds to it: a file the appended chunk references for the first time gets hashed
+        // now, because otherwise its path reaches the searchable `file` attribute through the
+        // carrier below while drift detection has nothing to compare it against and reports it
+        // clean forever.
+        //
+        // ONLY NEW PATHS ARE HASHED. An entry already in the baseline keeps its original hash —
+        // re-hashing would re-baseline the file to its current content on every append, so it
+        // could never be reported as drifted, and the append would destroy the very signal the
+        // baseline exists to provide. A path present in `file` but absent from the baseline
+        // because it was unhashable at store time is hashed here if it now resolves: it was never
+        // baselined, and this is the first opportunity.
         var fileHashes = existing?.FileHashes;
+        var newHashes = HashFileRefs(attrs, fileHasher);
+        if (newHashes is not null)
+        {
+            var combined = fileHashes is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(fileHashes, StringComparer.OrdinalIgnoreCase);
+            foreach (var (path, hash) in newHashes)
+                if (!combined.ContainsKey(path)) combined[path] = hash;
+            fileHashes = combined;
+        }
 
         // Review is canonicalized here on the same rule as the store path (D-06) rather than being
         // re-emitted from the EXISTING entry the way MCP's append did: re-emitting the old value

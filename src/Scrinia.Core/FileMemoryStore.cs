@@ -1316,7 +1316,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             AgentKeywords: existingEntry?.AgentKeywords ?? existingEph?.AgentKeywords);
 
         var derived = MemoryDerivation.ForAppend(
-            fullContent, write.Description, write.Attributes, write.Keywords, existing);
+            fullContent, write.Description, write.Attributes, write.Keywords, existing,
+            fileHasher: HashWorkspaceFile);
 
         if (ephemeral)
             return PersistEphemeral(write.Name, newArtifact, originalBytes, chunkCount, derived,
