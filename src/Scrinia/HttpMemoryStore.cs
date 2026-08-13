@@ -286,7 +286,17 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         {
             var e = kvp.Value;
             var artifactEntry = new ArtifactEntry(
-                Name: $"~{e.Name}",
+                // Bare, not `$"~{e.Name}"` — this used to prefix the tilde here, disagreeing with
+                // every other ephemeral Name projection in the codebase: FileMemoryStore.ListEphemeral,
+                // FileMemoryStore.PersistEphemeral (which is what actually answers this store's own
+                // ephemeral WRITE response, through _localHelper), and the server's MemoryEntry.From
+                // all treat ArtifactEntry.Name as bare and add the `~` only when building a
+                // caller-facing address (QualifiedName, a display label). A prefixed Name here meant a
+                // remote store's write response and its own list response disagreed about the same
+                // memory's Name, and every consumer that (correctly, per those other sites) adds its
+                // own `~` for Scope == "ephemeral" — the CLI, SearchResultRenderer, MemoryTools list —
+                // would double it to "~~name" when the candidate came from here.
+                Name: e.Name,
                 // Uri is empty because an ephemeral artifact has no backing file — not the
                 // remote-path placeholder described at BuildArtifactEntry. These entries come
                 // from the in-process _ephemeral dictionary, not the server.

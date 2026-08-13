@@ -394,6 +394,37 @@ public sealed class RemoteStoreToolTests
                 because: "two projections of one record must not disagree about it");
     }
 
+    /// <summary>
+    /// A third hand-written projection of the same ephemeral record used to disagree here: the
+    /// WRITE response (<c>Remember</c>, answered by <c>_localHelper.StoreAsync</c> →
+    /// <c>FileMemoryStore.PersistEphemeral</c>, which reports a bare <c>Name</c>, matching
+    /// <c>FileMemoryStore.ListEphemeral</c>) and this store's own <c>ListEphemeral</c>, which used
+    /// to prefix the tilde itself (<c>$"~{e.Name}"</c>) — so the same memory's <c>Name</c> came back
+    /// bare from one read and pre-prefixed from the other. Every consumer that formats an ephemeral
+    /// display label (the CLI, <c>SearchResultRenderer</c>, the MCP <c>list</c> tool) already adds
+    /// its own <c>~</c> when <c>Scope == "ephemeral"</c>, on the assumption that <c>Entry.Name</c> is
+    /// always bare — an assumption <see cref="HttpMemoryStore.ListEphemeral"/> alone broke, which
+    /// would have doubled the prefix to <c>"~~scratch"</c> for any candidate it produced.
+    /// </summary>
+    [Fact]
+    public async Task ListScoped_EphemeralPath_RemoteStore_NameMatchesTheWriteResponse()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var written = await scope.Store.StoreAsync(new MemoryWrite("~scratch", "local", ["a thought about boats"]));
+
+        var listed = scope.Store.ListScoped(null).Single(s => s.Scope == "ephemeral").Entry;
+
+        listed.Name.Should().Be(written.Name,
+            because: "the write response and the listing projection describe the same memory and " +
+                     "must not disagree about its Name — one bare, one tilde-prefixed — the way " +
+                     "PersistEphemeral and ListEphemeral used to");
+        listed.Name.Should().Be("scratch",
+            because: "ArtifactEntry.Name is bare everywhere else (FileMemoryStore's two ephemeral " +
+                     "projections, the server's MemoryEntry.From); every ephemeral display label is " +
+                     "built by prefixing '~' onto this bare Name, not by trusting it to already carry one");
+    }
+
     /// <summary>An ephemeral write must not reach the network at all. Complements the two round
     /// trips above: they would still pass if the write were POSTed AND mirrored locally, which
     /// would put the memory in two places and leak scratch content to the server.</summary>

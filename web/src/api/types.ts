@@ -53,6 +53,10 @@ export interface MemoryEntry {
   termFrequencies?: Record<string, number>;
   chunkEntries?: ChunkEntryDto[];
   fileHashes?: Record<string, string>;
+  // Which of `keywords` the caller actually supplied, as opposed to what was auto-extracted from
+  // content. Additive and optional — absent (not present) means "unknown", not "none". Mirrors
+  // Scrinia.Server.Models.MemoryEntry.AgentKeywords.
+  agentKeywords?: string[];
 }
 
 export interface ChunkEntryDto {

@@ -155,9 +155,14 @@ public sealed class PatchEndpointTests : IAsyncLifetime
     /// — mutation-proven blind to the server HONOURING caller-forged values (adding
     /// <c>TermFrequencies = req.TermFrequencies, FileHashes = req.FileHashes</c> to the handler's
     /// <c>with</c> expression compiled clean and left all four tests green). This version PATCHes a
-    /// body that forges <c>TermFrequencies</c>, <c>FileHashes</c> and <c>ChunkEntries</c> to
-    /// obviously-wrong values alongside a legitimate attribute change, and asserts the store's real,
-    /// pre-patch values win — the only version of this guard that catches both directions.
+    /// body that forges <c>TermFrequencies</c>, <c>FileHashes</c>, <c>ChunkEntries</c>,
+    /// <c>ChunkCount</c>, <c>OriginalBytes</c> and <c>CreatedAt</c> to obviously-wrong values
+    /// alongside a legitimate attribute change, and asserts the store's real, pre-patch values win
+    /// for all six — the only version of this guard that catches both directions for every field
+    /// the handler's doc comment claims the body can never move. <c>ChunkCount</c>/<c>OriginalBytes</c>/
+    /// <c>CreatedAt</c> were added after the doc comment turned out to name them but the test never
+    /// forged them — a caller-supplied <c>createdAt</c> reaching storage is an integrity concern on a
+    /// public REST surface, not just an internal accounting detail.
     /// </summary>
     [Fact]
     public async Task Patch_LeavesDerivedFieldsIntact()
@@ -202,6 +207,9 @@ public sealed class PatchEndpointTests : IAsyncLifetime
             [
                 new ChunkEntryDto(1, "forged chunk", ["forged"], new Dictionary<string, int> { ["forged"] = 1 }),
             ],
+            ChunkCount = 9999,
+            OriginalBytes = 123456789,
+            CreatedAt = DateTimeOffset.UnixEpoch,
         };
         var patchResp = await _client.PatchAsJsonAsync(
             $"{_base}/memories/patch-derived-survival-probe", forged);
@@ -249,6 +257,20 @@ public sealed class PatchEndpointTests : IAsyncLifetime
             because: "the server must keep its own derived drift baseline, not the caller-forged one");
         reread.FileHashes.Should().NotContainKey("x",
             because: "the forged FileHashes key must never reach storage");
+
+        // The handler's own doc comment names ChunkCount/OriginalBytes/CreatedAt alongside
+        // TermFrequencies/ChunkEntries/FileHashes as fields the body must never move — but until now
+        // nothing forged them, so a future edit wiring any of these three into the handler's `with`
+        // expression would have left this whole file green. CreatedAt in particular is an integrity
+        // concern: PATCH is a public REST surface, and a caller-forged CreatedAt reaching storage
+        // would let anyone rewrite a memory's history.
+        reread.ChunkCount.Should().Be(entry.ChunkCount,
+            because: "the forged ChunkCount must never reach storage");
+        reread.OriginalBytes.Should().Be(entry.OriginalBytes,
+            because: "the forged OriginalBytes must never reach storage");
+        reread.CreatedAt.Should().Be(entry.CreatedAt,
+            because: "the forged CreatedAt must never reach storage — PATCH must not let a caller " +
+                     "rewrite a memory's history");
 
         // The legitimate attribute promotion this test carries alongside the guard did apply.
         reread.Attributes!.Should().ContainKey("mention");
