@@ -101,18 +101,29 @@ public sealed partial class ScriniaMcpTools
         "Persist a memory at a path. content is an array — each element becomes one independently " +
         "retrievable chunk. attributes is a map of typed facets that link and filter memories " +
         "(e.g. person/org/topic/file/review); keywords are the distinctive terms and query phrasings " +
-        "a searcher would use. Example: remember({ path: '/findings/SEC-001', " +
+        "a searcher would use. A keywords entry shaped 'key:value' (e.g. 'person:maria') is routed " +
+        "into attributes instead of kept as a keyword — see the keywords and content parameter " +
+        "descriptions for the exact rule. Example: remember({ path: '/findings/SEC-001', " +
         "content: ['observation', 'recommendation'], attributes: { org: ['acme'], topic: ['auth'] }, " +
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
         [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string path,
-        [Description("Content array — each element becomes one independently retrievable chunk.")] string[] content,
-        [Description("Optional typed attributes — a map of key to values. Recommended keys: person, place, " +
+        [Description("Content array — each element becomes one independently retrievable chunk. A " +
+                     "'key:value' pair written inline in the prose (e.g. 'file:src/x.cs') is also picked up " +
+                     "as an attribute, but only for the eight recommended keys: person, place, org, thing, " +
+                     "topic, file, ref, review. Any other key in prose is left as plain text.")] string[] content,
+        [Description("Optional typed attributes — a map of key to values. Sets attributes directly, " +
+                     "regardless of what content or keywords contain. Recommended keys: person, place, " +
                      "org, thing, topic (entities that link related memories); file, ref (dependencies, hashed " +
                      "for drift detection); review (an ISO 8601 date and/or a free-text condition). Any key is " +
                      "allowed. Example: { person: ['maria'], org: ['acme'], review: ['2026-08-01'] }.")]
         Dictionary<string, string[]>? attributes = null,
-        [Description("Optional keywords — the distinctive terms AND the phrasings a searcher is likely to use. Merged with auto-extracted terms and seeded into search.")] string[]? keywords = null,
+        [Description("Optional keywords — the distinctive terms AND the phrasings a searcher is likely to use. " +
+                     "Merged with auto-extracted terms and seeded into search. A 'key:value' entry (any key, " +
+                     "e.g. 'person:maria', 'sprint:24') is routed into attributes instead of kept as a keyword " +
+                     "— the preferred way to attach a person/place/org/thing/topic/file/ref/review facet, and " +
+                     "any other key works too since every element here was typed on purpose. A plain keyword " +
+                     "(no colon) stays a keyword. Use the same canonical name for an entity across memories.")] string[]? keywords = null,
         CancellationToken cancellationToken = default)
     {
         // Skill-path routing: '/skill/{name}' → SkillCreate.
@@ -224,14 +235,20 @@ public sealed partial class ScriniaMcpTools
     [McpServerTool(Name = "append"), Description(
         "Append a new chunk to an existing memory (or create it if missing). Preserves the memory's " +
         "existing retrieval metadata and merges in any new attributes (multi-valued keys union) and " +
-        "keywords (deduplicated). Example: append({ path: '/sessions/2026-05-11', " +
+        "keywords (deduplicated) — same 'key:value' routing as remember: a keywords entry shaped " +
+        "'key:value' becomes an attribute instead of a keyword, and the eight recommended keys route " +
+        "the same way from inline content prose. Example: append({ path: '/sessions/2026-05-11', " +
         "content: 'session note', attributes: { topic: ['standup'] } }).")]
     public async Task<string> MemoryAppend(
         [Description("Memory path to append to.")] string path,
-        [Description("Text content for the new chunk.")] string content,
-        [Description("Optional attributes merged into the memory's existing attributes (multi-valued keys union, scalar keys newer-wins). Same key vocabulary as remember.")]
+        [Description("Text content for the new chunk. A 'key:value' pair written inline (e.g. " +
+                     "'file:src/x.cs') is also picked up as an attribute, but only for the eight recommended " +
+                     "keys: person, place, org, thing, topic, file, ref, review.")] string content,
+        [Description("Optional attributes merged into the memory's existing attributes (multi-valued keys union, scalar keys newer-wins). Same key vocabulary as remember — sets attributes directly.")]
         Dictionary<string, string[]>? attributes = null,
-        [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated).")] string[]? keywords = null,
+        [Description("Optional keywords merged with the memory's existing + auto-extracted terms (deduplicated). " +
+                     "A 'key:value' entry (any key) routes into attributes instead of keywords, same as " +
+                     "remember; a plain keyword (no colon) stays a keyword.")] string[]? keywords = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -295,12 +312,13 @@ public sealed partial class ScriniaMcpTools
     }
 
     [McpServerTool(Name = "link"), Description(
-        "Create a bidirectional link between two memories. " +
+        "Create a bidirectional link between two memories by adding a 'ref' attribute on each pointing " +
+        "at the other — queryable later via search's attributeFilter: { ref: [...] }. " +
         "Example: link({ path: '/findings/SEC-001', destination: '/patterns/auth' }).")]
     public async Task<string> MemoryLink(
         [Description("Source memory path.")] string path,
         [Description("Target memory path.")] string destination,
-        [Description("Optional reason for the link.")] string? reason = null,
+        [Description("Optional reason for the link, shown only in this call's response text — not persisted on either memory.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(path))

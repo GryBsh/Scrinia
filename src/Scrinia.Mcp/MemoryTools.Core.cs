@@ -115,14 +115,10 @@ public sealed partial class ScriniaMcpTools
                      "Naming: '/path/to/memory' (e.g. '/api/auth-flow'), '/temp/subject' (ephemeral).")] string name,
         [Description("Optional description. If empty, the first 200 characters of content are used.")] string description = "",
         [Description("Optional tags for categorization.")] string[]? tags = null,
-        [Description("Optional keywords for search. Merged with auto-extracted content terms. " +
-                     "Prefer key:value keywords using one of these entity types: 'person:<name>', 'place:<name>', " +
-                     "'org:<name>', 'thing:<name>', 'topic:<theme>'. These entries, and any other " +
-                     "key:value keyword, become structured attributes — an exact-match retrieval signal and " +
-                     "entity-graph input, so a query mentioning one entity can surface this memory via a " +
-                     "related entity even with no text overlap. Plain keywords remain search keywords. " +
-                     "Use the same canonical name for an entity across memories; the type lets a person and a " +
-                     "place that share a name stay distinct.")] string[]? keywords = null,
+        [Description("Optional keywords for search. Merged with auto-extracted content terms; 'key:value' " +
+                     "entries route into attributes. This Description is inert — internal helper, not an " +
+                     "MCP tool — the guidance callers see is on the public 'remember' tool's keywords " +
+                     "parameter in MemoryTools.cs.")] string[]? keywords = null,
         [Description("Optional retrieval anchors — phrases, questions, or category-level paraphrases that bridge likely user queries to this entry's content. Use vocabulary you expect users to query with, not vocabulary already in the content. Indexed for both attribute-score lookup and BM25 via term-frequency seeding.")]
         string[]? anchors = null,
         [Description("Optional ISO 8601 date after which this memory should be reviewed for staleness.")] string? reviewAfter = null,
