@@ -3,21 +3,16 @@ using System.Text.Json;
 using FluentAssertions;
 using Scrinia;
 using Scrinia.Core.Encoding;
-using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
 using Xunit;
 
 namespace Scrinia.Tests;
 
 /// <summary>
-/// The client half of the store wire: <see cref="HttpMemoryStore.WriteArtifactAsync"/> must put the
-/// <see cref="ArtifactWriteMetadata"/> it is handed into the request body.
-///
-/// This is the assertion the server-side StoreAttributesWireTests cannot make. That test proves the
-/// server persists an attribute map it receives; this one proves the client sends one. Until this
-/// change the only construction here was <c>new StoreApiRequest([text], qualifiedName)</c> — the
-/// metadata parameter was accepted and dropped, and remember() against a remote store reported
-/// success while discarding every agent-supplied attribute.
+/// The client half of the store wire. <see cref="HttpMemoryStore.WriteArtifactAsync"/> no longer
+/// carries any metadata parameter — the store derives, so the write is raw content only — and this
+/// pins that the request body reflects exactly that: no <c>attributes</c>, <c>keywords</c> or
+/// <c>description</c> member, ever.
 /// </summary>
 public class HttpMemoryStoreWriteRequestTests
 {
@@ -38,39 +33,6 @@ public class HttpMemoryStoreWriteRequestTests
             response.Headers.TryAddWithoutValidation(RemoteApiVersion.HeaderName, RemoteApiVersion.Current);
             return response;
         }
-    }
-
-    [Fact]
-    public async Task WriteArtifactAsync_PutsWriteMetadataOnTheRequest()
-    {
-        var handler = new CapturingHandler();
-        var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:5000") };
-        using var store = new HttpMemoryStore(http, "default", retryOptions: new RetryOptions(MaxRetries: 0));
-
-        await store.WriteArtifactAsync("note", "local", Nmp2ChunkedEncoder.Encode("hello world"),
-            new ArtifactWriteMetadata(
-                Attributes: new Dictionary<string, string[]> { ["person"] = ["maria"], ["custom"] = ["v"] },
-                Keywords: ["portcullis"],
-                Description: "a curated preview"));
-
-        handler.Body.Should().NotBeNull("precondition: the write posted a body");
-        using var doc = JsonDocument.Parse(handler.Body!);
-        var root = doc.RootElement;
-
-        var attributes = root.GetProperty("attributes");
-        attributes.GetProperty("person").EnumerateArray().Select(v => v.GetString())
-            .Should().Contain("maria");
-        attributes.GetProperty("custom").EnumerateArray().Select(v => v.GetString())
-            .Should().Contain("v");
-
-        // Keywords travel WITH the attributes, not instead of them. The map crossing here is the
-        // caller's pre-AttributeMigration.Forward map; the server re-runs Forward to re-fold
-        // recognized "key:value" keywords into attributes. Drop the keywords from the wire and
-        // Forward has nothing to re-fold, so that class of agent-supplied keyword is lost silently.
-        root.GetProperty("keywords").EnumerateArray().Select(v => v.GetString())
-            .Should().Contain("portcullis");
-
-        root.GetProperty("description").GetString().Should().Be("a curated preview");
     }
 
     [Fact]

@@ -1023,24 +1023,13 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     }
 
     public async Task WriteArtifactAsync(string subject, string scope, string artifactText,
-        ArtifactWriteMetadata? meta = null, CancellationToken ct = default)
+        CancellationToken ct = default)
     {
         // Decode the NMP/2 artifact back to text, then store via the API
         byte[] bytes = Nmp2Strategy.Instance.Decode(artifactText);
         string text = System.Text.Encoding.UTF8.GetString(bytes);
         string qualifiedName = FormatQualifiedName(scope, subject);
-        // Keywords travel alongside Attributes, not instead of them. The map handed to this write is
-        // the caller's PRE-AttributeMigration.Forward map; the server re-runs Forward, which re-folds
-        // recognized "key:value" keywords into attributes. Send the map without the keywords and
-        // Forward has nothing to re-fold, so that class of agent-supplied keyword is lost silently.
-        // ToDictionary: ArtifactWriteMetadata.Attributes is IReadOnlyDictionary and the
-        // source-generated serializer needs the concrete Dictionary.
-        var req = new StoreApiRequest(
-            [text],
-            qualifiedName,
-            Description: meta?.Description,
-            Attributes: meta?.Attributes?.ToDictionary(kv => kv.Key, kv => kv.Value),
-            Keywords: meta?.Keywords);
+        var req = new StoreApiRequest([text], qualifiedName);
 
         // Same send path, same failure contract, as StoreAsync above — see PostCheckedAsync. This
         // method used to carry its own copy of it.

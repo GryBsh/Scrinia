@@ -205,14 +205,9 @@ public interface IMemoryStore
     string ArtifactUri(string name, string scope = "local");
 
     // Artifact file I/O
-    /// <summary>
-    /// Writes the artifact text for <paramref name="subject"/>.
-    /// <para><paramref name="meta"/> is honoured only by stores that cannot receive metadata
-    /// through <c>Upsert</c> — in practice, remote stores. <see cref="FileMemoryStore"/> ignores
-    /// it by design; see the comment at its implementation.</para>
-    /// </summary>
+    /// <summary>Writes the artifact text for <paramref name="subject"/>.</summary>
     Task WriteArtifactAsync(string subject, string scope, string artifactText,
-        ArtifactWriteMetadata? meta = null, CancellationToken ct = default);
+        CancellationToken ct = default);
     Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default);
     bool DeleteArtifact(string subject, string scope);
 

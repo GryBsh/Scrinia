@@ -290,19 +290,10 @@ public partial class ScriniaCommands
         byte[] allBytes = Nmp2Strategy.Instance.Decode(artifact);
         string fullText = System.Text.Encoding.UTF8.GetString(allBytes);
         string compacted = Nmp2ChunkedEncoder.Encode(fullText);
-        // Compaction rewrites content, not metadata, so the entry's existing attributes/keywords/
-        // description travel with the write. FileMemoryStore ignores `meta` (its Upsert below is the
-        // authority), and `store` is typed ILocalMemoryStore, which HttpMemoryStore does not
-        // implement — so this cannot reach a remote store today. It is passed anyway because the
-        // sibling compaction paths (MemoryTools.Lifecycle.Compact, MemoryTools.Core.Append) that
-        // CAN reach one lost exactly this metadata by omitting it: a write that must preserve
-        // metadata should say so at the call site, not depend on the parameter's static type.
-        await store.WriteArtifactAsync(item.Entry.Name, item.Scope, compacted,
-            new ArtifactWriteMetadata(
-                Attributes: item.Entry.Attributes,
-                Keywords: item.Entry.Keywords,
-                Description: item.Entry.ContentPreview),
-            ct);
+        // Compaction rewrites content, not metadata. The Upsert below is what makes the entry's
+        // existing attributes/keywords/description travel forward — this write carries only the
+        // recompacted text.
+        await store.WriteArtifactAsync(item.Entry.Name, item.Scope, compacted, ct);
 
         var updated = item.Entry with
         {

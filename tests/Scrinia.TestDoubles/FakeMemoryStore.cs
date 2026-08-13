@@ -41,7 +41,7 @@ public class FakeMemoryStore : IMemoryStore
     public virtual void ArchiveVersion(string subject, string scope = "local") { }
     public virtual string ArtifactUri(string name, string scope = "local") => "";
     public virtual Task WriteArtifactAsync(string subject, string scope, string artifactText,
-        ArtifactWriteMetadata? meta = null, CancellationToken ct = default) => Task.CompletedTask;
+        CancellationToken ct = default) => Task.CompletedTask;
     public virtual Task<string> ReadArtifactAsync(string subject, string scope, CancellationToken ct = default) => Task.FromResult("");
     public virtual bool DeleteArtifact(string subject, string scope) => false;
     public virtual string[] DiscoverTopics() => [];
