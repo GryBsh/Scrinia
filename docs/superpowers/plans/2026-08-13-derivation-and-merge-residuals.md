@@ -1347,7 +1347,13 @@ Create `tests/Scrinia.Tests/EphemeralLifecycleTests.cs`:
         // was derived and then discarded — the entry looked clean while carrying no baseline.
         // ... arrange a store rooted at a temp workspace containing src/thing.cs ...
 
-        store.StoreAsync(new MemoryWrite("~scratch", "local", ["see file:src/thing.cs"])).Result
+        // A BARE path, not `file:src/thing.cs`. Prose `file:` is NOT a supported way to produce a
+        // `file` attribute, and worse than unsupported: FilePathPattern's (?<!["'`=:]) lookbehind
+        // does not suppress the match, it shifts the start one character — so `file:src/thing.cs`
+        // silently yields the corrupt path `rc/thing.cs`. The supported forms are a bare path in
+        // content (this one), `file:path` in the `keywords` argument, an explicit `attributes` map,
+        // or a line-start `file: path` WITH whitespace after the colon.
+        store.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"])).Result
              .FileHashes.Should().ContainKey("src/thing.cs");
 
         store.GetEphemeral("scratch")!.FileHashes.Should().ContainKey("src/thing.cs",
