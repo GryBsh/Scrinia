@@ -1,5 +1,12 @@
 namespace Scrinia.Merge;
 
+/// <summary>
+/// DUPLICATE, AND THE DUPLICATION IS FORCED. The original is
+/// <c>Scrinia.Core.Merge.KeywordJaccard</c>. This project is a standalone AOT executable with zero
+/// project references by hard constraint, so it cannot call it. Change one and you must change the
+/// other: <c>Scrinia.Merge.Tests.KeywordJaccardParityTests</c> runs the same cases through both and
+/// fails when they disagree. The rule and its reasoning live in the Core copy.
+/// </summary>
 public static class KeywordJaccard
 {
     public static double Compute(string[]? a, string[]? b)
