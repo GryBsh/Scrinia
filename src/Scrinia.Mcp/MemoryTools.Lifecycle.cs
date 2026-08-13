@@ -460,6 +460,21 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
+            // The timestamps come from the ONE rule, not from whichever node won the base
+            // selection above. Riding along meant createdAt took the winner's value — so an
+            // automatic reconcile could move a memory's creation time FORWARD.
+            var (mergedCreated, mergedUpdated) = SidecarTimestampMerge.Select(
+                oursNode["createdAt"]?.GetValue<string>(), oursUpdated,
+                theirsNode["createdAt"]?.GetValue<string>(), theirsUpdated);
+            if (mergedCreated is null)
+                (baseNode as JsonObject)?.Remove("createdAt");
+            else
+                baseNode["createdAt"] = mergedCreated;
+            if (mergedUpdated is null)
+                (baseNode as JsonObject)?.Remove("updatedAt");
+            else
+                baseNode["updatedAt"] = mergedUpdated;
+
             // Union the keywords and their provenance, through the ONE rule
             // (Scrinia.Core.Merge.SidecarKeywordMerge). This used to be a hand-rolled keyword
             // union that left `agentKeywords` to ride along on whichever side won the timestamp

@@ -220,6 +220,46 @@ public sealed class ReconcileMetaProvenanceTests
         "keywords":["auth","local"],"termFrequencies":null}
         """;
 
+    private const string OursEarlyCreatedEarlyUpdated = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z",
+        "keywords":["auth","local"]}
+        """;
+
+    private const string TheirsLateCreatedLateUpdated = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-02-01T00:00:00Z","updatedAt":"2026-03-01T00:00:00Z",
+        "keywords":["auth","local"]}
+        """;
+
+    /// <summary>
+    /// The A3 defect: the auto-resolver picked one node WHOLE by <c>updatedAt</c> and never
+    /// considered <c>createdAt</c> at all, so resolving in favour of the newer side (theirs, here)
+    /// silently moved the memory's creation time forward — from 2026-01-01 to 2026-02-01 — losing
+    /// when it was actually created. The git merge driver had always kept the earliest; the two
+    /// mergers disagreed. Both timestamps now come from the one shared rule
+    /// (<c>Scrinia.Core.Merge.SidecarTimestampMerge.Select</c>): latest <c>updatedAt</c>, but
+    /// EARLIEST <c>createdAt</c>, independently of which side otherwise wins.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_AutoMergedMetaJson_KeepsTheEarliestCreatedAt()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string conflictId = await SeedConflictAsync(
+            scope, OursEarlyCreatedEarlyUpdated, TheirsLateCreatedLateUpdated);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+        ResponseParser.Parse(result).Status.Should().Be("success");
+
+        var resolved = await ResolvedAsync(scope, conflictId);
+        resolved.GetProperty("createdAt").GetString().Should().Be("2026-01-01T00:00:00Z",
+            because: "createdAt is the earliest of the two — the memory was created once, and a " +
+                     "merge that moves it forward claims it did not exist during a period it did");
+        resolved.GetProperty("updatedAt").GetString().Should().Be("2026-03-01T00:00:00Z",
+            because: "updatedAt is the latest of the two — theirs also wins the base-node selection " +
+                     "here, so this pins that createdAt is corrected independently of that choice");
+    }
+
     /// <summary>
     /// An explicit JSON <c>null</c> is a distinct shape from an absent key: <c>node?[key]</c>
     /// (the indexer) returns a null reference for BOTH, so a naive reader cannot tell "this side

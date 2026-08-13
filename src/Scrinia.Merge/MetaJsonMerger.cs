@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -59,10 +60,9 @@ public static class MetaJsonMerger
             foreach (var kw in theirsAgent) if (!string.IsNullOrWhiteSpace(kw)) agentKeywords.Add(kw);
         }
 
-        string? oursUpdated = GetString(ours, "updatedAt"), theirsUpdated = GetString(theirs, "updatedAt");
-        string? updatedAt = CompareTimestamps(oursUpdated, theirsUpdated) > 0 ? oursUpdated : theirsUpdated;
-        string? oursCreated = GetString(ours, "createdAt"), theirsCreated = GetString(theirs, "createdAt");
-        string? createdAt = CompareTimestamps(oursCreated, theirsCreated) < 0 ? oursCreated : theirsCreated;
+        var (createdAt, updatedAt) = SelectTimestamps(
+            GetString(ours, "createdAt"), GetString(ours, "updatedAt"),
+            GetString(theirs, "createdAt"), GetString(theirs, "updatedAt"));
 
         // Overlay the merged fields onto OURS' full object — preserves every unknown property
         // (contentPreview, chunkEntries, codeRefs, attributes, …) verbatim. termFrequencies is NOT
@@ -218,11 +218,37 @@ public static class MetaJsonMerger
         result = ours; return false;
     }
 
-    private static int CompareTimestamps(string? a, string? b)
+    // DUPLICATE, AND THE DUPLICATION IS FORCED. The original is
+    // Scrinia.Core.Merge.SidecarTimestampMerge.Select, which reconcile()'s auto-resolver calls;
+    // this project is a standalone AOT executable with zero project references by hard constraint,
+    // so it cannot call it. Change one and you must change the other:
+    // Scrinia.Merge.Tests.SidecarTimestampMergeParityTests runs the same cases through both and
+    // fails when they disagree. The rule and its reasoning live there. In summary: pick the LATEST
+    // updatedAt and the EARLIEST createdAt, compared as parsed instants; an unparseable value is
+    // treated as absent for comparison, and OURS is returned unchanged when neither side parses, so
+    // a merge can never silently reformat a timestamp.
+    private static (string? CreatedAt, string? UpdatedAt) SelectTimestamps(
+        string? oursCreated, string? oursUpdated, string? theirsCreated, string? theirsUpdated) =>
+        (Pick(oursCreated, theirsCreated, earliest: true),
+         Pick(oursUpdated, theirsUpdated, earliest: false));
+
+    private static string? Pick(string? ours, string? theirs, bool earliest)
     {
-        if (a is null && b is null) return 0;
-        if (a is null) return -1;
-        if (b is null) return 1;
-        return string.Compare(a, b, StringComparison.Ordinal);
+        bool oursOk = TryParse(ours, out var o);
+        bool theirsOk = TryParse(theirs, out var t);
+
+        if (!oursOk && !theirsOk) return ours;
+        if (!oursOk) return theirs;
+        if (!theirsOk) return ours;
+
+        return (earliest ? o <= t : o >= t) ? ours : theirs;
+    }
+
+    private static bool TryParse(string? value, out DateTimeOffset parsed)
+    {
+        parsed = default;
+        return !string.IsNullOrWhiteSpace(value)
+            && DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out parsed);
     }
 }
