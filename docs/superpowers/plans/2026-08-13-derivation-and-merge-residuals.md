@@ -264,9 +264,17 @@ public static class SidecarTermFrequencyMerge
     {
         if (ours is null && theirs is null) return null;
 
-        // Ordinal, matching the map TextAnalysis produces: these keys are already-normalized index
-        // tokens, and folding case here would merge two tokens the scorer treats as distinct.
-        var merged = new Dictionary<string, int>(StringComparer.Ordinal);
+        // OrdinalIgnoreCase, matching the map every producer builds. TextAnalysis
+        // .ComputeTermFrequencies uses OrdinalIgnoreCase, and Tokenize lowercases every token, so
+        // no producer can emit two keys differing only in case — for real data the comparer is
+        // unobservable.
+        //
+        // It is load-bearing for a hand-edited or foreign sidecar. Merging under Ordinal would let
+        // "Auth" and "auth" both survive into the merged map, and
+        // MemoryDerivation.ForMetadataUpdate copies that map into an OrdinalIgnoreCase dictionary
+        // — which THROWS ArgumentException on exactly that pair. Folding here is what stops a
+        // malformed sidecar becoming a crash three calls later.
+        var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         if (ours is not null)
             foreach (var (term, count) in ours)
                 merged[term] = count;
@@ -426,15 +434,16 @@ with these two helpers:
     // this project is a standalone AOT executable with zero project references by hard constraint,
     // so it cannot call it. Change one and you must change the other:
     // Scrinia.Merge.Tests.SidecarTermFrequencyMergeParityTests runs the same cases through both and
-    // fails when they disagree. The rule and its reasoning live there. In summary: union the keys,
-    // take the MAX on a shared key (a count is a frequency, not a running total — summing would
-    // inflate a term on every merge), and a null side contributes nothing rather than vetoing.
+    // fails when they disagree. The rule and its reasoning live there. In summary: union the keys
+    // case-insensitively, take the MAX on a shared key (a count is a frequency, not a running
+    // total — summing would inflate a term on every merge), and a null side contributes nothing
+    // rather than vetoing.
     private static Dictionary<string, int>? UnionTermFrequencies(
         Dictionary<string, int>? ours, Dictionary<string, int>? theirs)
     {
         if (ours is null && theirs is null) return null;
 
-        var merged = new Dictionary<string, int>(StringComparer.Ordinal);
+        var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         if (ours is not null)
             foreach (var (term, count) in ours)
                 merged[term] = count;
