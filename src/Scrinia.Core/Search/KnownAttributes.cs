@@ -97,13 +97,22 @@ public static class KnownAttributes
     /// <summary>The guided attribute keys — what the guide teaches and agents write most.
     /// Guidance + the weight-table seed for freshly agent-supplied input: the keywords ARGUMENT
     /// (<see cref="AttributeExtractor.RouteKeywords"/>) treats any key uniformly there, because
-    /// every element was typed on purpose. It IS a gate wherever a key:value pair is pulled out of
-    /// UNCONTROLLED text instead — pasted logs, quoted code, transcripts, legacy free text — where
-    /// an arbitrary key (<c>TODO:fix</c> in a pasted comment) must not mint an attribute: inline
-    /// prose <c>key:value</c> routing (<see cref="AttributeExtractor"/>) and the legacy
+    /// every element was typed on purpose.
+    ///
+    /// <para>It IS a gate on exactly TWO routes, and only those two: inline prose
+    /// <c>key:value</c> routing (<see cref="AttributeExtractor"/>) and the legacy
     /// <c>key:value</c>-shaped-Keywords forward-fill
-    /// (<see cref="Scrinia.Core.Migration.AttributeMigration.Forward"/>) both gate on this set for
-    /// exactly that reason.</summary>
+    /// (<see cref="Scrinia.Core.Migration.AttributeMigration.Forward"/>). Both read uncontrolled
+    /// text — pasted logs, quoted code, transcripts, legacy free text — where an arbitrary key
+    /// (<c>TODO:fix</c> in a pasted comment) must not mint an attribute.</para>
+    ///
+    /// <para><b>It is NOT a general gate on uncontrolled text.</b> The line-start
+    /// <c>key: value</c> and <c>**Bold:**</c> label routes read the same uncontrolled content and
+    /// are UNGATED — a line reading <c>TODO: cleanup</c> mints <c>todo</c> today. Their guard is
+    /// shape, not vocabulary: a line-start position plus mandatory whitespace after the colon is
+    /// deliberate-looking enough on its own, where a bare inline <c>key:value</c> anywhere in a
+    /// sentence is not. Widening this set therefore changes those two routes and nothing
+    /// else.</para></summary>
     public static readonly IReadOnlySet<string> RecommendedKeys =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { "person", "place", "org", "thing", "topic", "file", "ref", "review" };

@@ -21,9 +21,13 @@ public static partial class ReferenceExtractor
     //    in from a later restart position the way the old narrower lookbehind coincidentally allowed
     //    (it used to match "../src/a/b.cs" by restarting at index 1, i.e. at the SECOND dot), so the
     //    prefix group now has to consume the whole ".." itself.
-    //  - "[/\\]" (forward slash OR backslash) is what makes ".\src\a.cs" match at all — a single dot
-    //    would already satisfy the old "at most one dot" limit, but the old prefix only ever accepted
-    //    '/' as the separator, so a backslash-separated path never matched regardless of dot count.
+    //  - "[/\\]" (forward slash OR backslash) is what keeps ".\src\a.cs" matching under the WIDER
+    //    lookbehind. Not because a backslash path never matched before — it did: the old lookbehind
+    //    permitted '\', so the engine failed at the leading '.', restarted, and succeeded at 's',
+    //    matching "src\a.cs" and trimming to the same value this pattern produces. That coasting is
+    //    exactly what the new lookbehind blocks, and with a slash-only prefix group the pattern then
+    //    finds NO match at all in ".\src\a.cs" (verified against both patterns directly). The
+    //    backslash alternative is what lets the match start at the path's own beginning instead.
     //  - The group is a Kleene star ("*"), not "?" (0-or-1): a single optional repetition only ever
     //    restores ONE level ("../"), so "../../src/a.cs" still matched nothing under an earlier round
     //    of this fix. The star lets the prefix repeat, so "../../", "..\..\", and deeper chains all

@@ -25,8 +25,9 @@ public class LoadIndexCacheHitTests
         using var scope = new TestHelpers.StoreScope();
         var store = TestHelpers.LocalStore;
 
-        // Upsert both writes the sidecar and leaves the scope's cache populated
-        // (FileMemoryStore.cs:982), so the very next LoadIndex is a cache hit.
+        // Upsert both writes the sidecar and leaves the scope's cache populated (see
+        // FileMemoryStore.Upsert — named, not cited by line, for the reason the class comment
+        // above gives), so the very next LoadIndex is a cache hit.
         store.Upsert(Entry("warm"), "local");
         string lockPath = Path.Combine(store.GetStoreDirForScope("local"), ".lock");
         File.Exists(lockPath).Should().BeTrue(

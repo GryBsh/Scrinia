@@ -369,11 +369,14 @@ public sealed class MemoryDerivationTests
             existing: new ExistingMetadata(
                 Attributes: new() { ["file"] = ["src/old.cs"] },
                 FileHashes: new() { ["src/old.cs"] = "aaa" }),
-            // NOT "should-not-be-called": HashFileRefs hashes every `file` value, including
-            // src/old.cs. What protects the existing baseline is the ContainsKey guard in the
-            // merge, not the hasher being skipped — so returning a sentinel here would encode a
-            // false expectation about which paths get hashed.
-            fileHasher: path => path == "src/new.cs" ? "bbb" : "recomputed-but-must-not-win");
+            // The non-"bbb" branch is UNREACHABLE, and that is the point: HashFileRefs' `skip`
+            // parameter excludes every already-baselined path before the hasher runs on it (see
+            // MemoryDerivation.ForAppend's "ONLY NEW PATHS ARE HASHED — literally, not just kept"),
+            // so src/old.cs never reaches this delegate. It is spelled out rather than left as a
+            // throwing sentinel so a reader can see that this test asserts the NEW path's hash
+            // without also depending on how the old one is protected — the sibling test below is
+            // what pins that.
+            fileHasher: path => path == "src/new.cs" ? "bbb" : "unreachable-src-old-is-skipped");
 
         derived.FileHashes.Should().ContainKey("src/new.cs").WhoseValue.Should().Be("bbb",
             because: "a file first referenced by the appended chunk must gain a drift baseline");

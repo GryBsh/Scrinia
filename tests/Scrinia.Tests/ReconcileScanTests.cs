@@ -358,8 +358,9 @@ public sealed class ReconcileScanTests
     }
 
     /// <summary>
-    /// ScanForConflicts passes "current" and "incoming" to TryReadConflictCopy
-    /// (MemoryTools.Lifecycle.cs:250-251). A swapped pair produces a conflict report with the two
+    /// ScanForConflicts passes "current" and "incoming" to TryReadConflictCopy — the two
+    /// TryReadConflictCopy calls in its "nmp2" branch, cited by name rather than by line because a
+    /// line number here has already gone stale once. A swapped pair produces a conflict report with the two
     /// sides transposed, which reads as plausible output rather than as an error — so this
     /// distinguishes the sides by content, not by both being non-empty.
     /// </summary>

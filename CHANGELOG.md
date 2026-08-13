@@ -13,9 +13,11 @@ and all assembly attributes.
 ### Changed (breaking) — `reconcile()` refuses to auto-merge dissimilar sidecars
 
 - `reconcile()`'s automatic `.meta.json` merge now runs the same admission check the git merge
-  driver has always applied (`Scrinia.Core.Merge.SidecarAdmission`, also consumed by
-  `MetaJsonMerger`): it refuses to auto-merge two conflicted sidecars whose keyword sets score
-  below a Jaccard similarity threshold. Default `0.7`; configurable as `jaccardThreshold` in
+  driver has always applied. The rule is `Scrinia.Core.Merge.SidecarAdmission`, which `reconcile()`
+  calls; `MetaJsonMerger` cannot call it — the merge driver is a standalone AOT executable with
+  zero project references by hard constraint — so it states the same predicate inline, with
+  `SidecarAdmissionParityTests` running both. It refuses to auto-merge two conflicted sidecars
+  whose keyword sets score below a Jaccard similarity threshold. Default `0.7`; configurable as `jaccardThreshold` in
   `.scrinia/merge.config`. A conflict that resolved automatically before this change may now
   require an explicit `choice`.
 - The refusal is reported with its own error naming the threshold (*"cannot be auto-merged: the
@@ -34,11 +36,15 @@ and all assembly attributes.
 
 ### Fixed — merges lost term frequencies and could move a memory's `createdAt` forward
 
-- Term frequencies now merge on both routes. The git merge driver used to require BOTH sides to
-  carry a `termFrequencies` map or it dropped the field entirely; `reconcile()`'s auto-resolver had
-  the identical defect. Both now union whichever side(s) actually carry one, taking the max on a
-  shared term. Term frequencies are what BM25 scores against, so this was a silent ranking loss on
-  every affected merge.
+- Term frequencies now merge on both routes, and both lost them differently before. `reconcile()`'s
+  auto-resolver required BOTH sides to carry a `termFrequencies` map, so a memory whose base
+  recorded none and whose other side did lost that side's map whole. The git merge driver never
+  merged the field at all: it preserved OURS verbatim as one of the "unknown properties" it carries
+  across untouched, which silently discarded theirs' contribution on every merge. Both now union
+  whichever side(s) actually carry one, taking the max on a shared term, and both escalate to a
+  conflict rather than guessing when either side's map is malformed (present but not an object, or
+  holding a value that isn't an int). Term frequencies are what BM25 scores against, so this was a
+  silent ranking loss on every affected merge.
 - Neither merger now moves a memory's `createdAt` forward, and both agree with each other on the
   result. This closes two independent bugs, not one: the git merge driver compared `createdAt` as
   ISO **strings** with ordinal comparison, which is wrong across UTC offsets (`10:00+10:00` and
@@ -103,6 +109,25 @@ and all assembly attributes.
   `key:value` entry — every element there was typed on purpose — and line-start `key: value` and
   `**Key:** value` lines still route any key, not just the recommended eight.
 
+### Fixed — an inline prose value naming nothing, an unaddressable drift row, a half-written link
+
+- An inline prose `key:value` whose value contains no alphanumeric character (`file:-`, `(ref:**)`,
+  `file:...`) no longer mints an attribute. `file` and `ref` are graph-forming keys, so a value that
+  names nothing became one node shared by every memory whose prose happened to contain the shape —
+  and uncontrolled prose (pasted logs, diffs, ASCII tables) is full of those shapes.
+- An inline prose value now stores the same spelling the bare extractors produce for the same
+  reference: `ref:[[/api/auth]]` stores `/api/auth`, and `file:"src/a.cs"` stores `src/a.cs`. Both
+  wrappers previously survived, which split one reference into two values under one key — and the
+  quoted form additionally failed the workspace-containment check, so that reference silently got
+  no drift baseline at all.
+- `list({ mode: "drift" })` now names an ephemeral memory `~name` rather than bare. The bare name
+  was unreachable until ephemerals gained a drift baseline in this release; a bare row either misses
+  on `recall()` or resolves to an unrelated persistent memory of the same name.
+- `link()` now refuses before writing anything when either side is an ephemeral (`~name`) memory.
+  It previously ran both updates unconditionally, so the ephemeral side failed and the other side
+  was still written — persisting a `ref` pointing at a memory that carried no `ref` back, then
+  reporting a partial failure. Its description has always said it refuses.
+
 ### Fixed — tool descriptions now describe what the tools do
 
 - `remember`'s and `append`'s descriptions never documented that `key:value`-shaped keywords route
@@ -113,6 +138,15 @@ and all assembly attributes.
   a link to another memory.
 - `link`'s `reason` parameter description no longer reads as though the reason were persisted — it
   is only echoed into that one call's response text, never written to either memory's sidecar.
+- `remember`'s and `append`'s content descriptions no longer claim that NONE of the automatic
+  attribute extraction happens inside a fenced code block. Three routes skip fences (line-start
+  `key: value`, `**Bold:**` labels, inline prose `key:value`) and one skips inline `code` spans and
+  frontmatter as well (proper-noun `mention` spans) — but bare file paths and `[[wiki-links]]` are
+  scanned over the whole content, fences included, and a bare path found that way is hashed into
+  the memory's drift baseline. The descriptions now say which routes are which.
+- `compact`'s description no longer claims unconditionally that it archives the original. An
+  ephemeral memory has no `versions/` directory, so compacting one is irreversible; the response
+  already reported this correctly and the description now agrees with it.
 
 ### Known Issues
 

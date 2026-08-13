@@ -88,10 +88,14 @@ public sealed class SidecarTimestampMergeParityTests
     /// A <c>createdAt</c> that is present but not a JSON string (here, a Unix-epoch number — a
     /// hand-edited or foreign sidecar) is MALFORMED, not ABSENT. Plain <c>GetString</c> cannot tell
     /// the two apart and would silently treat this as absent, letting theirs' value win with no
-    /// conflict raised — while reconcile()'s auto-resolver already refuses the same input (a
-    /// non-string value throws inside <c>JsonNode.GetValue&lt;string&gt;()</c>, caught and
-    /// escalated). The driver must refuse too, so the two mergers agree on malformed input the same
-    /// way they now agree on well-formed timestamps.
+    /// conflict raised — while reconcile()'s auto-resolver refuses the same input through
+    /// <c>MemoryTools.Lifecycle.TryReadTimestampString</c>, which checks PRESENCE before inspecting
+    /// the value. (Not, as an earlier version of this comment claimed, an exception thrown inside
+    /// <c>JsonNode.GetValue&lt;string&gt;()</c>: that mechanism was true only for a non-string value
+    /// like this one and false for an explicit JSON null, which is why it was replaced —
+    /// <c>MetaJsonMerger.TryGetTimestampString</c> spells the correction out.) The driver must
+    /// refuse too, so the two mergers agree on malformed input the same way they now agree on
+    /// well-formed timestamps.
     /// </summary>
     [Fact]
     public void MalformedCreatedAt_NonStringValue_RefusesTheMerge()
