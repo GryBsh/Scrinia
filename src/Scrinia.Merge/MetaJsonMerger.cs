@@ -65,7 +65,9 @@ public static class MetaJsonMerger
         string? createdAt = CompareTimestamps(oursCreated, theirsCreated) < 0 ? oursCreated : theirsCreated;
 
         // Overlay the merged fields onto OURS' full object — preserves every unknown property
-        // (contentPreview, termFrequencies, chunkEntries, codeRefs, attributes, …) verbatim.
+        // (contentPreview, chunkEntries, codeRefs, attributes, …) verbatim. termFrequencies is NOT
+        // among them: it is merged below, because preserving it verbatim silently dropped theirs'
+        // contribution on every merge.
         SetString(ours, "name", name);
         SetString(ours, "uri", uri);
         SetString(ours, "description", description);
@@ -83,6 +85,15 @@ public static class MetaJsonMerger
                 .Select(k => (JsonNode?)JsonValue.Create(k)).ToArray());
         SetString(ours, "updatedAt", updatedAt);
         SetString(ours, "createdAt", createdAt);
+
+        var mergedTf = UnionTermFrequencies(GetIntMap(ours, "termFrequencies"),
+                                            GetIntMap(theirs, "termFrequencies"));
+        if (mergedTf is null)
+            ours.Remove("termFrequencies");
+        else
+            ours["termFrequencies"] = new JsonObject(
+                mergedTf.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                        .Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value))));
 
         File.WriteAllText(oursPath, ours.ToJsonString(WriteOptions));
         return MergeResult.Resolved;
@@ -116,6 +127,40 @@ public static class MetaJsonMerger
     {
         if (value is null) o.Remove(key);
         else o[key] = value;
+    }
+
+    private static Dictionary<string, int>? GetIntMap(JsonObject? o, string key)
+    {
+        if (o is null || !o.TryGetPropertyValue(key, out var n) || n is not JsonObject obj) return null;
+        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (name, value) in obj)
+            if (value is JsonValue v && v.TryGetValue<int>(out int i)) map[name] = i;
+        return map;
+    }
+
+    // DUPLICATE, AND THE DUPLICATION IS FORCED. The original is
+    // Scrinia.Core.Merge.SidecarTermFrequencyMerge.Union, which reconcile()'s auto-resolver calls;
+    // this project is a standalone AOT executable with zero project references by hard constraint,
+    // so it cannot call it. Change one and you must change the other:
+    // Scrinia.Merge.Tests.SidecarTermFrequencyMergeParityTests runs the same cases through both and
+    // fails when they disagree. The rule and its reasoning live there. In summary: union the keys,
+    // take the MAX on a shared key (a count is a frequency, not a running total — summing would
+    // inflate a term on every merge), and a null side contributes nothing rather than vetoing.
+    private static Dictionary<string, int>? UnionTermFrequencies(
+        Dictionary<string, int>? ours,
+        Dictionary<string, int>? theirs)
+    {
+        if (ours is null && theirs is null) return null;
+
+        var merged = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (ours is not null)
+            foreach (var (term, count) in ours)
+                merged[term] = count;
+        if (theirs is not null)
+            foreach (var (term, count) in theirs)
+                merged[term] = merged.TryGetValue(term, out int existing) ? Math.Max(existing, count) : count;
+
+        return merged;
     }
 
     // Returns false when both sides changed the field to different values (real conflict).

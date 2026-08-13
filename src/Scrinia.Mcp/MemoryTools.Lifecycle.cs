@@ -477,24 +477,16 @@ public sealed partial class ScriniaMcpTools
             else
                 baseNode["agentKeywords"] = ToJsonArray(mergedAgentKeywords);
 
-            // Union termFrequencies (max value for shared keys)
-            if (baseNode["termFrequencies"] is JsonObject baseTf &&
-                otherNode["termFrequencies"] is JsonObject otherTf)
-            {
-                foreach (var kvp in otherTf)
-                {
-                    if (baseTf.ContainsKey(kvp.Key))
-                    {
-                        int baseVal = baseTf[kvp.Key]?.GetValue<int>() ?? 0;
-                        int otherVal = kvp.Value?.GetValue<int>() ?? 0;
-                        baseTf[kvp.Key] = Math.Max(baseVal, otherVal);
-                    }
-                    else
-                    {
-                        baseTf[kvp.Key] = kvp.Value?.GetValue<int>() ?? 0;
-                    }
-                }
-            }
+            // Union the term frequencies through the ONE rule
+            // (Scrinia.Core.Merge.SidecarTermFrequencyMerge). This used to require BOTH sides to
+            // carry a map, so a memory whose base recorded none and whose other side did lost them
+            // whole — a silent ranking change, since term frequencies are what BM25 scores against.
+            var mergedTf = SidecarTermFrequencyMerge.Union(
+                ReadIntMap(baseNode, "termFrequencies"), ReadIntMap(otherNode, "termFrequencies"));
+            if (mergedTf is null)
+                (baseNode as JsonObject)?.Remove("termFrequencies");
+            else
+                baseNode["termFrequencies"] = ToJsonObject(mergedTf);
 
             var writeOptions = new JsonSerializerOptions { WriteIndented = true };
             resolvedJson = baseNode.ToJsonString(writeOptions);
@@ -524,6 +516,27 @@ public sealed partial class ScriniaMcpTools
         var array = new JsonArray();
         foreach (string value in values) array.Add((JsonNode?)value);
         return array;
+    }
+
+    /// <summary>A JSON object of string→int as a dictionary, or null when the key is absent or is
+    /// not an object. Null means the side recorded no term frequencies.</summary>
+    private static Dictionary<string, int>? ReadIntMap(JsonNode? node, string key)
+    {
+        if (node?[key] is not JsonObject obj) return null;
+        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        // TryGetValue, not GetValue<int>() — the latter throws on a non-integer value, and a
+        // hand-edited sidecar is exactly the input this method has to survive.
+        foreach (var (name, value) in obj)
+            if (value is JsonValue v && v.TryGetValue<int>(out int i)) map[name] = i;
+        return map;
+    }
+
+    private static JsonObject ToJsonObject(Dictionary<string, int> map)
+    {
+        var obj = new JsonObject();
+        foreach (var (term, count) in map.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            obj[term] = count;
+        return obj;
     }
 
     // ── Maintenance tools ──────────────────────────────────────────────────

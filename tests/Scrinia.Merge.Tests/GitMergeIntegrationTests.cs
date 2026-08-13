@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Xunit;
 
@@ -63,11 +64,45 @@ public sealed class GitMergeIntegrationTests
             because: "the later updatedAt wins");
     }
 
-    private static string Meta(string[] keywords, string updatedAt)
+    private static string Meta(string[] keywords, string updatedAt,
+        Dictionary<string, int>? termFrequencies = null)
     {
         string kw = string.Join(",", keywords.Select(k => $"\"{k}\""));
+        string tf = termFrequencies is null
+            ? ""
+            : ",\"termFrequencies\":{" +
+              string.Join(",", termFrequencies.Select(p => $"\"{p.Key}\":{p.Value}")) + "}";
         return $"{{\"name\":\"auth-flow\",\"keywords\":[{kw}],\"originalBytes\":10," +
-               $"\"chunkCount\":1,\"updatedAt\":\"{updatedAt}\"}}\n";
+               $"\"chunkCount\":1,\"updatedAt\":\"{updatedAt}\"{tf}}}\n";
+    }
+
+    [Fact]
+    public void TermFrequenciesFromBothSidesSurviveAMerge()
+    {
+        // The defect this closes: the driver preserved OURS' termFrequencies verbatim and dropped
+        // theirs, so a branch that appended content lost its ranking contribution on merge with no
+        // conflict raised. Asserted through a real `git merge` rather than against the merger
+        // directly, because that is the level a user meets it at.
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("meta");
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.SeedThreeWay(
+            Sidecar,
+            baseContent:   Meta(["a", "b", "c", "d"], "2026-01-01T00:00:00+00:00"),
+            oursContent:   Meta(["a", "b", "c", "d"], "2026-02-01T00:00:00+00:00",
+                                new() { ["auth"] = 5 }),
+            theirsContent: Meta(["a", "b", "c", "d"], "2026-03-01T00:00:00+00:00",
+                                new() { ["jwt"] = 3 }));
+
+        repo.Merge("other").ExitCode.Should().Be(0);
+
+        // The neighbouring tests assert on the raw merged text rather than a parsed object; parse
+        // here because the assertion is about a numeric value, not the presence of a token.
+        using var doc = JsonDocument.Parse(repo.ReadFile(Sidecar));
+        var tf = doc.RootElement.GetProperty("termFrequencies");
+        tf.GetProperty("auth").GetInt32().Should().Be(5);
+        tf.GetProperty("jwt").GetInt32().Should().Be(3,
+            because: "theirs' term frequencies must survive — dropping them was the defect");
     }
 
     [Fact]
