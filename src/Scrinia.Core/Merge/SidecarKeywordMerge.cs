@@ -4,21 +4,22 @@ namespace Scrinia.Core.Merge;
 /// The rule for merging two sidecars' keyword lists and their provenance — <b>the authoritative
 /// copy</b>.
 ///
-/// <para><b>Why this is a shared type and not inlined at each site.</b> Three places merge
-/// <c>.meta.json</c> sidecars: this rule's callers are the git merge driver
-/// (<c>Scrinia.Merge.MetaJsonMerger</c>) and <c>reconcile()</c>'s auto-resolver
-/// (<c>MemoryTools.Lifecycle.TryComputeAutoResolvedMetaJson</c>), which reached the same files by
-/// different routes and had drifted: the driver unioned <c>agentKeywords</c> with the keywords it
-/// names, and <c>reconcile()</c> took it whole from one side — recording the other side's curated
-/// keyword as auto-extracted while reporting a clean automatic merge. Both then feed
-/// <see cref="MemoryDerivation"/>, so a divergence here is a ranking divergence that depends on
-/// which of the two resolved the conflict.</para>
+/// <para><b>Why this is a shared type and not inlined at its call site.</b> Two places merge
+/// <c>.meta.json</c> sidecars: the git merge driver (<c>Scrinia.Merge.MetaJsonMerger</c>) and
+/// <c>reconcile()</c>'s auto-resolver (<c>MemoryTools.Lifecycle.TryComputeAutoResolvedMetaJson</c>),
+/// which reached the same files by different routes and had drifted: the driver unioned
+/// <c>agentKeywords</c> with the keywords it names, and <c>reconcile()</c> took it whole from one
+/// side — recording the other side's curated keyword as auto-extracted while reporting a clean
+/// automatic merge. Both then feed <see cref="MemoryDerivation"/>, so a divergence here is a ranking
+/// divergence that depends on which of the two resolved the conflict. Of the two, only
+/// <c>reconcile()</c>'s auto-resolver can actually call this type — see below — so <see cref="Union"/>
+/// has exactly one caller.</para>
 ///
 /// <para><b>One duplicate survives, and it is forced.</b> <c>Scrinia.Merge</c> is a standalone AOT
 /// executable with zero project references by hard constraint, so it cannot call this. It carries a
 /// copy that names this type as the original, and
 /// <c>Scrinia.Merge.Tests.SidecarKeywordMergeParityTests</c> runs the same cases through both and
-/// asserts identical output — the only thing that keeps a copy honest.</para>
+/// asserts identical output — the only thing that keeps that forced duplicate honest.</para>
 /// </summary>
 public static class SidecarKeywordMerge
 {

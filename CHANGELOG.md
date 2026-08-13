@@ -193,7 +193,7 @@ and all assembly attributes.
   remember path assembles it *before* the write instead of trying to patch it in afterward.
   ***Superseded, `store-owned-derivation`:*** `ArtifactWriteMetadata` is deleted. It was a
   patch over the real defect — every caller still derived its own metadata and handed the result
-  to the write seam, which is the four-implementations problem the entries below this one fix at
+  to the write seam, which is the four-implementations problem the entries above this one fix at
   the root. `WriteArtifactAsync` no longer carries metadata at all: persistent writes go through
   `IMemoryStore.StoreAsync`/`AppendAsync`, which take the caller's *raw* input and return the
   entry the store derived — locally in-process, remotely by deferring to the server's own

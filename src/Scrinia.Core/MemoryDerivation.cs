@@ -25,9 +25,12 @@ namespace Scrinia.Core;
 ///
 /// <para><b>Raw in, derived out (D-01/D-29).</b> The keyword parameters carry the CALLER's raw
 /// keywords. A derived keyword list must never be handed back in as input: doing so reclassifies
-/// every auto-extracted term as agent-supplied and boosts it +5 instead of +2. That is the mistake
-/// <c>HttpMemoryStore.WriteArtifactAsync</c> makes today by sending MCP's already-merged keywords
-/// over the wire, and the one compact would make by round-tripping its stored keyword list. There
+/// every auto-extracted term as agent-supplied and boosts it +5 instead of +2. That was the mistake
+/// <c>HttpMemoryStore.WriteArtifactAsync</c> used to make by sending MCP's already-merged keywords
+/// over the wire — it now sends only <c>StoreApiRequest([text], qualifiedName)</c>, no keywords at
+/// all (see <c>CHANGELOG.md</c>'s "remote writes silently discarded the agent's metadata" entry) —
+/// and it is still the mistake the one compact would make by round-tripping its stored keyword
+/// list. There
 /// is deliberately no parameter on <see cref="ForStore"/> through which a previously-derived list
 /// could enter. (<see cref="ForAppend"/>'s <see cref="ExistingMetadata.Keywords"/> is the one
 /// carry-forward, and it is a ruled data-loss fix — D-12 — not a round-trip: an append that

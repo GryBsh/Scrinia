@@ -634,10 +634,13 @@ public sealed partial class ScriniaMcpTools
         // Derive workspace root for the [drift] column (only reached if an entry has FileHashes).
         // Re-hashing needs files on disk, and a non-local store has none — so the page is returned
         // without the column rather than the whole listing failing. Same degrade as the remember()
-        // path above (:387), and the same shape a remote store already gets here, since
-        // HttpMemoryStore.ListScoped never populates FileHashes. Reachable for real: the server
-        // installs whatever an IStorageBackend plugin's CreateStore returned as the ambient store,
-        // and nothing obliges that to be an ILocalMemoryStore.
+        // path above (:387), and the same shape a remote store gets here — not because
+        // HttpMemoryStore.ListScoped fails to populate FileHashes (it does: ToArtifactEntry reads it
+        // straight off the wire), but because `store as ILocalMemoryStore` is null for an
+        // HttpMemoryStore, so there is no WorkspaceRoot to resolve `file` attribute values against
+        // regardless of what FileHashes already carries. Reachable for real: the server installs
+        // whatever an IStorageBackend plugin's CreateStore returned as the ambient store, and nothing
+        // obliges that to be an ILocalMemoryStore.
         string? workspaceRoot = page.Any(p => p.Entry.FileHashes is { Count: > 0 })
             ? (store as ILocalMemoryStore)?.WorkspaceRoot
             : null;

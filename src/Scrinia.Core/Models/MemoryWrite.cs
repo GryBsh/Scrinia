@@ -8,8 +8,10 @@ namespace Scrinia.Core.Models;
 /// <para><b>Raw in, derived out (D-01/D-29).</b> <see cref="Keywords"/> is the CALLER's own keyword
 /// list. Handing back a list a store previously derived reclassifies every auto-extracted term as
 /// agent-supplied and boosts it +5 instead of +2 — the mistake
-/// <c>HttpMemoryStore.WriteArtifactAsync</c> makes today by sending MCP's already-merged keywords
-/// over the wire. The shape of this record is what makes that mistake hard to express: there is no
+/// <c>HttpMemoryStore.WriteArtifactAsync</c> used to make by sending MCP's already-merged keywords
+/// over the wire, before it was cut over to sending only <c>StoreApiRequest([text], qualifiedName)</c>
+/// (see <c>CHANGELOG.md</c>'s "remote writes silently discarded the agent's metadata" entry). The
+/// shape of this record is what makes that mistake hard to express: there is no
 /// field through which the rest of a derived entry could come back in with them.</para>
 ///
 /// <para><b><see cref="Name"/> and <see cref="Scope"/> are the resolved pair</b>, as every other

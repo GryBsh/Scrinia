@@ -76,12 +76,17 @@ public interface IMemoryStore
     /// <para><b>The store re-derives term frequencies from the mutation; the caller must not.</b>
     /// Attribute values feed the BM25 index, so a mutation that adds one and leaves
     /// <c>TermFrequencies</c> alone makes the entry unfindable by its own new attribute. Every
-    /// implementation runs <see cref="MemoryDerivation.ForMetadataUpdate"/> over
-    /// <c>(current, mutated)</c> before persisting — which is what makes this member behave the
-    /// same however the mutation arrived, and the same whether the store is local or remote (a
-    /// remote store sends the attributes and the server's store derives). A caller that computes
-    /// the boost itself has re-created the defect this branch exists to remove; three of them did,
-    /// each differently, and one of the three could not persist it over HTTP at all.</para>
+    /// local mutation eventually runs <see cref="MemoryDerivation.ForMetadataUpdate"/> over
+    /// <c>(current, mutated)</c> before persisting — <c>FileMemoryStore.TryUpdateEntry</c> does so
+    /// directly; <c>HttpMemoryStore.TryUpdateEntry</c> does not run it itself, it GETs the entry,
+    /// applies <paramref name="mutate"/>, and PATCHes the result, and the server's own
+    /// <c>FileMemoryStore</c> is what derives on that end. Either way the rule runs in exactly one
+    /// place per side of the wire, which is what makes this member behave the same however the
+    /// mutation arrived. A caller that computes the boost itself has re-created the defect this
+    /// branch exists to remove; one of them did (<c>MemoryTools.UpdateMeta</c>), and the other two
+    /// mutation routes through this member (<c>EntityTypingEventHandler.PromoteAsync</c>,
+    /// <c>MaintenanceEventSink</c>) computed nothing at all — see
+    /// <see cref="MemoryDerivation.ForMetadataUpdate"/>'s doc comment.</para>
     /// <para>Default implementation is a non-atomic load→mutate→Upsert, adequate for in-memory/test
     /// stores with no concurrent writers. FileMemoryStore overrides it to run under its per-scope
     /// write lock.</para>
