@@ -186,6 +186,14 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
 
         // Everything else must still agree after the second write, which is the write that also
         // exercises the archive-and-replace branch rather than the create branch.
+        //
+        // The substance check is not optional here, and this case is the proof: without it a
+        // vacuity probe that emptied the SHARED pipeline's output — keywords, term frequencies and
+        // provenance to empty, attributes and hashes to null, on BOTH sides — failed every other
+        // case in this class and left this one green, because two agreeing nulls satisfy every
+        // comparison below. The archive-and-replace branch is exactly where a regression would sit
+        // unseen.
+        AssertStorePathIsSubstantial(localSecond);
         AssertSameDerivation(localSecond, remoteSecond, "the re-store write surface");
         AssertSameDerivation(ReloadLocal(name), ReloadRemote(name), "the persisted re-stored entry");
     }
@@ -292,6 +300,62 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The other half of compaction, and the one behaviour the <c>keepRecent: 1</c> case above
+    /// cannot reach: <b>D-28</b>. Compaction used to null <c>ChunkEntries</c> outright ("chunk-level
+    /// entries no longer valid after compaction"); routing it through the pipeline REPOPULATES them
+    /// for the surviving chunks whenever more than one survives, and the inventory recorded that as
+    /// an accepted behaviour change rather than a regression. A single-chunk compaction yields null
+    /// on both paths — agreeing nulls — so it leaves the repopulated case, and every per-chunk field
+    /// inside it, entirely uncompared.
+    ///
+    /// <para>Three chunks in, <c>keepRecent: 2</c>, so two survive with freshly derived per-chunk
+    /// previews, keywords and term frequencies — computed independently on each backend, from the
+    /// chunk array each one reassembled.</para>
+    /// </summary>
+    [Fact]
+    public async Task Compact_KeepingSeveralChunks_RepopulatesTheSameChunkEntriesOnBothPaths()
+    {
+        const string name = "parity-compact-chunks";
+        string[] content =
+        [
+            "A harbour full of boats, which this compaction drops. ",
+            "The second chunk is about cargo manifests and crates. ",
+            "The third chunk is about tides, moorings and the pilot.",
+        ];
+
+        foreach (var store in new IMemoryStore[] { _local, _remote })
+            await store.StoreAsync(new MemoryWrite(
+                name, "local", content, Description: "curated preview", Keywords: ["harbour"]));
+
+        MemoryStoreContext.Current = _local;
+        (await new ScriniaMcpTools().MemoryCompact(path: name, keepRecent: 2))
+            .Should().Contain("3 -> 2", because: "the local compaction has to actually run");
+
+        MemoryStoreContext.Current = _remote;
+        (await new ScriniaMcpTools().MemoryCompact(path: name, keepRecent: 2))
+            .Should().Contain("3 -> 2", because: "and so does the remote one");
+
+        MemoryStoreContext.Current = null;
+
+        var local = ReloadLocal(name);
+        var remote = ReloadRemote(name);
+
+        local.ChunkCount.Should().Be(2);
+        local.ChunkEntries.Should().NotBeNull().And.HaveCount(2,
+            because: "precondition: D-28 — the surviving chunks get fresh entries rather than the " +
+                     "null the old compaction left behind. Two nulls would compare equal and cover " +
+                     "nothing, which is the whole reason this case exists beside the keepRecent:1 one");
+        local.ChunkEntries!.Select(c => c.ChunkIndex).Should().Equal([1, 2],
+            because: "precondition: renumbered over the survivors, 1-based and contiguous (D-25)");
+        local.ChunkEntries[0].TermFrequencies.Should().NotBeNullOrEmpty(
+            because: "precondition: the per-chunk fields this case exists to compare are populated");
+        local.AgentKeywords.Should().Equal(["harbour"],
+            because: "precondition: the curated keyword still outlives the chunk that carried its text");
+
+        AssertSameDerivation(local, remote, "the multi-chunk compacted entry");
+    }
+
+    /// <summary>
     /// Metadata update. <c>RemoteLoadIndexTests.TryUpdateEntry_TermFrequencyReDerivation_AgreesWithTheLocalStore</c>
     /// already pins the narrow claim — the two backends seed the same term-frequency DELTA for an
     /// added attribute — and this does not repeat it. It closes the hole beside it: that test
@@ -359,9 +423,14 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         const string key = "parity-ephemeral";
 
         var entry = await _remote.StoreAsync(new MemoryWrite(
-            name, "local", ["An ephemeral note about the harbour."], Keywords: ["harbour"]));
+            name, "local", ["An ephemeral note about the harbour and its fishing boats."],
+            Keywords: ["harbour"]));
 
-        entry.Keywords.Should().Contain("harbour");
+        // A term the caller never supplied: `harbour` came in as input, so finding it in the output
+        // would be satisfied by a bare echo and proves nothing. `boats` can only be there because
+        // the write ran a real extraction pass.
+        entry.Keywords.Should().Contain("boats",
+            because: "the in-process write extracts from the content — it is not an echo of the input");
         entry.AgentKeywords.Should().Equal(["harbour"],
             because: "the in-process write goes through the same MemoryDerivation pass a persistent " +
                      "one does — an ephemeral is not a metadata-free echo of its input");
@@ -393,6 +462,11 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         remote.Name.Should().Be(local.Name, because: $"{what}: the resolved name");
         remote.OriginalBytes.Should().Be(local.OriginalBytes, because: $"{what}: OriginalBytes");
         remote.ChunkCount.Should().Be(local.ChunkCount, because: $"{what}: ChunkCount");
+        // Note what this does NOT currently discriminate: no fixture in this class produces a null
+        // preview, because every one supplies a description and MemoryDerivation returns "" rather
+        // than null for the empty case. The wire's null → "" coalescing (AttributeReaders.PreviewText,
+        // behind MemoryEntry.From) is a real one-side drift class, so the assertion stays — but it
+        // is standing guard over a scenario nothing here reaches, not covering one.
         remote.ContentPreview.Should().Be(local.ContentPreview, because: $"{what}: ContentPreview");
 
         SameStrings(local.Keywords, remote.Keywords, $"{what}: Keywords");
@@ -406,6 +480,14 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         // instants — so what is compared is the semantics: "has this been updated" must be the same
         // answer on both backends. The VALUE relationships (CreatedAt survives a re-store, UpdatedAt
         // appears on the second write) are pinned in ReStore_PreservesCreatedAtAndSetsUpdatedAt.
+        //
+        // The OFFSET is comparable even though the instant is not, and it is worth taking: this
+        // codebase has already had one local-vs-UTC divergence in a persisted timestamp (the review
+        // date, D-06 — MCP parsed under the machine's local zone, so a store in UTC and a client in
+        // UTC+10 wrote different strings for the same input). A store that stamped CreatedAt in
+        // local time on one path and UTC on the other is the same defect in the same shape.
+        remote.CreatedAt.Offset.Should().Be(local.CreatedAt.Offset,
+            because: $"{what}: both paths must stamp the memory's age in the same zone");
         if (local.UpdatedAt is null)
             remote.UpdatedAt.Should().BeNull(because: $"{what}: UpdatedAt is unset locally");
         else
@@ -549,8 +631,10 @@ public sealed class LocalRemoteParityTests : IAsyncLifetime
         for (int i = 0; i < local.Length; i++)
         {
             remote[i].ChunkIndex.Should().Be(local[i].ChunkIndex, because: $"{field}[{i}].ChunkIndex");
+            // As above: null vs "" is the D-23 drift this WOULD catch, but no fixture here produces
+            // an empty chunk, so what it actually compares is two real previews.
             remote[i].ContentPreview.Should().Be(local[i].ContentPreview,
-                because: $"{field}[{i}].ContentPreview — including null vs \"\", which is D-23");
+                because: $"{field}[{i}].ContentPreview");
             SameStrings(local[i].Keywords, remote[i].Keywords, $"{field}[{i}].Keywords");
             SameCounts(local[i].TermFrequencies, remote[i].TermFrequencies,
                 $"{field}[{i}].TermFrequencies");
