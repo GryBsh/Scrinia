@@ -506,28 +506,58 @@ Add `using Scrinia.Core.Merge;` if it is not already present.
 
 - [ ] **Step 7: Prove it end to end through a real git merge**
 
-Add to `tests/Scrinia.Merge.Tests/GitMergeIntegrationTests.cs`, following the existing fixtures in that file for repo setup:
+Add to `tests/Scrinia.Merge.Tests/GitMergeIntegrationTests.cs`. Use `[Fact]` — **not `[SkippableFact]`**: that project has no `Xunit.SkippableFact` reference and every test in the file uses `[Fact]`.
+
+The file's setup goes through `GitMergeHarness` (`RegisterDriver`, `WriteFile`, `SeedThreeWay`, `Merge`, `ReadFile`), and its file-private `Meta(string[] keywords, string updatedAt)` helper at `:66-71` emits no `termFrequencies`. Extend it with an optional parameter rather than adding a second helper:
 
 ```csharp
-    [SkippableFact]
+    private static string Meta(string[] keywords, string updatedAt,
+        Dictionary<string, int>? termFrequencies = null)
+    {
+        string kw = string.Join(",", keywords.Select(k => $"\"{k}\""));
+        string tf = termFrequencies is null
+            ? ""
+            : ",\"termFrequencies\":{" +
+              string.Join(",", termFrequencies.Select(p => $"\"{p.Key}\":{p.Value}")) + "}";
+        return $"{{\"name\":\"auth-flow\",\"keywords\":[{kw}],\"originalBytes\":10," +
+               $"\"chunkCount\":1,\"updatedAt\":\"{updatedAt}\"{tf}}}\n";
+    }
+```
+
+Then the test, modelled on `MetaDriver_WithSimilarKeywords_AutoResolves` at `:45-63`:
+
+```csharp
+    [Fact]
     public void TermFrequenciesFromBothSidesSurviveAMerge()
     {
         // The defect this closes: the driver preserved OURS' termFrequencies verbatim and dropped
         // theirs, so a branch that appended content lost its ranking contribution on merge with no
         // conflict raised. Asserted through a real `git merge` rather than against the merger
         // directly, because that is the level a user meets it at.
-        // ... arrange two branches whose sidecars carry {"auth":5} and {"jwt":3} respectively,
-        //     both with keywords ["auth","jwt"] so the Jaccard gate admits them ...
+        using var repo = new GitMergeHarness();
+        repo.RegisterDriver("meta");
+        repo.WriteFile(".scrinia/.gitattributes", NmpAttributes);
+        repo.SeedThreeWay(
+            Sidecar,
+            baseContent:   Meta(["a", "b", "c", "d"], "2026-01-01T00:00:00+00:00"),
+            oursContent:   Meta(["a", "b", "c", "d"], "2026-02-01T00:00:00+00:00",
+                                new() { ["auth"] = 5 }),
+            theirsContent: Meta(["a", "b", "c", "d"], "2026-03-01T00:00:00+00:00",
+                                new() { ["jwt"] = 3 }));
 
-        var merged = ReadMergedSidecar();
+        repo.Merge("other").ExitCode.Should().Be(0);
 
-        merged.TermFrequencies.Should().ContainKey("auth").WhoseValue.Should().Be(5);
-        merged.TermFrequencies.Should().ContainKey("jwt").WhoseValue.Should().Be(3,
+        // The neighbouring tests assert on the raw merged text rather than a parsed object; parse
+        // here because the assertion is about a numeric value, not the presence of a token.
+        using var doc = JsonDocument.Parse(repo.ReadFile(Sidecar));
+        var tf = doc.RootElement.GetProperty("termFrequencies");
+        tf.GetProperty("auth").GetInt32().Should().Be(5);
+        tf.GetProperty("jwt").GetInt32().Should().Be(3,
             because: "theirs' term frequencies must survive — dropping them was the defect");
     }
 ```
 
-Match the file's existing helper names and repo-setup pattern rather than inventing new ones; if it has no `ReadMergedSidecar`, parse the merged file the way its neighbouring tests do.
+Keywords are identical on both sides, so the Jaccard gate scores 1.0 and admits the merge regardless of the configured threshold. Add `using System.Text.Json;` if the file lacks it.
 
 - [ ] **Step 8: Full build and suite**
 
@@ -553,7 +583,7 @@ Closes A3. The two implementations already differ, and `reconcile()` can move a 
 **Files:**
 - Create: `src/Scrinia.Core/Merge/SidecarTimestampMerge.cs`
 - Modify: `src/Scrinia.Merge/MetaJsonMerger.cs:62-65,131-137`, `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:447-461`
-- Test: `tests/Scrinia.Merge.Tests/SidecarTimestampMergeParityTests.cs`, `tests/Scrinia.Tests/ReconcileScanTests.cs`
+- Test: `tests/Scrinia.Merge.Tests/SidecarTimestampMergeParityTests.cs`, `tests/Scrinia.Tests/ReconcileMetaProvenanceTests.cs`
 
 **Interfaces:**
 - Produces: `Scrinia.Core.Merge.SidecarTimestampMerge.Select(string? oursCreated, string? oursUpdated, string? theirsCreated, string? theirsUpdated) -> (string? CreatedAt, string? UpdatedAt)`
@@ -762,32 +792,39 @@ In `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs`, the base-node selection at `:447-
 
 - [ ] **Step 6: Pin the `createdAt` behaviour in `reconcile()`'s own tests**
 
-Add to `tests/Scrinia.Tests/ReconcileScanTests.cs`, following that file's existing conflicted-file fixtures:
+Add to **`tests/Scrinia.Tests/ReconcileMetaProvenanceTests.cs`**, not `ReconcileScanTests.cs` — that file already owns the conflicted-sidecar fixtures and the accessors these tests need.
+
+**Assertion style — read this before writing.** There is no `BeSuccess`/`BeError` helper anywhere in the repo, and `MemoryReconcile` returns a **YAML string**, not an `McpResponse`. The established patterns are `ResponseParser.Parse(result).Status.Should().Be("success")` for the response, and this file's own `ResolvedAsync(scope, conflictId)` + `Array(resolved, "keywords")` for reading the resolved sidecar back. Read scalars with `resolved.GetProperty("createdAt").GetString()`. Match those; do not invent helpers.
 
 ```csharp
     [Fact]
-    public void AutoResolve_KeepsTheEarliestCreatedAt()
+    public async Task AutoResolve_KeepsTheEarliestCreatedAt()
     {
         // The defect: reconcile() picked one node whole by updatedAt and never looked at
         // createdAt, so resolving in favour of the newer side moved the memory's creation time
         // forward. The merge driver had always kept the earliest; the two disagreed.
         // ours: createdAt 2026-01-01, updatedAt 2026-01-02
         // theirs: createdAt 2026-02-01, updatedAt 2026-03-01   <- wins updatedAt, must NOT win createdAt
-        // ... arrange a conflicted .meta.json with those values, resolve with no explicit choice ...
+        // Arrange a conflicted .meta.json with those values — copy the Ours/Theirs const strings
+        // at :52-58 and change the timestamps — then resolve with no explicit choice.
+        var resolved = await ResolvedAsync(scope, conflictId);
 
-        resolved.CreatedAt.Should().Be("2026-01-01T00:00:00Z",
-            because: "createdAt is the earliest of the two — the memory was created once, then");
-        resolved.UpdatedAt.Should().Be("2026-03-01T00:00:00Z");
+        resolved.GetProperty("createdAt").GetString().Should().Be("2026-01-01T00:00:00Z",
+            because: "createdAt is the earliest of the two — the memory was created once, and a " +
+                     "merge that moves it forward claims it did not exist during a period it did");
+        resolved.GetProperty("updatedAt").GetString().Should().Be("2026-03-01T00:00:00Z");
     }
 
     [Fact]
-    public void AutoResolve_KeepsAOneSidedTermFrequencyMap()
+    public async Task AutoResolve_KeepsAOneSidedTermFrequencyMap()
     {
         // The defect: the union required BOTH sides to carry a map, so a side that recorded term
         // frequencies against a side that did not lost them entirely.
-        // ... arrange ours with no termFrequencies, theirs with {"auth":4} ...
+        // Arrange ours with no termFrequencies and theirs with {"auth":4}, keywords equal on both
+        // sides so the admission gate Task 4 adds cannot refuse this case.
+        var resolved = await ResolvedAsync(scope, conflictId);
 
-        resolved.TermFrequencies.Should().ContainKey("auth").WhoseValue.Should().Be(4);
+        resolved.GetProperty("termFrequencies").GetProperty("auth").GetInt32().Should().Be(4);
     }
 ```
 
@@ -806,7 +843,7 @@ Expected: 0 errors; **2051 + 11 = 2062** passed, 0 failed, 4 skipped.
 - [ ] **Step 8: Commit**
 
 ```bash
-rtk git add src/Scrinia.Core/Merge/SidecarTimestampMerge.cs src/Scrinia.Merge/MetaJsonMerger.cs src/Scrinia.Mcp/MemoryTools.Lifecycle.cs tests/Scrinia.Merge.Tests/SidecarTimestampMergeParityTests.cs tests/Scrinia.Tests/ReconcileScanTests.cs
+rtk git add src/Scrinia.Core/Merge/SidecarTimestampMerge.cs src/Scrinia.Merge/MetaJsonMerger.cs src/Scrinia.Mcp/MemoryTools.Lifecycle.cs tests/Scrinia.Merge.Tests/SidecarTimestampMergeParityTests.cs tests/Scrinia.Tests/ReconcileMetaProvenanceTests.cs
 rtk git commit -m "fix(merge): one timestamp rule; reconcile stops moving createdAt forward"
 ```
 
@@ -819,7 +856,9 @@ Closes A2. **This is the plan's one user-visible behaviour change** — some con
 **Files:**
 - Create: `src/Scrinia.Core/Merge/SidecarAdmission.cs`
 - Modify: `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs` (`TryComputeAutoResolvedMetaJson`, both call sites at `:125` and `:236`, and a new threshold reader beside `GetConflictDir` at `:396-404`)
-- Test: `tests/Scrinia.Tests/ReconcileScanTests.cs`
+- Test: `tests/Scrinia.Tests/ReconcileScanTests.cs`, **`tests/Scrinia.Tests/ReconcileMetaProvenanceTests.cs`** (five existing test results regress without Step 0 — see below)
+
+**Read Step 0 first. This task breaks five passing tests unless you do.**
 
 **Interfaces:**
 - Consumes: `Scrinia.Core.Merge.KeywordJaccard.Compute` (Task 1).
@@ -860,13 +899,35 @@ public static class SidecarAdmission
 }
 ```
 
+- [ ] **Step 0: Admit the existing fixtures before the gate refuses them**
+
+Every conflicted-sidecar fixture in the suite sits at **Jaccard 0.333** — `ReconcileMetaProvenanceTests.cs:52-58` pairs `["auth","local"]` with `["auth","remote"]` (one shared term over three distinct), and `:111-116` pairs `["auth","portcullis"]` with `["auth","gatehouse"]`. All are below the 0.7 default, so adding the gate makes **five currently-passing test results fail**: `ReconcileScanTests.Reconcile_WithConflictIdOnly_AppliesAutoMergeForMetaJson` and all four in `ReconcileMetaProvenanceTests`.
+
+Those tests are about provenance merging and auto-merge mechanics, not admission — their keyword dissimilarity is incidental. **Disable the gate in their fixtures rather than rewriting their keywords**, which would change the exact unions their assertions encode. There is direct precedent: `SidecarKeywordMergeParityTests.cs:82` passes `new MergeConfig(JaccardThreshold: 0.0)` for exactly this reason, and says so.
+
+In each affected fixture, write a `merge.config` into the fixture's `.scrinia` directory before reconciling:
+
+```csharp
+        // This test is about what the merge RULES produce, not about whether the two sides are
+        // similar enough to merge at all — its keyword sets are deliberately disjoint to make the
+        // provenance question sharp. Drop the admission threshold so every case reaches the rule
+        // under test, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+```
+
+Raising the fixtures' similarity instead is the wrong fix: it would make `Array(resolved, "keywords").Should().Equal(["auth", "local", "remote"])` and its siblings assert over different data, silently weakening tests that encode hard-won provenance rulings.
+
+**Do this before Step 4 lands the gate**, so the suite never goes red for a reason the plan already knows about.
+
 - [ ] **Step 2: Write the failing test**
 
-Add to `tests/Scrinia.Tests/ReconcileScanTests.cs`:
+Add to `tests/Scrinia.Tests/ReconcileScanTests.cs`.
+
+**Assertion style.** `BeSuccess`/`BeError` do not exist anywhere in this repo, and `MemoryReconcile` returns a **YAML string**, not an `McpResponse`. The file's real pattern is `ResponseParser.Parse(result).Status.Should().Be("success")`. Match it.
 
 ```csharp
     [Fact]
-    public void AutoResolve_RefusesTwoDissimilarSidecars()
+    public async Task AutoResolve_RefusesTwoDissimilarSidecars()
     {
         // The defect: reconcile() had no admission gate, so it auto-merged two sidecars with
         // nothing in common and reported a clean resolve. The git merge driver has always refused
@@ -874,9 +935,9 @@ Add to `tests/Scrinia.Tests/ReconcileScanTests.cs`:
         // ... arrange a conflicted .meta.json where ours has keywords ["auth","jwt"] and theirs
         //     has ["kubernetes","helm"] — Jaccard 0.0, below the 0.7 default ...
 
-        var response = Reconcile(conflictId: relativePath, choice: null);
+        string result = await tools.MemoryReconcile(conflictId: relativePath);
 
-        response.Should().BeError(ErrorCodes.InvalidParameter,
+        ResponseParser.Parse(result).Status.Should().Be("error",
             because: "below the threshold the two are different memories sharing a filename, so " +
                      "the conflict must reach a human rather than be merged on no evidence");
         File.ReadAllText(absolutePath).Should().Contain("<<<<<<<",
@@ -884,19 +945,20 @@ Add to `tests/Scrinia.Tests/ReconcileScanTests.cs`:
     }
 
     [Fact]
-    public void AutoResolve_AdmitsTwoSimilarSidecars()
+    public async Task AutoResolve_AdmitsTwoSimilarSidecars()
     {
         // The gate must not refuse the ordinary case. ours ["auth","jwt","oidc"], theirs
-        // ["auth","jwt","saml"] — Jaccard 0.5 ... with a merge.config lowering the threshold to 0.4.
+        // ["auth","jwt","saml"] — Jaccard 0.5 — with a merge.config setting jaccardThreshold to
+        // 0.4, which also proves the threshold is read from config rather than hard-coded.
 
-        var response = Reconcile(conflictId: relativePath, choice: null);
+        string result = await tools.MemoryReconcile(conflictId: relativePath);
 
-        response.Should().BeSuccess();
+        ResponseParser.Parse(result).Status.Should().Be("success");
         File.ReadAllText(absolutePath).Should().NotContain("<<<<<<<");
     }
 ```
 
-Match the assertion helpers that file already uses; if it asserts on `McpResponse` shape directly rather than via `BeError`/`BeSuccess`, follow its style.
+Read `ReconcileScanTests.cs`'s existing fixtures for how it builds a conflicted file and invokes the tool, and use the same names — the call above shows the shape, not necessarily the exact method name.
 
 - [ ] **Step 3: Add the threshold reader**
 
@@ -971,14 +1033,14 @@ Add `MetaSidecarsAreSimilarEnough(string conflictedContent, double threshold)` a
 rtk dotnet build Scrinia.sln && rtk dotnet test
 ```
 
-Expected: 0 errors; **2062 + 2 = 2064** passed, 0 failed, 4 skipped.
+Expected: 0 errors; **2062 + 2 = 2064** passed, **0 failed**, 4 skipped. The five fixtures Step 0 admitted must still be passing — if any of them fails, Step 0 was applied to the wrong fixture or missed one.
 
 Then confirm the gate is load-bearing: temporarily change `IsSimilarEnough` to `=> true`, rebuild, re-run `ReconcileScanTests`. Expected: `AutoResolve_RefusesTwoDissimilarSidecars` **FAILS**. Revert and confirm green.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-rtk git add src/Scrinia.Core/Merge/SidecarAdmission.cs src/Scrinia.Mcp/MemoryTools.Lifecycle.cs tests/Scrinia.Tests/ReconcileScanTests.cs
+rtk git add src/Scrinia.Core/Merge/SidecarAdmission.cs src/Scrinia.Mcp/MemoryTools.Lifecycle.cs tests/Scrinia.Tests/ReconcileScanTests.cs tests/Scrinia.Tests/ReconcileMetaProvenanceTests.cs
 rtk git commit -m "fix(reconcile): refuse to auto-merge sidecars below the similarity threshold"
 ```
 
@@ -1203,14 +1265,15 @@ Add `FileHashes: derived.FileHashes` to both objects in `PersistEphemeral`, and 
 
 - [ ] **Step 4: Supply it at the composition root**
 
-`src/Scrinia/Commands/ScriniaCommands.Serve.cs:62`. The local branch of the same `if` already resolves a workspace root — pass that same value:
+`src/Scrinia/Commands/ScriniaCommands.Serve.cs:62`. The `else` branch does **not** construct a `FileMemoryStore` directly — it calls `WorkspaceSetup.Configure(workspaceRoot)` at `:67`, and the resolution happens one level down at `WorkspaceSetup.cs:51`. Use that same expression:
 
 ```csharp
             MemoryStoreContext.Current = new HttpMemoryStore(
-                httpClient, store ?? "default", workspaceRoot: <the root the local branch uses>);
+                httpClient, store ?? "default",
+                workspaceRoot: WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory()));
 ```
 
-Read the `else` branch immediately below (`:65-`) to find the exact expression it passes to `FileMemoryStore`, and use that expression verbatim. Do not introduce a second resolution path — one resolver, two consumers.
+`WorkspaceRoot` is in `Scrinia.Core`, so no new dependency. **It never throws for a missing workspace** — `WorkspaceRoot.cs:28` falls back to the start directory when no repository root is found — so `scri serve --remote` outside a workspace resolves to the current directory rather than failing. That is the right answer: `HashWorkspaceFile` already guards every path with `PathContainment.IsWithin` and `File.Exists`, so an unresolvable reference simply yields no baseline, exactly as it does locally.
 
 - [ ] **Step 5: Write the tests**
 
@@ -1427,9 +1490,12 @@ Add to `tests/Scrinia.Tests/EphemeralLifecycleTests.cs`:
         // and suggested running list() to find it.
         // ... store ~scratch, append twice so it has three chunks ...
 
-        var response = await tools.Compact("~scratch");
+        // Assertion style: there is no BeSuccess helper in this repo. MCP tool methods here return
+        // a YAML string; the established pattern is ResponseParser.Parse(result).Status. Check what
+        // Compact's own existing tests do and match them.
+        string result = await tools.Compact("~scratch");
 
-        response.Should().BeSuccess();
+        ResponseParser.Parse(result).Status.Should().Be("success");
         store.GetEphemeral("scratch")!.ChunkCount.Should().Be(1);
     }
 
@@ -1586,6 +1652,27 @@ rtk git commit -m "docs: record the merge-parity behaviour change and the epheme
 ```
 
 ---
+
+## Plan Verification Pass
+
+A falsification pass ran against this plan before any implementer was dispatched, and found **five
+false claims** — all corrected above. Recorded because each is a trap the next reader could fall
+back into:
+
+1. **`[SkippableFact]` does not exist in `Scrinia.Merge.Tests`.** No `Xunit.SkippableFact` package
+   reference; every test in that project uses `[Fact]`.
+2. **`GitMergeIntegrationTests` has no typed sidecar reader.** Its neighbours assert on raw merged
+   text via `repo.ReadFile(Sidecar).Should().Contain(...)`. Setup is `GitMergeHarness`
+   (`SeedThreeWay`, `RegisterDriver`, `WriteFile`, `ReadFile`, `Merge`), and its file-private
+   `Meta(keywords, updatedAt)` had no term-frequency support.
+3. **`BeError` / `BeSuccess` do not exist anywhere in the repo** — zero matches across all `*.cs`.
+   `MemoryReconcile` returns a YAML **string**, not an `McpResponse`; the real pattern is
+   `ResponseParser.Parse(result).Status`.
+4. **`ScriniaCommands.Serve.cs`'s local branch constructs no store** — it delegates to
+   `WorkspaceSetup.Configure`, and the resolution lives at `WorkspaceSetup.cs:51`.
+5. **The admission gate regressed five existing green tests.** Every conflicted-sidecar fixture in
+   the suite sits at Jaccard 0.333, and `ReconcileMetaProvenanceTests.cs` was not in any task's
+   file list. Task 4 Step 0 exists because of this.
 
 ## Self-Review Notes
 
