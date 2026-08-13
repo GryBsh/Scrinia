@@ -95,7 +95,15 @@ public static class KnownAttributes
     public const string MentionKey = "mention";
 
     /// <summary>The guided attribute keys — what the guide teaches and agents write most.
-    /// The engine treats any key uniformly; this set is guidance + the weight-table seed, not a gate.</summary>
+    /// Guidance + the weight-table seed for freshly agent-supplied input: the keywords ARGUMENT
+    /// (<see cref="AttributeExtractor.RouteKeywords"/>) treats any key uniformly there, because
+    /// every element was typed on purpose. It IS a gate wherever a key:value pair is pulled out of
+    /// UNCONTROLLED text instead — pasted logs, quoted code, transcripts, legacy free text — where
+    /// an arbitrary key (<c>TODO:fix</c> in a pasted comment) must not mint an attribute: inline
+    /// prose <c>key:value</c> routing (<see cref="AttributeExtractor"/>) and the legacy
+    /// <c>key:value</c>-shaped-Keywords forward-fill
+    /// (<see cref="Scrinia.Core.Migration.AttributeMigration.Forward"/>) both gate on this set for
+    /// exactly that reason.</summary>
     public static readonly IReadOnlySet<string> RecommendedKeys =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { "person", "place", "org", "thing", "topic", "file", "ref", "review" };

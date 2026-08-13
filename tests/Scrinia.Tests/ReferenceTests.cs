@@ -46,6 +46,17 @@ public sealed class ReferenceTests : IDisposable
     }
 
     [Fact]
+    public void FileRef_AfterAColon_IsNotSilentlyTruncated()
+    {
+        // The lookbehind (?<!["'`=:]) does not suppress the match, it SHIFTS it: the engine fails
+        // at 's' (preceded by ':'), advances one char, and succeeds at 'r' — yielding "rc/new.cs".
+        // That corrupt path is indexed, seeded into term frequencies, and reports a clean drift
+        // baseline because HashWorkspaceFile returns null for a path that does not exist.
+        ReferenceExtractor.ExtractFileRefs("see file:src/new.cs")
+            .Should().NotContain("rc/new.cs");
+    }
+
+    [Fact]
     public void ExtractFileRefs_EmptyInput()
     {
         ReferenceExtractor.ExtractFileRefs(null).Should().BeEmpty("null input should return empty array");

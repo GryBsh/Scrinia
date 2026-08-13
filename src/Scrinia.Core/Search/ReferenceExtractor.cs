@@ -7,7 +7,14 @@ public static partial class ReferenceExtractor
 {
     // File paths: word chars, dots, slashes, hyphens followed by known extensions
     // Anchored to avoid matching inside URLs or other noise
-    [GeneratedRegex(@"(?<![""'`=:])(?:\.?/)?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
+    //
+    // The lookbehind must exclude word AND path characters, not just quote/=/: — excluding only
+    // quote/=/: does not suppress a match after one of those, it SHIFTS it: on "file:src/new.cs"
+    // the engine fails at 's' (preceded by ':'), advances one character, and succeeds at 'r' —
+    // yielding the corrupt path "rc/new.cs". A legitimate path starts after whitespace, a line
+    // start, or punctuation like '('; if the preceding character is a word or path character the
+    // engine is mid-token and must not match.
+    [GeneratedRegex(@"(?<![\w""'`=:./\-\\])(?:\.?/)?(?:[\w][\w./\-\\]*)?[\w]+\.(cs|ts|tsx|json|md|yaml|yml|csproj|sln|xml|txt|nmp2|ps1|sh)\b")]
     private static partial Regex FilePathPattern();
 
     // Memory names: [[wiki-link]] references, e.g. [[/api/auth]], [[session-notes]],

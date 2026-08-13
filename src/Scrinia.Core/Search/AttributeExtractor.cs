@@ -3,13 +3,14 @@ using System.Text.RegularExpressions;
 namespace Scrinia.Core.Search;
 
 /// <summary>
-/// Populates the attribute map from its two mechanical sources: content extraction
-/// (frontmatter, line-start <c>key: value</c>, <c>**Bold:** label</c> lines) and agent-keyword
-/// routing (<c>key:value</c>-shaped entries in the keywords param). LLM-free, regex-only,
-/// run at write time. Values verbatim — exact-match signal for what BM25 tokenization shreds
-/// (versions, dates, hyphenated identifiers, statuses). Conservative: nothing inside code
-/// fences, URL-remainder values skipped, tight key charset, value + attribute caps.
-/// Merge semantics live in <see cref="KnownAttributes"/>, not here.
+/// Populates the attribute map from its three mechanical sources: content extraction
+/// (frontmatter, line-start <c>key: value</c>, <c>**Bold:** label</c> lines, and inline prose
+/// <c>key:value</c> bounded to <see cref="KnownAttributes.RecommendedKeys"/>) and agent-keyword
+/// routing (<c>key:value</c>-shaped entries in the keywords param, unbounded — every element there
+/// was typed on purpose). LLM-free, regex-only, run at write time. Values verbatim — exact-match
+/// signal for what BM25 tokenization shreds (versions, dates, hyphenated identifiers, statuses).
+/// Conservative: nothing inside code fences, URL-remainder values skipped, tight key charset,
+/// value + attribute caps. Merge semantics live in <see cref="KnownAttributes"/>, not here.
 /// </summary>
 public static partial class AttributeExtractor
 {
@@ -26,6 +27,16 @@ public static partial class AttributeExtractor
     // Keyword routing: key charset before first colon, non-empty remainder.
     [GeneratedRegex(@"^([A-Za-z][A-Za-z0-9_-]{0,29}):(.+)$")]
     private static partial Regex KeywordAttributePattern();
+
+    // Inline prose key:value — anywhere in a line, no leading whitespace required, value is a
+    // single non-whitespace token (unlike KeywordAttributePattern's "rest of the string", prose
+    // has trailing words after the value that must not be swallowed). Same key charset as
+    // KeywordAttributePattern; unlike keyword routing, every match here is additionally gated on
+    // KnownAttributes.RecommendedKeys at the call site — prose is uncontrolled text (pasted logs,
+    // quoted code, transcripts), so only the eight keys the guide teaches are allowed to mint an
+    // attribute from it.
+    [GeneratedRegex(@"(?<![\w-])([A-Za-z][A-Za-z0-9_-]{0,29}):(\S+)")]
+    private static partial Regex InlineProseKeyValuePattern();
 
     /// <summary>
     /// Extracts attributes from content. Multi-valued keys (per <see cref="KnownAttributes"/>)
@@ -61,10 +72,17 @@ public static partial class AttributeExtractor
             firstLine = false;
 
             var (key, value) = MatchAttributeLine(line);
-            if (key is null) continue;
+            if (key is not null)
+            {
+                found ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                AddAttribute(found, key, value!);
+            }
 
-            found ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-            AddAttribute(found, key, value!);
+            foreach (var (inlineKey, inlineValue) in MatchInlineProsePairs(line))
+            {
+                found ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                AddAttribute(found, inlineKey, inlineValue);
+            }
         }
 
         return ToAttributeDict(found);
@@ -337,5 +355,25 @@ public static partial class AttributeExtractor
             return (null, null);
 
         return (m.Groups[1].Value.Trim().ToLowerInvariant(), value);
+    }
+
+    /// <summary>Finds inline prose <c>key:value</c> pairs anywhere in <paramref name="line"/>,
+    /// gated to <see cref="KnownAttributes.RecommendedKeys"/> — see
+    /// <see cref="InlineProseKeyValuePattern"/> for why the gate lives here and not in the regex.
+    /// Applies the same value guards as <see cref="MatchAttributeLine"/> (length cap, URL-remainder
+    /// skip).</summary>
+    private static IEnumerable<(string Key, string Value)> MatchInlineProsePairs(string line)
+    {
+        foreach (Match m in InlineProseKeyValuePattern().Matches(line))
+        {
+            string key = m.Groups[1].Value.ToLowerInvariant();
+            if (!KnownAttributes.RecommendedKeys.Contains(key)) continue;
+
+            string value = m.Groups[2].Value;
+            if (value.Length == 0 || value.Length > MaxValueLength) continue;
+            if (value.StartsWith("//", StringComparison.Ordinal)) continue; // URL remainder guard
+
+            yield return (key, value);
+        }
     }
 }

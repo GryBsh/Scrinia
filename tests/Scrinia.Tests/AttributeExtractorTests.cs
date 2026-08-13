@@ -5,7 +5,8 @@ namespace Scrinia.Tests;
 
 /// <summary>
 /// Tests for <see cref="AttributeExtractor"/> — mechanical key:value extraction (frontmatter,
-/// line-start pairs, bold labels) and agent-keyword routing into the attribute map.
+/// line-start pairs, bold labels, and inline prose bounded to
+/// <see cref="KnownAttributes.RecommendedKeys"/>) and agent-keyword routing into the attribute map.
 /// </summary>
 public sealed class AttributeExtractorTests
 {
@@ -68,6 +69,23 @@ public sealed class AttributeExtractorTests
         AttributeExtractor.Extract(string.Join("\n", lines))!.Should().HaveCount(KnownAttributes.MaxAttributes);
         AttributeExtractor.Extract("Just prose.").Should().BeNull();
         AttributeExtractor.Extract(null).Should().BeNull();
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_RoutesForARecommendedKey()
+    {
+        AttributeExtractor.Extract("see file:src/new.cs for the detail")!["file"]
+            .Should().Contain("src/new.cs");
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_IsIgnoredForAnUnrecommendedKey()
+    {
+        // Prose is uncontrolled text — pasted logs, quoted code. Only the eight keys the guide
+        // teaches route from prose; the keywords ARGUMENT still routes any key, because every
+        // element there was typed on purpose.
+        AttributeExtractor.Extract("TODO:cleanup the retry path")
+            .Should().BeNull();
     }
 
     [Fact]
