@@ -10,6 +10,124 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Changed (breaking) — one derivation pipeline; the remote wire is API v2
+
+- Metadata derivation for memories was implemented four times — MCP store, MCP append, server
+  store, server append — and had drifted, in four places far enough to lose data. All four collapse
+  onto one pipeline (`Scrinia.Core.MemoryDerivation`), moved to the store boundary: a store now
+  takes the caller's *raw* input and returns the entry it derived. `FileMemoryStore` derives
+  in-process; `HttpMemoryStore` POSTs the raw input and returns whatever the server derived —
+  nothing is derived client-side any more, and there is no longer a second copy of
+  `TextAnalysis`/`AttributeExtractor` logic on the client to drift out of step with the server's.
+  `RemoteApiVersion.Current` is now `"2"`. Client and server always ship from the same commit, so
+  this is a hard cut, not a negotiated migration — a pre-change client will not work against this
+  server.
+- `POST /memories`, the append endpoint, and the listing (`GET /memories`) all now carry the
+  **complete derived entry**, not a `{name, chunkCount, originalBytes, message}` summary. A caller
+  that only wants the message ignores the rest; a caller that wants to know what the store actually
+  computed — keywords, term frequencies, chunk entries, the drift baseline — no longer has to issue
+  a second `GET` to find out.
+- `ShowResponse.Content` is a `string[]` of chunks, not one joined string. `ShowResponse.ChunkCount`
+  is deleted — it is `Content.Length`, and a derivable field that can disagree with its own payload
+  is exactly the defect this branch removes elsewhere (`StoreResponse`/`AppendResponse` dropping
+  `Name`/`QualifiedName`/`ChunkCount`/`OriginalBytes` for the same reason: read the counts off
+  `Entry`). **Consequence:** `recall({ chunk: N })` against a remote store now returns the right
+  chunk. It previously reassembled a multi-chunk memory as a single joined chunk on every remote
+  read (`Nmp2ChunkedEncoder.Encode(show.Content)` over one scalar string), so a chunk index past 1
+  either returned the whole memory or nothing — the tool description's claim that chunk retrieval
+  works was false for any remote, multi-chunk memory. It is now re-encoded from the real chunk
+  array (`Nmp2ChunkedEncoder.EncodeChunks(show.Content)`) and behaves the same as a local recall.
+- The entry (`ArtifactEntry` locally, `MemoryEntry` on the wire) carries a new keyword-provenance
+  field, `agentKeywords` — which of the entry's `keywords` the caller actually supplied, as opposed
+  to what was auto-extracted from content. It is additive and optional, read as "unknown" (not
+  "none") when absent, so it did not by itself need the version bump — but it is why a memory
+  survives a rewrite (compaction, an attribute-only update) without its curated keywords being
+  guessed at from the text again. See "Changed — compaction derives its metadata" below.
+
+### Added — `GET` one complete entry, and `PATCH` its metadata
+
+- `GET /memories/{name}/entry` returns the same complete entry shape as the write endpoints, for a
+  caller that wants to read one without writing to it. Requires the `read` permission.
+- `PATCH /memories/{name}` updates a memory's description, attributes and keywords without
+  rewriting its content. This is the real fix for a defect the previous branch could only fail
+  closed on: `HttpMemoryStore.TryUpdateEntry` used to always return `false` because there was no
+  server-side channel to persist a metadata-only mutation through, so `update()`/`link()` against a
+  remote store either reported `NOT_SUPPORTED` or (before that) reported success while nothing
+  reached the server. Requires the `store` permission.
+  - The body **is** the entry — a PATCH that omits `description`, `attributes` or `keywords`
+    entirely is rejected with `400` rather than treated as "leave it alone": those keys binding to
+    null/default from a partial body would silently erase curated metadata (an explicit `null` is
+    fine; an *omitted* key is not).
+  - A body that changes `keywords` to anything other than what is already stored is rejected with
+    `400`. Keywords are derived from content, and PATCH has no content to re-derive against — a
+    genuine keyword change has to go through `remember()`/`append()`.
+  - `updatedAt` is an optimistic-concurrency token: the body must carry the value the server
+    currently has stored, or the PATCH is rejected with `409` rather than silently overwriting a
+    concurrent writer's change.
+  - **Operational:** updating an entry's metadata against a remote store now needs the `read` *and*
+    `store` permissions (`GET .../entry` then `PATCH`), where the path it replaces went through the
+    listing endpoint and needed only `search`. An API key scoped to `search` alone that previously
+    got `NOT_SUPPORTED` from `update()`/`link()` now gets a `403`.
+
+### Changed (breaking) — BM25 ranking now matches between local and remote
+
+- Local and remote used to rank the same memory differently: over the wire the carrier attributes
+  (`tag`/`review`/`anchor`/`file`) arrived in one flat map and were seeded into term frequencies,
+  while locally `SeedTermFrequencies` ran *before* the carrier merge, so those keys were never
+  seeded there at all. The one derivation pipeline seeds term frequencies exactly once, as the last
+  step of attribute handling, over the complete attribute map — both store modes now take this
+  path, so they rank identically. **This is a deliberate, user-visible ranking change: `tag`,
+  `review` and `file` attribute values now seed term frequencies at +3 (previously 0, locally), and
+  `anchor` at +3 (previously +2)** — one weight for every attribute value, applied the next time a
+  memory is written or rewritten.
+- **A ruling, not just a consequence of unifying the pipelines:** attribute values added through
+  `update()`/`link()` previously seeded at +5 — the same weight as a curated keyword — so an
+  attribute added after the fact outranked the same term if it had arrived through `remember()`
+  (seeded at +3). They now seed at the same +3 every write path uses. There is no longer a
+  preferential lane for a metadata-only update.
+- An auto-extracted keyword an `append()` carries forward from a memory's existing content used to
+  be reclassified as agent-supplied and reboosted to +5 on every append — compounding, so a term
+  that was never curated could out-rank a genuinely curated one after a few appends. It now keeps
+  its original auto weight (+2) unless it is genuinely agent-supplied. Nothing is dropped: the
+  carried-forward list still leads the keyword merge exactly as before (that guarantee is
+  unaffected) — only the *weight* changes.
+- Review dates now persist as UTC on every write path. `remember()`'s bare-date parse and the
+  direct-REST path used to disagree — one round-tripped a bare date through the writer's local time
+  zone, the other stored it verbatim as an unparseable condition — so the same input produced two
+  different stored values depending on the writer's machine and the route taken. Both now go
+  through one shared parse (`MemoryDerivation.TryParseReviewDate`, anchored to UTC), so a bare
+  `review` date is read the same way regardless of where or how it was written.
+
+### Changed — compaction now derives its metadata
+
+- `compact()` used to derive nothing beyond whatever the memory already carried: it hand-assembled
+  the compacted entry from the surviving chunks and the existing attributes/keywords, with no pass
+  through the extraction/keyword/term-frequency pipeline. It now performs a real store rewrite over
+  the compacted chunks, so a compacted memory can gain keywords, term frequencies and chunk entries
+  it did not have — and, if its surviving text happens to be count-shaped, a
+  `review: "when counts in this memory change"` attribute it did not have either. The memory's
+  curated keywords, attributes and description are not lost in the process: they travel forward as
+  the caller's own input to the rewrite (read from `ArtifactEntry.AgentKeywords` when the entry
+  knows its own provenance; a documented heuristic over the pre-compact chunks for an entry that
+  predates that field).
+
+### Fixed — a re-store's rollback could destroy the memory it was overwriting
+
+- Re-storing an existing memory whose sidecar write then failed (a transient I/O error, a locked
+  file) used to delete the artifact unconditionally as part of the rollback — so the failure
+  destroyed the memory's only live copy on disk while the index entry, never updated because the
+  failure happened before it could be, still pointed at a file that no longer existed. Nothing reads
+  `versions/` back on that path, so there was no way to recover the memory afterward. The rollback
+  now captures the previous artifact before the overwrite and restores it on failure; only a
+  brand-new memory's now-orphaned artifact is deleted, matching what `AppendAsync`'s rollback
+  already did.
+
+### Changed — stale `facts.json` sidecars rebuild automatically
+
+- `EntityFactSidecar.Version` is `3`. A `facts.json` written under an earlier version is rejected
+  and rebuilt the next time it is read. This is expected churn from the derivation collapse, not
+  corruption — no action is needed.
+
 ### Changed (breaking) — the HTTP store request and response shapes
 
 - `POST /api/v1/stores/{store}/memories`'s request body drops `tags`, `reviewAfter`, and
@@ -73,6 +191,15 @@ and all assembly attributes.
   sent the attributes map, the keywords, and the curated description nowhere — none of it reached
   the server. `WriteArtifactAsync` now takes an optional `ArtifactWriteMetadata`, and the MCP
   remember path assembles it *before* the write instead of trying to patch it in afterward.
+  ***Superseded, `store-owned-derivation`:*** `ArtifactWriteMetadata` is deleted. It was a
+  patch over the real defect — every caller still derived its own metadata and handed the result
+  to the write seam, which is the four-implementations problem the entries below this one fix at
+  the root. `WriteArtifactAsync` no longer carries metadata at all: persistent writes go through
+  `IMemoryStore.StoreAsync`/`AppendAsync`, which take the caller's *raw* input and return the
+  entry the store derived — locally in-process, remotely by deferring to the server's own
+  derivation pass over `POST /memories`/`POST /memories/{name}/append`. A remote `remember()` now
+  loses nothing for the same reason a local one doesn't: there is one derivation pipeline, not a
+  value smuggled sideways into a write call that wasn't built to carry it.
 
 ### Fixed — remote search results reported fabricated metadata
 
@@ -214,6 +341,10 @@ and all assembly attributes.
   the caller's keywords as agent-supplied and boosts them accordingly. Attribute *maps* match
   exactly; only ranking differs. Reproducing local's split needs the two maps sent separately,
   which is a wire-shape change. Documented at `MemoryOrchestrator.cs`.
+  ***Fixed, `store-owned-derivation`:*** the two maps are now sent separately — the wire carries a
+  complete entry, not a flattened carrier — so both store modes seed term frequencies through the
+  same call, in the same order, and rank identically. See "Changed (breaking) — BM25 ranking now
+  matches between local and remote" above for the resulting weight change.
 
 ### Changed — MCP and REST disagree on a bare date in a `review` attribute
 
@@ -227,6 +358,11 @@ and all assembly attributes.
   reports `needsReview: true` forever rather than going stale on the date. The MCP tool description
   (`MemoryTools.cs`) advertises exactly the lenient bare-date form (`review: ['2026-08-01']`) that
   only works correctly through MCP, not through the REST endpoint directly.
+  ***Fixed, `store-owned-derivation`:*** every write path now parses a `review` date through the
+  one shared `MemoryDerivation.TryParseReviewDate`, which reads with
+  `DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal` — a bare date is anchored to
+  UTC rather than the writer's local zone, so the same input produces the same stored value on
+  every machine and through every route.
 
 ### Changed — store read path
 

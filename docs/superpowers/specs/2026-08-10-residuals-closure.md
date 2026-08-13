@@ -1,6 +1,7 @@
 # Residuals Closure — the backlog stops rotating here
 
-**Status:** closure in progress — Groups A–D and F closed; E decided; three designs outstanding.
+**Status:** closure in progress — Groups A–D and F closed; E decided, and E1/E4/E5 closed; two
+designs outstanding (E2, E3).
 **Supersedes as the working list:** `2026-08-08-residuals-triage.md` (the 35-item inventory that
 started this sequence).
 
@@ -382,14 +383,31 @@ being a synthesized string nothing can dereference. Needs its own spec.
 remote scoring needs a surface gets answered rather than re-deferred. Needs its own spec, and the
 spec should start from the trust question, not the plumbing.
 
-**E4 — RULED: build the server-side PATCH endpoint** for entry metadata, so entity-typing
-promotion actually persists remotely instead of failing closed. New endpoint, new DTO, auth and
-bounds. Needs a spec.
+**E4 — CLOSED on `store-owned-derivation`, 2026-08-12.** Built, not just ruled: `GET
+/memories/{name}/entry` and `PATCH /memories/{name}` exist, gated on `read` and `store`
+respectively. `HttpMemoryStore.TryUpdateEntry` now uses them instead of always returning `false`,
+so entity-typing promotion and `update()`/`link()` persist remotely instead of failing closed. The
+PATCH contract turned out to need more than "new endpoint, new DTO": the body is the complete
+entry (an omitted `description`/`attributes`/`keywords` key is a `400`, not a silent partial
+write), a `keywords` change is refused with `400` (PATCH has no content to re-derive it from), and
+`updatedAt` is the optimistic-concurrency token (`409` on a stale value). Recorded in CHANGELOG.md.
 
-**E5 — RULED: send the chunks.** Chunk structure crosses the wire so remote matches local,
-`recall({chunk: N})` works remotely, and the tool description stops being false. Needs a wire
-field and a server-side change. Arguably unfinished business from the metadata fix that just
-landed — same class, same seam.
+**E5 — CLOSED on `store-owned-derivation`, 2026-08-12.** The chunks cross the wire: `StoreRequest`/
+`AppendRequest` carry the raw chunk array and `ShowResponse.Content` is a `string[]`, not one
+joined string. `recall({chunk: N})` works remotely now — it used to reassemble a multi-chunk
+memory as a single chunk on every remote read, so an index past 1 returned either the whole memory
+or nothing, and the tool description's claim was false for any remote, multi-chunk memory. Recorded
+in CHANGELOG.md.
+
+Both were designed together, as the sequencing note below anticipated — not as two specs, but as
+one design (`docs/superpowers/specs/2026-08-11-store-owned-derivation-design.md`) that turned out
+wider than either ruling: the wire gaps E4 and E5 named were downstream of metadata derivation
+being implemented four times over, and closing that at the root closes both. See the plan at
+`docs/superpowers/plans/2026-08-11-store-owned-derivation.md` and the inventory at
+`docs/superpowers/analysis/2026-08-11-derivation-inventory.md` for the full account; commits
+`9250aa8` through `1722d48` on `store-owned-derivation` carry the work, with `6ccea4a`, `aaf0914`,
+`65fba16` and `c899d8b` specifically building the PATCH endpoint (E4), and `6aac54d`, `2a49837` and
+`2595fa2` specifically widening the wire to the chunk array and the complete entry shape (E5).
 
 ### Consequence for sequencing
 
@@ -475,39 +493,58 @@ be checked before ruling.
   sites, two of which append to an existing `Info`. The reachability argument no longer holds and
   the ordering needs re-deciding.
 
-## Two known divergences — NO LONGER PERMANENT, 2026-08-11
+## Two known divergences — CLOSED on `store-owned-derivation`, 2026-08-12
 
-Both were recorded here as consequences of decisions already made, closeable by nobody. **Both are
-now in scope of `docs/superpowers/specs/2026-08-11-store-owned-derivation-design.md`**, which
-removes their cause rather than documenting them.
+Both were recorded here as consequences of decisions already made, closeable by nobody. Both closed
+by `docs/superpowers/specs/2026-08-11-store-owned-derivation-design.md`, which removed their cause
+— one derivation pipeline, run at the store boundary on every write path — rather than documenting
+around it. Local and remote now produce field-for-field identical entries; that property is what
+`tests/Scrinia.Server.Tests/LocalRemoteParityTests.cs` asserts.
 
-- **BM25 term frequencies differ by store mode**, so search ranking differs local vs remote. The
+- **BM25 term frequencies differed by store mode**, so search ranking differed local vs remote. The
   explanation recorded here was **accurate but incomplete**, and it described only one of two
   independent causes.
-  - *The one it named, on the store path:* locally `SeedTermFrequencies` runs before the carrier
-    merge so carrier keys are never seeded, while over the wire they arrive in one flat map and get
-    seeded; and a flat map cannot tell an agent-supplied attribute from a carrier one. Documented in
-    full at `src/Scrinia.Server/Services/MemoryOrchestrator.cs:57-66`, which also names the fix —
-    "sending the two maps separately, which is a wire-shape change." That is exactly what the new
-    spec does.
-  - *The one nobody recorded, on the append path:* the server passes `null` for agent keywords,
-    boosts everything `+2` instead of agent `+5`, and boosts the raw keyword rather than its index
-    tokens (`MemoryOrchestrator.cs:269-275` against `src/Scrinia.Mcp/MemoryTools.Core.cs:1322-1341`).
-    Pure duplication drift, on a path the recorded note never mentions.
+  - *The one it named, on the store path:* locally `SeedTermFrequencies` ran before the carrier
+    merge so carrier keys were never seeded, while over the wire they arrived in one flat map and
+    got seeded; and a flat map could not tell an agent-supplied attribute from a carrier one. This
+    was documented in full at what was `src/Scrinia.Server/Services/MemoryOrchestrator.cs:57-66`
+    before that method was deleted on this branch (`refactor(server): the store derives; delete the
+    orchestrator copy`) — the comment named the fix in advance: "sending the two maps separately,
+    which is a wire-shape change." That is exactly what the new pipeline does — see D-08 in
+    `docs/superpowers/analysis/2026-08-11-derivation-inventory.md`, implemented at
+    `src/Scrinia.Core/MemoryDerivation.cs` (`SeedTermFrequencies` now runs once, last, over the
+    complete attribute map). The correct diagnosis was right about the fix and right about the
+    cause; it undercounted the causes.
+  - *The one nobody recorded, on the append path:* the server passed `null` for agent keywords,
+    boosted everything `+2` instead of agent `+5`, and boosted the raw keyword rather than its
+    index tokens (was `MemoryOrchestrator.cs:269-275` against
+    `src/Scrinia.Mcp/MemoryTools.Core.cs:1322-1341`). Pure duplication drift, on a path the recorded
+    note never mentioned — a second, undocumented cause, not a restatement of the first. Closed the
+    same way: `MemoryDerivation.ForAppend` is the one implementation both paths now call.
 
   An earlier revision of this section claimed the recorded explanation was false. It was not; it was
-  a correct diagnosis of a different code path. Both causes are closed by the same design, because
-  both are consequences of the derivation existing more than once.
-- **MCP and REST disagree on a bare date in a `review` attribute.** `remember()` routes it through
-  a lenient parse and stores a round-tripped date that goes stale; a direct `POST` stores it
-  verbatim, so it reads as a *condition* and the memory reports `needsReview=true` forever. Same
-  cause: two implementations of one contract.
+  a correct diagnosis of a different code path that happened to share a symptom with a second,
+  undocumented one. Both are closed by the same design, because both were consequences of the
+  derivation existing more than once — not because the first diagnosis needed correcting.
+- **MCP and REST disagreed on a bare date in a `review` attribute.** One cause, not two: both were
+  independent, ad hoc parses of the same input. `remember()`'s lenient `DateTimeOffset.TryParse`
+  read a bare date in the writer's local time zone before round-tripping it; the direct `POST`
+  path did no parsing at all and stored the bare string verbatim, which `TryReadReview` then read
+  as a review *condition* rather than a *date*. Both now go through
+  `MemoryDerivation.TryParseReviewDate`, anchored to UTC
+  (`DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal`), so the same bare date
+  produces the same stored value regardless of the writer's machine or the route taken.
+
+See commits `9250aa8` through `1722d48` on `store-owned-derivation`, the plan at
+`docs/superpowers/plans/2026-08-11-store-owned-derivation.md`, and the inventory at
+`docs/superpowers/analysis/2026-08-11-derivation-inventory.md`. Recorded in CHANGELOG.md.
 
 ## Closure order — revised after the Group E rulings
 
 Group E's answers turned three closure branches into **three closure branches plus three new
 designs**. The designs are the long pole; the closure work is ready now and should not wait on
-them. **All of the closure work has now landed — the three designs are all that remain.**
+them. **All of the closure work has now landed, and one of the three designs has too — E2 and E3
+are what remain.**
 
 **Done:**
 
@@ -522,21 +559,20 @@ them. **All of the closure work has now landed — the three designs are all tha
   in Group C is waiting on a CI leg to be verified.** Its last open decision — `CopyMemory`'s
   destination existence check — was closed by fixing it on `copy-destination-casing`, 2026-08-11,
   which ends the case-sensitivity class: **no site of it remains open.**
-
-**Specced, ready for a plan:**
-
-1. ~~**Remote wire parity (E4 + E5)**~~ — **specced 2026-08-11** as
-   `docs/superpowers/specs/2026-08-11-store-owned-derivation-design.md`. The spec came out wider
-   than the ruling: brainstorming established that the goal is MCP and HTTP being *effectively the
-   same*, and that the wire gaps are downstream of derivation being implemented four times. So the
-   spec moves derivation to the store boundary — the local store derives, the remote store defers to
-   the server — and E4's PATCH and E5's chunk array fall out of it. It also closes both "known
-   divergences" above.
+- ~~Remote wire parity (E4 + E5) + both known divergences~~ — closed on `store-owned-derivation`,
+  2026-08-12. Specced 2026-08-11 as
+  `docs/superpowers/specs/2026-08-11-store-owned-derivation-design.md`; the spec came out wider
+  than the ruling — brainstorming established that the goal is MCP and HTTP being *effectively the
+  same*, and that the wire gaps were downstream of derivation being implemented four times over. The
+  spec moved derivation to the store boundary — the local store derives, the remote store defers to
+  the server — and E4's PATCH and E5's chunk array fell out of it, along with both "known
+  divergences" above. See the Group E and "Two known divergences" sections above for the closure
+  detail.
 
 **Needs a spec before a plan:**
 
-2. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
-3. **Remote scoring surface (E3)** — start from the trust question.
+1. **Addressable artifacts (E2)** — a resolvable scheme for `remote://`.
+2. **Remote scoring surface (E3)** — start from the trust question.
 
 **Group G** gets verified inside whichever branch touches its area. Each result either closes the
 item or produces exactly one new specced item — not a `/findings/` chunk.
