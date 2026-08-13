@@ -299,7 +299,10 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
-                Attributes: e.Attributes);
+                Attributes: e.Attributes,
+                // See FileMemoryStore.ListEphemeral: one memory must not report its provenance
+                // differently depending on which read reached it.
+                AgentKeywords: e.AgentKeywords);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
         return result;

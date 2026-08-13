@@ -345,4 +345,34 @@ public class FileMemoryStoreWriteSurfaceTests
         tmp.Store.GetEphemeral("scratch")!.ChunkCount.Should().Be(2);
         tmp.Store.LoadIndex("local").Should().BeEmpty();
     }
+
+    /// <summary>
+    /// An ephemeral memory reports the same keyword provenance whichever read reaches it. The write
+    /// returns it, and the listing projection is a SECOND hand-written projection of the same
+    /// record — one that already carried <c>Keywords</c> and <c>TermFrequencies</c> but not this,
+    /// so the same memory answered "these were curated" through one read and "nobody knows"
+    /// (null) through the other.
+    /// <para>Nothing misbehaves on that today, but it is armed rather than harmless: the listing IS
+    /// what <c>LoadIndex</c> serves for an ephemeral, and a compaction reads its metadata from
+    /// exactly there — so the moment compact stops being a no-op on a <c>~name</c>, it would take
+    /// the recovery heuristic for a memory whose provenance was recorded and sitting in the map it
+    /// just read from.</para>
+    /// </summary>
+    [Fact]
+    public async Task ListScoped_ProjectsAnEphemeralsKeywordProvenance()
+    {
+        using var tmp = new TempWorkspace();
+
+        var written = await tmp.Store.StoreAsync(
+            new MemoryWrite("~scratch", "local", ["a thought about boats"], Keywords: ["portcullis"]));
+        written.AgentKeywords.Should().Equal(["portcullis"],
+            because: "precondition: the write recorded it");
+
+        var listed = tmp.Store.ListScoped(null).Single(s => s.Scope == "ephemeral").Entry;
+
+        listed.AgentKeywords.Should().Equal(written.AgentKeywords,
+            because: "two projections of one record must not disagree about it");
+        listed.Keywords.Should().Equal(written.Keywords,
+            because: "the neighbouring field this one was omitted next to");
+    }
 }

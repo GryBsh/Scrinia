@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
+using Scrinia.Core.Merge;
 using Scrinia.Core.Models;
 
 namespace Scrinia.Mcp;
@@ -459,17 +460,22 @@ public sealed partial class ScriniaMcpTools
                 }
             }
 
-            // Union keywords
-            var keywordSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (baseNode["keywords"] is JsonArray baseKw)
-                foreach (var k in baseKw) if (k?.GetValue<string>() is string s) keywordSet.Add(s);
-            if (otherNode["keywords"] is JsonArray otherKw)
-                foreach (var k in otherKw) if (k?.GetValue<string>() is string s) keywordSet.Add(s);
+            // Union the keywords and their provenance, through the ONE rule
+            // (Scrinia.Core.Merge.SidecarKeywordMerge). This used to be a hand-rolled keyword
+            // union that left `agentKeywords` to ride along on whichever side won the timestamp
+            // comparison — so an automatic reconcile recorded the losing side's curated keywords
+            // as auto-extracted while reporting a clean merge, which is the same defect the git
+            // merge driver had already been fixed for. Two implementations of this rule are forced
+            // (the driver is AOT with no project references); a third was not.
+            var (mergedKeywords, mergedAgentKeywords) = SidecarKeywordMerge.Union(
+                ReadStrings(baseNode, "keywords"), ReadStrings(baseNode, "agentKeywords"),
+                ReadStrings(otherNode, "keywords"), ReadStrings(otherNode, "agentKeywords"));
 
-            var sortedKw = new JsonArray();
-            foreach (var k in keywordSet.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
-                sortedKw.Add((JsonNode?)k);
-            baseNode["keywords"] = sortedKw;
+            baseNode["keywords"] = ToJsonArray(mergedKeywords);
+            if (mergedAgentKeywords is null)
+                (baseNode as JsonObject)?.Remove("agentKeywords");
+            else
+                baseNode["agentKeywords"] = ToJsonArray(mergedAgentKeywords);
 
             // Union termFrequencies (max value for shared keys)
             if (baseNode["termFrequencies"] is JsonObject baseTf &&
@@ -500,6 +506,24 @@ public sealed partial class ScriniaMcpTools
             resolvedJson = null;
             return false; // If anything fails, report as needing manual resolution
         }
+    }
+
+    /// <summary>A JSON string array as <c>string[]</c>, or null when the key is absent or is not an
+    /// array. Null is load-bearing for <c>agentKeywords</c>, where absent means UNKNOWN.</summary>
+    private static string[]? ReadStrings(JsonNode? node, string key)
+    {
+        if (node?[key] is not JsonArray array) return null;
+        var values = new List<string>(array.Count);
+        foreach (var element in array)
+            if (element?.GetValue<string>() is string s) values.Add(s);
+        return [.. values];
+    }
+
+    private static JsonArray ToJsonArray(string[] values)
+    {
+        var array = new JsonArray();
+        foreach (string value in values) array.Add((JsonNode?)value);
+        return array;
     }
 
     // ── Maintenance tools ──────────────────────────────────────────────────

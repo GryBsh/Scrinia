@@ -33,27 +33,31 @@ public static class MetaJsonMerger
         long originalBytes = originalBytesN ?? GetLong(ours, "originalBytes") ?? 0;
         int chunkCount = chunkCountN ?? GetInt(ours, "chunkCount") ?? 0;
 
-        // Union keywords (already known similar by Jaccard).
-        var keywords = new HashSet<string>(GetStrings(ours, "keywords") ?? [], StringComparer.OrdinalIgnoreCase);
-        foreach (var kw in GetStrings(theirs, "keywords") ?? []) keywords.Add(kw);
-
-        // ...and union their provenance with them, on the same rule and for the same reason. This
-        // is not an "unknown property preserved verbatim" like the ones the overlay below keeps:
-        // `agentKeywords` names members of `keywords`, so taking ours whole while the union pulls
-        // in theirs would leave a branch's curated keyword recorded as auto-extracted — and a later
-        // compaction reads exactly this field to decide what to keep at agent weight.
+        // Union the keywords (already known similar by Jaccard) and their provenance with them.
         //
-        // Absent on BOTH sides means neither entry knows its provenance (a pre-field sidecar), and
-        // the key stays absent: writing an empty array would assert "nothing was curated", which is
-        // a different claim from "nobody wrote it down". Absent on ONE side is the union of what is
-        // known, which can only under-claim.
+        // DUPLICATE, AND THE DUPLICATION IS FORCED. The original is
+        // Scrinia.Core.Merge.SidecarKeywordMerge.Union, which reconcile()'s auto-resolver calls;
+        // this project is a standalone AOT executable with zero project references by hard
+        // constraint, so it cannot call it. Change one and you must change the other:
+        // Scrinia.Merge.Tests.SidecarKeywordMergeParityTests runs the same cases through both and
+        // fails when they disagree. The rule and its reasoning live there. In summary: keywords
+        // union case-insensitively and sort; agentKeywords is UNKNOWN unless BOTH sides recorded
+        // it, because a reader treats a non-null list as the complete answer, so merging known
+        // with unknown would positively assert that the unrecorded side'''s curated keywords were
+        // auto-extracted and demote them with no way to tell anything was lost.
+        var keywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kw in GetStrings(ours, "keywords") ?? []) if (!string.IsNullOrWhiteSpace(kw)) keywords.Add(kw);
+        foreach (var kw in GetStrings(theirs, "keywords") ?? []) if (!string.IsNullOrWhiteSpace(kw)) keywords.Add(kw);
+
         string[]? oursAgent = GetStrings(ours, "agentKeywords");
         string[]? theirsAgent = GetStrings(theirs, "agentKeywords");
-        HashSet<string>? agentKeywords = oursAgent is null && theirsAgent is null
-            ? null
-            : new HashSet<string>(oursAgent ?? [], StringComparer.OrdinalIgnoreCase);
-        if (agentKeywords is not null)
-            foreach (var kw in theirsAgent ?? []) agentKeywords.Add(kw);
+        HashSet<string>? agentKeywords = null;
+        if (oursAgent is not null && theirsAgent is not null)
+        {
+            agentKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kw in oursAgent) if (!string.IsNullOrWhiteSpace(kw)) agentKeywords.Add(kw);
+            foreach (var kw in theirsAgent) if (!string.IsNullOrWhiteSpace(kw)) agentKeywords.Add(kw);
+        }
 
         string? oursUpdated = GetString(ours, "updatedAt"), theirsUpdated = GetString(theirs, "updatedAt");
         string? updatedAt = CompareTimestamps(oursUpdated, theirsUpdated) > 0 ? oursUpdated : theirsUpdated;

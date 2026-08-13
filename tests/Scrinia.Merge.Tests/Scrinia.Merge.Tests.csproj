@@ -24,5 +24,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Scrinia.Merge\Scrinia.Merge.csproj" />
+    <!-- Scrinia.Merge itself may not reference Core — it is a standalone AOT executable, which is
+         why its keyword/provenance merge is a forced duplicate of
+         Scrinia.Core.Merge.SidecarKeywordMerge. That constraint binds the PRODUCT project, not this
+         one: the reference exists so SidecarKeywordMergeParityTests can run the same cases through
+         both implementations and fail when the copy drifts from the original. -->
+    <ProjectReference Include="..\..\src\Scrinia.Core\Scrinia.Core.csproj" />
   </ItemGroup>
 </Project>

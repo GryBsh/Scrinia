@@ -372,6 +372,28 @@ public sealed class RemoteStoreToolTests
         recalled.Should().Contain("the first line").And.Contain("the second line");
     }
 
+    /// <summary>
+    /// The remote store's own ephemeral listing projection carries the keyword provenance, like its
+    /// local twin. Two hand-written projections of one record — the write's and the listing's — and
+    /// this one already carried <c>Keywords</c> and <c>TermFrequencies</c> but not the record of
+    /// which of those keywords were curated, so the same memory answered differently depending on
+    /// which read reached it. <c>LoadIndex</c> IS this projection for an ephemeral, and a
+    /// compaction reads its metadata from there.
+    /// </summary>
+    [Fact]
+    public async Task ListScoped_EphemeralPath_RemoteStore_CarriesKeywordProvenance()
+    {
+        using var scope = new RemoteStoreScope();
+
+        await Tools().Remember(["a thought about boats"], "~scratch", keywords: ["portcullis"]);
+        scope.Store.GetEphemeral("scratch")!.AgentKeywords.Should().Equal(["portcullis"],
+            because: "precondition: the in-process write recorded it");
+
+        scope.Store.ListScoped(null).Single(s => s.Scope == "ephemeral").Entry.AgentKeywords
+            .Should().Equal(["portcullis"],
+                because: "two projections of one record must not disagree about it");
+    }
+
     /// <summary>An ephemeral write must not reach the network at all. Complements the two round
     /// trips above: they would still pass if the write were POSTed AND mirrored locally, which
     /// would put the memory in two places and leak scratch content to the server.</summary>

@@ -197,6 +197,52 @@ public sealed class MetaJsonMergerTests : IDisposable
                          "so both must survive into the record of which ones are curated");
     }
 
+    /// <summary>
+    /// ONE side pre-provenance is the case that matters most, and it must come out UNKNOWN.
+    ///
+    /// <para>The merged keyword list holds both sides' curated keywords, but only one side can say
+    /// which of its own were curated. Keeping that side's list looks like "the union of what is
+    /// known" and is in fact a positive claim about the whole merged list: every keyword not in it
+    /// was auto-extracted. Readers act on that — <c>Compact</c> runs its recovery heuristic only
+    /// when the field is null — so the unrecorded side's curated keywords are demoted +5 → +2 on
+    /// the next content rewrite, permanently, with nothing left to recover from. Under-claiming a
+    /// SET is benign; flipping unknown to known is the one thing the null state forbids.</para>
+    ///
+    /// <para>Asserted in both directions: whichever side is "ours" is an accident of which branch
+    /// the merge runs on, and this is exactly the migration window the null state was designed
+    /// for — one machine upgraded, one not.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Merge_LeavesAgentKeywordsAbsentWhenOnlyOneSideRecordedIt(bool unrecordedSideIsOurs)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "mm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string a = Path.Combine(dir, "a.meta.json");
+        string ours = Path.Combine(dir, "ours.meta.json");
+        string theirs = Path.Combine(dir, "theirs.meta.json");
+
+        const string Unrecorded = """{"name":"m","keywords":["auth","jwt","portcullis"]}""";
+        const string Recorded = """{"name":"m","keywords":["auth","jwt","gatehouse"],"agentKeywords":["gatehouse"]}""";
+
+        File.WriteAllText(a, """{"name":"m","keywords":["auth","jwt"]}""");
+        File.WriteAllText(ours, unrecordedSideIsOurs ? Unrecorded : Recorded);
+        File.WriteAllText(theirs, unrecordedSideIsOurs ? Recorded : Unrecorded);
+
+        MetaJsonMerger.Merge(a, ours, theirs, new MergeConfig(JaccardThreshold: 0.5))
+            .Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(ours));
+        doc.RootElement.GetProperty("keywords").EnumerateArray().Select(e => e.GetString())
+            .Should().Contain("portcullis",
+                because: "precondition: the unrecorded side's curated keyword survives the union, " +
+                         "so there is something for a wrong provenance record to mislabel");
+        doc.RootElement.TryGetProperty("agentKeywords", out _).Should().BeFalse(
+            because: "the merged entry genuinely does not know which of its keywords were " +
+                     "curated, and recording a half-answer as a whole one cannot be undone");
+    }
+
     /// <summary>Two pre-provenance sidecars merge to a pre-provenance sidecar. Emitting an empty
     /// array would assert "nothing was curated" for a memory where nobody wrote it down, which is
     /// the one claim the null state exists to avoid making.</summary>

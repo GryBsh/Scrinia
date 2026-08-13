@@ -334,7 +334,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
-                Attributes: e.Attributes);
+                Attributes: e.Attributes,
+                // Carried for the same reason Keywords is: this projection and PersistEphemeral's
+                // are two views of ONE memory, and a field present in one and null in the other
+                // means the answer depends on which read you came through. Null would read as
+                // UNKNOWN here (ArtifactEntry.AgentKeywords) for a memory whose provenance was
+                // recorded — sending a caller to the recovery heuristic with the real answer
+                // sitting in the map it just read from.
+                AgentKeywords: e.AgentKeywords);
             result.Add(new ScopedArtifact("ephemeral", artifactEntry));
         }
         return result;
