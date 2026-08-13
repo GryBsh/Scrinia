@@ -131,4 +131,86 @@ public sealed class ReconcileMetaProvenanceTests
             because: "the merged entry does not know which of its keywords were curated, and " +
                      "saying it does is unrecoverable — the recovery heuristic only runs for null");
     }
+
+    // Keywords are identical on both sides in the two fixtures below, on purpose: a later admission
+    // gate that refuses a merge below a keyword-similarity threshold must not have anything to
+    // object to here, since these tests are about termFrequencies, not about the keyword gate.
+
+    private const string OursLaterNoTermFrequencies = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":["auth","local"]}
+        """;
+
+    private const string TheirsEarlierWithTermFrequencies = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z",
+        "keywords":["auth","local"],"termFrequencies":{"auth":4}}
+        """;
+
+    /// <summary>
+    /// The A4 defect: the old code required BOTH sides to carry a termFrequencies map before
+    /// unioning anything, so a memory whose base recorded none — as ours does here, and ours wins
+    /// the base slot because it is the later side — lost the other side's map whole. Term
+    /// frequencies are what BM25 scores against, so this was a silent ranking loss, not a visible
+    /// failure.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_AutoMergedMetaJson_KeepsAOneSidedTermFrequencyMap()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string conflictId = await SeedConflictAsync(
+            scope, OursLaterNoTermFrequencies, TheirsEarlierWithTermFrequencies);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+        ResponseParser.Parse(result).Status.Should().Be("success");
+
+        var resolved = await ResolvedAsync(scope, conflictId);
+        resolved.TryGetProperty("termFrequencies", out var tf).Should().BeTrue(
+            because: "ours (the base, since it is later) recorded no term frequencies at all; that " +
+                     "must not veto theirs' contribution surviving the merge");
+        tf.GetProperty("auth").GetInt32().Should().Be(4,
+            because: "the one-sided map must survive whole, not vanish because the base side had none");
+    }
+
+    private const string OursValidTermFrequencies = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z",
+        "keywords":["auth","local"],"termFrequencies":{"auth":3}}
+        """;
+
+    private const string TheirsMalformedTermFrequencies = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":["auth","local"],"termFrequencies":{"auth":"oops"}}
+        """;
+
+    /// <summary>
+    /// A termFrequencies value that isn't a readable int (a hand-edited or foreign sidecar) used to
+    /// throw inside GetValue&lt;int&gt;() and let the outer catch escalate to manual resolution. The
+    /// A4 fix must not regress that into a silent "resolve minus the key it couldn't read" — it has
+    /// to keep escalating, because auto-resolving something the merger cannot safely interpret is
+    /// worse than asking a human.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_MalformedTermFrequencies_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string conflictId = await SeedConflictAsync(
+            scope, OursValidTermFrequencies, TheirsMalformedTermFrequencies);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "a termFrequencies value that isn't a readable int means the auto-resolver " +
+                     "cannot safely interpret one side's intent, so the conflict must escalate to " +
+                     "manual resolution rather than silently resolving with the field dropped or " +
+                     "coerced");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
 }

@@ -481,8 +481,17 @@ public sealed partial class ScriniaMcpTools
             // (Scrinia.Core.Merge.SidecarTermFrequencyMerge). This used to require BOTH sides to
             // carry a map, so a memory whose base recorded none and whose other side did lost them
             // whole — a silent ranking change, since term frequencies are what BM25 scores against.
-            var mergedTf = SidecarTermFrequencyMerge.Union(
-                ReadIntMap(baseNode, "termFrequencies"), ReadIntMap(otherNode, "termFrequencies"));
+            //
+            // ABSENT (the key is missing) contributes nothing — a normal side of the union.
+            // MALFORMED (present but not an object, or holding a value that isn't an int) used to
+            // throw inside GetValue<int>() and let the outer catch escalate to manual resolution;
+            // returning false here restores exactly that failure mode instead of silently
+            // "resolving" the conflict minus the key it couldn't read.
+            if (!TryReadIntMap(baseNode, "termFrequencies", out var baseTf) ||
+                !TryReadIntMap(otherNode, "termFrequencies", out var otherTf))
+                return false;
+
+            var mergedTf = SidecarTermFrequencyMerge.Union(baseTf, otherTf);
             if (mergedTf is null)
                 (baseNode as JsonObject)?.Remove("termFrequencies");
             else
@@ -518,17 +527,44 @@ public sealed partial class ScriniaMcpTools
         return array;
     }
 
-    /// <summary>A JSON object of string→int as a dictionary, or null when the key is absent or is
-    /// not an object. Null means the side recorded no term frequencies.</summary>
-    private static Dictionary<string, int>? ReadIntMap(JsonNode? node, string key)
+    /// <summary>Reads a termFrequencies-shaped JSON node into a dictionary. Returns true for
+    /// ABSENT (<paramref name="map"/> is null; the side recorded no term frequencies and
+    /// contributes nothing to a merge) and for a well-formed object. Returns false for MALFORMED
+    /// input — present but not a JSON object, or containing a value that isn't readable as an int —
+    /// so the caller can escalate to manual resolution rather than silently drop or coerce a
+    /// hand-edited or foreign sidecar's term frequencies.</summary>
+    private static bool TryReadIntMap(JsonNode? node, string key, out Dictionary<string, int>? map)
     {
-        if (node?[key] is not JsonObject obj) return null;
-        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        var value = node?[key];
+        if (value is null)
+        {
+            map = null;
+            return true; // absent
+        }
+        if (value is not JsonObject obj)
+        {
+            map = null;
+            return false; // malformed: present but not an object
+        }
+
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         // TryGetValue, not GetValue<int>() — the latter throws on a non-integer value, and a
-        // hand-edited sidecar is exactly the input this method has to survive.
-        foreach (var (name, value) in obj)
-            if (value is JsonValue v && v.TryGetValue<int>(out int i)) map[name] = i;
-        return map;
+        // hand-edited sidecar is exactly the input this method has to survive by reporting
+        // MALFORMED rather than crashing.
+        foreach (var (name, propertyValue) in obj)
+        {
+            if (propertyValue is JsonValue v && v.TryGetValue<int>(out int i))
+            {
+                result[name] = i;
+            }
+            else
+            {
+                map = null;
+                return false; // malformed: a value isn't readable as an int
+            }
+        }
+        map = result;
+        return true;
     }
 
     private static JsonObject ToJsonObject(Dictionary<string, int> map)

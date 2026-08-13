@@ -26,6 +26,12 @@ public sealed class SidecarTermFrequencyMergeParityTests
         { "mixed",                new() { ["auth"] = 3, ["jwt"] = 1 },   new() { ["auth"] = 1, ["oidc"] = 9 } },
         { "empty maps",           new(),                                 new() },
         { "zero counts",          new() { ["auth"] = 0 },                new() { ["auth"] = 0 } },
+        // Pins the comparer choice rather than merely documenting it: TextAnalysis.ComputeTermFrequencies
+        // builds with OrdinalIgnoreCase and Tokenize lowercases every token, so no real producer emits
+        // "Auth" and "auth" as distinct keys — but a hand-edited sidecar can, and merging that pair under
+        // Ordinal would let both survive into the merged map, which MemoryDerivation.ForMetadataUpdate
+        // then throws on when it copies the map into an OrdinalIgnoreCase dictionary.
+        { "case-variant keys, ours upper", new() { ["Auth"] = 3 },        new() { ["auth"] = 5 } },
     };
 
     [Theory]
@@ -40,6 +46,46 @@ public sealed class SidecarTermFrequencyMergeParityTests
             because: $"[{caseName}] the copy in MetaJsonMerger must union term frequencies exactly " +
                      "as SidecarTermFrequencyMerge does — this field is what BM25 scores against, " +
                      "so a divergence is a ranking divergence nobody sees until two machines disagree");
+    }
+
+    /// <summary>
+    /// The parity theory above reads the merged output back into a <c>Dictionary</c>, which has no
+    /// order — it cannot catch a dropped <c>OrderBy(..., Ordinal)</c> in the driver. Sorted key
+    /// order is what keeps a termFrequencies diff small and stable across machines instead of
+    /// reordering the whole map on every merge, so it is asserted directly against the raw JSON
+    /// here.
+    /// </summary>
+    [Fact]
+    public void MergedTermFrequencies_SerializeKeysInSortedOrder()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "tf-order-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string ancestor = Path.Combine(dir, "a.meta.json");
+            string oursPath = Path.Combine(dir, "ours.meta.json");
+            string theirsPath = Path.Combine(dir, "theirs.meta.json");
+
+            File.WriteAllText(ancestor, Sidecar(null));
+            File.WriteAllText(oursPath, Sidecar(new() { ["zebra"] = 1, ["mango"] = 2 }));
+            File.WriteAllText(theirsPath, Sidecar(new() { ["apple"] = 3, ["kiwi"] = 4 }));
+
+            MetaJsonMerger.Merge(ancestor, oursPath, theirsPath, new MergeConfig(JaccardThreshold: 0.0))
+                .Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(oursPath));
+            string[] keys = [.. doc.RootElement.GetProperty("termFrequencies")
+                .EnumerateObject().Select(p => p.Name)];
+
+            keys.Should().Equal(keys.OrderBy(k => k, StringComparer.Ordinal),
+                because: "sorted key order keeps merge output byte-stable across machines, which is " +
+                         "what keeps git diffs on termFrequencies small instead of reordering the " +
+                         "whole map on every merge");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     private static Dictionary<string, int>? ThroughTheMergeDriver(

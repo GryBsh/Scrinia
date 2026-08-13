@@ -86,14 +86,22 @@ public static class MetaJsonMerger
         SetString(ours, "updatedAt", updatedAt);
         SetString(ours, "createdAt", createdAt);
 
-        var mergedTf = UnionTermFrequencies(GetIntMap(ours, "termFrequencies"),
-                                            GetIntMap(theirs, "termFrequencies"));
-        if (mergedTf is null)
-            ours.Remove("termFrequencies");
-        else
-            ours["termFrequencies"] = new JsonObject(
-                mergedTf.OrderBy(kv => kv.Key, StringComparer.Ordinal)
-                        .Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value))));
+        // ABSENT (the key is missing) contributes nothing to the union — a normal side, not an
+        // error. MALFORMED (present but not an object, or holding a value that isn't an int) means
+        // this driver cannot safely interpret what that side intended, so ours' termFrequencies is
+        // left exactly as it was rather than silently dropped or rewritten around the part that
+        // couldn't be read.
+        if (TryGetIntMap(ours, "termFrequencies", out var oursTf)
+            && TryGetIntMap(theirs, "termFrequencies", out var theirsTf))
+        {
+            var mergedTf = UnionTermFrequencies(oursTf, theirsTf);
+            if (mergedTf is null)
+                ours.Remove("termFrequencies");
+            else
+                ours["termFrequencies"] = new JsonObject(
+                    mergedTf.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                            .Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value))));
+        }
 
         File.WriteAllText(oursPath, ours.ToJsonString(WriteOptions));
         return MergeResult.Resolved;
@@ -129,13 +137,40 @@ public static class MetaJsonMerger
         else o[key] = value;
     }
 
-    private static Dictionary<string, int>? GetIntMap(JsonObject? o, string key)
+    /// <summary>Reads a termFrequencies-shaped JSON object into a dictionary. Returns true for
+    /// ABSENT (<paramref name="map"/> is null; the side recorded no term frequencies and
+    /// contributes nothing to a merge) and for a well-formed object. Returns false for MALFORMED
+    /// input — present but not a JSON object, or containing a value that isn't readable as an int —
+    /// so the caller can leave the field untouched rather than silently drop or rewrite around the
+    /// part it couldn't read.</summary>
+    private static bool TryGetIntMap(JsonObject? o, string key, out Dictionary<string, int>? map)
     {
-        if (o is null || !o.TryGetPropertyValue(key, out var n) || n is not JsonObject obj) return null;
-        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (o is null || !o.TryGetPropertyValue(key, out var n))
+        {
+            map = null;
+            return true; // absent
+        }
+        if (n is not JsonObject obj)
+        {
+            map = null;
+            return false; // malformed: present but not an object
+        }
+
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, value) in obj)
-            if (value is JsonValue v && v.TryGetValue<int>(out int i)) map[name] = i;
-        return map;
+        {
+            if (value is JsonValue v && v.TryGetValue<int>(out int i))
+            {
+                result[name] = i;
+            }
+            else
+            {
+                map = null;
+                return false; // malformed: a value isn't readable as an int
+            }
+        }
+        map = result;
+        return true;
     }
 
     // DUPLICATE, AND THE DUPLICATION IS FORCED. The original is
@@ -152,7 +187,17 @@ public static class MetaJsonMerger
     {
         if (ours is null && theirs is null) return null;
 
-        var merged = new Dictionary<string, int>(StringComparer.Ordinal);
+        // OrdinalIgnoreCase, matching the map every producer builds. TextAnalysis
+        // .ComputeTermFrequencies uses OrdinalIgnoreCase, and Tokenize lowercases every token, so
+        // no producer can emit two keys differing only in case — for real data the comparer is
+        // unobservable.
+        //
+        // It is load-bearing for a hand-edited or foreign sidecar. Merging under Ordinal would let
+        // "Auth" and "auth" both survive into the merged map, and
+        // MemoryDerivation.ForMetadataUpdate copies that map into an OrdinalIgnoreCase dictionary
+        // — which THROWS ArgumentException on exactly that pair. Folding here is what stops a
+        // malformed sidecar becoming a crash three calls later.
+        var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         if (ours is not null)
             foreach (var (term, count) in ours)
                 merged[term] = count;
