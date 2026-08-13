@@ -16,7 +16,11 @@ public sealed class ReconcileScanTests
 
     // An auto-resolvable .meta.json conflict: both sides parse as valid JSON once the
     // conflict markers are stripped (this mirrors the exact slicing TryComputeAutoResolvedMetaJson
-    // performs), so the scan should classify it as auto-resolvable rather than needing manual work.
+    // performs). Its keyword sets are deliberately non-disjoint but below the admission threshold
+    // (["alpha","common"] vs ["beta","common"], Jaccard 0.333 < the 0.7 default), so a fixture that
+    // wants the scan to classify it as auto-resolvable — rather than "too dissimilar" — must supply
+    // a merge.config dropping the threshold, exactly like SidecarKeywordMergeParityTests does on
+    // the driver side.
     private const string ConflictedMetaJson =
         "{\n" +
         "  \"name\": \"test\",\n" +
@@ -40,6 +44,11 @@ public sealed class ReconcileScanTests
         Directory.CreateDirectory(metaDir);
         string metaPath = Path.Combine(metaDir, "conflict.meta.json");
         await File.WriteAllTextAsync(metaPath, ConflictedMetaJson);
+
+        // This test is about the scan being read-only, not about admission — see ConflictedMetaJson's
+        // doc comment. Without this, the gate refuses the fixture below the default threshold and
+        // the test passes vacuously: it never reaches the auto-resolve branch it exists to pin.
+        await File.WriteAllTextAsync(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
 
         byte[] before = await File.ReadAllBytesAsync(metaPath);
 
@@ -70,9 +79,10 @@ public sealed class ReconcileScanTests
 
         // This test is about auto-merge mechanics (that the write happens on explicit reconcile,
         // not during scan), not about whether the two sides are similar enough to merge at all —
-        // ConflictedMetaJson's keyword sets are deliberately disjoint (Jaccard 0.333) to keep that
-        // question orthogonal. Drop the admission threshold so this fixture still reaches the
-        // merge rules, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        // ConflictedMetaJson's keyword sets share one term of three (Jaccard 0.333, below the 0.7
+        // default) to keep that question orthogonal. Drop the admission threshold so this fixture
+        // still reaches the merge rules, exactly as SidecarKeywordMergeParityTests does on the
+        // driver side.
         await File.WriteAllTextAsync(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
 
         // The explicit apply path: pass the conflictId with no choice. This is where the write
@@ -118,9 +128,51 @@ public sealed class ReconcileScanTests
 
         string result = await Tools().MemoryReconcile(conflictId: "local/topics/topic/dissimilar.meta.json");
 
-        ResponseParser.Parse(result).Status.Should().Be("error",
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("error",
             because: "below the threshold the two are different memories sharing a filename, so " +
                      "the conflict must reach a human rather than be merged on no evidence");
+        parsed.Error.Should().Contain("too dissimilar").And.Contain("jaccardThreshold",
+            because: "a gate refusal must say WHY in terms a caller can act on — not fall through " +
+                     "to the generic \"'choice' is required\" message, which reads as though the " +
+                     "sidecar were malformed rather than simply too different to merge automatically");
+        (await File.ReadAllTextAsync(metaPath)).Should().Contain("<<<<<<<",
+            because: "a refused auto-merge must leave the conflicted file untouched");
+    }
+
+    [Fact]
+    public async Task AutoResolve_RefusesAtJaccardHalf_PinningTheDefaultThreshold()
+    {
+        // AutoResolve_RefusesTwoDissimilarSidecars uses Jaccard 0.0, so it stays green for ANY
+        // default in (0, 1] — it does not pin 0.7 specifically. This fixture sits at Jaccard 0.5
+        // with no merge.config, so it only passes while the unconfigured default is above 0.5;
+        // together with AutoResolve_AdmitsTwoSimilarSidecars (0.5, admitted via an explicit 0.4
+        // config) it narrows the unpinned default down around the documented 0.7.
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string metaDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(metaDir);
+        string metaPath = Path.Combine(metaDir, "half.meta.json");
+        // ours: ["auth", "jwt", "oidc"], theirs: ["auth", "jwt", "saml"] — Jaccard 0.5, no
+        // merge.config, so the unconfigured default applies.
+        const string conflictedContent =
+            "{\n" +
+            "  \"name\": \"test\",\n" +
+            "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+            "<<<<<<< HEAD\n" +
+            "  \"keywords\": [\"auth\", \"jwt\", \"oidc\"]\n" +
+            "=======\n" +
+            "  \"keywords\": [\"auth\", \"jwt\", \"saml\"]\n" +
+            ">>>>>>> branch-x\n" +
+            "}";
+        await File.WriteAllTextAsync(metaPath, conflictedContent);
+
+        string result = await Tools().MemoryReconcile(conflictId: "local/topics/topic/half.meta.json");
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "the unconfigured default threshold must sit above 0.5, matching the git " +
+                     "merge driver's MergeConfig.Load default of 0.7");
         (await File.ReadAllTextAsync(metaPath)).Should().Contain("<<<<<<<",
             because: "a refused auto-merge must leave the conflicted file untouched");
     }
@@ -157,6 +209,47 @@ public sealed class ReconcileScanTests
                      "be refused");
         (await File.ReadAllTextAsync(metaPath)).Should().NotContain("<<<<<<<",
             because: "an admitted auto-merge must resolve and remove the conflict markers");
+    }
+
+    [Fact]
+    public async Task AutoResolve_ReadsKeywordsCaseInsensitively_MatchingTheDriver()
+    {
+        // The git merge driver parses .meta.json with PropertyNameCaseInsensitive (MetaJsonMerger's
+        // NodeOptions), so a hand-edited or foreign sidecar spelling the field "Keywords" still
+        // computes a real Jaccard and refuses when the sets are dissimilar. Before this fix,
+        // reconcile()'s plain JsonNode.Parse read "Keywords" as absent on BOTH sides — and
+        // KeywordJaccard.Compute treats two empty sides as IDENTICAL (1.0) — so it admitted the
+        // merge on no evidence at all, disagreeing with the driver about the exact thing this task
+        // exists to align.
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string metaDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(metaDir);
+        string metaPath = Path.Combine(metaDir, "cased.meta.json");
+        // ours: Keywords ["auth", "jwt"], theirs: Keywords ["kubernetes", "helm"] — real Jaccard
+        // 0.0 once "Keywords" is read case-insensitively; misread as absent on both sides it would
+        // score 1.0 and wrongly admit.
+        const string conflictedContent =
+            "{\n" +
+            "  \"name\": \"test\",\n" +
+            "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+            "<<<<<<< HEAD\n" +
+            "  \"Keywords\": [\"auth\", \"jwt\"]\n" +
+            "=======\n" +
+            "  \"Keywords\": [\"kubernetes\", \"helm\"]\n" +
+            ">>>>>>> branch-x\n" +
+            "}";
+        await File.WriteAllTextAsync(metaPath, conflictedContent);
+
+        string result = await Tools().MemoryReconcile(conflictId: "local/topics/topic/cased.meta.json");
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "a capitalised \"Keywords\" field must still be read by the gate — reading it " +
+                     "as absent on both sides would score an empty-vs-empty 1.0 and admit a merge " +
+                     "the driver would refuse");
+        (await File.ReadAllTextAsync(metaPath)).Should().Contain("<<<<<<<",
+            because: "a refused auto-merge must leave the conflicted file untouched");
     }
 
     /// <summary>

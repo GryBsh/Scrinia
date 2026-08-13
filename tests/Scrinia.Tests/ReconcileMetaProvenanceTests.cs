@@ -63,9 +63,10 @@ public sealed class ReconcileMetaProvenanceTests
     {
         using var scope = new TestHelpers.StoreScope();
         // This test is about what the merge RULES produce, not about whether the two sides are
-        // similar enough to merge at all — its keyword sets are deliberately disjoint to make the
-        // provenance question sharp. Drop the admission threshold so every case reaches the rule
-        // under test, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        // similar enough to merge at all — its keyword sets share one term of three (Jaccard
+        // 0.333, below the 0.7 default) to make the provenance question sharp. Drop the admission
+        // threshold so every case reaches the rule under test, exactly as
+        // SidecarKeywordMergeParityTests does on the driver side.
         string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
         Directory.CreateDirectory(scriniaDir);
         File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
@@ -89,9 +90,10 @@ public sealed class ReconcileMetaProvenanceTests
     {
         using var scope = new TestHelpers.StoreScope();
         // This test is about what the merge RULES produce, not about whether the two sides are
-        // similar enough to merge at all — its keyword sets are deliberately disjoint to make the
-        // provenance question sharp. Drop the admission threshold so every case reaches the rule
-        // under test, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        // similar enough to merge at all — its keyword sets share one term of three (Jaccard
+        // 0.333, below the 0.7 default) to make the provenance question sharp. Drop the admission
+        // threshold so every case reaches the rule under test, exactly as
+        // SidecarKeywordMergeParityTests does on the driver side.
         string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
         Directory.CreateDirectory(scriniaDir);
         File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
@@ -119,9 +121,10 @@ public sealed class ReconcileMetaProvenanceTests
     {
         using var scope = new TestHelpers.StoreScope();
         // This test is about what the merge RULES produce, not about whether the two sides are
-        // similar enough to merge at all — its keyword sets are deliberately disjoint to make the
-        // provenance question sharp. Drop the admission threshold so every case reaches the rule
-        // under test, exactly as SidecarKeywordMergeParityTests does on the driver side.
+        // similar enough to merge at all — its keyword sets share one term of three (Jaccard
+        // 0.333, below the 0.7 default) to make the provenance question sharp. Drop the admission
+        // threshold so every case reaches the rule under test, exactly as
+        // SidecarKeywordMergeParityTests does on the driver side.
         string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
         Directory.CreateDirectory(scriniaDir);
         File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");

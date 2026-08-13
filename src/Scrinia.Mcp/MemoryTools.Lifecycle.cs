@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -122,22 +123,38 @@ public sealed partial class ScriniaMcpTools
             // No explicit choice: the only unattended resolution we support is the .meta.json
             // auto-merge (keyword union, latest timestamp). This is the ONLY place that write
             // is allowed to happen — scanning (ScanForConflicts) only reports it as possible.
-            if (type == "meta.json"
-                && TryComputeAutoResolvedMetaJson(
-                    fileContent, GetJaccardThreshold(scriniaDir), out string? autoResolvedJson))
+            if (type == "meta.json")
             {
-                try { File.WriteAllText(absolutePath, autoResolvedJson!); }
-                catch (Exception ex)
+                double threshold = GetJaccardThreshold(scriniaDir);
+                if (TryComputeAutoResolvedMetaJson(fileContent, threshold, out string? autoResolvedJson))
                 {
-                    return ResponseBuilder.Error(
-                        $"Writing resolved content to {absolutePath}: {ex.Message}",
-                        ErrorCodes.Internal,
-                        "Verify filesystem permissions and disk space, then retry the reconcile.");
+                    try { File.WriteAllText(absolutePath, autoResolvedJson!); }
+                    catch (Exception ex)
+                    {
+                        return ResponseBuilder.Error(
+                            $"Writing resolved content to {absolutePath}: {ex.Message}",
+                            ErrorCodes.Internal,
+                            "Verify filesystem permissions and disk space, then retry the reconcile.");
+                    }
+
+                    return ResponseBuilder.Success(
+                            $"Resolved {conflictId} (meta.json) via automatic merge (keyword union, latest timestamp wins).")
+                        .WithAction("reconciled");
                 }
 
-                return ResponseBuilder.Success(
-                        $"Resolved {conflictId} (meta.json) via automatic merge (keyword union, latest timestamp wins).")
-                    .WithAction("reconciled");
+                // The gate refusal is a deliberate decision, not a parse failure — give it its own
+                // message rather than falling into the generic "'choice' is required" error below,
+                // which reads as though the sidecar were malformed instead of simply too different
+                // to merge automatically.
+                if (!MetaSidecarsAreSimilarEnough(fileContent, threshold))
+                    return ResponseBuilder.Error(
+                        $"'{conflictId}' cannot be auto-merged: the two sides' keywords are too " +
+                        $"dissimilar (below the configured similarity threshold of " +
+                        $"{threshold.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}). " +
+                        "Set 'jaccardThreshold' in .scrinia/merge.config to change the threshold, " +
+                        "or resolve explicitly.",
+                        ErrorCodes.Conflict,
+                        $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }}) or choice: 'theirs'/'merged'");
             }
 
             return ResponseBuilder.Error(
@@ -437,10 +454,71 @@ public sealed partial class ScriniaMcpTools
         return truncated.Replace("\n", "\n" + prefix);
     }
 
+    /// <summary>Matches <c>MetaJsonMerger.NodeOptions</c> on the driver side — see the comment in
+    /// <see cref="TryExtractMetaSides"/> for why this is scoped to a conflicted sidecar's own two
+    /// sides rather than applied to every parse in this file.</summary>
+    private static readonly JsonNodeOptions CaseInsensitiveNodeOptions = new() { PropertyNameCaseInsensitive = true };
+
     /// <summary>
-    /// Whether a conflicted .meta.json's two sides pass the admission gate — extracted the same
-    /// way <see cref="TryComputeAutoResolvedMetaJson"/> does, so the scan's classification always
-    /// matches what an explicit reconcile would decide.
+    /// Slices a conflicted .meta.json's marker body into "ours" and "theirs" JSON nodes — the ONE
+    /// place this parsing happens.
+    ///
+    /// <para><see cref="TryComputeAutoResolvedMetaJson"/> and <see
+    /// cref="MetaSidecarsAreSimilarEnough"/> both call this rather than each slicing the markers
+    /// themselves. This file's own doctrine (see <see cref="TryReadIntMap"/>) is that a rule
+    /// duplicated between the git merge driver and reconcile() is FORCED — the driver is a
+    /// standalone AOT executable with no project references — and every other duplication is a
+    /// defect waiting to happen: teach one caller to handle CRLF markers or a second conflict
+    /// region and miss the other, and the scan starts mislabeling a parse failure as "too
+    /// dissimilar" — the exact honesty gap Step 5 exists to close.</para>
+    /// </summary>
+    /// <returns>False when the markers are malformed or either side fails to parse as JSON.</returns>
+    private static bool TryExtractMetaSides(
+        string conflictedContent,
+        [NotNullWhen(true)] out JsonNode? oursNode,
+        [NotNullWhen(true)] out JsonNode? theirsNode)
+    {
+        oursNode = null;
+        theirsNode = null;
+        try
+        {
+            // Format: <<<<<<< HEAD\n{ours}\n=======\n{theirs}\n>>>>>>> {branch}
+            int oursStart = conflictedContent.IndexOf("<<<<<<<");
+            int separator = conflictedContent.IndexOf("=======");
+            int theirsEnd = conflictedContent.IndexOf(">>>>>>>");
+            if (oursStart < 0 || separator < 0 || theirsEnd < 0) return false;
+
+            string beforeConflict = conflictedContent[..oursStart];
+            string oursSection = conflictedContent[(conflictedContent.IndexOf('\n', oursStart) + 1)..separator];
+            string theirsSection = conflictedContent[(conflictedContent.IndexOf('\n', separator) + 1)..theirsEnd];
+            string afterConflict = conflictedContent[(conflictedContent.IndexOf('\n', theirsEnd) + 1)..];
+
+            // Try to reconstruct valid JSON from each side
+            string oursJson = beforeConflict + oursSection + afterConflict;
+            string theirsJson = beforeConflict + theirsSection + afterConflict;
+
+            // PropertyNameCaseInsensitive, matching MetaJsonMerger.NodeOptions on the driver side.
+            // Without it, a hand-edited or foreign sidecar spelling a field "Keywords" (or
+            // "CreatedAt", etc.) reads as ABSENT here while the driver's case-insensitive parse
+            // reads it correctly — for the admission gate specifically, that turned two sides the
+            // driver would compute a real Jaccard for into null/null on this side, which
+            // KeywordJaccard.Compute treats as "identical" and admits on no evidence at all: the
+            // two mergers disagreeing about the very thing this task exists to align. Scoped to
+            // just these two parses (the conflicted sidecar's own two sides) rather than every
+            // JsonNode.Parse call in this file — merge.config and the ad-hoc mergedContent
+            // validity check elsewhere read different, codebase-defined schemas with no foreign
+            // authorship, so they are not the same risk this closes.
+            oursNode = JsonNode.Parse(oursJson, CaseInsensitiveNodeOptions);
+            theirsNode = JsonNode.Parse(theirsJson, CaseInsensitiveNodeOptions);
+            return oursNode is not null && theirsNode is not null;
+        }
+        catch { oursNode = null; theirsNode = null; return false; }
+    }
+
+    /// <summary>
+    /// Whether a conflicted .meta.json's two sides pass the admission gate — read through the same
+    /// <see cref="TryExtractMetaSides"/> slicing <see cref="TryComputeAutoResolvedMetaJson"/> uses,
+    /// so the scan's classification always matches what an explicit reconcile would decide.
     ///
     /// <para>Used only to give <see cref="ScanForConflicts"/> an honest reason for a refusal: a
     /// gate refusal is a deliberate decision, not a parse failure, so it must not be reported the
@@ -450,29 +528,11 @@ public sealed partial class ScriniaMcpTools
     /// </summary>
     private static bool MetaSidecarsAreSimilarEnough(string conflictedContent, double threshold)
     {
-        try
-        {
-            int oursStart = conflictedContent.IndexOf("<<<<<<<");
-            int separator = conflictedContent.IndexOf("=======");
-            int theirsEnd = conflictedContent.IndexOf(">>>>>>>");
-            if (oursStart < 0 || separator < 0 || theirsEnd < 0) return true;
+        if (!TryExtractMetaSides(conflictedContent, out var oursNode, out var theirsNode))
+            return true; // unparseable: a genuine auto-resolve failure, not a gate refusal
 
-            string beforeConflict = conflictedContent[..oursStart];
-            string oursSection = conflictedContent[(conflictedContent.IndexOf('\n', oursStart) + 1)..separator];
-            string theirsSection = conflictedContent[(conflictedContent.IndexOf('\n', separator) + 1)..theirsEnd];
-            string afterConflict = conflictedContent[(conflictedContent.IndexOf('\n', theirsEnd) + 1)..];
-
-            string oursJson = beforeConflict + oursSection + afterConflict;
-            string theirsJson = beforeConflict + theirsSection + afterConflict;
-
-            var oursNode = JsonNode.Parse(oursJson);
-            var theirsNode = JsonNode.Parse(theirsJson);
-            if (oursNode is null || theirsNode is null) return true;
-
-            return SidecarAdmission.IsSimilarEnough(
-                ReadStrings(oursNode, "keywords"), ReadStrings(theirsNode, "keywords"), threshold);
-        }
-        catch { return true; } // unparseable: a genuine auto-resolve failure, not a gate refusal
+        return SidecarAdmission.IsSimilarEnough(
+            ReadStrings(oursNode, "keywords"), ReadStrings(theirsNode, "keywords"), threshold);
     }
 
     /// <summary>
@@ -486,27 +546,8 @@ public sealed partial class ScriniaMcpTools
         resolvedJson = null;
         try
         {
-            // Extract "ours" and "theirs" sections
-            // Format: <<<<<<< HEAD\n{ours}\n=======\n{theirs}\n>>>>>>> {branch}
-            int oursStart = conflictedContent.IndexOf("<<<<<<<");
-            int separator = conflictedContent.IndexOf("=======");
-            int theirsEnd = conflictedContent.IndexOf(">>>>>>>");
-            if (oursStart < 0 || separator < 0 || theirsEnd < 0) return false;
-
-            // Extract the JSON from each side
-            string beforeConflict = conflictedContent[..oursStart];
-            string oursSection = conflictedContent[(conflictedContent.IndexOf('\n', oursStart) + 1)..separator];
-            string theirsSection = conflictedContent[(conflictedContent.IndexOf('\n', separator) + 1)..theirsEnd];
-            string afterConflict = conflictedContent[(conflictedContent.IndexOf('\n', theirsEnd) + 1)..];
-
-            // Try to reconstruct valid JSON from each side
-            string oursJson = beforeConflict + oursSection + afterConflict;
-            string theirsJson = beforeConflict + theirsSection + afterConflict;
-
-            // Parse both sides as mutable JSON
-            var oursNode = JsonNode.Parse(oursJson);
-            var theirsNode = JsonNode.Parse(theirsJson);
-            if (oursNode is null || theirsNode is null) return false;
+            if (!TryExtractMetaSides(conflictedContent, out var oursNode, out var theirsNode))
+                return false;
 
             // Admission gate, matching the git merge driver's. Two sidecars can collide on a
             // filename while describing different memories; merging those is worse than a
