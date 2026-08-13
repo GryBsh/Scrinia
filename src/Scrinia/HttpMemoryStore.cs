@@ -223,7 +223,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         AgentKeywords: item.AgentKeywords);
 
     public HttpMemoryStore(HttpClient http, string store = "default", TimeSpan? timeout = null,
-        CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null)
+        CircuitBreaker? circuitBreaker = null, RetryOptions? retryOptions = null,
+        string? workspaceRoot = null)
     {
         _http = http;
         _http.Timeout = timeout ?? TimeSpan.FromSeconds(30);
@@ -231,16 +232,25 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         _circuitBreaker = circuitBreaker ?? new CircuitBreaker();
         _retryOptions = retryOptions ?? new RetryOptions();
         CircuitBreakerRegistry.Register($"http-memory-store:{_store}", _circuitBreaker);
-        // A temp dir for the helper, which serves two purposes: the pure string operations (naming,
-        // parsing, sanitizing) that a remote store answers locally, and — see
+        // The helper store serves two purposes: the pure string operations (naming, parsing,
+        // sanitizing) that a remote store answers locally, and — see
         // WriteEphemeralInProcessAsync — ephemeral writes, which are addressed to this process and
-        // must be derived by a real store rather than sent to one. Neither touches this directory:
-        // the string operations are static in all but name, and an ephemeral write returns from
-        // FileMemoryStore.StoreAsync before any path is resolved. It exists because
-        // FileMemoryStore's constructor takes a root, not because anything is written under it.
+        // must be derived by a real store rather than sent to one.
+        //
+        // Its root is the WORKSPACE root when the caller supplies one, and that matters: an
+        // ephemeral write is derived by FileMemoryStore.StoreAsync, which hashes `file` attribute
+        // values (MemoryDerivation.ForStore's fileHasher) BEFORE it branches on ephemerality. A
+        // throwaway root resolves every reference to nothing, so the memory's drift baseline
+        // records each referenced file as unhashable. That was invisible only while EphemeralEntry
+        // had no FileHashes member to store the wrong answer in. The comment that used to sit here
+        // claimed the write "returns before any path is resolved" — it does not, and that claim is
+        // how this stayed hidden.
+        //
+        // The temp directory remains the fallback for callers with no workspace (tests, and any
+        // construction that predates this parameter), and nothing is ever written under it.
         _tempDir = Path.Combine(Path.GetTempPath(), $"scrinia-http-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
-        _localHelper = new FileMemoryStore(_tempDir);
+        _localHelper = new FileMemoryStore(workspaceRoot ?? _tempDir);
     }
 
     private string BaseUrl => $"/api/v1/stores/{Uri.EscapeDataString(_store)}";
@@ -309,6 +319,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
+                FileHashes: e.FileHashes,
                 Attributes: e.Attributes,
                 // See FileMemoryStore.ListEphemeral: one memory must not report its provenance
                 // differently depending on which read reached it.

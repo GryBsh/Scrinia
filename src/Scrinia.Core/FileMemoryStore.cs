@@ -334,6 +334,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 TermFrequencies: e.TermFrequencies,
                 UpdatedAt: e.UpdatedAt,
                 ChunkEntries: e.ChunkEntries,
+                FileHashes: e.FileHashes,
                 Attributes: e.Attributes,
                 // Carried for the same reason Keywords is: this projection and PersistEphemeral's
                 // are two views of ONE memory, and a field present in one and null in the other
@@ -1304,13 +1305,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
         // Everything the memory already carries that an append must not destroy. A server-side REST
         // append used to lose the curated keywords (D-12) and the drift baseline (D-21) outright.
-        // EphemeralEntry has no FileHashes to carry — see PersistEphemeral.
+        // EphemeralEntry now carries FileHashes too, so the fallback below matches every other field.
         var existing = new ExistingMetadata(
             Attributes: existingEntry?.Attributes ?? existingEph?.Attributes,
             Keywords: existingEntry?.Keywords ?? existingEph?.Keywords,
             ContentPreview: existingEntry?.ContentPreview ?? existingEph?.ContentPreview,
             ChunkEntries: existingEntry?.ChunkEntries ?? existingEph?.ChunkEntries,
-            FileHashes: existingEntry?.FileHashes,
+            FileHashes: existingEntry?.FileHashes ?? existingEph?.FileHashes,
             // Null here is UNKNOWN, and ForAppend reads it that way: a memory last written before
             // the field existed keeps the old blanket carry-forward until this append rewrites it.
             AgentKeywords: existingEntry?.AgentKeywords ?? existingEph?.AgentKeywords);
@@ -1382,10 +1383,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     /// <summary>Persists an ephemeral write and projects it back as an <see cref="ArtifactEntry"/>,
     /// the way <see cref="ListEphemeral"/> does.
-    /// <para><see cref="EphemeralEntry"/> has no <c>FileHashes</c> field, so the projection reports
-    /// none — it describes what was stored, not what was derived. The hashed paths themselves
-    /// survive as the searchable <c>file</c> attribute. Ephemerals had no drift baseline before this
-    /// surface either; giving them one is a storage-model change, not a write-path one.</para></summary>
+    /// <para><see cref="EphemeralEntry.FileHashes"/> carries the derived drift baseline, matching
+    /// both objects built here — the stored entry and the returned one are two views of ONE memory,
+    /// and a field present in one and null in the other means the answer depends on which read you
+    /// came through.</para></summary>
     private ArtifactEntry PersistEphemeral(
         string name, string artifact, long originalBytes, int chunkCount,
         DerivedMetadata derived, DateTimeOffset createdAt, DateTimeOffset? updatedAt)
@@ -1405,6 +1406,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             TermFrequencies: tf,
             UpdatedAt: updatedAt,
             ChunkEntries: derived.ChunkEntries,
+            FileHashes: derived.FileHashes,
             Attributes: derived.Attributes,
             AgentKeywords: derived.AgentKeywords));
 
@@ -1419,6 +1421,7 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             TermFrequencies: tf,
             UpdatedAt: updatedAt,
             ChunkEntries: derived.ChunkEntries,
+            FileHashes: derived.FileHashes,
             Attributes: derived.Attributes,
             AgentKeywords: derived.AgentKeywords);
     }

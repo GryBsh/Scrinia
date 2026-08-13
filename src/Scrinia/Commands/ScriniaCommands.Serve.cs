@@ -59,7 +59,9 @@ public partial class ScriniaCommands
             var httpClient = new HttpClient { BaseAddress = new Uri(remote) };
             httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", apiKey ?? "");
-            MemoryStoreContext.Current = new HttpMemoryStore(httpClient, store ?? "default");
+            MemoryStoreContext.Current = new HttpMemoryStore(
+                httpClient, store ?? "default",
+                workspaceRoot: WorkspaceRoot.Resolve(workspaceRoot, Directory.GetCurrentDirectory()));
         }
         else
         {

@@ -12,6 +12,9 @@ public sealed record EphemeralEntry(
     Dictionary<string, int>? TermFrequencies = null,
     DateTimeOffset? UpdatedAt = null,
     ChunkEntry[]? ChunkEntries = null,
+    /// <inheritdoc cref="ArtifactEntry.FileHashes"/>
+    [property: System.Text.Json.Serialization.JsonPropertyName("codeRefs")]
+    Dictionary<string, string>? FileHashes = null,
     /// <summary>
     /// Unified multi-valued **attributes** — key:value facts from agent-supplied keywords
     /// (person:x routed at write time), mechanical content extraction, and reference
