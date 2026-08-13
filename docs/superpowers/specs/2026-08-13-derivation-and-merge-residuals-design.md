@@ -62,7 +62,7 @@ two independent implementations, and three of them have already diverged:
 | timestamps | `string.Compare(…, Ordinal)`; latest `updatedAt`, **earliest** `createdAt` (`:62-65`, `:131-137`) | `DateTimeOffset.TryParse`; picks one node whole by `updatedAt`, never touches `createdAt` (`:447-461`) | an auto-reconcile can move a memory's creation time forward; ordinal comparison is wrong across offsets |
 
 The ordinal comparison is independently wrong: `2026-08-13T10:00:00+10:00` and
-`2026-08-13T01:00:00Z` are the same instant and do not compare equal as strings.
+`2026-08-13T00:00:00Z` are the same instant and do not compare equal as strings.
 
 ### The design
 

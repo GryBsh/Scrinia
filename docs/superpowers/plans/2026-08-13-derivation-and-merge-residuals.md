@@ -617,7 +617,7 @@ namespace Scrinia.Core.Merge;
 /// FORWARD, losing when it was actually created.</para>
 ///
 /// <para>Ordinal comparison is independently wrong across offsets:
-/// <c>2026-08-13T10:00:00+10:00</c> and <c>2026-08-13T01:00:00Z</c> are the same instant and do
+/// <c>2026-08-13T10:00:00+10:00</c> and <c>2026-08-13T00:00:00Z</c> are the same instant and do
 /// not compare equal as strings.</para>
 ///
 /// <para><b>One duplicate survives, and it is forced.</b> See
