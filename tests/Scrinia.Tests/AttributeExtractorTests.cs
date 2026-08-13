@@ -130,12 +130,60 @@ public sealed class AttributeExtractorTests
     [Theory]
     [InlineData("thing:Foo(bar) is the shape", "thing", "Foo(bar)")]
     [InlineData("topic:retry(exponential) backoff", "topic", "retry(exponential)")]
-    [InlineData("ref:[[/api/auth]] has details", "ref", "[[/api/auth]]")]
     public void InlineProseKeyValue_LeavesBalancedDelimitersIntact(string input, string key, string expected)
     {
         // The trailing-punctuation trim must not be balance-blind: a closing delimiter that matches
         // an opener the caller deliberately typed is not swallowed prose, it's part of the value.
         AttributeExtractor.Extract(input)![key].Should().BeEquivalentTo([expected]);
+    }
+
+    [Theory]
+    [InlineData("file:-")]
+    [InlineData("(ref:**)")]
+    [InlineData("file:...")]
+    [InlineData("ref:--")]
+    public void InlineProseKeyValue_RefusesAValueWithNoAlphanumericCharacter(string input)
+    {
+        // A length check is not a "must be something" check: "-" is length 1 and "**" is length 2,
+        // so both routed. `file` and `ref` are union-merged ReferenceKeys and
+        // EntityGraph.ParseEntityAttributes yields every key, so `file=["-"]` becomes a graph node
+        // SHARED by every memory whose prose contains the shape — the orphan:true hub pathology
+        // KnownAttributes.StateMarkerKeys documents, reached from the other direction. Uncontrolled
+        // prose (pasted logs, diffs, ASCII tables) is full of these.
+        AttributeExtractor.Extract(input).Should().BeNull();
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_StillRoutesAnOrdinaryValue()
+    {
+        // The guard above must bar punctuation runs WITHOUT barring real values — a rule that
+        // rejected everything would pass every case in the theory and break the feature.
+        AttributeExtractor.Extract("see file:src/a.cs here")!["file"]
+            .Should().BeEquivalentTo(["src/a.cs"]);
+    }
+
+    [Theory]
+    [InlineData("ref:[[/api/auth]] has details", "ref", "/api/auth")]
+    [InlineData("file:\"src/a.cs\" is quoted", "file", "src/a.cs")]
+    [InlineData("file:'src/a.cs' is quoted", "file", "src/a.cs")]
+    public void InlineProseKeyValue_StoresTheSameSpellingTheBareExtractorsProduce(
+        string input, string key, string expected)
+    {
+        // TrimTrailingUnbalancedPunctuation leaves a BALANCED wrapper alone — correct for
+        // "Foo(bar)", wrong for a reference: "[[/api/auth]]" stored a second spelling of the value
+        // ExtractRefAttributes stores as "/api/auth", and "\"src/a.cs\"" fails HashWorkspaceFile's
+        // containment check, so that reference silently got no drift baseline at all.
+        AttributeExtractor.Extract(input)![key].Should().BeEquivalentTo([expected]);
+    }
+
+    [Fact]
+    public void InlineProseKeyValue_WikiLinkSpelling_MatchesTheBareWikiLinkExtractor()
+    {
+        // Derived rather than hardcoded: this is the assertion that stays true if the wiki-link
+        // capture ever changes, and it is the whole point of the strip — one reference, one value.
+        string bareSpelling = AttributeExtractor.ExtractRefAttributes("[[/api/auth]]")!["ref"].Single();
+        AttributeExtractor.Extract("ref:[[/api/auth]] has details")!["ref"]
+            .Should().BeEquivalentTo([bareSpelling]);
     }
 
     [Fact]

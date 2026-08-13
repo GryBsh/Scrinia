@@ -1,0 +1,92 @@
+using System.Text.Json;
+using FluentAssertions;
+using Scrinia.Core.Merge;
+using Xunit;
+
+namespace Scrinia.Merge.Tests;
+
+/// <summary>
+/// The admission rule exists twice and must decide once.
+///
+/// <para>Two conflicted sidecars can collide on a filename while describing genuinely different
+/// memories; merging those produces one entry claiming both keyword sets, which is worse than a
+/// conflict because a conflict asks a human. <c>Scrinia.Core.Merge.SidecarAdmission</c> is the
+/// authoritative copy, called by <c>reconcile()</c>'s auto-resolver; the git merge driver states
+/// the same predicate inline (<c>MetaJsonMerger.Merge</c>) because that project is a standalone
+/// AOT executable with zero project references by hard constraint.</para>
+///
+/// <para>The two are exact COMPLEMENTS — <c>jaccard &lt; threshold</c> refuses, <c>jaccard &gt;=
+/// threshold</c> admits — so the cases below deliberately include the boundary itself, which is
+/// the value a hand-copied predicate gets wrong first. Every case drives the FULL merge driver
+/// over sidecars that differ only in their keyword lists, so the driver's other rules are no-ops
+/// and what is compared is exactly the shared rule.</para>
+/// </summary>
+public sealed class SidecarAdmissionParityTests
+{
+    public static TheoryData<string, string[]?, string[]?, double> Cases() => new()
+    {
+        { "identical, mid threshold",     ["auth", "jwt"],  ["auth", "jwt"],     0.7 },
+        { "disjoint, mid threshold",      ["auth"],         ["remote"],          0.7 },
+        { "score well below threshold",   ["auth", "jwt"],  ["auth", "remote"],  0.7 },
+        { "score EXACTLY at threshold",   ["auth", "jwt"],  ["auth", "remote"],  1.0 / 3.0 },
+        { "score a hair under threshold", ["auth", "jwt"],  ["auth", "remote"],  0.34 },
+        { "threshold 0 admits disjoint",  ["auth"],         ["remote"],          0.0 },
+        { "threshold 1 needs identity",   ["auth", "jwt"],  ["auth"],            1.0 },
+        { "both keyword-free",            null,             null,                0.7 },
+        { "one keyword-free",             ["auth"],         null,                0.7 },
+        { "casing differs",               ["Auth"],         ["auth"],            1.0 },
+    };
+
+    [Theory]
+    [MemberData(nameof(Cases))]
+    public void BothImplementationsAgree(string caseName, string[]? ours, string[]? theirs, double threshold)
+    {
+        bool expected = SidecarAdmission.IsSimilarEnough(ours, theirs, threshold);
+        bool admitted = ThroughTheMergeDriver(ours, theirs, threshold);
+
+        admitted.Should().Be(expected,
+            because: $"[{caseName}] the driver's inline predicate must admit exactly what " +
+                     "SidecarAdmission admits — a divergence here is one merger auto-merging two " +
+                     "unrelated memories into one while the other correctly asks a human");
+    }
+
+    /// <summary>True when the driver admitted the merge (Resolved), false when it refused.</summary>
+    private static bool ThroughTheMergeDriver(string[]? ours, string[]? theirs, double threshold)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "admission-parity-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string ancestor = Path.Combine(dir, "a.meta.json");
+            string oursPath = Path.Combine(dir, "ours.meta.json");
+            string theirsPath = Path.Combine(dir, "theirs.meta.json");
+
+            File.WriteAllText(ancestor, Sidecar(null));
+            File.WriteAllText(oursPath, Sidecar(ours));
+            File.WriteAllText(theirsPath, Sidecar(theirs));
+
+            return MetaJsonMerger.Merge(ancestor, oursPath, theirsPath, new MergeConfig(threshold))
+                == MetaJsonMerger.MergeResult.Resolved;
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>A sidecar identical on every field the driver's OTHER rules read, so admission is
+    /// the only rule that can decide the verdict. Timestamps are equal on both sides (no
+    /// SelectTimestamps divergence), termFrequencies is absent (a normal side), and the ancestor
+    /// carries no keywords so the scalar 3-way merges are all "neither side changed".</summary>
+    private static string Sidecar(string[]? keywords)
+    {
+        var fields = new List<string>
+        {
+            "\"name\":\"m\"", "\"uri\":\"\"", "\"originalBytes\":100", "\"chunkCount\":1",
+            "\"createdAt\":\"2026-01-01T00:00:00Z\"", "\"updatedAt\":\"2026-01-02T00:00:00Z\"",
+        };
+        if (keywords is not null)
+            fields.Add($"\"keywords\":{JsonSerializer.Serialize(keywords)}");
+        return "{" + string.Join(",", fields) + "}";
+    }
+}

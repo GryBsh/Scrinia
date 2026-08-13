@@ -382,25 +382,60 @@ public static partial class AttributeExtractor
             // "(file:src/x.cs)" -> "src/x.cs)"). That corrupt suffix defeats a later file-existence
             // check exactly like D-a did. TrimTrailingUnbalancedPunctuation only strips a closing
             // delimiter when it has no matching opener left in the value, so a deliberately-typed
-            // "thing:Foo(bar)" or "ref:[[/api/auth]]" survives intact.
-            //
-            // TrimStart mirrors ExtractFileRefs' own leading-prefix strip ('.', '/', '\\') so the
-            // bare-path route and this inline-prose route normalize a relative path
-            // ("../src/a.cs") to the SAME spelling. Without it, "file:../src/a.cs" stored
-            // "../src/a.cs" while a bare mention of the same file stored "src/a.cs" — two spellings
-            // of one path under one multi-valued key, and the un-normalized spelling fails
-            // HashWorkspaceFile's containment check, so that half of the pair silently gets no drift
-            // baseline. This applies to every recommended key's value, not just file/ref — the guard
-            // above it (TrimEnd's punctuation strip) is the same way, so a value like "topic:.NET"
-            // loses its leading dot too; accepted for the same reason the URL/length guards below
-            // are generic rather than per-key.
-            string value = TrimTrailingUnbalancedPunctuation(m.Groups[2].Value)
-                .TrimStart('.', '/', '\\');
-            if (value.Length == 0 || value.Length > MaxValueLength) continue;
+            // "thing:Foo(bar)" survives intact.
+            string value = StripReferenceWrappers(TrimTrailingUnbalancedPunctuation(m.Groups[2].Value));
+            if (value.Length > MaxValueLength) continue;
             if (value.StartsWith("//", StringComparison.Ordinal)) continue; // URL remainder guard
+
+            // THE VALUE MUST BE SOMETHING. A length check alone is not that: "file:-" and
+            // "(ref:**)" are length 1 and 2, so they passed it and minted `file=["-"]` /
+            // `ref=["**"]`. `file` and `ref` are union-merged ReferenceKeys and
+            // EntityGraph.ParseEntityAttributes yields every key, so a value carrying no name at
+            // all becomes a graph node SHARED by every memory whose prose happens to contain the
+            // shape — the hub pathology KnownAttributes.StateMarkerKeys documents for
+            // `orphan:true`, arrived at from the other direction. Uncontrolled prose (pasted logs,
+            // diffs, ASCII art) is full of these shapes, and this route reads exactly that. One
+            // alphanumeric character is the whole bar: it admits "topic:C#" and "file:a.cs" while
+            // refusing punctuation runs, which never name anything.
+            if (!value.Any(char.IsLetterOrDigit)) continue;
 
             yield return (key, value);
         }
+    }
+
+    /// <summary>
+    /// Normalizes a routed value to the SAME spelling the bare-path and wiki-link extractors
+    /// produce for the same reference, so one reference under one multi-valued key is one value
+    /// rather than two.
+    ///
+    /// <para>Three strips, in this order. A matched surrounding quote pair
+    /// (<c>file:"src/a.cs"</c>) survives <see cref="TrimTrailingUnbalancedPunctuation"/> — its
+    /// quote count is EVEN, which that method reads as balanced and deliberate — and the quoted
+    /// spelling then fails <c>HashWorkspaceFile</c>'s containment check, so the reference silently
+    /// gets no drift baseline. A <c>[[wiki-link]]</c> wrapper survives it for the same reason
+    /// (openers match closers) and leaves <c>ref:[[/api/auth]]</c> stored as
+    /// <c>"[[/api/auth]]"</c> while <see cref="ExtractRefAttributes"/> stores <c>"/api/auth"</c>
+    /// for the identical link in the identical text; the inner target is returned verbatim,
+    /// leading <c>/</c> included, because that is exactly what
+    /// <c>ReferenceExtractor.ExtractMemoryRefs</c> captures. Otherwise the leading path prefix is
+    /// trimmed the way <c>ReferenceExtractor.ExtractFileRefs</c> trims it ('.', '/', '\\'), so
+    /// <c>file:../src/a.cs</c> and a bare <c>../src/a.cs</c> both store <c>src/a.cs</c>.</para>
+    ///
+    /// <para>The prefix trim applies to every recommended key's value, not just file/ref, so a
+    /// value like <c>topic:.NET</c> loses its leading dot too; accepted for the same reason the
+    /// URL and length guards at the call site are generic rather than per-key.</para>
+    /// </summary>
+    private static string StripReferenceWrappers(string value)
+    {
+        if (value.Length >= 2 && value[0] is '"' or '\'' or '`' && value[^1] == value[0])
+            value = value[1..^1].Trim();
+
+        if (value.Length > 4
+            && value.StartsWith("[[", StringComparison.Ordinal)
+            && value.EndsWith("]]", StringComparison.Ordinal))
+            return value[2..^2].Trim();
+
+        return value.TrimStart('.', '/', '\\');
     }
 
     /// <summary>Strips trailing prose punctuation a <c>(\S+)</c> capture swallows by mistake. Plain

@@ -21,6 +21,18 @@ public static class MetaJsonMerger
         if (ours is null || theirs is null)
             return MergeResult.Conflict;
 
+        // DUPLICATE, AND THE DUPLICATION IS FORCED. The original is
+        // Scrinia.Core.Merge.SidecarAdmission.IsSimilarEnough, which reconcile()'s auto-resolver
+        // calls; this project is a standalone AOT executable with zero project references by hard
+        // constraint, so it cannot call it. Change one and you must change the other:
+        // Scrinia.Merge.Tests.SidecarAdmissionParityTests runs the same cases through both and
+        // fails when they disagree. The rule and its reasoning live there. In summary: two
+        // conflicted sidecars may only be auto-merged when their keyword sets score at or above
+        // the configured Jaccard threshold — a filename collision between genuinely different
+        // memories must reach a human rather than become one entry claiming both.
+        //
+        // Expressed as the exact complement (`< threshold` here, `>= threshold` there) so the two
+        // agree on the boundary itself, which is where an admission gate is worth getting wrong.
         double jaccard = KeywordJaccard.Compute(GetStrings(ours, "keywords"), GetStrings(theirs, "keywords"));
         if (jaccard < config.JaccardThreshold)
             return MergeResult.Conflict;
@@ -97,21 +109,29 @@ public static class MetaJsonMerger
         SetString(ours, "createdAt", createdAt);
 
         // ABSENT (the key is missing) contributes nothing to the union — a normal side, not an
-        // error. MALFORMED (present but not an object, or holding a value that isn't an int) means
-        // this driver cannot safely interpret what that side intended, so ours' termFrequencies is
-        // left exactly as it was rather than silently dropped or rewritten around the part that
-        // couldn't be read.
-        if (TryGetIntMap(ours, "termFrequencies", out var oursTf)
-            && TryGetIntMap(theirs, "termFrequencies", out var theirsTf))
-        {
-            var mergedTf = UnionTermFrequencies(oursTf, theirsTf);
-            if (mergedTf is null)
-                ours.Remove("termFrequencies");
-            else
-                ours["termFrequencies"] = new JsonObject(
-                    mergedTf.OrderBy(kv => kv.Key, StringComparer.Ordinal)
-                            .Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value))));
-        }
+        // error. MALFORMED (present but not an object, or holding a value that isn't an int)
+        // ESCALATES, exactly as the createdAt/updatedAt gate above does and exactly as
+        // reconcile()'s auto-resolver does for this same field
+        // (MemoryTools.Lifecycle.TryReadIntMap, whose false return aborts the auto-merge).
+        //
+        // This gate used to be an `&&` guarding the merge block, which short-circuited the WHOLE
+        // block: a malformed side left ours' map exactly as it was, dropped theirs' contribution,
+        // and still reported Resolved — silently keeping one side's ranking data and discarding
+        // the other's, on input neither Scrinia nor the driver produced. That is the same
+        // "resolve by guessing" shape this branch exists to close, and it left the two mergers
+        // disagreeing on malformed input while agreeing on everything else. Refuse rather than
+        // guess: a conflict asks a human, an automatic merge does not.
+        if (!TryGetIntMap(ours, "termFrequencies", out var oursTf)
+            || !TryGetIntMap(theirs, "termFrequencies", out var theirsTf))
+            return MergeResult.Conflict;
+
+        var mergedTf = UnionTermFrequencies(oursTf, theirsTf);
+        if (mergedTf is null)
+            ours.Remove("termFrequencies");
+        else
+            ours["termFrequencies"] = new JsonObject(
+                mergedTf.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                        .Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value))));
 
         File.WriteAllText(oursPath, ours.ToJsonString(WriteOptions));
         return MergeResult.Resolved;

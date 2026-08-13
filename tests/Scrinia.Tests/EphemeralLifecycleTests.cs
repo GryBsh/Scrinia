@@ -115,6 +115,31 @@ public sealed class EphemeralLifecycleTests : IDisposable
     }
 
     [Fact]
+    public async Task DriftList_NamesAnEphemeralWithItsTildePrefix()
+    {
+        // BuildDriftList skips entries with no FileHashes, so before this branch gave ephemerals a
+        // baseline its naming line was dead for them. Now they reach it — and it calls
+        // FormatQualifiedName, which only special-cases "local:", so scope "ephemeral" came back as
+        // the BARE name. A drift row naming "scratch" is unaddressable: recall('scratch') either
+        // misses or returns an unrelated persistent memory of that name.
+        var tools = new ScriniaMcpTools();
+
+        await tools.Remember(["see src/thing.cs"], "~scratch");
+        _store.GetEphemeral("scratch")!.FileHashes.Should().ContainKey("src/thing.cs",
+            because: "precondition: without a baseline the drift scan skips this entry and the " +
+                     "assertion below would be vacuous");
+
+        // Drift the file so the entry produces a row at all — a clean reference prints nothing.
+        await File.WriteAllTextAsync(Path.Combine(_workspace, "src", "thing.cs"), "// changed");
+
+        string result = await tools.MemoryList(mode: "drift");
+
+        result.Should().Contain("~scratch → src/thing.cs [DRIFT]",
+            because: "a drift row must name the memory the way recall() takes it — the sibling " +
+                     "renderer in BuildFullList already prefixes the tilde");
+    }
+
+    [Fact]
     public async Task Compact_OnAMultiChunkEphemeral_MergesItsChunks()
     {
         // Compact never checked IsEphemeral and went straight to ReadArtifactAsync, which is

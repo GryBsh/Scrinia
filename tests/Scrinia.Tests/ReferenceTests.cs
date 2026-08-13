@@ -256,6 +256,31 @@ public sealed class ReferenceTests : IDisposable
     }
 
     [Fact]
+    public async Task Link_WithAnEphemeralSide_RefusesBeforeWritingEither()
+    {
+        // link ran both UpdateMeta calls unconditionally. UpdateMeta refuses an ephemeral name, so
+        // the ~scratch side failed — and then the OTHER side was written anyway, persisting
+        // ref:~scratch on a memory that was never linked back and reporting "Partial link failure".
+        // A dangling one-sided ref is worse than a refusal: it is a link the graph believes in.
+        await _tools.Remember(["Persistent side"], "/patterns/link-target");
+        await _tools.Remember(["Ephemeral side"], "~scratch");
+
+        string result = (await _tools.Link("~scratch", "/patterns/link-target")).ToYaml();
+
+        result.Should().Contain("ephemeral",
+            because: "the tool description has always claimed link refuses an ephemeral side");
+
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("/patterns/link-target");
+        var entry = store.LoadIndex(scope)
+            .First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
+        (entry.Attributes is not null && entry.Attributes.ContainsKey("ref")).Should().BeFalse(
+            because: "a refused link must write NOTHING — the surviving half of a partial write is " +
+                     "a ref pointing at a memory that carries no ref back");
+    }
+
+    [Fact]
     public async Task References_FindsLinkedMemory()
     {
         // Arrange — create two memories and link them

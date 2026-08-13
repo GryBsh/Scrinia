@@ -1003,6 +1003,20 @@ public sealed partial class ScriniaMcpTools
         [Description("Reason for the connection.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
+        // BOTH sides are checked BEFORE either is written. UpdateMeta refuses an ephemeral name
+        // outright, but running the two calls unconditionally meant link('~scratch', '/patterns/x')
+        // failed on the first call, then went on to PERSIST ref:~scratch on /patterns/x, and
+        // reported "Partial link failure" — leaving a dangling one-sided ref pointing at a memory
+        // that was never linked back, which is worse than either a clean link or a clean refusal.
+        // The tool description has always said link refuses when either side is ephemeral; this is
+        // where that becomes true.
+        var store = CurrentStore;
+        if (store.IsEphemeral(from) || store.IsEphemeral(to))
+            return ResponseBuilder.Error(
+                "link does not support ephemeral (~name) memories on either side — nothing was written.",
+                ErrorCodes.InvalidParameter,
+                "Persist the memory first with remember({ path: '/topic/name', content: [...] }), then link it.");
+
         // Add ref:{to} attribute to {from} (UpdateMeta routes the ref:-shaped keyword into Attributes)
         McpResponse result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
         // Add ref:{from} attribute to {to}
@@ -1035,7 +1049,17 @@ public sealed partial class ScriniaMcpTools
             // Pass sa.Scope straight in — FormatQualifiedName already handles the "local"/"local:topic"
             // forms. The earlier pre-strip of the "local:" prefix fed it a bare topic ("api"), which
             // it can't recognise, so topic-scoped drift rows lost their "/topic/" path.
-            string qualName = store.FormatQualifiedName(sa.Scope, sa.Entry.Name);
+            //
+            // The "~" is prepended here, not inside FormatQualifiedName, matching the sibling
+            // renderer in BuildFullList: FormatQualifiedName only special-cases "local:", so scope
+            // "ephemeral" comes back as the BARE name. That was unreachable until Task 6 gave
+            // ephemerals a drift baseline — before it they never had FileHashes, so the loop's
+            // guard above skipped every one of them. Now they reach this line, and a bare name in
+            // a drift row is a name the reader cannot act on: recall('x') either misses or, worse,
+            // returns an unrelated persistent memory that happens to share the name.
+            string qualName = sa.Scope == "ephemeral"
+                ? $"~{sa.Entry.Name}"
+                : store.FormatQualifiedName(sa.Scope, sa.Entry.Name);
 
             foreach (var (path, storedHash) in sa.Entry.FileHashes)
             {
