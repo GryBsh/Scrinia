@@ -236,6 +236,88 @@ public sealed class FileMemoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void CopyMemory_PromotingAnEphemeral_CarriesEveryMetadataField()
+    {
+        // The defect: promotion built a fresh ArtifactEntry populated with a subset of fields,
+        // dropping Keywords, TermFrequencies, AgentKeywords and UpdatedAt. TermFrequencies is what
+        // BM25 scores against, so a promoted memory kept its bytes and preview and became
+        // UNFINDABLE BY SEARCH.
+        string artifact = Nmp2ChunkedEncoder.Encode("Ephemeral source content");
+        var sourceEntry = new EphemeralEntry(
+            Name: "source",
+            Artifact: artifact,
+            OriginalBytes: 123,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow,
+            ContentPreview: "a curated preview",
+            Keywords: ["alpha", "beta"],
+            TermFrequencies: new Dictionary<string, int> { ["alpha"] = 2, ["beta"] = 1 },
+            UpdatedAt: DateTimeOffset.UtcNow.AddMinutes(-5),
+            ChunkEntries: [new ChunkEntry(0, "chunk preview", ["alpha"], new Dictionary<string, int> { ["alpha"] = 1 })],
+            FileHashes: new Dictionary<string, string> { ["src/thing.cs"] = "abc123" },
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { ["file"] = ["src/thing.cs"] },
+            AgentKeywords: ["alpha"]);
+        _store.RememberEphemeral("source", sourceEntry);
+
+        _store.CopyMemory("~source", "promoted", overwrite: false, out _).Should().BeTrue();
+
+        var source = _store.GetEphemeral("source")!;
+        var promoted = _store.LoadIndex("local").Single(e => e.Name == "promoted");
+
+        promoted.Keywords.Should().BeEquivalentTo(source.Keywords);
+        promoted.TermFrequencies.Should().BeEquivalentTo(source.TermFrequencies,
+            because: "this is what BM25 scores against — dropping it makes the copy unfindable");
+        promoted.AgentKeywords.Should().BeEquivalentTo(source.AgentKeywords,
+            because: "null means UNKNOWN, so losing a recorded list demotes curated keywords later");
+        promoted.UpdatedAt.Should().Be(source.UpdatedAt);
+        promoted.FileHashes.Should().BeEquivalentTo(source.FileHashes);
+        promoted.ContentPreview.Should().Be(source.ContentPreview);
+        promoted.Attributes.Should().BeEquivalentTo(source.Attributes);
+        promoted.ChunkEntries.Should().BeEquivalentTo(source.ChunkEntries);
+        promoted.OriginalBytes.Should().Be(source.OriginalBytes);
+        promoted.ChunkCount.Should().Be(source.ChunkCount);
+    }
+
+    [Fact]
+    public async Task CopyMemory_DemotingToAnEphemeral_CarriesEveryMetadataField()
+    {
+        // Same defect, opposite direction, same subset dropped.
+        string artifact = Nmp2ChunkedEncoder.Encode("Persistent source content");
+        await _store.WriteArtifactAsync("source", "local", artifact);
+        var sourceEntry = new ArtifactEntry(
+            Name: "source",
+            Uri: _store.ArtifactUri("source", "local"),
+            OriginalBytes: 456,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow,
+            ContentPreview: "a curated preview",
+            Keywords: ["gamma", "delta"],
+            TermFrequencies: new Dictionary<string, int> { ["gamma"] = 3 },
+            UpdatedAt: DateTimeOffset.UtcNow.AddMinutes(-10),
+            ChunkEntries: [new ChunkEntry(0, "chunk preview", ["gamma"], new Dictionary<string, int> { ["gamma"] = 1 })],
+            FileHashes: new Dictionary<string, string> { ["src/other.cs"] = "def456" },
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { ["file"] = ["src/other.cs"] },
+            AgentKeywords: ["gamma"]);
+        _store.Upsert(sourceEntry, "local");
+
+        _store.CopyMemory("source", "~demoted", overwrite: false, out _).Should().BeTrue();
+
+        var source = _store.LoadIndex("local").Single(e => e.Name == "source");
+        var demoted = _store.GetEphemeral("demoted")!;
+
+        demoted.Keywords.Should().BeEquivalentTo(source.Keywords);
+        demoted.TermFrequencies.Should().BeEquivalentTo(source.TermFrequencies,
+            because: "this is what BM25 scores against — dropping it makes the copy unfindable");
+        demoted.AgentKeywords.Should().BeEquivalentTo(source.AgentKeywords,
+            because: "null means UNKNOWN, so losing a recorded list demotes curated keywords later");
+        demoted.UpdatedAt.Should().Be(source.UpdatedAt);
+        demoted.FileHashes.Should().BeEquivalentTo(source.FileHashes);
+        demoted.ContentPreview.Should().Be(source.ContentPreview);
+        demoted.Attributes.Should().BeEquivalentTo(source.Attributes);
+        demoted.ChunkEntries.Should().BeEquivalentTo(source.ChunkEntries);
+    }
+
+    [Fact]
     public void DiscoverTopics_finds_topic_dirs()
     {
         // v3: DiscoverTopics scans .scrinia/memories/ directly (the old .scrinia/topics/ v1 scan

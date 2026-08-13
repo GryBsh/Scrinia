@@ -1895,6 +1895,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
             AtomicWriteAllText(destPath, entry.Artifact);
 
+            // A copy carries; it does not re-derive. The artifact bytes are identical by
+            // definition, so the derived metadata is identical — carrying it is correct by
+            // construction, and re-deriving would re-hash files against the current workspace and
+            // could produce an entry that differs from its byte-identical source. This branch used
+            // to populate a subset, which dropped TermFrequencies — what BM25 scores against — and
+            // left the promoted memory unfindable by search. CreatedAt is deliberately NOT carried:
+            // the promoted memory is created now.
             var destEntry = new ArtifactEntry(
                 Name: dstSubject,
                 Uri: ArtifactUri(dstSubject, dstScope),
@@ -1902,8 +1909,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 ChunkCount: entry.ChunkCount,
                 CreatedAt: DateTimeOffset.UtcNow,
                 ContentPreview: entry.ContentPreview,
+                Keywords: entry.Keywords,
+                TermFrequencies: entry.TermFrequencies,
+                UpdatedAt: entry.UpdatedAt,
                 ChunkEntries: entry.ChunkEntries,
-                Attributes: entry.Attributes);
+                FileHashes: entry.FileHashes,
+                Attributes: entry.Attributes,
+                AgentKeywords: entry.AgentKeywords);
             Upsert(destEntry, dstScope);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
@@ -1953,6 +1965,10 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
             string artifact = File.ReadAllText(sourcePath);
 
+            // Same rule as the promotion branch above: a copy carries, it does not re-derive.
+            // The `sourceEntry?.` null-tolerance stays — the source index entry can be absent
+            // when only the artifact file exists, and the copy still has to succeed with
+            // synthesized defaults in that case.
             var ephEntry = new EphemeralEntry(
                 Name: dstKey,
                 Artifact: artifact,
@@ -1960,8 +1976,13 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 ChunkCount: sourceEntry?.ChunkCount ?? Nmp2ChunkedEncoder.GetChunkCount(artifact),
                 CreatedAt: DateTimeOffset.UtcNow,
                 ContentPreview: sourceEntry?.ContentPreview ?? $"Loaded from {sourceName}",
+                Keywords: sourceEntry?.Keywords,
+                TermFrequencies: sourceEntry?.TermFrequencies,
+                UpdatedAt: sourceEntry?.UpdatedAt,
                 ChunkEntries: sourceEntry?.ChunkEntries,
-                Attributes: sourceEntry?.Attributes);
+                FileHashes: sourceEntry?.FileHashes,
+                Attributes: sourceEntry?.Attributes,
+                AgentKeywords: sourceEntry?.AgentKeywords);
             RememberEphemeral(dstKey, ephEntry);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
