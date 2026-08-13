@@ -121,4 +121,43 @@ public sealed class SidecarTimestampMergeParityTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    /// <summary>
+    /// Regression pin for fix round 2. An explicit <c>"createdAt": null</c> is a distinct shape
+    /// from an absent key: <c>TryGetPropertyValue</c> returns true for a present-but-null key, and
+    /// the value is then not a <c>JsonValue</c> at all (a JSON null is a null node reference), so
+    /// <c>TryGetTimestampString</c> already reports MALFORMED for it — this was true before fix
+    /// round 2 too. What fix round 2 actually closed was reconcile()'s side reading the identical
+    /// input as ABSENT (via the <c>node?[key]</c> indexer, which cannot distinguish "absent" from
+    /// "present but null") and silently auto-resolving. This test exists so the driver's half of
+    /// that parity is pinned explicitly rather than only asserted in the fix-round report.
+    /// </summary>
+    [Fact]
+    public void MalformedCreatedAt_ExplicitNull_RefusesTheMerge()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "ts-null-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string ancestor = Path.Combine(dir, "a.meta.json");
+            string ours = Path.Combine(dir, "ours.meta.json");
+            string theirs = Path.Combine(dir, "theirs.meta.json");
+
+            File.WriteAllText(ancestor, Sidecar(null, null));
+            File.WriteAllText(ours,
+                "{\"name\":\"m\",\"uri\":\"\",\"originalBytes\":100,\"chunkCount\":1," +
+                "\"keywords\":[\"auth\"],\"createdAt\":null,\"updatedAt\":\"2026-01-02T00:00:00Z\"}");
+            File.WriteAllText(theirs, Sidecar("2026-01-01T00:00:00Z", "2026-01-03T00:00:00Z"));
+
+            MetaJsonMerger.Merge(ancestor, ours, theirs, new MergeConfig(JaccardThreshold: 0.0))
+                .Should().Be(MetaJsonMerger.MergeResult.Conflict,
+                    because: "createdAt: null is present but not a JSON string — the driver cannot " +
+                             "safely interpret one side's intent, so it must escalate rather than " +
+                             "silently treat it as absent and let theirs' value win unchallenged");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

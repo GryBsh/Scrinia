@@ -303,6 +303,47 @@ public sealed class ReconcileMetaProvenanceTests
                      "human or an explicit choice to resolve");
     }
 
+    private const string OursExplicitNullCreatedAt = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":null,"updatedAt":"2026-01-02T00:00:00Z",
+        "keywords":["auth","local"]}
+        """;
+
+    /// <summary>
+    /// Regression pin for fix round 2. An explicit <c>"createdAt": null</c> is a distinct shape
+    /// from an absent key, exactly like <c>termFrequencies: null</c> below — but the fix round 1
+    /// timestamp read didn't go through that lesson: <c>oursNode["createdAt"]?.GetValue&lt;string&gt;()</c>
+    /// uses the <c>node?[key]</c> indexer, which returns a null reference for BOTH "absent" and
+    /// "present but JSON null," and <c>?.</c> short-circuits on that null reference with no throw —
+    /// so a null <c>createdAt</c> was silently read as ABSENT and the conflict auto-resolved on
+    /// theirs' value, while the driver (fixed in round 1 via <c>TryGetPropertyValue</c>) already
+    /// refused the identical input. This is the regression fix round 2 closed: reconcile() now
+    /// reads through <c>TryReadTimestampString</c>, the same <c>TryGetPropertyValue</c>-based shape
+    /// as <c>TryReadIntMap</c> uses for <c>termFrequencies</c>, so a present-but-null timestamp is
+    /// MALFORMED on both sides and both escalate.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_MalformedCreatedAt_ExplicitNull_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string conflictId = await SeedConflictAsync(
+            scope, OursExplicitNullCreatedAt, TheirsValidTimestampsForMalformedPair);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "an explicit createdAt: null is not the same as the key being absent — " +
+                     "treating it as absent would silently auto-resolve on theirs' value instead of " +
+                     "escalating a shape the merger did not produce and cannot safely interpret, " +
+                     "and would disagree with the driver, which already refuses this input");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
+
     /// <summary>
     /// An explicit JSON <c>null</c> is a distinct shape from an absent key: <c>node?[key]</c>
     /// (the indexer) returns a null reference for BOTH, so a naive reader cannot tell "this side

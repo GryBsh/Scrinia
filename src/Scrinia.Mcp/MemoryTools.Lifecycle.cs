@@ -444,12 +444,22 @@ public sealed partial class ScriniaMcpTools
             var theirsNode = JsonNode.Parse(theirsJson);
             if (oursNode is null || theirsNode is null) return false;
 
+            // MALFORMED createdAt/updatedAt (present but not a JSON string — including an explicit
+            // JSON null, which the node?[key] indexer below cannot distinguish from ABSENT) must
+            // escalate rather than be silently treated as absent. Read all four up front, through
+            // the one TryReadTimestampString helper, so base-node selection below and the shared
+            // rule both see the SAME values — reading updatedAt twice with two different extraction
+            // shapes is exactly how this divergence happened the first time.
+            if (!TryReadTimestampString(oursNode, "createdAt", out var oursCreated) ||
+                !TryReadTimestampString(oursNode, "updatedAt", out var oursUpdated) ||
+                !TryReadTimestampString(theirsNode, "createdAt", out var theirsCreated) ||
+                !TryReadTimestampString(theirsNode, "updatedAt", out var theirsUpdated))
+                return false;
+
             // Pick base: latest updatedAt wins, fall back to theirs
             var baseNode = theirsNode; // default to incoming
             var otherNode = oursNode;
 
-            var oursUpdated = oursNode["updatedAt"]?.GetValue<string>();
-            var theirsUpdated = theirsNode["updatedAt"]?.GetValue<string>();
             if (oursUpdated is not null && theirsUpdated is not null)
             {
                 if (DateTimeOffset.TryParse(oursUpdated, out var odt) &&
@@ -464,8 +474,7 @@ public sealed partial class ScriniaMcpTools
             // selection above. Riding along meant createdAt took the winner's value — so an
             // automatic reconcile could move a memory's creation time FORWARD.
             var (mergedCreated, mergedUpdated) = SidecarTimestampMerge.Select(
-                oursNode["createdAt"]?.GetValue<string>(), oursUpdated,
-                theirsNode["createdAt"]?.GetValue<string>(), theirsUpdated);
+                oursCreated, oursUpdated, theirsCreated, theirsUpdated);
             if (mergedCreated is null)
                 (baseNode as JsonObject)?.Remove("createdAt");
             else
@@ -540,6 +549,31 @@ public sealed partial class ScriniaMcpTools
         var array = new JsonArray();
         foreach (string value in values) array.Add((JsonNode?)value);
         return array;
+    }
+
+    /// <summary>Reads a createdAt/updatedAt-shaped JSON node into a string. Returns true for ABSENT
+    /// (the key is missing; contributes nothing to <see cref="SidecarTimestampMerge.Select"/>) and
+    /// for a well-formed JSON string. Returns false for MALFORMED input — present but not a JSON
+    /// string, including an explicit JSON <c>null</c> — so the caller can escalate to manual
+    /// resolution instead of what the <c>node?[key]</c> indexer used to do here: return a null
+    /// reference for BOTH "key absent" and "key present with value JSON <c>null</c>", silently
+    /// treating the latter as absent and auto-resolving on the other side's value.
+    ///
+    /// <para>Deliberately mirrors <see cref="TryReadIntMap"/>'s two-step shape
+    /// (<c>JsonObject.TryGetPropertyValue</c> before inspecting the value) for the same reason that
+    /// one exists: the indexer cannot tell "absent" from "present but null" apart, and getting that
+    /// wrong here made the git merge driver and reconcile()'s auto-resolver classify
+    /// <c>"createdAt": null</c> differently — the timestamp analogue of the divergence
+    /// <see cref="TryReadIntMap"/> closes for <c>termFrequencies</c>.</para></summary>
+    private static bool TryReadTimestampString(JsonNode? node, string key, out string? value)
+    {
+        value = null;
+        if (node is not JsonObject nodeObj || !nodeObj.TryGetPropertyValue(key, out var raw))
+            return true; // absent
+        if (raw is not JsonValue v || !v.TryGetValue<string>(out var s))
+            return false; // malformed: present but not a JSON string (includes an explicit JSON null)
+        value = s;
+        return true;
     }
 
     /// <summary>Reads a termFrequencies-shaped JSON node into a dictionary. Returns true for
