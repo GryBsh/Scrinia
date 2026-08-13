@@ -530,13 +530,22 @@ public sealed partial class ScriniaMcpTools
     /// <summary>Reads a termFrequencies-shaped JSON node into a dictionary. Returns true for
     /// ABSENT (<paramref name="map"/> is null; the side recorded no term frequencies and
     /// contributes nothing to a merge) and for a well-formed object. Returns false for MALFORMED
-    /// input — present but not a JSON object, or containing a value that isn't readable as an int —
-    /// so the caller can escalate to manual resolution rather than silently drop or coerce a
-    /// hand-edited or foreign sidecar's term frequencies.</summary>
+    /// input — present but not a JSON object (including an explicit JSON <c>null</c>), or
+    /// containing a value that isn't readable as an int — so the caller can escalate to manual
+    /// resolution rather than silently drop or coerce a hand-edited or foreign sidecar's term
+    /// frequencies.
+    ///
+    /// <para>Deliberately mirrors <c>MetaJsonMerger.TryGetIntMap</c>'s two-step shape
+    /// (<c>JsonObject.TryGetPropertyValue</c> before inspecting the value) rather than the
+    /// single-step <c>node?[key]</c> indexer. The indexer returns a null reference for BOTH "key
+    /// absent" and "key present with value JSON <c>null</c>" — System.Text.Json represents a JSON
+    /// null as a null <see cref="JsonNode"/> reference — so it cannot tell the two apart. Getting
+    /// that wrong here made the git merge driver and reconcile()'s auto-resolver classify
+    /// <c>"termFrequencies": null</c> differently: exactly the divergence this whole rule exists to
+    /// close.</para></summary>
     private static bool TryReadIntMap(JsonNode? node, string key, out Dictionary<string, int>? map)
     {
-        var value = node?[key];
-        if (value is null)
+        if (node is not JsonObject nodeObj || !nodeObj.TryGetPropertyValue(key, out var value))
         {
             map = null;
             return true; // absent
@@ -544,7 +553,7 @@ public sealed partial class ScriniaMcpTools
         if (value is not JsonObject obj)
         {
             map = null;
-            return false; // malformed: present but not an object
+            return false; // malformed: present but not an object (includes an explicit JSON null)
         }
 
         var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);

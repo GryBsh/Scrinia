@@ -88,6 +88,67 @@ public sealed class SidecarTermFrequencyMergeParityTests
         }
     }
 
+    /// <summary>
+    /// Pins the driver side of the explicit-null shape fixed alongside
+    /// <c>MemoryTools.Lifecycle.TryReadIntMap</c> in review round 2: an explicit JSON <c>null</c>
+    /// is MALFORMED, not ABSENT (nothing in this codebase ever writes one —
+    /// <c>DefaultIgnoreCondition = WhenWritingNull</c> omits the property instead — so a literal
+    /// null is a hand-edit or a foreign writer). The driver's <c>TryGetIntMap</c> already got this
+    /// right via <c>JsonObject.TryGetPropertyValue</c>; this pins it on the driver side too, so the
+    /// pair is covered symmetrically rather than only where the bug actually was.
+    ///
+    /// <para>Checking only ours' <em>values</em> survive would be vacuous here: unioning ours
+    /// against a theirs wrongly treated as ABSENT produces the exact same key/value pairs as
+    /// leaving ours untouched (a no-op contribution either way), so a value-only assertion cannot
+    /// tell "skipped the union entirely" from "ran the union and it happened not to change
+    /// anything." What DOES distinguish them deterministically: the union path always rewrites the
+    /// object through <c>OrderBy(..., Ordinal)</c>, so it re-sorts; the untouched path is a
+    /// straight pass-through of the parsed JSON, so it keeps the file's original (unsorted) key
+    /// order. Ours is written with keys out of order on purpose so the two paths diverge.</para>
+    /// </summary>
+    [Fact]
+    public void MalformedTermFrequencies_ExplicitNull_LeavesOursUntouched()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "tf-null-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string ancestor = Path.Combine(dir, "a.meta.json");
+            string oursPath = Path.Combine(dir, "ours.meta.json");
+            string theirsPath = Path.Combine(dir, "theirs.meta.json");
+
+            // Sidecar() can only omit the key or write a well-formed (JsonSerializer-ordered) map;
+            // both the explicit null and the deliberately-unsorted key order under test need raw
+            // JSON, so both files are written directly here.
+            File.WriteAllText(ancestor, Sidecar(null));
+            File.WriteAllText(oursPath,
+                "{\"name\":\"m\",\"uri\":\"\",\"originalBytes\":100,\"chunkCount\":1," +
+                "\"keywords\":[\"auth\"],\"createdAt\":\"2026-01-01T00:00:00Z\"," +
+                "\"updatedAt\":\"2026-01-02T00:00:00Z\",\"termFrequencies\":{\"zebra\":1,\"apple\":2}}");
+            File.WriteAllText(theirsPath,
+                "{\"name\":\"m\",\"uri\":\"\",\"originalBytes\":100,\"chunkCount\":1," +
+                "\"keywords\":[\"auth\"],\"createdAt\":\"2026-01-01T00:00:00Z\"," +
+                "\"updatedAt\":\"2026-01-02T00:00:00Z\",\"termFrequencies\":null}");
+
+            MetaJsonMerger.Merge(ancestor, oursPath, theirsPath, new MergeConfig(JaccardThreshold: 0.0))
+                .Should().Be(MetaJsonMerger.MergeResult.Resolved);
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(oursPath));
+            var tf = doc.RootElement.GetProperty("termFrequencies");
+            tf.GetProperty("zebra").GetInt32().Should().Be(1);
+            tf.GetProperty("apple").GetInt32().Should().Be(2);
+            string[] keys = [.. tf.EnumerateObject().Select(p => p.Name)];
+            keys.Should().Equal(["zebra", "apple"],
+                because: "theirs' explicit null is MALFORMED, not ABSENT, so ours' termFrequencies " +
+                         "must be left byte-for-byte as parsed — including its original key order — " +
+                         "rather than run through the union path, which always re-sorts");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     private static Dictionary<string, int>? ThroughTheMergeDriver(
         Dictionary<string, int>? ours, Dictionary<string, int>? theirs)
     {

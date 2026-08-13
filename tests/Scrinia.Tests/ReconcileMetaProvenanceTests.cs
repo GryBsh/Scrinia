@@ -213,4 +213,41 @@ public sealed class ReconcileMetaProvenanceTests
             because: "escalating must not write anything — the conflict markers stay in place for a " +
                      "human or an explicit choice to resolve");
     }
+
+    private const string TheirsExplicitNullTermFrequencies = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":["auth","local"],"termFrequencies":null}
+        """;
+
+    /// <summary>
+    /// An explicit JSON <c>null</c> is a distinct shape from an absent key: <c>node?[key]</c>
+    /// (the indexer) returns a null reference for BOTH, so a naive reader cannot tell "this side
+    /// recorded no term frequencies" from "this side wrote something the merger cannot interpret."
+    /// Nothing in this codebase ever serializes an explicit null here — <c>DefaultIgnoreCondition
+    /// = WhenWritingNull</c> omits the property instead — so a literal <c>null</c> is a hand-edit or
+    /// a foreign writer, and must be treated as MALFORMED (escalate) rather than ABSENT (silently
+    /// union using only the other side), exactly like the driver already does via
+    /// <c>JsonObject.TryGetPropertyValue</c>.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_ExplicitNullTermFrequencies_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string conflictId = await SeedConflictAsync(
+            scope, OursValidTermFrequencies, TheirsExplicitNullTermFrequencies);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "an explicit termFrequencies: null is not the same as the key being absent — " +
+                     "treating it as absent would silently union using only ours' map instead of " +
+                     "escalating a shape the merger did not produce and cannot safely interpret");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
 }
