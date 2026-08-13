@@ -1662,11 +1662,65 @@ rtk git commit -m "docs: record the merge-parity behaviour change and the epheme
 
 ---
 
-## Plan Verification Pass
+## Plan Verification Protocol
 
-A falsification pass ran against this plan before any implementer was dispatched, and found **five
-false claims** — all corrected above. Recorded because each is a trap the next reader could fall
-back into:
+**Standing requirement. A verification pass runs before any implementer is dispatched, and again
+whenever a later group of tasks has not yet been through one.** It has three jobs, in this order.
+The ordering is deliberate: the two most expensive misses on this branch were both scope misses, and
+scope is Job 1.
+
+### Job 1 — Enumerate scope. Never confirm a count; produce the list.
+
+Where the plan asserts a scope — "one call site", "five affected fixtures", "three projections" —
+the pass does **not** check whether the assertion looks right. It independently produces the
+complete list by mechanical search and diffs that against the claim, reporting both what the plan
+missed and what it names that does not exist.
+
+Enumerate, at minimum: every call site of a method whose signature changes; every construction site
+of a record that gains a member, tagged **named or positional** (a positional call past the
+insertion point rebinds silently and still compiles); every fixture that reaches a path whose
+admission rules change; every projection of a type into another shape.
+
+*Why:* the plan asserted "five affected fixtures" for Task 4. A sixth existed, and it went green
+while no longer testing what it names.
+
+### Job 2 — Check claims, and treat comment-sourced claims as presumptively wrong.
+
+Every factual claim gets a verdict: TRUE, FALSE, or UNVERIFIABLE. **A claim that originates in a
+code comment is verified against the code the comment describes, never against the comment.**
+
+*Why:* this codebase's comments are unreliable by measurement. `MetaJsonMerger` described the
+`termFrequencies` data-loss bug as "preserved verbatim". `HttpMemoryStore.cs:237-240` asserts an
+ephemeral write "returns before any path is resolved" — it does not; hashing runs first, and that
+false claim is the only reason the defect stayed invisible. `TryComputeAutoResolvedMetaJson`'s
+summary claimed "latest timestamp wins" after that stopped being true. The branch immediately
+preceding this one shipped six verifiably false comments. **A comment here is a lead, not a fact.**
+
+### Job 3 — Find tests that would stop testing what they name.
+
+For each behaviour change: which existing tests touch this path, and would any still **pass** while
+its subject is short-circuited? That class stays green, so it never surfaces on its own.
+
+*Why:* it has happened twice on this branch — a data-loss fix that shipped with no coverage because
+the plan scheduled its test into a later task, and Task 4's sixth fixture, whose three assertions all
+still held after the gate stopped it ever reaching the code under test.
+
+### What this does not catch
+
+Claim-checking finds false facts; it does not find wrong semantics. The `JsonNode`-indexer trap
+(the indexer cannot distinguish "key absent" from "key present with value `null`") produced parity
+gaps in Tasks 2 and 3 and no amount of claim verification would have found it. What found it was an
+**enumeration** — a sweep of every meaningful-absence read in the file. Both techniques that have
+actually worked on this branch are enumerations, which is why Job 1 leads.
+
+Scope the enumeration to what the plan touches. A repo-wide sweep balloons the pass for no gain.
+
+---
+
+### Round 1 findings — before Task 1
+
+Found **five false claims** — all corrected above. Recorded because each is a trap the next reader
+could fall back into:
 
 1. **`[SkippableFact]` does not exist in `Scrinia.Merge.Tests`.** No `Xunit.SkippableFact` package
    reference; every test in that project uses `[Fact]`.
@@ -1682,6 +1736,34 @@ back into:
 5. **The admission gate regressed five existing green tests.** Every conflicted-sidecar fixture in
    the suite sits at Jaccard 0.333, and `ReconcileMetaProvenanceTests.cs` was not in any task's
    file list. Task 4 Step 0 exists because of this.
+
+### What Round 1 missed, and why Job 1 and Job 2 exist
+
+Four further plan defects surfaced during Tasks 1-4, each costing a fix round. Round 1 was pure
+claim-checking, so it caught none of them:
+
+6. **`StringComparer.Ordinal` for the term-frequency merge, justified by a backwards fact.**
+   `TextAnalysis.ComputeTermFrequencies` uses `OrdinalIgnoreCase`. Not merely a wrong comment:
+   `MemoryDerivation.ForMetadataUpdate` copies the merged map into an `OrdinalIgnoreCase`
+   dictionary, which **throws `ArgumentException`** on a map holding both `Auth` and `auth` —
+   exactly the pair Ordinal lets survive a merge. → **Job 2.**
+7. **"Handle the malformed case" without enumerating the input shapes.** Produced a fix that
+   conflated *absent* with *malformed*, then an asymmetry where the same sidecar escalated in one
+   merger and silently resolved in the other. → **Job 1.**
+8. **`2026-08-13T10:00:00+10:00` is `00:00:00Z`, not `01:00:00Z`.** The wrong example propagated
+   spec → plan → the doc comment of the one shared rule, while the parity test beside it used the
+   correct pair. → **Job 2.**
+9. **`GetConflictDir` never existed.** The method is `ReadConflictDirName`. An invented name in
+   both spec and plan. → **Job 2.**
+
+All nine were confident factual claims about code not re-read at the moment of writing. None were
+reasoning errors.
+
+### Round 2 — before Task 5
+
+Run over Tasks 5-9 under the full three-job protocol. Findings recorded in the ledger at
+`.superpowers/sdd/2026-08-13-derivation-and-merge-residuals/progress.md`; corrections applied to the
+task text above.
 
 ## Self-Review Notes
 
