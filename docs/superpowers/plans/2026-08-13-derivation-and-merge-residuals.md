@@ -1083,7 +1083,11 @@ Add to `tests/Scrinia.Tests/MemoryDerivationTests.cs`. **Both assertions are req
             existing: new ExistingMetadata(
                 Attributes: new() { ["file"] = ["src/old.cs"] },
                 FileHashes: new() { ["src/old.cs"] = "aaa" }),
-            fileHasher: path => path == "src/new.cs" ? "bbb" : "ignored-should-not-be-called");
+            // NOT "should-not-be-called": HashFileRefs hashes every `file` value, including
+            // src/old.cs. What protects the existing baseline is the ContainsKey guard in the
+            // merge, not the hasher being skipped — so returning a sentinel here would encode a
+            // false expectation about which paths get hashed.
+            fileHasher: path => path == "src/new.cs" ? "bbb" : "recomputed-but-must-not-win");
 
         derived.FileHashes.Should().ContainKey("src/new.cs").WhoseValue.Should().Be("bbb",
             because: "a file first referenced by the appended chunk must gain a drift baseline");
@@ -1231,13 +1235,60 @@ Closes C-a and C-b. **These two must land in one commit.** Adding the field with
     Dictionary<string, string>? FileHashes = null,
 ```
 
-Place it before `AgentKeywords` so the two records' member order matches. Because these are positional records, **check every `new EphemeralEntry(...)` call site that passes arguments positionally past this point** — a positional call would silently rebind. Named arguments are used at `FileMemoryStore.cs:1396-1408`; verify the others.
+Place it **before `Attributes`**, not before `AgentKeywords` — `ArtifactEntry`'s order is `…ChunkEntries, FileHashes, Attributes, AgentKeywords`, and matching it is the point.
 
-- [ ] **Step 2: Carry it through all three projections**
+**The positional-rebinding hazard this plan called its top risk does not exist.** Verification enumerated all five `new EphemeralEntry(...)` sites: `FileMemoryStore.cs:1396` (12 args, NAMED), `:1952` (8, NAMED), and `FileMemoryStoreTests.cs:115,125,145` (5 positional each — `Name, Artifact, OriginalBytes, ChunkCount, CreatedAt`). The insertion point is position 11 of 12; nothing reaches it. Two whole-record `with` expressions (`FileMemoryStore.cs:1877`, `HttpMemoryStore.cs:793`) are unaffected by construction. Do not spend effort here.
+
+**The real risk is Step 1a.**
+
+- [ ] **Step 1a: CRITICAL — stop the append path destroying the baseline you just added**
+
+`src/Scrinia.Core/FileMemoryStore.cs:1308-1316` builds the `ExistingMetadata` an append carries
+forward. Every field falls back to the ephemeral entry — except one:
+
+```csharp
+            FileHashes: existingEntry?.FileHashes,          // :1313 — no `?? existingEph?…`
+```
+
+That is correct **today**, and the comment above it at `:1307` says so: *"EphemeralEntry has no
+FileHashes to carry — see PersistEphemeral."* The moment Step 1 lands, that comment is false and
+this line silently drops the baseline on **every append to an ephemeral** — reintroducing D-21, the
+exact drift-baseline data loss the previous branch existed to fix, inside the task that adds the
+field.
+
+Fix it in the same commit:
+
+```csharp
+            FileHashes: existingEntry?.FileHashes ?? existingEph?.FileHashes,
+```
+
+and rewrite the `:1305-1307` comment, which now documents an assumption this task removes.
+
+**Test it, because nothing else will:** append to an ephemeral that carries a `file:` reference and
+assert the baseline survives the append. Confirm it fails without the `?? existingEph?.FileHashes`.
+
+- [ ] **Step 2: Carry it through all FIVE projections**
 
 `PersistEphemeral` (`:1388-1423`) writes **two** objects — the stored `EphemeralEntry` and the returned `ArtifactEntry` — and `ListEphemeral` (`:326-344`) writes a third. All three currently agree by omitting `FileHashes`; the comment at `:338-344` states the invariant explicitly: *"this projection and PersistEphemeral's are two views of ONE memory, and a field present in one and null in the other means the answer depends on which read you came through."*
 
 Add `FileHashes: derived.FileHashes` to both objects in `PersistEphemeral`, and `FileHashes: e.FileHashes` to `ListEphemeral`'s. Missing one reintroduces exactly the defect that comment warns about.
+
+**Verification enumerated seven projection sites, not three.** Two more carry ephemeral state and are
+NOT in the list above:
+
+| Site | Direction | Action |
+|---|---|---|
+| `FileMemoryStore.cs:1396-1408` | Derived → `EphemeralEntry` | add `FileHashes` |
+| `FileMemoryStore.cs:1410-1422` | Derived → `ArtifactEntry` | add `FileHashes` |
+| `FileMemoryStore.cs:326-344` (`ListEphemeral`) | Eph → Artifact | add `FileHashes` |
+| **`HttpMemoryStore.cs:288-315`** | Eph → Artifact | **add — the remote client's own projection** |
+| **`FileMemoryStore.cs:1308-1316`** | Eph → `ExistingMetadata` | **Step 1a — the Critical** |
+| `FileMemoryStore.cs:1894-1902` | Eph → Artifact (promotion) | Task 7 |
+| `FileMemoryStore.cs:1952-1960` | Artifact → Eph (demotion) | Task 7 |
+
+`HttpMemoryStore.cs:288-315` matters for the same reason `ListEphemeral` does: it is a third view of
+one memory, and a field present in some views and null in others means the answer depends on which
+read you came through — the invariant `FileMemoryStore.cs:338-344` states in its own comment.
 
 - [ ] **Step 3: Give the remote helper a real root**
 
@@ -1318,6 +1369,16 @@ Create `tests/Scrinia.Tests/EphemeralLifecycleTests.cs`:
 
 Follow the fixture style of `tests/Scrinia.Tests/FileMemoryStoreTests.cs` for temp-workspace setup and disposal.
 
+**Both tests above drive a local `FileMemoryStore`, so C-b ships untested** — delete the
+`workspaceRoot` parameter from `HttpMemoryStore` and both still pass. That is the same
+data-loss-without-coverage shape this branch has already hit twice. Add a third test that
+constructs an `HttpMemoryStore` **with** a `workspaceRoot` pointing at a temp workspace containing a
+real file, writes an ephemeral referencing it, and asserts the baseline is hashed against that
+workspace rather than the throwaway temp dir. Confirm it fails when the parameter is not passed.
+
+Verification enumerated 13 `new HttpMemoryStore(...)` sites (1 production at `ScriniaCommands.Serve.cs:62`,
+12 in tests); none passes more than 2 positional arguments, so a trailing optional parameter is safe.
+
 - [ ] **Step 6: Verify**
 
 ```bash
@@ -1363,7 +1424,7 @@ Add to `tests/Scrinia.Tests/FileMemoryStoreTests.cs`. Assert **field-for-field**
         store.CopyMemory("~source", "promoted", overwrite: false, out _).Should().BeTrue();
 
         var source = store.GetEphemeral("source")!;
-        var promoted = store.LoadIndex("local:default").Single(e => e.Name == "promoted");
+        var promoted = store.LoadIndex("local").Single(e => e.Name == "promoted");
 
         promoted.Keywords.Should().BeEquivalentTo(source.Keywords);
         promoted.TermFrequencies.Should().BeEquivalentTo(source.TermFrequencies,
@@ -1387,7 +1448,7 @@ Add to `tests/Scrinia.Tests/FileMemoryStoreTests.cs`. Assert **field-for-field**
 
         store.CopyMemory("source", "~demoted", overwrite: false, out _).Should().BeTrue();
 
-        var source = store.LoadIndex("local:default").Single(e => e.Name == "source");
+        var source = store.LoadIndex("local").Single(e => e.Name == "source");
         var demoted = store.GetEphemeral("demoted")!;
 
         demoted.Keywords.Should().BeEquivalentTo(source.Keywords);
@@ -1480,8 +1541,13 @@ rtk git commit -m "fix(core): a cross-kind copy carries the metadata that makes 
 Closes C2.
 
 **Files:**
-- Modify: `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:532-641`
+- Modify: `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs` — `Compact` is at **`:753-873`**, not `:532-641`
 - Test: `tests/Scrinia.Tests/EphemeralLifecycleTests.cs`
+
+**Every line number this task cites was stale by ~220 lines** (Tasks 2-4 grew the file). Verified
+current anchors: `Compact` `:753-873`; the artifact read `:761-773`; the index lookup `:824-828`; the
+`MemoryWrite` construction `:857-862`; the "original archived" message `:870`. Re-locate by symbol,
+not by line, and re-verify before editing.
 
 **Interfaces:**
 - Consumes: `IMemoryStore.GetEphemeral(string key) -> EphemeralEntry?` (`FileMemoryStore.cs:317`), `MemoryNaming.StripEphemeralPrefix`.
@@ -1613,7 +1679,9 @@ At `:603-607`, the index lookup finds nothing for an ephemeral, which sends the 
 
 Then feed the `MemoryWrite` at `:636-641` from these locals, and pass the **original `name`** (not `subject`) as the write's name when ephemeral, so `StoreAsync`'s `IsEphemeral` check sees the prefix and routes to `PersistEphemeral`.
 
-**Check the "original archived" message** at `:645`: it is conditional on there having been an indexed entry, which is already false for an ephemeral, so it needs no change. Confirm that by reading it rather than assuming.
+**The "original archived" message at `:870` DOES need attention, contrary to this plan's earlier claim.** Its condition reads `existingEntry`, and the refactor above scopes that variable into the `else` branch — so it stops compiling. Hoist what it needs (a `bool` for "there was an indexed entry to archive") alongside the four locals, rather than leaving `existingEntry` in scope just for it.
+
+**One more vacuity trap in the second test.** `Compact_OnAnEphemeral_PreservesItsCuratedMetadata` only pins Step 4 if `"vulpine"` does **not** appear in the chunk text — otherwise `MemoryDerivation.CuratedKeywords`'s recovery heuristic reconstructs it and the test passes with Step 4 omitted entirely. Keep the curated keyword absent from the content, and verify the test fails with the ephemeral branch of Step 4 removed.
 
 - [ ] **Step 5: Verify**
 
@@ -1639,7 +1707,8 @@ rtk git commit -m "fix(mcp): compact works on ephemeral memories instead of deny
 
 - [ ] **Step 1: CHANGELOG**
 
-Read the Unreleased section and match its heading style. Record, in this order:
+Read the Unreleased section and match its heading style. **Verification produced the complete list —
+this task's original draft omitted three.** Record, in this order:
 
 1. **The behaviour change first, marked as such** — `reconcile()` now refuses to auto-merge two sidecars whose keywords are less than 70% similar by Jaccard, matching the git merge driver. Conflicts that resolved automatically before may now require a choice. The threshold is `jaccardThreshold` in `merge.config`.
 2. Term frequencies merge on both routes: a git merge no longer drops theirs', and `reconcile()` no longer drops a one-sided map.
@@ -1648,6 +1717,23 @@ Read the Unreleased section and match its heading style. Record, in this order:
 5. Ephemeral memories carry a drift baseline, and a remote ephemeral write hashes against the real workspace rather than a temporary directory.
 6. Copying a memory into or out of ephemeral storage keeps its keywords, term frequencies, provenance and timestamps — previously the copy lost them and became unfindable by search.
 7. `compact()` works on ephemeral memories instead of reporting them as not found.
+
+**The three the draft omitted, plus scope corrections:**
+
+8. **The git merge driver now returns a conflict** for a sidecar whose `createdAt`/`updatedAt` is
+   present but not a JSON string (number, bool, object, array, or explicit null), where it
+   previously auto-resolved. Requires a hand-edited or foreign-tool sidecar.
+9. **An already-baselined file keeps its ORIGINAL hash across appends.** Item 4 says appends now
+   baseline *new* files; this is the other half, and it is what makes drift detection work at all —
+   a reader needs both to understand the rule.
+10. **`scri serve --remote` now resolves a workspace root from the current directory**, where it
+    previously never touched the workspace. Behaviour-visible on any remote session with `file:`
+    references.
+
+**Scope corrections to the wording of items above:** item 4 applies to local **and** remote (the
+server routes through the same store); item 6's cross-kind copy fix is **local-store only** —
+`HttpMemoryStore.CopyMemory` routes cross-kind copies to the server, so remote promotion still
+cannot carry these fields. Say so rather than implying the fix is universal.
 
 - [ ] **Step 2: Architecture doc**
 
@@ -1761,9 +1847,31 @@ reasoning errors.
 
 ### Round 2 — before Task 5
 
-Run over Tasks 5-9 under the full three-job protocol. Findings recorded in the ledger at
-`.superpowers/sdd/2026-08-13-derivation-and-merge-residuals/progress.md`; corrections applied to the
-task text above.
+Run over Tasks 5-9 under the full three-job protocol. **Seven false claims and one latent Critical**,
+all corrected in the task text above. Job 1 (enumeration) found what Round 1's claim-checking
+structurally could not:
+
+- **The Critical.** `FileMemoryStore.cs:1313` carries `FileHashes` forward on append from the
+  persistent entry only — every sibling field has a `?? existingEph?…` fallback and this one does
+  not. Correct today, and the comment at `:1307` says why. The moment Task 6 adds the member, **every
+  append to an ephemeral destroys its drift baseline** — D-21 reintroduced by the task that adds the
+  field. No claim in the plan was false; the site simply was not enumerated. Now Task 6 Step 1a.
+- **Projections: 7, not 3.** `HttpMemoryStore.cs:288-315` and `FileMemoryStore.cs:1308-1316` were
+  missing from Task 6's list.
+- **Task 6's self-declared top risk does not exist.** All five `new EphemeralEntry(...)` sites are
+  named or ≤5 positional; the insertion point is position 11 of 12. The plan spent its risk budget
+  on a hazard that could not fire while the real one went unlisted.
+- Task 8's line numbers were stale by ~220 lines; Task 7's tests used a scope string
+  (`"local:default"`) that does not exist; Task 8's "archived message needs no change" was false
+  under this plan's own refactor; Task 5's hasher sentinel encoded a false expectation about which
+  paths get hashed.
+- **Job 3 found six tests at risk of vacuity**, including two already green today that assert far
+  less than their names claim (`WriterCutoverTests.cs:215` checks `Attributes` only;
+  `FileMemoryStoreTests.cs:189` checks only that the destination exists).
+
+Baseline at this point: **2084 passed, 0 failed, 4 skipped**. Every per-task predicted total earlier
+in this plan is stale — Tasks 2-4 took five fix rounds between them, all adding tests. Report actual
+counts and explain deltas qualitatively; do not target a number.
 
 ## Self-Review Notes
 
