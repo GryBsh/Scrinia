@@ -294,23 +294,29 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
     // ── Round 2 review, Critical 1: bounds on the carried metadata ──────────────────────────
     //
     // This route is the only wire entry point for these six fields (StoreRequest doesn't carry
-    // them; PatchEntry refuses them). Each bound below mirrors what a real local write already
-    // produces — see CarriedEntryBoundsError's doc comment in MemoryEndpoints.cs for exactly
-    // which constant each number comes from. Numbers are literal here because
-    // MaxCarriedKeywords/MaxCarriedPreviewLength are private to MemoryEndpoints; the two that
-    // ARE public (KnownAttributes.MaxValuesPerKey, TextAnalysis.DefaultMaxTfTerms) are referenced
-    // directly.
+    // them; PatchEntry refuses them). Round 2 re-review found three of the ROUND-1 numbers here
+    // (Keywords/AgentKeywords at 25, Description at 500) were tighter than what a real local write
+    // can produce — a store-mode divergence, the exact defect class this branch removes. See
+    // CarriedEntryBoundsError's doc comment and each MaxCarried* constant's own doc comment in
+    // MemoryEndpoints.cs for which derivation and which number now governs each field.
+    // TextAnalysis.DefaultMaxMergedKeywords (30, public — promoted in round 2 specifically so this
+    // number and the wire bound cannot drift apart again) is referenced directly; the two bounds
+    // that are private to MemoryEndpoints (MaxCarriedDescriptionLength = 50,000,
+    // MaxCarriedTermFrequencyTerms = 8,324) are literal here with the formula in each test's
+    // comment.
 
     [Fact]
     public async Task CopyFromClient_WithOverLongDescription_Returns400()
     {
-        var entry = MinimalEntry() with { Description = new string('d', 501) }; // > 500-char bound
+        // > 50,000-char bound (MaxCarriedDescriptionLength — a RESOURCE guard: no local ceiling
+        // exists for a curated description, which MemoryDerivation.cs:152-154 stores verbatim).
+        var entry = MinimalEntry() with { Description = new string('d', 50_001) };
         var req = new CopyFromClientRequest(["content"], entry);
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/desc-bounds-probe/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
-        body!.Error.Should().Contain("500",
+        body!.Error.Should().Contain("50000",
             because: "the message must name the actual bound applied");
     }
 
@@ -319,7 +325,10 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
     {
         var entry = MinimalEntry() with
         {
-            Keywords = Enumerable.Range(0, 26).Select(i => $"kw{i}").ToArray(), // > 25-entry bound
+            // > 30-entry bound (TextAnalysis.DefaultMaxMergedKeywords — MergeKeywordsWithSource's
+            // real post-merge ceiling, not AnalyzeText's topN=25, which bounds only the auto half).
+            Keywords = Enumerable.Range(0, TextAnalysis.DefaultMaxMergedKeywords + 1)
+                .Select(i => $"kw{i}").ToArray(),
         };
         var req = new CopyFromClientRequest(["content"], entry);
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/kw-bounds-probe/copy-from-client", req);
@@ -335,7 +344,8 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
     {
         var entry = MinimalEntry() with
         {
-            AgentKeywords = Enumerable.Range(0, 26).Select(i => $"kw{i}").ToArray(), // > 25-entry bound
+            AgentKeywords = Enumerable.Range(0, TextAnalysis.DefaultMaxMergedKeywords + 1)
+                .Select(i => $"kw{i}").ToArray(),
         };
         var req = new CopyFromClientRequest(["content"], entry);
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/agent-kw-bounds-probe/copy-from-client", req);
@@ -349,15 +359,17 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
     [Fact]
     public async Task CopyFromClient_WithTooManyTermFrequencyTerms_Returns400()
     {
-        var tf = Enumerable.Range(0, TextAnalysis.DefaultMaxTfTerms + 1)
-            .ToDictionary(i => $"term{i}", i => 1);
+        // > 8,324-entry bound (MaxCarriedTermFrequencyTerms = DefaultMaxTfTerms(100) +
+        // MaxAttributes(32) * (1 + MaxValuesPerKey(256)) — a RESOURCE guard: MemoryDerivation.ForStore
+        // mutates the AnalyzeText-capped dictionary twice more, unconditionally, after the 100 cap).
+        var tf = Enumerable.Range(0, 8_325).ToDictionary(i => $"term{i}", i => 1);
         var entry = MinimalEntry() with { TermFrequencies = tf };
         var req = new CopyFromClientRequest(["content"], entry);
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/tf-bounds-probe/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
-        body!.Error.Should().Contain($"{TextAnalysis.DefaultMaxTfTerms}",
+        body!.Error.Should().Contain("8324",
             because: "the message must name the actual bound applied");
     }
 
@@ -376,20 +388,31 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
             because: "the message must name the actual bound applied");
     }
 
+    /// <summary>
+    /// Round 2 review: the round-1 version of this test sent
+    /// <c>[ChunkEntryDto(1,…), ChunkEntryDto(2,…)]</c> against one content chunk and asserted only
+    /// <c>Contain("chunkEntries")</c> — a message from either the COUNT check or the per-element
+    /// RANGE check (the second entry's index 2 is out of range too) satisfies that assertion, so
+    /// deleting the count check specifically left this green. Both entries now carry the SAME valid
+    /// index (1, which is in range for Content.Length == 1), so only the count check can fire —
+    /// duplicate indices are deliberately allowed (see CarriedEntryBoundsError's doc comment) — and
+    /// the assertion is narrowed to the count message's distinctive text.
+    /// </summary>
     [Fact]
     public async Task CopyFromClient_WithMoreChunkEntriesThanContentChunks_Returns400()
     {
         var entry = MinimalEntry() with
         {
-            ChunkEntries = [new ChunkEntryDto(1, null, null, null), new ChunkEntryDto(2, null, null, null)],
+            ChunkEntries = [new ChunkEntryDto(1, null, null, null), new ChunkEntryDto(1, null, null, null)],
         };
         var req = new CopyFromClientRequest(["only one chunk"], entry); // Content.Length == 1
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/chunk-count-bounds-probe/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
-        body!.Error.Should().Contain("chunkEntries",
-            because: "the message must name the field the bound applies to");
+        body!.Error.Should().Contain("may not carry more entries",
+            because: "the message must be the COUNT check's, not a range check that happens to also "
+                   + "mention \"chunkEntries\" — the fixture must fail for the count reason specifically");
     }
 
     /// <summary>

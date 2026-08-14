@@ -97,10 +97,24 @@ public static class TextAnalysis
     }
 
     /// <summary>
+    /// The ceiling <see cref="MergeKeywords"/>/<see cref="MergeKeywordsWithSource"/> cap
+    /// <c>ArtifactEntry.Keywords</c> at — a LOCAL memory's real, post-merge keyword ceiling, not to
+    /// be confused with <see cref="AnalyzeText"/>'s own <c>topN</c> (25), which bounds only the
+    /// AUTO half before agent keywords are folded in. Named so a wire-side bound mirroring this
+    /// ceiling (<c>Scrinia.Server.Endpoints.MemoryEndpoints.CarriedEntryBoundsError</c>) reads it
+    /// from here rather than carrying its own copy of "30" that could silently drift from this one
+    /// (round 2 review, remote-copy-and-fence-aware-extraction Task 3: a wire bound tighter than
+    /// what the local path can legitimately produce recreates the exact "remember() writes it,
+    /// promote() can't ship it" defect this branch exists to remove).
+    /// </summary>
+    public const int DefaultMaxMergedKeywords = 30;
+
+    /// <summary>
     /// Merges agent-provided keywords (intentional, placed first) with auto-extracted keywords.
     /// Deduplicates case-insensitively and caps at maxTotal.
     /// </summary>
-    public static string[] MergeKeywords(string[]? agentKeywords, string[] autoKeywords, int maxTotal = 30)
+    public static string[] MergeKeywords(
+        string[]? agentKeywords, string[] autoKeywords, int maxTotal = DefaultMaxMergedKeywords)
     {
         var (keywords, _) = MergeKeywordsWithSource(agentKeywords, autoKeywords, maxTotal);
         return keywords;
@@ -111,7 +125,7 @@ public static class TextAnalysis
     /// Agent keywords get higher TF boost (+5) than auto-extracted (+2) for better search differentiation.
     /// </summary>
     public static (string[] Keywords, HashSet<string> AgentKeywords) MergeKeywordsWithSource(
-        string[]? agentKeywords, string[] autoKeywords, int maxTotal = 30)
+        string[]? agentKeywords, string[] autoKeywords, int maxTotal = DefaultMaxMergedKeywords)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var agentSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

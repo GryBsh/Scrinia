@@ -364,11 +364,19 @@ from the destination name or the artifact — `name`, `qualifiedName`, `scope`, 
 the sum of each `content` element's UTF-8 byte length, which the server computes itself), so none
 of them can disagree with the request that carries them.
 
-Every field in `entry` is bounded: `description` and each chunk entry's `contentPreview` to 500
-characters, `keywords`/`agentKeywords` to 25 entries, `termFrequencies` to 100 terms,
-`fileHashes` to 256 entries, and `chunkEntries` to one entry per `content` element, each one's
-`chunkIndex` addressing an actual element (1-based). This route is the only one that accepts these
-fields at all, so nothing else bounds them.
+Every field in `entry` is bounded. This route is the only one that accepts these fields at all, so
+nothing else bounds them. Two groups apply, because a top-level field can be curated by hand while
+a chunk entry's is always auto-generated:
+
+- **Top level** — matched to what a real local `remember()` can legitimately produce, so a bound
+  here can never reject a memory the local path already accepted: `keywords`/`agentKeywords` to 30
+  entries (the local merge ceiling); `description` to 50,000 characters and `termFrequencies` to
+  8,324 terms (resource guards — no local ceiling exists for either, so these are sized to a value
+  no realistic local memory could reach, not to a derivation constant).
+- **Per chunk entry** (`chunkEntries[].contentPreview`/`.keywords`/`.termFrequencies`) — 500
+  characters / 25 entries / 100 terms, matching the auto-derivation every chunk entry always goes
+  through. `chunkEntries` itself carries at most one entry per `content` element, each one's
+  `chunkIndex` addressing an actual element (1-based).
 
 ### Search
 
