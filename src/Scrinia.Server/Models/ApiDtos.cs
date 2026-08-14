@@ -145,6 +145,40 @@ public sealed record CopyRequest(
     string Destination,
     bool Overwrite = false);
 
+/// <summary>
+/// The metadata a client-side source carries to a destination this server owns: exactly the fields
+/// the server can neither derive from the artifact nor compute from the destination name.
+///
+/// <para><c>Name</c>, <c>QualifiedName</c> and <c>Scope</c> are the destination's; <c>ChunkCount</c>
+/// is <c>Content.Length</c>; <c>CreatedAt</c> is stamped on arrival. None of them appear here, so
+/// none of them can disagree with the request that carries them — the same rule
+/// <see cref="ShowResponse"/> states, applied to a request.</para>
+/// </summary>
+public sealed record CarriedEntry(
+    long OriginalBytes,
+    DateTimeOffset? UpdatedAt,
+    string? Description,
+    Dictionary<string, string[]>? Attributes,
+    string[]? Keywords,
+    Dictionary<string, int>? TermFrequencies,
+    ChunkEntryDto[]? ChunkEntries,
+    Dictionary<string, string>? FileHashes,
+    string[]? AgentKeywords = null);
+
+/// <summary>
+/// Body of <c>POST /memories/{name}/copy-from-client</c>, where <c>{name}</c> is the
+/// <b>DESTINATION</b> — the opposite of <c>POST /memories/{name}/copy</c>, where it is the source.
+///
+/// <para>That asymmetry is deliberate and is the whole reason this route exists: the source lives
+/// only on the client, so there is no server-side name to put in the path. The caller supplies the
+/// artifact and the metadata it already derived, and the server stores both without deriving
+/// anything.</para>
+/// </summary>
+public sealed record CopyFromClientRequest(
+    string[] Content,
+    CarriedEntry Entry,
+    bool Overwrite = false);
+
 public sealed record ExportRequest(
     string[] Topics,
     string? Filename = null);

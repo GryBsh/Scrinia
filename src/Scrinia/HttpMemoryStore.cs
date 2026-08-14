@@ -120,6 +120,8 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     [JsonSerializable(typeof(AppendApiRequest))]
     [JsonSerializable(typeof(AppendApiResponse))]
     [JsonSerializable(typeof(CopyApiRequest))]
+    [JsonSerializable(typeof(CopyFromClientApiRequest))]
+    [JsonSerializable(typeof(CarriedEntryDto))]
     [JsonSerializable(typeof(ChunkApiResponse))]
     private partial class HttpStoreJsonContext : JsonSerializerContext;
 
@@ -182,6 +184,24 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     /// <inheritdoc cref="StoreApiResponse"/>
     internal sealed record AppendApiResponse(MemoryEntry Entry, string Message);
     internal sealed record CopyApiRequest(string Destination, bool Overwrite = false);
+    /// <summary>The metadata a client-side source carries to a server-owned destination: exactly the
+    /// fields the server can neither derive from the artifact nor compute from the destination name.
+    /// Mirrors <c>Scrinia.Server.Models.CarriedEntry</c>.</summary>
+    internal sealed record CarriedEntryDto(
+        long OriginalBytes,
+        DateTimeOffset? UpdatedAt,
+        string? Description,
+        Dictionary<string, string[]>? Attributes,
+        string[]? Keywords,
+        Dictionary<string, int>? TermFrequencies,
+        ChunkEntryDto[]? ChunkEntries,
+        Dictionary<string, string>? FileHashes,
+        string[]? AgentKeywords = null);
+    /// <summary>Body of <c>POST /memories/{name}/copy-from-client</c>, where <c>{name}</c> is the
+    /// DESTINATION — unlike <c>/copy</c>, where it is the source. See <see cref="CopyMemory"/> for why
+    /// the source cannot be named in the path.</summary>
+    internal sealed record CopyFromClientApiRequest(
+        string[] Content, CarriedEntryDto Entry, bool Overwrite = false);
     internal sealed record ChunkApiResponse(string Content, int ChunkIndex, int TotalChunks);
 
     /// <summary>

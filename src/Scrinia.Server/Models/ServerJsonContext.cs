@@ -18,6 +18,8 @@ namespace Scrinia.Server.Models;
 [JsonSerializable(typeof(SearchResultItem))]
 [JsonSerializable(typeof(ChunkResponse))]
 [JsonSerializable(typeof(CopyRequest))]
+[JsonSerializable(typeof(CopyFromClientRequest))]
+[JsonSerializable(typeof(CarriedEntry))]
 [JsonSerializable(typeof(ExportRequest))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(HealthResponse))]
