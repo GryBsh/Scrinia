@@ -9,8 +9,9 @@ namespace Scrinia.Core.Search;
 /// routing (<c>key:value</c>-shaped entries in the keywords param, unbounded — every element there
 /// was typed on purpose). LLM-free, regex-only, run at write time. Values verbatim — exact-match
 /// signal for what BM25 tokenization shreds (versions, dates, hyphenated identifiers, statuses).
-/// Conservative: nothing inside code fences, URL-remainder values skipped, tight key charset,
-/// value + attribute caps. Merge semantics live in <see cref="KnownAttributes"/>, not here.
+/// Conservative: nothing inside code fences (see <see cref="ProseScanner"/>), URL-remainder values
+/// skipped, tight key charset, value + attribute caps. Merge semantics live in
+/// <see cref="KnownAttributes"/>, not here.
 /// </summary>
 public static partial class AttributeExtractor
 {
@@ -56,29 +57,9 @@ public static partial class AttributeExtractor
             return null;
 
         Dictionary<string, List<string>>? found = null;
-        bool inFence = false, firstLine = true, inFrontmatter = false;
 
-        foreach (string rawLine in content.Split('\n'))
+        foreach (string line in ProseScanner.ProseLines(content))
         {
-            string line = rawLine.TrimEnd('\r');
-
-            if (line.StartsWith("```", StringComparison.Ordinal))
-            {
-                inFence = !inFence;
-                firstLine = false;
-                continue;
-            }
-            if (inFence) { firstLine = false; continue; }
-
-            if (line.Trim() == "---")
-            {
-                if (firstLine) inFrontmatter = true;
-                else if (inFrontmatter) inFrontmatter = false;
-                firstLine = false;
-                continue;
-            }
-            firstLine = false;
-
             var (key, value) = MatchAttributeLine(line);
             if (key is not null)
             {
@@ -193,9 +174,11 @@ public static partial class AttributeExtractor
     /// <summary>
     /// Mechanical prose entity-span extraction (Piece 2, Stage 1). Emits capitalized-noun-phrase
     /// runs as <c>mention:&lt;value&gt;</c> presence facts. LLM-free; embedder-free. A run is a
-    /// maximal sequence of consecutive capitalized, non-stop-word tokens taken outside code fences,
-    /// inline-code spans, and YAML frontmatter; the value is the run joined and lowercased, kept
-    /// whole. No positional/echo logic. Returns null when no span survives.
+    /// maximal sequence of consecutive capitalized, non-stop-word tokens taken outside code fences
+    /// (see <see cref="ProseScanner"/>) — inline-code spans and YAML frontmatter are prose here,
+    /// same as in <see cref="Extract"/>, so a backtick now breaks a mention run the way any other
+    /// non-word character does; the value is the run joined and lowercased, kept whole. No
+    /// positional/echo logic. Returns null when no span survives.
     /// </summary>
     public static Dictionary<string, string[]>? ExtractMentionSpans(string? content)
     {
@@ -205,23 +188,9 @@ public static partial class AttributeExtractor
         var values = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        bool inFence = false, firstLine = true, inFrontmatter = false;
-        foreach (string rawLine in content.Split('\n'))
+        foreach (string line in ProseScanner.ProseLines(content))
         {
-            string line = rawLine.TrimEnd('\r');
-            if (line.StartsWith("```", StringComparison.Ordinal)) { inFence = !inFence; firstLine = false; continue; }
-            if (inFence) { firstLine = false; continue; }
-            if (line.Trim() == "---")
-            {
-                if (firstLine) inFrontmatter = true;
-                else if (inFrontmatter) inFrontmatter = false;
-                firstLine = false;
-                continue;
-            }
-            firstLine = false;
-            if (inFrontmatter) continue;
-
-            if (!ScanMentionLine(StripInlineCode(line), values, seen))
+            if (!ScanMentionLine(line, values, seen))
                 break; // per-memory cap reached
         }
 
@@ -253,21 +222,6 @@ public static partial class AttributeExtractor
         if (kept.Length == 0) attrs.Remove(KnownAttributes.MentionKey);
         else attrs[KnownAttributes.MentionKey] = kept;
         return attrs;
-    }
-
-    /// <summary>Blanks out inline `code` spans (backtick-delimited) with spaces so their tokens
-    /// are never scanned, while preserving column positions.</summary>
-    private static string StripInlineCode(string line)
-    {
-        if (line.IndexOf('`') < 0) return line;
-        var chars = line.ToCharArray();
-        bool inCode = false;
-        for (int i = 0; i < chars.Length; i++)
-        {
-            if (chars[i] == '`') { inCode = !inCode; chars[i] = ' '; }
-            else if (inCode) chars[i] = ' ';
-        }
-        return new string(chars);
     }
 
     /// <summary>Appends normalized mention values from one line into <paramref name="values"/>.

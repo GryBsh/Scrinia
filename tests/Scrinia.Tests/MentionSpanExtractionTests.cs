@@ -27,10 +27,14 @@ public class MentionSpanExtractionTests
     }
 
     [Fact]
-    public void CodeFencesAndInlineCode_Excluded()
+    public void CodeFences_Excluded_InlineCode_ReadAsProse()
     {
+        // Fenced blocks are still excluded — the one exclusion rule ProseScanner enforces.
         Spans("```\nSeraphim Config\n```\nWe met Alice.").Should().BeEquivalentTo(["alice"]);
-        Spans("Set `MaxRetries` and call Bob.").Should().BeEquivalentTo(["bob"]);
+        // Inline code is prose now, not stripped: the backtick around `MaxRetries` breaks the
+        // mention run the same way any other non-word character would, so "Set" (a stopword,
+        // dropped) and "MaxRetries" (its own run) no longer fuse into a single "bob"-only result.
+        Spans("Set `MaxRetries` and call Bob.").Should().BeEquivalentTo(["maxretries", "bob"]);
     }
 
     [Fact]
