@@ -245,9 +245,23 @@ prose only.
 dump — that nobody is citing. Everything else the author typed on purpose:
 
 - **Frontmatter is prose.** It is deliberate structured metadata, and `Extract` has always read it.
-- **Inline-code spans are prose.** `` see `src/Foo.cs` for the parser `` is the commonest way a
-  person cites a file. Excluding it would silently drop the most deliberate reference form there is
-  — the opposite of the defect being fixed.
+- **Inline-code spans are prose.** A backtick-quoted `` `[[/api/auth]]` `` or `` `~scratch` ``
+  extracts today and must keep doing so, and inline code is where mention spans find real entity
+  names. Excluding it would drop deliberate references.
+
+**A correction, because the first draft of this section got it wrong.** That draft justified the
+choice by claiming `` `src/Foo.cs` `` is the commonest way a person cites a file and that excluding
+inline code would drop it. **`ExtractFileRefs` has never extracted a backtick-quoted path and will
+not after this change** — `FilePathPattern` (`ReferenceExtractor.cs:35`) carries the backtick inside
+its lookbehind exclusion class, and every interior position of the token is preceded by a word
+character, `/` or `.`, so no restart position matches either. That is deliberate: `:10-16` documents
+that narrowing the lookbehind *shifts* the match rather than suppressing it, turning
+`file:src/new.cs` into the corrupt `rc/new.cs`, and `ReferenceTests.cs:49-64` pins it. **Do not widen
+the lookbehind to "fix" this.** A backtick-quoted path reaches attributes only when written
+`` file:`src/a.cs` ``, which `StripReferenceWrappers` (`:428-431`) unwraps.
+
+The decision stands on the two surviving reasons: frontmatter, and backtick-quoted *memory* refs
+plus mention spans.
 
 **This reconciles the two loops rather than preserving both.** Moving them onto the mention-span set
 instead would stop `Extract` reading frontmatter, destroying a documented attribute source; moving
@@ -259,6 +273,27 @@ large — `KnownAttributes.StateMarkerKeys` documents what a flood of low-value 
 **`~~~` is not recognised**, inherited from the loops being replaced and left alone deliberately.
 Widening it is a behaviour change with its own blast radius, not a tidy-up. The gap is recorded in
 the unit's own doc comment so the next reader does not mistake it for an oversight.
+
+### Three consequences the falsification pass surfaced
+
+**Auto-linking and orphan marking change.** `MaintenanceEventSink.cs:100` calls
+`ExtractMemoryRefs` directly — not through `ExtractRefAttributes` — on **every** store (`:62`) and
+**every** append (`:74`). So a `[[wiki-link]]` inside a fenced block will no longer link its target
+back, and a memory whose only inbound reference lived inside a fence can now be marked
+`orphan:true`. That is correct under the new rule and it is a user-visible behaviour change on a
+write path; it goes in the CHANGELOG.
+
+**`MemoryNamePattern` can match across a newline.** `\s*` matches `\n`, so
+`[[\n/api/auth\n]]` extracts today. Wiki-link matching therefore runs over the prose lines
+**rejoined** (`string.Join("\n", ProseLines(content))`), not line by line — preserving cross-line
+matches while still excluding fenced blocks. The other two patterns cannot span a newline and run
+per line.
+
+**Dropping `StripInlineCode` splits mention spans, it does not only add them.** The strip replaces
+backticks and their contents with spaces, and whitespace does not break a run while other
+non-word characters do. So `` Alpha `x` Beta `` is the single span `alpha beta` today and becomes
+two spans. That changes entity-graph node **identity**, not merely node count, which is why the
+implementation measures the symmetric difference of the mention sets rather than two totals.
 
 ### Convergence is asymmetric, and stated plainly
 
@@ -345,8 +380,17 @@ The fix separates them:
 
 - **Absent** → null. This is load-bearing: for `agentKeywords`, absent means UNKNOWN provenance, and
   `MemoryDerivation` depends on that distinction.
-- **Present but not an array** → escalate, matching the timestamp and term-frequency rules
-  ("refuse rather than guess").
+- **Present but not an array — including an explicit JSON `null`** → escalate, matching the
+  timestamp and term-frequency rules ("refuse rather than guess").
+
+**An earlier draft of this section said explicit `null` should read as absent, and justified it as
+matching the sibling rules. That was backwards.** `TryReadTimestampString` (`:712-713`) and
+`TryReadIntMap` (`:741-745`) both classify an explicit JSON `null` as MALFORMED, each saying so in
+its own comment, and three green tests pin it —
+`ReconcileMetaProvenanceTests.cs:350`, `:382`, and `SidecarTimestampMergeParityTests.cs:96-157`.
+Reading `keywords: null` as absent would leave one file with two null policies, and would let a
+foreign writer's explicit `null` be silently read as UNKNOWN provenance — the very distinction this
+section calls load-bearing.
 
 **Implementation note, from two parity gaps on the last branch:** use `TryGetPropertyValue`, not the
 `node?[key]` indexer. The indexer returns a null reference for *both* "key absent" and "key present
@@ -383,11 +427,37 @@ hardcoded `ref:` calls. There is no public `update()` MCP tool. Two comments say
 Both are corrected to describe the real caller graph. The surrounding claims about `TryUpdateEntry`
 and `PATCH` are accurate and stay.
 
-### 3.5 `compact`'s archive prose — two sites
+**There are 21 sites, not 2**, and four of them ship in production source —
+`MemoryTools.Core.cs:377` and `:430`, `MemoryDerivation.cs:549`, `MemoryEndpoints.cs:252`. The one at
+`:430` contradicts itself: `:428` says "reachable only through this one tool" three lines above.
+Five more are in the still-editable `## [Unreleased]` CHANGELOG block, including a section heading.
+All 21 are corrected together. Fixing two while committing "claims the code does not support" would
+leave nineteen behind and read as closure.
 
-"Archives the original version" appears in **both** `MemoryTools.Lifecycle.cs:777` and
-`ScriniaCommands.Memory.cs:535`. It is imprecise for the no-index-entry case. Both are corrected
-together; correcting one is how the two descriptions drift.
+The replacement wording must say **"no caller outside `Link` and the tests"**, not "reachable only
+through `Link`": tests call `UpdateMeta` directly at fourteen sites, and an implementer who believes
+the tests cannot see it will widen its behaviour unguarded.
+
+### 3.5 `compact`'s archive prose — seven sites
+
+**The behaviour is already precise; only the prose is not.** `MemoryTools.Lifecycle.cs:954` emits
+`Original archived.` only when `hadIndexedEntry`, so the runtime message never over-claims. The flag
+is false for **two** reasons: the memory is ephemeral — the common, user-reachable case, set
+unconditionally at `:888` — and, rarely, a persistent artifact with no index entry.
+
+**Seven sites carry the unconditional claim**, and four of them are user-facing:
+
+| Site | |
+|---|---|
+| `src/Scrinia.Mcp/MemoryTools.Lifecycle.cs:777` | internal doc comment |
+| `src/Scrinia/Commands/ScriniaCommands.Memory.cs:535` | **the `scri compact --help` text** |
+| `src/Scrinia.Mcp/prompts/guide.md:94` | **what `guide()` returns to every agent at session start** |
+| `README.md:201`, `AGENTS.md:83`, `docs/cli-reference.md:162` | user-facing tables and reference |
+| `src/Scrinia.Mcp/MemoryTools.cs:342-344` | already conditional, but names only the ephemeral case |
+
+All seven are corrected in one commit. An earlier draft of this section named two and diagnosed the
+rare cause while omitting the common one — which would have left the ephemeral carve-out at one site
+and the unconditional claim at five, ending **more** divergent than it started.
 
 ### 3.6 Two vacuous tests
 
@@ -419,14 +489,29 @@ server validation rejection. One test that `POST /copy` — the existing route �
 as it does today, since persistent→persistent must not shift. One test that a 404 from
 `copy-from-client` surfaces as an explicit refusal rather than a reported success.
 
+Nothing tests `HttpMemoryStore.CopyMemory` today — the whole 42-line method is uncovered, including
+the two branches this design leaves unchanged. Task coverage must therefore include
+persistent→persistent, which is otherwise a modified branch with no net beneath it.
+
 **Fence-awareness.** Extraction from ordinary prose must be **identical to pre-branch output**, not
 merely "correct" — comparing against expectations rather than against prior behaviour is how the
-reference-extraction regex silently dropped drift baselines three times on the last branch. Then:
-paths inside fences, frontmatter and inline code are not extracted; the shared scanner is pinned
-once and both extractors are shown to use it.
+reference-extraction regex silently dropped drift baselines three times on the last branch. The
+pinned fixture must contain the cases that would otherwise slip past: a line-wrapped
+`[[\n/api/auth\n]]`, a backtick-quoted path (pinned as **absent** — it never extracted), a
+backtick-quoted `[[link]]` and `~ephemeral` (pinned as **present**), and an indented fence (pinned
+as **not** a fence, since `StartsWith("```")` has no leading-whitespace trim).
 
-**Hygiene.** `link` across all four ephemeral/persistent combinations. `ReadStrings` for absent,
-JSON `null`, malformed non-array, and well-formed. Parity suites stay green for every shared rule.
+Four existing reference tests are pure negatives (`ReferenceTests.cs:37`, `:103`, `:171`, and `:113`
+which uses `Contain` rather than `Equal`). They pass if extraction returns nothing at all — no
+protection against exactly the failure this change can introduce. Each gains a positive half.
+
+**Hygiene.** `link` across all four ephemeral/persistent combinations, including one in **remote**
+mode — ephemerals are client-side in both, so it is cheap and it is the only thing that proves the
+"identically in local and remote mode" claim. `ReadStrings` for absent, JSON `null`, malformed
+non-array, and well-formed, each with `.scrinia/merge.config` set to `{"jaccardThreshold":0.0}` —
+without it the admission gate refuses every fixture before the read is reached. Both mergers'
+JSON reads need a **matched pair** of end-to-end cases: there is no existing parity suite covering
+them, because both helpers are private in projects that cannot reference each other.
 
 **Vacuous-test discipline.** Every new test is proved by an **isolated single-step revert** of the
 one step it names — not a revert of the whole fix, which can leave a test passing for the wrong
