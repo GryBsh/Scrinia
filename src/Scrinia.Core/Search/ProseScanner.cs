@@ -2,8 +2,8 @@ namespace Scrinia.Core.Search;
 
 /// <summary>
 /// The single line-scanning rule shared by every mechanical prose scan in
-/// <see cref="AttributeExtractor"/>: skip fenced code blocks, keep everything else verbatim.
-/// YAML frontmatter and inline-code
+/// <see cref="AttributeExtractor"/> and <see cref="ReferenceExtractor"/>: skip properly closed
+/// fenced code blocks, keep everything else verbatim. YAML frontmatter and inline-code
 /// spans are treated as prose, not stripped — both are deliberate. Frontmatter carries real
 /// attributes (<c>status:</c>, <c>verdict:</c>, ...) that <see cref="AttributeExtractor.Extract"/>
 /// is meant to read. Inline code is exactly the kind of place a real reference lives — a
@@ -34,62 +34,51 @@ public static class ProseScanner
     /// </summary>
     /// <remarks>
     /// A ``` opener's fate is not decidable until its closer arrives, or doesn't, so lines after an
-    /// opener are buffered rather than dropped immediately. A matching closer discards the opener,
-    /// the buffered lines, and the closer itself — that block was a real fence, excluded as before.
-    /// Reaching end-of-content with the buffer still open means the opener never closed, so it was
-    /// never a fence at all: an unterminated ``` is ordinary text like any other line, and this
-    /// yields the OPENER LINE ITSELF followed by every buffered line, verbatim and in the original
-    /// order — exactly as if the ``` had never been recognized as a delimiter.
+    /// opener are held back rather than dropped immediately. A matching closer means that block was
+    /// a real fence — its lines, opener included, are simply never yielded, excluded as before.
+    /// Reaching end-of-content still inside an opened fence means it never closed, so it was never a
+    /// fence at all: an unterminated ``` is ordinary text like any other line, and this replays the
+    /// OPENER LINE ITSELF followed by every line after it, verbatim and in the original order —
+    /// exactly as if the ``` had never been recognized as a delimiter. (No other ``` line can appear
+    /// in that replayed tail: the next one encountered while scanning would already have closed the
+    /// fence and reset state, so an opener with no closer by EOF has nothing else to skip over.)
+    /// <c>Split('\n')</c> already materializes every line up front, so the opener's index is tracked
+    /// instead of copying lines into a separate buffer — no extra allocation for the common case of a
+    /// properly closed fence.
     /// </remarks>
     public static IEnumerable<string> ProseLines(string? content)
     {
         if (string.IsNullOrEmpty(content))
             yield break;
 
+        string[] rawLines = content.Split('\n');
         bool inFence = false;
-        string? openerLine = null;
-        List<string>? buffered = null;
+        int openerIndex = -1;
 
-        foreach (string rawLine in content.Split('\n'))
+        for (int i = 0; i < rawLines.Length; i++)
         {
-            string line = rawLine.TrimEnd('\r');
+            string line = rawLines[i].TrimEnd('\r');
 
             if (line.StartsWith("```", StringComparison.Ordinal))
             {
+                inFence = !inFence;
                 if (inFence)
-                {
-                    // Closer: the buffered block was a real fence — discard opener and contents.
-                    inFence = false;
-                    openerLine = null;
-                    buffered = null;
-                }
-                else
-                {
-                    // Opener: its fate is unknown until a closer arrives (or EOF proves it never
-                    // will) — buffer from here instead of excluding immediately.
-                    inFence = true;
-                    openerLine = line;
-                    buffered = [];
-                }
+                    openerIndex = i;
                 continue;
             }
 
             if (inFence)
-            {
-                buffered!.Add(line);
                 continue;
-            }
 
             yield return line;
         }
 
-        // EOF with the buffer still open: the ``` never closed, so it was never a fence — replay
-        // the opener line and everything buffered after it as ordinary prose.
+        // EOF still inside an opened fence: it never closed, so replay the opener and everything
+        // after it as ordinary prose.
         if (inFence)
         {
-            yield return openerLine!;
-            foreach (string line in buffered!)
-                yield return line;
+            for (int i = openerIndex; i < rawLines.Length; i++)
+                yield return rawLines[i].TrimEnd('\r');
         }
     }
 }

@@ -17,39 +17,42 @@ and all assembly attributes.
   into a **properly closed** fenced block in a memory's content no longer yields spurious file-path
   or `[[wiki-link]]` drift baselines. YAML frontmatter and inline-code spans are unaffected — both
   stay prose, so a `file:` line in frontmatter and a backtick-quoted `[[wiki-link]]` or `~ephemeral`
-  still extract.
-- **An unterminated fence is not a fence.** If an opening fence marker never gets a matching closer,
-  the opener line and everything after it are ordinary prose and extract normally — the opposite of
-  an earlier iteration of this fix, which (incorrectly) treated an unterminated fence as running to
-  end-of-content and suppressing everything after it. A single stray fence marker (e.g. an
-  accidentally-pasted ``` with no closing one) no longer silently deletes every reference in the rest
-  of a memory's content.
-- **Behaviour change on two write paths**, both of which call the extractors on every store and
-  append, and both of which now cut in *two* directions — fenced content stops extracting, but
-  content after a *broken* (unterminated) fence starts extracting again:
-  - `AttributeExtractor.ExtractRefAttributes` (called from `MemoryDerivation.cs` on store and
-    append) derives the `file`/`ref` attributes written onto every memory. This is the dominant
-    effect in practice — most content carries far more file-path mentions than wiki-links. A memory
-    whose only mention of a file or another memory lived inside a *properly closed* fence no longer
-    carries that mention in its own `file`/`ref` attributes; conversely, a memory with a stray,
-    never-closed fence marker now has everything after it — previously silently dropped — extracted
-    into `file`/`ref` again.
+  still extract. An **unterminated** fence (an opening ``` with no matching closer) is not a fence at
+  all — the opener line and everything after it are ordinary prose and extract normally, same as
+  before this change existed: `ReferenceExtractor` had no fence awareness at all prior to this
+  release, so no fence, closed or not, ever excluded anything from file/memory reference extraction.
+  Net effect on an unterminated fence here: none. The only net change is on a properly closed one.
+- **Behaviour change on three write-path consumers of the same fence-scanning rule**, all called on
+  every store, and two of them on every append too:
+  - `AttributeExtractor.ExtractRefAttributes` (`MemoryDerivation.cs:99` store, `:239` append)
+    derives the `file`/`ref` attributes written onto every memory. This is the dominant effect in
+    practice — most content carries far more file-path mentions than wiki-links. A memory whose only
+    mention of a file or another memory lived inside a properly closed fence no longer carries that
+    mention in its own `file`/`ref` attributes.
   - `MaintenanceEventSink` calls `ExtractMemoryRefs` to auto-link `[[wiki-link]]` targets and detect
     orphans. A wiki-link that only appears inside a properly closed fenced block no longer triggers
     the auto-link write onto its target — and because that write is also what clears the
     *mentioning* memory's own orphan flag as a side effect, a memory whose only outbound
     `[[wiki-link]]` lived inside such a fence can now be marked `orphan:true` itself (not the memory
-    it linked to). A `[[wiki-link]]` sitting after a stray, never-closed fence marker, conversely,
-    now auto-links again where it previously would not have.
+    it linked to).
+  - **`AttributeExtractor.Extract`** (`MemoryDerivation.cs:103` store, `:238` append) and
+    **`AttributeExtractor.ExtractMentionSpans`** (`MemoryDerivation.cs:105`, store only — mention
+    spans are deliberately not re-extracted on append) are where the unterminated-fence direction
+    IS a genuine, new change: unlike `ReferenceExtractor`, these two already treated an unterminated
+    fence as running to end-of-content before this release, so a memory with one stray, never-closed
+    ``` lost every `key: value` / `**Bold:**` / inline `key:value` attribute and every `mention:`
+    span after it, silently. That over-suppression is now fixed — content after an unterminated
+    fence extracts attributes and mention spans normally, the same as any other prose.
 
-  All of this is the fix working as intended — a reference pasted as part of quoted/sample content
-  inside a real fence was never meant to create a real cross-reference or drift baseline, and a typo'd
-  fence marker was never meant to blank out the rest of a memory — but it is a visible behaviour
-  change for any existing memory that relied on either direction. **Migration:** this only takes
-  effect when a memory is re-derived (stored or appended). Memories written before this change keep
-  whichever `file`/`ref` attribute shape their content produced under the OLD rules (fence-polluted,
-  or missing content lost to an unterminated fence) until they are next stored or appended — a corpus
-  can hold multiple attribute shapes side by side indefinitely.
+  All of this is the fix working as intended — a reference, attribute, or mention pasted as part of
+  quoted/sample content inside a real, properly closed fence was never meant to create a real
+  cross-reference, drift baseline, attribute, or mention span; and (for `Extract`/
+  `ExtractMentionSpans` specifically) a typo'd fence marker was never meant to blank out the rest of
+  a memory's attributes either. Both are visible behaviour changes for any existing memory affected.
+  **Migration:** this only takes effect when a memory is re-derived (stored or appended). Memories
+  written before this change keep whichever `file`/`ref`/attribute/`mention` shape their content
+  produced under the OLD rules until they are next stored or appended — a corpus can hold multiple
+  shapes side by side indefinitely.
 
 ### Changed (breaking) — `reconcile()` refuses to auto-merge dissimilar sidecars
 

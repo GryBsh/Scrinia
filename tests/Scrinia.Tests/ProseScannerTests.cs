@@ -6,7 +6,8 @@ namespace Scrinia.Tests;
 
 /// <summary>
 /// Tests for <see cref="ProseScanner.ProseLines"/> — the single fence-skipping rule shared by
-/// every mechanical prose scan in <see cref="AttributeExtractor"/>.
+/// every mechanical prose scan in <see cref="AttributeExtractor"/> and
+/// <see cref="ReferenceExtractor"/>.
 /// </summary>
 public class ProseScannerTests
 {

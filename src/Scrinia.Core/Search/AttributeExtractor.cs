@@ -9,9 +9,10 @@ namespace Scrinia.Core.Search;
 /// routing (<c>key:value</c>-shaped entries in the keywords param, unbounded — every element there
 /// was typed on purpose). LLM-free, regex-only, run at write time. Values verbatim — exact-match
 /// signal for what BM25 tokenization shreds (versions, dates, hyphenated identifiers, statuses).
-/// Conservative: nothing inside code fences (see <see cref="ProseScanner"/>), URL-remainder values
-/// skipped, tight key charset, value + attribute caps. Merge semantics live in
-/// <see cref="KnownAttributes"/>, not here.
+/// Conservative: nothing inside a properly closed code fence (see <see cref="ProseScanner"/> — an
+/// unterminated fence is not a fence and its contents read as prose), URL-remainder values skipped,
+/// tight key charset, value + attribute caps. Merge semantics live in <see cref="KnownAttributes"/>,
+/// not here.
 /// </summary>
 public static partial class AttributeExtractor
 {
@@ -174,8 +175,9 @@ public static partial class AttributeExtractor
     /// <summary>
     /// Mechanical prose entity-span extraction (Piece 2, Stage 1). Emits capitalized-noun-phrase
     /// runs as <c>mention:&lt;value&gt;</c> presence facts. LLM-free; embedder-free. A run is a
-    /// maximal sequence of consecutive capitalized, non-stop-word tokens taken outside code fences
-    /// (see <see cref="ProseScanner"/>) — inline-code spans and YAML frontmatter are prose here,
+    /// maximal sequence of consecutive capitalized, non-stop-word tokens taken outside properly
+    /// closed code fences (see <see cref="ProseScanner"/> — an unterminated fence is not a fence and
+    /// its contents read as prose) — inline-code spans and YAML frontmatter are prose here,
     /// same as in <see cref="Extract"/>, so a backtick breaks a mention run the way any other
     /// non-word character does; the value is the run joined and lowercased, kept whole. No
     /// positional/echo logic. Returns null when no span survives.
