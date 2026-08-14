@@ -3,6 +3,7 @@ using System.Text;
 using FluentAssertions;
 using Scrinia;
 using Scrinia.Core;
+using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
 using Scrinia.Mcp;
@@ -33,14 +34,28 @@ public sealed class RemoteStoreToolTests
         "updatedAt":null,"description":"an entry","attributes":null}],"total":1}
         """;
 
+    /// <summary>Same single entry as <see cref="OneEntryListJson"/>, but with <c>keywords</c>
+    /// present — used by the demotion test, which asserts the copied-down
+    /// <see cref="EphemeralEntry"/> carries the source's metadata rather than a blank one.</summary>
+    private const string OneEntryListJsonWithKeywords = """
+        {"memories":[{"name":"alpha","qualifiedName":"local:alpha","scope":"local",
+        "chunkCount":1,"originalBytes":18,"createdAt":"2026-01-01T00:00:00+00:00",
+        "updatedAt":null,"description":"an entry","attributes":null,"keywords":["boats"],
+        "termFrequencies":null,"chunkEntries":null,"fileHashes":null}],"total":1}
+        """;
+
     /// <summary>
     /// Serves the endpoints these tools reach remotely: <c>GET .../memories</c> (used by
     /// <see cref="HttpMemoryStore.ListScoped(string?)"/>), <c>POST .../memories</c> (used by
     /// <see cref="HttpMemoryStore.WriteArtifactAsync"/>, which throws
-    /// <see cref="HttpRequestException"/> on any non-success status), and the metadata pair
+    /// <see cref="HttpRequestException"/> on any non-success status), the metadata pair
     /// <c>GET .../memories/{name}/entry</c> + <c>PATCH .../memories/{name}</c> that
-    /// <see cref="HttpMemoryStore.TryUpdateEntry"/> uses. Everything else 404s, which is
-    /// deliberate: if a tool starts making an unexpected call, the test should notice.
+    /// <see cref="HttpMemoryStore.TryUpdateEntry"/> uses, and the three routes
+    /// <see cref="HttpMemoryStore.CopyMemory"/> reaches: <c>GET .../memories/{name}</c> (show,
+    /// serving <paramref name="showJson"/>), <c>POST .../memories/{name}/copy</c> (persistent →
+    /// persistent), and <c>POST .../memories/{name}/copy-from-client</c> (promotion, serving
+    /// <paramref name="copyFromClientStatus"/>). Everything else 404s, which is deliberate: if a
+    /// tool starts making an unexpected call, the test should notice.
     ///
     /// <para>The single-entry GET is served BY SELECTING FROM <paramref name="listJson"/> rather
     /// than from a second literal, so a fixture that says "this store holds one entry called alpha"
@@ -52,14 +67,29 @@ public sealed class RemoteStoreToolTests
     /// them from). It is a parameter rather than something inferred from the body because inferring
     /// it means re-implementing the endpoint's rules here; the rules themselves are pinned against
     /// a real server in <c>Scrinia.Server.Tests.RemoteLoadIndexTests</c>.</para>
+    ///
+    /// <para><paramref name="copyFromClientStatus"/> is configurable for the same reason: <c>200</c>
+    /// for the happy path, <c>404</c> to simulate a server that predates the route.
+    /// <paramref name="showJson"/> defaults to null (404) because most tests never reach the show
+    /// route; the demotion tests supply it.</para>
     /// </summary>
     private sealed class StubBackendHandler(
-        string listJson, HttpStatusCode patchStatus = HttpStatusCode.OK) : HttpMessageHandler
+        string listJson,
+        HttpStatusCode patchStatus = HttpStatusCode.OK,
+        HttpStatusCode copyFromClientStatus = HttpStatusCode.OK,
+        string? showJson = null) : HttpMessageHandler
     {
         /// <summary>Every request that reached the wire, as "METHOD path". Lets a test assert that
         /// an operation made NO network call — which no status-code fixture can show, because a
         /// call that should not have happened still gets a plausible answer here.</summary>
         public List<string> Requests { get; } = [];
+
+        /// <summary>The body of each request in <see cref="Requests"/>, at the same index — empty
+        /// string for a request with no content. Read synchronously (<c>GetAwaiter().GetResult()</c>)
+        /// because <see cref="HttpMemoryStore.SendSync"/> reaches this handler through the
+        /// synchronous <see cref="Send"/> override, not <see cref="SendAsync"/>, so an async-only
+        /// capture would never run for the path these tests exercise.</summary>
+        public List<string> Bodies { get; } = [];
 
         // Both overrides are required: HttpMemoryStore.ListScoped goes through SendSync, which
         // calls the synchronous HttpClient.Send. A handler that only overrides SendAsync throws
@@ -121,6 +151,9 @@ public sealed class RemoteStoreToolTests
         {
             string path = request.RequestUri!.AbsolutePath;
             Requests.Add($"{request.Method} {path}");
+            Bodies.Add(request.Content is null
+                ? ""
+                : request.Content.ReadAsStringAsync().GetAwaiter().GetResult());
             bool isMemoriesCollection = path.EndsWith("/memories", StringComparison.Ordinal);
 
             HttpResponseMessage response;
@@ -153,6 +186,43 @@ public sealed class RemoteStoreToolTests
                     : new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent(entry, Encoding.UTF8, "application/json"),
+                    };
+            }
+            // Promotion (HttpMemoryStore.CopyMemory, ~a -> b). A separate branch from the plain
+            // "/copy" one below — the destination-in-path route Task 3 added — with a configurable
+            // status so a test can simulate an older server that predates it (404) as well as the
+            // happy path (200).
+            else if (request.Method == HttpMethod.Post && path.EndsWith("/copy-from-client", StringComparison.Ordinal))
+            {
+                response = new HttpResponseMessage(copyFromClientStatus)
+                {
+                    Content = new StringContent(
+                        """{"message":"Copied."}""", Encoding.UTF8, "application/json"),
+                };
+            }
+            // Persistent -> persistent (HttpMemoryStore.CopyMemory, a -> b), unchanged wire shape.
+            else if (request.Method == HttpMethod.Post && path.EndsWith("/copy", StringComparison.Ordinal))
+            {
+                response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"message":"Copied."}""", Encoding.UTF8, "application/json"),
+                };
+            }
+            // Demotion (HttpMemoryStore.CopyMemory, a -> ~b) reads the show route for content, after
+            // the /entry route above has already answered the metadata half. A single-name path
+            // (".../memories/{name}") never matches isMemoriesCollection (which requires the path to
+            // END with "/memories") and the /entry branch above already claimed anything ending
+            // "/entry", so this is a genuinely new case, not a widened existing one.
+            else if (request.Method == HttpMethod.Get && !isMemoriesCollection
+                     && path.Contains("/memories/", StringComparison.Ordinal)
+                     && !path.EndsWith("/entry", StringComparison.Ordinal))
+            {
+                response = showJson is null
+                    ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                    : new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(showJson, Encoding.UTF8, "application/json"),
                     };
             }
             else if (request.Method == HttpMethod.Patch)
@@ -188,11 +258,12 @@ public sealed class RemoteStoreToolTests
         public StubBackendHandler Handler { get; }
 
         public RemoteStoreScope(string listJson = EmptyListJson, HttpStatusCode patchStatus = HttpStatusCode.OK,
-            string? workspaceRoot = null)
+            string? workspaceRoot = null, HttpStatusCode copyFromClientStatus = HttpStatusCode.OK,
+            string? showJson = null)
         {
             _previous = MemoryStoreContext.Current;
             MemoryEventSinkContext.Default = null;
-            Handler = new StubBackendHandler(listJson, patchStatus);
+            Handler = new StubBackendHandler(listJson, patchStatus, copyFromClientStatus, showJson);
             var http = new HttpClient(Handler)
             {
                 BaseAddress = new Uri("http://localhost:5000"),
@@ -818,5 +889,132 @@ public sealed class RemoteStoreToolTests
         yaml.Should().Contain(ErrorCodes.NotFound);
         yaml.Should().NotContain(ErrorCodes.NotSupported,
             because: "a missing agent file remotely is a lookup miss, not a refused capability");
+    }
+
+    // ── Task 4: four-way copy dispatch on HttpMemoryStore.CopyMemory ─────────
+    //
+    // Nothing tested CopyMemory before this task, over any store. These are the first tests for
+    // all four branches, remote and (implicitly, via the persistent -> persistent case) the parts
+    // shared with FileMemoryStore's shape.
+
+    /// <summary>
+    /// Promotion (<c>~a -> b</c>) posts to <c>copy-from-client</c>, not the plain <c>/copy</c> route
+    /// a promotion used to be misrouted to, and every decoded chunk reaches the wire along with the
+    /// carried metadata — not just the first chunk, which is the one an off-by-one in the 1-based
+    /// <c>DecodeChunk</c> loop would still get right.
+    /// </summary>
+    [Fact]
+    public async Task Copy_Promotion_RemoteStore_PostsEveryChunkAndCarriedEntryToDestinationRoute()
+    {
+        using var scope = new RemoteStoreScope();
+
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first chunk content", "second chunk content"]);
+        scope.Store.RememberEphemeral("srcmem", new EphemeralEntry(
+            Name: "srcmem",
+            Artifact: artifact,
+            OriginalBytes: Encoding.UTF8.GetByteCount("first chunk content")
+                           + Encoding.UTF8.GetByteCount("second chunk content"),
+            ChunkCount: 2,
+            CreatedAt: DateTimeOffset.UtcNow,
+            ContentPreview: "a preview",
+            FileHashes: new Dictionary<string, string> { ["src/thing.cs"] = "deadbeef" }));
+
+        var response = await Tools().Copy("~srcmem", "promoted");
+
+        response.Status.Should().Be("success",
+            because: "the server accepted the copy-from-client request");
+
+        string request = scope.Handler.Requests.Should().ContainSingle(
+            r => r.EndsWith("/copy-from-client", StringComparison.Ordinal),
+            because: "promotion must reach copy-from-client, not the plain /copy route the old " +
+                     "bare-name path used").Which;
+        request.Should().Contain("promoted",
+            because: "{name} in the copy-from-client path is the DESTINATION");
+
+        string body = scope.Handler.Bodies[scope.Handler.Requests.IndexOf(request)];
+        body.Should().Contain("deadbeef",
+            because: "the request body must carry the client's FileHashes value");
+        body.Should().Contain("first chunk content").And.Contain("second chunk content",
+            because: "every decoded chunk must be posted — a 0-based decode loop would throw " +
+                     "before any request is sent, and a loop that stopped one short would silently " +
+                     "drop the second chunk instead");
+    }
+
+    /// <summary>A 404 from copy-from-client is the ROUTE being absent (an older server), not the
+    /// memory — but either way it must surface as a refusal, never as a copy that appeared to
+    /// work.</summary>
+    [Fact]
+    public async Task Copy_Promotion_RemoteStore_SurfacesAsRefusal_WhenServerLacksTheRoute()
+    {
+        using var scope = new RemoteStoreScope(copyFromClientStatus: HttpStatusCode.NotFound);
+
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["only chunk"]);
+        scope.Store.RememberEphemeral("srcmem", new EphemeralEntry(
+            Name: "srcmem", Artifact: artifact, OriginalBytes: 10, ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow));
+
+        var response = await Tools().Copy("~srcmem", "promoted");
+
+        response.Status.Should().Be("error",
+            because: "a 404 from copy-from-client must never be reported as a completed copy");
+        response.Error.Should().NotBeNullOrEmpty();
+    }
+
+    /// <summary>A missing client-side source has nothing to ask the server about — sending a bare
+    /// name and letting the server resolve it is exactly how the old path found an unrelated,
+    /// same-named persistent memory.</summary>
+    [Fact]
+    public async Task Copy_Promotion_RemoteStore_SendsNoRequest_WhenTheSourceIsMissing()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var response = await Tools().Copy("~missing", "promoted");
+
+        response.Status.Should().Be("error");
+        scope.Handler.Requests.Should().BeEmpty(
+            because: "there is nothing to ask the server about when the local ephemeral is absent");
+    }
+
+    /// <summary>Demotion (<c>a -> ~b</c>) writes into THIS process's ephemeral map — not the
+    /// server's, which the client asking for the copy could never read back from — and carries the
+    /// source's metadata rather than synthesizing a blank entry.</summary>
+    [Fact]
+    public async Task Copy_Demotion_RemoteStore_WritesIntoThisProcesssEphemeralMapWithMetadataIntact()
+    {
+        const string showJson = """{"name":"alpha","content":["a persistent chunk"],"originalBytes":18}""";
+        using var scope = new RemoteStoreScope(OneEntryListJsonWithKeywords, showJson: showJson);
+
+        var response = await Tools().Copy("alpha", "~demoted");
+
+        response.Status.Should().Be("success");
+
+        var eph = scope.Store.GetEphemeral("demoted");
+        eph.Should().NotBeNull(
+            because: "the copy must be readable from THIS process, not the server's own ephemeral map");
+        eph!.Keywords.Should().Equal(["boats"],
+            because: "the demotion carries the source's metadata field-for-field, the way " +
+                     "FileMemoryStore's local persistent -> ephemeral branch does");
+        Nmp2ChunkedEncoder.DecodeChunk(eph.Artifact, 1).Should().Be("a persistent chunk",
+            because: "the artifact is re-encoded from the show route's content, not fabricated — " +
+                     "round-trip fidelity is the property, not byte-identity with the raw JSON");
+    }
+
+    /// <summary>Persistent -> persistent (<c>a -> b</c>) is unchanged wire shape but had never been
+    /// tested at all, and it no longer strips a leading <c>~</c> from <c>src</c> — because with the
+    /// three ephemeral-touching branches above intercepting every case that could carry one, this
+    /// branch can no longer be reached with a tilde in <c>src</c>.</summary>
+    [Fact]
+    public async Task Copy_PersistentToPersistent_RemoteStore_PostsToThePlainCopyRoute()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var response = await Tools().Copy("alpha", "beta");
+
+        response.Status.Should().Be("success");
+        string request = scope.Handler.Requests.Should().ContainSingle(
+            r => r.EndsWith("/memories/alpha/copy", StringComparison.Ordinal)).Which;
+        string body = scope.Handler.Bodies[scope.Handler.Requests.IndexOf(request)];
+        body.Should().Contain("beta",
+            because: "the destination travels in the body for this route, unlike copy-from-client");
     }
 }

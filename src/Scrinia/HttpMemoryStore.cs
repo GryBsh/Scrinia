@@ -804,16 +804,52 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
     // ── Copy & Archive ──────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Four-way dispatch on the ephemerality of <paramref name="src"/> and <paramref name="dst"/>.
+    /// Ephemeral storage stays client-side, so only the two ALL-persistent-touching combinations
+    /// (promotion, demotion) ever leave the process; the other two are answered from
+    /// <see cref="_ephemeral"/> or the plain server copy endpoint, exactly as before.
+    ///
+    /// <para><b>Ruling 2(a) — <c>~a</c> → <c>~a</c>:</b> <see cref="FileMemoryStore"/>'s ephemeral
+    /// branch refuses a same-name copy ("source and destination are the same"); this branch used
+    /// to accept it. CLOSED, not pinned: the check is a single case-insensitive comparison against
+    /// keys this method already has in hand, the branch never leaves the process (so there is no
+    /// wire-compatibility reason to tolerate the gap), and nothing elsewhere in this file documents
+    /// the omission as a deliberate remote/local divergence — it reads as one that was simply never
+    /// ported, not a decision.</para>
+    ///
+    /// <para><b>Ruling 2(b) — <c>ErrorCodes.Internal</c> for a version-skew refusal:</b> a 404 from
+    /// <c>copy-from-client</c> means the caller's server predates the route, not that anything
+    /// broke — but <see cref="Scrinia.Mcp.MemoryTools.Copy"/> is the only production caller and it
+    /// wraps EVERY <c>false</c> return from this method in <c>ErrorCodes.Internal</c>, unconditionally,
+    /// via the same one line it uses for every other failure this method can produce. This method
+    /// has no error-code channel — its contract is <c>bool</c> + <c>out string message</c> — and
+    /// giving it one would mean widening <see cref="IMemoryStore.CopyMemory"/> across every
+    /// implementation (<see cref="FileMemoryStore"/> included) and its one caller, which is a
+    /// bigger surface than "the client uses the copy-from-client member Tasks 1-3 built" and is not
+    /// something this task's file list (<c>HttpMemoryStore.cs</c> plus its tests) reaches. PINNED:
+    /// the label stays <c>Internal</c>: the message text below says explicitly that the server
+    /// lacks the route rather than describing an internal fault, so the caller-facing string is
+    /// honest even though the machine-readable code is not yet.</para>
+    /// </summary>
     public bool CopyMemory(string src, string dst, bool overwrite, out string message)
     {
         bool srcEphemeral = IsEphemeral(src);
         bool dstEphemeral = IsEphemeral(dst);
 
-        // Handle ephemeral-only copies locally
+        // ~a → ~b: unchanged except for the ruling-2(a) same-name guard below — client-local, no
+        // wire traffic either way.
         if (srcEphemeral && dstEphemeral)
         {
             string srcKey = MemoryNaming.StripEphemeralPrefix(src);
             string dstKey = MemoryNaming.StripEphemeralPrefix(dst);
+
+            if (srcKey.Equals(dstKey, StringComparison.OrdinalIgnoreCase))
+            {
+                message = "Error: source and destination are the same.";
+                return false;
+            }
+
             var entry = GetEphemeral(srcKey);
             if (entry is null)
             {
@@ -830,8 +866,157 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             return true;
         }
 
-        // For any persistent copy, use the server's copy endpoint
-        string encoded = Uri.EscapeDataString(srcEphemeral ? MemoryNaming.StripEphemeralPrefix(src) : src);
+        // ~a → b (promotion): the local ephemeral is the only source of truth. If it is absent
+        // there is nothing to ask the server about — sending a bare name and letting the server
+        // resolve it is exactly how the old path found an unrelated same-named persistent memory.
+        if (srcEphemeral && !dstEphemeral)
+        {
+            string srcKey = MemoryNaming.StripEphemeralPrefix(src);
+            var entry = GetEphemeral(srcKey);
+            if (entry is null)
+            {
+                message = $"Error: source memory '{src}' was not found.";
+                return false;
+            }
+
+            // Nmp2ChunkedEncoder.DecodeChunk is 1-based — it throws ArgumentOutOfRangeException for
+            // any index below 1 — so the loop runs [1, chunkCount], not [0, chunkCount).
+            // DecodeAllChunksVerified does this same per-chunk walk with CRC re-checks and size
+            // guards, but it is `internal` to Scrinia.Core and this assembly (Scrinia) cannot call
+            // it, so the plain per-chunk decode is re-implemented here instead.
+            int chunkCount = Nmp2ChunkedEncoder.GetChunkCount(entry.Artifact);
+            string[] chunks = new string[chunkCount];
+            for (int i = 0; i < chunkCount; i++)
+                chunks[i] = Nmp2ChunkedEncoder.DecodeChunk(entry.Artifact, i + 1);
+
+            var entryDto = new CarriedEntryDto(
+                UpdatedAt: entry.UpdatedAt,
+                Description: entry.ContentPreview,
+                Attributes: entry.Attributes,
+                Keywords: entry.Keywords,
+                TermFrequencies: entry.TermFrequencies,
+                ChunkEntries: entry.ChunkEntries?
+                    .Select(c => new ChunkEntryDto(c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies))
+                    .ToArray(),
+                FileHashes: entry.FileHashes,
+                AgentKeywords: entry.AgentKeywords);
+
+            string encodedDst = Uri.EscapeDataString(dst);
+            var promoteReq = new CopyFromClientApiRequest(chunks, entryDto, overwrite);
+            var promoteContent = JsonContent.Create(promoteReq, HttpStoreJsonContext.Default.CopyFromClientApiRequest);
+            using var promoteHttpReq = new HttpRequestMessage(
+                HttpMethod.Post, $"{BaseUrl}/memories/{encodedDst}/copy-from-client") { Content = promoteContent };
+            using var promoteResp = SendSync(promoteHttpReq);
+
+            if (promoteResp.IsSuccessStatusCode)
+            {
+                message = $"Copied '{src}' to '{dst}'.";
+                return true;
+            }
+
+            // See ruling 2(b) above: this route creates its destination and resolves nothing of its
+            // own, so a 404 is the ROUTE being absent — an older server that predates
+            // copy-from-client — not "the memory was not found".
+            if (promoteResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                message = $"Error: server does not support promoting '{src}' to '{dst}' " +
+                           "(no copy-from-client route on this server).";
+                return false;
+            }
+
+            message = $"Error copying '{src}' to '{dst}': {promoteResp.StatusCode}";
+            return false;
+        }
+
+        // a → ~b (demotion): no wire change from before this task — GET .../memories/{name}/entry
+        // for the metadata, GET .../memories/{name} for the content, then build the EphemeralEntry
+        // field-for-field as FileMemoryStore.cs's persistent → ephemeral branch does (including its
+        // `sourceEntry?.` null tolerance and its "Loaded from {sourceName}" preview fallback), and
+        // write it into THIS process's ephemeral map so it is visible to the client that asked.
+        if (!srcEphemeral && dstEphemeral)
+        {
+            string dstKey = MemoryNaming.StripEphemeralPrefix(dst);
+            string encodedSrc = Uri.EscapeDataString(src);
+
+            MemoryEntry? sourceEntry;
+            using (var entryReq = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/memories/{encodedSrc}/entry"))
+            using (var entryResp = SendSync(entryReq))
+            {
+                if (entryResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    message = $"Error: source memory '{src}' was not found.";
+                    return false;
+                }
+                if (!entryResp.IsSuccessStatusCode)
+                {
+                    message = $"Error copying '{src}' to '{dst}': {entryResp.StatusCode}";
+                    return false;
+                }
+                using var entryStream = entryResp.Content.ReadAsStream();
+                sourceEntry = JsonSerializer.Deserialize(entryStream, HttpStoreJsonContext.Default.MemoryEntry);
+            }
+            if (sourceEntry is null)
+            {
+                message = $"Error: source memory '{src}' was not found.";
+                return false;
+            }
+
+            if (!overwrite && GetEphemeral(dstKey) is not null)
+            {
+                message = $"Error: destination memory '{dst}' already exists. Set overwrite=true to replace it.";
+                return false;
+            }
+
+            ShowApiResponse? show;
+            using (var showReq = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/memories/{encodedSrc}"))
+            using (var showResp = SendSync(showReq))
+            {
+                if (showResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    message = $"Error: source memory '{src}' was not found.";
+                    return false;
+                }
+                if (!showResp.IsSuccessStatusCode)
+                {
+                    message = $"Error copying '{src}' to '{dst}': {showResp.StatusCode}";
+                    return false;
+                }
+                using var showStream = showResp.Content.ReadAsStream();
+                show = JsonSerializer.Deserialize(showStream, HttpStoreJsonContext.Default.ShowApiResponse);
+            }
+            if (show is null)
+            {
+                message = $"Error: source memory '{src}' was not found.";
+                return false;
+            }
+
+            string artifact = Nmp2ChunkedEncoder.EncodeChunks(show.Content);
+
+            var ephEntry = new EphemeralEntry(
+                Name: dstKey,
+                Artifact: artifact,
+                OriginalBytes: sourceEntry?.OriginalBytes ?? show.OriginalBytes,
+                ChunkCount: sourceEntry?.ChunkCount ?? show.Content.Length,
+                CreatedAt: DateTimeOffset.UtcNow,
+                ContentPreview: sourceEntry?.Description ?? $"Loaded from {src}",
+                Keywords: sourceEntry?.Keywords,
+                TermFrequencies: sourceEntry?.TermFrequencies,
+                UpdatedAt: sourceEntry?.UpdatedAt,
+                ChunkEntries: sourceEntry?.ChunkEntries?
+                    .Select(c => new ChunkEntry(c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies))
+                    .ToArray(),
+                FileHashes: sourceEntry?.FileHashes,
+                Attributes: sourceEntry?.Attributes,
+                AgentKeywords: sourceEntry?.AgentKeywords);
+            RememberEphemeral(dstKey, ephEntry);
+            message = $"Copied '{src}' to '{dst}'.";
+            return true;
+        }
+
+        // a → b: unchanged, still POST .../copy. No `~` is stripped from src here any more — this
+        // branch can no longer be reached with one, since both ephemeral-source cases are handled
+        // above.
+        string encoded = Uri.EscapeDataString(src);
         var req = new CopyApiRequest(dst, overwrite);
         var content = JsonContent.Create(req, HttpStoreJsonContext.Default.CopyApiRequest);
         using var httpReq = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/memories/{encoded}/copy") { Content = content };
