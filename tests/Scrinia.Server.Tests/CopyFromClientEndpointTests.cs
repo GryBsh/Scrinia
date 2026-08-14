@@ -6,9 +6,11 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using Scrinia.Core;
 using Scrinia.Core.Search;
 using Scrinia.Server.Auth;
 using Scrinia.Server.Models;
+using Scrinia.Server.Services;
 
 namespace Scrinia.Server.Tests;
 
@@ -440,6 +442,74 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
             because: "the message must name the field the bound applies to");
     }
 
+    // ── Round 3 review: the PER-CHUNK-ENTRY bounds had no tests of their own ────────────────
+    //
+    // Before round 2 split MaxCarriedPreviewLength/MaxCarriedKeywords into separate top-level and
+    // per-chunk-entry constants, the top-level bounds tests above exercised the (then-shared)
+    // numbers for both. After the split, only the top-level half stayed covered — a later "these
+    // look like duplicates, unify them" refactor would have been silently green. Each ChunkEntry
+    // here carries a valid ChunkIndex (1, matching Content.Length == 1) so only the field-specific
+    // check under test can fire, not the index-range check.
+
+    [Fact]
+    public async Task CopyFromClient_WithOverLongChunkContentPreview_Returns400()
+    {
+        var entry = MinimalEntry() with
+        {
+            // > 500-char bound (MaxCarriedChunkPreviewLength — a PARITY guard: ComputeChunkEntries
+            // always runs ContentPreview.Generate's own default maxLength over a real chunk).
+            ChunkEntries = [new ChunkEntryDto(1, new string('p', 501), null, null)],
+        };
+        var req = new CopyFromClientRequest(["only one chunk"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/chunk-preview-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("contentPreview",
+            because: "the message must name the field the bound applies to");
+    }
+
+    [Fact]
+    public async Task CopyFromClient_WithTooManyChunkKeywords_Returns400()
+    {
+        var entry = MinimalEntry() with
+        {
+            // > 25-entry bound (MaxCarriedChunkKeywords — AnalyzeText's own topN default; distinct
+            // from the top-level 30, since ComputeChunkEntries never merges in agent keywords).
+            ChunkEntries = [new ChunkEntryDto(
+                1, null, Enumerable.Range(0, 26).Select(i => $"kw{i}").ToArray(), null)],
+        };
+        var req = new CopyFromClientRequest(["only one chunk"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/chunk-kw-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("chunkEntries",
+            because: "the message must name the field the bound applies to");
+        body.Error.Should().Contain("keywords",
+            because: "the message must distinguish this from the chunkIndex/contentPreview checks");
+    }
+
+    [Fact]
+    public async Task CopyFromClient_WithTooManyChunkTermFrequencyTerms_Returns400()
+    {
+        // > 100-entry bound (TextAnalysis.DefaultMaxTfTerms, reused directly for the per-chunk
+        // case — unlike the top-level TermFrequencies bound, this one genuinely is what
+        // AnalyzeText's own pruning produces for a single chunk, unmutated afterwards).
+        var tf = Enumerable.Range(0, TextAnalysis.DefaultMaxTfTerms + 1).ToDictionary(i => $"term{i}", i => 1);
+        var entry = MinimalEntry() with
+        {
+            ChunkEntries = [new ChunkEntryDto(1, null, null, tf)],
+        };
+        var req = new CopyFromClientRequest(["only one chunk"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/chunk-tf-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("termFrequencies",
+            because: "the message must name the field the bound applies to");
+    }
+
     [Fact]
     public async Task CopyFromClient_ExistingDestinationWithoutOverwrite_Returns400()
     {
@@ -454,6 +524,56 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
         body!.Error.Should().Contain("already exists",
             because: "the message must be WriteCarriedCopy's own overwrite refusal");
+    }
+
+    /// <summary>
+    /// Round 3 review: the round-2 disclosure that a post-write I/O fault (a locked sidecar, a
+    /// full disk) was untested — verified analytically, not with a red/green cycle — gets a real
+    /// trigger here instead. <c>FileMemoryStore.WriteSidecarCore</c> writes
+    /// <c>Path.Combine(storeDir, SanitizeNameCore(entry.Name) + ".meta.json")</c> via a
+    /// temp-file-then-<c>File.Move</c>; pre-creating a DIRECTORY at exactly that path makes the
+    /// move fail deterministically on both Windows and Linux (you cannot move-overwrite a file onto
+    /// an existing directory) — and the failure happens inside <c>Upsert</c>, which
+    /// <c>WriteCarriedCopy</c> only reaches AFTER <c>AtomicWriteAllText</c> has already written the
+    /// real <c>.nmp2</c> artifact.
+    ///
+    /// <para>Measured (temporary diagnostic catch, reverted): this specific trigger throws
+    /// <c>UnauthorizedAccessException</c>, not <c>IOException</c> — which is exactly why the
+    /// round-3 fix removes the <c>WriteCarriedCopy</c> catch entirely rather than narrowing it to
+    /// <c>catch (IOException)</c>; the latter would not have caught this fault either, and would
+    /// have left this exact regression open under a different exception type. Confirmed by
+    /// temporarily reintroducing a <c>catch (Exception)</c> around the call and observing this test
+    /// fail (expected 500, got 400) — proof the test is sensitive to exactly the property under
+    /// test (whether <c>WriteCarriedCopy</c>'s exceptions propagate), not to one exception type.</para>
+    ///
+    /// <para>The second assertion below is the one that matters: it pins that the artifact
+    /// genuinely landed and the response was honest about that — the whole property removing the
+    /// round-2 catch restored — not merely that some non-200 code came back.</para>
+    /// </summary>
+    [Fact]
+    public async Task CopyFromClient_WhenTheSidecarWriteFailsAfterTheArtifactLands_Returns500AndKeepsTheArtifact()
+    {
+        const string destName = "post-write-fault-probe";
+        var store = (FileMemoryStore)_factory.Services.GetRequiredService<StoreManager>().GetStore(_factory.PrimaryStore);
+        string storeDir = store.GetStoreDirForScope("local");
+        Directory.CreateDirectory(storeDir);
+
+        // A directory sitting at the sidecar's own path makes WriteSidecarCore's File.Move fail —
+        // deterministically, and only after AtomicWriteAllText (the artifact write, below) has
+        // already succeeded.
+        Directory.CreateDirectory(Path.Combine(storeDir, destName + ".meta.json"));
+
+        var req = new CopyFromClientRequest(["post-write fault content"], MinimalEntry());
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/{destName}/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.InternalServerError,
+            because: "a fault past the artifact write is a server-side fault, not a caller-facing "
+                   + "refusal — it must not be reported as a 400 blaming the destination name");
+
+        File.Exists(Path.Combine(storeDir, destName + ".nmp2")).Should().BeTrue(
+            because: "AtomicWriteAllText runs before Upsert's sidecar write, so the artifact "
+                   + "genuinely landed on disk — the 500 above must be honest about that, not "
+                   + "silently imply the write never happened");
     }
 }
 

@@ -44,15 +44,24 @@ public static class MemoryEndpoints
 
     // Bounds for the metadata copy-from-client carries — see CarriedEntryBoundsError's doc
     // comment for the full reasoning. Round 2 review split these into TOP-LEVEL bounds (this
-    // group — PARITY guards, matched to what a real local write can produce) and PER-CHUNK-ENTRY
-    // bounds (below, unchanged from round 1 — RESOURCE-only guards matched to what
-    // TextAnalysis.ComputeChunkEntries always produces, since a chunk entry's fields are never
-    // caller-curated the way the top-level Description is).
+    // group — mostly RESOURCE guards: Description and TermFrequencies have no local ceiling to
+    // mirror at all, and Keywords/AgentKeywords is the one genuine parity guard among them) and
+    // PER-CHUNK-ENTRY bounds (below, unchanged from round 1 — genuine PARITY guards, matched to
+    // what TextAnalysis.ComputeChunkEntries always produces, since a chunk entry's fields are
+    // never caller-curated the way the top-level Description is).
 
     /// <summary>Top-level Keywords/AgentKeywords — the LOCAL ceiling
     /// (<see cref="TextAnalysis.DefaultMaxMergedKeywords"/>), not <see cref="AnalyzeText"/>'s
     /// topN=25, which bounds only the auto half before agent keywords are merged in. A memory with
-    /// 5+ agent keywords legitimately lands 26-30 total locally.</summary>
+    /// 5+ agent keywords legitimately lands 26-30 total locally.
+    /// <para><b>Residual (round 3 review):</b> 30 is still tighter than the local path can produce
+    /// in GENERAL — <c>MemoryTools.Core.cs:345-351</c>'s <c>update({keywords})</c> unions new
+    /// keywords into <c>entry.Keywords</c> with no cap, and <c>MemoryDerivation.cs:446-448</c> does
+    /// the same for <c>AgentKeywords</c>, so a memory updated enough times locally can exceed 30
+    /// either way. Unreachable through THIS route today only because <c>update()</c> refuses
+    /// ephemerals and this route's sole source is a client-side ephemeral — if copy-from-client
+    /// ever carries a persistent entry instead, this bound bites a value the local path genuinely
+    /// produced.</para></summary>
     private const int MaxCarriedKeywords = TextAnalysis.DefaultMaxMergedKeywords;
 
     /// <summary>Top-level Description. No local ceiling exists — <c>MemoryDerivation.cs:152-154</c>
