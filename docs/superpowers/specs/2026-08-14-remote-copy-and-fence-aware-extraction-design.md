@@ -492,6 +492,44 @@ branch was mistaken for.
 
 ---
 
+## Part 4 — Scope segments are sanitized (added after Task 3's review)
+
+`ParseQualifiedName` (`FileMemoryStore.cs:243-254`) sanitizes **only the leaf**. `:253` runs
+`SanitizeName(segments[^1].Value)`; `:251` joins the remaining segments **raw** into the scope
+string. `SanitizeNameCore` maps `* ? < > | "` and `:` to `_` — and never sees them.
+
+Two consequences, both verified against the code and by probing on Windows/NTFS:
+
+**Names that should be refused reach the filesystem.** `/a*b/x` produces scope `local:a*b`, which
+`Directory.CreateDirectory` rejects with `IOException`; `/NUL/x` throws `DirectoryNotFoundException`.
+Task 3 catches both at the endpoint, so they are 400s rather than 500s — but only on that route.
+
+**Distinct scope strings alias to one directory.** `local:topic.`, `local:topic ` and `local:topic`
+are three different strings — three different `_indexCache` keys and three different per-scope lock
+entries — that resolve to the same directory, because Windows trims trailing dots and spaces from
+path components. `local:.` resolves to the bare `local` store directory while indexing under scope
+`"local:."`. **Two writers to one directory, holding different locks**, is a correctness defect that
+no endpoint-level guard can reach.
+
+### The fix, and the question it raises
+
+Sanitize the scope segments the same way the leaf is sanitized, and reject the forms sanitization
+cannot repair — trailing dots and spaces, bare `.`, and reserved device names. Every input in the
+table above then becomes the `ArgumentException` at `SanitizeNameCore:291` that callers already
+handle, and the aliasing disappears because the three strings collapse to one.
+
+**This is pre-existing and shared.** `RememberMemory` reaches `ParseQualifiedName` through
+`StoreRequest.Name` with the same exposure; so does every local `remember()`. It is not a residual
+of `derivation-merge-residuals`, and it is not something Task 3 introduced — Task 3 is only what
+made one axis of it reachable by an untrusted caller.
+
+**It changes where an existing memory resolves.** A memory stored today under a scope containing one
+of these characters would, after the change, parse to a different scope string — a different index
+cache key and a different directory. The design must state what happens to it: whether such a
+memory can exist in practice (the write paths that could create one, and whether any did), and
+whether anything is needed beyond the sanitization itself. That question is the reason this is its
+own task rather than a line in Task 3.
+
 ## Testing
 
 **Remote copy.** All four directions, in both local and remote mode. The promotion test asserts the

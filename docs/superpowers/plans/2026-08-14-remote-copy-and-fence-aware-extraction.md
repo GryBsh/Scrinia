@@ -1433,6 +1433,45 @@ rtk git commit -m "docs: remote copy works across the ephemeral boundary; fences
 
 ---
 
+## Task 13: Scope segments are sanitized
+
+Added after Task 3's review. `ParseQualifiedName` sanitizes only the leaf (`FileMemoryStore.cs:253`); the scope is built from **raw** segments at `:251`. Task 3 closed the resulting 500s at its own endpoint; this closes the defect at its source, for every caller.
+
+**Files:**
+- Modify: `src/Scrinia.Core/FileMemoryStore.cs:243-254`
+- Test: `tests/Scrinia.Tests/` — the file that already covers `ParseQualifiedName`; find it in Step 1
+
+- [ ] **Step 1: Establish whether an aliased memory can exist before deciding what to do about one**
+
+The change alters which scope string a name resolves to. Before writing it, enumerate every write path that reaches `ParseQualifiedName` and determine whether any of them can produce a stored memory whose scope contains `* ? < > | "`, a trailing dot or space, a bare `.`, or a reserved device name.
+
+Check the real store under `.scrinia/memories/` too. **If none can exist, say so with evidence and no migration is needed.** If one can, stop and ask — that is a design question, not an implementation detail.
+
+- [ ] **Step 2: Pin the current behaviour, including the aliasing**
+
+Write tests that record what `ParseQualifiedName` returns today for each input class, and one that demonstrates the aliasing directly: that `local:topic.` and `local:topic` are distinct scope strings resolving to the same directory. This is the defect; it should be visible in a test before it is fixed.
+
+- [ ] **Step 3: Sanitize the segments, and reject what sanitization cannot repair**
+
+`:251` becomes `…Select(s => SanitizeName(s.Value))`. Sanitization alone does **not** fix trailing dots and spaces (Windows trims them from path components, so `topic.` and `topic` still collide), bare `.`, or reserved device names — those must be **rejected** with the `ArgumentException` callers already handle, not silently rewritten.
+
+Decide whether rejection belongs in `SanitizeNameCore` or beside it, and say which. `SanitizeNameCore` is shared with the leaf path, so widening it changes subject names too — that may be right, but it must be a decision.
+
+- [ ] **Step 4: Confirm Task 3's endpoint guard still behaves**
+
+`CopyFromClientEndpointTests`' malformed-name cases should now reach `ArgumentException` rather than `IOException`. They must still return 400 with the same message. If the `IOException` catch Task 3 added becomes unreachable, say so — do not delete it without checking whether any path still needs it.
+
+- [ ] **Step 5: Full build and suite, then commit**
+
+```bash
+rtk git add src/Scrinia.Core/FileMemoryStore.cs tests/Scrinia.Tests/
+rtk git commit -m "fix(core): sanitize scope segments, not just the leaf"
+```
+
+Stage the specific test files, not the directory.
+
+---
+
 ## Task order
 
 **1 → 2 → 3 → 4** (remote copy; each gates the next)
