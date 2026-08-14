@@ -10,6 +10,20 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — file and memory references no longer extract from pasted code
+
+- `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs` now scan outside fenced (```` ``` ````)
+  code blocks only, via the shared `ProseScanner`. A stack trace, `git diff`, or file listing pasted
+  into a fenced block in a memory's content no longer yields spurious file-path or `[[wiki-link]]`
+  drift baselines. YAML frontmatter and inline-code spans are unaffected — both stay prose, so a
+  `file:` line in frontmatter and a backtick-quoted `[[wiki-link]]` or `~ephemeral` still extract.
+- **Behaviour change on the write path:** `MaintenanceEventSink` calls `ExtractMemoryRefs` on every
+  store and append to auto-link `[[wiki-link]]` targets and detect orphans. A wiki-link that only
+  appears inside a fenced block no longer auto-links its target back, and a memory whose sole
+  inbound reference lived inside a fence can now be marked `orphan:true`. This is the fix working —
+  a link pasted as part of quoted/sample content was never meant to create a real cross-reference —
+  but it is a visible behaviour change for any existing memory that relied on it.
+
 ### Changed (breaking) — `reconcile()` refuses to auto-merge dissimilar sidecars
 
 - `reconcile()`'s automatic `.meta.json` merge now runs the same admission check the git merge

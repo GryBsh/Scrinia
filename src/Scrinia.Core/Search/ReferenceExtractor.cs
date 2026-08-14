@@ -2,7 +2,11 @@ using System.Text.RegularExpressions;
 
 namespace Scrinia.Core.Search;
 
-/// <summary>Extracts file path and memory name references from content text.</summary>
+/// <summary>Extracts file path and memory name references from content text, scanning outside
+/// fenced code blocks only (see <see cref="ProseScanner"/>) — a stack trace or diff pasted into a
+/// fenced block no longer yields file or memory references. YAML frontmatter and inline-code spans
+/// are prose, not stripped, so a <c>file:</c> line in frontmatter and a backtick-quoted
+/// <c>[[wiki-link]]</c> or <c>~ephemeral</c> still extract.</summary>
 public static partial class ReferenceExtractor
 {
     // File paths: word chars, dots, slashes, hyphens followed by known extensions
@@ -45,28 +49,39 @@ public static partial class ReferenceExtractor
     [GeneratedRegex(@"(?<!\w)(~[a-z][a-z0-9-]+)")]
     private static partial Regex EphemeralNamePattern();
 
-    /// <summary>Extract file path references from content.</summary>
+    /// <summary>Extract file path references from content, outside fenced code blocks (see
+    /// <see cref="ProseScanner"/>). Runs per prose line — <see cref="FilePathPattern"/> cannot span
+    /// a newline.</summary>
     public static string[] ExtractFileRefs(string? content)
     {
         if (string.IsNullOrWhiteSpace(content))
             return [];
 
-        return FilePathPattern().Matches(content)
+        return ProseScanner.ProseLines(content)
+            .SelectMany(line => FilePathPattern().Matches(line))
             .Select(m => m.Value.TrimStart('.', '/', '\\'))
             .Where(p => !string.IsNullOrEmpty(p))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
-    /// <summary>Extract memory name references ([[/path]] / [[name]] wiki-links and ~ephemeral) from content.</summary>
+    /// <summary>Extract memory name references ([[/path]] / [[name]] wiki-links and ~ephemeral)
+    /// from content, outside fenced code blocks (see <see cref="ProseScanner"/>).
+    /// <see cref="MemoryNamePattern"/> runs over the prose lines rejoined with <c>"\n"</c> — its
+    /// <c>\s*</c> matches a newline, so a link wrapped across lines still extracts, while a fenced
+    /// block stays excluded. <see cref="EphemeralNamePattern"/> runs per prose line — it cannot
+    /// span a newline.</summary>
     public static string[] ExtractMemoryRefs(string? content)
     {
         if (string.IsNullOrWhiteSpace(content))
             return [];
 
-        var persistent = MemoryNamePattern().Matches(content)
+        string[] proseLines = [.. ProseScanner.ProseLines(content)];
+
+        var persistent = MemoryNamePattern().Matches(string.Join("\n", proseLines))
             .Select(m => m.Groups[1].Value);
-        var ephemeral = EphemeralNamePattern().Matches(content)
+        var ephemeral = proseLines
+            .SelectMany(line => EphemeralNamePattern().Matches(line))
             .Select(m => m.Groups[1].Value);
 
         return persistent.Concat(ephemeral)

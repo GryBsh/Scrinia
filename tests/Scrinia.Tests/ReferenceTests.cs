@@ -37,12 +37,15 @@ public sealed class ReferenceTests : IDisposable
     [Fact]
     public void ExtractFileRefs_IgnoresUrls()
     {
-        string input = "See https://api.openai.com/v1/embeddings";
+        string input = "See https://api.openai.com/v1/embeddings and also src/Real.cs";
 
         var refs = ReferenceExtractor.ExtractFileRefs(input);
 
         refs.Should().NotContain(r => r.Contains("openai") || r.Contains("api"),
             "URL paths should not be extracted as file references");
+        refs.Should().Contain("src/Real.cs",
+            "a real path elsewhere in the line must still extract — a NotContain-only assertion " +
+            "would pass even if extraction returned nothing at all");
     }
 
     [Fact]
@@ -106,8 +109,12 @@ public sealed class ReferenceTests : IDisposable
         // The prefix group's widened repetition must not turn into a URL-path recovery mechanism —
         // a colon-and-slashes URL still has no valid start position for FilePathPattern regardless
         // of how many times the prefix group can repeat once a start position exists.
-        ReferenceExtractor.ExtractFileRefs("See https://ex.com/a/b.cs for the schema")
-            .Should().NotContain(r => r.Contains("ex.com") || r.Contains("b.cs"));
+        var refs = ReferenceExtractor.ExtractFileRefs("See https://ex.com/a/b.cs and src/Real.cs for the schema");
+
+        refs.Should().NotContain(r => r.Contains("ex.com") || r.Contains("b.cs"));
+        refs.Should().Contain("src/Real.cs",
+            "a real path elsewhere in the line must still extract — a NotContain-only assertion " +
+            "would pass even if extraction returned nothing at all");
     }
 
     [Theory]
@@ -134,8 +141,10 @@ public sealed class ReferenceTests : IDisposable
     [InlineData("'..\\..\\'-prefixed (two levels up, Windows)", @"..\..\src\foo.cs", @"src\foo.cs")]
     public void ExtractFileRefs_ContextTable(string context, string input, string expected)
     {
+        // Equal, not Contain: Contain cannot catch a spurious EXTRA extraction alongside the
+        // expected one, which is exactly the failure class a regex change can introduce.
         ReferenceExtractor.ExtractFileRefs(input)
-            .Should().Contain(expected, because: $"context: {context}");
+            .Should().Equal([expected], because: $"context: {context}");
     }
 
     [Fact]
@@ -171,12 +180,83 @@ public sealed class ReferenceTests : IDisposable
     [Fact]
     public void ExtractMemoryRefs_IgnoresNamespaces()
     {
-        string input = "Scrinia.Core.Resilience namespace";
+        string input = "Scrinia.Core.Resilience namespace, see [[/api/real]]";
 
         var refs = ReferenceExtractor.ExtractMemoryRefs(input);
 
         refs.Should().NotContain(r => r.Contains("Core") || r.Contains("Resilience"),
             "C# namespaces (capital letters, dot-separated) should not be extracted as memory references");
+        refs.Should().Contain("/api/real",
+            "a real wiki-link elsewhere in the line must still extract — a NotContain-only " +
+            "assertion would pass even if extraction returned nothing at all");
+    }
+
+    [Fact]
+    public void PreFenceAwareness_PinsCurrentExtractionBehaviour()
+    {
+        // Pins ExtractFileRefs/ExtractMemoryRefs output as produced BEFORE this branch routes both
+        // extractors through ProseScanner. Recorded by running against pre-change code (see
+        // task-6-report.md). None of these lines sits inside a REAL fence — the indented ``` below
+        // is deliberately not one, since ProseScanner inherits that gap unfixed — so this output is
+        // the contract: byte-identical after the change.
+        string content =
+            "See src/Alpha.cs and src/Beta.cs for details.\n" +
+            "Link: [[/api/gamma]].\n" +
+            "Stored as ~delta.\n" +
+            "Ref file:src/Epsilon.cs here.\n" +
+            "Two levels up: ../../src/Zeta.cs done.\n" +
+            "Backtick path (never extracts): `src/Iota.cs` here.\n" +
+            "Backtick wiki link (extracts): `[[/api/eta]]` and ephemeral `~theta` here.\n" +
+            "Links to [[\n/api/kappa\n]] here.\n" +
+            "  ```\n" +
+            "  src/Lambda.cs\n" +
+            "  ```\n";
+
+        ReferenceExtractor.ExtractFileRefs(content).Should().Equal(
+            "src/Alpha.cs", "src/Beta.cs", "src/Zeta.cs", "src/Lambda.cs");
+        ReferenceExtractor.ExtractMemoryRefs(content).Should().Equal(
+            "/api/gamma", "/api/eta", "/api/kappa", "~delta", "~theta");
+    }
+
+    [Fact]
+    public void ExtractFileRefs_IgnoresPathsInsideAFencedBlock()
+    {
+        string content = "See src/Real.cs.\n\n```\n  at Foo() in src/Fenced.cs:line 12\n  src/Other.cs\n```\n";
+        ReferenceExtractor.ExtractFileRefs(content).Should().Equal("src/Real.cs");
+    }
+
+    [Fact]
+    public void ExtractMemoryRefs_IgnoresLinksInsideAFencedBlock()
+    {
+        string content = "Links to [[/api/real]].\n```\n[[/api/fenced]]\n~fenced-scratch\n```\n";
+        ReferenceExtractor.ExtractMemoryRefs(content).Should().Equal("/api/real");
+    }
+
+    /// <summary>Frontmatter stays prose — a file: line there is deliberate metadata.</summary>
+    [Fact]
+    public void ExtractFileRefs_StillReadsFrontmatter()
+    {
+        ReferenceExtractor.ExtractFileRefs("---\nfile: src/Front.cs\n---\nbody")
+            .Should().Equal("src/Front.cs");
+    }
+
+    /// <summary>Inline code stays prose for MEMORY refs, which is where the claim is true.
+    /// A backtick-quoted PATH is not asserted here because it has never extracted — see the
+    /// lookbehind at ReferenceExtractor.cs:35 and the comment block at :10-16.</summary>
+    [Fact]
+    public void ExtractMemoryRefs_StillReadsInlineCode()
+    {
+        ReferenceExtractor.ExtractMemoryRefs("See `[[/api/auth]]` and `~scratch` here")
+            .Should().BeEquivalentTo(["/api/auth", "~scratch"]);
+    }
+
+    /// <summary>A wiki link wrapped across lines still extracts: MemoryNamePattern's \s* matches \n,
+    /// so this pattern runs over rejoined prose rather than line by line.</summary>
+    [Fact]
+    public void ExtractMemoryRefs_StillReadsALinkWrappedAcrossLines()
+    {
+        ReferenceExtractor.ExtractMemoryRefs("Links to [[\n/api/auth\n]] here.")
+            .Should().Equal("/api/auth");
     }
 
     // ── Integration tests ─────────────────────────────────────────────────────

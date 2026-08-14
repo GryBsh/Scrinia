@@ -59,6 +59,49 @@ public sealed class MaintenanceEventSinkTests : IDisposable
                 "on any mutation that changes attributes, whichever caller made it");
     }
 
+    /// <summary>Task 6 write-path consequence: <see cref="ReferenceExtractor.ExtractMemoryRefs"/>
+    /// now skips fenced code blocks, and this sink calls it on every store/append (see
+    /// <see cref="MaintenanceEventSink"/>). A <c>[[wiki-link]]</c> pasted inside a fenced block —
+    /// e.g. a code sample that happens to mention a memory name — no longer auto-links its target
+    /// back, and a target whose only inbound reference lived inside a fence stays orphaned.</summary>
+    [Fact]
+    public async Task AutoLink_IgnoresLinksInsideAFencedBlock()
+    {
+        // Arrange — create two topic-scoped entries
+        var store = MemoryStoreContext.Current!;
+        await _tools.Remember(["Source content placeholder."], "/test/fencesource");
+        await _tools.Remember(["Target content placeholder."], "/test/fencetarget");
+
+        // Act — fire OnStoredAsync with the link only inside a fenced block
+        await _sink.OnStoredAsync(
+            "/test/fencesource",
+            ["Prose has no link here.\n```\nSee [[/test/fencetarget]] in this pasted snippet.\n```\n"],
+            store,
+            CancellationToken.None);
+
+        // Orphan detection runs against the entry OnStoredAsync/OnAppendedAsync was called FOR —
+        // fire it for the target itself, as OrphanDetection_AddsOrphanAttribute above does, to
+        // check whether the (never-written) inbound ref left it orphaned.
+        await _sink.OnStoredAsync(
+            "/test/fencetarget",
+            ["Target content placeholder."],
+            store,
+            CancellationToken.None);
+
+        // Assert — target entry gets no ref field and stays orphan: the fenced link never reached
+        // the extractor.
+        var (targetScope, targetSubject) = store.ParseQualifiedName("/test/fencetarget");
+        var targetEntry = store.LoadIndex(targetScope).First(e =>
+            e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
+
+        (targetEntry.Attributes?.ContainsKey("ref") ?? false).Should().BeFalse(
+            "a wiki-link inside a fenced block must not auto-link its target — that is the fix, " +
+            "not a regression");
+        targetEntry.Attributes.Should().NotBeNull().And.ContainKey("orphan",
+            "with no inbound reference reaching it (the only one lived inside a fence), the target " +
+            "stays flagged orphan");
+    }
+
     /// <summary>The orphan marker is an <c>orphan</c> ATTRIBUTE, not a keyword — see
     /// <see cref="MaintenanceEventSink"/> for why the keyword form made this sink a no-op against
     /// a remote store while succeeding locally.</summary>
