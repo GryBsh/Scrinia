@@ -1133,6 +1133,32 @@ public sealed class RemoteStoreToolTests
         Nmp2ChunkedEncoder.DecodeChunk(eph.Artifact, 1).Should().Be("only the artifact survives");
     }
 
+    /// <summary>
+    /// The riskiest branch of the I-1 fix: a source that is genuinely absent — no index entry AND
+    /// no artifact. The I-1 fix lets a bare <c>/entry</c> 404 fall through instead of failing
+    /// immediately, on the premise that the show route's OWN 404 remains the final word. This is
+    /// the one test that exercises that guard directly rather than by construction: without it,
+    /// nothing distinguishes "no metadata, but the memory is real" (tolerated, synthesized
+    /// defaults) from "no memory at all" (must still refuse) — every other demotion test supplies
+    /// either a <c>showJson</c> or a <c>showFailureStatus</c>, so none of them would notice if the
+    /// show 404 guard were accidentally weakened into another fallback.
+    /// </summary>
+    [Fact]
+    public async Task Copy_Demotion_RemoteStore_ReportsNotFound_WhenTheSourceTrulyDoesNotExist()
+    {
+        // No showJson supplied — the stub's show branch answers its default 404, exactly as it
+        // would for a name the server has never heard of.
+        using var scope = new RemoteStoreScope(EmptyListJson);
+
+        var response = await Tools().Copy("missing", "~b");
+
+        response.Status.Should().Be("error");
+        response.Error.Should().Contain("not found");
+        scope.Store.GetEphemeral("b").Should().BeNull(
+            because: "the I-1 fix must not convert a genuine not-found into a successful copy of " +
+                     "an empty memory — that would be a worse defect than the one it fixes");
+    }
+
     /// <summary>Demotion's <c>/entry</c> GET must surface the server's error body on a non-404
     /// failure, not just the status name — the same I-2 defect class as promotion's, fixed here too
     /// rather than only at the one site the review used as its example.</summary>

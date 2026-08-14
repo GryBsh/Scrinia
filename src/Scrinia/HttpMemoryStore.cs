@@ -944,6 +944,24 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             string dstKey = MemoryNaming.StripEphemeralPrefix(dst);
             string encodedSrc = Uri.EscapeDataString(src);
 
+            // Ruling — source addressing this branch now reaches. Before the I-1 fix below, a
+            // non-qualified-name `src` (an inline "NMP/2 " artifact, or a workspace-scoped
+            // `file://` URI — the other two branches of IMemoryStore.ResolveArtifactAsync,
+            // FileMemoryStore.cs:1550-1563) would 404 at the /entry lookup and never reach the show
+            // route that actually understands those shapes. With /entry no longer gating this
+            // branch, they do reach it now. ACCEPTED, not restricted: no new permission surface —
+            // it is the same `read` permission and the same show/recall route any caller already
+            // has (Scrinia.Server.Endpoints.MemoryEndpoints.RecallMemory), just reached one branch
+            // earlier than intended — and MemoryTools.Copy's own `nameOrUri` parameter is documented
+            // as "Memory name or file:// URI to copy", so a file:// source is a use this tool already
+            // promises, not a novel one. FileMemoryStore.CopyMemory's local demotion branch does NOT
+            // handle either shape (it goes straight to ParseQualifiedName/FindArtifactPath), so this
+            // is a real remote/local capability gap — but it is remote gaining a capability the tool
+            // contract already advertises, not remote losing a safety check local relies on. If the
+            // two are ever made to converge, the fix would be to teach FileMemoryStore.CopyMemory
+            // these two source shapes too (routing through ResolveArtifactAsync the way ShowAsync
+            // does), not to add a shape check here that narrows remote back down.
+            //
             // GetEntry (the /entry route) resolves through the INDEX only
             // (Scrinia.Server.Endpoints.MemoryEndpoints.FindEntry -> IMemoryStore.LoadIndex). The
             // show route below resolves through the ARTIFACT FILE only
@@ -1005,6 +1023,17 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
 
             string artifact = Nmp2ChunkedEncoder.EncodeChunks(show.Content);
 
+            // Ruling — OriginalBytes in the no-index-entry case. FileMemoryStore.cs:2008 falls back
+            // to `?? 0` here, because on the local path a missing sourceEntry means no cheap byte
+            // count is available without re-reading and re-hashing the artifact file, and 0 was
+            // judged good enough for a synthesized entry. The remote path already has a real count
+            // for free — `show.OriginalBytes` is the server's own `Content.Sum(UTF8 byte length)`,
+            // computed for this exact request regardless of whether an index entry exists — so `?? 0`
+            // would be manufacturing a wrong answer purely for symmetry with a value the local path
+            // only settled for out of convenience, not correctness. KEPT AS ITS OWN VALUE, not
+            // matched to local: if the two are ever unified, `0` is the one that should move,
+            // to whatever FileMemoryStore.cs can cheaply compute (e.g. a File.Exists + byte-length
+            // read it does not currently do) — not the other way around.
             var ephEntry = new EphemeralEntry(
                 Name: dstKey,
                 Artifact: artifact,
