@@ -36,7 +36,7 @@ Three jobs, in this order, before writing any code:
 
 - `rtk grep` and `grep | head -N` **silently drop matches**, and recursive grep walks into `bin/`. Use the Grep tool with an explicit glob (`**/*.cs`, `**/*.md`).
 - The C# language server emits **phantom** CS0234/CS0103/CS8019 errors. It was wrong on every task of the last branch. Trust `rtk dotnet build`, not the diagnostic stream.
-- `rtk dotnet build Scrinia.sln` is a reliable gate. On failure `Build FAILED` appears **above** the trailing `Time Elapsed` line — never judge by the last line. **The exit code is authoritative.** Baseline: **18 projects, 0 errors, 0 warnings.**
+- `rtk dotnet build Scrinia.sln` is a reliable gate. On failure `Build FAILED` appears **above** the trailing `Time Elapsed` line — never judge by the last line. **The exit code is authoritative.** Baseline: **18 projects, 0 errors, exit code 0** — and roughly **2027 warnings**, every one of them `CA1001`/`CA1707`/`CA1711` in `.Tests`/`.Benchmarks`, which are exempt from `TreatWarningsAsErrors`. **Gate on 0 errors and exit 0, never on 0 warnings.** An incremental build can report 0 warnings and a from-scratch one will not; a task that gates on warnings will look broken when it is fine.
 - **Stale-binary trap:** a test that fails to compile lets `dotnet test --no-build` re-run stale assemblies and report green. Gate every run on an explicit error count, and treat a test count that did not rise as a compile failure until proven otherwise.
 - **`--filter` substrings match the fully-qualified name.** `FullyQualifiedName~ReferenceExtractor` matches **zero** tests, because the class is `ReferenceTests`. A filter that selects nothing looks exactly like a filter that passes.
 - `rtk proxy sed -i` with `|` delimiters and quotes fails. Use the Edit tool.
@@ -351,7 +351,7 @@ Temporarily change `FileHashes: carried.FileHashes` to `FileHashes: null` in `Wr
 
 - [ ] **Step 10: Full build and suite**
 
-Run: `rtk dotnet build Scrinia.sln` — expect 0 errors, 0 warnings.
+Run: `rtk dotnet build Scrinia.sln` — expect 0 errors and exit code 0. Ignore the warning count.
 Run: `rtk dotnet test Scrinia.sln` — expect 0 failed, and a test count **3 higher** than the baseline.
 
 - [ ] **Step 11: Commit**
@@ -548,7 +548,7 @@ Do **not** add them to `PatchBodyJsonContext`.
 
 - [ ] **Step 7: Build and run the full suite**
 
-Run: `rtk dotnet build Scrinia.sln` — 0 errors, 0 warnings.
+Run: `rtk dotnet build Scrinia.sln` — 0 errors, exit code 0. Ignore the warning count.
 Run: `rtk dotnet test Scrinia.sln` — 0 failed, count **7 higher** than after Task 1.
 
 - [ ] **Step 8: Commit**
