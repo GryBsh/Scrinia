@@ -167,9 +167,21 @@ checks the local copy has no need for. Each failure is a 400 naming the specific
   `RememberMemory:67`.
 - The existing `copy` permission check and `IsWritable` store check are unchanged and run first.
 
-`OriginalBytes` is deliberately **not** cross-checked against `Content`. The relationship between a
-memory's original byte count and its decoded chunks is not an invariant this design verified, and
-inventing one would reject valid promotions.
+**`OriginalBytes` is derived, not carried — corrected after Task 3's review.** An earlier draft of
+this section had it carried, on the stated grounds that "the relationship between a memory's
+original byte count and its decoded chunks is not an invariant this design verified". It is one, and
+the encoder computes it: `Nmp2ChunkedEncoder.cs:201-205` sums the chunks' UTF-8 byte lengths and
+writes the total into the artifact header at `:220`. The claim was unverified, not unverifiable.
+
+Carrying it therefore broke this section's own rule twice over — it let the request state a byte
+count the server *knows* to be wrong, and it exempted a derivable field from the very principle
+applied to `ChunkCount` one line above.
+
+So `OriginalBytes` leaves `CarriedEntry` entirely, and the endpoint computes it from the content it
+is already encoding. `CarriedMetadata` keeps the member: the store takes an already-encoded artifact
+and cannot recompute it without parsing the header, and the in-process promotion path has the
+authoritative value in hand. The wire is where the untrusted number was, and the wire is where it
+stops.
 
 ### Client dispatch
 
