@@ -17,12 +17,28 @@ and all assembly attributes.
   into a fenced block in a memory's content no longer yields spurious file-path or `[[wiki-link]]`
   drift baselines. YAML frontmatter and inline-code spans are unaffected — both stay prose, so a
   `file:` line in frontmatter and a backtick-quoted `[[wiki-link]]` or `~ephemeral` still extract.
-- **Behaviour change on the write path:** `MaintenanceEventSink` calls `ExtractMemoryRefs` on every
-  store and append to auto-link `[[wiki-link]]` targets and detect orphans. A wiki-link that only
-  appears inside a fenced block no longer auto-links its target back, and a memory whose sole
-  inbound reference lived inside a fence can now be marked `orphan:true`. This is the fix working —
-  a link pasted as part of quoted/sample content was never meant to create a real cross-reference —
-  but it is a visible behaviour change for any existing memory that relied on it.
+  An unterminated fence (an opening fence marker with no matching closer) runs to the end of the
+  content, so a single stray fence marker suppresses every reference after it, not just the intended
+  block — this is existing `ProseScanner` behaviour, unchanged by this fix.
+- **Behaviour change on two write paths**, both of which call the extractors on every store and
+  append:
+  - `AttributeExtractor.ExtractRefAttributes` (called from `MemoryDerivation.cs` on store and
+    append) derives the `file`/`ref` attributes written onto every memory. This is the dominant
+    effect in practice — most content carries far more file-path mentions than wiki-links — and a
+    memory whose only mention of a file or another memory lived inside a fence no longer carries
+    that mention in its own `file`/`ref` attributes.
+  - `MaintenanceEventSink` calls `ExtractMemoryRefs` to auto-link `[[wiki-link]]` targets and detect
+    orphans. A wiki-link that only appears inside a fenced block no longer triggers the auto-link
+    write onto its target — and because that write is also what clears the *mentioning* memory's own
+    orphan flag as a side effect, a memory whose only outbound `[[wiki-link]]` lived inside a fence
+    can now be marked `orphan:true` itself (not the memory it linked to).
+
+  Both are the fix working as intended — a reference pasted as part of quoted/sample content was
+  never meant to create a real cross-reference or drift baseline — but both are visible behaviour
+  changes for any existing memory that relied on them. **Migration:** this only takes effect when a
+  memory is re-derived (stored or appended). Memories written before this change keep their
+  fence-polluted `file`/`ref` attributes until they are next stored or appended — a corpus can hold
+  both the old (fence-polluted) and new (fence-aware) attribute shapes side by side indefinitely.
 
 ### Changed (breaking) — `reconcile()` refuses to auto-merge dissimilar sidecars
 

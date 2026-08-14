@@ -232,6 +232,29 @@ public sealed class ReferenceTests : IDisposable
         ReferenceExtractor.ExtractMemoryRefs(content).Should().Equal("/api/real");
     }
 
+    /// <summary>An unterminated fence (opening ``` with no closer) runs to end of content per
+    /// <see cref="ProseScanner"/> — not just the ``` line itself. Everything after it, including
+    /// text that never visually looks "inside a code block", is suppressed. Pinned here rather than
+    /// fixed: the semantic is inherited from <see cref="ProseScanner"/>, which
+    /// <see cref="AttributeExtractor"/> also consumes, so changing it is a decision above this
+    /// extractor.</summary>
+    [Fact]
+    public void ExtractFileRefs_UnterminatedFence_SuppressesToEndOfContent()
+    {
+        string content =
+            "See src/Real.cs.\n```\nsrc/NeverClosed.cs\nMore prose mentioning src/AlsoLost.cs here.\n";
+        ReferenceExtractor.ExtractFileRefs(content).Should().Equal("src/Real.cs");
+    }
+
+    /// <summary>Memory-ref counterpart of <see cref="ExtractFileRefs_UnterminatedFence_SuppressesToEndOfContent"/>.</summary>
+    [Fact]
+    public void ExtractMemoryRefs_UnterminatedFence_SuppressesToEndOfContent()
+    {
+        string content =
+            "Links to [[/api/real]].\n```\n[[/api/never-closed]]\nMore prose with ~also-lost here.\n";
+        ReferenceExtractor.ExtractMemoryRefs(content).Should().Equal("/api/real");
+    }
+
     /// <summary>Frontmatter stays prose — a file: line there is deliberate metadata.</summary>
     [Fact]
     public void ExtractFileRefs_StillReadsFrontmatter()

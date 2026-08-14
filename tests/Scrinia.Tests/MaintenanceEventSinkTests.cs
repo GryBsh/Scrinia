@@ -62,8 +62,14 @@ public sealed class MaintenanceEventSinkTests : IDisposable
     /// <summary>Task 6 write-path consequence: <see cref="ReferenceExtractor.ExtractMemoryRefs"/>
     /// now skips fenced code blocks, and this sink calls it on every store/append (see
     /// <see cref="MaintenanceEventSink"/>). A <c>[[wiki-link]]</c> pasted inside a fenced block —
-    /// e.g. a code sample that happens to mention a memory name — no longer auto-links its target
-    /// back, and a target whose only inbound reference lived inside a fence stays orphaned.</summary>
+    /// e.g. a code sample that happens to mention a memory name — no longer auto-links its target.
+    /// <para>The auto-link write (<c>AutoLinkAndDetectOrphans</c> step 2) lands on the MENTIONED
+    /// target's own <c>ref</c> attribute, not on the mentioner's — and orphan detection (step 3)
+    /// runs, in the same call, against whichever entry is currently being stored/appended, checking
+    /// whether ITS name shows up in anyone else's <c>ref</c> list. So the entry whose orphan status
+    /// this write can flip is the one whose content did the mentioning (fencesource here), not the
+    /// one that got mentioned (fencetarget) — a single <c>OnStoredAsync</c> call for fencesource
+    /// exercises both the auto-link write and its own orphan check together.</para></summary>
     [Fact]
     public async Task AutoLink_IgnoresLinksInsideAFencedBlock()
     {
@@ -72,24 +78,19 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         await _tools.Remember(["Source content placeholder."], "/test/fencesource");
         await _tools.Remember(["Target content placeholder."], "/test/fencetarget");
 
-        // Act — fire OnStoredAsync with the link only inside a fenced block
+        // Act — fire OnStoredAsync for the SOURCE, whose content mentions fencetarget only inside
+        // a fenced block. Under the pre-fence-aware extractor this single call would both (a) write
+        // ref=[fencesource] onto fencetarget, and (b) have its own orphan check (running right
+        // after, against fencesource) see that fresh write and clear fencesource's orphan flag —
+        // proven by reverting ReferenceExtractor and confirming this test fails (see task-6-report.md).
         await _sink.OnStoredAsync(
             "/test/fencesource",
             ["Prose has no link here.\n```\nSee [[/test/fencetarget]] in this pasted snippet.\n```\n"],
             store,
             CancellationToken.None);
 
-        // Orphan detection runs against the entry OnStoredAsync/OnAppendedAsync was called FOR —
-        // fire it for the target itself, as OrphanDetection_AddsOrphanAttribute above does, to
-        // check whether the (never-written) inbound ref left it orphaned.
-        await _sink.OnStoredAsync(
-            "/test/fencetarget",
-            ["Target content placeholder."],
-            store,
-            CancellationToken.None);
-
-        // Assert — target entry gets no ref field and stays orphan: the fenced link never reached
-        // the extractor.
+        // Assert — fencetarget gets no ref field: the fenced link never reached the extractor, so
+        // the auto-link write never happened.
         var (targetScope, targetSubject) = store.ParseQualifiedName("/test/fencetarget");
         var targetEntry = store.LoadIndex(targetScope).First(e =>
             e.Name.Equals(targetSubject, StringComparison.OrdinalIgnoreCase));
@@ -97,9 +98,17 @@ public sealed class MaintenanceEventSinkTests : IDisposable
         (targetEntry.Attributes?.ContainsKey("ref") ?? false).Should().BeFalse(
             "a wiki-link inside a fenced block must not auto-link its target — that is the fix, " +
             "not a regression");
-        targetEntry.Attributes.Should().NotBeNull().And.ContainKey("orphan",
-            "with no inbound reference reaching it (the only one lived inside a fence), the target " +
-            "stays flagged orphan");
+
+        // Assert — fencesource, whose only mention of another memory lived inside the fence, stays
+        // orphan: with the write suppressed, its own orphan check finds nothing pointing back at it.
+        var (sourceScope, sourceSubject) = store.ParseQualifiedName("/test/fencesource");
+        var sourceEntry = store.LoadIndex(sourceScope).First(e =>
+            e.Name.Equals(sourceSubject, StringComparison.OrdinalIgnoreCase));
+
+        sourceEntry.Attributes.Should().NotBeNull().And.ContainKey("orphan",
+            "fencesource's mention of fencetarget lived only inside a fence and was never " +
+            "extracted, so the auto-link write that would otherwise clear its own orphan flag " +
+            "never happened — it stays orphan");
     }
 
     /// <summary>The orphan marker is an <c>orphan</c> ATTRIBUTE, not a keyword — see
