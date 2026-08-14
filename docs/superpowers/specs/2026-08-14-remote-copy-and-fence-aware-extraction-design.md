@@ -14,8 +14,8 @@ as a stop-and-ask at the moment it finds it. It does not write notes for a later
 at merge time, attached to a "merge with fixes" verdict. This branch closes them, and restates the
 rule as a first-class constraint on itself.
 
-Every claim below was verified against `main` at `bc7fdb3` before it was written. Two recorded
-residuals did not survive that check and are corrected here rather than implemented:
+Every claim below was verified against `main` at `bc7fdb3` before it was written. **Three of the
+recorded residuals did not survive that check** and are corrected here rather than implemented:
 
 - **`link` is not a silent refusal.** `MemoryTools.Core.cs:1014-1018` already returns a structured
   error with a suggested alternative, checked before either side is written. The ledger line
@@ -24,6 +24,12 @@ residuals did not survive that check and are corrected here rather than implemen
   Max explicitly: a count is a term's frequency in one memory's content, and summing inflates on
   every merge. The monotonic drift is the documented cost of the smallest answer that loses
   nothing. Closed as ruled; no code change.
+- **The punctuation trim is already balance-aware.** See 3.3 — `thing:Foo(bar)` survives intact
+  today; the residual was written before the fix that made it so.
+
+That is three of roughly ten. A residual list written at branch close, rather than a decision taken
+when each item was found, decays quietly — items get fixed by later work and the list never learns.
+It is a second reason the standing rule below exists, independent of the first.
 
 ## Global constraints
 
@@ -212,31 +218,47 @@ Paste a fenced build log and every path in it becomes a `file` attribute — and
 `derivation-merge-residuals` extended the drift baseline to appends and ephemerals, gets hashed
 into that baseline too.
 
-### The mechanism already exists
+### The machinery exists, but in two disagreeing copies
 
-`AttributeExtractor` scans line by line with `inFence`, `inFrontmatter` and `firstLine` state, and
-does it **twice**: at `:59-76` and again at `:208-222`. Its class doc (`:12`) and the mention-span
-doc (`:196-197`) describe the exclusion set as fenced blocks, inline-code spans, and YAML
-frontmatter.
+`AttributeExtractor` scans line by line **twice**, and the two loops do not apply the same rule:
 
-So this is not new machinery. It is one scanner, currently duplicated, that one extractor never got.
+| | `Extract` (`:53`) | `ExtractMentionSpans` (`:200`) |
+|---|---|---|
+| Fenced blocks | skipped (`:71`) | skipped (`:213`) |
+| YAML frontmatter | **read** — no skip exists | skipped (`:222`) |
+| Inline-code spans | **not stripped** | stripped (`:224`) |
+
+`Extract` reading frontmatter is deliberate, not an oversight: the class doc (`:7`) names frontmatter
+as the **first** source of attributes, which is where `key: value` metadata legitimately lives. It
+tracks `inFrontmatter` only to know when a later `---` closes the block.
+
+So there is no single existing rule to copy. There is a duplicated loop and a divergence.
 
 ### The design
 
 A new unit in `Scrinia.Core.Search` owns the single question *"which parts of this content are
-prose?"* and yields the prose regions of a document, excluding:
+prose?"* and excludes **fenced blocks only**. Both of `AttributeExtractor`'s loops adopt it, which
+removes the duplication *and* the divergence; all three of `ReferenceExtractor`'s patterns run over
+prose only.
 
-- fenced blocks delimited by ``` at line start
-- YAML frontmatter (a `---` line as the first line, through its closing `---`)
-- inline-code spans
+**Why fences only.** A fenced block is bulk machine output — a pasted build log, a diff, a config
+dump — that nobody is citing. Everything else the author typed on purpose:
 
-Both of `AttributeExtractor`'s loops adopt it, removing the duplication. All three of
-`ReferenceExtractor`'s patterns run over prose only.
+- **Frontmatter is prose.** It is deliberate structured metadata, and `Extract` has always read it.
+- **Inline-code spans are prose.** `` see `src/Foo.cs` for the parser `` is the commonest way a
+  person cites a file. Excluding it would silently drop the most deliberate reference form there is
+  — the opposite of the defect being fixed.
 
-**Exclusion parity is exact and deliberate.** `~~~` fences are *not* recognised, because
-`AttributeExtractor` does not recognise them. Widening the set is a separate change; matching it
-keeps one rule across every extractor and lets the tool descriptions state that rule once. The gap
-is recorded in the unit's own doc comment so the next reader does not mistake it for an oversight.
+**This reconciles the two loops rather than preserving both.** Moving them onto the mention-span set
+instead would stop `Extract` reading frontmatter, destroying a documented attribute source; moving
+onto fences-only is additive. The cost is real and is measured rather than assumed: mention spans
+will now also come from frontmatter and inline code, and those feed the entity graph. The
+implementation measures that growth against the real corpus before adopting it, and stops if it is
+large — `KnownAttributes.StateMarkerKeys` documents what a flood of low-value entity nodes does.
+
+**`~~~` is not recognised**, inherited from the loops being replaced and left alone deliberately.
+Widening it is a behaviour change with its own blast radius, not a tidy-up. The gap is recorded in
+the unit's own doc comment so the next reader does not mistake it for an oversight.
 
 ### Convergence is asymmetric, and stated plainly
 
@@ -284,24 +306,23 @@ branch, `FileHashes`. What is missing is a metadata write path.
 `UpdateMeta` gains an ephemeral branch: load the `EphemeralEntry`, apply the same
 added-keywords/added-attributes rule, and write back through the existing ephemeral write path.
 
-`MemoryDerivation.ForMetadataUpdate` (`MemoryDerivation.cs:418`) is typed
-`(ArtifactEntry current, ArtifactEntry updated)`, but its body touches only six field values —
-`current.Attributes`, `updated.Attributes`, `current.Keywords`, `updated.Keywords`,
-`updated.TermFrequencies` and `updated.AgentKeywords` — and mutates exactly two, returning
-`updated with { TermFrequencies, AgentKeywords }` (`:450`). `EphemeralEntry` carries all four of
-those field kinds, so the rule already fits it.
+**No derivation rule changes, and none is duplicated.** `UpdateMeta`'s mutation is already a lambda
+over `ArtifactEntry` handed to `store.TryUpdateEntry` (`:338`), and
+`MemoryDerivation.ForMetadataUpdate` (`:418`) already takes and returns `ArtifactEntry`. So the
+ephemeral path projects `EphemeralEntry → ArtifactEntry`, runs **the same** mutation and **the same**
+`ForMetadataUpdate`, and projects back — reusing both unchanged.
 
-That body is lifted into a core computing the two mutated values from the six read ones. The
-existing `ArtifactEntry` signature becomes a thin wrapper over it; the `EphemeralEntry` path calls
-the same core. **One rule, two callers** — the shape `Scrinia.Core.Merge` uses for every shared
-field rule. A second copy of the boost logic for ephemerals is precisely how the four derivation
-implementations drifted.
+The lambda body moves into a named private method so the two paths call one implementation rather
+than a copy. That is the whole structural change.
 
-**The no-op contract must survive the refactor.** `:416-417` documents that an update with nothing
-seed-worthy returns `updated` unchanged *including the same `TermFrequencies` reference*, so a
-caller can distinguish a no-op by reference identity. A core that always allocates a fresh
-dictionary would break the PATCH round-trip contract that depends on it. A test pins the reference
-identity, for both entry types.
+Reusing `ForMetadataUpdate` untouched also preserves its no-op contract for free: `:416-417`
+documents that an update with nothing seed-worthy returns `updated` unchanged *including the same
+`TermFrequencies` reference*, which the PATCH round-trip depends on. Rewriting it to serve two entry
+types would have put that contract at risk for no gain.
+
+Applying `ForMetadataUpdate` on the ephemeral path is required, not optional: without it an
+ephemeral's term frequencies would diverge from a persistent memory's given identical input — a
+store-mode divergence, the class this codebase keeps removing.
 
 `Link`'s pre-check at `:1014` then narrows from "either side is ephemeral" to "either side does not
 exist". The both-sides-checked-before-either-is-written property at `:1006-1012` is load-bearing and
@@ -335,12 +356,19 @@ with value JSON `null`", because System.Text.Json represents a JSON null as a nu
 Both mergers behave the same today, so this is a consistency gap rather than a divergence — but the
 `Scrinia.Merge` copy must move with it, pinned by the existing parity suite.
 
-### 3.3 Balance-blind punctuation trim
+### 3.3 Balance-blind punctuation trim — ALREADY FIXED, no work
 
-`AttributeExtractor`'s inline-prose route trims trailing punctuation without tracking brackets, so
-`thing:Foo(bar)` yields `Foo(bar`. The trim becomes balance-aware: a closing bracket is kept when
-the value contains its matching opener. File paths are unaffected — they are matched by a pattern
-with its own terminator — so the change is scoped to prose-routed attribute values.
+The recorded residual says `thing:Foo(bar)` trims to `Foo(bar`. **It does not.**
+`TrimTrailingUnbalancedPunctuation` (`AttributeExtractor.cs:448`) strips a closing bracket only when
+the value holds more of that closer than its matching opener (`:460`), and a quote or backtick only
+when its running count is odd (`:467`). `Foo(bar)` has one of each, so it survives untouched.
+
+Verified by reading the method, not its comment — the comment at `:383-385` makes the same claim, and
+a claim traceable to a comment is presumptively wrong until the code is read.
+
+The fix landed during the previous branch's final review round; the residual line was written before
+it and never updated. **Third stale residual**, after `link`'s refusal and term-frequency drift.
+Closed with no code change.
 
 ### 3.4 Two comments assert a tool that does not exist
 
