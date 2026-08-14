@@ -77,12 +77,23 @@ public sealed class RemoteStoreToolTests
     /// for the happy path, <c>404</c> to simulate a server that predates the route.
     /// <paramref name="showJson"/> defaults to null (404) because most tests never reach the show
     /// route; the demotion tests supply it.</para>
+    ///
+    /// <para><paramref name="copyStatus"/> is the persistent -> persistent analogue of
+    /// <paramref name="copyFromClientStatus"/>. <paramref name="entryFailureStatus"/> and
+    /// <paramref name="showFailureStatus"/> are a THIRD state on top of the /entry and show routes'
+    /// existing found/not-found binary — set, they short-circuit straight to that status with an
+    /// error body, bypassing <paramref name="listJson"/>/<paramref name="showJson"/> entirely, so a
+    /// test can pin a non-404 failure (a 403, say) on a route whose normal behaviour is otherwise
+    /// data-driven.</para>
     /// </summary>
     private sealed class StubBackendHandler(
         string listJson,
         HttpStatusCode patchStatus = HttpStatusCode.OK,
         HttpStatusCode copyFromClientStatus = HttpStatusCode.OK,
-        string? showJson = null) : HttpMessageHandler
+        string? showJson = null,
+        HttpStatusCode copyStatus = HttpStatusCode.OK,
+        HttpStatusCode? entryFailureStatus = null,
+        HttpStatusCode? showFailureStatus = null) : HttpMessageHandler
     {
         /// <summary>Every request that reached the wire, as "METHOD path". Lets a test assert that
         /// an operation made NO network call — which no status-code fixture can show, because a
@@ -185,13 +196,25 @@ public sealed class RemoteStoreToolTests
             }
             else if (request.Method == HttpMethod.Get && path.EndsWith("/entry", StringComparison.Ordinal))
             {
-                string? entry = FindEntryJson(path);
-                response = entry is null
-                    ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                    : new HttpResponseMessage(HttpStatusCode.OK)
+                if (entryFailureStatus is { } entryFail)
+                {
+                    response = new HttpResponseMessage(entryFail)
                     {
-                        Content = new StringContent(entry, Encoding.UTF8, "application/json"),
+                        Content = new StringContent(
+                            """{"error":"Error: permission 'read' required."}""",
+                            Encoding.UTF8, "application/json"),
                     };
+                }
+                else
+                {
+                    string? entry = FindEntryJson(path);
+                    response = entry is null
+                        ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                        : new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(entry, Encoding.UTF8, "application/json"),
+                        };
+                }
             }
             // Promotion (HttpMemoryStore.CopyMemory, ~a -> b). A separate branch from the plain
             // "/copy" one below — the destination-in-path route Task 3 added — with a configurable
@@ -212,12 +235,17 @@ public sealed class RemoteStoreToolTests
                 };
             }
             // Persistent -> persistent (HttpMemoryStore.CopyMemory, a -> b), unchanged wire shape.
+            // Configurable status for the same reason copy-from-client's is: a non-OK response
+            // carries an error body so a test can pin that it reaches the caller.
             else if (request.Method == HttpMethod.Post && path.EndsWith("/copy", StringComparison.Ordinal))
             {
-                response = new HttpResponseMessage(HttpStatusCode.OK)
+                response = new HttpResponseMessage(copyStatus)
                 {
                     Content = new StringContent(
-                        """{"message":"Copied."}""", Encoding.UTF8, "application/json"),
+                        copyStatus == HttpStatusCode.OK
+                            ? """{"message":"Copied."}"""
+                            : """{"error":"Error: destination memory already exists. Set overwrite=true to replace it."}""",
+                        Encoding.UTF8, "application/json"),
                 };
             }
             // Demotion (HttpMemoryStore.CopyMemory, a -> ~b) reads the show route for content, after
@@ -229,12 +257,24 @@ public sealed class RemoteStoreToolTests
                      && path.Contains("/memories/", StringComparison.Ordinal)
                      && !path.EndsWith("/entry", StringComparison.Ordinal))
             {
-                response = showJson is null
-                    ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                    : new HttpResponseMessage(HttpStatusCode.OK)
+                if (showFailureStatus is { } showFail)
+                {
+                    response = new HttpResponseMessage(showFail)
                     {
-                        Content = new StringContent(showJson, Encoding.UTF8, "application/json"),
+                        Content = new StringContent(
+                            """{"error":"Error: permission 'read' required."}""",
+                            Encoding.UTF8, "application/json"),
                     };
+                }
+                else
+                {
+                    response = showJson is null
+                        ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                        : new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(showJson, Encoding.UTF8, "application/json"),
+                        };
+                }
             }
             else if (request.Method == HttpMethod.Patch)
             {
@@ -270,11 +310,13 @@ public sealed class RemoteStoreToolTests
 
         public RemoteStoreScope(string listJson = EmptyListJson, HttpStatusCode patchStatus = HttpStatusCode.OK,
             string? workspaceRoot = null, HttpStatusCode copyFromClientStatus = HttpStatusCode.OK,
-            string? showJson = null)
+            string? showJson = null, HttpStatusCode copyStatus = HttpStatusCode.OK,
+            HttpStatusCode? entryFailureStatus = null, HttpStatusCode? showFailureStatus = null)
         {
             _previous = MemoryStoreContext.Current;
             MemoryEventSinkContext.Default = null;
-            Handler = new StubBackendHandler(listJson, patchStatus, copyFromClientStatus, showJson);
+            Handler = new StubBackendHandler(listJson, patchStatus, copyFromClientStatus, showJson,
+                copyStatus, entryFailureStatus, showFailureStatus);
             var http = new HttpClient(Handler)
             {
                 BaseAddress = new Uri("http://localhost:5000"),
@@ -1091,6 +1133,37 @@ public sealed class RemoteStoreToolTests
         Nmp2ChunkedEncoder.DecodeChunk(eph.Artifact, 1).Should().Be("only the artifact survives");
     }
 
+    /// <summary>Demotion's <c>/entry</c> GET must surface the server's error body on a non-404
+    /// failure, not just the status name — the same I-2 defect class as promotion's, fixed here too
+    /// rather than only at the one site the review used as its example.</summary>
+    [Fact]
+    public async Task Copy_Demotion_RemoteStore_SurfacesTheServersErrorBody_WhenTheEntryGetFails()
+    {
+        using var scope = new RemoteStoreScope(entryFailureStatus: HttpStatusCode.Forbidden);
+
+        var response = await Tools().Copy("alpha", "~demoted");
+
+        response.Status.Should().Be("error");
+        response.Error.Should().Contain("permission 'read' required",
+            because: "a bare status name tells the caller nothing actionable; the server's own " +
+                     "refusal text does");
+    }
+
+    /// <summary>The same guarantee for demotion's SECOND GET, the show route — a non-404 failure
+    /// there must surface the server's error body too, not just the status name.</summary>
+    [Fact]
+    public async Task Copy_Demotion_RemoteStore_SurfacesTheServersErrorBody_WhenTheShowGetFails()
+    {
+        using var scope = new RemoteStoreScope(OneEntryListJson, showFailureStatus: HttpStatusCode.Forbidden);
+
+        var response = await Tools().Copy("alpha", "~demoted");
+
+        response.Status.Should().Be("error");
+        response.Error.Should().Contain("permission 'read' required",
+            because: "a bare status name tells the caller nothing actionable; the server's own " +
+                     "refusal text does");
+    }
+
     /// <summary>Persistent -> persistent (<c>a -> b</c>) is unchanged wire shape but had never been
     /// tested at all, and it no longer strips a leading <c>~</c> from <c>src</c> — because with the
     /// three ephemeral-touching branches above intercepting every case that could carry one, this
@@ -1108,6 +1181,21 @@ public sealed class RemoteStoreToolTests
         string body = scope.Handler.Bodies[scope.Handler.Requests.IndexOf(request)];
         body.Should().Contain("beta",
             because: "the destination travels in the body for this route, unlike copy-from-client");
+    }
+
+    /// <summary>Persistent -> persistent's failures must surface the server's error body too, not
+    /// just the status name — the same I-2 defect class, fixed at every site it appeared.</summary>
+    [Fact]
+    public async Task Copy_PersistentToPersistent_RemoteStore_SurfacesTheServersErrorBody_OnFailure()
+    {
+        using var scope = new RemoteStoreScope(copyStatus: HttpStatusCode.BadRequest);
+
+        var response = await Tools().Copy("alpha", "beta");
+
+        response.Status.Should().Be("error");
+        response.Error.Should().Contain("destination memory already exists",
+            because: "a bare status name tells the caller nothing actionable; the server's own " +
+                     "refusal text does");
     }
 
     /// <summary>Ruling 2(a): the remote ephemeral -> ephemeral branch refuses a same-name copy, the
