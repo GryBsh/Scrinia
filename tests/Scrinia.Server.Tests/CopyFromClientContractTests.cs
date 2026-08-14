@@ -17,6 +17,7 @@ public sealed class CopyFromClientContractTests
     [InlineData("Scope")]
     [InlineData("ChunkCount")]
     [InlineData("CreatedAt")]
+    [InlineData("OriginalBytes")]
     public void CarriedEntry_DoesNotCarryADerivableOrDestinationOwnedField(string forbidden)
     {
         typeof(CarriedEntry).GetProperty(forbidden).Should().BeNull(
@@ -33,13 +34,12 @@ public sealed class CopyFromClientContractTests
         var original = new CopyFromClientRequest(
             Content: ["chunk one", "chunk two"],
             Entry: new CarriedEntry(
-                OriginalBytes: 17,
                 UpdatedAt: new DateTimeOffset(2026, 3, 4, 5, 6, 7, TimeSpan.Zero),
                 Description: "a preview",
                 Attributes: new Dictionary<string, string[]> { ["file"] = ["src/A.cs"] },
                 Keywords: ["kw"],
                 TermFrequencies: new Dictionary<string, int> { ["kw"] = 2 },
-                ChunkEntries: [new ChunkEntryDto(0, "preview", ["kw"], null)],
+                ChunkEntries: [new ChunkEntryDto(1, "preview", ["kw"], null)],
                 FileHashes: new Dictionary<string, string> { ["src/A.cs"] = "deadbeef" },
                 AgentKeywords: ["kw"]),
             Overwrite: true);
@@ -56,7 +56,7 @@ public sealed class CopyFromClientContractTests
     public void CopyFromClientRequest_DefaultsOverwriteToFalse()
     {
         var back = JsonSerializer.Deserialize(
-            """{"content":["c"],"entry":{"originalBytes":1}}""",
+            """{"content":["c"],"entry":{}}""",
             ServerJsonContext.Default.CopyFromClientRequest);
 
         back!.Overwrite.Should().BeFalse();

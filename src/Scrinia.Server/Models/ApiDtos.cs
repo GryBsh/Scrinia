@@ -153,9 +153,15 @@ public sealed record CopyRequest(
 /// is <c>Content.Length</c>; <c>CreatedAt</c> is stamped on arrival. None of them appear here, so
 /// none of them can disagree with the request that carries them — the same rule
 /// <see cref="ShowResponse"/> states, applied to a request.</para>
+///
+/// <para><c>OriginalBytes</c> is deleted for the same reason (RULED 2026-08-14): the encoder
+/// computes the true value from <c>Content</c> itself
+/// (<see cref="Scrinia.Core.Encoding.Nmp2ChunkedEncoder"/> sums each chunk's UTF-8 length), so it is
+/// not metadata the client derived and the server cannot — it is exactly the kind of derivable field
+/// this shape otherwise excludes. Trusting a client-supplied number here would let the request
+/// disagree with its own artifact. The handler computes it from <c>Content</c>.</para>
 /// </summary>
 public sealed record CarriedEntry(
-    long OriginalBytes,
     DateTimeOffset? UpdatedAt,
     string? Description,
     Dictionary<string, string[]>? Attributes,

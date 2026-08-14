@@ -170,6 +170,8 @@ All memory endpoints require store resolution and appropriate permissions. They 
 | POST | `/memories` | `store` |
 | GET | `/memories` | `search` |
 | GET | `/memories/{name}` | `read` |
+| GET | `/memories/{name}/entry` | `read` |
+| PATCH | `/memories/{name}` | `store` |
 | DELETE | `/memories/{name}` | `forget` |
 | POST | `/memories/{name}/append` | `append` |
 | POST | `/memories/{name}/copy` | `copy` |
@@ -180,10 +182,11 @@ All memory endpoints require store resolution and appropriate permissions. They 
 | POST | `/export` | `export` |
 | POST | `/import` | `import` |
 
-`{name}` names the **source** on every route above except `copy-from-client`, where it names the
-**destination** — there is no server-side source to name, since a `copy-from-client` request's
-source is a client-side ephemeral this process has never seen. The handler performs no name
-resolution against its own store at all.
+`{name}` addresses the memory the route acts on — the one being read, deleted, appended to,
+patched, or copied FROM — on every route above except `copy-from-client`, where it names the
+**destination** instead: there is no server-side source to name, since a `copy-from-client`
+request's source is a client-side ephemeral this process has never seen. The handler performs no
+name resolution against its own store at all.
 
 ### KeyEndpoints
 

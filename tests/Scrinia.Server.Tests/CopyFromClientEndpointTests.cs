@@ -32,27 +32,38 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         _base = $"/api/v1/stores/{factory.PrimaryStore}";
     }
 
+    /// <summary>An entry carrying nothing but the required-null shape, for rejection-path tests
+    /// that don't care about the metadata itself.</summary>
+    private static CarriedEntry MinimalEntry() => new(
+        UpdatedAt: null, Description: null, Attributes: null, Keywords: null,
+        TermFrequencies: null, ChunkEntries: null, FileHashes: null, AgentKeywords: null);
+
     /// <summary>
     /// The promotion carries a drift baseline naming a file that does NOT exist in the server's
     /// workspace. That is the assertion that matters: derivation hashes <c>file</c> values against
     /// the local filesystem, so a baseline surviving intact can only have been carried. A test that
     /// merely asserted the memory exists would pass while the server silently re-derived it to
     /// empty.
+    ///
+    /// <para>Round 2 review, Important 7: also covers <c>ChunkEntries</c>, <c>Description</c> and
+    /// <c>Attributes</c> — deleting any one of those three from the carry mapping left the
+    /// round-1 suite green.</para>
     /// </summary>
     [Fact]
     public async Task CopyFromClient_CarriesTheClientsDriftBaselineIntact()
     {
+        const string content = "client-only content";
         var entry = new CarriedEntry(
-            OriginalBytes: 42,
             UpdatedAt: new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero),
             Description: "carried from the client",
             Attributes: new Dictionary<string, string[]> { ["file"] = ["src/OnlyOnTheClient.cs"] },
             Keywords: ["carried-keyword"],
             TermFrequencies: new Dictionary<string, int> { ["carried-keyword"] = 3 },
-            ChunkEntries: null,
+            ChunkEntries: [new ChunkEntryDto(1, "chunk preview", ["chunk-keyword"],
+                new Dictionary<string, int> { ["chunk-keyword"] = 1 })],
             FileHashes: new Dictionary<string, string> { ["src/OnlyOnTheClient.cs"] = "deadbeefcafe" },
             AgentKeywords: ["carried-keyword"]);
-        var req = new CopyFromClientRequest(["client-only content"], entry);
+        var req = new CopyFromClientRequest([content], entry);
 
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/promoted/copy-from-client", req);
         resp.StatusCode.Should().Be(HttpStatusCode.OK,
@@ -61,12 +72,25 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         var got = await _client.GetFromJsonAsync<MemoryEntry>($"{_base}/memories/promoted/entry");
         got.Should().NotBeNull();
         got!.Name.Should().Be("promoted");
-        got.OriginalBytes.Should().Be(42);
+        got.OriginalBytes.Should().Be(System.Text.Encoding.UTF8.GetByteCount(content),
+            because: "OriginalBytes is derived from Content now (Important 5), not carried — "
+                   + "CarriedEntry no longer has the field at all");
         got.FileHashes.Should().BeEquivalentTo(entry.FileHashes,
             because: "the drift baseline names a file the server's own filesystem does not have — "
                    + "surviving intact proves it was carried, not silently re-derived to empty");
         got.TermFrequencies.Should().BeEquivalentTo(entry.TermFrequencies);
         got.AgentKeywords.Should().BeEquivalentTo(entry.AgentKeywords);
+        got.Description.Should().Be(entry.Description,
+            because: "Description carries the client's ContentPreview — deleting that mapping left "
+                   + "the round-1 suite green");
+        got.Attributes.Should().BeEquivalentTo(entry.Attributes,
+            because: "Attributes carries through Normalize, which is a no-op on an already-lowercase, "
+                   + "already-trimmed map like this one");
+        got.ChunkEntries.Should().BeEquivalentTo(entry.ChunkEntries,
+            options => options.Excluding(c => c.ChunkIndex).WithStrictOrdering(),
+            because: "ChunkEntries carries the client's per-chunk keywords/preview/term "
+                   + "frequencies — deleting that mapping left the round-1 suite green");
+        got.ChunkEntries![0].ChunkIndex.Should().Be(1);
     }
 
     /// <summary>No name resolution happens against this store, so a same-named persistent memory is
@@ -78,12 +102,8 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         var serverResp = await _client.PostAsJsonAsync($"{_base}/memories", serverReq);
         serverResp.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        var clientEntry = new CarriedEntry(
-            OriginalBytes: 99, UpdatedAt: null, Description: "client-side",
-            Attributes: null, Keywords: null, TermFrequencies: null, ChunkEntries: null,
-            FileHashes: null, AgentKeywords: null);
         var copyReq = new CopyFromClientRequest(
-            ["CLIENT-SIDE marker content"], clientEntry, Overwrite: true);
+            ["CLIENT-SIDE marker content"], MinimalEntry(), Overwrite: true);
 
         var copyResp = await _client.PostAsJsonAsync($"{_base}/memories/collide/copy-from-client", copyReq);
         copyResp.StatusCode.Should().Be(HttpStatusCode.OK,
@@ -104,8 +124,7 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         using var limitedClient = _factory.CreateClient();
         limitedClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", rawKey);
 
-        var req = new CopyFromClientRequest(
-            ["content"], new CarriedEntry(1, null, null, null, null, null, null, null));
+        var req = new CopyFromClientRequest(["content"], MinimalEntry());
         var resp = await limitedClient.PostAsJsonAsync($"{_base}/memories/no-perm-probe/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -133,8 +152,7 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         using var factory = new CopyFromClientReadOnlyServerFactory();
         using var readOnlyClient = factory.CreateReadOnlyTargetClient();
 
-        var req = new CopyFromClientRequest(
-            ["content"], new CarriedEntry(1, null, null, null, null, null, null, null));
+        var req = new CopyFromClientRequest(["content"], MinimalEntry());
         var resp = await readOnlyClient.PostAsJsonAsync(
             $"/api/v1/stores/{factory.PrimaryStore}/memories/ro-probe/copy-from-client", req);
 
@@ -150,8 +168,7 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
     public async Task CopyFromClient_WithOverLongName_Returns400()
     {
         string longName = new string('a', 300);
-        var req = new CopyFromClientRequest(
-            ["content"], new CarriedEntry(1, null, null, null, null, null, null, null));
+        var req = new CopyFromClientRequest(["content"], MinimalEntry());
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/{longName}/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -169,8 +186,7 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
     [Fact]
     public async Task CopyFromClient_WithMalformedDestinationName_Returns400()
     {
-        var req = new CopyFromClientRequest(
-            ["content"], new CarriedEntry(1, null, null, null, null, null, null, null));
+        var req = new CopyFromClientRequest(["content"], MinimalEntry());
         var resp = await _client.PostAsJsonAsync(
             $"{_base}/memories/legacy:colon-name/copy-from-client", req);
 
@@ -180,13 +196,47 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         body!.Error.Should().Contain("path syntax",
             because: "the refusal must be ParseQualifiedName's own caller-facing message, caught "
                    + "and turned into a 400 rather than surfacing as an unhandled 500");
+        body.Error.Should().NotContain("Parameter",
+            because: "the internal C# parameter name ArgumentException auto-appends is not a "
+                   + "caller-facing detail (round 2 review, minor)");
+    }
+
+    /// <summary>
+    /// Round 2 review, Critical 2. <c>ParseQualifiedName</c> sanitizes ONLY the leaf segment
+    /// (<c>FileMemoryStore.cs:253</c>) — the scope built from every other segment
+    /// (<c>FileMemoryStore.cs:251</c>) is raw, so <c>*</c> reaches <c>Directory.CreateDirectory</c>
+    /// intact and throws <c>IOException</c> there, past <c>ParseQualifiedName</c>'s own throw.
+    /// Needs a real Kestrel round trip (mirrors <c>CaseInsensitiveRestoreTests</c>): the shared
+    /// in-memory <c>TestServer</c> the class fixture's <c>_client</c> uses does not reliably carry an
+    /// escaped slash (<c>%2F</c>) through to the route value the way a real HTTP request does, and a
+    /// two-segment v2 path is required to reach the scope-building code at all — a single-segment
+    /// name goes through the leaf's own (correct) sanitization instead.
+    /// </summary>
+    [Fact]
+    public async Task CopyFromClient_WithFilesystemInvalidDestinationName_Returns400()
+    {
+        using var factory = new ScriniaServerFactory();
+        factory.UseKestrel(0);
+        factory.StartServer();
+        using var client = factory.CreateAuthenticatedClient();
+
+        string encodedName = Uri.EscapeDataString("/a*b/x");
+        var req = new CopyFromClientRequest(["content"], MinimalEntry());
+        var resp = await client.PostAsJsonAsync(
+            $"/api/v1/stores/{factory.PrimaryStore}/memories/{encodedName}/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            because: await resp.Content.ReadAsStringAsync());
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("filesystem",
+            because: "the refusal must be the endpoint's IOException guard, not an unhandled 500 — "
+                   + "and must not leak the server's absolute filesystem path");
     }
 
     [Fact]
     public async Task CopyFromClient_WithEmptyContent_Returns400()
     {
-        var req = new CopyFromClientRequest(
-            [], new CarriedEntry(1, null, null, null, null, null, null, null));
+        var req = new CopyFromClientRequest([], MinimalEntry());
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/empty-content-probe/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -195,12 +245,27 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
             because: "the message must name the missing field, not just report failure");
     }
 
+    /// <summary>Round 2 review, Important 3: the size check tolerated a null element (it only
+    /// filtered non-null ones), so a null content element sailed past every guard into
+    /// <c>EncodeChunks</c>'s <c>UTF8.GetBytes(null)</c> — an unhandled 500.</summary>
+    [Fact]
+    public async Task CopyFromClient_WithNullContentElement_Returns400()
+    {
+        var req = new CopyFromClientRequest(["real chunk", null!], MinimalEntry());
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/null-content-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            because: await resp.Content.ReadAsStringAsync());
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("null",
+            because: "the message must name the actual problem, not just report failure");
+    }
+
     [Fact]
     public async Task CopyFromClient_WithOverSizeContentElement_Returns400()
     {
         string huge = new string('x', 6 * 1024 * 1024); // over the 5 MB per-element cap
-        var req = new CopyFromClientRequest(
-            [huge], new CarriedEntry(1, null, null, null, null, null, null, null));
+        var req = new CopyFromClientRequest([huge], MinimalEntry());
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/oversize-content-probe/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -216,8 +281,7 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
         for (int i = 0; i < KnownAttributes.MaxAttributes + 1; i++)
             tooManyKeys[$"key{i}"] = ["v"];
 
-        var entry = new CarriedEntry(
-            1, null, null, tooManyKeys, null, null, null, null);
+        var entry = MinimalEntry() with { Attributes = tooManyKeys };
         var req = new CopyFromClientRequest(["content"], entry);
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/bounds-probe/copy-from-client", req);
 
@@ -227,6 +291,132 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
             because: "the message must name the actual bound applied");
     }
 
+    // ── Round 2 review, Critical 1: bounds on the carried metadata ──────────────────────────
+    //
+    // This route is the only wire entry point for these six fields (StoreRequest doesn't carry
+    // them; PatchEntry refuses them). Each bound below mirrors what a real local write already
+    // produces — see CarriedEntryBoundsError's doc comment in MemoryEndpoints.cs for exactly
+    // which constant each number comes from. Numbers are literal here because
+    // MaxCarriedKeywords/MaxCarriedPreviewLength are private to MemoryEndpoints; the two that
+    // ARE public (KnownAttributes.MaxValuesPerKey, TextAnalysis.DefaultMaxTfTerms) are referenced
+    // directly.
+
+    [Fact]
+    public async Task CopyFromClient_WithOverLongDescription_Returns400()
+    {
+        var entry = MinimalEntry() with { Description = new string('d', 501) }; // > 500-char bound
+        var req = new CopyFromClientRequest(["content"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/desc-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("500",
+            because: "the message must name the actual bound applied");
+    }
+
+    [Fact]
+    public async Task CopyFromClient_WithTooManyKeywords_Returns400()
+    {
+        var entry = MinimalEntry() with
+        {
+            Keywords = Enumerable.Range(0, 26).Select(i => $"kw{i}").ToArray(), // > 25-entry bound
+        };
+        var req = new CopyFromClientRequest(["content"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/kw-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("keywords",
+            because: "the message must name the field the bound applies to");
+    }
+
+    [Fact]
+    public async Task CopyFromClient_WithTooManyAgentKeywords_Returns400()
+    {
+        var entry = MinimalEntry() with
+        {
+            AgentKeywords = Enumerable.Range(0, 26).Select(i => $"kw{i}").ToArray(), // > 25-entry bound
+        };
+        var req = new CopyFromClientRequest(["content"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/agent-kw-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("agentKeywords",
+            because: "the message must name the field the bound applies to");
+    }
+
+    [Fact]
+    public async Task CopyFromClient_WithTooManyTermFrequencyTerms_Returns400()
+    {
+        var tf = Enumerable.Range(0, TextAnalysis.DefaultMaxTfTerms + 1)
+            .ToDictionary(i => $"term{i}", i => 1);
+        var entry = MinimalEntry() with { TermFrequencies = tf };
+        var req = new CopyFromClientRequest(["content"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/tf-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain($"{TextAnalysis.DefaultMaxTfTerms}",
+            because: "the message must name the actual bound applied");
+    }
+
+    [Fact]
+    public async Task CopyFromClient_WithTooManyFileHashes_Returns400()
+    {
+        var hashes = Enumerable.Range(0, KnownAttributes.MaxValuesPerKey + 1)
+            .ToDictionary(i => $"src/File{i}.cs", i => $"hash{i}");
+        var entry = MinimalEntry() with { FileHashes = hashes };
+        var req = new CopyFromClientRequest(["content"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/filehash-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain($"{KnownAttributes.MaxValuesPerKey}",
+            because: "the message must name the actual bound applied");
+    }
+
+    [Fact]
+    public async Task CopyFromClient_WithMoreChunkEntriesThanContentChunks_Returns400()
+    {
+        var entry = MinimalEntry() with
+        {
+            ChunkEntries = [new ChunkEntryDto(1, null, null, null), new ChunkEntryDto(2, null, null, null)],
+        };
+        var req = new CopyFromClientRequest(["only one chunk"], entry); // Content.Length == 1
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/chunk-count-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("chunkEntries",
+            because: "the message must name the field the bound applies to");
+    }
+
+    /// <summary>
+    /// Round 2 review, Important 4: <c>ChunkIndex</c> is 1-based and client-chosen.
+    /// <c>WeightedAttributeScorer</c> emits search hits at whatever index a <c>ChunkEntry</c>
+    /// carries, with <c>totalChunks</c> read from the entry's real <c>ChunkCount</c> — an
+    /// out-of-range index is the reachable form of the header-mismatch threat Step 4a of the
+    /// original task ruled unreachable at the artifact's own header (which this endpoint encodes
+    /// itself and so cannot forge); <c>ChunkEntries</c> is caller-authored data this endpoint does
+    /// NOT derive, so nothing stopped a fabricated index before this fix.
+    /// </summary>
+    [Fact]
+    public async Task CopyFromClient_WithChunkEntryIndexOutOfRange_Returns400()
+    {
+        var entry = MinimalEntry() with
+        {
+            ChunkEntries = [new ChunkEntryDto(2, null, null, null)], // Content has 1 chunk: valid range is [1,1]
+        };
+        var req = new CopyFromClientRequest(["only one chunk"], entry);
+        var resp = await _client.PostAsJsonAsync($"{_base}/memories/chunk-index-bounds-probe/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
+        body!.Error.Should().Contain("chunkIndex",
+            because: "the message must name the field the bound applies to");
+    }
+
     [Fact]
     public async Task CopyFromClient_ExistingDestinationWithoutOverwrite_Returns400()
     {
@@ -234,8 +424,7 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
             new StoreRequest(["already here"], "existing-dest-probe"));
         storeResp.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        var entry = new CarriedEntry(1, null, null, null, null, null, null, null);
-        var req = new CopyFromClientRequest(["new content"], entry); // Overwrite defaults to false
+        var req = new CopyFromClientRequest(["new content"], MinimalEntry()); // Overwrite defaults to false
         var resp = await _client.PostAsJsonAsync($"{_base}/memories/existing-dest-probe/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -246,15 +435,15 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
 }
 
 /// <summary>
-/// Provisions two API keys against one store, for
+/// Provisions one API key against one store, for
 /// <see cref="CopyFromClientEndpointTests.CopyFromClient_DeniedWhenStoreIsReadOnlyForThisKey"/>:
-/// the factory's own (writable, 'copy'-holding) seed key, and a second key under
-/// <see cref="ReadOnlyClaimsServerFactory.ReadOnlyTargetUserId"/> — the same identity
+/// a key under <see cref="ReadOnlyClaimsServerFactory.ReadOnlyTargetUserId"/> — the same identity
 /// <c>PatchEndpointTests</c>' <see cref="MarkTargetUserReadOnlyTransform"/> marks read-only — so
 /// this route's <c>IsWritable</c> check gets the same genuine-claims-transform coverage PATCH's did
 /// (M-1), without a second copy of the transform or the target-identity constant. Unlike
-/// <see cref="ReadOnlyClaimsServerFactory"/>, both keys here hold 'copy' rather than 'store', since
-/// that is the permission this route checks before <c>IsWritable</c> runs.
+/// <see cref="ReadOnlyClaimsServerFactory"/>, this key holds 'copy' rather than 'store', since that
+/// is the permission this route checks before <c>IsWritable</c> runs; no second (writable) key is
+/// needed because the test never has to create anything through it first.
 /// </summary>
 public sealed class CopyFromClientReadOnlyServerFactory : WebApplicationFactory<Program>
 {

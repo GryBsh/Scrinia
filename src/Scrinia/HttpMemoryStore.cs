@@ -186,9 +186,10 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     internal sealed record CopyApiRequest(string Destination, bool Overwrite = false);
     /// <summary>The metadata a client-side source carries to a server-owned destination: exactly the
     /// fields the server can neither derive from the artifact nor compute from the destination name.
-    /// Mirrors <c>Scrinia.Server.Models.CarriedEntry</c>.</summary>
+    /// Mirrors <c>Scrinia.Server.Models.CarriedEntry</c>. <c>OriginalBytes</c> is deliberately absent
+    /// (RULED 2026-08-14): the server computes it from <c>Content</c> itself, so carrying it here
+    /// would let the request disagree with its own artifact.</summary>
     internal sealed record CarriedEntryDto(
-        long OriginalBytes,
         DateTimeOffset? UpdatedAt,
         string? Description,
         Dictionary<string, string[]>? Attributes,

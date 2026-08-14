@@ -42,6 +42,11 @@ public static class MemoryEndpoints
     private const int MaxNameLength = 256;
     private const long MaxContentBytes = 5 * 1024 * 1024; // 5 MB per element
 
+    // Bounds for the metadata copy-from-client carries — see CarriedEntryBoundsError's doc
+    // comment for why these two values specifically.
+    private const int MaxCarriedPreviewLength = 500;
+    private const int MaxCarriedKeywords = 25;
+
     /// <summary>True when the caller may write to <paramref name="store"/> — i.e. the store is not
     /// marked read-only by an SSO store_access claim. API keys default to read-write.</summary>
     internal static bool IsWritable(RequestContext ctx, string store) =>
@@ -577,7 +582,14 @@ public static class MemoryEndpoints
         if (req.Entry is null)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("entry is required.")));
 
-        if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
+        // Round 2 review, Important 3: EncodeChunks runs outside any try/catch below and calls
+        // UTF8.GetBytes on each element — a null element throws ArgumentNullException there, an
+        // unhandled 500. Rejected explicitly, before the size check (which already tolerated null
+        // via `c is not null &&`, silently letting it through to that later crash).
+        if (req.Content.Any(c => c is null))
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("content elements must not be null.")));
+
+        if (req.Content.Any(c => System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
             return Task.FromResult<IResult>(Results.BadRequest(
                 new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB.")));
 
@@ -589,10 +601,45 @@ public static class MemoryEndpoints
             is { } boundsError)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(boundsError)));
 
+        // Round 2 review, Critical 1: this is the ONLY wire entry point for TermFrequencies,
+        // FileHashes, ChunkEntries, Keywords, AgentKeywords and Description — StoreRequest doesn't
+        // carry them and PatchEntry refuses them — so nothing bounded them before now. An unbounded
+        // request lands in CachedIndex for the process lifetime and every search scores against it.
+        // See CarriedEntryBoundsError's doc comment for where each bound comes from.
+        if (CarriedEntryBoundsError(req.Entry, req.Content.Length) is { } carriedBoundsError)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(carriedBoundsError)));
+
         if (ctx.Store is not ILocalMemoryStore local)
             return Task.FromResult<IResult>(Results.Json(
                 new ErrorResponse("copy-from-client requires a store backed by a local filesystem."),
                 statusCode: StatusCodes.Status501NotImplemented));
+
+        // Round 2 review, Critical 2: WriteCarriedCopy resolves `decoded` via ParseQualifiedName
+        // internally, but ParseQualifiedName sanitizes ONLY the leaf segment
+        // (FileMemoryStore.cs:253) — the scope built from every OTHER segment (FileMemoryStore.cs:251)
+        // is raw, so it throws ArgumentException for a legacy "topic:subject" name, a v2 path
+        // containing a backslash/colon/".."/control character, or one that normalizes to no segments
+        // ("/" alone), but does NOT throw — and does NOT sanitize — for '*','?','<','>','|','"', or a
+        // reserved device name in a non-leaf segment. Those survive into the scope string and reach
+        // Directory.CreateDirectory unsanitized, deep inside WriteCarriedCopy, well past any name
+        // parsing. Pre-parsing HERE, in isolation, narrows the ArgumentException catch to exactly the
+        // operation that can legitimately throw it — not the disk write or LoadIndex's read-time
+        // forward-fill that follow inside WriteCarriedCopy, so neither an exception thrown after the
+        // artifact has landed nor one from a pre-existing corrupt sidecar elsewhere in the destination
+        // scope gets misattributed to "malformed destination name". This is an ENDPOINT-ONLY
+        // mitigation for the exception path; it does not sanitize the scope segments, so the
+        // filesystem-invalid-character case below still needs its own (separate, IOException) guard,
+        // and the scope-ALIASING defect ("local:topic.", "local:topic " and "local:." are distinct
+        // cache keys/locks that resolve to the same directory) is not fixed by anything in this file —
+        // see task-3-report.md for why that fix was left to a stop-and-ask rather than made here.
+        try
+        {
+            _ = local.ParseQualifiedName(decoded);
+        }
+        catch (ArgumentException ex)
+        {
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(CallerFacingMessage(ex))));
+        }
 
         // The artifact is encoded HERE, from req.Content — never accepted as a raw string from the
         // caller — so its "C:{k}" chunk-count header can never disagree with the artifact's actual
@@ -602,8 +649,17 @@ public static class MemoryEndpoints
         // mismatched count through this route — the concern that check exists for elsewhere. See
         // task-3-report.md for the verification.
         string artifact = Nmp2ChunkedEncoder.EncodeChunks(req.Content);
+
+        // Round 2 review, Important 5: OriginalBytes is DERIVED now, not carried — CarriedEntry no
+        // longer has the field (RULED 2026-08-14). The encoder already computes the true value the
+        // same way for both the single- and multi-chunk paths: the sum of each element's UTF-8 byte
+        // length (Nmp2ChunkedEncoder.cs:201-205 for multi-chunk; Nmp2Strategy.Encode's `input.Length`
+        // for the one-element case, which is the same sum with one term). Computed here rather than
+        // trusted from the client, which could otherwise disagree with the artifact it travels with.
+        long originalBytes = req.Content.Sum(c => (long)System.Text.Encoding.UTF8.GetByteCount(c));
+
         var carried = new CarriedMetadata(
-            OriginalBytes: req.Entry.OriginalBytes,
+            OriginalBytes: originalBytes,
             UpdatedAt: req.Entry.UpdatedAt,
             ContentPreview: req.Entry.Description,
             Attributes: normalizedAttributes,
@@ -618,26 +674,94 @@ public static class MemoryEndpoints
         string msg;
         try
         {
-            // WriteCarriedCopy resolves `decoded` via ParseQualifiedName internally, which throws
-            // ArgumentException — not a caller-facing refusal — for a legacy "topic:subject" name,
-            // or for a v2 (leading-"/") path containing a backslash, a colon, a ".." sequence, a
-            // control character, or one that normalizes to no segments at all ("/" alone). In-process
-            // that is a programming error; reachable from an untrusted caller via this route it would
-            // be an unhandled 500. Guarded here, at the endpoint, rather than inside the store: that
-            // keeps WriteCarriedCopy's contract — and its in-process caller, CopyMemory — unchanged,
-            // at the cost of every OTHER caller of WriteCarriedCopy needing the same guard if one is
-            // ever added. See task-3-report.md for the ruling.
+            // The name-parsing throw is already handled above, narrowly. This catches ONLY the
+            // filesystem-invalid-character case ParseQualifiedName lets through (see the comment
+            // above): Directory.CreateDirectory always runs before AtomicWriteAllText, and
+            // AtomicWriteAllText deletes its own temp file before rethrowing on any failure, so
+            // nothing has landed on disk by the time this fires. ex.Message is deliberately not
+            // surfaced — it can carry the server's absolute filesystem path.
             ok = local.WriteCarriedCopy(decoded, artifact, carried, req.Overwrite, out msg);
         }
-        catch (ArgumentException ex)
+        catch (IOException)
         {
-            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(ex.Message)));
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(
+                $"Destination name '{decoded}' contains characters the filesystem cannot store.")));
         }
 
         if (!ok)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(msg)));
         return Task.FromResult<IResult>(Results.Ok(new { message = msg }));
     }
+
+    /// <summary>
+    /// Bounds for the metadata a copy-from-client request carries. This route is the ONLY wire
+    /// entry point for these six fields — <see cref="StoreRequest"/> doesn't carry them and
+    /// <c>PatchEntry</c> refuses them — so nothing bounded them before now; an unbounded request
+    /// lands directly in <c>CachedIndex</c> for the process lifetime and every search scores
+    /// against it.
+    ///
+    /// <para>Every bound mirrors what a LOCAL write already produces, rather than inventing a new
+    /// number: <c>MaxCarriedKeywords</c> (25) is <see cref="TextAnalysis.AnalyzeText"/>'s own
+    /// <c>topN</c> default; <c>TextAnalysis.DefaultMaxTfTerms</c> (100) and
+    /// <c>MaxCarriedPreviewLength</c> (500, <see cref="ContentPreview.Generate"/>'s own default
+    /// <c>maxLength</c>) are reused directly rather than duplicated as new constants.
+    /// <c>FileHashes</c> is bounded by <see cref="KnownAttributes.MaxValuesPerKey"/> (256): it is
+    /// 1:1 with the <c>file</c> attribute values that bound already governs, so a request cannot
+    /// carry more hashes than a local write could ever have <c>file</c> values to hash.</para>
+    ///
+    /// <para><c>ChunkEntries</c> is bounded by <paramref name="contentLength"/> itself — a real
+    /// derivation (<see cref="TextAnalysis.ComputeChunkEntries"/>) never produces more entries than
+    /// chunks — and each <c>ChunkIndex</c> must address one of them (1-based). This is also Important
+    /// 4's fix: an unvalidated, client-chosen <c>ChunkIndex</c> reaches
+    /// <c>WeightedAttributeScorer</c>'s search-hit output at a fabricated position with a
+    /// <c>totalChunks</c> that disagrees with it — the reachable form of the header-mismatch threat
+    /// Step 4a of the original brief ruled unreachable: the artifact's own header can't disagree with
+    /// its chunks, but this array is caller-authored data, not something this endpoint derives.
+    /// Duplicate indices are not rejected — only the count and the range are, matching what a real
+    /// derivation's shape guarantees, not everything it happens to never produce.</para>
+    /// </summary>
+    private static string? CarriedEntryBoundsError(CarriedEntry entry, int contentLength)
+    {
+        if (entry.Description is { Length: > MaxCarriedPreviewLength })
+            return $"description must not exceed {MaxCarriedPreviewLength} characters.";
+        if (entry.Keywords is { Length: > MaxCarriedKeywords })
+            return $"keywords may not exceed {MaxCarriedKeywords} entries.";
+        if (entry.AgentKeywords is { Length: > MaxCarriedKeywords })
+            return $"agentKeywords may not exceed {MaxCarriedKeywords} entries.";
+        if (entry.TermFrequencies is { Count: > TextAnalysis.DefaultMaxTfTerms })
+            return $"termFrequencies may not exceed {TextAnalysis.DefaultMaxTfTerms} terms.";
+        if (entry.FileHashes is { Count: > KnownAttributes.MaxValuesPerKey })
+            return $"fileHashes may not exceed {KnownAttributes.MaxValuesPerKey} entries.";
+
+        if (entry.ChunkEntries is { } chunkEntries)
+        {
+            if (chunkEntries.Length > contentLength)
+                return $"chunkEntries may not carry more entries ({chunkEntries.Length}) than content has chunks ({contentLength}).";
+
+            for (int i = 0; i < chunkEntries.Length; i++)
+            {
+                var c = chunkEntries[i];
+                if (c.ChunkIndex < 1 || c.ChunkIndex > contentLength)
+                    return $"chunkEntries[{i}].chunkIndex {c.ChunkIndex} is out of range [1, {contentLength}].";
+                if (c.ContentPreview is { Length: > MaxCarriedPreviewLength })
+                    return $"chunkEntries[{i}].contentPreview must not exceed {MaxCarriedPreviewLength} characters.";
+                if (c.Keywords is { Length: > MaxCarriedKeywords })
+                    return $"chunkEntries[{i}].keywords may not exceed {MaxCarriedKeywords} entries.";
+                if (c.TermFrequencies is { Count: > TextAnalysis.DefaultMaxTfTerms })
+                    return $"chunkEntries[{i}].termFrequencies may not exceed {TextAnalysis.DefaultMaxTfTerms} terms.";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Strips <see cref="ArgumentException"/>'s auto-appended <c>" (Parameter 'x')"</c>
+    /// suffix before a message reaches a caller — the throwing method's internal C# parameter name
+    /// is an implementation detail, not part of a caller-facing refusal.</summary>
+    private static string CallerFacingMessage(ArgumentException ex) =>
+        ex.ParamName is { } p && ex.Message.EndsWith($" (Parameter '{p}')", StringComparison.Ordinal)
+            ? ex.Message[..^$" (Parameter '{p}')".Length]
+            : ex.Message;
 
     private static async Task<IResult> GetChunk(
         string store,

@@ -345,13 +345,12 @@ only ever (optionally) overwritten.
 {
   "content": ["chunk one", "chunk two"],
   "entry": {
-    "originalBytes": 1234,
     "updatedAt": "2026-08-14T00:00:00Z",
     "description": "a curated preview",
     "attributes": { "file": ["src/A.cs"] },
     "keywords": ["kw"],
     "termFrequencies": { "kw": 2 },
-    "chunkEntries": [{ "chunkIndex": 0, "contentPreview": "preview", "keywords": ["kw"] }],
+    "chunkEntries": [{ "chunkIndex": 1, "contentPreview": "preview", "keywords": ["kw"] }],
     "fileHashes": { "src/A.cs": "deadbeef" },
     "agentKeywords": ["kw"]
   },
@@ -360,8 +359,16 @@ only ever (optionally) overwritten.
 ```
 
 `entry` carries exactly the metadata the server can neither derive from the artifact nor compute
-from the destination name — `name`, `qualifiedName`, `scope`, `chunkCount` and `createdAt` are
-deliberately absent, so none of them can disagree with the request that carries them.
+from the destination name or the artifact — `name`, `qualifiedName`, `scope`, `chunkCount`,
+`createdAt` and `originalBytes` are all deliberately absent (RULED 2026-08-14: `originalBytes` is
+the sum of each `content` element's UTF-8 byte length, which the server computes itself), so none
+of them can disagree with the request that carries them.
+
+Every field in `entry` is bounded: `description` and each chunk entry's `contentPreview` to 500
+characters, `keywords`/`agentKeywords` to 25 entries, `termFrequencies` to 100 terms,
+`fileHashes` to 256 entries, and `chunkEntries` to one entry per `content` element, each one's
+`chunkIndex` addressing an actual element (1-based). This route is the only one that accepts these
+fields at all, so nothing else bounds them.
 
 ### Search
 
