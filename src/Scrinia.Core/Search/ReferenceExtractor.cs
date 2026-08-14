@@ -7,11 +7,12 @@ namespace Scrinia.Core.Search;
 /// fenced block no longer yields file or memory references. YAML frontmatter and inline-code spans
 /// are prose, not stripped, so a <c>file:</c> line in frontmatter and a backtick-quoted
 /// <c>[[wiki-link]]</c> or <c>~ephemeral</c> still extract.</summary>
-/// <remarks>An unterminated fence (an opening ``` with no closing ```) runs to the end of the
-/// content, per <see cref="ProseScanner"/> — a single stray ``` line suppresses every file and
-/// memory reference from that point to EOF, not just the intended block. This is existing
-/// <see cref="ProseScanner"/> behaviour, inherited here deliberately rather than special-cased: the
-/// safe direction is excluding too much, not too little.</remarks>
+/// <remarks>An unterminated fence (an opening ``` with no matching closing ```) is NOT a fence, per
+/// <see cref="ProseScanner"/> — it never closed, so it was always ordinary text. The opener line and
+/// everything after it read as prose and extract normally, exactly as if the ``` had never appeared.
+/// A properly closed fence (opener AND closer both present) is still excluded, same as ever; only an
+/// unterminated one falls through to prose. This is existing <see cref="ProseScanner"/> behaviour,
+/// inherited here rather than special-cased.</remarks>
 public static partial class ReferenceExtractor
 {
     // File paths: word chars, dots, slashes, hyphens followed by known extensions

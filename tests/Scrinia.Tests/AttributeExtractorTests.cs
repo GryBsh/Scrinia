@@ -63,6 +63,21 @@ public sealed class AttributeExtractorTests
         attributes!["ok"].Should().BeEquivalentTo(["fine"]);
     }
 
+    /// <summary>Not a <see cref="ReferenceExtractor"/>-only effect: <see cref="Extract"/> consumes
+    /// <see cref="ProseScanner"/> the same way, so an unterminated fence being "not a fence" (round
+    /// 2 ruling) applies here too — a <c>key: value</c> line after a stray, never-closed ``` now
+    /// extracts, where before it would have been silently excluded to end of content.</summary>
+    [Fact]
+    public void Extract_UnterminatedFence_IsNotAFence_LineAfterItExtracts()
+    {
+        string content = "intro: prose\n```\nafter-opener: this now extracts too";
+        var attributes = AttributeExtractor.Extract(content);
+
+        attributes.Should().NotBeNull();
+        attributes!["intro"].Should().BeEquivalentTo(["prose"]);
+        attributes["after-opener"].Should().BeEquivalentTo(["this now extracts too"]);
+    }
+
     [Fact]
     public void Extract_CapsAtMaxAttributes_AndNullWhenNone()
     {

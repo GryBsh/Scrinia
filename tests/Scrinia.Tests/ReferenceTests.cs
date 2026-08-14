@@ -232,27 +232,29 @@ public sealed class ReferenceTests : IDisposable
         ReferenceExtractor.ExtractMemoryRefs(content).Should().Equal("/api/real");
     }
 
-    /// <summary>An unterminated fence (opening ``` with no closer) runs to end of content per
-    /// <see cref="ProseScanner"/> — not just the ``` line itself. Everything after it, including
-    /// text that never visually looks "inside a code block", is suppressed. Pinned here rather than
-    /// fixed: the semantic is inherited from <see cref="ProseScanner"/>, which
-    /// <see cref="AttributeExtractor"/> also consumes, so changing it is a decision above this
-    /// extractor.</summary>
+    /// <summary>Reversed by deliberate ruling (round 2): an unterminated fence (opening ``` with no
+    /// closer) is NOT a fence — it never closed, so it was always ordinary text, and everything
+    /// after it, including the opener line itself, reads as prose and extracts normally. Was
+    /// <c>ExtractFileRefs_UnterminatedFence_SuppressesToEndOfContent</c>, which pinned the opposite
+    /// direction; kept as the same test with the flipped expectation, per
+    /// <see cref="ProseScanner"/>.</summary>
     [Fact]
-    public void ExtractFileRefs_UnterminatedFence_SuppressesToEndOfContent()
+    public void ExtractFileRefs_UnterminatedFence_IsNotAFence_RestExtractsNormally()
     {
         string content =
             "See src/Real.cs.\n```\nsrc/NeverClosed.cs\nMore prose mentioning src/AlsoLost.cs here.\n";
-        ReferenceExtractor.ExtractFileRefs(content).Should().Equal("src/Real.cs");
+        ReferenceExtractor.ExtractFileRefs(content).Should().Equal(
+            "src/Real.cs", "src/NeverClosed.cs", "src/AlsoLost.cs");
     }
 
-    /// <summary>Memory-ref counterpart of <see cref="ExtractFileRefs_UnterminatedFence_SuppressesToEndOfContent"/>.</summary>
+    /// <summary>Memory-ref counterpart of <see cref="ExtractFileRefs_UnterminatedFence_IsNotAFence_RestExtractsNormally"/>.</summary>
     [Fact]
-    public void ExtractMemoryRefs_UnterminatedFence_SuppressesToEndOfContent()
+    public void ExtractMemoryRefs_UnterminatedFence_IsNotAFence_RestExtractsNormally()
     {
         string content =
             "Links to [[/api/real]].\n```\n[[/api/never-closed]]\nMore prose with ~also-lost here.\n";
-        ReferenceExtractor.ExtractMemoryRefs(content).Should().Equal("/api/real");
+        ReferenceExtractor.ExtractMemoryRefs(content).Should().Equal(
+            "/api/real", "/api/never-closed", "~also-lost");
     }
 
     /// <summary>Frontmatter stays prose — a file: line there is deliberate metadata.</summary>

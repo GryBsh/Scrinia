@@ -45,6 +45,17 @@ public class MentionSpanExtractionTests
         Spans("Alpha `Xray` Beta").Should().BeEquivalentTo(["alpha", "xray", "beta"]);
     }
 
+    /// <summary>Not a <see cref="AttributeExtractor.Extract"/>-only effect either: mention-span
+    /// scanning consumes <see cref="ProseScanner"/> the same way, so a capitalized run after a
+    /// stray, never-closed ``` now contributes a mention span, where before it would have been
+    /// silently excluded to end of content (round 2 ruling: an unterminated fence is not a fence).</summary>
+    [Fact]
+    public void UnterminatedFence_IsNotAFence_MentionAfterItSurvives()
+    {
+        Spans("We met Alice.\n```\nCarol appears after the never-closed opener.")
+            .Should().BeEquivalentTo(["alice", "carol"]);
+    }
+
     [Fact]
     public void Frontmatter_IsProse_ContributesMentionSpans()
     {

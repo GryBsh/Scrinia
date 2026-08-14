@@ -29,30 +29,67 @@ public static class ProseScanner
 {
     /// <summary>
     /// Splits <paramref name="content"/> on <c>'\n'</c>, trims a trailing <c>'\r'</c> from each
-    /// line, and yields every line that is not a ``` fence delimiter and not inside a fenced
-    /// block. Null or empty content yields nothing. An unterminated fence (no closing
-    /// ```) runs to the end of the content — the safe direction, since it excludes rather than
-    /// includes whatever follows.
+    /// line, and yields every line that is not part of a real — opened AND closed — fenced block.
+    /// Null or empty content yields nothing.
     /// </summary>
+    /// <remarks>
+    /// A ``` opener's fate is not decidable until its closer arrives, or doesn't, so lines after an
+    /// opener are buffered rather than dropped immediately. A matching closer discards the opener,
+    /// the buffered lines, and the closer itself — that block was a real fence, excluded as before.
+    /// Reaching end-of-content with the buffer still open means the opener never closed, so it was
+    /// never a fence at all: an unterminated ``` is ordinary text like any other line, and this
+    /// yields the OPENER LINE ITSELF followed by every buffered line, verbatim and in the original
+    /// order — exactly as if the ``` had never been recognized as a delimiter.
+    /// </remarks>
     public static IEnumerable<string> ProseLines(string? content)
     {
         if (string.IsNullOrEmpty(content))
             yield break;
 
         bool inFence = false;
+        string? openerLine = null;
+        List<string>? buffered = null;
+
         foreach (string rawLine in content.Split('\n'))
         {
             string line = rawLine.TrimEnd('\r');
 
             if (line.StartsWith("```", StringComparison.Ordinal))
             {
-                inFence = !inFence;
+                if (inFence)
+                {
+                    // Closer: the buffered block was a real fence — discard opener and contents.
+                    inFence = false;
+                    openerLine = null;
+                    buffered = null;
+                }
+                else
+                {
+                    // Opener: its fate is unknown until a closer arrives (or EOF proves it never
+                    // will) — buffer from here instead of excluding immediately.
+                    inFence = true;
+                    openerLine = line;
+                    buffered = [];
+                }
                 continue;
             }
+
             if (inFence)
+            {
+                buffered!.Add(line);
                 continue;
+            }
 
             yield return line;
+        }
+
+        // EOF with the buffer still open: the ``` never closed, so it was never a fence — replay
+        // the opener line and everything buffered after it as ordinary prose.
+        if (inFence)
+        {
+            yield return openerLine!;
+            foreach (string line in buffered!)
+                yield return line;
         }
     }
 }

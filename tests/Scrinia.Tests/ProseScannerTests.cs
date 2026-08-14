@@ -36,11 +36,28 @@ public class ProseScannerTests
     }
 
     [Fact]
-    public void UnterminatedFence_RunsToEndOfContent()
+    public void UnterminatedFence_IsNotAFence_OpenerAndRestReadAsProse()
     {
+        // Reversed by deliberate ruling: an unterminated ``` is not a fence — it is an ordinary
+        // line of text like any other, so it (and everything after it) reads as prose. The opener
+        // line itself is yielded too; dropping it would leave a rule harder to state than it's
+        // worth. (Was: UnterminatedFence_RunsToEndOfContent, which pinned the opposite direction.)
         string content = "before\n```\nnever closes\nstill inside";
-        Lines(content).Should().Equal(["before"],
-            because: "an unterminated fence excludes everything after it — the safe direction");
+        Lines(content).Should().Equal(["before", "```", "never closes", "still inside"],
+            because: "an opener with no closer never became a fence, so nothing after it is excluded");
+    }
+
+    [Fact]
+    public void OddNumberOfFenceDelimiters_MiddleBlockExcluded_TailAfterThirdIsProse()
+    {
+        // The case most likely to be wrong: three ``` lines in one document. The first two form a
+        // real (opened-and-closed) fence — excluded, same as ever. The third is an opener with no
+        // closer, so it and everything after it are prose, per the ruling above.
+        string content = "before\n```\nreal fence contents\n```\nbetween\n```\nunterminated opener\nafter";
+        Lines(content).Should().Equal(
+            ["before", "between", "```", "unterminated opener", "after"],
+            because: "the middle block (properly opened and closed) stays excluded, while the " +
+                     "third ``` never closes and so is not a fence at all");
     }
 
     [Fact]
