@@ -183,11 +183,15 @@ and all assembly attributes.
 - `link`'s `reason` parameter description no longer reads as though the reason were persisted — it
   is only echoed into that one call's response text, never written to either memory's sidecar.
 - `remember`'s and `append`'s content descriptions no longer claim that NONE of the automatic
-  attribute extraction happens inside a fenced code block. Three routes skip fences (line-start
-  `key: value`, `**Bold:**` labels, inline prose `key:value`) and one skips inline `code` spans and
-  frontmatter as well (proper-noun `mention` spans) — but bare file paths and `[[wiki-links]]` are
-  scanned over the whole content, fences included, and a bare path found that way is hashed into
-  the memory's drift baseline. The descriptions now say which routes are which.
+  attribute extraction happens inside a fenced code block. **This bullet originally said** three
+  routes skipped fences (line-start `key: value`, `**Bold:**` labels, inline prose `key:value`) and
+  one skipped inline `code` spans and frontmatter as well (proper-noun `mention` spans), while bare
+  file paths and `[[wiki-links]]` were scanned over the whole content, fences included. That split
+  no longer exists: see "file and memory references no longer extract from pasted code" above,
+  which landed later in this same `[Unreleased]` cycle and made bare file paths and `[[wiki-links]]`
+  fence-aware too. All extraction routes now follow the one `ProseScanner` rule — skip a properly
+  closed fence, read YAML frontmatter and inline `code` spans as ordinary text — and the descriptions
+  were rewritten again to state that once instead of route-by-route.
 - `compact`'s description no longer claims unconditionally that it archives the original. An
   ephemeral memory has no `versions/` directory, so compacting one is irreversible; the response
   already reported this correctly and the description now agrees with it.

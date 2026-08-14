@@ -108,23 +108,24 @@ public sealed partial class ScriniaMcpTools
         "keywords: ['oauth flow', 'token refresh'] }).")]
     public async Task<string> MemoryRemember(
         [Description("Memory path (e.g. '/findings/SEC-001', '/patterns/retry', '/api/auth-flow', '/temp/scratch').")] string path,
-        [Description("Content array — each element becomes one independently retrievable chunk. Several " +
-                     "things in the text become attributes automatically. THREE of them skip fenced code " +
-                     "blocks (```): a line-start 'key: value' pair or a '**Key:** value' bold label mints " +
-                     "an attribute under any key that starts with a letter (so 'C#:' and '2024:' don't " +
-                     "route) — this one also runs inside YAML frontmatter; an inline 'key:value' with no " +
-                     "space (e.g. 'file:src/x.cs') additionally requires the key to be one of the eight " +
-                     "recommended keys — person, place, org, thing, topic, file, ref, review — and is left " +
-                     "as plain text for any other key; and a capitalized proper-noun phrase becomes a " +
-                     "'mention' attribute, this one skipping frontmatter and inline `code` spans too. TWO " +
-                     "do NOT skip anything: a bare file path ending in one of a fixed set of code/doc " +
-                     "extensions (.cs, .md, .json, .yaml and similar — a name with no matching extension, " +
-                     "like 'Dockerfile' or 'app.py', does not qualify) becomes a 'file' attribute, and a " +
-                     "'[[wiki-link]]' or '~ephemeral' reference becomes a 'ref' attribute, both scanned " +
-                     "over the WHOLE content — fenced blocks and frontmatter included. So a pasted build " +
-                     "log or diff contributes every path in it as a 'file' attribute, and those paths are " +
-                     "hashed as this memory's drift baseline; pass file paths you did not mean as " +
-                     "dependencies in a fenced block only if you want them tracked.")] string[] content,
+        [Description("Content array — each element becomes one independently retrievable chunk. Everything " +
+                     "below follows one rule: extraction reads all of the text except inside a properly " +
+                     "closed fenced code block (```) — YAML frontmatter and inline `code` spans are read as " +
+                     "ordinary text, not skipped. An opener ``` that never closes isn't a fence at all; the " +
+                     "opener line and everything after it read as prose too. What extracts: a line-start " +
+                     "'key: value' pair or a '**Key:** value' bold label mints an attribute under any key " +
+                     "that starts with a letter (so 'C#:' and '2024:' don't route); an inline 'key:value' " +
+                     "with no space (e.g. 'file:src/x.cs') additionally requires the key to be one of the " +
+                     "eight recommended keys — person, place, org, thing, topic, file, ref, review — and is " +
+                     "left as plain text for any other key; a bare file path ending in one of a fixed set of " +
+                     "code/doc extensions (.cs, .md, .json, .yaml and similar — a name with no matching " +
+                     "extension, like 'Dockerfile' or 'app.py', does not qualify) becomes a 'file' " +
+                     "attribute, hashed as this memory's drift baseline; a '[[wiki-link]]' or '~ephemeral' " +
+                     "reference becomes a 'ref' attribute; and a capitalized proper-noun phrase becomes a " +
+                     "'mention' attribute. So a pasted build log or diff still contributes every path in it " +
+                     "as a 'file' attribute unless you wrap it in a properly closed fenced code block — do " +
+                     "that when you want sample content excluded from drift tracking, wiki-links, and " +
+                     "mentions.")] string[] content,
         [Description("Optional typed attributes — a map of key to values. Combines with what content and " +
                      "keywords derive: person/place/org/thing/topic/file/ref (and the auto-derived 'mention') " +
                      "union with the derived value; every other key — including review, anchor, and tag — is " +
@@ -264,21 +265,27 @@ public sealed partial class ScriniaMcpTools
         "content: 'session note', attributes: { topic: ['standup'] } }).")]
     public async Task<string> MemoryAppend(
         [Description("Memory path to append to.")] string path,
-        [Description("Text content for the new chunk. TWO of the attribute routes skip fenced code blocks " +
-                     "(```): a line-start 'key: value' pair or a '**Key:** value' bold label mints an " +
+        [Description("Text content for the new chunk. Every attribute route below follows one rule: none " +
+                     "of them read inside a properly closed fenced code block (```), but all of them read " +
+                     "YAML frontmatter and inline `code` spans as ordinary text. An opener ``` that never " +
+                     "closes isn't a fence at all — the opener line and everything after it read as prose " +
+                     "too. A line-start 'key: value' pair or a '**Key:** value' bold label mints an " +
                      "attribute under any key that starts with a letter (so 'C#:' and '2024:' don't " +
                      "route); an inline 'key:value' with no space (e.g. 'file:src/x.cs') additionally " +
                      "requires the key to be one of the eight recommended keys — person, place, org, " +
-                     "thing, topic, file, ref, review — and is left as plain text for any other key. TWO " +
-                     "do NOT: a bare file path ending in one of a fixed set of code/doc extensions (.cs, " +
-                     ".md, .json, .yaml and similar — a name with no matching extension, like 'Dockerfile' " +
-                     "or 'app.py', does not qualify) becomes a 'file' attribute, and a '[[wiki-link]]' or " +
-                     "'~ephemeral' reference becomes a 'ref' attribute, both scanned over the WHOLE chunk " +
-                     "including fenced blocks — so a pasted build log contributes every path in it, and a " +
-                     "path this memory has not seen before is hashed into its drift baseline. Unlike " +
-                     "remember, this text is not scanned for proper-noun 'mention' spans — only " +
-                     "whole-memory writes (remember, compact) do that; create-via-append is unaffected " +
-                     "since it delegates to a whole-memory write internally.")] string content,
+                     "thing, topic, file, ref, review — and is left as plain text for any other key; a " +
+                     "bare file path ending in one of a fixed set of code/doc extensions (.cs, .md, .json, " +
+                     ".yaml and similar — a name with no matching extension, like 'Dockerfile' or " +
+                     "'app.py', does not qualify) becomes a 'file' attribute; and a '[[wiki-link]]' or " +
+                     "'~ephemeral' reference becomes a 'ref' attribute. So a pasted build log still " +
+                     "contributes every path in it unless you wrap it in a properly closed fence, and a " +
+                     "path this memory has not seen before is hashed into its drift baseline. This runs " +
+                     "on the appended chunk only and unions what it finds with what's already stored, so " +
+                     "an attribute a fenced block minted before this change persists on this memory until " +
+                     "it's re-stored with remember. Unlike remember, this text is not scanned for " +
+                     "proper-noun 'mention' spans — only whole-memory writes (remember, compact) do that; " +
+                     "create-via-append is unaffected since it delegates to a whole-memory write " +
+                     "internally.")] string content,
         [Description("Optional attributes merged into the memory's existing attributes. person/place/org/" +
                      "thing/topic/file/ref/mention always union with what's already stored. tag and anchor " +
                      "also union here (append-only: a tag or anchor you pass adds to the existing set rather " +
