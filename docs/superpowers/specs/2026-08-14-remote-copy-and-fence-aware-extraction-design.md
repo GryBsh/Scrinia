@@ -86,14 +86,38 @@ POST /api/v1/stores/{store}/memories/{name}/copy-from-client
 ```
 
 ```csharp
+/// <summary>The metadata a client-side source carries to a destination the server owns: exactly
+/// the fields the server can neither derive from the artifact nor compute from the destination
+/// name. Name, QualifiedName and Scope are the destination's; ChunkCount is Content.Length;
+/// CreatedAt is stamped on arrival. None of them appear here, so none of them can disagree with
+/// the request that carries them.</summary>
+public sealed record CarriedEntry(
+    long OriginalBytes,
+    DateTimeOffset? UpdatedAt,
+    string Description,
+    Dictionary<string, string[]>? Attributes,
+    string[]? Keywords,
+    Dictionary<string, int>? TermFrequencies,
+    ChunkEntryDto[]? ChunkEntries,
+    Dictionary<string, string>? FileHashes,
+    string[]? AgentKeywords = null);
+
 /// <summary>A copy whose source the server cannot resolve, because it lives only on the client:
-/// the caller supplies the artifact and the entry it already derived. "Store this exact entry
+/// the caller supplies the artifact and the metadata it already derived. "Store this exact entry
 /// from this exact artifact; do not derive." Used for ephemeral→persistent promotion.</summary>
 public sealed record CopyFromClientRequest(
     string[] Content,
-    MemoryEntry Entry,
+    CarriedEntry Entry,
     bool Overwrite = false);
 ```
+
+**Why a dedicated shape rather than reusing `MemoryEntry`.** `MemoryEntry` carries `ChunkCount`,
+which would sit on the request beside the `Content` it must agree with — and `Name`,
+`QualifiedName`, `Scope` and `CreatedAt`, which the server ignores or recomputes. `ApiDtos.cs:109`
+states the rule this would break: *"ChunkCount is deleted, not retained: it is `Content.Length`, and
+a derivable field that can disagree with its payload is the defect this shape fixes"*, and `:23-26`
+says the same for `StoreResponse`. Omitting them makes the disagreement **unrepresentable** rather
+than validated — the pattern `AppendRequest` already uses (`:32-36`).
 
 **Why a route and not an optional field on `CopyRequest`.** An older server receiving an unknown
 optional field ignores it, falls through to resolving `{name}` in its own store, and silently copies
@@ -107,8 +131,9 @@ genuine misreading hazard, so it is called out in the route's own doc comment, i
 the client method that calls it.
 
 The client mirror lives in `src/Scrinia/HttpMemoryStore.cs` beside `CopyApiRequest` (`:184`), reusing
-the existing `internal sealed record MemoryEntry` (`:153-165`) as its payload type. Both records
-need entries in `HttpStoreJsonContext` (`:122`) for AOT serialization.
+its own mirrors of both records. Both need entries in `HttpStoreJsonContext` (`:122`) for AOT
+serialization. The client projects its `EphemeralEntry` into the carried shape; it does **not** reuse
+`internal sealed record MemoryEntry` (`:153-165`), for the reason above.
 
 ### Server validation
 
@@ -116,21 +141,20 @@ The governing principle is the local one: **carry, do not re-derive.** The serve
 given, changing only what identifies the destination. This mirrors `FileMemoryStore.cs:1905-1919`,
 which carries `OriginalBytes` and `ChunkCount` verbatim from the source entry.
 
-- `Entry.Name` and `Entry.Uri` are **recomputed** from the destination, not trusted.
-- `Entry.CreatedAt` is **ignored and stamped server-side** — a copy is created now, matching
-  `FileMemoryStore.cs:1903`, which deliberately does not carry it. `UpdatedAt` **is** carried.
-- Everything else — `OriginalBytes`, `ChunkCount`, `Keywords`, `AgentKeywords`, `TermFrequencies`,
-  `Attributes`, `ChunkEntries`, `ContentPreview`, `FileHashes` — is carried verbatim. Recomputing
+- `Name`, `QualifiedName`, `Scope` and `Uri` come from the **destination**. They are not on the
+  request at all, so there is nothing to trust or reject.
+- `ChunkCount` is `Content.Length`. Not on the request either.
+- `CreatedAt` is **stamped server-side** — a copy is created now, matching `FileMemoryStore.cs:1903`,
+  which deliberately does not carry it. `UpdatedAt` **is** carried.
+- Everything the request does carry — `OriginalBytes`, `Description`, `Keywords`, `AgentKeywords`,
+  `TermFrequencies`, `Attributes`, `ChunkEntries`, `FileHashes` — is written verbatim. Recomputing
   even the content-derived ones would reintroduce the divergence risk this design exists to avoid,
   and `FileHashes` cannot be recomputed at all: they describe the client's workspace, which is where
   the content was written about. The promotion test asserts they arrive intact.
 
 Because a client-supplied entry crosses a trust boundary the local path does not, the endpoint adds
-checks the local copy has no need for. Each failure is a 400 naming the specific mismatch:
+checks the local copy has no need for. Each failure is a 400 naming the specific problem:
 
-- `Entry.ChunkCount` must equal `Content.Length` — an entry disagreeing with its own artifact is
-  malformed regardless of which field is right, and `refuse rather than guess` is the standing rule
-  for exactly this shape.
 - `Content` must be non-empty, and the destination `{name}` must satisfy the same `MaxNameLength`
   bound `RememberMemory` enforces.
 - `MaxContentBytes` (5 MB per element, `MemoryEndpoints.cs:41`) applies to `Content`, matching
@@ -149,7 +173,7 @@ inventing one would reject valid promotions.
 - **`a` → `b`** — unchanged, `POST /memories/{a}/copy` with `{ Destination = b }`.
 - **`~a` → `b`** — read the local `EphemeralEntry`; if absent, fail client-side **without sending a
   request**. Otherwise `POST /memories/{b}/copy-from-client` carrying the artifact chunks and the
-  entry projected to `MemoryEntry`. This route performs **no name lookup on the server at all**,
+  entry projected to the carried shape. This route performs **no name lookup on the server at all**,
   which is what removes the collision: there is no resolution step left to land on the wrong memory.
   A 404 means the server predates this route — surfaced to the caller as an explicit
   "this server does not support promoting an ephemeral", never as a copy that appeared to work.
