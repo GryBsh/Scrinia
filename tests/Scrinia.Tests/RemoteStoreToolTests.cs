@@ -34,14 +34,19 @@ public sealed class RemoteStoreToolTests
         "updatedAt":null,"description":"an entry","attributes":null}],"total":1}
         """;
 
-    /// <summary>Same single entry as <see cref="OneEntryListJson"/>, but with <c>keywords</c>
-    /// present — used by the demotion test, which asserts the copied-down
-    /// <see cref="EphemeralEntry"/> carries the source's metadata rather than a blank one.</summary>
-    private const string OneEntryListJsonWithKeywords = """
+    /// <summary>Same single entry as <see cref="OneEntryListJson"/>, but with all eight fields
+    /// <c>CarriedEntryDto</c> mirrors on the wire populated with distinguishable values — used by
+    /// the demotion metadata test, which asserts the copied-down <see cref="EphemeralEntry"/>
+    /// carries every one of them, not just <c>Keywords</c> alone.</summary>
+    private const string OneEntryListJsonWithFullMetadata = """
         {"memories":[{"name":"alpha","qualifiedName":"local:alpha","scope":"local",
         "chunkCount":1,"originalBytes":18,"createdAt":"2026-01-01T00:00:00+00:00",
-        "updatedAt":null,"description":"an entry","attributes":null,"keywords":["boats"],
-        "termFrequencies":null,"chunkEntries":null,"fileHashes":null}],"total":1}
+        "updatedAt":"2026-02-02T00:00:00+00:00","description":"a curated preview",
+        "attributes":{"person":["maria"]},"keywords":["boats"],
+        "termFrequencies":{"boats":3},
+        "chunkEntries":[{"chunkIndex":1,"contentPreview":"chunk one preview","keywords":["boats"],
+        "termFrequencies":{"boats":1}}],
+        "fileHashes":{"src/thing.cs":"deadbeef"},"agentKeywords":["curated-boats"]}],"total":1}
         """;
 
     /// <summary>
@@ -194,10 +199,16 @@ public sealed class RemoteStoreToolTests
             // happy path (200).
             else if (request.Method == HttpMethod.Post && path.EndsWith("/copy-from-client", StringComparison.Ordinal))
             {
+                // A non-OK status carries the server's own ErrorResponse-shaped body — matching the
+                // real endpoint's 400 for a destination collision — so a test can pin that
+                // HttpMemoryStore.CopyMemory surfaces the body text, not just the status name.
                 response = new HttpResponseMessage(copyFromClientStatus)
                 {
                     Content = new StringContent(
-                        """{"message":"Copied."}""", Encoding.UTF8, "application/json"),
+                        copyFromClientStatus == HttpStatusCode.OK
+                            ? """{"message":"Copied."}"""
+                            : """{"error":"Error: destination memory already exists. Set overwrite=true to replace it."}""",
+                        Encoding.UTF8, "application/json"),
                 };
             }
             // Persistent -> persistent (HttpMemoryStore.CopyMemory, a -> b), unchanged wire shape.
@@ -940,9 +951,21 @@ public sealed class RemoteStoreToolTests
                      "drop the second chunk instead");
     }
 
-    /// <summary>A 404 from copy-from-client is the ROUTE being absent (an older server), not the
-    /// memory — but either way it must surface as a refusal, never as a copy that appeared to
-    /// work.</summary>
+    /// <summary>
+    /// A 404 from copy-from-client is the ROUTE being absent (an older server), not the memory —
+    /// but either way it must surface as a refusal, never as a copy that appeared to work.
+    ///
+    /// <para>Ruling 2(b) (see <see cref="HttpMemoryStore.CopyMemory"/>'s doc comment) rests entirely on the MESSAGE
+    /// naming the real cause, because the error CODE stays <c>Internal</c> either way — so this
+    /// pins the message text, not just the status. If the dedicated 404 branch were deleted, the
+    /// generic fallback would produce <c>"...: NotFound."</c> instead, which contains neither
+    /// "copy-from-client" nor any actionable detail — the exact silent unwind the ruling would
+    /// otherwise have.</para>
+    ///
+    /// <para>Also asserts a request DID reach the wire — the one thing that distinguishes this
+    /// refusal from <see cref="Copy_Promotion_RemoteStore_SendsNoRequest_WhenTheSourceIsMissing"/>,
+    /// which no status-code fixture alone can show.</para>
+    /// </summary>
     [Fact]
     public async Task Copy_Promotion_RemoteStore_SurfacesAsRefusal_WhenServerLacksTheRoute()
     {
@@ -957,7 +980,35 @@ public sealed class RemoteStoreToolTests
 
         response.Status.Should().Be("error",
             because: "a 404 from copy-from-client must never be reported as a completed copy");
-        response.Error.Should().NotBeNullOrEmpty();
+        response.Error.Should().Contain("copy-from-client",
+            because: "the message is the entire remedy for ruling 2(b) — the error code alone " +
+                     "cannot tell a caller this is a version-skew refusal, not an internal fault");
+        scope.Handler.Requests.Should().ContainSingle(
+            r => r.EndsWith("/copy-from-client", StringComparison.Ordinal),
+            because: "a request DID reach the wire here — the server just doesn't support it — " +
+                     "unlike the missing-source case, which sends none at all");
+    }
+
+    /// <summary>Promotion's non-404 failures must surface the server's own error body, not just the
+    /// bare status name — the local variant of the same refusal (destination collision, or one of
+    /// Task 3's carried-entry bounds errors) names the exact fix; a remote caller deserves the
+    /// same text, not "BadRequest".</summary>
+    [Fact]
+    public async Task Copy_Promotion_RemoteStore_SurfacesTheServersErrorBody_OnANonNotFoundFailure()
+    {
+        using var scope = new RemoteStoreScope(copyFromClientStatus: HttpStatusCode.BadRequest);
+
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["only chunk"]);
+        scope.Store.RememberEphemeral("srcmem", new EphemeralEntry(
+            Name: "srcmem", Artifact: artifact, OriginalBytes: 10, ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow));
+
+        var response = await Tools().Copy("~srcmem", "promoted");
+
+        response.Status.Should().Be("error");
+        response.Error.Should().Contain("destination memory already exists",
+            because: "a bare status name tells the caller nothing actionable; the server's own " +
+                     "refusal text does");
     }
 
     /// <summary>A missing client-side source has nothing to ask the server about — sending a bare
@@ -976,13 +1027,15 @@ public sealed class RemoteStoreToolTests
     }
 
     /// <summary>Demotion (<c>a -> ~b</c>) writes into THIS process's ephemeral map — not the
-    /// server's, which the client asking for the copy could never read back from — and carries the
-    /// source's metadata rather than synthesizing a blank entry.</summary>
+    /// server's, which the client asking for the copy could never read back from — and carries ALL
+    /// EIGHT of the source's metadata fields (the same set <c>CarriedEntryDto</c> mirrors for
+    /// promotion) rather than synthesizing a blank entry or getting away with just one of
+    /// them.</summary>
     [Fact]
     public async Task Copy_Demotion_RemoteStore_WritesIntoThisProcesssEphemeralMapWithMetadataIntact()
     {
         const string showJson = """{"name":"alpha","content":["a persistent chunk"],"originalBytes":18}""";
-        using var scope = new RemoteStoreScope(OneEntryListJsonWithKeywords, showJson: showJson);
+        using var scope = new RemoteStoreScope(OneEntryListJsonWithFullMetadata, showJson: showJson);
 
         var response = await Tools().Copy("alpha", "~demoted");
 
@@ -991,12 +1044,51 @@ public sealed class RemoteStoreToolTests
         var eph = scope.Store.GetEphemeral("demoted");
         eph.Should().NotBeNull(
             because: "the copy must be readable from THIS process, not the server's own ephemeral map");
-        eph!.Keywords.Should().Equal(["boats"],
-            because: "the demotion carries the source's metadata field-for-field, the way " +
-                     "FileMemoryStore's local persistent -> ephemeral branch does");
+        eph!.ContentPreview.Should().Be("a curated preview",
+            because: "Description on the wire becomes ContentPreview locally, the same mapping " +
+                     "copy-from-client's handler uses in reverse");
+        eph.Keywords.Should().Equal(["boats"]);
+        eph.UpdatedAt.Should().Be(DateTimeOffset.Parse("2026-02-02T00:00:00+00:00"));
+        eph.Attributes.Should().ContainKey("person").WhoseValue.Should().Equal(["maria"]);
+        eph.TermFrequencies.Should().ContainKey("boats").WhoseValue.Should().Be(3);
+        eph.ChunkEntries.Should().ContainSingle().Which.ContentPreview.Should().Be("chunk one preview");
+        eph.FileHashes.Should().ContainKey("src/thing.cs").WhoseValue.Should().Be("deadbeef");
+        eph.AgentKeywords.Should().Equal(["curated-boats"]);
         Nmp2ChunkedEncoder.DecodeChunk(eph.Artifact, 1).Should().Be("a persistent chunk",
             because: "the artifact is re-encoded from the show route's content, not fabricated — " +
                      "round-trip fidelity is the property, not byte-identity with the raw JSON");
+    }
+
+    /// <summary>
+    /// <c>GetEntry</c> (the <c>/entry</c> route) resolves through the INDEX only; the show route
+    /// resolves through the ARTIFACT FILE only. The two can disagree — a stale or missing index
+    /// sidecar for an artifact that is still on disk — and <c>FileMemoryStore.cs</c>'s own
+    /// persistent -> ephemeral branch already tolerates exactly that gap with synthesized defaults.
+    /// The remote demotion must degrade the same way rather than reporting a real memory as
+    /// "not found" because only its metadata sidecar is missing.
+    /// </summary>
+    [Fact]
+    public async Task Copy_Demotion_RemoteStore_SynthesizesDefaults_WhenTheIndexEntryIsAbsent()
+    {
+        const string showJson = """{"name":"orphan","content":["only the artifact survives"],"originalBytes":26}""";
+        using var scope = new RemoteStoreScope(EmptyListJson, showJson: showJson);
+
+        var response = await Tools().Copy("orphan", "~recovered");
+
+        response.Status.Should().Be("success",
+            because: "an absent INDEX entry is not an absent MEMORY — the artifact still resolved " +
+                     "through the show route");
+
+        var eph = scope.Store.GetEphemeral("recovered");
+        eph.Should().NotBeNull();
+        eph!.ContentPreview.Should().Be("Loaded from orphan",
+            because: "with no index entry to carry a curated description, the fallback preview " +
+                     "kicks in, exactly as FileMemoryStore's local branch does");
+        eph.OriginalBytes.Should().Be(26,
+            because: "with no index entry, the byte count falls back to the show route's value");
+        eph.Keywords.Should().BeNull(
+            because: "there is no index entry to carry keywords from");
+        Nmp2ChunkedEncoder.DecodeChunk(eph.Artifact, 1).Should().Be("only the artifact survives");
     }
 
     /// <summary>Persistent -> persistent (<c>a -> b</c>) is unchanged wire shape but had never been
@@ -1016,5 +1108,42 @@ public sealed class RemoteStoreToolTests
         string body = scope.Handler.Bodies[scope.Handler.Requests.IndexOf(request)];
         body.Should().Contain("beta",
             because: "the destination travels in the body for this route, unlike copy-from-client");
+    }
+
+    /// <summary>Ruling 2(a): the remote ephemeral -> ephemeral branch refuses a same-name copy, the
+    /// way <c>FileMemoryStore</c>'s local branch always has. Requires an EXISTING source — the
+    /// existence check runs first (I-5: matching <c>FileMemoryStore</c>'s own ordering), so a
+    /// missing same-named source reports "not found", not "source and destination are the
+    /// same".</summary>
+    [Fact]
+    public async Task Copy_EphemeralToEphemeral_RemoteStore_RefusesSameName()
+    {
+        using var scope = new RemoteStoreScope();
+        scope.Store.RememberEphemeral("scratch", new EphemeralEntry(
+            Name: "scratch", Artifact: Nmp2ChunkedEncoder.EncodeChunks(["x"]), OriginalBytes: 1,
+            ChunkCount: 1, CreatedAt: DateTimeOffset.UtcNow));
+
+        var response = await Tools().Copy("~scratch", "~scratch");
+
+        response.Status.Should().Be("error");
+        response.Error.Should().Contain("same",
+            because: "ruling 2(a) closes the gap between this branch and FileMemoryStore's, which " +
+                     "has always refused this");
+    }
+
+    /// <summary>The existence check ordering (I-5): a same-named source that does NOT exist reports
+    /// "not found", the way FileMemoryStore's ephemeral branch does — not "source and destination
+    /// are the same", which would be true of the names but not of the request.</summary>
+    [Fact]
+    public async Task Copy_EphemeralToEphemeral_RemoteStore_ReportsNotFound_WhenTheSameNamedSourceIsMissing()
+    {
+        using var scope = new RemoteStoreScope();
+
+        var response = await Tools().Copy("~missing", "~missing");
+
+        response.Status.Should().Be("error");
+        response.Error.Should().Contain("not found",
+            because: "existence is checked before the same-name guard, matching " +
+                     "FileMemoryStore.CopyMemory's ephemeral branch ordering exactly");
     }
 }

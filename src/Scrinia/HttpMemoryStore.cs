@@ -844,18 +844,24 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             string srcKey = MemoryNaming.StripEphemeralPrefix(src);
             string dstKey = MemoryNaming.StripEphemeralPrefix(dst);
 
-            if (srcKey.Equals(dstKey, StringComparison.OrdinalIgnoreCase))
-            {
-                message = "Error: source and destination are the same.";
-                return false;
-            }
-
+            // Existence is checked BEFORE same-name, matching FileMemoryStore's ephemeral branch
+            // ordering exactly: a missing source is "not found", not "source and destination are
+            // the same", even when src and dst happen to be spelled identically. Reversing this
+            // order (as an earlier draft did) reopens, for the one-name-typed-twice case, the exact
+            // divergence-between-stores class ruling 2(a) exists to close.
             var entry = GetEphemeral(srcKey);
             if (entry is null)
             {
                 message = $"Error: source memory '{src}' was not found.";
                 return false;
             }
+
+            if (srcKey.Equals(dstKey, StringComparison.OrdinalIgnoreCase))
+            {
+                message = "Error: source and destination are the same.";
+                return false;
+            }
+
             if (!overwrite && GetEphemeral(dstKey) is not null)
             {
                 message = $"Error: destination memory '{dst}' already exists. Set overwrite=true to replace it.";
@@ -924,7 +930,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 return false;
             }
 
-            message = $"Error copying '{src}' to '{dst}': {promoteResp.StatusCode}";
+            message = $"Error copying '{src}' to '{dst}': {promoteResp.StatusCode}.{ReadErrorBody(promoteResp)}";
             return false;
         }
 
@@ -938,27 +944,34 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             string dstKey = MemoryNaming.StripEphemeralPrefix(dst);
             string encodedSrc = Uri.EscapeDataString(src);
 
+            // GetEntry (the /entry route) resolves through the INDEX only
+            // (Scrinia.Server.Endpoints.MemoryEndpoints.FindEntry -> IMemoryStore.LoadIndex). The
+            // show route below resolves through the ARTIFACT FILE only
+            // (IMemoryStore.ResolveArtifactAsync's qualified-name branch: FindArtifactPath +
+            // File.Exists, no index read at all). The two can disagree — a stale or missing index
+            // sidecar for an artifact still on disk — and FileMemoryStore.cs's own persistent ->
+            // ephemeral branch already tolerates exactly that gap (its `sourceEntry?.` null
+            // tolerance and synthesized defaults). So a 404 here means only "no metadata", not
+            // "no memory": it degrades sourceEntry to null and lets the show route's own 404 (below)
+            // be the authoritative "source not found" answer.
             MemoryEntry? sourceEntry;
             using (var entryReq = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/memories/{encodedSrc}/entry"))
             using (var entryResp = SendSync(entryReq))
             {
                 if (entryResp.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    message = $"Error: source memory '{src}' was not found.";
-                    return false;
+                    sourceEntry = null;
                 }
-                if (!entryResp.IsSuccessStatusCode)
+                else if (!entryResp.IsSuccessStatusCode)
                 {
-                    message = $"Error copying '{src}' to '{dst}': {entryResp.StatusCode}";
+                    message = $"Error copying '{src}' to '{dst}': {entryResp.StatusCode}.{ReadErrorBody(entryResp)}";
                     return false;
                 }
-                using var entryStream = entryResp.Content.ReadAsStream();
-                sourceEntry = JsonSerializer.Deserialize(entryStream, HttpStoreJsonContext.Default.MemoryEntry);
-            }
-            if (sourceEntry is null)
-            {
-                message = $"Error: source memory '{src}' was not found.";
-                return false;
+                else
+                {
+                    using var entryStream = entryResp.Content.ReadAsStream();
+                    sourceEntry = JsonSerializer.Deserialize(entryStream, HttpStoreJsonContext.Default.MemoryEntry);
+                }
             }
 
             if (!overwrite && GetEphemeral(dstKey) is not null)
@@ -978,7 +991,7 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
                 }
                 if (!showResp.IsSuccessStatusCode)
                 {
-                    message = $"Error copying '{src}' to '{dst}': {showResp.StatusCode}";
+                    message = $"Error copying '{src}' to '{dst}': {showResp.StatusCode}.{ReadErrorBody(showResp)}";
                     return false;
                 }
                 using var showStream = showResp.Content.ReadAsStream();
@@ -1028,8 +1041,33 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
             return true;
         }
 
-        message = $"Error copying '{src}' to '{dst}': {resp.StatusCode}";
+        message = $"Error copying '{src}' to '{dst}': {resp.StatusCode}.{ReadErrorBody(resp)}";
         return false;
+    }
+
+    /// <summary>
+    /// Best-effort read of a failed response's body, truncated for display via
+    /// <see cref="HttpErrorBody.Truncate"/> — the same rule <see cref="PostCheckedAsync"/> uses for
+    /// its async failures, applied here for <see cref="CopyMemory"/>'s synchronous ones.
+    ///
+    /// <para>A bare status name ("BadRequest") tells a caller nothing actionable; the server's own
+    /// refusal — the destination-collision message, or one of Task 3's carried-entry bounds errors —
+    /// is the entire remedy for a caller that hit it. Without this, the local variant of the same
+    /// refusal names the exact fix ("Set overwrite=true to replace it.") while the remote one names
+    /// only an HTTP status. A body-read failure must not replace the status-code message with a
+    /// different one, so this degrades to an empty string rather than throwing.</para>
+    /// </summary>
+    private static string ReadErrorBody(HttpResponseMessage resp)
+    {
+        try
+        {
+            string body = HttpErrorBody.Truncate(resp.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+            return string.IsNullOrWhiteSpace(body) ? "" : $" {body}";
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     public void ArchiveVersion(string subject, string scope = "local")
