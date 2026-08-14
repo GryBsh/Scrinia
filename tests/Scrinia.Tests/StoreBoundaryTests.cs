@@ -32,11 +32,16 @@ namespace Scrinia.Tests;
 /// </summary>
 public sealed class StoreBoundaryTests
 {
-    /// <summary>The members that moved off <see cref="IMemoryStore"/> onto
-    /// <see cref="ILocalMemoryStore"/>. Same list as
-    /// <see cref="IMemoryStore_DoesNotDeclareLocalOnlyMembers"/> asserts the absence of, read from
-    /// the other side: gone from the shared interface AND present on the local one. A half-finished
-    /// split satisfies only one of the two.</summary>
+    /// <summary>The members declared on <see cref="ILocalMemoryStore"/> and nowhere else. Six —
+    /// <c>ArtifactPath</c>, <c>FindArtifactPath</c>, <c>GetStoreDirForScope</c>,
+    /// <c>WorkspaceRoot</c>, <c>ListTopicArtifacts</c>, <c>ImportTopicEntries</c> — moved off
+    /// <see cref="IMemoryStore"/> when the split was made; <c>WriteCarriedCopy</c> never lived on
+    /// <see cref="IMemoryStore"/> at all; it was declared local-only from the start.
+    /// <see cref="IMemoryStore_DoesNotDeclareLocalOnlyMembers"/> asserts the absence of every name
+    /// here from the shared interface — read from the other side — but it is a superset, not
+    /// "the same list": it also covers <c>SaveIndex</c> and <c>GenerateContentPreview</c>, which
+    /// are on neither interface. A half-finished split satisfies only one direction of the
+    /// check.</summary>
     private static readonly string[] LocalOnlyMembers =
     [
         "ArtifactPath", "FindArtifactPath", "GetStoreDirForScope",
@@ -143,6 +148,7 @@ public sealed class StoreBoundaryTests
         names.Should().NotContain("GetStoreDirForScope");
         names.Should().NotContain("ListTopicArtifacts");
         names.Should().NotContain("ImportTopicEntries");
+        names.Should().NotContain("WriteCarriedCopy");
         names.Should().NotContain("SaveIndex");
         names.Should().NotContain("GenerateContentPreview");
 

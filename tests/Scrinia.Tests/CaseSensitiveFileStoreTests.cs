@@ -169,4 +169,50 @@ public sealed class CaseSensitiveFileStoreTests : IDisposable
         File.Exists(store.ArtifactPath("Archive", "local")).Should().BeFalse(
             because: "no second artifact may be created under the caller's casing");
     }
+
+    /// <summary>
+    /// The promotion-side counterpart of
+    /// <see cref="CopyMemory_WithOverwrite_ReplacesTheCaseMismatchedDestinationRatherThanTwinningIt"/>:
+    /// this drives the same casing-adoption behaviour through <c>CopyMemory</c>'s
+    /// ephemeral→persistent promotion branch rather than calling <c>WriteCarriedCopy</c> directly.
+    /// <see cref="FileMemoryStoreTests.WriteCarriedCopy_AdoptsTheExistingDestinationsCasing"/> only
+    /// checks the index entry's <c>Name</c>, so it would still pass a bug that adopts the casing for
+    /// the INDEX ENTRY but builds the artifact path from the caller's casing — on a case-sensitive
+    /// filesystem that writes a twin file even though the index shows a single entry. The
+    /// destination-bytes and <c>File.Exists</c> checks below are what actually catch that, mirroring
+    /// the persistent→persistent test above.
+    /// </summary>
+    [SkippableFact]
+    public async Task CopyMemory_PromotingAnEphemeral_AdoptsTheExistingDestinationsCasing()
+    {
+        Skip.If(_dir is null, "This host cannot provide a case-sensitive directory.");
+        using var store = new FileMemoryStore(_dir!.Path);
+
+        await SeedAsync(store, "archive", "the destination body");
+
+        string sourceArtifact = Nmp2ChunkedEncoder.Encode("the promoted body");
+        store.RememberEphemeral("source", new EphemeralEntry(
+            Name: "source",
+            Artifact: sourceArtifact,
+            OriginalBytes: sourceArtifact.Length,
+            ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow));
+
+        bool copied = store.CopyMemory("~source", "Archive", overwrite: true, out _);
+
+        copied.Should().BeTrue();
+
+        var matches = store.LoadIndex()
+            .Where(e => e.Name.Equals("archive", StringComparison.OrdinalIgnoreCase)).ToList();
+        matches.Should().ContainSingle(because: "the promotion must replace the existing memory, not twin it");
+        matches[0].Name.Should().Be("archive",
+            because: "the memory that already existed keeps its own casing, the same convention " +
+                     "the direct persistent→persistent copy already follows");
+
+        File.ReadAllText(store.ArtifactPath("archive", "local"))
+            .Should().Be(sourceArtifact,
+                because: "the destination's bytes must be the promoted source's after the copy");
+        File.Exists(store.ArtifactPath("Archive", "local")).Should().BeFalse(
+            because: "no second artifact may be created under the caller's casing");
+    }
 }

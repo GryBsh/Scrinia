@@ -109,7 +109,7 @@ The CLI can proxy all operations to a remote Scrinia.Server via `--remote`. This
 | Abstraction | Purpose | Location |
 |-------------|---------|----------|
 | `IMemoryStore` | Storage contract every store (local or remote) can honour | Core |
-| `ILocalMemoryStore` | Extends `IMemoryStore` with the 6 members that need a local filesystem; `FileMemoryStore` implements it, `HttpMemoryStore` does not | Core |
+| `ILocalMemoryStore` | Extends `IMemoryStore` with the 7 members that need a local filesystem; `FileMemoryStore` implements it, `HttpMemoryStore` does not | Core |
 | `IEncodingStrategy` | NMP/2 compression format | Core |
 | `ISearchScoreContributor` | Plugin hook for supplemental search scores | Core |
 | `IMemoryEventSink` | Plugin hook for store/append/forget events | Core |

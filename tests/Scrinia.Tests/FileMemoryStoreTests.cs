@@ -282,7 +282,10 @@ public sealed class FileMemoryStoreTests : IDisposable
     /// <c>WriteCarriedCopy</c> indexes the metadata it is handed rather than deriving any of it. The
     /// distinguishing field is <c>FileHashes</c>: derivation hashes `file` attribute values against the
     /// workspace, so a baseline naming a path that does not exist here is one that can ONLY have been
-    /// carried. A test asserting a re-derivable field would pass either way.
+    /// carried. A test asserting a re-derivable field would pass either way. <c>ChunkEntries</c> is
+    /// asserted for the same reason: its carried preview/keywords/frequencies do not match the
+    /// artifact's actual chunk text, so a derive-instead-of-carry defect fails this assertion too,
+    /// not just <c>FileHashes</c>'s.
     /// </summary>
     [Fact]
     public void WriteCarriedCopy_IndexesTheCarriedMetadataWithoutDeriving()
@@ -297,7 +300,8 @@ public sealed class FileMemoryStoreTests : IDisposable
             Keywords: ["carried-keyword"],
             TermFrequencies: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
                 { ["carried"] = 9 },
-            ChunkEntries: null,
+            ChunkEntries: [new ChunkEntry(0, "carried chunk preview", ["carried-keyword"],
+                new Dictionary<string, int> { ["carried"] = 9 })],
             FileHashes: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 { ["src/Absent.cs"] = "carried-hash-not-from-this-workspace" },
             AgentKeywords: ["carried-keyword"]);
@@ -312,6 +316,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         entry.Keywords.Should().BeEquivalentTo(["carried-keyword"]);
         entry.AgentKeywords.Should().BeEquivalentTo(["carried-keyword"]);
         entry.TermFrequencies!["carried"].Should().Be(9);
+        entry.ChunkEntries.Should().BeEquivalentTo(carried.ChunkEntries);
         entry.FileHashes!["src/Absent.cs"].Should().Be("carried-hash-not-from-this-workspace");
         entry.Attributes!["file"].Should().BeEquivalentTo(["src/Absent.cs"]);
         // Destination-owned and artifact-derived, never carried:
