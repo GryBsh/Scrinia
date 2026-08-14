@@ -49,10 +49,12 @@ and all assembly attributes.
   cross-reference, drift baseline, attribute, or mention span; and (for `Extract`/
   `ExtractMentionSpans` specifically) a typo'd fence marker was never meant to blank out the rest of
   a memory's attributes either. Both are visible behaviour changes for any existing memory affected.
-  **Migration:** this only takes effect when a memory is re-derived (stored or appended). Memories
-  written before this change keep whichever `file`/`ref`/attribute/`mention` shape their content
-  produced under the OLD rules until they are next stored or appended — a corpus can hold multiple
-  shapes side by side indefinitely.
+  **Migration:** this only takes effect when a memory is re-derived via a full `remember`. An append
+  extracts from its new chunk only and never re-derives from a memory's existing content (D-22), so
+  appending to a memory does not recompute its already-stored shape. Memories written before this
+  change keep whichever `file`/`ref`/attribute/`mention` shape their content produced under the OLD
+  rules until they are next stored with `remember` — a corpus can hold multiple shapes side by side
+  indefinitely, and appending does not migrate one.
 
 ### Changed (breaking) — `reconcile()` refuses to auto-merge dissimilar sidecars
 

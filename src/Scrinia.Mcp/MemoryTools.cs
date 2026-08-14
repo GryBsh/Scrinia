@@ -280,12 +280,12 @@ public sealed partial class ScriniaMcpTools
                      "'~ephemeral' reference becomes a 'ref' attribute. So a pasted build log still " +
                      "contributes every path in it unless you wrap it in a properly closed fence, and a " +
                      "path this memory has not seen before is hashed into its drift baseline. This runs " +
-                     "on the appended chunk only and unions what it finds with what's already stored, so " +
-                     "an attribute a fenced block minted before this change persists on this memory until " +
-                     "it's re-stored with remember. Unlike remember, this text is not scanned for " +
-                     "proper-noun 'mention' spans — only whole-memory writes (remember, compact) do that; " +
-                     "create-via-append is unaffected since it delegates to a whole-memory write " +
-                     "internally.")] string content,
+                     "on the appended chunk only and merges what it finds with what's already stored " +
+                     "(multi-valued keys union, others replace), so an attribute a fenced block minted " +
+                     "before this change persists on this memory until it's re-stored with remember. " +
+                     "Unlike remember, this text is not scanned for proper-noun 'mention' spans — only " +
+                     "whole-memory writes (remember, compact) do that; create-via-append is unaffected " +
+                     "since it delegates to a whole-memory write internally.")] string content,
         [Description("Optional attributes merged into the memory's existing attributes. person/place/org/" +
                      "thing/topic/file/ref/mention always union with what's already stored. tag and anchor " +
                      "also union here (append-only: a tag or anchor you pass adds to the existing set rather " +
