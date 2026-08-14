@@ -41,6 +41,7 @@ public sealed class StoreBoundaryTests
     [
         "ArtifactPath", "FindArtifactPath", "GetStoreDirForScope",
         "WorkspaceRoot", "ListTopicArtifacts", "ImportTopicEntries",
+        "WriteCarriedCopy",
     ];
 
     [Fact]
@@ -55,9 +56,12 @@ public sealed class StoreBoundaryTests
             .ToHashSet();
 
         names.Should().BeEquivalentTo(LocalOnlyMembers,
-            because: "the six members that need a filesystem live here and nowhere else — an " +
+            because: "the seven members that need a filesystem live here and nowhere else — an " +
                      "extra one means a member was moved without being removed upstream, a " +
-                     "missing one means it never arrived");
+                     "missing one means it never arrived. Six are path accessors or import/export " +
+                     "helpers that need a filesystem to answer at all; WriteCarriedCopy is not a " +
+                     "path accessor but a write that only a filesystem-backed store can perform — a " +
+                     "remote store forwards it rather than performing it");
     }
 
     [Fact]

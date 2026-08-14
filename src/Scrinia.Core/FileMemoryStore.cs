@@ -1849,6 +1849,53 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
     // ── Copy & Archive ───────────────────────────────────────────────────────
 
+    /// <inheritdoc />
+    public bool WriteCarriedCopy(
+        string destinationName, string artifact, CarriedMetadata carried, bool overwrite,
+        out string message)
+    {
+        ArgumentNullException.ThrowIfNull(carried);
+
+        var (dstScope, dstSubject) = ParseQualifiedName(destinationName);
+
+        // Adopt the existing memory's casing. The promotion branch this serves did NOT do this — it went
+        // straight to ArtifactPath — so on a case-sensitive volume it could write a twin. The resolved
+        // subject decides three things: whether the collision check below sees a collision, where the
+        // bytes land, and what the entry is called.
+        ArtifactEntry? existing = LoadIndex(dstScope).FirstOrDefault(
+            e => e.Name.Equals(dstSubject, StringComparison.OrdinalIgnoreCase));
+        if (existing is not null)
+            dstSubject = existing.Name;
+
+        string destPath = ArtifactPath(dstSubject, dstScope);
+        if (File.Exists(destPath) && !overwrite)
+        {
+            message = $"Error: destination memory '{destinationName}' already exists. Set overwrite=true to replace it.";
+            return false;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+        AtomicWriteAllText(destPath, artifact);
+
+        Upsert(new ArtifactEntry(
+            Name: dstSubject,
+            Uri: ArtifactUri(dstSubject, dstScope),
+            OriginalBytes: carried.OriginalBytes,
+            ChunkCount: Nmp2ChunkedEncoder.GetChunkCount(artifact),
+            CreatedAt: DateTimeOffset.UtcNow,
+            ContentPreview: carried.ContentPreview,
+            Keywords: carried.Keywords,
+            TermFrequencies: carried.TermFrequencies,
+            UpdatedAt: carried.UpdatedAt,
+            ChunkEntries: carried.ChunkEntries,
+            FileHashes: carried.FileHashes,
+            Attributes: carried.Attributes,
+            AgentKeywords: carried.AgentKeywords), dstScope);
+
+        message = $"Wrote '{destinationName}'.";
+        return true;
+    }
+
     public bool CopyMemory(string sourceName, string destinationName, bool overwrite, out string message)
     {
         bool srcEphemeral = IsEphemeral(sourceName);
@@ -1883,40 +1930,26 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
                 return true;
             }
 
-            // Ephemeral → Persistent (promotion)
-            var (dstScope, dstSubject) = ParseQualifiedName(dstKey);
-            string destPath = ArtifactPath(dstSubject, dstScope);
-            if (File.Exists(destPath) && !overwrite)
-            {
-                message = $"Error: destination memory '{destinationName}' already exists. Set overwrite=true to replace it.";
+            // Ephemeral → Persistent (promotion). The write is WriteCarriedCopy's, so the in-process
+            // path and the one a remote client reaches over `copy-from-client` cannot drift: the
+            // carry rule has one implementation.
+            if (!WriteCarriedCopy(
+                    dstKey,
+                    entry.Artifact,
+                    new CarriedMetadata(
+                        OriginalBytes: entry.OriginalBytes,
+                        UpdatedAt: entry.UpdatedAt,
+                        ContentPreview: entry.ContentPreview,
+                        Attributes: entry.Attributes,
+                        Keywords: entry.Keywords,
+                        TermFrequencies: entry.TermFrequencies,
+                        ChunkEntries: entry.ChunkEntries,
+                        FileHashes: entry.FileHashes,
+                        AgentKeywords: entry.AgentKeywords),
+                    overwrite,
+                    out message))
                 return false;
-            }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-            AtomicWriteAllText(destPath, entry.Artifact);
-
-            // A copy carries; it does not re-derive. The artifact bytes are identical by
-            // definition, so the derived metadata is identical — carrying it is correct by
-            // construction, and re-deriving would re-hash files against the current workspace and
-            // could produce an entry that differs from its byte-identical source. This branch used
-            // to populate a subset, which dropped TermFrequencies — what BM25 scores against — and
-            // left the promoted memory unfindable by search. CreatedAt is deliberately NOT carried:
-            // the promoted memory is created now.
-            var destEntry = new ArtifactEntry(
-                Name: dstSubject,
-                Uri: ArtifactUri(dstSubject, dstScope),
-                OriginalBytes: entry.OriginalBytes,
-                ChunkCount: entry.ChunkCount,
-                CreatedAt: DateTimeOffset.UtcNow,
-                ContentPreview: entry.ContentPreview,
-                Keywords: entry.Keywords,
-                TermFrequencies: entry.TermFrequencies,
-                UpdatedAt: entry.UpdatedAt,
-                ChunkEntries: entry.ChunkEntries,
-                FileHashes: entry.FileHashes,
-                Attributes: entry.Attributes,
-                AgentKeywords: entry.AgentKeywords);
-            Upsert(destEntry, dstScope);
             message = $"Copied '{sourceName}' to '{destinationName}'.";
             return true;
         }

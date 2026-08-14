@@ -378,16 +378,21 @@ public interface ILocalMemoryStore : IMemoryStore
     List<(string Name, string FilePath)> ListTopicArtifacts(string topicScope);
     void ImportTopicEntries(string topicScope, List<ArtifactEntry> entries,
         Dictionary<string, string> artifactContents, bool overwrite);
+    bool WriteCarriedCopy(
+        string destinationName, string artifact, CarriedMetadata carried, bool overwrite,
+        out string message);
 }
 ```
 
-The six members that only make sense against a local filesystem — the ones a remote store could
-previously implement only by throwing `NotSupportedException` at runtime. `FileMemoryStore` is the
-sole implementation; `HttpMemoryStore` implements only `IMemoryStore` and does not implement this
-interface at all, so a caller that needs a local path now fails to compile against a remote store
-instead of discovering the gap at runtime. `HttpMemoryStore` retains exactly one
-`NotSupportedException`, unrelated to this split: rejecting a `file://`-prefixed input to
-`ResolveArtifactAsync`, which is a rejection of an input value rather than of a capability.
+The seven members that only make sense against a local filesystem — six path accessors and
+import/export helpers that a remote store could previously implement only by throwing
+`NotSupportedException` at runtime, plus `WriteCarriedCopy`, a write that only a filesystem-backed
+store can perform rather than forward. `FileMemoryStore` is the sole implementation;
+`HttpMemoryStore` implements only `IMemoryStore` and does not implement this interface at all, so a
+caller that needs a local path now fails to compile against a remote store instead of discovering
+the gap at runtime. `HttpMemoryStore` retains exactly one `NotSupportedException`, unrelated to
+this split: rejecting a `file://`-prefixed input to `ResolveArtifactAsync`, which is a rejection of
+an input value rather than of a capability.
 
 Callers that need a local path narrow to `ILocalMemoryStore` in one of two ways, chosen by how much
 of the method needs the filesystem:

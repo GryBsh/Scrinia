@@ -278,6 +278,82 @@ public sealed class FileMemoryStoreTests : IDisposable
         promoted.ChunkCount.Should().Be(source.ChunkCount);
     }
 
+    /// <summary>
+    /// <c>WriteCarriedCopy</c> indexes the metadata it is handed rather than deriving any of it. The
+    /// distinguishing field is <c>FileHashes</c>: derivation hashes `file` attribute values against the
+    /// workspace, so a baseline naming a path that does not exist here is one that can ONLY have been
+    /// carried. A test asserting a re-derivable field would pass either way.
+    /// </summary>
+    [Fact]
+    public void WriteCarriedCopy_IndexesTheCarriedMetadataWithoutDeriving()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["notes about src/Absent.cs"]);
+        var carried = new CarriedMetadata(
+            OriginalBytes: 4242,
+            UpdatedAt: new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero),
+            ContentPreview: "carried preview",
+            Attributes: new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                { ["file"] = ["src/Absent.cs"] },
+            Keywords: ["carried-keyword"],
+            TermFrequencies: new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                { ["carried"] = 9 },
+            ChunkEntries: null,
+            FileHashes: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                { ["src/Absent.cs"] = "carried-hash-not-from-this-workspace" },
+            AgentKeywords: ["carried-keyword"]);
+
+        bool ok = _store.WriteCarriedCopy("promoted", artifact, carried, overwrite: false, out string msg);
+
+        ok.Should().BeTrue(msg);
+        var entry = _store.LoadIndex("local").Single(e => e.Name == "promoted");
+        entry.OriginalBytes.Should().Be(4242);
+        entry.UpdatedAt.Should().Be(new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero));
+        entry.ContentPreview.Should().Be("carried preview");
+        entry.Keywords.Should().BeEquivalentTo(["carried-keyword"]);
+        entry.AgentKeywords.Should().BeEquivalentTo(["carried-keyword"]);
+        entry.TermFrequencies!["carried"].Should().Be(9);
+        entry.FileHashes!["src/Absent.cs"].Should().Be("carried-hash-not-from-this-workspace");
+        entry.Attributes!["file"].Should().BeEquivalentTo(["src/Absent.cs"]);
+        // Destination-owned and artifact-derived, never carried:
+        entry.Name.Should().Be("promoted");
+        entry.ChunkCount.Should().Be(1);
+        entry.CreatedAt.Should().BeAfter(DateTimeOffset.UtcNow.AddMinutes(-1));
+    }
+
+    [Fact]
+    public void WriteCarriedCopy_RefusesAnExistingDestinationWithoutOverwrite()
+    {
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["first"]);
+        var carried = new CarriedMetadata(1, null, null, null, null, null, null, null);
+        _store.WriteCarriedCopy("taken", artifact, carried, overwrite: false, out _).Should().BeTrue();
+
+        bool second = _store.WriteCarriedCopy("taken", artifact, carried, overwrite: false, out string msg);
+
+        second.Should().BeFalse();
+        msg.Should().Contain("already exists");
+    }
+
+    /// <summary>
+    /// Promotion now resolves its destination through the index and adopts the existing entry's casing.
+    /// The branch this replaces did NOT — it went straight to <c>ArtifactPath</c> — so on a
+    /// case-sensitive volume, promoting onto "Archive" while "archive" existed wrote a second memory.
+    /// This is the promotion-side variant of what CaseSensitiveFileStoreTests pins for
+    /// persistent→persistent, and nothing covered it before.
+    /// </summary>
+    [Fact]
+    public void WriteCarriedCopy_AdoptsTheExistingDestinationsCasing()
+    {
+        var carried = new CarriedMetadata(1, null, null, null, null, null, null, null);
+        _store.WriteCarriedCopy("Archive", Nmp2ChunkedEncoder.EncodeChunks(["first"]),
+            carried, overwrite: false, out _).Should().BeTrue();
+
+        _store.WriteCarriedCopy("archive", Nmp2ChunkedEncoder.EncodeChunks(["second"]),
+            carried, overwrite: true, out _).Should().BeTrue();
+
+        _store.LoadIndex("local").Where(e => e.Name.Equals("archive", StringComparison.OrdinalIgnoreCase))
+            .Should().ContainSingle().Which.Name.Should().Be("Archive");
+    }
+
     [Fact]
     public async Task CopyMemory_DemotingToAnEphemeral_CarriesEveryMetadataField()
     {
