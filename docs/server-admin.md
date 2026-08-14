@@ -320,6 +320,49 @@ POST /api/v1/stores/{store}/memories/{name}/copy
 }
 ```
 
+Here `{name}` is the **source** memory and `destination` in the body names the copy.
+
+### Copy a Memory From the Client
+
+```
+POST /api/v1/stores/{store}/memories/{name}/copy-from-client
+```
+
+**Permission:** `copy`
+
+Promotes an ephemeral memory the server has never seen: the client sends the artifact content plus
+the metadata it already derived, and the server stores both verbatim, deriving nothing itself.
+
+**`{name}` is the DESTINATION here — the opposite of `POST .../copy`, where it names the source.**
+There is no server-side source to name: the whole reason this route exists is that the source is a
+client-side ephemeral this process cannot see. The handler performs no name resolution against its
+own store, so a persistent memory that happens to share the destination name is never read from —
+only ever (optionally) overwritten.
+
+**Request:**
+
+```json
+{
+  "content": ["chunk one", "chunk two"],
+  "entry": {
+    "originalBytes": 1234,
+    "updatedAt": "2026-08-14T00:00:00Z",
+    "description": "a curated preview",
+    "attributes": { "file": ["src/A.cs"] },
+    "keywords": ["kw"],
+    "termFrequencies": { "kw": 2 },
+    "chunkEntries": [{ "chunkIndex": 0, "contentPreview": "preview", "keywords": ["kw"] }],
+    "fileHashes": { "src/A.cs": "deadbeef" },
+    "agentKeywords": ["kw"]
+  },
+  "overwrite": false
+}
+```
+
+`entry` carries exactly the metadata the server can neither derive from the artifact nor compute
+from the destination name — `name`, `qualifiedName`, `scope`, `chunkCount` and `createdAt` are
+deliberately absent, so none of them can disagree with the request that carries them.
+
 ### Search
 
 ```

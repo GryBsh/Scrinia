@@ -30,6 +30,8 @@ public static class MemoryEndpoints
         group.MapDelete("/memories/{name}", ForgetMemory);
         group.MapPost("/memories/{name}/append", AppendMemory);
         group.MapPost("/memories/{name}/copy", CopyMemory);
+        // {name} is the DESTINATION on this one — see CopyFromClient's doc comment.
+        group.MapPost("/memories/{name}/copy-from-client", CopyFromClient);
         group.MapGet("/memories/{name}/chunks/{i:int}", GetChunk);
         group.MapGet("/search", SearchMemory);
         group.MapPost("/search", SearchMemoryPost);
@@ -530,6 +532,108 @@ public static class MemoryEndpoints
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("destination is required.")));
 
         bool ok = ctx.Store!.CopyMemory(decoded, req.Destination, req.Overwrite, out string msg);
+        if (!ok)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(msg)));
+        return Task.FromResult<IResult>(Results.Ok(new { message = msg }));
+    }
+
+    /// <summary>
+    /// Stores an artifact plus the metadata the CALLER derived, deriving nothing itself.
+    ///
+    /// <para><b><c>{name}</c> is the DESTINATION here</b> — the opposite of
+    /// <see cref="CopyMemory"/>, where it is the source. That is deliberate and is the whole reason
+    /// this route exists: the source is a client-side ephemeral this process has never seen, so
+    /// there is no server-side name to put in the path. <b>The handler performs no name resolution
+    /// against this store at all</b>, which is precisely what removes the defect it replaces — a
+    /// promotion used to arrive as a bare name and get resolved here, silently copying an unrelated
+    /// persistent memory that happened to share it.</para>
+    ///
+    /// <para>A separate route rather than an optional field on <see cref="CopyRequest"/>: a server
+    /// predating this would ignore an unknown field and fall through to that same wrong resolution,
+    /// reporting success. An unknown route 404s, which the client surfaces as a refusal.</para>
+    /// </summary>
+    private static Task<IResult> CopyFromClient(
+        string store,
+        string name,
+        CopyFromClientRequest req,
+        RequestContext ctx)
+    {
+        if (!ctx.HasPermission("copy"))
+            return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'copy' required."), statusCode: 403));
+
+        if (!IsWritable(ctx, store))
+            return Task.FromResult<IResult>(Results.Json(new ErrorResponse($"Store '{store}' is read-only for this key."), statusCode: 403));
+
+        string decoded = Uri.UnescapeDataString(name);
+        if (string.IsNullOrWhiteSpace(decoded))
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("A destination name is required.")));
+
+        if (decoded.Length > MaxNameLength)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse($"Name must not exceed {MaxNameLength} characters.")));
+
+        if (req.Content is null || req.Content.Length == 0)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("content is required.")));
+
+        if (req.Entry is null)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("entry is required.")));
+
+        if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
+            return Task.FromResult<IResult>(Results.BadRequest(
+                new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB.")));
+
+        // Normalized BEFORE bounds-checking, matching RememberMemory/PatchEntry (I-1/R-6): Normalize
+        // can only ever shrink a map, so checking the raw one would reject a body the store itself
+        // would accept.
+        Dictionary<string, string[]>? normalizedAttributes = KnownAttributes.Normalize(req.Entry.Attributes);
+        if (ValidateAttributeBounds(normalizedAttributes, KnownAttributes.MaxAttributes, KnownAttributes.MaxValuesPerKey)
+            is { } boundsError)
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(boundsError)));
+
+        if (ctx.Store is not ILocalMemoryStore local)
+            return Task.FromResult<IResult>(Results.Json(
+                new ErrorResponse("copy-from-client requires a store backed by a local filesystem."),
+                statusCode: StatusCodes.Status501NotImplemented));
+
+        // The artifact is encoded HERE, from req.Content — never accepted as a raw string from the
+        // caller — so its "C:{k}" chunk-count header can never disagree with the artifact's actual
+        // chunk sections: EncodeChunks writes k = req.Content.Length and emits exactly that many
+        // ##CHUNK: sections. WriteCarriedCopy's ChunkCount (Nmp2ChunkedEncoder.GetChunkCount, a
+        // lenient scrape with no 1..MaxChunkCount range check) therefore cannot be handed a bogus,
+        // mismatched count through this route — the concern that check exists for elsewhere. See
+        // task-3-report.md for the verification.
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(req.Content);
+        var carried = new CarriedMetadata(
+            OriginalBytes: req.Entry.OriginalBytes,
+            UpdatedAt: req.Entry.UpdatedAt,
+            ContentPreview: req.Entry.Description,
+            Attributes: normalizedAttributes,
+            Keywords: req.Entry.Keywords,
+            TermFrequencies: req.Entry.TermFrequencies,
+            ChunkEntries: req.Entry.ChunkEntries?.Select(c => new ChunkEntry(
+                c.ChunkIndex, c.ContentPreview, c.Keywords, c.TermFrequencies)).ToArray(),
+            FileHashes: req.Entry.FileHashes,
+            AgentKeywords: req.Entry.AgentKeywords);
+
+        bool ok;
+        string msg;
+        try
+        {
+            // WriteCarriedCopy resolves `decoded` via ParseQualifiedName internally, which throws
+            // ArgumentException — not a caller-facing refusal — for a legacy "topic:subject" name,
+            // or for a v2 (leading-"/") path containing a backslash, a colon, a ".." sequence, a
+            // control character, or one that normalizes to no segments at all ("/" alone). In-process
+            // that is a programming error; reachable from an untrusted caller via this route it would
+            // be an unhandled 500. Guarded here, at the endpoint, rather than inside the store: that
+            // keeps WriteCarriedCopy's contract — and its in-process caller, CopyMemory — unchanged,
+            // at the cost of every OTHER caller of WriteCarriedCopy needing the same guard if one is
+            // ever added. See task-3-report.md for the ruling.
+            ok = local.WriteCarriedCopy(decoded, artifact, carried, req.Overwrite, out msg);
+        }
+        catch (ArgumentException ex)
+        {
+            return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(ex.Message)));
+        }
+
         if (!ok)
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(msg)));
         return Task.FromResult<IResult>(Results.Ok(new { message = msg }));

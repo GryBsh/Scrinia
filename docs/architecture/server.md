@@ -14,7 +14,7 @@ src/Scrinia.Server/
     ApiKeyOptions.cs        Auth scheme options
     RequestContext.cs        Per-request scoped context
   Endpoints/
-    MemoryEndpoints.cs      10 memory operation endpoints
+    MemoryEndpoints.cs      14 memory operation endpoints
     KeyEndpoints.cs         4 key management endpoints
     HealthEndpoints.cs      4 health probe endpoints
   Services/
@@ -173,11 +173,17 @@ All memory endpoints require store resolution and appropriate permissions. They 
 | DELETE | `/memories/{name}` | `forget` |
 | POST | `/memories/{name}/append` | `append` |
 | POST | `/memories/{name}/copy` | `copy` |
+| POST | `/memories/{name}/copy-from-client` | `copy` |
 | GET | `/memories/{name}/chunks/{i}` | `read` |
 | GET | `/search` | `search` |
 | POST | `/search` | `search` |
 | POST | `/export` | `export` |
 | POST | `/import` | `import` |
+
+`{name}` names the **source** on every route above except `copy-from-client`, where it names the
+**destination** — there is no server-side source to name, since a `copy-from-client` request's
+source is a client-side ephemeral this process has never seen. The handler performs no name
+resolution against its own store at all.
 
 ### KeyEndpoints
 
