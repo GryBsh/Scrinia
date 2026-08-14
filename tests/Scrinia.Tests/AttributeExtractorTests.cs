@@ -49,6 +49,7 @@ public sealed class AttributeExtractorTests
     {
         string longVal = new string('x', 121);
         var attributes = AttributeExtractor.Extract(
+            "---\n" +                          // no `---` guard exists; pins that it mints nothing
             "```\nfenced: skipped\n```\n" +
             "http://example.com\n" +          // key "http", value "//..." → URL guard
             "1key: starts with digit\n" +

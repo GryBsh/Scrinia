@@ -2,8 +2,8 @@ namespace Scrinia.Core.Search;
 
 /// <summary>
 /// The single line-scanning rule shared by every mechanical prose scan in
-/// <see cref="AttributeExtractor"/> (and, from Task 6, by fence-aware reference extraction):
-/// skip fenced code blocks, keep everything else verbatim. YAML frontmatter and inline-code
+/// <see cref="AttributeExtractor"/>: skip fenced code blocks, keep everything else verbatim.
+/// YAML frontmatter and inline-code
 /// spans are treated as prose, not stripped — both are deliberate. Frontmatter carries real
 /// attributes (<c>status:</c>, <c>verdict:</c>, ...) that <see cref="AttributeExtractor.Extract"/>
 /// is meant to read. Inline code is exactly the kind of place a real reference lives — a

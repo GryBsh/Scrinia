@@ -31,10 +31,27 @@ public class MentionSpanExtractionTests
     {
         // Fenced blocks are still excluded — the one exclusion rule ProseScanner enforces.
         Spans("```\nSeraphim Config\n```\nWe met Alice.").Should().BeEquivalentTo(["alice"]);
-        // Inline code is prose now, not stripped: the backtick around `MaxRetries` breaks the
-        // mention run the same way any other non-word character would, so "Set" (a stopword,
-        // dropped) and "MaxRetries" (its own run) no longer fuse into a single "bob"-only result.
+        // Inline code is prose, not stripped: `MaxRetries` is its own run, separate from "Set"
+        // (a stopword) and "Bob" (its own run, unaffected by the backtick pair before it).
         Spans("Set `MaxRetries` and call Bob.").Should().BeEquivalentTo(["maxretries", "bob"]);
+        // A backtick pair breaks a mention run on BOTH sides — the case above can't tell that
+        // apart from "the backtick's contents are simply invisible", because "Set" is a stopword
+        // (nothing to its left to fuse with) and "Bob" is whitespace-bounded on the far side.
+        // Here real capitalized runs sit on both sides of the backticks: under the old strip this
+        // was one fused span "alpha beta" (StripInlineCode blanks the backticks and "Xray" to
+        // spaces, and whitespace never breaks a run); under a hypothetical "backtick as whitespace"
+        // reading it would also fuse, into "alpha xray beta". Only "backtick is a run-breaking
+        // character" produces three separate spans.
+        Spans("Alpha `Xray` Beta").Should().BeEquivalentTo(["alpha", "xray", "beta"]);
+    }
+
+    [Fact]
+    public void Frontmatter_IsProse_ContributesMentionSpans()
+    {
+        // ExtractMentionSpans no longer skips frontmatter (ProseScanner treats it as prose, same
+        // as Extract) — a capitalized run inside the frontmatter block is now a mention span too,
+        // scanned before the body since frontmatter lines come first in the content.
+        Spans("---\nperson: Alice Smith\n---\nWe met Bob.").Should().BeEquivalentTo(["alice smith", "bob"]);
     }
 
     [Fact]

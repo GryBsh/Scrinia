@@ -176,7 +176,7 @@ public static partial class AttributeExtractor
     /// runs as <c>mention:&lt;value&gt;</c> presence facts. LLM-free; embedder-free. A run is a
     /// maximal sequence of consecutive capitalized, non-stop-word tokens taken outside code fences
     /// (see <see cref="ProseScanner"/>) — inline-code spans and YAML frontmatter are prose here,
-    /// same as in <see cref="Extract"/>, so a backtick now breaks a mention run the way any other
+    /// same as in <see cref="Extract"/>, so a backtick breaks a mention run the way any other
     /// non-word character does; the value is the run joined and lowercased, kept whole. No
     /// positional/echo logic. Returns null when no span survives.
     /// </summary>
