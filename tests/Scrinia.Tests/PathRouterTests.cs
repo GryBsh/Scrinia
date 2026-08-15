@@ -5,10 +5,6 @@ namespace Scrinia.Tests;
 
 public class PathRouterTests : IDisposable
 {
-    private static readonly HashSet<string> EntityTypes = new(
-        ["goal", "phase", "task", "concern", "requirement", "project", "workflow", "skill"],
-        StringComparer.OrdinalIgnoreCase);
-
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"scrinia-test-{Guid.NewGuid():N}");
 
     public PathRouterTests()
@@ -22,27 +18,16 @@ public class PathRouterTests : IDisposable
             Directory.Delete(_root, recursive: true);
     }
 
-    private ParsedPath P(string raw) => PathParser.Parse(raw, EntityTypes);
-
     // Task 13 deleted ToFilesystemPath/ToVersionsDir/ToMetadataPath — a second scope→directory
     // mapper with no production callers that disagreed with ToStoreDir. Their coverage moved to
     // MigrationTests, against the live FileMemoryStore.ArtifactPath/MetaPath resolvers.
-
-    // ── IsEphemeral ───────────────────────────────────────────────────────────
-
-    [Fact]
-    public void IsEphemeral_TempPath_ReturnsTrue()
-    {
-        PathRouter.IsEphemeral(P("/temp/scratch")).Should().BeTrue();
-    }
-
-    [Fact]
-    public void IsEphemeral_RegularPath_ReturnsFalse()
-    {
-        PathRouter.IsEphemeral(P("/api/auth-flow")).Should().BeFalse();
-    }
-
-    // ── Additional coverage ───────────────────────────────────────────────────
+    //
+    // The branch review then deleted IsFileEntity and IsEphemeral(ParsedPath), which that commit
+    // orphaned and missed, along with the tests here that were their only remaining callers. Those
+    // tests could not fail for any reason a user would notice: nothing in src/ asked either
+    // question. The rules they named are covered where they actually live — the file-entity kind
+    // table through ToFileEntityDir below, and "/temp/ means ephemeral" through the remember/forget
+    // tools' own tests.
 
     // ── ToStoreDir ────────────────────────────────────────────────────────────
 
@@ -105,19 +90,6 @@ public class PathRouterTests : IDisposable
             because: "workflows are deleted; an unknown kind is a programming error, " +
                      "matching ToStoreDir's contract");
     }
-
-    [Theory]
-    [InlineData("skill")]
-    [InlineData("agent")]
-    public void IsFileEntity_TrueForKnownKinds(string kind) =>
-        PathRouter.IsFileEntity(kind).Should().BeTrue();
-
-    [Theory]
-    [InlineData("findings")]
-    [InlineData("workflow")]
-    [InlineData("")]
-    public void IsFileEntity_FalseOtherwise(string segment) =>
-        PathRouter.IsFileEntity(segment).Should().BeFalse();
 
     [Fact]
     public void TryToFileEntityPath_ValidName_ResolvesUnderTheKindDirectory()

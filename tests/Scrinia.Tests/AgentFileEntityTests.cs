@@ -94,7 +94,11 @@ public class AgentFileEntityTests
         // (which runs unconditionally AFTER the topics loop below) would rewrite the sidecar
         // moments after any sweep deleted it, masking exactly the failure this test exists to
         // catch.
-        string topicScope = MemoryNaming.BuildScopedTopicScope(store.SanitizeName("agent"));
+        // Task 13: the one scope constructor sanitizes each segment itself. Wrapping it in
+        // SanitizeName flattens '/' to '_' and so names a DIFFERENT scope for any nested topic —
+        // it is a no-op only for a single-segment alphanumeric like this one, which is what kept
+        // the pairing invisible.
+        string topicScope = MemoryNaming.BuildScopedTopicScope("agent");
         store.Upsert(
             new ArtifactEntry("note", "", 5, 1, DateTimeOffset.UtcNow, "an agent-topic note"),
             topicScope);

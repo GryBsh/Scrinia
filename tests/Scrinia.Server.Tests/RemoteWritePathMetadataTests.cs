@@ -194,8 +194,11 @@ public sealed class RemoteWritePathMetadataTests : IAsyncLifetime
     /// third state — success reported AND the <c>ref</c> attribute actually on both entries,
     /// re-read from the server. Claiming success without the re-read is exactly state 1.</item>
     /// </list>
-    /// <c>link</c> is the interesting mutation to pin here because it routes its <c>ref:</c> input
-    /// into ATTRIBUTES and leaves <c>Keywords</c> alone — which is what PATCH accepts. A mutation
+    /// <c>link</c> is the interesting mutation to pin here because it writes the <c>ref</c>
+    /// ATTRIBUTE directly and leaves <c>Keywords</c> alone — which is what PATCH accepts. There is
+    /// no routing step: Task 14 removed the <c>ref:{name}</c>-shaped keyword <c>link</c> used to
+    /// mint and let <c>AttributeExtractor.RouteKeywords</c> convert back, precisely because that
+    /// conversion was conditional on the name's length. A mutation
     /// that changed keywords is refused, pinned in
     /// <c>RemoteLoadIndexTests.TryUpdateEntry_ReturnsFalse_WhenTheMutationChangesKeywords</c>.
     /// </summary>

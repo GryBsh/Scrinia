@@ -60,9 +60,16 @@ public sealed record EphemeralEntry(
         AgentKeywords: AgentKeywords);
 
     /// <summary>
-    /// The inverse of <see cref="ToArtifactEntry"/>: this memory with every shared field taken from
-    /// <paramref name="entry"/>. Round-trips — <c>e.WithMetadataFrom(e.ToArtifactEntry())</c> is
-    /// <c>e</c>.
+    /// This memory with every shared field taken from <paramref name="entry"/>.
+    ///
+    /// <para><b>One-sided, not an inverse.</b> <c>e.WithMetadataFrom(e.ToArtifactEntry())</c> is
+    /// <c>e</c> — that direction holds, because <see cref="ToArtifactEntry"/> drops no shared field.
+    /// The other direction does NOT: <c>a</c> is not
+    /// <c>e.WithMetadataFrom(a).ToArtifactEntry()</c> whenever <c>a.Uri</c> is non-empty, since
+    /// <see cref="EphemeralEntry"/> has no <c>Uri</c> to hold it and the projection back out writes
+    /// the empty placeholder. Harmless as used — every caller applies this to an entry derived from
+    /// an ephemeral, which has no backing file and so no address — but "the inverse" claimed a
+    /// symmetry the pair does not have.</para>
     ///
     /// <para><b>It writes OVER this record rather than building a new one, and it has to.</b>
     /// <see cref="ArtifactEntry"/> has no <see cref="Artifact"/> — the memory's actual content lives

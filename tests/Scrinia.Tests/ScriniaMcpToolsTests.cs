@@ -2687,10 +2687,14 @@ public sealed class ScriniaMcpToolsTests
         result.Should().Contain("legacy-ref").And.Contain("fields-ref");
     }
 
-    // ── UpdateMeta field routing / Link writes ref fields ────────────────────
+    // ── UpdateMeta keyword routing / Link writes the ref ATTRIBUTE ───────────
+    //
+    // "fields" is pre-Attributes vocabulary: the entry carries `Attributes`, and link() writes into
+    // it directly (Task 14) rather than minting a ref:-shaped keyword for RouteKeywords to convert.
+    // UpdateMeta's routing is still real and still what the first half of this test exercises.
 
     [Fact]
-    public async Task UpdateMeta_RoutesFieldShapedKeywords_AndLinkWritesRefFields()
+    public async Task UpdateMeta_RoutesAttributeShapedKeywords_AndLinkWritesTheRefAttribute()
     {
         using var scope = new TestHelpers.StoreScope();
         await Tools().Remember(["alpha body"], "um-alpha");

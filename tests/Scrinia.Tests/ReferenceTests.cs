@@ -607,9 +607,12 @@ public sealed class ReferenceTests : IDisposable
         // Act — search references for alpha
         string result = (await _tools.References("linked-alpha")).ToYaml();
 
-        // Assert — beta should appear because it has ref:linked-alpha keyword
+        // Assert — beta appears because link() wrote "linked-alpha" into its `ref` ATTRIBUTE.
+        // Task 14 removed the ref:{name} keyword link() used to mint, so the keyword branch of
+        // References' predicate is not what matches here; it survives only for entries stored
+        // before that change. The attribute branch (MatchesRefAttribute) is the live mechanism.
         result.Should().Contain("linked-beta",
-            "references() should find memories linked to the target via ref: keywords");
+            "references() should find memories whose `ref` attribute names the target");
     }
 
     // ── FileHashes & drift detection tests ────────────────────────────────────

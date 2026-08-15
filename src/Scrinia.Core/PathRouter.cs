@@ -1,9 +1,12 @@
 namespace Scrinia.Core;
 
 /// <summary>
-/// Maps <see cref="ParsedPath"/> instances to their filesystem locations under <c>.scrinia/</c>:
-/// hand-authored file entities (skills, agent configs) resolve to a top-level directory,
-/// everything else resolves under <c>.scrinia/memories/</c>. Pure and side-effect-free.
+/// Resolves filesystem locations under <c>.scrinia/</c>: hand-authored file entities (skills, agent
+/// configs) to a top-level directory, and a store SCOPE to its directory under
+/// <c>.scrinia/memories/</c>. Pure and side-effect-free.
+/// <para>It takes strings, not <see cref="ParsedPath"/>. It used to say otherwise — a leftover from
+/// when <c>ToFilesystemPath</c> and <c>IsEphemeral(ParsedPath)</c> lived here; no surviving member
+/// takes one.</para>
 /// </summary>
 public static class PathRouter
 {
@@ -24,10 +27,6 @@ public static class PathRouter
         ["skill"] = "skills",
         ["agent"] = "agent",
     };
-
-    /// <summary>True when <paramref name="segment"/> names a hand-authored file-entity kind.</summary>
-    public static bool IsFileEntity(string? segment) =>
-        !string.IsNullOrEmpty(segment) && FileEntityDirs.ContainsKey(segment);
 
     /// <summary>
     /// Resolves a file-entity kind to its directory. The single authority for where skills and
@@ -83,16 +82,18 @@ public static class PathRouter
     //
     // ToFileEntityDir and TryToFileEntityPath are NOT dead (MemoryTools.Core/Skills/Lifecycle and
     // BundleFormatService call them) and remain above.
-
-    /// <summary>
-    /// Returns <see langword="true"/> when the path starts with <c>/temp/</c>,
-    /// indicating it should be stored in the ephemeral in-memory cache only.
-    /// </summary>
-    /// <param name="path">The parsed path to check.</param>
-    /// <returns><see langword="true"/> when the path is ephemeral.</returns>
-    public static bool IsEphemeral(ParsedPath path) =>
-        path.Segments.Count > 0 &&
-        path.Segments[0].Value.Equals("temp", StringComparison.OrdinalIgnoreCase);
+    //
+    // ALSO DELETED (branch review): IsFileEntity(string?) and IsEphemeral(ParsedPath), which the
+    // commit above missed. Both were reachable only from ToFilesystemPath, so deleting it orphaned
+    // them; their only remaining references were tests written to exercise them, and both were
+    // `public static` on Scrinia.Core — the same "one `using` from being wrong" hazard that deletion
+    // cited. The live rules they duplicated:
+    //   * the file-entity kind test is FileEntityDirs.TryGetValue, inside ToFileEntityDir, where a
+    //     caller cannot ask the question and then forget to act on the answer;
+    //   * the "/temp/ means ephemeral" rule is the string-prefix rewrite in MemoryTools.Core
+    //     (`name.StartsWith("/temp/")` → `"~" + …`, at the remember and forget entry points), which
+    //     runs before any path parsing — so a ParsedPath-shaped copy could never have been the one
+    //     that decided.
 
     /// <summary>
     /// Maps an internal scope string ("local", "local:findings", "local:goal/G-5") to its

@@ -308,7 +308,9 @@ public sealed class BundleV2Tests : IDisposable
             .Should().Be("# Execution policy\nVerify before commit.");
 
         // Verify the imported topic artifact content matches
-        string importScope = MemoryNaming.BuildScopedTopicScope(importStore.SanitizeName("patterns"));
+        // Task 13: the constructor sanitizes each segment itself — see SeedTopic. Wrapping it in
+        // SanitizeName would flatten '/' to '_' and resolve a DIFFERENT scope than import wrote to.
+        string importScope = MemoryNaming.BuildScopedTopicScope("patterns");
         var retryContent = await importStore.ReadArtifactAsync("retry", importScope);
         retryContent.Should().Be("## Retry pattern\nExponential backoff.");
 
@@ -335,7 +337,8 @@ public sealed class BundleV2Tests : IDisposable
         ImportFromBytes(zipBytes, importStore);
 
         // Assert — ContentPreview and Attributes["tag"] survived the round trip.
-        string importScope = MemoryNaming.BuildScopedTopicScope(importStore.SanitizeName("recipes"));
+        // See SeedTopic for why the SanitizeName wrapper is wrong here.
+        string importScope = MemoryNaming.BuildScopedTopicScope("recipes");
         var imported = importStore.LoadIndex(importScope).Single(e => e.Name == "soup");
 
         imported.ContentPreview.Should().Be("A hearty soup recipe.");
@@ -390,7 +393,8 @@ public sealed class BundleV2Tests : IDisposable
         ImportFromBytes(zipBytes, importStore);
 
         // Assert — old "description"/"tags" keys routed into ContentPreview/Attributes["tag"].
-        string importScope = MemoryNaming.BuildScopedTopicScope(importStore.SanitizeName("old"));
+        // See SeedTopic for why the SanitizeName wrapper is wrong here.
+        string importScope = MemoryNaming.BuildScopedTopicScope("old");
         var imported = importStore.LoadIndex(importScope).Single(e => e.Name == "legacy-note");
 
         imported.ContentPreview.Should().Be("An old-format description");

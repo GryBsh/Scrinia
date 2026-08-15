@@ -157,11 +157,18 @@ public static class BundleFormatService
         // throws for a topic it cannot build (a trailing dot, a bare ".", NUL), and this loop
         // writes as it goes — so validating inside it would abort part-way through, leaving the
         // store half-imported and surfacing a raw ArgumentException that no caller in
-        // BundleService or ScriniaCommands.Bundle turns into a caller-facing error. Our own
-        // export can no longer produce such a manifest (it constructs the scope first), so this
-        // only fires for a hand-crafted or foreign bundle — which is exactly the case that should
-        // be refused cleanly, as the malformed-bundle InvalidOperationException this method
-        // already documents, before any side effect.
+        // BundleService or ScriniaCommands.Bundle turns into a caller-facing error.
+        //
+        // CORRECTED (branch review): this said it "only fires for a hand-crafted or foreign
+        // bundle". It also fires for a bundle THIS codebase exported before Task 13. The
+        // pre-Task-13 export wrote `BuildScopedTopicScope(SanitizeName(topic))` where
+        // BuildScopedTopicScope was `$"local:{topic}"` with no validation at all, and SanitizeName
+        // rejects nothing — it strips "..", swaps separators and invalid characters for '_', and
+        // returns Path.GetFileName. A trailing dot or space, a bare "." and "NUL" all survive it
+        // intact, so a bundle exported then can carry a manifest topic this refuses now. That is
+        // the intended answer either way — refuse cleanly, as the malformed-bundle
+        // InvalidOperationException this method already documents, before any side effect — but
+        // "foreign bundle" is not where a user will actually meet it.
         foreach (string topic in topicsToImport)
         {
             if (!MemoryNaming.TryBuildScopedTopicScope(topic, out _))
