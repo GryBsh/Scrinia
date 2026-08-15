@@ -202,6 +202,44 @@ public interface IMemoryStore
     bool ForgetEphemeral(string key);
     EphemeralEntry? GetEphemeral(string key);
 
+    /// <summary>
+    /// Atomically load the ephemeral memory under <paramref name="key"/>, apply
+    /// <paramref name="mutate"/>, and store the result. Returns false when the memory is missing or
+    /// <paramref name="mutate"/> returns null (no write). The ephemeral counterpart of
+    /// <see cref="TryUpdateEntry"/>, and it exists for the same reason: a caller doing
+    /// <see cref="GetEphemeral"/> → mutate → <see cref="RememberEphemeral"/> is a read-modify-write
+    /// with no synchronization, so a concurrent writer's change is silently lost. The value dropped
+    /// is whatever the loser was adding — for <c>link</c>, a <c>ref</c> attribute, which makes a lost
+    /// update produce exactly the dangling one-sided <c>ref</c> that <c>link</c>'s both-sides-checked
+    /// precheck exists to prevent.
+    ///
+    /// <para><b><paramref name="mutate"/> may run more than once.</b> The real implementations are a
+    /// compare-and-swap retry loop: if another writer replaces the entry between the read and the
+    /// swap, the mutation is re-applied to the NEWER entry rather than overwriting it. A mutation
+    /// that accumulates into caller-owned state must therefore reset that state on entry, not append
+    /// across attempts. (<see cref="TryUpdateEntry"/> carries no such caveat — it is invoked exactly
+    /// once by all three of its implementations.)</para>
+    ///
+    /// <para>Unlike <see cref="TryUpdateEntry"/> this takes no scope: an ephemeral memory is its own
+    /// whole address. It also stays entirely in-process on BOTH store implementations — a
+    /// <c>~name</c> addresses the process holding it, never the server — so there is no remote
+    /// variant of this member and nothing it does crosses the wire.</para>
+    ///
+    /// <para>Default implementation is the unsynchronized load→mutate→store, adequate for
+    /// in-memory/test stores with no concurrent writers, matching how
+    /// <see cref="TryUpdateEntry"/>'s default is scoped.</para>
+    /// </summary>
+    bool TryUpdateEphemeral(string key, Func<EphemeralEntry, EphemeralEntry?> mutate)
+    {
+        ArgumentNullException.ThrowIfNull(mutate);
+        var current = GetEphemeral(key);
+        if (current is null) return false;
+        var updated = mutate(current);
+        if (updated is null) return false;
+        RememberEphemeral(key, updated);
+        return true;
+    }
+
     // Copy & Archive
     bool CopyMemory(string src, string dst, bool overwrite, out string message);
     void ArchiveVersion(string subject, string scope = "local");

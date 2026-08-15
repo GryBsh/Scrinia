@@ -169,20 +169,35 @@ and all assembly attributes.
 - `list({ mode: "drift" })` now names an ephemeral memory `~name` rather than bare. The bare name
   was unreachable until ephemerals gained a drift baseline in this release; a bare row either misses
   on `recall()` or resolves to an unrelated persistent memory of the same name.
-- **`link()` now works on ephemeral (`~name`) memories on either side, instead of refusing them.**
-  `update()`'s underlying `UpdateMeta` refused a `~name` outright, so linking one was impossible;
-  it now loads the ephemeral, applies the same metadata mutation the persistent path applies, and
-  writes it back. Identical in local and remote mode — an ephemeral memory lives in the calling
-  process in both, so nothing about this crosses the wire. **This replaces an earlier entry in this
-  same `[Unreleased]` cycle** which said `link()` refuses before writing anything when either side
-  is an ephemeral.
-- `link()` now refuses before writing anything when either side **does not exist** — the guarantee
-  the refusal above was reaching for, and it never held for a missing PERSISTENT side. `link()` ran
-  both updates unconditionally, so `link('/findings/absent', '/patterns/retry')` failed on the
-  first, wrote `/patterns/retry` anyway, and reported a partial failure — leaving a `ref` pointing
-  at a memory that carries no `ref` back, which is worse than either a clean link or a clean
-  refusal. Both sides are resolved before either is written, through the same store members the
-  write itself uses. The response for a missing side is now a `NOT_FOUND` naming it, not `INTERNAL`.
+- `link()` now refuses before writing anything when either side **does not exist**. It ran both
+  updates unconditionally, so `link('/findings/absent', '/patterns/retry')` failed on the first,
+  wrote `/patterns/retry` anyway, and reported a partial failure — leaving a `ref` pointing at a
+  memory that carries no `ref` back, which is worse than either a clean link or a clean refusal.
+  Both sides are resolved before either is written, through the same store members the write itself
+  uses. The response for a missing side is now a `NOT_FOUND` naming it, not `INTERNAL`.
+
+### Changed — `link()` works on ephemeral memories instead of refusing them
+
+- **`link()` now accepts an ephemeral (`~name`) memory on either side.** `UpdateMeta`, which both
+  halves of a link go through, refused a `~name` outright, so linking one was impossible; it now
+  loads the ephemeral, applies the same metadata mutation the persistent path applies, and writes it
+  back. Identical in local and remote mode — an ephemeral memory lives in the calling process in
+  both, so nothing about this crosses the wire. **This replaces an earlier entry in this same
+  `[Unreleased]` cycle** which said `link()` refuses before writing anything when either side is an
+  ephemeral.
+  - **Not reachable from the CLI**, and cannot be: an ephemeral memory lives only in the memory of
+    the process that created it, and every `scri` invocation is a fresh process. `scri link ~x /y`
+    answers "not found". The MCP tool supports it because `scri serve` is long-lived.
+- `IMemoryStore` gains `TryUpdateEphemeral(key, mutate)` — the ephemeral counterpart of
+  `TryUpdateEntry`, and the only place the missing atomicity could live. Both real stores implement
+  it as a compare-and-swap over their in-process map, so a metadata update that loses a race is
+  re-applied to the newer entry rather than overwriting it; the local one also invalidates the merged
+  entity-fact cache, as every other mutating write path there does. A `GetEphemeral` → mutate →
+  `RememberEphemeral` caller would silently drop a concurrent writer's change — and for `link` the
+  dropped value is a `ref`, so a lost update manufactures exactly the dangling one-sided reference
+  the precheck above exists to prevent. **Interface addition:** an external `IMemoryStore`
+  implementation inherits an unsynchronized default and keeps compiling, but does not get the
+  atomicity until it overrides.
 
 ### Fixed — tool descriptions now describe what the tools do
 

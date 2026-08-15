@@ -965,6 +965,29 @@ public sealed class RemoteStoreToolTests
     }
 
     /// <summary>
+    /// The guarantee this branch created — a missing side writes NOTHING — over a REMOTE store,
+    /// where it runs on a different mechanism than it does locally. <c>Exists</c> resolves a
+    /// persistent name through <c>HttpMemoryStore.TryUpdateEntry</c>, i.e.
+    /// <c>GET /memories/{name}/entry</c> → 404 → false, where locally it is a sidecar scan. Local
+    /// coverage of this property proves nothing about the remote path.
+    ///
+    /// <para>The absence of a <c>PATCH</c> is the assertion that matters: a status code cannot show
+    /// it, because the fixture would answer a write that should never have been attempted.</para>
+    /// </summary>
+    [Fact]
+    public async Task Link_WithAMissingSide_RemoteStore_WritesNeither()
+    {
+        using var scope = new RemoteStoreScope(OneEntryListJson);
+
+        var response = await Tools().Link("alpha", "absent");
+
+        response.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        scope.Handler.Requests.Should().NotContain(r => r.StartsWith("PATCH", StringComparison.Ordinal),
+            because: "the precheck resolves BOTH sides before either is written, so the side that " +
+                     "does exist must never reach its metadata write");
+    }
+
+    /// <summary>
     /// <c>link</c>'s "Partial link failure" envelope, which survives its existence precheck for the
     /// case the precheck cannot cover: both memories exist when they are checked, and the store then
     /// refuses the write anyway.
@@ -974,6 +997,13 @@ public sealed class RemoteStoreToolTests
     /// non-existent side — which the precheck now answers with a clean NOT_FOUND before either write
     /// (the golden is renamed <c>link-missing-side</c>). Nothing else reached the envelope, so a
     /// refactor could have deleted it silently.</para>
+    ///
+    /// <para><b>Which half this pins.</b> <c>patchStatus</c> applies to every PATCH, so BOTH writes
+    /// are refused here — a total failure wearing the partial envelope. That is enough to pin the
+    /// envelope's rendering (it names each side and its own reason), which is what was at risk of
+    /// silent deletion. The asymmetric case — first write lands, second is refused, leaving the
+    /// one-sided <c>ref</c> — stays uncovered, and reaching it needs a fixture that can vary its
+    /// answer per memory name.</para>
     /// </summary>
     [Fact]
     public async Task Link_RemoteStore_ReportsPartialFailure_WhenTheServerRefusesTheWrites()

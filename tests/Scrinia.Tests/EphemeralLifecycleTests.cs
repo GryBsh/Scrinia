@@ -125,6 +125,95 @@ public sealed class EphemeralLifecycleTests : IDisposable
         original.WithMetadataFrom(original.ToArtifactEntry()).Should().BeEquivalentTo(original);
     }
 
+    /// <summary>
+    /// The compare-and-swap in <see cref="FileMemoryStore.TryUpdateEphemeral"/> re-applies its
+    /// mutation to the NEWER entry when a concurrent writer lands between the read and the swap,
+    /// instead of overwriting it.
+    ///
+    /// <para>Driven deterministically rather than with threads: the callback itself performs the
+    /// interloping write on its first invocation, which is exactly the interleaving that matters and
+    /// the only one a test can pin without a race. Under the unsynchronized
+    /// <c>GetEphemeral</c> → mutate → <c>RememberEphemeral</c> shape this member replaced, the
+    /// interloper's attribute is simply gone — and in the case that motivated this, the value lost is
+    /// a <c>ref</c>, which makes a lost update manufacture the dangling one-sided ref that
+    /// <c>link</c>'s precheck exists to prevent.</para>
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEphemeral_ReAppliesToTheNewerEntry_WhenAConcurrentWriterWinsTheSwap()
+    {
+        await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["body text"]));
+        // The encoded NMP/2 artifact, captured to compare against — a metadata swap must leave the
+        // memory's content byte-identical.
+        string originalArtifact = _store.GetEphemeral("scratch")!.Artifact;
+
+        int attempts = 0;
+        bool swapped = _store.TryUpdateEphemeral("scratch", current =>
+        {
+            attempts++;
+            if (attempts == 1)
+            {
+                // Lands after this callback read `current`, before it can swap.
+                var interloped = _store.GetEphemeral("scratch")! with
+                {
+                    Attributes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["ref"] = ["~written-by-the-other-writer"],
+                    },
+                };
+                _store.RememberEphemeral("scratch", interloped);
+            }
+
+            var merged = current.Attributes is null
+                ? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string[]>(current.Attributes, StringComparer.OrdinalIgnoreCase);
+            merged["person"] = ["maria"];
+            return current with { Attributes = merged };
+        });
+
+        swapped.Should().BeTrue();
+        attempts.Should().Be(2,
+            because: "the first swap must be REJECTED and the mutation re-run against what the " +
+                     "other writer stored — one attempt would mean the CAS compared nothing");
+
+        var final = _store.GetEphemeral("scratch")!;
+        final.Attributes!.Should().ContainKey("person");
+        final.Attributes.Should().ContainKey("ref",
+            because: "the concurrent writer's value must survive — dropping it is the lost update " +
+                     "this member exists to prevent");
+        final.Artifact.Should().Be(originalArtifact, "the swap must not disturb the memory's content");
+    }
+
+    /// <summary>
+    /// A swap invalidates the merged entity-fact cache, matching every other mutating write path on
+    /// this store (<c>SaveIndex</c>, <c>Remove</c>, <c>TryUpdateEntry</c>). An ephemeral memory's
+    /// attributes ARE part of that view — <c>GetEntityFactStore</c> builds over
+    /// <c>ListScoped(null)</c>, which includes the ephemeral scope — so without the tail an
+    /// already-built fact store stays blind to the write for the rest of the session.
+    ///
+    /// <para>The first <c>GetEntityFactStore()</c> call is what makes this test able to fail: it
+    /// populates the cache, so a missing invalidation is observable rather than hidden behind a
+    /// lazy first build.</para>
+    /// </summary>
+    [Fact]
+    public async Task TryUpdateEphemeral_InvalidatesTheMergedFactStore()
+    {
+        await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["body text"]));
+
+        var maria = new Scrinia.Core.Search.EntityRef("person", "maria");
+        _store.GetEntityFactStore().MentionCount(maria).Should().Be(0);
+
+        _store.TryUpdateEphemeral("scratch", current => current with
+        {
+            Attributes = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["person"] = ["maria"],
+            },
+        });
+
+        _store.GetEntityFactStore().MentionCount(maria).Should().Be(1,
+            because: "a fact store built before the swap must not survive it");
+    }
+
     [Fact]
     public async Task HttpMemoryStore_HashesEphemeralFileRefsAgainstTheSuppliedWorkspaceRoot()
     {

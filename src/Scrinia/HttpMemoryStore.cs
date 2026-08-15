@@ -313,6 +313,32 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
     public EphemeralEntry? GetEphemeral(string key) =>
         _ephemeral.TryGetValue(key, out var entry) ? entry : null;
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// The same compare-and-swap as <c>FileMemoryStore</c>'s, over this store's own map, and it
+    /// makes no request: a <c>~name</c> addresses THIS process here too, so an ephemeral metadata
+    /// update has nothing to ask the server. That is what lets <c>link</c> on a <c>~name</c> behave
+    /// identically in local and remote mode rather than through a second mechanism.
+    ///
+    /// <para>No fact-store invalidation tail, unlike the local twin: this store does not override
+    /// <c>GetEntityFactStore</c>, so it takes the interface default, which rebuilds from
+    /// <c>ListScoped(null)</c> on every call and caches nothing to invalidate.</para>
+    /// </remarks>
+    public bool TryUpdateEphemeral(string key, Func<EphemeralEntry, EphemeralEntry?> mutate)
+    {
+        ArgumentNullException.ThrowIfNull(mutate);
+
+        while (true)
+        {
+            if (!_ephemeral.TryGetValue(key, out var current)) return false;
+
+            var updated = mutate(current);
+            if (updated is null) return false;
+
+            if (_ephemeral.TryUpdate(key, updated, current)) return true;
+        }
+    }
+
     private List<ScopedArtifact> ListEphemeral()
     {
         var result = new List<ScopedArtifact>();

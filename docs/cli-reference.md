@@ -211,8 +211,15 @@ pipeline is gone, so there's no reason to fire this command per-session anymore.
 
 Create a bidirectional reference between two memories. Both sides get a `ref`
 attribute naming the other, so searches and graph traversals discover the
-connection. Either side may be an ephemeral `~name`. Both memories must already
-exist — if either is missing, neither is written.
+connection. Both memories must already exist — if either is missing, neither is
+written.
+
+Ephemeral `~name` memories cannot be linked from the CLI. An ephemeral memory
+lives only in the memory of the process that created it, and every `scri`
+invocation is a fresh process, so a `~name` is never present when the command
+starts — `scri link ~scratch /patterns/x` can only answer "not found". The MCP
+`link` tool does support ephemerals, because the server (`scri serve`) is a
+long-lived process that still holds the one that created them.
 
 ```bash
 scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]

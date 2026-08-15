@@ -330,29 +330,35 @@ public sealed partial class ScriniaMcpTools
             string key = MemoryNaming.StripEphemeralPrefix(name);
             qualifiedName = $"~{key}";
 
-            var existing = store.GetEphemeral(key);
-            persisted = false;
-            if (existing is not null)
+            // TryUpdateEphemeral, not GetEphemeral → mutate → RememberEphemeral. That shape is the
+            // racy read-modify-write the persistent branch below moved OFF of, and reintroducing it
+            // here would be worse than where it started: the value a lost update drops is the `ref`
+            // attribute, i.e. it manufactures the dangling one-sided ref this whole tool's precheck
+            // exists to prevent.
+            persisted = store.TryUpdateEphemeral(key, existing =>
             {
                 found = true;
+
+                // Reset, because a CAS retry re-runs this against a NEWER entry — see
+                // IMemoryStore.TryUpdateEphemeral. The message must describe the mutation that
+                // actually landed, not the union of every attempt.
+                changes.Clear();
+
                 var current = existing.ToArtifactEntry();
                 var mutated = ApplyMetadataMutation(
                     current, keywords, description, reviewAfter, reviewWhen, changes);
 
                 // Null is "nothing to change" — reported by the shared changes.Count == 0 warning
                 // below, exactly as the persistent path reports it.
-                if (mutated is not null)
-                {
-                    // ForMetadataUpdate is the store's rule, applied here because for an ephemeral
-                    // THIS process is the store — see the block comment above the method.
-                    // Written back as `existing with { … }`, never a fresh EphemeralEntry:
-                    // ArtifactEntry has no Artifact, so a rebuild would report a successful update
-                    // and empty the memory.
-                    store.RememberEphemeral(key,
-                        existing.WithMetadataFrom(MemoryDerivation.ForMetadataUpdate(current, mutated)));
-                    persisted = true;
-                }
-            }
+                if (mutated is null) return null;
+
+                // ForMetadataUpdate is the store's rule, and this callback runs INSIDE the store
+                // member that owns the swap — the same position FileMemoryStore.TryUpdateEntry
+                // applies it from. Written back as `existing with { … }`, never a fresh
+                // EphemeralEntry: ArtifactEntry has no Artifact, so a rebuild would report a
+                // successful update and empty the memory.
+                return existing.WithMetadataFrom(MemoryDerivation.ForMetadataUpdate(current, mutated));
+            });
         }
         else
         {
@@ -418,11 +424,14 @@ public sealed partial class ScriniaMcpTools
     /// "no write", which is what <see cref="IMemoryStore.TryUpdateEntry"/> takes null to mean.
     ///
     /// <para><paramref name="changes"/> is an accumulator, appended to in place, and it is how the
-    /// caller renders the response. It can only be appended to once per call because
-    /// <c>TryUpdateEntry</c> invokes its mutation exactly once in all three implementations
+    /// caller renders the response. <b>It is the caller's job to make sure it describes one
+    /// mutation.</b> On the persistent path that is free — <c>TryUpdateEntry</c> invokes its
+    /// mutation exactly once in all three implementations
     /// (<see cref="IMemoryStore.TryUpdateEntry"/>'s default, <c>FileMemoryStore</c>'s locked
-    /// override, and <c>HttpMemoryStore</c>'s GET-mutate-PATCH override), and the ephemeral path
-    /// calls this method directly, once.</para>
+    /// override, and <c>HttpMemoryStore</c>'s GET-mutate-PATCH override). On the ephemeral path it
+    /// is not: <see cref="IMemoryStore.TryUpdateEphemeral"/> is a compare-and-swap that re-runs its
+    /// mutation against the newer entry when a concurrent writer wins the swap, so
+    /// <c>UpdateMeta</c>'s ephemeral callback clears the list on entry.</para>
     ///
     /// <para>Extracted from the callback it used to be so that the ephemeral and persistent paths
     /// share one mutation rather than two that agree today. Deliberately static, and deliberately
@@ -498,9 +507,12 @@ public sealed partial class ScriniaMcpTools
         // Null means "no write"; the caller reports it as its "no changes specified" warning.
         if (changes.Count == 0) return null;
 
-        // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
-        // members below + the Forward call at the end of this method). ADD/REPLACE ONLY — no
-        // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
+        // Attributes-native direct write of the review state, paired with the Forward call at the
+        // end of this method. (This comment used to say "dual-write with the legacy
+        // ReviewAfter/ReviewWhen members below" — false twice over: ArtifactEntry has carried no
+        // such members since the Attributes cutover, and there is nothing below.)
+        // ADD/REPLACE ONLY — no Remove(ReviewKey) — matches AttributeMigration.Forward's
+        // incoming-only fold: when
         // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
         // key, so KnownAttributes.Merge PRESERVES any existing Attributes["review"] rather than
         // clearing it. KnownAttributes.Merge always returns a NEW dictionary, so this never mutates

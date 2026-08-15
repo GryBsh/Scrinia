@@ -317,6 +317,54 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     public EphemeralEntry? GetEphemeral(string key) =>
         _ephemeralStore.TryGetValue(key, out var entry) ? entry : null;
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Compare-and-swap over <c>_ephemeralStore</c>, replacing the interface default's
+    /// unsynchronized read-modify-write. <c>ConcurrentDictionary.TryUpdate</c> swaps only if the
+    /// stored value is still the one this loop read; if a concurrent writer won, the mutation is
+    /// re-applied to that newer entry instead of clobbering it.
+    ///
+    /// <para><b>Why record equality is the right comparison here.</b> <see cref="EphemeralEntry"/>
+    /// is a record whose collection members (<c>Attributes</c>, <c>Keywords</c>,
+    /// <c>TermFrequencies</c>, …) compare by REFERENCE, so the synthesized <c>Equals</c> behaves as
+    /// an identity check for anything a real writer produces — every write path builds fresh
+    /// collections. That makes it exactly the "nothing changed since my read" test a CAS needs. The
+    /// only values it treats as unchanged are ones member-wise identical to what was read, where
+    /// swapping is a no-op anyway. (This is the one deliberate USE of that equality; see the footgun
+    /// note on <see cref="ArtifactEntry"/>, which records that nothing relied on it.)</para>
+    ///
+    /// <para>Deliberately not routed through <see cref="RememberEphemeral"/>: that adds-or-replaces
+    /// and then evicts when over capacity. A swap leaves the entry count unchanged, so no eviction
+    /// can be owed, and going through it would reintroduce the unconditional overwrite this exists
+    /// to remove.</para>
+    ///
+    /// <para>The fact-store invalidation tail matches every other mutating write path here
+    /// (<c>SaveIndex</c>, <c>Remove</c>, <c>TryUpdateEntry</c>): an ephemeral entry's attributes are
+    /// part of <see cref="GetEntityFactStore"/>'s merged view, which <see cref="ListScoped(string?)"/>
+    /// builds INCLUDING the ephemeral scope, so a swap that did not invalidate would leave an
+    /// already-built fact store blind to it for the rest of the session. Taken alone — no index lock
+    /// is held here — so it cannot invert the documented (index lock, then fact-store lock)
+    /// order.</para>
+    /// </remarks>
+    public bool TryUpdateEphemeral(string key, Func<EphemeralEntry, EphemeralEntry?> mutate)
+    {
+        ArgumentNullException.ThrowIfNull(mutate);
+
+        while (true)
+        {
+            if (!_ephemeralStore.TryGetValue(key, out var current)) return false;
+
+            var updated = mutate(current);
+            if (updated is null) return false;
+
+            if (_ephemeralStore.TryUpdate(key, updated, current))
+            {
+                lock (_factStoreLock) { _factStore = null; _factStoreGeneration++; }
+                return true;
+            }
+        }
+    }
+
     public List<ScopedArtifact> ListEphemeral()
     {
         var result = new List<ScopedArtifact>();
