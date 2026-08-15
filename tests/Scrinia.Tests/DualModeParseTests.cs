@@ -338,7 +338,9 @@ public sealed class DualModeParseTests : IDisposable
 
         act.Should().Throw<ArgumentException>(
             because: "'topic.' and 'topic' are one directory, so returning them as two scope "
-                   + "strings gives that directory two cache keys and two locks");
+                   + "strings gives that directory two cache keys and two locks")
+           .WithMessage("*must not end with*",
+            because: "asserting only the exception type would pass for any other refusal");
     }
 
     [Fact]
@@ -348,7 +350,8 @@ public sealed class DualModeParseTests : IDisposable
         var act = () => _store.ParseQualifiedName("/topic /note");
 
         act.Should().Throw<ArgumentException>(
-            because: "'topic ' and 'topic' resolve to one directory");
+            because: "'topic ' and 'topic' resolve to one directory")
+           .WithMessage("*must not end with*");
     }
 
     [Fact]
@@ -359,7 +362,8 @@ public sealed class DualModeParseTests : IDisposable
         var act = () => _store.ParseQualifiedName("/./note");
 
         act.Should().Throw<ArgumentException>(
-            because: "a '.' segment resolves to the parent directory, aliasing the parent scope");
+            because: "a '.' segment resolves to the parent directory, aliasing the parent scope")
+           .WithMessage("*must not end with*");
     }
 
     [Theory]
@@ -380,10 +384,13 @@ public sealed class DualModeParseTests : IDisposable
         scope.Should().Be($"local:{name}");
         subject.Should().Be("note");
 
-        // Not just parseable — actually usable end to end.
+        // Not just parseable — actually usable end to end. Asserted on the SIDECAR rather than
+        // through LoadIndex, which would be served from _indexCache and so would prove only that
+        // the cache round-trips, not that the filesystem accepted the directory.
         _store.Upsert(MakeEntry("note"), scope);
-        _store.LoadIndex(scope).Select(e => e.Name).Should().Contain("note",
-            because: $"a '{name}' scope is a real, writable directory on this platform");
+        File.Exists(Path.Combine(_store.GetStoreDirForScope(scope), "note.meta.json"))
+            .Should().BeTrue(
+                because: $"a '{name}' scope must be a real, writable directory on this platform");
     }
 
     [Fact]
@@ -395,7 +402,8 @@ public sealed class DualModeParseTests : IDisposable
         var act = () => _store.ParseQualifiedName("/nul/note");
 
         act.Should().Throw<ArgumentException>(
-            because: "NUL cannot back a directory at all, so the write would fail mid-flight");
+            because: "NUL cannot back a directory at all, so the write would fail mid-flight")
+           .WithMessage("*reserved device name*");
     }
 
     [Fact]
@@ -486,6 +494,39 @@ public sealed class DualModeParseTests : IDisposable
     }
 
     [Fact]
+    public void BuildScopedTopicScope_SegmentOverload_TreatsSlashAsACharacterNotASeparator()
+    {
+        // The two overloads deliberately differ, and the difference is the whole point of having
+        // the segment one: to a caller holding already-split segments, '/' inside ONE of them is
+        // an invalid character (sanitized to '_'), not a separator. Conflating the two is what
+        // made the bundle zip key and the scope disagree.
+        MemoryNaming.BuildScopedTopicScope("a/b").Should().Be("local:a/b");
+        MemoryNaming.BuildScopedTopicScope(["a/b"]).Should().Be("local:a_b");
+        MemoryNaming.BuildScopedTopicScope(["a", "b"]).Should().Be("local:a/b");
+    }
+
+    [Fact]
+    public void TrySanitizeSegment_StripsDotDot_RatherThanRejectingIt()
+    {
+        // The one input class the rule REWRITES instead of refusing. Unreachable from
+        // ParseQualifiedName (PathParser rejects ".." outright before this runs) and no write path
+        // can create such a scope, so nothing is stranded — but it is worth pinning that this is
+        // a rewrite, because every other unrepairable form is a refusal.
+        MemoryNaming.TrySanitizeSegment("a..b", out string safe).Should().BeTrue();
+        safe.Should().Be("ab");
+        MemoryNaming.BuildScopedTopicScope("a..b").Should().Be("local:ab");
+    }
+
+    [Fact]
+    public void ResolveReadScopes_ReservedDeviceFilter_MatchesNothing()
+    {
+        // The device-name rule reaches the read path through the same constructor. NUL is
+        // refused, so the filter matches nothing; the names that demonstrably work are not.
+        _store.ResolveReadScopes("nul").Should().BeEmpty();
+        _store.ResolveReadScopes("CON").Should().BeEquivalentTo(["local:CON"]);
+    }
+
+    [Fact]
     public void ResolveReadScopes_UnconstructableFilter_MatchesNothingInsteadOfThrowing()
     {
         // READ callers take the non-throwing form. An aliased scope can never name a stored
@@ -493,6 +534,38 @@ public sealed class DualModeParseTests : IDisposable
         // directory names), so "matches nothing" is the correct answer, not leniency.
         _store.ResolveReadScopes("topic.").Should().BeEmpty();
         _store.ResolveReadScopes("local:topic.").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ResolveReadScopes_AliasingFilters_AreClosedAtTheFilterSurfaceToo()
+    {
+        // The empty-topic and redundant-separator aliases are pinned at the constructor above,
+        // but NormalizeScopeFilters is the one surface they were actually reachable from.
+        // "local:" resolves to the memories ROOT, i.e. it aliased the bare "local" scope.
+        _store.ResolveReadScopes("local:").Should().BeEmpty();
+
+        // "a//b" named the same directory chain as "a/b" under a different scope string.
+        _store.ResolveReadScopes("local:a//b").Should().BeEquivalentTo(["local:a/b"]);
+    }
+
+    [Fact]
+    public void BuildExcludedScopeSet_SanitizesTheTopic_SoItCanActuallyMatchAStoredScope()
+    {
+        // I-1: this consolidation had a real behaviour gain and no test. excludeTopics "a*b" used
+        // to build "local:a*b" — a scope string no write can produce, so the exclusion silently
+        // matched nothing. It now builds the scope a memory stored at "/a*b/x" really has.
+        var (storedScope, _) = _store.ParseQualifiedName("/a*b/x");
+        storedScope.Should().Be("local:a_b");
+
+        IMemoryStore.ShouldExcludeScope(storedScope, "a*b").Should().BeTrue(
+            because: "the exclusion must resolve to the same scope the write path produced");
+
+        // The '/'-containing arm used to bypass the constructor entirely via string interpolation.
+        var (deepScope, _) = _store.ParseQualifiedName("/goal/G-5/x");
+        IMemoryStore.ShouldExcludeScope(deepScope, "goal/G-5").Should().BeTrue();
+
+        // A topic that cannot be constructed excludes nothing rather than throwing.
+        IMemoryStore.ShouldExcludeScope(storedScope, "topic.").Should().BeFalse();
     }
 
     [Fact]

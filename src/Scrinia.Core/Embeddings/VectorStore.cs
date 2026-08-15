@@ -253,6 +253,21 @@ public sealed class VectorStore : IDisposable, IVectorStore
     /// <summary>
     /// Makes one scope segment safe as a directory name. A short hash is appended whenever
     /// sanitization changes the segment, so <c>a*b</c> and <c>a_b</c> stay distinct.
+    ///
+    /// <para><b>A deliberate NON-participant in the one scope constructor</b> (Task 13). This is a
+    /// third sanitizer, and it is intentionally different from
+    /// <see cref="MemoryNaming.TrySanitizeSegment"/>: that one is deliberately lossy (<c>a*b</c>
+    /// and <c>a_b</c> both become <c>a_b</c>, matching what the memory store has always done to
+    /// subject names), whereas this one must be INJECTIVE or two scopes would share one
+    /// <c>vectors.bin</c> and silently merge their embeddings. The hash suffix is what buys that,
+    /// so it cannot simply defer to the shared sanitizer.</para>
+    ///
+    /// <para>It also carried the same trailing-dot aliasing — <c>local:topic.</c> and
+    /// <c>local:topic</c> produced two relative dirs that Windows resolved to one — and Task 13
+    /// closed that incidentally rather than here: the scope reaching this method is now
+    /// PRE-VALIDATED upstream, because the one constructor can no longer emit a segment with a
+    /// trailing dot or space, a bare <c>.</c>, or <c>NUL</c>. This method is not the guard; it
+    /// relies on there being exactly one way a scope string is built.</para>
     /// </summary>
     private static string SanitizeSegment(string segment)
     {

@@ -64,77 +64,25 @@ public static class PathRouter
         return true;
     }
 
-    /// <summary>
-    /// Maps a parsed path to its filesystem location. Hand-authored file entities (skills, agent
-    /// configs) resolve to the top level of <c>.scrinia/</c>; everything else resolves under
-    /// <c>.scrinia/memories/</c>. Returns <see langword="null"/> for ephemeral <c>/temp/</c> paths.
-    /// </summary>
-    /// <param name="path">The parsed path to resolve.</param>
-    /// <param name="workspaceRoot">Absolute path to the workspace root directory.</param>
-    /// <returns>
-    /// The resolved filesystem path, or <see langword="null"/> when
-    /// <paramref name="path"/> is ephemeral or is a malformed/invalid file-entity reference.
-    /// </returns>
-    public static string? ToFilesystemPath(ParsedPath path, string workspaceRoot)
-    {
-        if (IsEphemeral(path)) return null;
-
-        var segments = path.Segments;
-        if (segments.Count == 0) return null;
-
-        // Hand-authored file entities are flat and live outside the store.
-        if (IsFileEntity(segments[0].Value))
-        {
-            if (segments.Count != 2) return null;
-            return TryToFileEntityPath(segments[0].Value, segments[1].Value, workspaceRoot, out string fePath)
-                ? fePath
-                : null;
-        }
-
-        // Everything else is an NMP/2 memory under .scrinia/memories/.
-        string dir = Path.Combine(workspaceRoot, ".scrinia", MemoriesDir);
-        for (int i = 0; i < segments.Count - 1; i++)
-            dir = Path.Combine(dir, segments[i].Value);
-
-        return Path.Combine(dir, segments[^1].Value + ".nmp2");
-    }
-
-    /// <summary>
-    /// Returns the versions directory for the given path (a <c>versions/</c> folder
-    /// that is a sibling of the artifact file's parent).
-    /// </summary>
-    /// <param name="path">The parsed path.</param>
-    /// <param name="workspaceRoot">Absolute path to the workspace root directory.</param>
-    /// <returns>The absolute path to the versions directory.</returns>
-    /// <exception cref="InvalidOperationException">
-    /// Thrown when <paramref name="path"/> is ephemeral.
-    /// </exception>
-    public static string ToVersionsDir(ParsedPath path, string workspaceRoot)
-    {
-        string? filePath = ToFilesystemPath(path, workspaceRoot);
-        if (filePath is null)
-            throw new InvalidOperationException("Ephemeral paths have no versions directory");
-
-        return Path.Combine(Path.GetDirectoryName(filePath)!, "versions");
-    }
-
-    /// <summary>
-    /// Returns the metadata sidecar path (<c>.meta.json</c>) for the given path.
-    /// </summary>
-    /// <param name="path">The parsed path.</param>
-    /// <param name="workspaceRoot">Absolute path to the workspace root directory.</param>
-    /// <returns>The absolute path to the metadata sidecar file.</returns>
-    /// <exception cref="InvalidOperationException">
-    /// Thrown when <paramref name="path"/> is ephemeral.
-    /// </exception>
-    public static string ToMetadataPath(ParsedPath path, string workspaceRoot)
-    {
-        string? filePath = ToFilesystemPath(path, workspaceRoot);
-        if (filePath is null)
-            throw new InvalidOperationException("Ephemeral paths have no metadata");
-
-        return Path.ChangeExtension(filePath, ".meta.json");
-    }
+    // DELETED (Task 13): ToFilesystemPath, ToVersionsDir and ToMetadataPath.
+    //
+    // ToFilesystemPath was a SECOND, independent scope→directory mapper living in this same file
+    // alongside ToStoreDir, built by Path.Combine-ing RAW ParsedPath segments. It therefore
+    // bypassed both sanitization and the aliasing rule, and once the one scope constructor
+    // (MemoryNaming.BuildScopedTopicScope) started rejecting a trailing dot / bare "." / NUL and
+    // collapsing redundant separators, it silently disagreed with ToStoreDir about where a memory
+    // for the same path lives. ToVersionsDir and ToMetadataPath were derived from it and carried
+    // the same divergence.
+    //
+    // All three had ZERO production callers — only PathRouterTests and MigrationTests — while
+    // being public on Scrinia.Core, i.e. one `using` away from becoming the wrong resolver. The
+    // live equivalents are FileMemoryStore.ArtifactPath / MetaPath / ArchiveVersion, which all
+    // route through GetStoreDirForScope → ToStoreDir, the single authority. MigrationTests'
+    // layout assertions were rewritten against those rather than deleted, so the behaviour they
+    // covered is still pinned.
+    //
+    // ToFileEntityDir and TryToFileEntityPath are NOT dead (MemoryTools.Core/Skills/Lifecycle and
+    // BundleFormatService call them) and remain above.
 
     /// <summary>
     /// Returns <see langword="true"/> when the path starts with <c>/temp/</c>,

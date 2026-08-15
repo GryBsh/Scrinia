@@ -45,9 +45,18 @@ public static class MemoryNaming
     //
     // The one deliberate NON-participant is scope RECOVERY — reading back a scope that already
     // exists, in FileMemoryStore.DiscoverMemoriesRecursive (from a directory name the filesystem
-    // itself produced) and ParseScopeLabel (from a label a remote store reports). Those must
-    // report what they find, not re-validate it, for the same reason SanitizeSegment must never
-    // throw on a name loaded from a sidecar.
+    // itself produced) and ParseScopeLabel (from a label a remote store reports).
+    //
+    // Why that is safe is NOT "no write is reachable from them" — writes very much are: both feed
+    // DiscoverTopics -> ResolveReadScopes, and MemoryTools' forget-by-URI loop calls DeleteArtifact
+    // and Remove once per resolved scope. The actual reason is stronger: a RECOVERED scope is
+    // canonical BY CONSTRUCTION. It is the name the filesystem or the remote store actually holds,
+    // so a write through it targets the very directory it was read from and cannot mint a second
+    // key for one directory — which is the only thing the rule prevents.
+    //
+    // Validating there would be actively harmful, and not merely by hiding a memory: because the
+    // forget-by-URI loop silently skips any scope the filter drops, a memory in a scope the
+    // validator rejected would become UNDELETABLE. Do not "tighten" these two sites.
 
     /// <summary>Characters invalid on Windows that Linux allows — always stripped for
     /// portability.</summary>
@@ -116,6 +125,18 @@ public static class MemoryNaming
         TryBuild(topic, out scope, out _);
 
     /// <summary>
+    /// Overload for callers that ALREADY hold separate segments (e.g. a parsed path), so they do
+    /// not have to join on '/' just for this to split again. That round trip is the same
+    /// separator-versus-character ambiguity that made the bundle key and the scope disagree: '/'
+    /// is a SEPARATOR to the string overload and an invalid CHARACTER (replaced with '_') inside
+    /// one segment. Taking the segments directly removes the question.
+    /// </summary>
+    public static string BuildScopedTopicScope(IEnumerable<string> segments) =>
+        TryBuild(segments, out string scope, out string? error)
+            ? scope
+            : throw new ArgumentException(error, nameof(segments));
+
+    /// <summary>
     /// The rule itself. A scope's topic part becomes a chain of DIRECTORY components
     /// (<see cref="PathRouter.ToStoreDir"/>), so any two topics naming one directory chain must
     /// not be two scope strings — they would be two <c>CachedIndex</c> keys and two write locks
@@ -137,16 +158,31 @@ public static class MemoryNaming
 
         // RemoveEmptyEntries collapses "a//b", "/a" and "a/" — each of which would otherwise
         // produce a distinct scope string for the same directory chain.
-        string[] parts = topic.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return TryBuild(topic.Split('/', StringSplitOptions.RemoveEmptyEntries), out scope, out error);
+    }
+
+    /// <summary>The rule, over already-separated segments. See the string overload.</summary>
+    private static bool TryBuild(IEnumerable<string> segments, out string scope, out string? error)
+    {
+        scope = "";
+        error = null;
+
+        var parts = segments.ToArray();
         if (parts.Length == 0)
         {
-            error = $"Scope topic '{topic}' contains no usable segments.";
+            error = "A scope topic must not be empty.";
             return false;
         }
 
         var safe = new string[parts.Length];
         for (int i = 0; i < parts.Length; i++)
         {
+            // NOTE: TrySanitizeSegment STRIPS "..", it does not reject it — so a segment "a..b"
+            // becomes "ab". That is a rewrite rather than a refusal, and it means a filter naming
+            // an already-stored "local:a..b" would resolve to "local:ab" and match nothing. It is
+            // unreachable from ParseQualifiedName (PathParser rejects any ".." outright before
+            // this runs) and no write path can create such a scope, so nothing is stranded today
+            // — but it is the one input class the rule rewrites instead of rejecting.
             if (!TrySanitizeSegment(parts[i], out string s))
             {
                 error = $"Scope segment '{parts[i]}' is invalid after sanitization.";
@@ -204,11 +240,17 @@ public static class MemoryNaming
     /// label. Needed by remote clients, which receive topic results labelled rather than scoped.
     ///
     /// <para><b>Deliberately not routed through <see cref="BuildScopedTopicScope"/></b> (Task 13).
-    /// This recovers a scope the remote store has already reported as existing, rather than
+    /// This RECOVERS a scope the remote store already reports as existing, rather than
     /// constructing one from caller input, so it must round-trip whatever that store says —
     /// exactly as <c>FileMemoryStore.DiscoverMemoriesRecursive</c> reports the directory names it
-    /// finds on disk. Validating here would hide a remote memory rather than prevent a local
-    /// write, and no write is reachable from this value.</para>
+    /// finds on disk.
+    ///
+    /// <para>Note this value DOES reach writes — <c>HttpMemoryStore</c>'s list path feeds
+    /// <c>DiscoverTopics</c>, and <c>MemoryTools</c>' forget-by-URI loop calls <c>Remove</c> once
+    /// per resolved scope. That is safe because a recovered scope is canonical by construction:
+    /// it names the directory it was read from, so it cannot create a second key for one
+    /// directory. Validating here would instead make a memory in a rejected scope UNDELETABLE,
+    /// since that loop silently skips any scope the filter drops.</para></para>
     /// Round-trips "local", "ephemeral", and "local:{topic}" where topic is neither "local" nor
     /// "ephemeral". <see cref="FormatScopeLabel"/> is not injective — a memory scoped
     /// "local:local" or "local:ephemeral" (e.g. a topic literally named "local" or "ephemeral")

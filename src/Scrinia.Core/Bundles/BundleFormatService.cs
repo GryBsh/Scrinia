@@ -62,14 +62,23 @@ public static class BundleFormatService
             if (entries.Count == 0)
                 continue;
 
-            string sanitizedTopic = store.SanitizeName(topic.Trim());
-            exportedTopics.Add(sanitizedTopic);
+            // DERIVED from the scope, never re-derived from `topic`. These are two different
+            // transforms of the same input — the scope treats '/' as a SEPARATOR, SanitizeName
+            // replaces it with '_' — so computing them independently made them disagree for any
+            // hierarchical topic: "goal/G-5" resolved scope "local:goal/G-5" (the real content)
+            // but wrote zip key and manifest entry "goal_G-5", and import then reconstructed
+            // "local:goal_G-5" and landed the memories in a DIFFERENT scope than they left,
+            // silently. FormatScopeLabel is BuildScopedTopicScope's exact inverse, so the key and
+            // the scope cannot drift. Zip entry names use '/' as their separator already, so a
+            // hierarchical topic round-trips as a nested path rather than being flattened.
+            string bundleTopic = MemoryNaming.FormatScopeLabel(topicScope);
+            exportedTopics.Add(bundleTopic);
 
             // Write index.json for this topic
             // ToList() because BundleIndex is a serialization DTO declared over List<T>; LoadIndex now
             // returns a live view of the index cache and must not be handed to a type that could retain it.
             string indexJson = JsonSerializer.Serialize(new BundleIndex(entries.ToList()), BundleJsonContext.Default.BundleIndex);
-            var indexEntry = zip.CreateEntry($"topics/{sanitizedTopic}/index.json");
+            var indexEntry = zip.CreateEntry($"topics/{bundleTopic}/index.json");
             using (var writer = new StreamWriter(indexEntry.Open()))
                 writer.Write(indexJson);
 
@@ -77,7 +86,7 @@ public static class BundleFormatService
             foreach (var (name, filePath) in artifacts)
             {
                 string artifactContent = File.ReadAllText(filePath);
-                string entryName = $"topics/{sanitizedTopic}/{store.SanitizeName(name)}.nmp2";
+                string entryName = $"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2";
                 var zipEntry = zip.CreateEntry(entryName);
                 using var writer = new StreamWriter(zipEntry.Open());
                 writer.Write(artifactContent);
@@ -144,6 +153,22 @@ public static class BundleFormatService
                 f.Trim().Equals(t, StringComparison.OrdinalIgnoreCase))).ToList()
             : availableTopics;
 
+        // Task 13: validate EVERY manifest topic before writing anything. The scope constructor
+        // throws for a topic it cannot build (a trailing dot, a bare ".", NUL), and this loop
+        // writes as it goes — so validating inside it would abort part-way through, leaving the
+        // store half-imported and surfacing a raw ArgumentException that no caller in
+        // BundleService or ScriniaCommands.Bundle turns into a caller-facing error. Our own
+        // export can no longer produce such a manifest (it constructs the scope first), so this
+        // only fires for a hand-crafted or foreign bundle — which is exactly the case that should
+        // be refused cleanly, as the malformed-bundle InvalidOperationException this method
+        // already documents, before any side effect.
+        foreach (string topic in topicsToImport)
+        {
+            if (!MemoryNaming.TryBuildScopedTopicScope(topic, out _))
+                throw new InvalidOperationException(
+                    $"Invalid bundle — manifest topic '{topic}' is not a usable scope name.");
+        }
+
         int importedTopics = 0;
         int importedEntries = 0;
         var importedTopicNames = new List<string>();
@@ -153,9 +178,15 @@ public static class BundleFormatService
             // Task 13: import is a WRITE path, so an unconstructable topic throws rather than
             // resolving to an aliased scope — see BundleFormatService's export counterpart.
             string topicScope = MemoryNaming.BuildScopedTopicScope(topic);
-            string sanitizedTopic = store.SanitizeName(topic);
 
-            var indexZipEntry = zip.GetEntry($"topics/{sanitizedTopic}/index.json");
+            // Derived from the scope, matching export. Back-compatible with bundles written
+            // before that change: their manifest carries an already-flattened "goal_G-5", which
+            // constructs scope "local:goal_G-5" and formats back to the same "goal_G-5" zip key
+            // they were written with, so they still import exactly as they used to. A flat topic
+            // is byte-identical either way.
+            string bundleTopic = MemoryNaming.FormatScopeLabel(topicScope);
+
+            var indexZipEntry = zip.GetEntry($"topics/{bundleTopic}/index.json");
             if (indexZipEntry is null)
                 continue;
 
@@ -252,7 +283,7 @@ public static class BundleFormatService
                     ChunkEntries: chunkEntries,
                     Attributes: attributes));
 
-                string artifactEntryName = $"topics/{sanitizedTopic}/{store.SanitizeName(name)}.nmp2";
+                string artifactEntryName = $"topics/{bundleTopic}/{store.SanitizeName(name)}.nmp2";
                 var artifactZipEntry = zip.GetEntry(artifactEntryName);
                 if (artifactZipEntry is not null)
                 {

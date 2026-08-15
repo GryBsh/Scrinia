@@ -24,53 +24,9 @@ public class PathRouterTests : IDisposable
 
     private ParsedPath P(string raw) => PathParser.Parse(raw, EntityTypes);
 
-    // ── ToFilesystemPath ──────────────────────────────────────────────────────
-
-    [Fact]
-    public void ToFilesystemPath_FreeformTopic_ReturnsNmp2()
-    {
-        var result = PathRouter.ToFilesystemPath(P("/api/auth-flow"), _root);
-
-        result.Should().NotBeNull();
-        result!.Should().EndWith(Path.Combine(".scrinia", "memories", "api", "auth-flow.nmp2"));
-    }
-
-    [Fact]
-    public void ToFilesystemPath_EntityPrefixedPath_ReturnsNmp2()
-    {
-        var result = PathRouter.ToFilesystemPath(P("/goal/G-5/research/frontend"), _root);
-
-        result.Should().NotBeNull();
-        result!.Should().EndWith(Path.Combine(".scrinia", "memories", "goal", "G-5", "research", "frontend.nmp2"));
-    }
-
-    [Fact]
-    public void ToFilesystemPath_EphemeralPath_ReturnsNull()
-    {
-        var result = PathRouter.ToFilesystemPath(P("/temp/scratch"), _root);
-
-        result.Should().BeNull();
-    }
-
-    // ── ToVersionsDir ─────────────────────────────────────────────────────────
-
-    [Fact]
-    public void ToVersionsDir_FreeformTopic_ReturnsVersionsSibling()
-    {
-        var result = PathRouter.ToVersionsDir(P("/api/auth-flow"), _root);
-
-        result.Should().EndWith(Path.Combine(".scrinia", "memories", "api", "versions"));
-    }
-
-    // ── ToMetadataPath ────────────────────────────────────────────────────────
-
-    [Fact]
-    public void ToMetadataPath_FreeformTopic_ReturnsMetaJson()
-    {
-        var result = PathRouter.ToMetadataPath(P("/api/auth-flow"), _root);
-
-        result.Should().EndWith(Path.Combine(".scrinia", "memories", "api", "auth-flow.meta.json"));
-    }
+    // Task 13 deleted ToFilesystemPath/ToVersionsDir/ToMetadataPath — a second scope→directory
+    // mapper with no production callers that disagreed with ToStoreDir. Their coverage moved to
+    // MigrationTests, against the live FileMemoryStore.ArtifactPath/MetaPath resolvers.
 
     // ── IsEphemeral ───────────────────────────────────────────────────────────
 
@@ -87,30 +43,6 @@ public class PathRouterTests : IDisposable
     }
 
     // ── Additional coverage ───────────────────────────────────────────────────
-
-    [Fact]
-    public void ToVersionsDir_EphemeralPath_Throws()
-    {
-        var act = () => PathRouter.ToVersionsDir(P("/temp/scratch"), _root);
-        act.Should().Throw<InvalidOperationException>();
-    }
-
-    [Fact]
-    public void ToMetadataPath_EphemeralPath_Throws()
-    {
-        var act = () => PathRouter.ToMetadataPath(P("/temp/scratch"), _root);
-        act.Should().Throw<InvalidOperationException>();
-    }
-
-    [Fact]
-    public void ToFilesystemPath_DeepEntityPath_IncludesAllSegments()
-    {
-        var result = PathRouter.ToFilesystemPath(P("/goal/G-5/phase/01/task/fix"), _root);
-
-        result.Should().NotBeNull();
-        result!.Should().EndWith(Path.Combine(
-            ".scrinia", "memories", "goal", "G-5", "phase", "01", "task", "fix.nmp2"));
-    }
 
     // ── ToStoreDir ────────────────────────────────────────────────────────────
 
@@ -210,26 +142,23 @@ public class PathRouterTests : IDisposable
         path.Should().BeEmpty();
     }
 
+    // The file-entity locations these used to assert through the deleted ToFilesystemPath are
+    // pinned directly on the live resolver instead — it is what MemoryTools.Skills/Core/Lifecycle
+    // actually call.
+
     [Fact]
-    public void ToFilesystemPath_SkillTopic_ResolvesToTopLevelSkillsDir()
+    public void TryToFileEntityPath_SkillTopic_ResolvesToTopLevelSkillsDir()
     {
-        var result = PathRouter.ToFilesystemPath(P("/skill/qa"), _root);
-        result.Should().Be(Path.Combine(_root, ".scrinia", "skills", "qa.md"),
+        PathRouter.TryToFileEntityPath("skill", "qa", _root, out string path).Should().BeTrue();
+        path.Should().Be(Path.Combine(_root, ".scrinia", "skills", "qa.md"),
             because: "hand-authored file entities live at the top level of .scrinia/, " +
                      "never inside the memory store");
     }
 
     [Fact]
-    public void ToFilesystemPath_AgentTopic_ResolvesToTopLevelAgentDir()
+    public void TryToFileEntityPath_AgentTopic_ResolvesToTopLevelAgentDir()
     {
-        var result = PathRouter.ToFilesystemPath(P("/agent/profile"), _root);
-        result.Should().Be(Path.Combine(_root, ".scrinia", "agent", "profile.md"));
-    }
-
-    [Fact]
-    public void ToFilesystemPath_FileEntityWithExtraSegments_ReturnsNull()
-    {
-        PathRouter.ToFilesystemPath(P("/skill/a/b"), _root)
-            .Should().BeNull(because: "file entities are flat; a nested path has no location");
+        PathRouter.TryToFileEntityPath("agent", "profile", _root, out string path).Should().BeTrue();
+        path.Should().Be(Path.Combine(_root, ".scrinia", "agent", "profile.md"));
     }
 }

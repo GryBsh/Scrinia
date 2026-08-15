@@ -705,19 +705,19 @@ public static class MemoryEndpoints
         // fault elsewhere in the destination scope's index gets misattributed to "malformed
         // destination name". `dstScope` is kept (not discarded) for part 2 below.
         //
-        // TASK 13 UPDATE. ParseQualifiedName no longer sanitizes only the leaf: it now sanitizes
-        // every scope segment and rejects the residue substitution cannot repair (a trailing dot or
-        // space, a bare ".", a reserved device name — FileMemoryStore.SanitizeScopeSegment). That
-        // changes what reaches this catch, in both directions:
+        // TASK 13 UPDATE. ParseQualifiedName no longer sanitizes only the leaf: it builds the
+        // scope through MemoryNaming.BuildScopedTopicScope — the one scope constructor — which
+        // sanitizes every segment and rejects the residue substitution cannot repair (a trailing
+        // dot or space, a bare ".", NUL). That changes what reaches this catch, in both
+        // directions:
         //   * '*','?','<','>','|','"' are now REPAIRED at source ('/a*b/x' stores under
         //     "local:a_b", exactly as the leaf has always treated them) and so no longer produce
         //     any error here at all — they used to reach Directory.CreateDirectory intact and throw
         //     IOException at part 2 below.
-        //   * A trailing dot/space, a bare "." and every reserved device name (measured on this
-        //     build: only NUL actually fails to create a directory; CON/PRN/AUX/COM1-9/LPT1-9
-        //     quietly create a real one, which is precisely why they had to be refused by rule
-        //     rather than left to the filesystem) now throw ArgumentException and are caught HERE,
-        //     one exception family earlier than before.
+        //   * A trailing dot/space, a bare "." and NUL now throw ArgumentException and are caught
+        //     HERE, one exception family earlier than before. Only NUL, deliberately: measured on
+        //     this build, CON/PRN/AUX/COM1-9/LPT1-9 create real, writable directories and alias
+        //     nothing, so refusing them would reject input that demonstrably works.
         // The scope-ALIASING defect this comment used to record as unfixed ("local:topic.",
         // "local:topic " and "local:." being distinct cache keys/locks over one directory) is fixed
         // at its source; no endpoint-level mitigation carries it any more.

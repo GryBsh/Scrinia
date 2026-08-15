@@ -39,57 +39,59 @@ public sealed class MigrationTests : IDisposable
     //  V2 PATH STRUCTURE TESTS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    // Task 13 deleted PathRouter.ToFilesystemPath/ToMetadataPath — a second scope→directory
+    // mapper with no production callers, which built its path from RAW segments and so disagreed
+    // with ToStoreDir once the one scope constructor started validating. These four assertions
+    // were rewritten (not dropped) against the resolvers the store actually uses:
+    // ParseQualifiedName → ArtifactPath/MetaPath → GetStoreDirForScope → ToStoreDir. They now pin
+    // the same v2 layout on the live path.
+
+    private FileMemoryStore NewStore() => new(_tempDir);
+
     [Fact]
     public void V2Path_WritesToMemoriesDir()
     {
-        // store via /api/auth-flow → verify file at .scrinia/memories/api/auth-flow.nmp2
-        var result = PathRouter.ToFilesystemPath(P("/api/auth-flow"), _tempDir);
+        using var store = NewStore();
+        var (scope, subject) = store.ParseQualifiedName("/api/auth-flow");
 
-        result.Should().NotBeNull();
-        result!.Should().Be(Path.Combine(_tempDir, ".scrinia", "memories", "api", "auth-flow.nmp2"));
+        store.ArtifactPath(subject, scope)
+            .Should().Be(Path.Combine(_tempDir, ".scrinia", "memories", "api", "auth-flow.nmp2"));
     }
 
     [Fact]
     public void V2Path_AgentWritesMd()
     {
-        // Hand-authored file entities (skill, agent) live at the top level of .scrinia/,
-        // never under memories/ — see PathRouterTests for the dedicated coverage of this.
-        var result = PathRouter.ToFilesystemPath(P("/agent/profile"), _tempDir);
-
-        result.Should().NotBeNull();
-        result!.Should().Be(Path.Combine(_tempDir, ".scrinia", "agent", "profile.md"));
+        // Hand-authored file entities (skill, agent) live at the top level of .scrinia/, never
+        // under memories/. This is PathRouter.TryToFileEntityPath's job — the live resolver
+        // MemoryTools.Core/Skills call — see PathRouterTests for the dedicated coverage.
+        PathRouter.TryToFileEntityPath("agent", "profile", _tempDir, out string path)
+            .Should().BeTrue();
+        path.Should().Be(Path.Combine(_tempDir, ".scrinia", "agent", "profile.md"));
     }
 
     [Fact]
     public void V2Path_DeepEntityPath_CreatesNestedDirs()
     {
-        // store via /goal/G-5/research/frontend → verify nested directory structure
-        var result = PathRouter.ToFilesystemPath(P("/goal/G-5/research/frontend"), _tempDir);
+        using var store = NewStore();
+        var (scope, subject) = store.ParseQualifiedName("/goal/G-5/research/frontend");
 
-        result.Should().NotBeNull();
-        result!.Should().Be(Path.Combine(
+        string artPath = store.ArtifactPath(subject, scope);
+        artPath.Should().Be(Path.Combine(
             _tempDir, ".scrinia", "memories", "goal", "G-5", "research", "frontend.nmp2"));
-
-        // The parent directory chain should be: memories/goal/G-5/research/
-        string expectedDir = Path.GetDirectoryName(result)!;
-        expectedDir.Should().EndWith(Path.Combine("goal", "G-5", "research"));
+        Path.GetDirectoryName(artPath)!.Should().EndWith(Path.Combine("goal", "G-5", "research"));
     }
 
     [Fact]
     public void V2Path_SidecarMetadata_WrittenCorrectly()
     {
-        // Verify .meta.json alongside the artifact
-        var parsed = P("/api/auth-flow");
-        var artPath = PathRouter.ToFilesystemPath(parsed, _tempDir);
-        var metaPath = PathRouter.ToMetadataPath(parsed, _tempDir);
+        using var store = NewStore();
+        var (scope, subject) = store.ParseQualifiedName("/api/auth-flow");
 
-        artPath.Should().NotBeNull();
-        metaPath.Should().NotBeNull();
+        string artPath = store.ArtifactPath(subject, scope);
+        string metaPath = Path.ChangeExtension(artPath, ".meta.json");
 
-        // Meta path should be same location but with .meta.json extension
-        metaPath!.Should().Be(Path.Combine(_tempDir, ".scrinia", "memories", "api", "auth-flow.meta.json"));
-
-        // Both should share the same directory
+        metaPath.Should().Be(
+            Path.Combine(_tempDir, ".scrinia", "memories", "api", "auth-flow.meta.json"));
         Path.GetDirectoryName(artPath).Should().Be(Path.GetDirectoryName(metaPath));
     }
 

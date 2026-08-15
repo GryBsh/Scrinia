@@ -254,8 +254,8 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             // while only the leaf was sanitized, so "local:topic.", "local:topic " and
             // "local:topic" were three distinct scope strings — three CachedIndex keys and three
             // ReaderWriterLockSlim instances — over ONE directory.
-            string topicPart = string.Join("/", segments.Take(segments.Count - 1).Select(s => s.Value));
-            string scope = MemoryNaming.BuildScopedTopicScope(topicPart);
+            string scope = MemoryNaming.BuildScopedTopicScope(
+                segments.Take(segments.Count - 1).Select(s => s.Value));
             string subject = SanitizeName(segments[^1].Value);
             return (scope, subject);
         }
@@ -293,7 +293,6 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// would let one stored entry poison every read of its scope, and abort the orphan sweep
     /// part-way through a <see cref="SaveIndex"/> that deletes files.</para></summary>
     private static string SanitizeNameCore(string name) => MemoryNaming.SanitizeSegment(name);
-
 
     // ── Ephemeral memory ─────────────────────────────────────────────────────
 

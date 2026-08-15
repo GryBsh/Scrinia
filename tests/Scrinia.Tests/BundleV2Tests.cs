@@ -39,7 +39,9 @@ public sealed class BundleV2Tests : IDisposable
     /// </summary>
     private void SeedTopic(string topic, string subject, string content)
     {
-        string scope = MemoryNaming.BuildScopedTopicScope(_store.SanitizeName(topic));
+        // Task 13: the constructor sanitizes each segment itself. Wrapping it in SanitizeName
+        // would flatten '/' to '_' and seed a DIFFERENT scope than the one export resolves.
+        string scope = MemoryNaming.BuildScopedTopicScope(topic);
         var entry = new ArtifactEntry(
             Name: subject,
             Uri: "",
@@ -58,7 +60,9 @@ public sealed class BundleV2Tests : IDisposable
     private void SeedTopicWithAttributes(
         string topic, string subject, string content, string contentPreview, string[] tags)
     {
-        string scope = MemoryNaming.BuildScopedTopicScope(_store.SanitizeName(topic));
+        // Task 13: the constructor sanitizes each segment itself. Wrapping it in SanitizeName
+        // would flatten '/' to '_' and seed a DIFFERENT scope than the one export resolves.
+        string scope = MemoryNaming.BuildScopedTopicScope(topic);
         var entry = new ArtifactEntry(
             Name: subject,
             Uri: "",
@@ -393,6 +397,120 @@ public sealed class BundleV2Tests : IDisposable
         imported.Attributes.Should().NotBeNull();
         imported.Attributes!.Should().ContainKey(KnownAttributes.TagKey)
             .WhoseValue.Should().BeEquivalentTo(["archived", "legacy"]);
+    }
+
+    // ── Task 13: the bundle key is DERIVED from the scope ────────────────────
+
+    /// <summary>
+    /// The scope and the zip/manifest key are two transforms of one topic — the scope treats '/'
+    /// as a SEPARATOR, <c>SanitizeName</c> replaces it with '_'. Computing them independently
+    /// made them disagree for any hierarchical topic, so a bundle exported from
+    /// <c>local:goal/G-5</c> re-imported into <c>local:goal_G-5</c>: the memories silently
+    /// changed scope. This is the round trip that must be exact.
+    /// </summary>
+    [Fact]
+    public void BundleRoundTrip_HierarchicalTopic_LandsInTheScopeItLeft()
+    {
+        SeedTopic("goal/G-5", "hierarchical-note", "nested topic content");
+
+        byte[] zipBytes = ExportToBytes(["goal/G-5"]);
+
+        string importRoot = Path.Combine(_tempDir, "hierarchical-import-target");
+        Directory.CreateDirectory(importRoot);
+        using var importStore = new FileMemoryStore(importRoot);
+        var (_, _, names, _) = ImportFromBytes(zipBytes, importStore);
+
+        names.Should().BeEquivalentTo(["goal/G-5"],
+            because: "the manifest carries the topic in its scope-derived form, hierarchy intact");
+
+        importStore.LoadIndex("local:goal/G-5").Select(e => e.Name)
+            .Should().Contain("hierarchical-note",
+                because: "the memory must land in the scope it was exported from");
+        importStore.LoadIndex("local:goal_G-5").Should().BeEmpty(
+            because: "flattening the separator would silently relocate it to a different scope");
+    }
+
+    /// <summary>
+    /// Back-compat for bundles written BEFORE the key became scope-derived: their manifest carries
+    /// an already-flattened "goal_G-5". That constructs scope <c>local:goal_G-5</c> and formats
+    /// back to the same "goal_G-5" zip key they were written with, so they still import exactly as
+    /// they used to. Hand-built rather than exported, because the current exporter can no longer
+    /// produce this shape.
+    /// </summary>
+    [Fact]
+    public void BundleImport_LegacyFlattenedManifestTopic_StillImportsAsBefore()
+    {
+        byte[] zipBytes;
+        using (var ms = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                WriteZipText(zip, "manifest.json",
+                    """{"version":1,"topics":["goal_G-5"],"entryCount":1}""");
+                WriteZipText(zip, "topics/goal_G-5/index.json",
+                    """{"entries":[{"name":"legacy-note","originalBytes":5,"chunkCount":1}]}""");
+                WriteZipText(zip, "topics/goal_G-5/legacy-note.nmp2", "body");
+            }
+            zipBytes = ms.ToArray();
+        }
+
+        string importRoot = Path.Combine(_tempDir, "legacy-flat-import-target");
+        Directory.CreateDirectory(importRoot);
+        using var importStore = new FileMemoryStore(importRoot);
+
+        ImportFromBytes(zipBytes, importStore);
+
+        importStore.LoadIndex("local:goal_G-5").Select(e => e.Name)
+            .Should().Contain("legacy-note",
+                because: "a pre-existing flattened bundle must import exactly where it always did");
+    }
+
+    /// <summary>
+    /// A manifest topic the one scope constructor cannot build is refused BEFORE anything is
+    /// written. Validating inside the write loop would abort part-way, leaving the store
+    /// half-imported and surfacing a raw ArgumentException that no caller turns into a
+    /// caller-facing error.
+    /// </summary>
+    [Fact]
+    public void BundleImport_UnconstructableManifestTopic_IsRefusedBeforeAnythingIsWritten()
+    {
+        byte[] zipBytes;
+        using (var ms = new MemoryStream())
+        {
+            using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                // "good" sorts first and would already be written by the time "bad." threw.
+                WriteZipText(zip, "manifest.json",
+                    """{"version":1,"topics":["good","bad."],"entryCount":2}""");
+                WriteZipText(zip, "topics/good/index.json",
+                    """{"entries":[{"name":"good-note","originalBytes":5,"chunkCount":1}]}""");
+                WriteZipText(zip, "topics/good/good-note.nmp2", "body");
+            }
+            zipBytes = ms.ToArray();
+        }
+
+        string importRoot = Path.Combine(_tempDir, "bad-topic-import-target");
+        Directory.CreateDirectory(importRoot);
+        using var importStore = new FileMemoryStore(importRoot);
+
+        var act = () => ImportFromBytes(zipBytes, importStore);
+
+        act.Should().Throw<InvalidOperationException>(
+            because: "a malformed manifest is the failure this method already documents")
+           .WithMessage("*bad.*");
+
+        importStore.LoadIndex("local:good").Should().BeEmpty(
+            because: "the refusal must land before ANY topic is written, not part-way through");
+    }
+
+    /// <summary>Export refuses an unconstructable topic outright, so our own exporter can never
+    /// write a manifest that import would then have to refuse.</summary>
+    [Fact]
+    public void BundleExport_UnconstructableTopic_IsRefused()
+    {
+        var act = () => ExportToBytes(["topic."]);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*must not end with*");
     }
 
     // ── Zip helper ───────────────────────────────────────────────────────────
