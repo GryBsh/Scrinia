@@ -1,5 +1,0 @@
-status: error
-error: "Partial link failure:\n  /findings/does-not-exist: Memory '/findings/does-not-exist' not found.\n  /patterns/retry: Updated metadata for '/patterns/retry': 1 attribute(s) merged.\nFiles in .scrinia/ were updated — these are your changes."
-errorCode: INTERNAL
-actionNeeded:
-  - "Verify both '/findings/does-not-exist' and '/patterns/retry' exist via recall."

@@ -322,28 +322,11 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         var result = new List<ScopedArtifact>();
         foreach (var kvp in _ephemeralStore)
         {
-            var e = kvp.Value;
-            var artifactEntry = new ArtifactEntry(
-                Name: e.Name,
-                Uri: "",
-                OriginalBytes: e.OriginalBytes,
-                ChunkCount: e.ChunkCount,
-                CreatedAt: e.CreatedAt,
-                ContentPreview: e.ContentPreview,
-                Keywords: e.Keywords,
-                TermFrequencies: e.TermFrequencies,
-                UpdatedAt: e.UpdatedAt,
-                ChunkEntries: e.ChunkEntries,
-                FileHashes: e.FileHashes,
-                Attributes: e.Attributes,
-                // Carried for the same reason Keywords is: this projection and PersistEphemeral's
-                // are two views of ONE memory, and a field present in one and null in the other
-                // means the answer depends on which read you came through. Null would read as
-                // UNKNOWN here (ArtifactEntry.AgentKeywords) for a memory whose provenance was
-                // recorded — sending a caller to the recovery heuristic with the real answer
-                // sitting in the map it just read from.
-                AgentKeywords: e.AgentKeywords);
-            result.Add(new ScopedArtifact("ephemeral", artifactEntry));
+            // EphemeralEntry.ToArtifactEntry, not a copy of it written out here. This projection
+            // and PersistEphemeral's are two views of ONE memory, and a field present in one and
+            // null in the other means the answer depends on which read you came through — the
+            // reason Keywords and AgentKeywords both had to be added to it after the fact.
+            result.Add(new ScopedArtifact("ephemeral", kvp.Value.ToArtifactEntry()));
         }
         return result;
     }
@@ -1382,48 +1365,37 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             AgentKeywords: derived.AgentKeywords));
 
     /// <summary>Persists an ephemeral write and projects it back as an <see cref="ArtifactEntry"/>,
-    /// the way <see cref="ListEphemeral"/> does.
-    /// <para><see cref="EphemeralEntry.FileHashes"/> carries the derived drift baseline, matching
-    /// both objects built here — the stored entry and the returned one are two views of ONE memory,
-    /// and a field present in one and null in the other means the answer depends on which read you
-    /// came through.</para></summary>
+    /// the way <see cref="ListEphemeral"/> does — through the same
+    /// <see cref="EphemeralEntry.ToArtifactEntry"/>, applied to the record just stored.
+    /// <para>The stored entry and the returned one are two views of ONE memory, and a field present
+    /// in one and null in the other means the answer depends on which read you came through. This
+    /// used to build both objects side by side and keep them in step by inspection —
+    /// <see cref="EphemeralEntry.FileHashes"/>, the derived drift baseline, was the last field to
+    /// have to be added to each. Projecting the stored record makes them agree by
+    /// construction.</para></summary>
     private ArtifactEntry PersistEphemeral(
         string name, string artifact, long originalBytes, int chunkCount,
         DerivedMetadata derived, DateTimeOffset createdAt, DateTimeOffset? updatedAt)
     {
         string key = MemoryNaming.StripEphemeralPrefix(name);
-        string[]? keywords = derived.Keywords.Length > 0 ? derived.Keywords : null;
-        Dictionary<string, int>? tf = derived.TermFrequencies.Count > 0 ? derived.TermFrequencies : null;
 
-        RememberEphemeral(key, new EphemeralEntry(
+        var stored = new EphemeralEntry(
             Name: key,
             Artifact: artifact,
             OriginalBytes: originalBytes,
             ChunkCount: chunkCount,
             CreatedAt: createdAt,
             ContentPreview: derived.ContentPreview,
-            Keywords: keywords,
-            TermFrequencies: tf,
-            UpdatedAt: updatedAt,
-            ChunkEntries: derived.ChunkEntries,
-            FileHashes: derived.FileHashes,
-            Attributes: derived.Attributes,
-            AgentKeywords: derived.AgentKeywords));
-
-        return new ArtifactEntry(
-            Name: key,
-            Uri: "",
-            OriginalBytes: originalBytes,
-            ChunkCount: chunkCount,
-            CreatedAt: createdAt,
-            ContentPreview: derived.ContentPreview,
-            Keywords: keywords,
-            TermFrequencies: tf,
+            Keywords: derived.Keywords.Length > 0 ? derived.Keywords : null,
+            TermFrequencies: derived.TermFrequencies.Count > 0 ? derived.TermFrequencies : null,
             UpdatedAt: updatedAt,
             ChunkEntries: derived.ChunkEntries,
             FileHashes: derived.FileHashes,
             Attributes: derived.Attributes,
             AgentKeywords: derived.AgentKeywords);
+
+        RememberEphemeral(key, stored);
+        return stored.ToArtifactEntry();
     }
 
     /// <summary>

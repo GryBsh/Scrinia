@@ -209,8 +209,10 @@ pipeline is gone, so there's no reason to fire this command per-session anymore.
 
 ### scri link
 
-Create a bidirectional reference between two memories. Both sides get a
-`ref:{other}` keyword so searches and graph traversals discover the connection.
+Create a bidirectional reference between two memories. Both sides get a `ref`
+attribute naming the other, so searches and graph traversals discover the
+connection. Either side may be an ephemeral `~name`. Both memories must already
+exist — if either is missing, neither is written.
 
 ```bash
 scri link <from> <to> [-r reason] [--workspace-root <path>] [--json]

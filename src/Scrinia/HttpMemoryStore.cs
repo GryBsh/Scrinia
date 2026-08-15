@@ -318,37 +318,26 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         var result = new List<ScopedArtifact>();
         foreach (var kvp in _ephemeral)
         {
-            var e = kvp.Value;
-            var artifactEntry = new ArtifactEntry(
-                // Bare, not `$"~{e.Name}"` — this used to prefix the tilde here, disagreeing with
-                // every other ephemeral Name projection in the codebase: FileMemoryStore.ListEphemeral,
-                // FileMemoryStore.PersistEphemeral (which is what actually answers this store's own
-                // ephemeral WRITE response, through _localHelper), and the server's MemoryEntry.From
-                // all treat ArtifactEntry.Name as bare and add the `~` only when building a
-                // caller-facing address (QualifiedName, a display label). A prefixed Name here meant a
-                // remote store's write response and its own list response disagreed about the same
-                // memory's Name, and every consumer that (correctly, per those other sites) adds its
-                // own `~` for Scope == "ephemeral" — the CLI, SearchResultRenderer, MemoryTools list —
-                // would double it to "~~name" when the candidate came from here.
-                Name: e.Name,
-                // Uri is empty because an ephemeral artifact has no backing file — not the
-                // remote-path placeholder described at BuildArtifactEntry. These entries come
-                // from the in-process _ephemeral dictionary, not the server.
-                Uri: "",
-                OriginalBytes: e.OriginalBytes,
-                ChunkCount: e.ChunkCount,
-                CreatedAt: e.CreatedAt,
-                ContentPreview: e.ContentPreview,
-                Keywords: e.Keywords,
-                TermFrequencies: e.TermFrequencies,
-                UpdatedAt: e.UpdatedAt,
-                ChunkEntries: e.ChunkEntries,
-                FileHashes: e.FileHashes,
-                Attributes: e.Attributes,
-                // See FileMemoryStore.ListEphemeral: one memory must not report its provenance
-                // differently depending on which read reached it.
-                AgentKeywords: e.AgentKeywords);
-            result.Add(new ScopedArtifact("ephemeral", artifactEntry));
+            // EphemeralEntry.ToArtifactEntry, the one projection every ephemeral read shares. This
+            // site used to write its own, and got two things wrong that the shared one fixes by
+            // construction:
+            //
+            // - It prefixed the tilde onto Name (`$"~{e.Name}"`), disagreeing with every other
+            //   ephemeral Name projection: FileMemoryStore.ListEphemeral, PersistEphemeral (which
+            //   is what actually answers this store's own ephemeral WRITE response, through
+            //   _localHelper), and the server's MemoryEntry.From all treat ArtifactEntry.Name as
+            //   BARE and add the `~` only when building a caller-facing address. A prefixed Name
+            //   here meant a remote store's write response and its own list response disagreed
+            //   about the same memory, and every consumer that correctly adds its own `~` for
+            //   Scope == "ephemeral" — the CLI, SearchResultRenderer, MemoryTools list — doubled
+            //   it to "~~name" for any candidate from here.
+            // - It dropped AgentKeywords, so one memory reported its keyword provenance
+            //   differently depending on which read reached it.
+            //
+            // Uri comes back empty, as it did: an ephemeral artifact has no backing file. That is
+            // not the remote-path placeholder described at BuildArtifactEntry — these entries come
+            // from the in-process _ephemeral dictionary, not the server.
+            result.Add(new ScopedArtifact("ephemeral", kvp.Value.ToArtifactEntry()));
         }
         return result;
     }

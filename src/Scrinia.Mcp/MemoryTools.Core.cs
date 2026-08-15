@@ -312,135 +312,73 @@ public sealed partial class ScriniaMcpTools
     {
         var store = CurrentStore;
 
-        if (store.IsEphemeral(name))
-            return Task.FromResult(ResponseBuilder.Error(
-                "Update does not support ephemeral memories. Use remember instead.",
-                ErrorCodes.InvalidParameter,
-                "remember({ path: '...', content: [...] }) — overwrites an existing ephemeral entry"));
-
-        var (scope, subject) = store.ParseQualifiedName(name);
-        string qualifiedName = store.FormatQualifiedName(scope, subject);
-
         // Track what changed for the response message
         var changes = new List<string>();
         bool found = false;
+        bool persisted;
+        string qualifiedName;
+        bool ephemeral = store.IsEphemeral(name);
 
-        // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
-        // used to have. Remotely, Upsert is a deliberate no-op, so that shape mutated a copy,
-        // handed it to a method that discards it, and still reported "updated" — link() said
-        // "Linked 'a' <-> 'b'" while the `ref` attribute never reached the server. TryUpdateEntry
-        // is the seam that already fails closed there (HttpMemoryStore overrides it precisely so a
-        // mutation it cannot persist is refused rather than silently dropped), and locally it
-        // additionally runs under FileMemoryStore's per-scope write lock, so load→mutate→persist
-        // is atomic instead of a racy read-modify-write. `found`/`changes` are captured out of the
-        // callback because a false return has three distinct causes the caller must tell apart:
-        // no such entry, nothing to change, and "found but not persistable".
-        bool persisted = store.TryUpdateEntry(subject, scope, entry =>
+        // The ephemeral branch sits AHEAD of ParseQualifiedName, where the refusal it replaces sat:
+        // ParseQualifiedName does not strip `~`, so a ~name reaching it resolves to a persistent
+        // address that is not this memory. An ephemeral lives in this process in both store modes
+        // (FileMemoryStore's map locally, HttpMemoryStore's own map remotely — nothing about it goes
+        // over the wire), so the same three members serve both: GetEphemeral, the projection pair on
+        // EphemeralEntry, and RememberEphemeral.
+        if (ephemeral)
         {
-            found = true;
+            string key = MemoryNaming.StripEphemeralPrefix(name);
+            qualifiedName = $"~{key}";
 
-            // Route key:value-shaped additions into Attributes; only plain ones merge into Keywords.
-            var (routedAttributes, plainAdds) = AttributeExtractor.RouteKeywords(keywords);
-
-            string[]? mergedKeywords = entry.Keywords;
-            int addedCount = 0;
-            if (plainAdds is { Length: > 0 })
+            var existing = store.GetEphemeral(key);
+            persisted = false;
+            if (existing is not null)
             {
-                var existing = entry.Keywords ?? [];
-                mergedKeywords = existing.Union(plainAdds, StringComparer.OrdinalIgnoreCase).ToArray();
-                addedCount = mergedKeywords.Length - existing.Length;
-                if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
-            }
+                found = true;
+                var current = existing.ToArtifactEntry();
+                var mutated = ApplyMetadataMutation(
+                    current, keywords, description, reviewAfter, reviewWhen, changes);
 
-            Dictionary<string, string[]>? mergedAttributes = entry.Attributes;
-            if (routedAttributes is not null)
-            {
-                mergedAttributes = KnownAttributes.Merge(entry.Attributes, routedAttributes);
-                changes.Add($"{routedAttributes.Count} attribute(s) merged");
-            }
-
-            // Replace description if provided — displayed via ContentPreview (updatedContentPreview
-            // below); this block only tracks the "changes" message.
-            if (!string.IsNullOrWhiteSpace(description))
-            {
-                changes.Add("description updated");
-            }
-
-            // Carry-forward defaults for review sourced from Attributes["review"] (the successor
-            // carrier) rather than the legacy ReviewAfter/ReviewWhen members.
-            AttributeReaders.TryReadReview(entry.Attributes, out var existingReviewDate, out var existingReviewWhen);
-
-            // Parse reviewAfter if provided — through the store's own rule (invariant culture, a
-            // bare date is UTC), not a bare DateTimeOffset.TryParse. This is a metadata-only write,
-            // so it reaches neither derivation entry point and had kept its own parse: the same
-            // "2026-08-01" persisted as UTC through remember() and as the writer's local zone
-            // through update(), which is D-06's defect surviving one caller past the ruling that
-            // removed it everywhere else.
-            DateTimeOffset? parsedReviewAfter = existingReviewDate;
-            if (!string.IsNullOrWhiteSpace(reviewAfter))
-            {
-                if (MemoryDerivation.TryParseReviewDate(reviewAfter, out var ra))
+                // Null is "nothing to change" — reported by the shared changes.Count == 0 warning
+                // below, exactly as the persistent path reports it.
+                if (mutated is not null)
                 {
-                    parsedReviewAfter = ra;
-                    changes.Add($"reviewAfter set to {ra:yyyy-MM-dd}");
-                }
-                else
-                {
-                    changes.Add("reviewAfter ignored (invalid date)");
+                    // ForMetadataUpdate is the store's rule, applied here because for an ephemeral
+                    // THIS process is the store — see the block comment above the method.
+                    // Written back as `existing with { … }`, never a fresh EphemeralEntry:
+                    // ArtifactEntry has no Artifact, so a rebuild would report a successful update
+                    // and empty the memory.
+                    store.RememberEphemeral(key,
+                        existing.WithMetadataFrom(MemoryDerivation.ForMetadataUpdate(current, mutated)));
+                    persisted = true;
                 }
             }
+        }
+        else
+        {
+            var (scope, subject) = store.ParseQualifiedName(name);
+            qualifiedName = store.FormatQualifiedName(scope, subject);
 
-            // Replace reviewWhen if provided
-            string? updatedReviewWhen = existingReviewWhen;
-            if (reviewWhen is not null)
+            // Routed through TryUpdateEntry rather than the LoadIndex → mutate → Upsert shape this
+            // used to have. Remotely, Upsert is a deliberate no-op, so that shape mutated a copy,
+            // handed it to a method that discards it, and still reported "updated" — link() said
+            // "Linked 'a' <-> 'b'" while the `ref` attribute never reached the server. TryUpdateEntry
+            // is the seam that already fails closed there (HttpMemoryStore overrides it precisely so a
+            // mutation it cannot persist is refused rather than silently dropped), and locally it
+            // additionally runs under FileMemoryStore's per-scope write lock, so load→mutate→persist
+            // is atomic instead of a racy read-modify-write. `found`/`changes` are captured out of the
+            // callback because a false return has three distinct causes the caller must tell apart:
+            // no such entry, nothing to change, and "found but not persistable".
+            //
+            // `found` stays HERE rather than moving into ApplyMetadataMutation: it means "the store
+            // handed us an entry", a fact about TryUpdateEntry, not about the mutation.
+            persisted = store.TryUpdateEntry(subject, scope, entry =>
             {
-                updatedReviewWhen = string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen;
-                changes.Add(updatedReviewWhen is not null ? "reviewWhen updated" : "reviewWhen cleared");
-            }
-
-            // Null means "no write" to TryUpdateEntry; the caller reports it as the warning below.
-            if (changes.Count == 0) return null;
-
-            // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
-            // members below + the Forward call at the end of this callback). ADD/REPLACE ONLY — no
-            // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
-            // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
-            // key, so KnownAttributes.Merge PRESERVES any existing Attributes["review"] rather than
-            // clearing it. KnownAttributes.Merge always returns a NEW dictionary, so this never mutates
-            // entry.Attributes (== mergedAttributes when routedAttributes is null) in place.
-            var reviewParts = new List<string>(2);
-            if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
-            if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
-            if (reviewParts.Count > 0)
-                mergedAttributes = KnownAttributes.Merge(mergedAttributes,
-                    new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.ReviewKey] = reviewParts.ToArray() });
-
-            // ContentPreview direct write — Merge 3 Task 2b option A: an explicit new description
-            // wins and becomes the displayed ContentPreview; otherwise the existing ContentPreview
-            // is preserved (superseding the old Merge-2 null-only backfill).
-            string? updatedContentPreview = !string.IsNullOrWhiteSpace(description)
-                ? description
-                : entry.ContentPreview;
-
-            // TermFrequencies is deliberately NOT set here. This block used to compute the BM25
-            // boost for the added keywords and attributes itself — caller-side derivation, at a
-            // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
-            // strings rather than index tokens (against D-14), and reachable only through this one
-            // tool. Over HTTP it could not persist at all: PATCH refuses TermFrequencies from a
-            // body, correctly, so update() and link() reported full success while silently
-            // discarding the boost, and a remote corpus ranked differently from a local one
-            // forever. The store re-derives it now, in MemoryDerivation.ForMetadataUpdate, applied
-            // inside TryUpdateEntry by whichever side holds the store — so every mutation route
-            // gets it and nothing derived crosses the wire.
-            var updated = entry with
-            {
-                Keywords = mergedKeywords,
-                Attributes = mergedAttributes,
-                ContentPreview = updatedContentPreview,
-                UpdatedAt = DateTimeOffset.UtcNow
-            };
-            return AttributeMigration.Forward(updated);
-        });
+                found = true;
+                return ApplyMetadataMutation(
+                    entry, keywords, description, reviewAfter, reviewWhen, changes);
+            });
+        }
 
         if (!found)
             return Task.FromResult(ResponseBuilder.Error(
@@ -456,7 +394,9 @@ public sealed partial class ScriniaMcpTools
         // now means the server REFUSED the metadata write rather than that no channel exists —
         // most often because the change touches keywords, which are derived from content the
         // metadata endpoint does not have. Reporting success here is the defect this branch exists
-        // to close, so say so plainly instead.
+        // to close, so say so plainly instead. Unreachable for an ephemeral: the write is a
+        // dictionary assignment in this process, and the only other way out of that branch is the
+        // null mutation the warning above already answered.
         if (!persisted)
             return Task.FromResult(ResponseBuilder.Error(
                 $"Metadata for '{qualifiedName}' was not updated: the active store refused a " +
@@ -465,9 +405,138 @@ public sealed partial class ScriniaMcpTools
                 ErrorCodes.NotSupported,
                 "remember({ path: '...', content: [...] }) — a full write does carry attributes, keywords and description to a remote store"));
 
+        // An ephemeral write touches no file, so it reports no file changes.
+        var success = ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.");
         return Task.FromResult(
-            ResponseBuilder.Success($"Updated metadata for '{qualifiedName}': {string.Join(", ", changes)}.")
-                .WithFileChanges().WithAction("updated"));
+            (ephemeral ? success : success.WithFileChanges()).WithAction("updated"));
+    }
+
+    /// <summary>
+    /// The metadata mutation itself: takes the entry the store handed over, folds
+    /// <paramref name="keywords"/>/<paramref name="description"/>/<paramref name="reviewAfter"/>/
+    /// <paramref name="reviewWhen"/> into it, and returns the entry to persist — or <c>null</c> for
+    /// "no write", which is what <see cref="IMemoryStore.TryUpdateEntry"/> takes null to mean.
+    ///
+    /// <para><paramref name="changes"/> is an accumulator, appended to in place, and it is how the
+    /// caller renders the response. It can only be appended to once per call because
+    /// <c>TryUpdateEntry</c> invokes its mutation exactly once in all three implementations
+    /// (<see cref="IMemoryStore.TryUpdateEntry"/>'s default, <c>FileMemoryStore</c>'s locked
+    /// override, and <c>HttpMemoryStore</c>'s GET-mutate-PATCH override), and the ephemeral path
+    /// calls this method directly, once.</para>
+    ///
+    /// <para>Extracted from the callback it used to be so that the ephemeral and persistent paths
+    /// share one mutation rather than two that agree today. Deliberately static, and deliberately
+    /// not given <c>found</c>: whether the store had an entry to hand over is a fact about the
+    /// lookup, not about the mutation.</para>
+    /// </summary>
+    private static ArtifactEntry? ApplyMetadataMutation(
+        ArtifactEntry entry,
+        string[]? keywords,
+        string? description,
+        string? reviewAfter,
+        string? reviewWhen,
+        List<string> changes)
+    {
+        // Route key:value-shaped additions into Attributes; only plain ones merge into Keywords.
+        var (routedAttributes, plainAdds) = AttributeExtractor.RouteKeywords(keywords);
+
+        string[]? mergedKeywords = entry.Keywords;
+        if (plainAdds is { Length: > 0 })
+        {
+            var existing = entry.Keywords ?? [];
+            mergedKeywords = existing.Union(plainAdds, StringComparer.OrdinalIgnoreCase).ToArray();
+            int addedCount = mergedKeywords.Length - existing.Length;
+            if (addedCount > 0) changes.Add($"{addedCount} keyword(s) added");
+        }
+
+        Dictionary<string, string[]>? mergedAttributes = entry.Attributes;
+        if (routedAttributes is not null)
+        {
+            mergedAttributes = KnownAttributes.Merge(entry.Attributes, routedAttributes);
+            changes.Add($"{routedAttributes.Count} attribute(s) merged");
+        }
+
+        // Replace description if provided — displayed via ContentPreview (updatedContentPreview
+        // below); this block only tracks the "changes" message.
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            changes.Add("description updated");
+        }
+
+        // Carry-forward defaults for review sourced from Attributes["review"] (the successor
+        // carrier) rather than the legacy ReviewAfter/ReviewWhen members.
+        AttributeReaders.TryReadReview(entry.Attributes, out var existingReviewDate, out var existingReviewWhen);
+
+        // Parse reviewAfter if provided — through the store's own rule (invariant culture, a
+        // bare date is UTC), not a bare DateTimeOffset.TryParse. This is a metadata-only write,
+        // so it reaches neither derivation entry point and had kept its own parse: the same
+        // "2026-08-01" persisted as UTC through remember() and as the writer's local zone
+        // through update(), which is D-06's defect surviving one caller past the ruling that
+        // removed it everywhere else.
+        DateTimeOffset? parsedReviewAfter = existingReviewDate;
+        if (!string.IsNullOrWhiteSpace(reviewAfter))
+        {
+            if (MemoryDerivation.TryParseReviewDate(reviewAfter, out var ra))
+            {
+                parsedReviewAfter = ra;
+                changes.Add($"reviewAfter set to {ra:yyyy-MM-dd}");
+            }
+            else
+            {
+                changes.Add("reviewAfter ignored (invalid date)");
+            }
+        }
+
+        // Replace reviewWhen if provided
+        string? updatedReviewWhen = existingReviewWhen;
+        if (reviewWhen is not null)
+        {
+            updatedReviewWhen = string.IsNullOrWhiteSpace(reviewWhen) ? null : reviewWhen;
+            changes.Add(updatedReviewWhen is not null ? "reviewWhen updated" : "reviewWhen cleared");
+        }
+
+        // Null means "no write"; the caller reports it as its "no changes specified" warning.
+        if (changes.Count == 0) return null;
+
+        // Attributes-native direct write (dual-write with the legacy ReviewAfter/ReviewWhen
+        // members below + the Forward call at the end of this method). ADD/REPLACE ONLY — no
+        // Remove(ReviewKey) — matches AttributeMigration.Forward's incoming-only fold: when
+        // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
+        // key, so KnownAttributes.Merge PRESERVES any existing Attributes["review"] rather than
+        // clearing it. KnownAttributes.Merge always returns a NEW dictionary, so this never mutates
+        // entry.Attributes (== mergedAttributes when routedAttributes is null) in place.
+        var reviewParts = new List<string>(2);
+        if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
+        if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
+        if (reviewParts.Count > 0)
+            mergedAttributes = KnownAttributes.Merge(mergedAttributes,
+                new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase) { [KnownAttributes.ReviewKey] = reviewParts.ToArray() });
+
+        // ContentPreview direct write — Merge 3 Task 2b option A: an explicit new description
+        // wins and becomes the displayed ContentPreview; otherwise the existing ContentPreview
+        // is preserved (superseding the old Merge-2 null-only backfill).
+        string? updatedContentPreview = !string.IsNullOrWhiteSpace(description)
+            ? description
+            : entry.ContentPreview;
+
+        // TermFrequencies is deliberately NOT set here. This block used to compute the BM25
+        // boost for the added keywords and attributes itself — caller-side derivation, at a
+        // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
+        // strings rather than index tokens (against D-14), and reachable only through this one
+        // tool. Over HTTP it could not persist at all: PATCH refuses TermFrequencies from a
+        // body, correctly, so update() and link() reported full success while silently
+        // discarding the boost, and a remote corpus ranked differently from a local one
+        // forever. MemoryDerivation.ForMetadataUpdate re-derives it — inside TryUpdateEntry on
+        // the persistent path, and at UpdateMeta's ephemeral branch, which IS the store for a
+        // ~name. Either way nothing derived crosses the wire.
+        var updated = entry with
+        {
+            Keywords = mergedKeywords,
+            Attributes = mergedAttributes,
+            ContentPreview = updatedContentPreview,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        return AttributeMigration.Forward(updated);
     }
 
     /// <summary>Returns a summary or full listing of persisted memories.</summary>
@@ -993,9 +1062,39 @@ public sealed partial class ScriniaMcpTools
     }
 
     /// <summary>
+    /// Whether <paramref name="name"/> names a memory that exists, without writing to it.
+    ///
+    /// <para><b>Probed through the very members the write goes through</b>, so the answer cannot
+    /// disagree with what <see cref="UpdateMeta"/> resolves a moment later:
+    /// <see cref="IMemoryStore.GetEphemeral"/> for a <c>~name</c>, and
+    /// <see cref="IMemoryStore.TryUpdateEntry"/> with a mutation that returns null for everything
+    /// else. That member's contract is exactly this probe — the mutation runs if and only if the
+    /// entry exists, and a null return persists nothing — so all three implementations short-circuit
+    /// before their write.</para>
+    ///
+    /// <para>A <c>LoadIndex</c> scan would have been a SECOND resolution rule to keep in step with
+    /// <c>FileMemoryStore.TryUpdateEntry</c>'s sidecar lookup, and remotely a second ENDPOINT: the
+    /// listing route needs the <c>search</c> permission where the metadata route needs <c>read</c>,
+    /// so an API key scoped for <c>link</c> would have begun failing on the precheck — and failing
+    /// by throwing, since a 403 there is deliberately not "not found".</para>
+    /// </summary>
+    private static bool Exists(IMemoryStore store, string name)
+    {
+        if (store.IsEphemeral(name))
+            return store.GetEphemeral(MemoryNaming.StripEphemeralPrefix(name)) is not null;
+
+        var (scope, subject) = store.ParseQualifiedName(name);
+        bool found = false;
+        store.TryUpdateEntry(subject, scope, _ => { found = true; return null; });
+        return found;
+    }
+
+    /// <summary>
     /// Create a bidirectional relationship between two memories. Writes a unified
     /// <c>ref</c> attribute on each side (via <see cref="UpdateMeta"/>, which routes the
     /// <c>ref:{name}</c>-shaped keyword into <c>Attributes["ref"]</c> instead of a legacy keyword).
+    /// Refuses without writing anything unless both memories already exist; either side may be
+    /// an ephemeral <c>~name</c>.
     /// </summary>
     internal async Task<McpResponse> Link(
         [Description("Source memory name.")] string from,
@@ -1003,19 +1102,29 @@ public sealed partial class ScriniaMcpTools
         [Description("Reason for the connection.")] string? reason = null,
         CancellationToken cancellationToken = default)
     {
-        // BOTH sides are checked BEFORE either is written. UpdateMeta refuses an ephemeral name
-        // outright, but running the two calls unconditionally meant link('~scratch', '/patterns/x')
-        // failed on the first call, then went on to PERSIST ref:~scratch on /patterns/x, and
-        // reported "Partial link failure" — leaving a dangling one-sided ref pointing at a memory
-        // that was never linked back, which is worse than either a clean link or a clean refusal.
-        // The tool description has always said link refuses when either side is ephemeral; this is
-        // where that becomes true.
+        // BOTH sides are checked BEFORE either is written. link makes two writes and cannot undo
+        // the first if the second fails, and the surviving half is a `ref` pointing at a memory
+        // that carries no `ref` back — a link the graph believes in, and worse than either a clean
+        // link or a clean refusal.
+        //
+        // The predicate is EXISTENCE on both sides. It used to be "neither side is ephemeral",
+        // which delivered the guarantee above only for an ephemeral side: a non-existent PERSISTENT
+        // side sailed past it, failed its own UpdateMeta, and left the other side written and
+        // linked to nothing. That was checked into the repo as
+        // tests/Scrinia.Tests/Golden/__snapshots__/link-partial-failure.yaml, which recorded
+        // "Partial link failure" alongside "/patterns/retry: 1 attribute(s) merged" — the golden
+        // renamed by this change. So this is where that guarantee is first true as stated.
+        //
+        // An ephemeral side is no longer refused at all: UpdateMeta handles a ~name, in both store
+        // modes, so existence is the only thing left for link itself to check.
         var store = CurrentStore;
-        if (store.IsEphemeral(from) || store.IsEphemeral(to))
+        string? missing = !Exists(store, from) ? from : !Exists(store, to) ? to : null;
+        if (missing is not null)
             return ResponseBuilder.Error(
-                "link does not support ephemeral (~name) memories on either side — nothing was written.",
-                ErrorCodes.InvalidParameter,
-                "Persist the memory first with remember({ path: '/topic/name', content: [...] }), then link it.");
+                $"Memory '{missing}' not found — nothing was written.",
+                ErrorCodes.NotFound,
+                "list() to see available memories",
+                $"remember({{ path: '{missing}', content: [...] }}) to create it, then link it");
 
         // Add ref:{to} attribute to {from} (UpdateMeta routes the ref:-shaped keyword into Attributes)
         McpResponse result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);

@@ -169,10 +169,20 @@ and all assembly attributes.
 - `list({ mode: "drift" })` now names an ephemeral memory `~name` rather than bare. The bare name
   was unreachable until ephemerals gained a drift baseline in this release; a bare row either misses
   on `recall()` or resolves to an unrelated persistent memory of the same name.
-- `link()` now refuses before writing anything when either side is an ephemeral (`~name`) memory.
-  It previously ran both updates unconditionally, so the ephemeral side failed and the other side
-  was still written — persisting a `ref` pointing at a memory that carried no `ref` back, then
-  reporting a partial failure. Its description has always said it refuses.
+- **`link()` now works on ephemeral (`~name`) memories on either side, instead of refusing them.**
+  `update()`'s underlying `UpdateMeta` refused a `~name` outright, so linking one was impossible;
+  it now loads the ephemeral, applies the same metadata mutation the persistent path applies, and
+  writes it back. Identical in local and remote mode — an ephemeral memory lives in the calling
+  process in both, so nothing about this crosses the wire. **This replaces an earlier entry in this
+  same `[Unreleased]` cycle** which said `link()` refuses before writing anything when either side
+  is an ephemeral.
+- `link()` now refuses before writing anything when either side **does not exist** — the guarantee
+  the refusal above was reaching for, and it never held for a missing PERSISTENT side. `link()` ran
+  both updates unconditionally, so `link('/findings/absent', '/patterns/retry')` failed on the
+  first, wrote `/patterns/retry` anyway, and reported a partial failure — leaving a `ref` pointing
+  at a memory that carries no `ref` back, which is worse than either a clean link or a clean
+  refusal. Both sides are resolved before either is written, through the same store members the
+  write itself uses. The response for a missing side is now a `NOT_FOUND` naming it, not `INTERNAL`.
 
 ### Fixed — tool descriptions now describe what the tools do
 

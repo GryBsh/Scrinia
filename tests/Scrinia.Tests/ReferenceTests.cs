@@ -360,29 +360,107 @@ public sealed class ReferenceTests : IDisposable
             "prefixed ref: keywords are no longer written");
     }
 
+    /// <summary>
+    /// Reversed by user ruling: <c>link</c> now WORKS on an ephemeral side instead of refusing it.
+    ///
+    /// <para><b>History, kept because it is why the surrounding guarantee exists.</b> link ran both
+    /// UpdateMeta calls unconditionally. UpdateMeta refused an ephemeral name, so the ~scratch side
+    /// failed — and then the OTHER side was written anyway, persisting ref:~scratch on a memory that
+    /// was never linked back and reporting "Partial link failure". A dangling one-sided ref is worse
+    /// than a refusal: it is a link the graph believes in.</para>
+    ///
+    /// <para>That guarantee survives; only its predicate changed. The refusal has been replaced by
+    /// an EXISTENCE check on both sides — which keeps "neither side is written unless both can be"
+    /// and extends it to a non-existent PERSISTENT side, where it never held (see
+    /// <see cref="Link_WithAMissingSide_WritesNeither"/>).</para>
+    ///
+    /// <para>This test is also the anchor for the worked example in <c>link</c>'s MCP description
+    /// (<c>Scrinia.Mcp.MemoryTools</c>): <c>link({ path: '~scratch', destination: '/patterns/auth'
+    /// })</c>. An ephemeral argument being valid there is a claim, and this is what makes it
+    /// checkable — cf. <c>McpContentDescriptionExamplesTests</c>, which pins the description
+    /// examples that need no store.</para>
+    /// </summary>
     [Fact]
-    public async Task Link_WithAnEphemeralSide_RefusesBeforeWritingEither()
+    public async Task Link_WithAnEphemeralSide_LinksBothSides()
     {
-        // link ran both UpdateMeta calls unconditionally. UpdateMeta refuses an ephemeral name, so
-        // the ~scratch side failed — and then the OTHER side was written anyway, persisting
-        // ref:~scratch on a memory that was never linked back and reporting "Partial link failure".
-        // A dangling one-sided ref is worse than a refusal: it is a link the graph believes in.
         await _tools.Remember(["Persistent side"], "/patterns/link-target");
         await _tools.Remember(["Ephemeral side"], "~scratch");
 
         string result = (await _tools.Link("~scratch", "/patterns/link-target")).ToYaml();
 
-        result.Should().Contain("ephemeral",
-            because: "the tool description has always claimed link refuses an ephemeral side");
+        result.Should().Contain("Linked");
 
         var store = MemoryStoreContext.Current!;
         var (scope, subject) = store.ParseQualifiedName("/patterns/link-target");
         var entry = store.LoadIndex(scope)
             .First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
 
+        entry.Attributes.Should().NotBeNull();
+        entry.Attributes!["ref"].Should().Contain(v => v.Contains("scratch"),
+            because: "the persistent side carries a ref back to the ephemeral one");
+
+        var ephemeral = store.GetEphemeral("scratch");
+        ephemeral.Should().NotBeNull("the ephemeral memory must still be there after being linked");
+        ephemeral!.Attributes.Should().NotBeNull();
+        ephemeral.Attributes!["ref"].Should().Contain(v => v.Contains("link-target"),
+            because: "a one-sided link is the defect this guarantee exists to prevent");
+    }
+
+    /// <summary>
+    /// Both sides ephemeral — the case with no persistent memory anywhere in it, and the one that
+    /// proves the write-back is <c>existing with { … }</c> rather than a fresh
+    /// <c>EphemeralEntry</c>: <c>ArtifactEntry</c> has no <c>Artifact</c> field, so an
+    /// Eph→Artifact→Eph round trip that rebuilds the record drops the memory's content while
+    /// reporting a successful link.
+    /// </summary>
+    [Fact]
+    public async Task Link_BetweenTwoEphemerals_LinksBothSidesAndKeepsTheirContent()
+    {
+        await _tools.Remember(["alpha body text"], "~alpha-scratch");
+        await _tools.Remember(["beta body text"], "~beta-scratch");
+
+        string result = (await _tools.Link("~alpha-scratch", "~beta-scratch")).ToYaml();
+
+        result.Should().Contain("Linked");
+
+        var store = MemoryStoreContext.Current!;
+        store.GetEphemeral("alpha-scratch")!.Attributes!["ref"]
+            .Should().Contain(v => v.Contains("beta-scratch"));
+        store.GetEphemeral("beta-scratch")!.Attributes!["ref"]
+            .Should().Contain(v => v.Contains("alpha-scratch"));
+
+        (await _tools.MemoryRecall("~alpha-scratch")).Should().Contain("alpha body text",
+            because: "the projection round trip must write metadata back OVER the stored entry — " +
+                     "ArtifactEntry cannot carry the artifact, so rebuilding the record loses it");
+    }
+
+    /// <summary>
+    /// Neither side is written when either is missing. <c>~absent</c> was already refused before
+    /// this change, but for the wrong reason — the precheck fired on the <c>~</c> alone, whether or
+    /// not the memory existed. <c>/patterns/absent</c> is the case the guarantee never covered:
+    /// link wrote <c>/patterns/present</c>, then reported "Partial link failure", leaving exactly
+    /// the dangling one-sided ref the ephemeral refusal existed to prevent. Recorded in the repo at
+    /// the time as <c>Golden/__snapshots__/link-partial-failure.yaml</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("~absent")]
+    [InlineData("/patterns/absent")]
+    public async Task Link_WithAMissingSide_WritesNeither(string missing)
+    {
+        await _tools.Remember(["Present side"], "/patterns/present");
+
+        string result = (await _tools.Link(missing, "/patterns/present")).ToYaml();
+
+        result.Should().Contain("not found");
+
+        var store = MemoryStoreContext.Current!;
+        var (scope, subject) = store.ParseQualifiedName("/patterns/present");
+        var entry = store.LoadIndex(scope)
+            .First(e => e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+
         (entry.Attributes is not null && entry.Attributes.ContainsKey("ref")).Should().BeFalse(
-            because: "a refused link must write NOTHING — the surviving half of a partial write is " +
-                     "a ref pointing at a memory that carries no ref back");
+            because: "the surviving half of a partial write is a ref pointing at a memory that " +
+                     "carries no ref back — a link the graph believes in");
     }
 
     [Fact]

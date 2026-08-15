@@ -126,7 +126,7 @@ public class ResponseGoldenTests
         "list-summary", "list-full", "append", "forget",
         "compact", "link", "reconcile-scan", "facts-entities",
         "error-missing-path", "error-empty-content",
-        "update-warning", "recall-truncated", "compact-multichunk", "link-partial-failure",
+        "update-warning", "recall-truncated", "compact-multichunk", "link-missing-side",
     ];
 
     [Theory]
@@ -166,10 +166,17 @@ public class ResponseGoldenTests
             "update-warning"  => (await tools.UpdateMeta("/findings/auth-flow")).ToYaml(),
             "recall-truncated" => await tools.MemoryRecall("/findings/long-note"),
             "compact-multichunk" => await tools.MemoryCompact("/findings/multi-note"),
-            // link's open question (partial-failure envelope) turned out to be cheap to cover:
-            // an unresolvable `from` makes the first internal UpdateMeta call error, which link
-            // folds into its own "Partial link failure" error envelope — no seed helper needed.
-            "link-partial-failure" => await tools.MemoryLink("/findings/does-not-exist", "/patterns/retry"),
+            // link's refusal envelope for a side that does not exist — no seed helper needed, an
+            // unresolvable `from` is enough.
+            //
+            // This case was named "link-partial-failure" and pinned the OPPOSITE property: link
+            // used to run both metadata writes unconditionally, so this same call reported
+            // "Partial link failure" WHILE the golden recorded "/patterns/retry: 1 attribute(s)
+            // merged" — the dangling one-sided ref that link's own comment claimed was prevented.
+            // Both sides are checked before either is written now, so the answer is a clean
+            // NOT_FOUND and nothing is written; the old name would have described neither the call
+            // nor the response.
+            "link-missing-side" => await tools.MemoryLink("/findings/does-not-exist", "/patterns/retry"),
             _ => throw new ArgumentOutOfRangeException(nameof(name), name, "unknown golden case"),
         };
 

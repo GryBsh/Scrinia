@@ -1,0 +1,6 @@
+status: error
+error: "Memory '/findings/does-not-exist' not found — nothing was written."
+errorCode: NOT_FOUND
+actionNeeded:
+  - list() to see available memories
+  - "remember({ path: '/findings/does-not-exist', content: [...] }) to create it, then link it"

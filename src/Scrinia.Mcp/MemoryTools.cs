@@ -366,9 +366,10 @@ public sealed partial class ScriniaMcpTools
 
     [McpServerTool(Name = "link"), Description(
         "Create a bidirectional link between two memories by adding a 'ref' attribute on each pointing " +
-        "at the other — queryable later via search's attributeFilter: { ref: [...] }. Refuses if either " +
-        "side is an ephemeral (~name) memory. " +
-        "Example: link({ path: '/findings/SEC-001', destination: '/patterns/auth' }).")]
+        "at the other — queryable later via search's attributeFilter: { ref: [...] }. Either side may " +
+        "be an ephemeral (~name) memory. Both must already exist: if either is missing, neither is " +
+        "written, so there is never a link pointing at nothing. " +
+        "Example: link({ path: '~scratch', destination: '/patterns/auth' }).")]
     public async Task<string> MemoryLink(
         [Description("Source memory path.")] string path,
         [Description("Target memory path.")] string destination,

@@ -92,6 +92,39 @@ public sealed class EphemeralLifecycleTests : IDisposable
         listed.FileHashes.Should().BeEquivalentTo(_store.GetEphemeral("scratch")!.FileHashes);
     }
 
+    /// <summary>
+    /// The projection pair those three sites now share is a genuine round trip:
+    /// <c>e.WithMetadataFrom(e.ToArtifactEntry())</c> is <c>e</c>, including the artifact bytes
+    /// <see cref="ArtifactEntry"/> cannot carry.
+    ///
+    /// <para>That last part is why <c>WithMetadataFrom</c> writes over the existing record instead
+    /// of constructing one. A rebuild would have no <c>Artifact</c> to put back, so a metadata-only
+    /// update to an ephemeral memory (which is what <c>link</c> on a <c>~name</c> is) would report
+    /// success and leave the memory empty. Asserted on a memory with every optional field populated
+    /// — a round trip over an all-defaults record is one that cannot fail.</para>
+    /// </summary>
+    [Fact]
+    public async Task EphemeralEntry_ProjectionPair_RoundTrips()
+    {
+        await _store.StoreAsync(new MemoryWrite("~scratch", "local", ["see src/thing.cs"],
+            Keywords: ["curated-term"], Description: "a curated preview"));
+        // Appended so the record carries a second chunk (ChunkEntries) and an UpdatedAt as well.
+        await _store.AppendAsync(new MemoryWrite("~scratch", "local", ["a second chunk"]));
+        var original = _store.GetEphemeral("scratch")!;
+
+        // Every field the pair has to carry is actually populated here, or the round trip is
+        // vacuous for it.
+        original.Artifact.Should().NotBeNullOrEmpty();
+        original.Keywords.Should().NotBeNullOrEmpty();
+        original.TermFrequencies.Should().NotBeNullOrEmpty();
+        original.AgentKeywords.Should().NotBeNullOrEmpty();
+        original.Attributes.Should().NotBeNullOrEmpty();
+        original.FileHashes.Should().NotBeNullOrEmpty();
+        original.ChunkEntries.Should().NotBeNullOrEmpty();
+
+        original.WithMetadataFrom(original.ToArtifactEntry()).Should().BeEquivalentTo(original);
+    }
+
     [Fact]
     public async Task HttpMemoryStore_HashesEphemeralFileRefsAgainstTheSuppliedWorkspaceRoot()
     {

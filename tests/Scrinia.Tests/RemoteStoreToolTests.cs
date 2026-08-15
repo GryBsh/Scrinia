@@ -34,6 +34,17 @@ public sealed class RemoteStoreToolTests
         "updatedAt":null,"description":"an entry","attributes":null}],"total":1}
         """;
 
+    /// <summary>Two entries, for the operations that address a PAIR of memories — <c>link</c>, whose
+    /// existence precheck has to resolve both sides before either is written.</summary>
+    private const string TwoEntryListJson = """
+        {"memories":[{"name":"alpha","qualifiedName":"local:alpha","scope":"local",
+        "chunkCount":1,"originalBytes":128,"createdAt":"2026-01-01T00:00:00+00:00",
+        "updatedAt":null,"description":"an entry","attributes":null},
+        {"name":"beta","qualifiedName":"local:beta","scope":"local",
+        "chunkCount":1,"originalBytes":128,"createdAt":"2026-01-01T00:00:00+00:00",
+        "updatedAt":null,"description":"another entry","attributes":null}],"total":2}
+        """;
+
     /// <summary>Same single entry as <see cref="OneEntryListJson"/>, but with all eight fields
     /// <c>CarriedEntryDto</c> mirrors on the wire populated with distinguishable values — used by
     /// the demotion metadata test, which asserts the copied-down <see cref="EphemeralEntry"/>
@@ -922,6 +933,59 @@ public sealed class RemoteStoreToolTests
         var response = await Tools().UpdateMeta("alpha");
 
         response.Status.Should().Be("warning");
+    }
+
+    /// <summary>
+    /// <c>link</c> between two ephemerals, remotely. An ephemeral is client-side in BOTH store
+    /// modes, so this is the one case that can show the new ephemeral path behaving identically
+    /// local and remote without a second implementation of anything: the whole operation — the
+    /// existence precheck, both metadata mutations, both write-backs — has to complete without a
+    /// single request reaching the wire. A byte on the wire here would mean the ephemeral branch
+    /// fell through to the persistent one, which addresses the SERVER's store, where these
+    /// memories do not exist.
+    /// </summary>
+    [Fact]
+    public async Task Link_BetweenTwoEphemerals_RemoteStore_LinksBothSidesWithoutTouchingTheWire()
+    {
+        using var scope = new RemoteStoreScope();
+
+        await Tools().Remember(["alpha body text"], "~alpha");
+        await Tools().Remember(["beta body text"], "~beta");
+        scope.Handler.Requests.Clear();
+
+        var response = await Tools().Link("~alpha", "~beta");
+
+        response.ToYaml().Should().Contain("Linked");
+        scope.Store.GetEphemeral("alpha")!.Attributes!["ref"].Should().Contain(v => v.Contains("beta"));
+        scope.Store.GetEphemeral("beta")!.Attributes!["ref"].Should().Contain(v => v.Contains("alpha"));
+
+        scope.Handler.Requests.Should().BeEmpty(
+            because: "a ~name addresses THIS process in both store modes — nothing about linking " +
+                     "two of them has anything to ask the server");
+    }
+
+    /// <summary>
+    /// <c>link</c>'s "Partial link failure" envelope, which survives its existence precheck for the
+    /// case the precheck cannot cover: both memories exist when they are checked, and the store then
+    /// refuses the write anyway.
+    ///
+    /// <para>This test exists because the precheck took the envelope's only coverage with it. It was
+    /// pinned by <c>Golden/__snapshots__/link-partial-failure.yaml</c>, whose call had a
+    /// non-existent side — which the precheck now answers with a clean NOT_FOUND before either write
+    /// (the golden is renamed <c>link-missing-side</c>). Nothing else reached the envelope, so a
+    /// refactor could have deleted it silently.</para>
+    /// </summary>
+    [Fact]
+    public async Task Link_RemoteStore_ReportsPartialFailure_WhenTheServerRefusesTheWrites()
+    {
+        using var scope = new RemoteStoreScope(TwoEntryListJson, patchStatus: HttpStatusCode.BadRequest);
+
+        var response = await Tools().Link("alpha", "beta");
+
+        response.IsError.Should().BeTrue();
+        response.Error.Should().Contain("Partial link failure")
+            .And.Contain("alpha").And.Contain("beta",
+                because: "the envelope's job is to say WHICH side failed and how");
     }
 
     // ── Task 3: the narrowed optional site in Recall ─────────────────────────
