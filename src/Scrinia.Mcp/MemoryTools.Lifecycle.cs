@@ -155,6 +155,20 @@ public sealed partial class ScriniaMcpTools
                         "or resolve explicitly.",
                         ErrorCodes.Conflict,
                         $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }}) or choice: 'theirs'/'merged'");
+
+                // The second deliberate refusal, and it needs its own message for the same reason
+                // the first one does: falling through to "'choice' is required" reads as though the
+                // sidecar were malformed, when in fact it parsed perfectly and the two sides simply
+                // state different facts about the same memory. Names the fields, because which one
+                // disagrees is the whole of what a caller needs to decide between 'ours' and
+                // 'theirs'.
+                if (MetaSidecarsDisagreeOnCarriedFields(fileContent) is { } disagreeing)
+                    return ResponseBuilder.Error(
+                        $"'{conflictId}' cannot be auto-merged: the two sides disagree on " +
+                        $"{disagreeing}, which the merge cannot decide — there is no common " +
+                        "ancestor to tell which side changed it. Resolve explicitly.",
+                        ErrorCodes.Conflict,
+                        $"reconcile({{ conflictId: '{conflictId}', choice: 'ours' }}) or choice: 'theirs'/'merged'");
             }
 
             return ResponseBuilder.Error(
@@ -257,6 +271,10 @@ public sealed partial class ScriniaMcpTools
                     autoResolved.Add(relativePath);
                 else if (!MetaSidecarsAreSimilarEnough(fileContent, threshold))
                     needsManual.Add($"{relativePath} (.meta.json — sides too dissimilar to merge automatically)");
+                else if (MetaSidecarsDisagreeOnCarriedFields(fileContent) is { } disagreeing)
+                    // Same three-way split the explicit reconcile reports, so the scan never
+                    // describes a refusal as an "auto-resolve failure" when it was a decision.
+                    needsManual.Add($"{relativePath} (.meta.json — sides disagree on {disagreeing})");
                 else
                     needsManual.Add($"{relativePath} (.meta.json — auto-resolve failed)");
             }
@@ -541,6 +559,44 @@ public sealed partial class ScriniaMcpTools
     /// exists to close. Caught here, matching the same "unparseable → true → reported as
     /// auto-resolve failed, not too dissimilar" convention as an unparseable side above.</para>
     /// </summary>
+    /// <summary>
+    /// The fields the two sides state differently, as a caller-facing list — or null when they
+    /// state nothing differently, or when the content cannot be read at all.
+    ///
+    /// <para>The reporting twin of <see cref="TryMergeCarriedFields"/>: that method decides, this
+    /// one explains, and both read through <see cref="TryExtractMetaSides"/> so the explanation can
+    /// never name a different set than the decision used. Re-parses rather than reusing the merge's
+    /// nodes because <see cref="TryMergeCarriedFields"/> mutates ours in place; on a fresh parse
+    /// that is invisible, and this runs only on the refusal path.</para>
+    ///
+    /// <para>Wrapped in a catch for the reason
+    /// <see cref="MetaSidecarsAreSimilarEnough"/> documents at length — a duplicate case-variant key
+    /// throws LAZILY on the first property read, and both callers are unguarded. Null on a throw,
+    /// which reports the conflict as a generic auto-resolve failure: that is what it is.</para>
+    /// </summary>
+    private static string? MetaSidecarsDisagreeOnCarriedFields(string conflictedContent)
+    {
+        if (!TryExtractMetaSides(conflictedContent, out var oursNode, out var theirsNode))
+            return null;
+
+        try
+        {
+            var differing = new List<string>();
+            if (!TryMergeCarried<string>(Probe(oursNode), theirsNode, "name")) differing.Add("name");
+            if (!TryMergeCarried<string>(Probe(oursNode), theirsNode, "uri")) differing.Add("uri");
+            if (!TryMergeCarried<string>(Probe(oursNode), theirsNode, "description")) differing.Add("description");
+            if (!TryMergeCarried<long>(Probe(oursNode), theirsNode, "originalBytes")) differing.Add("originalBytes");
+            if (!TryMergeCarried<int>(Probe(oursNode), theirsNode, "chunkCount")) differing.Add("chunkCount");
+
+            return differing.Count == 0 ? null : string.Join(", ", differing);
+        }
+        catch { return null; }
+
+        // TryMergeCarried writes theirs' value onto ours when ours has none. Harmless on this
+        // throwaway parse, but passing a clone keeps this method a pure question.
+        static JsonNode? Probe(JsonNode? node) => node?.DeepClone();
+    }
+
     private static bool MetaSidecarsAreSimilarEnough(string conflictedContent, double threshold)
     {
         if (!TryExtractMetaSides(conflictedContent, out var oursNode, out var theirsNode))
@@ -608,19 +664,44 @@ public sealed partial class ScriniaMcpTools
                 !TryReadTimestampString(theirsNode, "updatedAt", out var theirsUpdated))
                 return false;
 
-            // Pick base: latest updatedAt wins, fall back to theirs
-            var baseNode = theirsNode; // default to incoming
-            var otherNode = oursNode;
+            // THE SUBSTRATE IS OURS, ALWAYS — and the fields this merge does not itself decide are
+            // 3-way-merged rather than carried from a winner. Both halves are the git merge
+            // driver's rule, adopted here (RULED 2026-08-15) to close a divergence that predates
+            // this branch. What used to be here picked a whole base node by latest `updatedAt`,
+            // defaulting to THEIRS, and wrote the merged fields onto it. That had two consequences,
+            // both now closed and both pinned by
+            // Scrinia.Tests.MetaMergeSymmetricParityTests, which drives ONE .meta.json pair through
+            // this method and through MetaJsonMerger and compares the documents:
+            //
+            //  1. Every field this merge does NOT decide rode along on the base node. So a conflict
+            //     where the two sides disagreed on `originalBytes`, `chunkCount`, `description`,
+            //     `name` or `uri` — which the driver REFUSES, because with no merge base any
+            //     disagreement is "both sides changed it" — resolved automatically here and kept
+            //     the timestamp winner's copy. The standalone driver asked a human; this tool
+            //     guessed, and because the default base was theirs, the side it discarded was the
+            //     local one. `originalBytes`/`chunkCount` describe the artifact's physical shape,
+            //     so the guess could leave a sidecar describing an artifact it does not match.
+            //
+            //  2. The keyword and term-frequency unions accumulate into case-INSENSITIVE
+            //     collections, which keep the FIRST-inserted spelling. Seeding from the base node
+            //     meant the surviving casing depended on which side happened to be newer, while the
+            //     driver always seeds from ours. On identical input the two wrote
+            //     keywords ["Auth","JWT"] / termFrequencies {"Auth":5} and ["auth","jwt"] /
+            //     {"auth":5} respectively — one conflict, two machines, different committed bytes.
+            //
+            // Fixing (1) alone would not have fixed (2): the casing divergence needs the SUBSTRATE
+            // to move to ours, and the escalation needs the gate. Hence both, together.
+            //
+            // NOTE the deliberate NON-symmetry with the driver: reconcile has no ancestor at all
+            // (TryExtractMetaSides slices <<<<<<< / ======= / >>>>>>> and never |||||||), so it can
+            // only reproduce the driver's ancestor-less behaviour, which is what TryMergeCarried
+            // implements. Should diff3 conflict markers ever be handled, this becomes a real 3-way
+            // merge and the gate loosens accordingly.
+            if (!TryMergeCarriedFields(oursNode, theirsNode))
+                return false;
 
-            if (oursUpdated is not null && theirsUpdated is not null)
-            {
-                if (DateTimeOffset.TryParse(oursUpdated, out var odt) &&
-                    DateTimeOffset.TryParse(theirsUpdated, out var tdt) && odt > tdt)
-                {
-                    baseNode = oursNode;
-                    otherNode = theirsNode;
-                }
-            }
+            var baseNode = oursNode;
+            var otherNode = theirsNode;
 
             // The timestamps come from the ONE rule, not from whichever node won the base
             // selection above. Riding along meant createdAt took the winner's value — so an
@@ -688,6 +769,91 @@ public sealed partial class ScriniaMcpTools
             resolvedJson = null;
             return false; // If anything fails, report as needing manual resolution
         }
+    }
+
+    /// <summary>
+    /// The fields the sidecar merge does not itself decide: <c>name</c>, <c>uri</c>,
+    /// <c>description</c>, <c>originalBytes</c>, <c>chunkCount</c>. 3-way-merged against an ABSENT
+    /// ancestor, which is the only ancestor reconcile can have — mirroring
+    /// <c>MetaJsonMerger.TryMergeField</c> exactly:
+    /// <list type="bullet">
+    /// <item>the two sides agree → nothing to do;</item>
+    /// <item>one side has no readable value → take the other, because a side that never set the
+    /// field did not change it;</item>
+    /// <item>both have readable values and they differ → <b>refuse</b>. With no merge base that is
+    /// "both sides changed it to something different", which no merge can decide.</item>
+    /// </list>
+    ///
+    /// <para><b>Mirrors the driver's escalation set exactly, and that is the point.</b> The review
+    /// estimate for this gate proposed refusing on "any non-merged property whose JSON differs",
+    /// on the reasoning that a fixed field list reopens the gap the moment a sidecar field is
+    /// added. Measured against the driver, that formulation is wrong: it would refuse conflicts
+    /// <c>MetaJsonMerger</c> RESOLVES — it overlays onto ours and carries every property it does not
+    /// know about verbatim (<c>MetaJsonMerger.cs:104-107</c>), escalating on these five and nothing
+    /// else. A broader gate here would have replaced one divergence with its mirror image. The
+    /// duplication is the same forced duplication as every other rule these two share, and
+    /// <c>MetaMergeSymmetricParityTests</c> is what catches it drifting.</para>
+    ///
+    /// <para><b>In practice the field list is not the fragile part.</b> Two conflicted sidecars for
+    /// the same memory with different content differ on <c>originalBytes</c> and <c>chunkCount</c>
+    /// — the artifact's physical shape — so the realistic case is caught by those two regardless of
+    /// what else a future sidecar carries.</para>
+    ///
+    /// <para><b>Known residual, unreachable from any sidecar this codebase writes.</b> When NEITHER
+    /// side has a readable <c>originalBytes</c>/<c>chunkCount</c>, the driver writes <c>0</c>
+    /// (<c>originalBytesN ?? GetLong(ours, …) ?? 0</c>) while this leaves the field as it found it.
+    /// Not replicated: writing a fabricated <c>0</c> over an unreadable value is a wart, not the
+    /// rule being adopted, and <c>ArtifactEntry</c> declares both as required positional members so
+    /// every sidecar Scrinia serializes carries them.</para>
+    /// </summary>
+    /// <returns><see langword="false"/> when the two sides disagree — the caller escalates to
+    /// manual resolution.</returns>
+    private static bool TryMergeCarriedFields(JsonNode? oursNode, JsonNode? theirsNode) =>
+        // Typed per field, and in the driver's own order: string for name/uri/description, long for
+        // originalBytes, int for chunkCount. Reading them all as untyped JSON scalars instead would
+        // NOT be the same rule — a hand-edited sidecar carrying "20" (a string) where the other side
+        // carries 20 (a number) reads as UNREADABLE to the driver's GetLong, which then takes the
+        // other side, but would read as "present and different" to an untyped comparison and refuse.
+        TryMergeCarried<string>(oursNode, theirsNode, "name")
+        && TryMergeCarried<string>(oursNode, theirsNode, "uri")
+        && TryMergeCarried<string>(oursNode, theirsNode, "description")
+        && TryMergeCarried<long>(oursNode, theirsNode, "originalBytes")
+        && TryMergeCarried<int>(oursNode, theirsNode, "chunkCount");
+
+    /// <summary>One field of <see cref="TryMergeCarriedFields"/>. See its doc for the rule.</summary>
+    private static bool TryMergeCarried<T>(JsonNode? oursNode, JsonNode? theirsNode, string key)
+    {
+        bool oursOk = TryReadScalar<T>(oursNode, key, out T? ours, out _);
+        bool theirsOk = TryReadScalar<T>(theirsNode, key, out T? theirs, out JsonNode? theirsRaw);
+
+        // Ours never set a readable value, so ours did not change it — take theirs, exactly as
+        // TryMergeField does when ours equals the (absent) ancestor. The raw node is cloned rather
+        // than rebuilt from the typed value so the written JSON is byte-for-byte theirs'.
+        if (!oursOk)
+        {
+            if (theirsOk && oursNode is JsonObject o)
+                o[key] = theirsRaw!.DeepClone();
+            return true;
+        }
+
+        if (!theirsOk) return true;
+
+        return EqualityComparer<T>.Default.Equals(ours!, theirs!);
+    }
+
+    /// <summary>A property read as <typeparamref name="T"/> — <c>TryGetPropertyValue</c>, then
+    /// <c>is JsonValue</c>, then <c>TryGetValue&lt;T&gt;</c>: the exact shape
+    /// <c>MetaJsonMerger</c>'s <c>GetString</c>/<c>GetLong</c>/<c>GetInt</c> share. Absent, not a
+    /// JSON scalar, and present-but-wrong-type are all one answer — false — because they are one
+    /// answer (null) there.</summary>
+    private static bool TryReadScalar<T>(JsonNode? node, string key, out T? value, out JsonNode? raw)
+    {
+        value = default;
+        raw = null;
+        if (node is not JsonObject o || !o.TryGetPropertyValue(key, out var n) || n is not JsonValue v)
+            return false;
+        raw = n;
+        return v.TryGetValue(out value);
     }
 
     /// <summary>Reads a keywords/agentKeywords-shaped JSON node into a string array. Returns true for

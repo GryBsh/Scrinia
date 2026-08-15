@@ -80,6 +80,33 @@ and all assembly attributes.
   rules until they are next stored with `remember` — a corpus can hold multiple shapes side by side
   indefinitely, and appending does not migrate one.
 
+### Changed (breaking) — `reconcile()` refuses a sidecar conflict whose two sides state different facts
+
+- **`reconcile()`'s automatic `.meta.json` merge now escalates when the two sides disagree on
+  `name`, `uri`, `description`, `originalBytes` or `chunkCount`**, instead of resolving and keeping
+  one side's copy. These are the fields the merge does not itself compute, and with no common
+  ancestor there is nothing to say which side changed one — so a disagreement is not a merge, it is
+  a question. The git merge driver has always answered it that way; `reconcile()` did not, and the
+  two disagreeing was the actual defect. A conflict that resolved automatically before this change
+  may now require an explicit `choice`.
+- The refusal names the fields it refused on (*"the two sides disagree on originalBytes, chunkCount,
+  which the merge cannot decide — there is no common ancestor to tell which side changed it"*),
+  rather than falling through to the generic `"'choice' is required"`, which reads as though the
+  sidecar were malformed. `reconcile()`'s scan reports the same reason. This is the third distinct
+  outcome, alongside the dissimilarity gate below and a genuine parse failure.
+- A field only **one** side sets is unchanged behaviour and still merges — a side that never set a
+  field did not change it, so the other side's value is adopted.
+- **Also fixed, same root cause: the two mergers could write different bytes for one conflict.**
+  `reconcile()` used to build its result on whichever side had the later `updatedAt`, defaulting to
+  *theirs*; the driver always builds on *ours*. Because the keyword and term-frequency unions are
+  case-insensitive and keep the first-seen spelling, one conflict resolved on two machines could
+  produce `keywords: ["Auth","JWT"]` on one and `["auth","jwt"]` on the other — and, via
+  `termFrequencies`, a genuine BM25 ranking difference. `reconcile()` now builds on *ours*, so the
+  two agree. Values are unaffected; only which side's spelling survives, and it is now the same
+  side in both.
+- **Migration:** nothing on disk changes. A sidecar already auto-resolved keeps whatever it has;
+  this only affects conflicts resolved from now on.
+
 ### Changed (breaking) — a topic segment that aliases another scope is now refused
 
 - **A memory path whose topic segment ends in `.` or a space, is a bare `.`, or is `NUL` is now

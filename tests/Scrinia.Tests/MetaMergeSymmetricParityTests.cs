@@ -261,71 +261,75 @@ public sealed class MetaMergeSymmetricParityTests
                   + "\"keywords\":[\"auth\",\"remote\"]"),
             threshold);
 
-    // ── Recorded divergences: PRE-EXISTING, and deliberately not fixed here ───
+    // ── The two closed divergences ────────────────────────────────────────────
     //
-    // Both tests below are verified identical at merge-base bc7fdb3 on both sides — neither was
-    // introduced by this branch — and both sit on ONE axis: which side's object is the substrate the
+    // Both were verified byte-identical at merge-base bc7fdb3 on both sides, so neither belonged to
+    // the branch that found them, and both sat on ONE axis: which side's object is the substrate the
     // merged fields are written onto. The driver always uses OURS ("Overlay the merged fields onto
-    // OURS' full object", MetaJsonMerger.cs:104-107). reconcile has no ancestor by construction —
-    // TryExtractMetaSides slices only <<<<<<< / ======= / >>>>>>>, never |||||||  — so it cannot do
-    // the driver's 3-way merge and instead picks a whole base node by latest updatedAt, DEFAULTING
-    // TO THEIRS. Closing that is a design decision, not a review fix, so these record the behaviour
-    // as it stands. Both will fail if it is changed; that is the point — a fix must be a deliberate
-    // edit here, not a silent one.
+    // OURS' full object", MetaJsonMerger.cs:104-107). reconcile used to pick a whole base node by
+    // latest updatedAt, DEFAULTING TO THEIRS, because it has no ancestor by construction —
+    // TryExtractMetaSides slices only <<<<<<< / ======= / >>>>>>>, never |||||||.
+    //
+    // RULED 2026-08-15: reconcile adopts the driver's rule. Its substrate is ours, and the fields
+    // the merge does not itself decide are 3-way-merged against an absent ancestor rather than
+    // carried from a winner — so a disagreement escalates instead of being guessed at.
+    //
+    // These two tests now assert AGREEMENT, and each additionally pins the specific outcome. Both
+    // halves matter: asserting only that the two agree would pass if both regressed together.
 
     /// <summary>
-    /// Same conflict, different bytes. Both mergers union keywords into a case-insensitive
-    /// <c>HashSet</c>, which keeps the FIRST-inserted casing; the driver inserts ours first
-    /// (<c>MetaJsonMerger.cs:74-75</c>) while reconcile inserts its base node first
-    /// (<c>MemoryTools.Lifecycle.cs:652-653</c>) — and the base node is the timestamp winner. The
-    /// same asymmetry lands on <c>termFrequencies</c>, whose union is keyed
-    /// <c>OrdinalIgnoreCase</c>. Two machines resolving one conflict therefore commit different
-    /// files.
+    /// Consequence 1, closed: one conflict, one set of bytes.
+    ///
+    /// <para>Both mergers union keywords into a case-INSENSITIVE collection, which keeps the
+    /// FIRST-inserted spelling, and the same holds for the <c>OrdinalIgnoreCase</c> term-frequency
+    /// map. The driver seeds from ours (<c>MetaJsonMerger.cs:74-75</c>); reconcile used to seed from
+    /// its base node — theirs, whenever theirs was newer — and now seeds from ours too. On this
+    /// input the two used to write <c>["Auth","JWT"]</c>/<c>{"Auth":5}</c> and
+    /// <c>["auth","jwt"]</c>/<c>{"auth":5}</c> respectively.</para>
+    ///
+    /// <para>Theirs is deliberately the NEWER side: that is the direction the old base selection
+    /// took, so it is the direction a regression would show up in.</para>
     /// </summary>
     [Fact]
-    public async Task CaseVariantKeywords_TheTwoMergersDisagree_PreExistingDivergence()
+    public async Task CaseVariantKeywords_BothMergersWriteOursCasing()
     {
         string ours = Sidecar("\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-02T00:00:00Z\","
                             + "\"keywords\":[\"Auth\",\"JWT\"],\"termFrequencies\":{\"Auth\":3}");
         string theirs = Sidecar("\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-03T00:00:00Z\","
                               + "\"keywords\":[\"auth\",\"jwt\"],\"termFrequencies\":{\"auth\":5}");
 
-        var driver = ThroughTheDriver(ours, theirs, 0.0);
+        await BothProduceTheSameDocument("case-variant keywords, theirs newer", ours, theirs);
+
+        // ...and specifically OURS' casing, on both sides. Agreement alone would also be satisfied
+        // by both switching to theirs'.
         var reconcile = await ThroughReconcileAsync(ours, theirs, 0.0);
-
-        driver.Resolved.Should().BeTrue();
-        reconcile.Resolved.Should().BeTrue(
-            because: "both admit the merge — the disagreement is in what they write, not whether");
-
-        JsonNode.Parse(driver.Document!)!["keywords"]!.ToJsonString()
-            .Should().Be("[\"Auth\",\"JWT\"]",
-                because: "the driver seeds the case-insensitive set from OURS, so ours' casing wins");
-        JsonNode.Parse(reconcile.Document!)!["keywords"]!.ToJsonString()
-            .Should().Be("[\"auth\",\"jwt\"]",
-                because: "reconcile seeds it from its BASE node — theirs here, because theirs is "
-                       + "newer — so theirs' casing wins on the identical input");
-        JsonNode.Parse(driver.Document!)!["termFrequencies"]!.ToJsonString()
-            .Should().Be("{\"Auth\":5}");
-        JsonNode.Parse(reconcile.Document!)!["termFrequencies"]!.ToJsonString()
-            .Should().Be("{\"auth\":5}",
-                because: "the same base-node asymmetry decides the term-frequency key's casing, and "
-                       + "term frequencies are what BM25 scores against");
+        var resolved = JsonNode.Parse(reconcile.Document!)!;
+        resolved["keywords"]!.ToJsonString().Should().Be("[\"Auth\",\"JWT\"]",
+            because: "the substrate is ours, so ours' spelling is the one the union keeps — the "
+                   + "driver's rule, now reconcile's");
+        resolved["termFrequencies"]!.ToJsonString().Should().Be("{\"Auth\":5}",
+            because: "the count is still the MAX of the two sides; only the key's casing came from "
+                   + "the substrate, and term frequencies are what BM25 scores against");
     }
 
     /// <summary>
-    /// The escalation divergence. The driver 3-way-merges <c>name</c>, <c>uri</c>,
-    /// <c>description</c>, <c>originalBytes</c> and <c>chunkCount</c> and returns
-    /// <c>Conflict</c> when both sides changed one differently — with no ancestor, that is ANY
-    /// disagreement (<c>MetaJsonMerger.cs:51-57</c>, <c>TryMergeField</c> at <c>:313-320</c>).
-    /// reconcile never reads those five fields at all: they ride along on the base node
-    /// (<c>MemoryTools.Lifecycle.cs:611-623, 682</c>), so it silently keeps the timestamp winner's
-    /// copy and reports a clean automatic merge. So the standalone driver asks a human and the MCP
-    /// tool guesses — and, because the default base is THEIRS, the side it discards is the local one.
+    /// Consequence 2, closed: the driver escalates and so does reconcile.
+    ///
+    /// <para>The driver 3-way-merges <c>name</c>, <c>uri</c>, <c>description</c>,
+    /// <c>originalBytes</c> and <c>chunkCount</c>, returning <c>Conflict</c> when both sides changed
+    /// one differently — with no ancestor, that is any disagreement between two readable values
+    /// (<c>MetaJsonMerger.cs:51-57</c>, <c>TryMergeField</c> at <c>:313-320</c>). reconcile used to
+    /// read none of the five: they rode along on the base node, so it kept the timestamp winner's
+    /// copy and reported a clean automatic merge. The standalone driver asked a human; the MCP tool
+    /// guessed, and because the default base was theirs, the side it discarded was the local one.
     /// <c>originalBytes</c>/<c>chunkCount</c> describe the artifact's physical shape, so the guess
-    /// can leave a sidecar describing an artifact it does not match.
+    /// could leave a sidecar describing an artifact it does not match.</para>
+    ///
+    /// <para>The two <c>updatedAt</c> values are equal, so the OLD behaviour took its default —
+    /// theirs. A regression therefore reappears as <c>originalBytes: 30</c>, not as a coin flip.</para>
     /// </summary>
     [Fact]
-    public async Task DisagreeingScalars_DriverEscalatesAndReconcileGuesses_PreExistingDivergence()
+    public async Task DisagreeingCarriedFields_BothMergersEscalate()
     {
         const string tail = "\"createdAt\":\"2026-01-01T00:00:00Z\","
                           + "\"updatedAt\":\"2026-02-01T00:00:00Z\",\"keywords\":[\"auth\",\"jwt\"]";
@@ -334,20 +338,76 @@ public sealed class MetaMergeSymmetricParityTests
         string theirs = "{\"name\":\"auth-flow\",\"uri\":\"\",\"description\":\"theirs\","
                       + "\"originalBytes\":30,\"chunkCount\":3," + tail + "}";
 
-        ThroughTheDriver(ours, theirs, 0.0).Resolved.Should().BeFalse(
-            because: "with no ancestor, both sides changing originalBytes differently is exactly "
-                   + "the case TryMergeField refuses — git surfaces the conflict to a human");
+        await BothProduceTheSameDocument("disagreeing carried fields", ours, theirs);
+
+        // ...and specifically by REFUSING. Agreement alone would also be satisfied by both
+        // resolving, which is the behaviour this closed.
+        ThroughTheDriver(ours, theirs, 0.0).Resolved.Should().BeFalse();
+        (await ThroughReconcileAsync(ours, theirs, 0.0)).Resolved.Should().BeFalse(
+            because: "with no common ancestor there is nothing to say which side changed "
+                   + "originalBytes, so the merge must ask a human rather than keep one side's "
+                   + "copy of the artifact's physical shape");
+    }
+
+    /// <summary>
+    /// The other half of the driver's rule, which a gate alone would have got wrong: a field only
+    /// ONE side sets is not a disagreement. <c>TryMergeField</c> takes the side that has it, because
+    /// a side that never set the field did not change it — so reconcile must ADOPT theirs'
+    /// <c>description</c> onto its own substrate, not merely keep ours' absence.
+    /// </summary>
+    [Fact]
+    public async Task CarriedFieldOnOneSideOnly_BothMergersAdoptIt()
+    {
+        const string tail = "\"createdAt\":\"2026-01-01T00:00:00Z\","
+                          + "\"updatedAt\":\"2026-02-01T00:00:00Z\",\"keywords\":[\"auth\",\"jwt\"]";
+        string ours = "{\"name\":\"auth-flow\",\"uri\":\"\",\"originalBytes\":20,\"chunkCount\":2," + tail + "}";
+        string theirs = "{\"name\":\"auth-flow\",\"uri\":\"\",\"description\":\"only theirs has this\","
+                      + "\"originalBytes\":20,\"chunkCount\":2," + tail + "}";
+
+        await BothProduceTheSameDocument("carried field on theirs only", ours, theirs);
 
         var reconcile = await ThroughReconcileAsync(ours, theirs, 0.0);
-        reconcile.Resolved.Should().BeTrue(
-            because: "reconcile reports a clean automatic merge for the input the driver escalates");
+        reconcile.Resolved.Should().BeTrue(because: "one-sided is not a disagreement");
+        JsonNode.Parse(reconcile.Document!)!["description"]!.GetValue<string>()
+            .Should().Be("only theirs has this",
+                because: "ours never set it, so ours did not change it — refusing here, or keeping "
+                       + "ours' absence, would each be a NEW divergence from the driver");
+    }
 
-        var resolved = JsonNode.Parse(reconcile.Document!)!;
-        resolved["originalBytes"]!.GetValue<long>().Should().Be(30);
-        resolved["chunkCount"]!.GetValue<int>().Should().Be(3);
-        resolved["description"]!.GetValue<string>().Should().Be("theirs",
-            because: "the two updatedAt values are equal, so the base node stays at its default — "
-                   + "THEIRS — and ours' description, byte count and chunk count are discarded "
-                   + "without a word");
+    /// <summary>
+    /// The refusal has to say what it refused. Falling through to the generic "'choice' is required"
+    /// reads as though the sidecar were malformed, when it parsed perfectly and the two sides simply
+    /// state different facts — the same reason the dissimilarity gate has its own message.
+    /// </summary>
+    [Fact]
+    public async Task DisagreeingCarriedFields_ReconcileNamesTheFieldsItRefusedOn()
+    {
+        const string tail = "\"createdAt\":\"2026-01-01T00:00:00Z\","
+                          + "\"updatedAt\":\"2026-02-01T00:00:00Z\",\"keywords\":[\"auth\",\"jwt\"]";
+        using var scope = new TestHelpers.StoreScope();
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+        string dir = Path.Combine(scriniaDir, "memories", "local");
+        Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(Path.Combine(dir, "auth-flow.meta.json"),
+            "<<<<<<< HEAD\n"
+            + "{\"name\":\"auth-flow\",\"uri\":\"\",\"originalBytes\":20,\"chunkCount\":2," + tail + "}"
+            + "\n=======\n"
+            + "{\"name\":\"auth-flow\",\"uri\":\"\",\"originalBytes\":30,\"chunkCount\":3," + tail + "}"
+            + "\n>>>>>>> theirs\n");
+
+        string result = await new ScriniaMcpTools().MemoryReconcile(
+            conflictId: "memories/local/auth-flow.meta.json");
+
+        result.Should().Contain("originalBytes").And.Contain("chunkCount",
+            because: "which field disagrees is the whole of what a caller needs in order to choose "
+                   + "between 'ours' and 'theirs'");
+        result.Should().NotContain("'choice' is required",
+            because: "this is a deliberate refusal, not a parse failure — reporting it as the "
+                   + "generic error is the defect the dissimilarity message already fixed once");
+        result.Should().NotContain("too dissimilar",
+            because: "the keyword sets are identical; naming the wrong gate sends the caller to "
+                   + "change jaccardThreshold, which would not help");
     }
 }
