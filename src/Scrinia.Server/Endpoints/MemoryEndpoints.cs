@@ -698,23 +698,29 @@ public static class MemoryEndpoints
                 statusCode: StatusCodes.Status501NotImplemented));
 
         // Round 2 review, Critical 2 (part 1 of 2): WriteCarriedCopy resolves `decoded` via
-        // ParseQualifiedName internally, but ParseQualifiedName sanitizes ONLY the leaf segment
-        // (FileMemoryStore.cs:253) — the scope built from every OTHER segment (FileMemoryStore.cs:251)
-        // is raw, so it throws ArgumentException for a legacy "topic:subject" name, a v2 path
-        // containing a backslash/colon/".."/control character, or one that normalizes to no segments
-        // ("/" alone), but does NOT throw — and does NOT sanitize — for '*','?','<','>','|','"', or
-        // (measured on this build: only NUL, not CON/PRN/AUX/LPT1/COM1, which quietly create a real
-        // directory instead) the one reserved device name that does throw. Pre-parsing HERE, in
-        // isolation, narrows the ArgumentException catch to exactly the operation that can
-        // legitimately throw it — not the disk write or LoadIndex's/Upsert's own sidecar I/O that
-        // follow inside WriteCarriedCopy, so neither an exception thrown after the artifact has
-        // landed nor one from an unrelated I/O fault elsewhere in the destination scope's index gets
-        // misattributed to "malformed destination name". `dstScope` is kept (not discarded) for
-        // part 2 below. This is an ENDPOINT-ONLY mitigation for the exception path; it does not
-        // sanitize the scope segments, so the scope-ALIASING defect ("local:topic.", "local:topic "
-        // and "local:." are distinct cache keys/locks that resolve to the same directory) is not
-        // fixed by anything in this file — see task-3-report.md for why that fix was left to a
-        // stop-and-ask rather than made here.
+        // ParseQualifiedName internally. Pre-parsing HERE, in isolation, narrows the
+        // ArgumentException catch to exactly the operation that can legitimately throw it — not the
+        // disk write or LoadIndex's/Upsert's own sidecar I/O that follow inside WriteCarriedCopy, so
+        // neither an exception thrown after the artifact has landed nor one from an unrelated I/O
+        // fault elsewhere in the destination scope's index gets misattributed to "malformed
+        // destination name". `dstScope` is kept (not discarded) for part 2 below.
+        //
+        // TASK 13 UPDATE. ParseQualifiedName no longer sanitizes only the leaf: it now sanitizes
+        // every scope segment and rejects the residue substitution cannot repair (a trailing dot or
+        // space, a bare ".", a reserved device name — FileMemoryStore.SanitizeScopeSegment). That
+        // changes what reaches this catch, in both directions:
+        //   * '*','?','<','>','|','"' are now REPAIRED at source ('/a*b/x' stores under
+        //     "local:a_b", exactly as the leaf has always treated them) and so no longer produce
+        //     any error here at all — they used to reach Directory.CreateDirectory intact and throw
+        //     IOException at part 2 below.
+        //   * A trailing dot/space, a bare "." and every reserved device name (measured on this
+        //     build: only NUL actually fails to create a directory; CON/PRN/AUX/COM1-9/LPT1-9
+        //     quietly create a real one, which is precisely why they had to be refused by rule
+        //     rather than left to the filesystem) now throw ArgumentException and are caught HERE,
+        //     one exception family earlier than before.
+        // The scope-ALIASING defect this comment used to record as unfixed ("local:topic.",
+        // "local:topic " and "local:." being distinct cache keys/locks over one directory) is fixed
+        // at its source; no endpoint-level mitigation carries it any more.
         string dstScope;
         try
         {
@@ -741,6 +747,14 @@ public static class MemoryEndpoints
         // the name. Nothing past this point is wrapped in a catch: a failure inside WriteCarriedCopy
         // now propagates as an unhandled exception (the global handler's 500), which is the honest
         // answer for a fault this endpoint did not cause and cannot attribute to the caller.
+        // TASK 13: this catch is NOT dead, but every cause it had at the time it was written is
+        // gone. `dstScope` is now built from sanitized, validated segments, so no character in the
+        // caller's name can reach here and fail. What remains is genuinely reachable and was always
+        // in scope for it: a total path that exceeds the filesystem's limit (the name is capped at
+        // 256, the workspace root beneath it is not), an ordinary FILE already occupying the
+        // directory name, a full or disconnected volume. Kept for those, with the message widened
+        // off "contains characters the filesystem cannot store" — which is now the one thing it
+        // cannot be.
         try
         {
             Directory.CreateDirectory(local.GetStoreDirForScope(dstScope));
@@ -748,7 +762,8 @@ public static class MemoryEndpoints
         catch (IOException)
         {
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(
-                $"Destination name '{decoded}' contains characters the filesystem cannot store.")));
+                $"Destination name '{decoded}' could not be resolved to a usable "
+                + "directory on the filesystem.")));
         }
 
         // The artifact is encoded HERE, from req.Content — never accepted as a raw string from the

@@ -247,8 +247,14 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             if (segments.Count == 1)
                 return ("local", SanitizeName(segments[0].Value));
 
-            // Build scope from all but last segment
-            string topicPart = string.Join("/", segments.Take(segments.Count - 1).Select(s => s.Value));
+            // Build scope from all but last segment. Every segment is sanitized exactly as the
+            // leaf is, and then checked for the residue sanitization cannot repair — see
+            // SanitizeScopeSegment. Before this, the scope was built from RAW segments while only
+            // the leaf was sanitized, so "local:topic.", "local:topic " and "local:topic" were
+            // three distinct scope strings — three CachedIndex keys and three
+            // ReaderWriterLockSlim instances — over ONE directory.
+            string topicPart = string.Join("/",
+                segments.Take(segments.Count - 1).Select(s => SanitizeScopeSegment(s.Value)));
             string scope = $"local:{topicPart}";
             string subject = SanitizeName(segments[^1].Value);
             return (scope, subject);
@@ -289,6 +295,67 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
 
         if (string.IsNullOrWhiteSpace(safe))
             throw new ArgumentException($"Name '{name}' is invalid after sanitization.", nameof(name));
+
+        return safe;
+    }
+
+    /// <summary>Reserved DOS device names. Compared case-insensitively against a whole scope
+    /// segment.</summary>
+    private static readonly HashSet<string> s_reservedDeviceNames =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        };
+
+    /// <summary>
+    /// Sanitizes ONE scope path segment, then REJECTS the residue that substitution cannot
+    /// repair. Used only when building the scope in <see cref="ParseQualifiedName"/>.
+    ///
+    /// <para><b>Why this is beside <see cref="SanitizeNameCore"/> and not inside it.</b>
+    /// <c>SanitizeNameCore</c> is shared with the LEAF (subject) path, and widening it to throw
+    /// would change subject names too — which would be wrong twice over. First, the leaf has no
+    /// aliasing defect to fix: <see cref="ArtifactPath"/> and <see cref="MetaPath"/> append
+    /// <c>.nmp2</c>/<c>.meta.json</c> AFTER sanitizing, so the resulting path component never
+    /// ends in the name's trailing dot or space — <c>notes.</c> becomes <c>notes..nmp2</c> and
+    /// <c>notes </c> becomes <c>notes .nmp2</c>, both distinct real files from
+    /// <c>notes.nmp2</c> (measured). A device-named leaf is likewise a real file
+    /// (<c>CON.nmp2</c>, <c>NUL.nmp2</c>). Second, and decisively, <c>SanitizeNameCore</c> runs
+    /// against names READ BACK FROM DISK, not just caller input: <see cref="WriteSidecarCore"/>,
+    /// <see cref="DeleteSidecar"/>, <see cref="SaveIndexUnsafe"/>'s orphan-sweep allow-list, the
+    /// case-insensitive entry matchers (here, <c>IMemoryStore.TryUpdateEntry</c>,
+    /// <c>MemoryEndpoints</c>, <c>MaintenanceEventSink</c>, <c>EntityTypingEventHandler</c>) and
+    /// <see cref="ExpandLegacyIndexEntries"/>, which runs at MIGRATION time over a legacy v1
+    /// index. Making it throw would let one already-stored entry with an awkward name poison
+    /// every read of its whole scope — and abort the orphan sweep half-way through a
+    /// <see cref="SaveIndex"/>, which deletes sidecars. So the rejection lives on the scope path
+    /// only, which is the only path where the aliasing exists.</para>
+    ///
+    /// <para><b>Rejected, not rewritten.</b> Silently folding <c>topic.</c> to <c>topic</c> would
+    /// file the caller's memory under a scope they did not name — losing it without an error.
+    /// <see cref="ArgumentException"/> is what every caller of
+    /// <see cref="ParseQualifiedName"/> already handles.</para>
+    /// </summary>
+    private static string SanitizeScopeSegment(string segment)
+    {
+        // Shared with the leaf: strips separators and the portable-invalid character set, and
+        // already throws for a segment that sanitizes away to nothing or to whitespace.
+        string safe = SanitizeNameCore(segment);
+
+        // Windows trims trailing dots and spaces from a path COMPONENT, so "topic." and
+        // "topic " both open the directory "topic" (measured). This also covers a segment that
+        // is a bare ".", which resolves to the directory itself and so aliases the PARENT
+        // scope — "/./note" would land among the plain "local" memories.
+        if (safe[^1] is '.' or ' ')
+            throw new ArgumentException(
+                $"Scope segment '{segment}' must not end with a '.' or a space — the filesystem " +
+                "trims those, so it would name the same directory as the trimmed form.",
+                nameof(segment));
+
+        if (s_reservedDeviceNames.Contains(safe))
+            throw new ArgumentException(
+                $"Scope segment '{segment}' is a reserved device name.", nameof(segment));
 
         return safe;
     }

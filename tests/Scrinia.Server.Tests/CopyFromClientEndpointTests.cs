@@ -204,35 +204,76 @@ public sealed class CopyFromClientEndpointTests : IClassFixture<ScriniaServerFac
     }
 
     /// <summary>
-    /// Round 2 review, Critical 2. <c>ParseQualifiedName</c> sanitizes ONLY the leaf segment
-    /// (<c>FileMemoryStore.cs:253</c>) — the scope built from every other segment
-    /// (<c>FileMemoryStore.cs:251</c>) is raw, so <c>*</c> reaches <c>Directory.CreateDirectory</c>
-    /// intact and throws <c>IOException</c> there, past <c>ParseQualifiedName</c>'s own throw.
-    /// Needs a real Kestrel round trip (mirrors <c>CaseInsensitiveRestoreTests</c>): the shared
-    /// in-memory <c>TestServer</c> the class fixture's <c>_client</c> uses does not reliably carry an
-    /// escaped slash (<c>%2F</c>) through to the route value the way a real HTTP request does, and a
-    /// two-segment v2 path is required to reach the scope-building code at all — a single-segment
-    /// name goes through the leaf's own (correct) sanitization instead.
+    /// Round 2 review, Critical 2 — REWRITTEN by Task 13, which changed the answer rather than the
+    /// endpoint. This case used to assert a 400: <c>ParseQualifiedName</c> sanitized only the leaf,
+    /// so <c>*</c> reached <c>Directory.CreateDirectory</c> intact and threw <c>IOException</c>
+    /// there, and the endpoint turned that into a refusal. Now every scope segment is sanitized at
+    /// source, so <c>*</c> is REPAIRED exactly as the leaf has always repaired it and the write
+    /// simply succeeds under <c>local:a_b</c>. Asserting the round trip — not just the status —
+    /// is what makes this observe the repair rather than merely the absence of the old error.
+    ///
+    /// <para>Needs a real Kestrel round trip (mirrors <c>CaseInsensitiveRestoreTests</c>): the
+    /// shared in-memory <c>TestServer</c> the class fixture's <c>_client</c> uses does not reliably
+    /// carry an escaped slash (<c>%2F</c>) through to the route value the way a real HTTP request
+    /// does, and a two-segment v2 path is required to reach the scope-building code at all — a
+    /// single-segment name goes through the leaf's own (correct) sanitization instead.</para>
     /// </summary>
     [Fact]
-    public async Task CopyFromClient_WithFilesystemInvalidDestinationName_Returns400()
+    public async Task CopyFromClient_WithRepairableDestinationName_SanitizesTheScopeAndStores()
+    {
+        using var factory = new ScriniaServerFactory();
+        factory.UseKestrel(0);
+        factory.StartServer();
+        using var client = factory.CreateAuthenticatedClient();
+        string storeBase = $"/api/v1/stores/{factory.PrimaryStore}";
+
+        var req = new CopyFromClientRequest(["repairable-scope content"], MinimalEntry());
+        var resp = await client.PostAsJsonAsync(
+            $"{storeBase}/memories/{Uri.EscapeDataString("/a*b/x")}/copy-from-client", req);
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK,
+            because: await resp.Content.ReadAsStringAsync());
+
+        // The memory is reachable under the SANITIZED path — the proof that the scope segment was
+        // repaired to "a_b" rather than left raw or refused.
+        var recall = await client.GetAsync(
+            $"{storeBase}/memories/{Uri.EscapeDataString("/a_b/x")}");
+        recall.StatusCode.Should().Be(HttpStatusCode.OK,
+            because: "'/a*b/x' must have stored under scope 'local:a_b', the same substitution "
+                   + "the leaf has always applied");
+        (await recall.Content.ReadAsStringAsync()).Should().Contain("repairable-scope content");
+    }
+
+    /// <summary>
+    /// Task 13, the other half of the change: a destination whose scope segment sanitization
+    /// CANNOT repair — a trailing dot, which the filesystem trims, so <c>topic.</c> and
+    /// <c>topic</c> would be one directory under two scope strings. It is refused at the source
+    /// now, which means it arrives at this endpoint as <c>ArgumentException</c> and is caught by
+    /// the pre-parse guard rather than by the <c>IOException</c> guard beneath it. Still a 400,
+    /// still never an unhandled 500 — but for a different reason and with a different message than
+    /// before, which is why this is a separate test rather than an edit to the one above.
+    /// </summary>
+    [Fact]
+    public async Task CopyFromClient_WithUnrepairableDestinationName_Returns400()
     {
         using var factory = new ScriniaServerFactory();
         factory.UseKestrel(0);
         factory.StartServer();
         using var client = factory.CreateAuthenticatedClient();
 
-        string encodedName = Uri.EscapeDataString("/a*b/x");
         var req = new CopyFromClientRequest(["content"], MinimalEntry());
         var resp = await client.PostAsJsonAsync(
-            $"/api/v1/stores/{factory.PrimaryStore}/memories/{encodedName}/copy-from-client", req);
+            $"/api/v1/stores/{factory.PrimaryStore}/memories/"
+            + $"{Uri.EscapeDataString("/trailingdot./x")}/copy-from-client", req);
 
         resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
             because: await resp.Content.ReadAsStringAsync());
         var body = await resp.Content.ReadFromJsonAsync<ErrorResponse>();
-        body!.Error.Should().Contain("filesystem",
-            because: "the refusal must be the endpoint's IOException guard, not an unhandled 500 — "
-                   + "and must not leak the server's absolute filesystem path");
+        body!.Error.Should().Contain("trailingdot.",
+            because: "the refusal must name the offending segment back to the caller");
+        body.Error.Should().NotContain("Parameter",
+            because: "the internal C# parameter name ArgumentException auto-appends is not a "
+                   + "caller-facing detail (round 2 review, minor)");
     }
 
     [Fact]

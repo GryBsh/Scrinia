@@ -315,4 +315,164 @@ public sealed class DualModeParseTests : IDisposable
         string content = await File.ReadAllTextAsync(found);
         content.Should().Be("retry pattern content");
     }
+
+    // ── Scope-segment sanitization (Task 13) ─────────────────────────────────
+    //
+    // ParseQualifiedName used to sanitize ONLY the leaf segment while building the scope from
+    // RAW segments, so "local:topic.", "local:topic " and "local:topic" were three distinct
+    // scope strings — three CachedIndex keys and three ReaderWriterLockSlim instances — over
+    // ONE directory. The characterization test at the bottom of this section demonstrates that
+    // store-layer hazard directly; the tests above it pin the parser contract that keeps
+    // ParseQualifiedName from ever minting the second and third strings.
+
+    private static ArtifactEntry MakeEntry(string name) =>
+        new(name, $"file:///{name}.nmp2", 16, 1, DateTimeOffset.UtcNow);
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_TrailingDot_IsRejected()
+    {
+        // Windows trims trailing dots from a path COMPONENT, so "topic." opens the directory
+        // "topic". Sanitization cannot repair that, and rewriting it to "topic" would silently
+        // file the caller's memory under a scope they did not name.
+        var act = () => _store.ParseQualifiedName("/topic./note");
+
+        act.Should().Throw<ArgumentException>(
+            because: "'topic.' and 'topic' are one directory, so returning them as two scope "
+                   + "strings gives that directory two cache keys and two locks");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_TrailingSpace_IsRejected()
+    {
+        // Same mechanism as the trailing dot: Windows trims trailing spaces too.
+        var act = () => _store.ParseQualifiedName("/topic /note");
+
+        act.Should().Throw<ArgumentException>(
+            because: "'topic ' and 'topic' resolve to one directory");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_BareDot_IsRejected()
+    {
+        // "." resolves to the directory itself, aliasing the PARENT scope: "/./note" would
+        // land in memories/ alongside every plain "local" memory.
+        var act = () => _store.ParseQualifiedName("/./note");
+
+        act.Should().Throw<ArgumentException>(
+            because: "a '.' segment resolves to the parent directory, aliasing the parent scope");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_ReservedDeviceName_IsRejected()
+    {
+        // Reserved DOS device names cannot be repaired by character substitution. Measured on
+        // this build, a directory named CON/PRN/AUX/COM1-9/LPT1-9 is created successfully while
+        // NUL fails outright — but all of them stay reserved at the Win32 layer and in older
+        // Windows/legacy tooling, so the scope path refuses the whole family rather than
+        // shipping a set that happens to work on one OS build.
+        var act = () => _store.ParseQualifiedName("/CON/note");
+
+        act.Should().Throw<ArgumentException>(
+            because: "a reserved device name is not repairable by substitution");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_NulDeviceName_IsRejected()
+    {
+        // NUL is the one device name that genuinely cannot back a directory: measured,
+        // Directory.CreateDirectory throws DirectoryNotFoundException. Before this fix that
+        // surfaced from deep inside a write as an IOException; now it is refused up front.
+        var act = () => _store.ParseQualifiedName("/nul/note");
+
+        act.Should().Throw<ArgumentException>(
+            because: "NUL cannot back a directory at all, so the write would fail mid-flight");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_FilesystemInvalidChars_AreSanitizedLikeTheLeaf()
+    {
+        // '*' is not a path separator and carries no traversal meaning, so it is REPAIRABLE —
+        // and the leaf has always repaired it. The scope now agrees with the leaf.
+        var (scope, subject) = _store.ParseQualifiedName("/a*b/c?d");
+
+        scope.Should().Be("local:a_b",
+            because: "a scope segment must be sanitized exactly as the leaf is");
+        subject.Should().Be("c_d");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_DeepPath_SanitizesEverySegment()
+    {
+        // Every non-leaf segment is sanitized, not just the first or the last.
+        var (scope, subject) = _store.ParseQualifiedName("/a|b/c<d/leaf");
+
+        scope.Should().Be("local:a_b/c_d");
+        subject.Should().Be("leaf");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_InteriorSpaceAndDot_AreKept()
+    {
+        // Guard against over-rejection: spaces and dots are legal INSIDE a component. Only a
+        // TRAILING one aliases. This mirrors SanitizeName_SpaceAndDot_Unchanged for the leaf.
+        var (scope, subject) = _store.ParseQualifiedName("/my notes.v2/entry");
+
+        scope.Should().Be("local:my notes.v2",
+            because: "only trailing dots/spaces alias; interior ones are ordinary characters");
+        subject.Should().Be("entry");
+    }
+
+    [Fact]
+    public void ParseQualifiedName_ScopeSegment_LeadingSpace_IsKept()
+    {
+        // Measured: Windows preserves a LEADING space in a directory name (" lead" and "lead"
+        // are two real, distinct directories), so it does not alias and must not be refused.
+        var (scope, _) = _store.ParseQualifiedName("/ lead/entry");
+
+        scope.Should().Be("local: lead");
+    }
+
+    /// <summary>
+    /// The store-layer hazard the parser fix exists to prevent, demonstrated directly against
+    /// <see cref="FileMemoryStore"/>'s scope API rather than through
+    /// <c>ParseQualifiedName</c> — which is exactly why it keeps working after the fix, when
+    /// the parser will no longer hand anyone the second string.
+    ///
+    /// <para>Two scope strings differing only by a trailing dot are ONE directory on disk, but
+    /// two independent <c>CachedIndex</c> keys. Writing through the second leaves the first
+    /// holding a stale index that is missing the entry — and because
+    /// <c>SaveIndexUnsafe</c> deletes every <c>*.meta.json</c> not present in the entry list it
+    /// is handed, a later save driven by that stale list would delete the other scope's
+    /// sidecar. That is the data-loss path behind the aliasing.</para>
+    /// </summary>
+    [Fact]
+    public void TwoScopeStrings_DifferingOnlyByTrailingDot_ShareOneDirectoryAndDesyncTheirCaches()
+    {
+        const string cleanScope = "local:aliasdemo";
+        const string aliasScope = "local:aliasdemo.";
+
+        // One directory, two names for it.
+        string cleanDir = _store.GetStoreDirForScope(cleanScope);
+        string aliasDir = _store.GetStoreDirForScope(aliasScope);
+        aliasDir.Should().NotBe(cleanDir,
+            because: "the two scope strings produce two different directory PATH strings");
+
+        _store.Upsert(MakeEntry("alpha"), cleanScope);
+        _store.Upsert(MakeEntry("beta"), aliasScope);
+
+        // Both sidecars landed in the SAME real directory — the paths are aliases.
+        Directory.GetFiles(cleanDir, "*.meta.json").Select(Path.GetFileName)
+            .Should().BeEquivalentTo(["alpha.meta.json", "beta.meta.json"],
+                because: "'aliasdemo.' and 'aliasdemo' are one directory on this filesystem");
+
+        // But the caches disagree: the clean scope's CachedIndex was never invalidated by the
+        // write that went through the alias, so it still reports only its own entry.
+        _store.LoadIndex(cleanScope).Select(e => e.Name)
+            .Should().BeEquivalentTo(["alpha"],
+                because: "writing through the aliased scope string did not invalidate this "
+                       + "scope's cache — the stale list is what a later SaveIndex would use "
+                       + "as its orphan-sweep allow-list, deleting 'beta' from disk");
+        _store.LoadIndex(aliasScope).Select(e => e.Name)
+            .Should().BeEquivalentTo(["alpha", "beta"]);
+    }
 }
