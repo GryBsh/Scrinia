@@ -362,18 +362,28 @@ public sealed class DualModeParseTests : IDisposable
             because: "a '.' segment resolves to the parent directory, aliasing the parent scope");
     }
 
-    [Fact]
-    public void ParseQualifiedName_ScopeSegment_ReservedDeviceName_IsRejected()
+    [Theory]
+    [InlineData("CON")]
+    [InlineData("PRN")]
+    [InlineData("AUX")]
+    [InlineData("COM1")]
+    [InlineData("LPT9")]
+    public void ParseQualifiedName_ScopeSegment_WorkingDeviceName_IsAccepted(string name)
     {
-        // Reserved DOS device names cannot be repaired by character substitution. Measured on
-        // this build, a directory named CON/PRN/AUX/COM1-9/LPT1-9 is created successfully while
-        // NUL fails outright — but all of them stay reserved at the Win32 layer and in older
-        // Windows/legacy tooling, so the scope path refuses the whole family rather than
-        // shipping a set that happens to work on one OS build.
-        var act = () => _store.ParseQualifiedName("/CON/note");
+        // MEASURED, and the measurement beat the assumption: on Windows a directory named
+        // CON/PRN/AUX/COM1-9/LPT1-9 is created and written successfully. None of them aliases
+        // another scope. Refusing input that demonstrably works would be worse than the aliasing
+        // this task exists to fix, so only NUL — the one that genuinely cannot back a directory —
+        // is rejected. (Task 3's endpoint comment recorded the same measurement independently.)
+        var (scope, subject) = _store.ParseQualifiedName($"/{name}/note");
 
-        act.Should().Throw<ArgumentException>(
-            because: "a reserved device name is not repairable by substitution");
+        scope.Should().Be($"local:{name}");
+        subject.Should().Be("note");
+
+        // Not just parseable — actually usable end to end.
+        _store.Upsert(MakeEntry("note"), scope);
+        _store.LoadIndex(scope).Select(e => e.Name).Should().Contain("note",
+            because: $"a '{name}' scope is a real, writable directory on this platform");
     }
 
     [Fact]
@@ -430,6 +440,69 @@ public sealed class DualModeParseTests : IDisposable
         var (scope, _) = _store.ParseQualifiedName("/ lead/entry");
 
         scope.Should().Be("local: lead");
+    }
+
+    // ── The ONE scope constructor (Task 13 consolidation) ────────────────────
+    //
+    // ParseQualifiedName, NormalizeScopeFilters, BundleFormatService and
+    // IMemoryStore.BuildExcludedScopeSet all build "local:{topic}" through
+    // MemoryNaming.BuildScopedTopicScope now. These pin the rule at the constructor and at the
+    // two callers whose behaviour on a failure differs (write throws, read matches nothing).
+
+    [Theory]
+    [InlineData("a//b", "local:a/b")]   // collapsed empty segment
+    [InlineData("/a/b", "local:a/b")]   // leading slash
+    [InlineData("a/b/", "local:a/b")]   // trailing slash
+    public void BuildScopedTopicScope_RedundantSeparators_CollapseToOneScope(string topic, string expected)
+    {
+        // Each of these named the same directory chain as "a/b" while being a different scope
+        // STRING — the same aliasing as a trailing dot, one level up.
+        MemoryNaming.BuildScopedTopicScope(topic).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("/")]
+    public void BuildScopedTopicScope_EmptyTopic_IsRejected(string topic)
+    {
+        // "local:" alone resolves to the memories ROOT, i.e. it aliases the bare "local" scope.
+        var act = () => MemoryNaming.BuildScopedTopicScope(topic);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void BuildScopedTopicScope_AppliesTheSameRuleAsParseQualifiedName()
+    {
+        // The point of the consolidation: one rule, not four copies that can drift.
+        MemoryNaming.BuildScopedTopicScope("a*b").Should().Be("local:a_b");
+        new Action(() => MemoryNaming.BuildScopedTopicScope("topic.")).Should().Throw<ArgumentException>();
+        new Action(() => MemoryNaming.BuildScopedTopicScope("nul")).Should().Throw<ArgumentException>();
+        MemoryNaming.BuildScopedTopicScope("CON").Should().Be("local:CON");
+
+        // …and ParseQualifiedName agrees, because it calls it.
+        _store.ParseQualifiedName("/a*b/leaf").Scope.Should().Be("local:a_b");
+    }
+
+    [Fact]
+    public void ResolveReadScopes_UnconstructableFilter_MatchesNothingInsteadOfThrowing()
+    {
+        // READ callers take the non-throwing form. An aliased scope can never name a stored
+        // memory (ArtifactEntry has no scope field; DiscoverTopics re-derives scopes from on-disk
+        // directory names), so "matches nothing" is the correct answer, not leniency.
+        _store.ResolveReadScopes("topic.").Should().BeEmpty();
+        _store.ResolveReadScopes("local:topic.").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ResolveReadScopes_LocalPrefixedFilter_IsNormalizedRatherThanPassedThroughRaw()
+    {
+        // This branch used to `return [s]` verbatim. That meant "local:a*b" became a scope string
+        // no write could ever produce, and "LOCAL:api" reached ToStoreDir — whose prefix test is
+        // Ordinal — as an unknown scope.
+        _store.ResolveReadScopes("local:a*b").Should().BeEquivalentTo(["local:a_b"]);
+        _store.ResolveReadScopes("LOCAL:api").Should().BeEquivalentTo(["local:api"]);
     }
 
     /// <summary>

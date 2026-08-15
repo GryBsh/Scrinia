@@ -181,20 +181,22 @@ public interface IMemoryStore
         return excluded.Contains(scope);
     }
 
-    /// <summary>Builds a HashSet of excluded scope names from a comma-separated excludeTopics string.
-    /// Already-scoped inputs (containing '/') pass through as "local:{input}";
-    /// bare topic names are routed through <see cref="MemoryNaming.BuildScopedTopicScope"/>.</summary>
+    /// <summary>Builds a HashSet of excluded scope names from a comma-separated excludeTopics
+    /// string. Every entry goes through <see cref="MemoryNaming.TryBuildScopedTopicScope"/> — the
+    /// ONE scope constructor (Task 13).
+    ///
+    /// <para>This used to fork on whether the input contained a '/', interpolating
+    /// <c>"local:{input}"</c> directly in that case and lower-casing only the other. The
+    /// constructor splits on '/' itself, so the fork is gone; the lower-casing went with it, since
+    /// this set is already <see cref="StringComparer.OrdinalIgnoreCase"/>. Being an exclusion
+    /// FILTER, an unconstructable topic is dropped rather than throwing — it could not have named
+    /// a stored scope, so it excludes nothing.</para></summary>
     static HashSet<string> BuildExcludedScopeSet(string excludeTopics) =>
         new(
             excludeTopics
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(t =>
-                {
-                    var trimmed = t.Trim();
-                    return trimmed.Contains('/')
-                        ? $"local:{trimmed}"
-                        : MemoryNaming.BuildScopedTopicScope(trimmed.ToLowerInvariant());
-                }),
+                .Select(t => MemoryNaming.TryBuildScopedTopicScope(t, out string scope) ? scope : null)
+                .OfType<string>(),
             StringComparer.OrdinalIgnoreCase);
 
     // Ephemeral

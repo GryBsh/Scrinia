@@ -662,15 +662,12 @@ public sealed partial class HttpMemoryStore : IMemoryStore, IDisposable
         {
             foreach (var item in list.Memories)
             {
-                // Reconstruct scope from the qualified name
-                string scope = item.Scope switch
-                {
-                    "local" => "local",
-                    "ephemeral" => "ephemeral",
-                    _ => $"local:{item.Scope}"
-                };
-
-                result.Add(new ScopedArtifact(scope, ToArtifactEntry(item)));
+                // Recover the scope from the label the server reported. Task 13: this was a
+                // character-for-character re-implementation of MemoryNaming.ParseScopeLabel —
+                // the same three cases in the same order — so it now calls it. Recovery, not
+                // construction: see ParseScopeLabel's remarks for why it is not validated here.
+                result.Add(new ScopedArtifact(
+                    MemoryNaming.ParseScopeLabel(item.Scope), ToArtifactEntry(item)));
             }
         }
 

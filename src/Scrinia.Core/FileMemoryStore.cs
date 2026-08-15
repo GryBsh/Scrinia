@@ -247,15 +247,15 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
             if (segments.Count == 1)
                 return ("local", SanitizeName(segments[0].Value));
 
-            // Build scope from all but last segment. Every segment is sanitized exactly as the
-            // leaf is, and then checked for the residue sanitization cannot repair — see
-            // SanitizeScopeSegment. Before this, the scope was built from RAW segments while only
-            // the leaf was sanitized, so "local:topic.", "local:topic " and "local:topic" were
-            // three distinct scope strings — three CachedIndex keys and three
+            // Build scope from all but last segment, through the ONE scope constructor
+            // (MemoryNaming.BuildScopedTopicScope), which sanitizes and validates each segment.
+            // This is a WRITE path, so a topic that cannot be constructed throws rather than
+            // resolving to something else: before Task 13 the scope was built from RAW segments
+            // while only the leaf was sanitized, so "local:topic.", "local:topic " and
+            // "local:topic" were three distinct scope strings — three CachedIndex keys and three
             // ReaderWriterLockSlim instances — over ONE directory.
-            string topicPart = string.Join("/",
-                segments.Take(segments.Count - 1).Select(s => SanitizeScopeSegment(s.Value)));
-            string scope = $"local:{topicPart}";
+            string topicPart = string.Join("/", segments.Take(segments.Count - 1).Select(s => s.Value));
+            string scope = MemoryNaming.BuildScopedTopicScope(topicPart);
             string subject = SanitizeName(segments[^1].Value);
             return (scope, subject);
         }
@@ -273,92 +273,27 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     public bool IsEphemeral(string name) =>
         !string.IsNullOrEmpty(name) && name[0] == '~';
 
-    // Characters invalid on Windows that Linux allows — always strip for portability.
-    private static readonly HashSet<char> s_portableInvalid =
-        [.. Path.GetInvalidFileNameChars(), ':', '*', '?', '<', '>', '|', '"'];
-
     public string SanitizeName(string name) => SanitizeNameCore(name);
 
     /// <summary>Static core of <see cref="SanitizeName"/> — no instance state, so it is also
     /// usable from <see cref="WriteSidecarCore"/>/<see cref="ExpandLegacyIndexEntries"/>, which
-    /// run without a <see cref="FileMemoryStore"/> instance (migration time).</summary>
-    private static string SanitizeNameCore(string name)
-    {
-        // Strip directory separators and path traversal sequences first
-        string safe = name.Replace("..", "").Replace('/', '_').Replace('\\', '_');
-
-        // Remove remaining invalid filename characters (cross-platform set)
-        safe = string.Concat(safe.Select(c => s_portableInvalid.Contains(c) ? '_' : c));
-
-        // Final safety: extract only the filename component (blocks any residual path)
-        safe = Path.GetFileName(safe);
-
-        if (string.IsNullOrWhiteSpace(safe))
-            throw new ArgumentException($"Name '{name}' is invalid after sanitization.", nameof(name));
-
-        return safe;
-    }
-
-    /// <summary>Reserved DOS device names. Compared case-insensitively against a whole scope
-    /// segment.</summary>
-    private static readonly HashSet<string> s_reservedDeviceNames =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            "CON", "PRN", "AUX", "NUL",
-            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-        };
-
-    /// <summary>
-    /// Sanitizes ONE scope path segment, then REJECTS the residue that substitution cannot
-    /// repair. Used only when building the scope in <see cref="ParseQualifiedName"/>.
+    /// run without a <see cref="FileMemoryStore"/> instance (migration time).
     ///
-    /// <para><b>Why this is beside <see cref="SanitizeNameCore"/> and not inside it.</b>
-    /// <c>SanitizeNameCore</c> is shared with the LEAF (subject) path, and widening it to throw
-    /// would change subject names too — which would be wrong twice over. First, the leaf has no
-    /// aliasing defect to fix: <see cref="ArtifactPath"/> and <see cref="MetaPath"/> append
-    /// <c>.nmp2</c>/<c>.meta.json</c> AFTER sanitizing, so the resulting path component never
-    /// ends in the name's trailing dot or space — <c>notes.</c> becomes <c>notes..nmp2</c> and
-    /// <c>notes </c> becomes <c>notes .nmp2</c>, both distinct real files from
-    /// <c>notes.nmp2</c> (measured). A device-named leaf is likewise a real file
-    /// (<c>CON.nmp2</c>, <c>NUL.nmp2</c>). Second, and decisively, <c>SanitizeNameCore</c> runs
-    /// against names READ BACK FROM DISK, not just caller input: <see cref="WriteSidecarCore"/>,
-    /// <see cref="DeleteSidecar"/>, <see cref="SaveIndexUnsafe"/>'s orphan-sweep allow-list, the
-    /// case-insensitive entry matchers (here, <c>IMemoryStore.TryUpdateEntry</c>,
-    /// <c>MemoryEndpoints</c>, <c>MaintenanceEventSink</c>, <c>EntityTypingEventHandler</c>) and
-    /// <see cref="ExpandLegacyIndexEntries"/>, which runs at MIGRATION time over a legacy v1
-    /// index. Making it throw would let one already-stored entry with an awkward name poison
-    /// every read of its whole scope — and abort the orphan sweep half-way through a
-    /// <see cref="SaveIndex"/>, which deletes sidecars. So the rejection lives on the scope path
-    /// only, which is the only path where the aliasing exists.</para>
-    ///
-    /// <para><b>Rejected, not rewritten.</b> Silently folding <c>topic.</c> to <c>topic</c> would
-    /// file the caller's memory under a scope they did not name — losing it without an error.
-    /// <see cref="ArgumentException"/> is what every caller of
-    /// <see cref="ParseQualifiedName"/> already handles.</para>
-    /// </summary>
-    private static string SanitizeScopeSegment(string segment)
-    {
-        // Shared with the leaf: strips separators and the portable-invalid character set, and
-        // already throws for a segment that sanitizes away to nothing or to whitespace.
-        string safe = SanitizeNameCore(segment);
+    /// <para>Task 13 moved the body to <see cref="MemoryNaming.SanitizeSegment"/> so the LEAF and
+    /// the SCOPE share one character rule rather than two that could drift. Note what is NOT
+    /// shared: the scope path also rejects what substitution cannot repair (a trailing dot or
+    /// space, a bare ".", NUL), and that rejection deliberately does not reach here. The leaf has
+    /// no aliasing defect to fix — <see cref="ArtifactPath"/>/<see cref="MetaPath"/> append
+    /// <c>.nmp2</c>/<c>.meta.json</c> AFTER sanitizing, so the path component never ends in the
+    /// name's trailing dot or space (<c>notes.</c> → <c>notes..nmp2</c>, distinct from
+    /// <c>notes.nmp2</c>; measured) — and, decisively, this runs against names READ BACK FROM
+    /// DISK: <see cref="WriteSidecarCore"/>, <see cref="DeleteSidecar"/>,
+    /// <see cref="SaveIndexUnsafe"/>'s orphan-sweep allow-list, the case-insensitive entry
+    /// matchers, and <see cref="ExpandLegacyIndexEntries"/> at migration time. Throwing here
+    /// would let one stored entry poison every read of its scope, and abort the orphan sweep
+    /// part-way through a <see cref="SaveIndex"/> that deletes files.</para></summary>
+    private static string SanitizeNameCore(string name) => MemoryNaming.SanitizeSegment(name);
 
-        // Windows trims trailing dots and spaces from a path COMPONENT, so "topic." and
-        // "topic " both open the directory "topic" (measured). This also covers a segment that
-        // is a bare ".", which resolves to the directory itself and so aliases the PARENT
-        // scope — "/./note" would land among the plain "local" memories.
-        if (safe[^1] is '.' or ' ')
-            throw new ArgumentException(
-                $"Scope segment '{segment}' must not end with a '.' or a space — the filesystem " +
-                "trims those, so it would name the same directory as the trimmed form.",
-                nameof(segment));
-
-        if (s_reservedDeviceNames.Contains(safe))
-            throw new ArgumentException(
-                $"Scope segment '{segment}' is a reserved device name.", nameof(segment));
-
-        return safe;
-    }
 
     // ── Ephemeral memory ─────────────────────────────────────────────────────
 
@@ -526,13 +461,26 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
         if (s.Equals("local", StringComparison.OrdinalIgnoreCase)) return ["local"];
         // Ephemeral is handled separately in ListScoped — exclude from filesystem scopes
         if (s.Equals("ephemeral", StringComparison.OrdinalIgnoreCase)) return [];
-        if (s.StartsWith("local:", StringComparison.OrdinalIgnoreCase)) return [s];
 
         // Path prefix query: "/goal/G-5/" → find all scopes under that path tree
         if (s.StartsWith('/'))
             return ResolvePathPrefix(s);
 
-        return [MemoryNaming.BuildScopedTopicScope(SanitizeName(s))];
+        // Everything else is a topic, whether or not the caller spelled the "local:" prefix.
+        // Both spellings go through the ONE scope constructor (Task 13). This branch used to
+        // return an already-"local:"-prefixed token RAW, which meant a filter naming
+        // "local:topic." became a second CachedIndex key over the same directory that no write
+        // to "local:topic" would ever invalidate — a permanently stale read. It also let
+        // "LOCAL:foo" through, which ToStoreDir then rejected outright as an unknown scope
+        // (its prefix test is Ordinal); re-constructing normalizes the prefix too.
+        string topic = s.StartsWith("local:", StringComparison.OrdinalIgnoreCase)
+            ? s["local:".Length..]
+            : s;
+
+        // READ path: a topic that cannot be constructed cannot name a stored memory either, so
+        // matching nothing is the correct answer rather than a refusal. See
+        // MemoryNaming.TryBuildScopedTopicScope.
+        return MemoryNaming.TryBuildScopedTopicScope(topic, out string scope) ? [scope] : [];
     }
 
     /// <summary>

@@ -51,7 +51,11 @@ public static class BundleFormatService
 
         foreach (string topic in topics)
         {
-            string topicScope = MemoryNaming.BuildScopedTopicScope(store.SanitizeName(topic.Trim()));
+            // Task 13: the ONE scope constructor sanitizes each segment itself, so the separate
+            // SanitizeName call this used to wrap is gone. That pairing sanitized without
+            // de-aliasing — "topic." survived it intact and became a second scope string over the
+            // "topic" directory.
+            string topicScope = MemoryNaming.BuildScopedTopicScope(topic.Trim());
             var artifacts = store.ListTopicArtifacts(topicScope);
             var entries = store.LoadIndex(topicScope);
 
@@ -146,7 +150,9 @@ public static class BundleFormatService
 
         foreach (string topic in topicsToImport)
         {
-            string topicScope = MemoryNaming.BuildScopedTopicScope(store.SanitizeName(topic));
+            // Task 13: import is a WRITE path, so an unconstructable topic throws rather than
+            // resolving to an aliased scope — see BundleFormatService's export counterpart.
+            string topicScope = MemoryNaming.BuildScopedTopicScope(topic);
             string sanitizedTopic = store.SanitizeName(topic);
 
             var indexZipEntry = zip.GetEntry($"topics/{sanitizedTopic}/index.json");
