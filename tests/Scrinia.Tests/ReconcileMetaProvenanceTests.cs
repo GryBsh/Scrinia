@@ -469,9 +469,9 @@ public sealed class ReconcileMetaProvenanceTests
                      "human or an explicit choice to resolve");
     }
 
-    private const string TheirsNonArrayKeywords = """
+    private const string OursNonArrayKeywords = """
         {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
-        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z",
         "keywords":"urgent"}
         """;
 
@@ -481,6 +481,10 @@ public sealed class ReconcileMetaProvenanceTests
     /// not JsonArray array</c> returned <c>null</c> for this exact input, indistinguishable from the
     /// key being missing, so the conflict silently auto-resolved on the other side's keywords instead
     /// of escalating input the merger did not produce and cannot safely interpret.
+    ///
+    /// <para>Deliberately puts the malformed value on <c>ours</c> — the explicit-null case above puts
+    /// it on <c>theirs</c> — so a check that only reads one of the two nodes cannot pass both tests.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task Reconcile_MalformedKeywords_NonArrayValue_EscalatesToManualResolution()
@@ -489,7 +493,7 @@ public sealed class ReconcileMetaProvenanceTests
         string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
         Directory.CreateDirectory(scriniaDir);
         File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
-        string conflictId = await SeedConflictAsync(scope, OursNoKeywords, TheirsNonArrayKeywords);
+        string conflictId = await SeedConflictAsync(scope, OursNonArrayKeywords, TheirsNoKeywords);
 
         string result = await Tools().MemoryReconcile(conflictId: conflictId);
 
@@ -497,6 +501,122 @@ public sealed class ReconcileMetaProvenanceTests
             because: "a keywords value that isn't a readable JSON array means the auto-resolver " +
                      "cannot safely interpret one side's intent, so the conflict must escalate to " +
                      "manual resolution rather than silently resolving on the other side's value");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
+
+    private const string TheirsNonStringElementKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":["auth",5]}
+        """;
+
+    /// <summary>
+    /// A <c>keywords</c> array containing an element that isn't a JSON string (here, a bare number —
+    /// a hand-edited or foreign sidecar) is MALFORMED, not "mostly readable." Before this fix,
+    /// <c>ReadStrings</c>' inner loop (<c>element?.GetValue&lt;string&gt;() is string s</c>) silently
+    /// skipped the bad element and kept the rest — dropping one keyword out of an array with no
+    /// signal, on the driver side (<c>MetaJsonMerger.GetStrings</c>), while an equivalent read on
+    /// this side happened to throw and get caught by a broad outer catch, so the two mergers reached
+    /// the same escalated outcome by accident rather than by a shared rule. Both now refuse
+    /// explicitly via the same <c>TryGetValue&lt;string&gt;</c> check the well-formed path already
+    /// used. Paired with <c>SidecarAdmissionParityTests.MalformedKeywords_NonStringElement_RefusesTheMerge</c>.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_MalformedKeywords_NonStringElement_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+        string conflictId = await SeedConflictAsync(scope, OursNoKeywords, TheirsNonStringElementKeywords);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "a keywords array containing a non-string element means the auto-resolver cannot " +
+                     "safely interpret one side's intent, so the conflict must escalate rather than " +
+                     "silently drop the bad element and merge the rest");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
+
+    private const string OursValidKeywordsNoAgentKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z",
+        "keywords":["auth","local"]}
+        """;
+
+    private const string TheirsExplicitNullAgentKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":["auth","local"],"agentKeywords":null}
+        """;
+
+    /// <summary>
+    /// <c>agentKeywords</c> is the field where getting ABSENT vs MALFORMED wrong matters most:
+    /// absent means UNKNOWN provenance (a normal side of the union, per
+    /// <c>SidecarKeywordMerge.Union</c>'s doc), so a malformed value silently read as absent would be
+    /// misclassified as UNKNOWN instead of escalating — recording a foreign writer's unreadable
+    /// provenance as if the side had simply never curated any keywords. The admission gate above only
+    /// reads <c>keywords</c>, not <c>agentKeywords</c>, so both sides here carry a valid, identical
+    /// <c>keywords</c> array to reach the union block where <c>agentKeywords</c> is actually read.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_MalformedAgentKeywords_ExplicitNull_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+        string conflictId = await SeedConflictAsync(
+            scope, OursValidKeywordsNoAgentKeywords, TheirsExplicitNullAgentKeywords);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "an explicit agentKeywords: null is not the same as the key being absent — " +
+                     "treating it as absent would misrecord it as UNKNOWN provenance instead of " +
+                     "escalating a shape the merger did not produce and cannot safely interpret");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
+
+    private const string TheirsNonArrayAgentKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":["auth","local"],"agentKeywords":"urgent"}
+        """;
+
+    /// <summary>The non-array-value twin of the explicit-null case above, for the same field.</summary>
+    [Fact]
+    public async Task Reconcile_MalformedAgentKeywords_NonArrayValue_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+        string conflictId = await SeedConflictAsync(
+            scope, OursValidKeywordsNoAgentKeywords, TheirsNonArrayAgentKeywords);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "an agentKeywords value that isn't a readable JSON array means the auto-resolver " +
+                     "cannot safely interpret one side's intent, so the conflict must escalate rather " +
+                     "than misrecord it as UNKNOWN provenance");
 
         string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
             conflictId.Replace('/', Path.DirectorySeparatorChar));

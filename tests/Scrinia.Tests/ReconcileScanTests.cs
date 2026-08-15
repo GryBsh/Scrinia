@@ -357,6 +357,76 @@ public sealed class ReconcileScanTests
                      "so it must be reported as \"auto-resolve failed\"");
     }
 
+    // A malformed keywords value (an explicit JSON null — a hand-edit or a foreign writer, not a
+    // normal absence) on one side. No merge.config here deliberately: MetaSidecarsAreSimilarEnough's
+    // malformed branch must return true regardless of the threshold, because a malformed side is an
+    // auto-resolve failure, not a similarity verdict — the two questions are orthogonal, and this
+    // fixture pins that the branch doesn't secretly depend on the default not mattering.
+    private const string MalformedKeywordsContent =
+        "{\n" +
+        "  \"name\": \"bad-keywords\",\n" +
+        "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+        "<<<<<<< HEAD\n" +
+        "  \"keywords\": [\"auth\"]\n" +
+        "=======\n" +
+        "  \"keywords\": null\n" +
+        ">>>>>>> branch-x\n" +
+        "}";
+
+    /// <summary>
+    /// Mutation-pinning test for <c>MetaSidecarsAreSimilarEnough</c>'s malformed-keywords branch
+    /// (returns <c>true</c> — "cannot judge similarity, not a dissimilarity refusal" — the OPPOSITE
+    /// convention from its own <c>TryComputeAutoResolvedMetaJson</c> caller, where <c>false</c> means
+    /// escalate). Without this test, inverting that one <c>return true</c> to <c>return false</c>
+    /// leaves the entire solution green: the OTHER tests exercising this method (the
+    /// duplicate-case-variant-key tests above) go through its unrelated <c>catch</c>, never through
+    /// this branch, so an unchanged verdict from them is not evidence this branch is pinned.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_NoArgs_MalformedKeywordsIsReportedAsAutoResolveFailedNotTooDissimilar()
+    {
+        using var scope = new TestHelpers.StoreScope();
+
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        string metaDir = Path.Combine(scriniaDir, "local", "topics", "topic");
+        Directory.CreateDirectory(metaDir);
+
+        // A perfectly healthy, genuinely auto-resolvable conflict sitting alongside the malformed
+        // one — identical keywords on both sides, Jaccard 1.0, admitted at the default 0.7 threshold.
+        string healthyPath = Path.Combine(metaDir, "healthy.meta.json");
+        const string healthyContent =
+            "{\n" +
+            "  \"name\": \"healthy\",\n" +
+            "  \"updatedAt\": \"2024-01-01T00:00:00Z\",\n" +
+            "<<<<<<< HEAD\n" +
+            "  \"keywords\": [\"auth\"]\n" +
+            "=======\n" +
+            "  \"keywords\": [\"auth\"]\n" +
+            ">>>>>>> branch-x\n" +
+            "}";
+        await File.WriteAllTextAsync(healthyPath, healthyContent);
+
+        string badPath = Path.Combine(metaDir, "malformed-keywords.meta.json");
+        await File.WriteAllTextAsync(badPath, MalformedKeywordsContent);
+
+        string result = await Tools().MemoryReconcile(); // no-arg call: scan only
+
+        var parsed = ResponseParser.Parse(result);
+        parsed.Status.Should().Be("success",
+            because: "one malformed sidecar must degrade to a manual-resolution entry, not fail the " +
+                     "whole scan");
+        parsed.Content.Should().Contain("OK local/topics/topic/healthy.meta.json",
+            because: "the healthy conflict must still be reported as auto-resolvable");
+        parsed.Content.Should().Contain(
+            "local/topics/topic/malformed-keywords.meta.json (.meta.json — auto-resolve failed)",
+            because: "a malformed keywords value is a genuine read failure — TryComputeAutoResolvedMetaJson " +
+                     "already refuses it — so it must be reported as \"auto-resolve failed\"");
+        parsed.Content.Should().NotContain("malformed-keywords.meta.json (.meta.json — sides too dissimilar",
+            because: "a malformed keywords value answers a different question than similarity — " +
+                     "MetaSidecarsAreSimilarEnough returning true for it is what keeps this from being " +
+                     "misreported as a deliberate dissimilarity refusal");
+    }
+
     /// <summary>
     /// ScanForConflicts passes "current" and "incoming" to TryReadConflictCopy — the two
     /// TryReadConflictCopy calls in its "nmp2" branch, cited by name rather than by line because a

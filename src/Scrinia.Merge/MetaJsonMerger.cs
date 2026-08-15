@@ -169,16 +169,21 @@ public static class MetaJsonMerger
 
     /// <summary>Reads a keywords/agentKeywords-shaped JSON value into a string array. Returns true
     /// for ABSENT (<paramref name="value"/> is null; load-bearing for <c>agentKeywords</c>, where
-    /// absent means UNKNOWN provenance) and for a well-formed JSON array (non-string elements are
-    /// skipped). Returns false for MALFORMED input — present but not a JSON array, including an
-    /// explicit JSON <c>null</c> — so the caller can escalate to conflict instead of silently
-    /// treating a foreign writer's malformed <c>keywords</c> as absent.
+    /// absent means UNKNOWN provenance) and for a well-formed JSON array of strings. Returns false
+    /// for MALFORMED input — present but not a JSON array (including an explicit JSON <c>null</c>),
+    /// or an array containing an element that isn't a JSON string — so the caller can escalate to
+    /// conflict instead of silently treating a foreign writer's malformed <c>keywords</c> as absent,
+    /// or (before this method was written this way) silently dropping the one bad element and
+    /// merging the rest as if nothing had been lost.
     ///
     /// <para><c>reconcile()</c>'s auto-resolver reads the same shape through
     /// <c>MemoryTools.Lifecycle.TryReadStrings</c>, a deliberate mirror of this method's
     /// <c>TryGetPropertyValue</c>-before-inspecting-the-value shape, for the same reason
     /// <see cref="TryGetTimestampString"/> and <see cref="TryGetIntMap"/> use it: the plain indexer
-    /// cannot tell "absent" from "present but null" apart.</para></summary>
+    /// cannot tell "absent" from "present but null" apart. Refusing a non-string element, rather
+    /// than skipping it, is deliberate too: dropping one keyword out of an array with no signal is
+    /// data loss, and this rule's whole premise is escalate-on-malformed over silently-absorb.</para>
+    /// </summary>
     private static bool TryGetStrings(JsonObject? o, string key, out string[]? value)
     {
         value = null;
@@ -189,7 +194,11 @@ public static class MetaJsonMerger
 
         var list = new List<string>(arr.Count);
         foreach (var el in arr)
-            if (el is JsonValue v && v.TryGetValue<string>(out var s)) list.Add(s);
+        {
+            if (el is not JsonValue v || !v.TryGetValue<string>(out var s))
+                return false; // malformed: an array element isn't a JSON string
+            list.Add(s);
+        }
         value = list.ToArray();
         return true;
     }

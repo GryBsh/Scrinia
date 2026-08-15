@@ -692,20 +692,24 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>Reads a keywords/agentKeywords-shaped JSON node into a string array. Returns true for
     /// ABSENT (<paramref name="value"/> is null; load-bearing for <c>agentKeywords</c>, where absent
-    /// means UNKNOWN provenance) and for a well-formed JSON array (non-string elements are skipped).
-    /// Returns false for MALFORMED input — present but not a JSON array, including an explicit JSON
-    /// <c>null</c> — so the caller can escalate to manual resolution instead of what the
-    /// <c>node?[key]</c> indexer used to do here: return a null reference for BOTH "key absent" and
-    /// "key present with value JSON <c>null</c>," silently treating the latter as absent and letting
-    /// a foreign writer's malformed <c>keywords</c> auto-resolve on the other side's value, or (for
-    /// <c>agentKeywords</c>) be misread as UNKNOWN provenance instead of escalating.
+    /// means UNKNOWN provenance) and for a well-formed JSON array of strings. Returns false for
+    /// MALFORMED input — present but not a JSON array (including an explicit JSON <c>null</c>), or an
+    /// array containing an element that isn't a JSON string — so the caller can escalate to manual
+    /// resolution instead of what the <c>node?[key]</c> indexer used to do here: return a null
+    /// reference for BOTH "key absent" and "key present with value JSON <c>null</c>," silently
+    /// treating the latter as absent and letting a foreign writer's malformed <c>keywords</c>
+    /// auto-resolve on the other side's value, or (for <c>agentKeywords</c>) be misread as UNKNOWN
+    /// provenance instead of escalating.
     ///
     /// <para>Deliberately mirrors <see cref="TryReadTimestampString"/> and <see cref="TryReadIntMap"/>'s
     /// two-step shape (<c>JsonObject.TryGetPropertyValue</c> before inspecting the value) for the
     /// same reason those exist: the indexer cannot tell "absent" from "present but null" apart, and
     /// getting that wrong here would make the git merge driver and reconcile()'s auto-resolver
     /// classify a malformed <c>keywords</c> differently — the array analogue of the divergence
-    /// <see cref="TryReadIntMap"/> closes for <c>termFrequencies</c>.</para></summary>
+    /// <see cref="TryReadIntMap"/> closes for <c>termFrequencies</c>. Refusing a non-string element,
+    /// rather than skipping it, is the same rule applied one level deeper: dropping one keyword out
+    /// of an array with no signal is data loss, and this whole rule's premise is escalate-on-malformed
+    /// over silently-absorb.</para></summary>
     private static bool TryReadStrings(JsonNode? node, string key, out string[]? value)
     {
         value = null;
@@ -716,7 +720,11 @@ public sealed partial class ScriniaMcpTools
 
         var values = new List<string>(array.Count);
         foreach (var element in array)
-            if (element?.GetValue<string>() is string s) values.Add(s);
+        {
+            if (element is not JsonValue v || !v.TryGetValue<string>(out var s))
+                return false; // malformed: an array element isn't a JSON string
+            values.Add(s);
+        }
         value = [.. values];
         return true;
     }
