@@ -190,13 +190,31 @@ public sealed class FileMemoryStoreTests : IDisposable
     {
         string artifact = Nmp2ChunkedEncoder.Encode("Copy content");
         await _store.WriteArtifactAsync("src", "local", artifact);
-        _store.Upsert(new ArtifactEntry("src", "", 100, 1, DateTimeOffset.UtcNow));
+        var updatedAt = DateTimeOffset.UtcNow.AddMinutes(-5);
+        _store.Upsert(new ArtifactEntry("src", "", 100, 1, DateTimeOffset.UtcNow,
+            UpdatedAt: updatedAt,
+            TermFrequencies: new Dictionary<string, int> { ["widget"] = 3 },
+            ChunkEntries: [new ChunkEntry(0, "chunk preview", ["widget"], new Dictionary<string, int> { ["widget"] = 1 })],
+            FileHashes: new Dictionary<string, string> { ["src/thing.cs"] = "abc123" },
+            AgentKeywords: ["widget"]));
 
         bool ok = _store.CopyMemory("src", "dst", false, out string msg);
         ok.Should().BeTrue();
 
         var dstEntries = _store.LoadIndex();
         dstEntries.Should().Contain(e => e.Name == "dst");
+
+        // Widened at Task 11 to cover what CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata
+        // does not: TermFrequencies, FileHashes, ChunkEntries, AgentKeywords, UpdatedAt. (That test
+        // already covers Attributes, Keywords, ContentPreview, OriginalBytes — duplicating those here
+        // would only prove what it already guarantees.)
+        var copied = dstEntries.Single(e => e.Name == "dst");
+        copied.TermFrequencies.Should().BeEquivalentTo(new Dictionary<string, int> { ["widget"] = 3 });
+        copied.FileHashes.Should().BeEquivalentTo(new Dictionary<string, string> { ["src/thing.cs"] = "abc123" });
+        copied.ChunkEntries.Should().BeEquivalentTo(
+            new[] { new ChunkEntry(0, "chunk preview", ["widget"], new Dictionary<string, int> { ["widget"] = 1 }) });
+        copied.AgentKeywords.Should().BeEquivalentTo(new[] { "widget" });
+        copied.UpdatedAt.Should().Be(updatedAt);
     }
 
     /// <summary>
@@ -206,8 +224,9 @@ public sealed class FileMemoryStoreTests : IDisposable
     /// found its file and not its entry, and the copy silently fell through to the
     /// synthesized-defaults branch: the destination kept the bytes and lost the attributes,
     /// keywords and curated preview the source carried. The pre-existing
-    /// <see cref="CopyMemory_persistent_to_persistent"/> uses one casing throughout and asserts
-    /// only that the destination exists, so it cannot see this.
+    /// <see cref="CopyMemory_persistent_to_persistent"/> uses one casing throughout — even though
+    /// Task 11 widened it to assert carried metadata, it never takes the mismatched-casing branch
+    /// this test exists to cover, so it still cannot see this.
     /// </summary>
     [Fact]
     public async Task CopyMemory_WithMismatchedSourceCasing_CarriesTheSourcesMetadata()
@@ -1017,7 +1036,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entries = _store.LoadIndex("local");
         var entry = entries.Single(e => e.Name == "legacy-security-note");
 
-        entry.Attributes.Should().NotBeNull(because: "read-time forward-fill should populate Fields without a prior scri migrate");
+        entry.Attributes.Should().NotBeNull(because: "read-time forward-fill should populate Attributes without a prior scri migrate");
         entry.Attributes!["person"].Should().Contain("maria");
         // "tags" lost its member source in P6.6b Task 4 — Forward no longer promotes it into Attributes.
         entry.Attributes.Should().NotContainKey("tag");
@@ -1054,7 +1073,7 @@ public sealed class FileMemoryStoreTests : IDisposable
         var entry = entries.Single(e => e.Name == "legacy-security-note");
 
         entry.Attributes.Should().NotBeNull(
-            because: "the first load's write-back should have persisted Fields to the sidecar on disk");
+            because: "the first load's write-back should have persisted Attributes to the sidecar on disk");
         entry.Attributes!["person"].Should().Contain("maria");
     }
 

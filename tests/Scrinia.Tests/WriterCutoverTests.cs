@@ -24,10 +24,10 @@ namespace Scrinia.Tests;
 /// same directory on disk during these tests (TestHelpers.StoreScope's TempDir). The tools
 /// under test persist through <c>store.Upsert(...)</c> — <c>FileMemoryStore.Upsert</c> — which
 /// just serializes the given entry straight to its sidecar; it does not call Forward either. So
-/// the only way <c>Fields</c> can already contain "tag"/"review"/"anchor"/"file" keys when read
+/// the only way <c>Attributes</c> can already contain "tag"/"review"/"anchor"/"file" keys when read
 /// back through <see cref="ReadSidecarDirect"/> is if the tool itself (Store/UpdateMeta/
 /// Append) called Forward on the entry before persisting it — which is exactly what this
-/// task adds. Before that change, these assertions fail because Fields lacks those
+/// task adds. Before that change, these assertions fail because Attributes lacks those
 /// param-derived keys (only keyword/ref/attribute-derived keys are present at write time).
 /// </summary>
 public sealed class WriterCutoverTests
@@ -67,7 +67,7 @@ public sealed class WriterCutoverTests
         // Raw sidecar read — bypasses FileMemoryStore's read-time Forward entirely (see class doc).
         var persisted = ReadSidecarDirect(scope.TempDir, "writer-cutover-store");
 
-        // Fields populated AT WRITE.
+        // Attributes populated AT WRITE.
         persisted.Attributes.Should().NotBeNull();
         persisted.Attributes!["tag"].Should().Contain("widgets");
         persisted.Attributes!["review"].Should().NotBeEmpty();
@@ -140,7 +140,7 @@ public sealed class WriterCutoverTests
 
         // EphemeralEntry is in-memory-only and never forward-filled at read time — assert
         // directly against the store, not through a ListEphemeral projection (that projection
-        // still drops Fields and is fixed in Task 4).
+        // still drops Attributes and is fixed in Task 4).
         var entry = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-store");
         entry.Should().NotBeNull();
 
@@ -177,13 +177,13 @@ public sealed class WriterCutoverTests
 
     /// <summary>
     /// Task 4 (P6.3 follow-up): <c>EphemeralEntry</c> never passes through the read-time
-    /// forward-fill (it's in-memory only), so the <c>Fields</c> populated at write time by
+    /// forward-fill (it's in-memory only), so the <c>Attributes</c> populated at write time by
     /// Task 2 are only observable through search/display if the <c>ListEphemeral</c>
     /// projection (<c>EphemeralEntry</c> → <c>ArtifactEntry</c>) actually carries them.
-    /// Pre-Task-4 this projection drops <c>Fields</c> entirely — this test exercises the real
+    /// Pre-Task-4 this projection drops <c>Attributes</c> entirely — this test exercises the real
     /// production projection (<see cref="FileMemoryStore.ListEphemeral"/>, reached here via
     /// <see cref="FileMemoryStore.ListScoped(string?)"/>, the same path the MCP list/search/
-    /// summary tools use) and fails until the projection carries <c>Fields</c> through.
+    /// summary tools use) and fails until the projection carries <c>Attributes</c> through.
     /// </summary>
     [Fact]
     public async Task ListEphemeral_Projection_CarriesFieldsFromEphemeralEntry()
@@ -207,9 +207,17 @@ public sealed class WriterCutoverTests
 
     /// <summary>
     /// Task 4: <c>CopyMemory</c>'s explicit-ctor ephemeral→persistent promotion path
-    /// (<see cref="FileMemoryStore.CopyMemory"/>) must also carry <c>Fields</c> from the
+    /// (<see cref="FileMemoryStore.CopyMemory"/>) must also carry <c>Attributes</c> from the
     /// source <c>EphemeralEntry</c> onto the newly-constructed persistent <c>ArtifactEntry</c>
     /// — otherwise attributes written at Task 2 would be silently lost on promotion.
+    ///
+    /// Task 11: widened to assert every one of <see cref="ArtifactEntry"/>'s thirteen members —
+    /// the destination-synthesized ones (<c>Name</c>, <c>Uri</c>, <c>CreatedAt</c>, <c>ChunkCount</c>)
+    /// against their expected synthesized values, and the carried ones against the source
+    /// ephemeral entry captured before the copy. Previously this asserted only two keys inside
+    /// one field (<c>Attributes["tag"]</c>/<c>["anchor"]</c>), so the other twelve members —
+    /// including <c>TermFrequencies</c>, which BM25 scores against — could be dropped on
+    /// promotion and this test would stay green.
     /// </summary>
     [Fact]
     public async Task CopyMemory_EphemeralToPersistent_CarriesFields()
@@ -222,12 +230,30 @@ public sealed class WriterCutoverTests
             tags: ["widgets"],
             anchors: ["how does the widget subsystem work"]);
 
+        var source = MemoryStoreContext.Current!.GetEphemeral("writer-cutover-eph-copy");
+        source.Should().NotBeNull();
+
+        var beforeCopy = DateTimeOffset.UtcNow;
         await Tools().Copy("~writer-cutover-eph-copy", "writer-cutover-copy-dest");
 
         var persisted = ReadSidecarDirect(scope.TempDir, "writer-cutover-copy-dest");
 
-        persisted.Attributes.Should().NotBeNull();
-        persisted.Attributes!["tag"].Should().Contain("widgets");
-        persisted.Attributes!["anchor"].Should().Contain("how does the widget subsystem work");
+        // Destination-synthesized fields — not carried from the source, computed for the copy.
+        persisted.Name.Should().Be("writer-cutover-copy-dest");
+        persisted.Uri.Should().Be(MemoryStoreContext.Current!.ArtifactUri("writer-cutover-copy-dest"));
+        persisted.CreatedAt.Should().BeOnOrAfter(beforeCopy);
+        persisted.ChunkCount.Should().Be(source!.ChunkCount);
+
+        // Carried fields — every one must match what the source ephemeral entry held.
+        persisted.OriginalBytes.Should().Be(source.OriginalBytes);
+        persisted.ContentPreview.Should().Be(source.ContentPreview);
+        persisted.Keywords.Should().BeEquivalentTo(source.Keywords);
+        persisted.TermFrequencies.Should().BeEquivalentTo(source.TermFrequencies,
+            because: "this is what BM25 scores against — dropping it makes the promoted memory unfindable");
+        persisted.UpdatedAt.Should().Be(source.UpdatedAt);
+        persisted.ChunkEntries.Should().BeEquivalentTo(source.ChunkEntries);
+        persisted.FileHashes.Should().BeEquivalentTo(source.FileHashes);
+        persisted.Attributes.Should().BeEquivalentTo(source.Attributes);
+        persisted.AgentKeywords.Should().BeEquivalentTo(source.AgentKeywords);
     }
 }
