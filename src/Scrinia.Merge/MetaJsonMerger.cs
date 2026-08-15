@@ -33,7 +33,17 @@ public static class MetaJsonMerger
         //
         // Expressed as the exact complement (`< threshold` here, `>= threshold` there) so the two
         // agree on the boundary itself, which is where an admission gate is worth getting wrong.
-        double jaccard = KeywordJaccard.Compute(GetStrings(ours, "keywords"), GetStrings(theirs, "keywords"));
+        //
+        // MALFORMED keywords (present but not an array, including an explicit JSON null) must
+        // escalate rather than be silently treated as absent — see TryGetStrings. reconcile()'s
+        // auto-resolver reads the identical shape through MemoryTools.Lifecycle.TryReadStrings, a
+        // deliberate mirror of this check, so the two mergers agree on malformed input the same way
+        // they agree on well-formed keyword arrays.
+        if (!TryGetStrings(ours, "keywords", out var oursKeywords) ||
+            !TryGetStrings(theirs, "keywords", out var theirsKeywords))
+            return MergeResult.Conflict;
+
+        double jaccard = KeywordJaccard.Compute(oursKeywords, theirsKeywords);
         if (jaccard < config.JaccardThreshold)
             return MergeResult.Conflict;
 
@@ -58,12 +68,17 @@ public static class MetaJsonMerger
         // it, because a reader treats a non-null list as the complete answer, so merging known
         // with unknown would positively assert that the unrecorded side'''s curated keywords were
         // auto-extracted and demote them with no way to tell anything was lost.
+        // keywords was already validated above (oursKeywords/theirsKeywords) by the admission gate;
+        // reused here rather than re-read.
         var keywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kw in GetStrings(ours, "keywords") ?? []) if (!string.IsNullOrWhiteSpace(kw)) keywords.Add(kw);
-        foreach (var kw in GetStrings(theirs, "keywords") ?? []) if (!string.IsNullOrWhiteSpace(kw)) keywords.Add(kw);
+        foreach (var kw in oursKeywords ?? []) if (!string.IsNullOrWhiteSpace(kw)) keywords.Add(kw);
+        foreach (var kw in theirsKeywords ?? []) if (!string.IsNullOrWhiteSpace(kw)) keywords.Add(kw);
 
-        string[]? oursAgent = GetStrings(ours, "agentKeywords");
-        string[]? theirsAgent = GetStrings(theirs, "agentKeywords");
+        // MALFORMED agentKeywords (present but not an array, including an explicit JSON null) must
+        // escalate rather than be silently treated as absent — same rule as keywords above.
+        if (!TryGetStrings(ours, "agentKeywords", out var oursAgent) ||
+            !TryGetStrings(theirs, "agentKeywords", out var theirsAgent))
+            return MergeResult.Conflict;
         HashSet<string>? agentKeywords = null;
         if (oursAgent is not null && theirsAgent is not null)
         {
@@ -152,13 +167,31 @@ public static class MetaJsonMerger
     private static long? GetLong(JsonObject? o, string key) =>
         o is not null && o.TryGetPropertyValue(key, out var n) && n is JsonValue v && v.TryGetValue<long>(out var i) ? i : null;
 
-    private static string[]? GetStrings(JsonObject? o, string key)
+    /// <summary>Reads a keywords/agentKeywords-shaped JSON value into a string array. Returns true
+    /// for ABSENT (<paramref name="value"/> is null; load-bearing for <c>agentKeywords</c>, where
+    /// absent means UNKNOWN provenance) and for a well-formed JSON array (non-string elements are
+    /// skipped). Returns false for MALFORMED input — present but not a JSON array, including an
+    /// explicit JSON <c>null</c> — so the caller can escalate to conflict instead of silently
+    /// treating a foreign writer's malformed <c>keywords</c> as absent.
+    ///
+    /// <para><c>reconcile()</c>'s auto-resolver reads the same shape through
+    /// <c>MemoryTools.Lifecycle.TryReadStrings</c>, a deliberate mirror of this method's
+    /// <c>TryGetPropertyValue</c>-before-inspecting-the-value shape, for the same reason
+    /// <see cref="TryGetTimestampString"/> and <see cref="TryGetIntMap"/> use it: the plain indexer
+    /// cannot tell "absent" from "present but null" apart.</para></summary>
+    private static bool TryGetStrings(JsonObject? o, string key, out string[]? value)
     {
-        if (o is null || !o.TryGetPropertyValue(key, out var n) || n is not JsonArray arr) return null;
+        value = null;
+        if (o is null || !o.TryGetPropertyValue(key, out var n))
+            return true; // absent
+        if (n is not JsonArray arr)
+            return false; // malformed: present but not a JSON array (includes an explicit JSON null)
+
         var list = new List<string>(arr.Count);
         foreach (var el in arr)
             if (el is JsonValue v && v.TryGetValue<string>(out var s)) list.Add(s);
-        return list.ToArray();
+        value = list.ToArray();
+        return true;
     }
 
     private static void SetString(JsonObject o, string key, string? value)

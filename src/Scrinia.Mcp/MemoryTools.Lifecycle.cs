@@ -532,7 +532,7 @@ public sealed partial class ScriniaMcpTools
     /// case (e.g. both <c>"keywords"</c> and <c>"Keywords"</c>) — <c>JsonNode.Parse</c> succeeds,
     /// and the property dictionary throws <see cref="ArgumentException"/> ("An item with the same
     /// key has already been added") LAZILY, on the first property lookup. That lookup is
-    /// <see cref="ReadStrings"/> below, not the parse call above, so <c>TryExtractMetaSides</c>'s
+    /// <see cref="TryReadStrings"/> below, not the parse call above, so <c>TryExtractMetaSides</c>'s
     /// own try/catch cannot see it — the throw happens strictly after that method has already
     /// returned. Both callers of this method (<see cref="ResolveConflictByPath"/> and the
     /// <see cref="ScanForConflicts"/> loop) call it unguarded, so an uncaught throw here would
@@ -548,8 +548,14 @@ public sealed partial class ScriniaMcpTools
 
         try
         {
-            return SidecarAdmission.IsSimilarEnough(
-                ReadStrings(oursNode, "keywords"), ReadStrings(theirsNode, "keywords"), threshold);
+            if (!TryReadStrings(oursNode, "keywords", out var oursKeywords) ||
+                !TryReadStrings(theirsNode, "keywords", out var theirsKeywords))
+                // MALFORMED keywords (present but not an array, including an explicit JSON null):
+                // a genuine auto-resolve failure, not a dissimilarity refusal — see the class doc
+                // above. TryComputeAutoResolvedMetaJson is the one place that escalates this.
+                return true;
+
+            return SidecarAdmission.IsSimilarEnough(oursKeywords, theirsKeywords, threshold);
         }
         catch
         {
@@ -578,9 +584,16 @@ public sealed partial class ScriniaMcpTools
             // filename while describing different memories; merging those is worse than a
             // conflict, because a conflict asks a human. Placed before any merge work so a
             // refusal is total.
+            // MALFORMED keywords (present but not an array, including an explicit JSON null) must
+            // escalate rather than be silently treated as absent — same rule as createdAt/updatedAt
+            // and termFrequencies below, applied here because the admission gate is the first place
+            // "keywords" is read.
+            if (!TryReadStrings(oursNode, "keywords", out var oursKeywordsForGate) ||
+                !TryReadStrings(theirsNode, "keywords", out var theirsKeywordsForGate))
+                return false;
+
             if (!SidecarAdmission.IsSimilarEnough(
-                    ReadStrings(oursNode, "keywords"), ReadStrings(theirsNode, "keywords"),
-                    jaccardThreshold))
+                    oursKeywordsForGate, theirsKeywordsForGate, jaccardThreshold))
                 return false;
 
             // MALFORMED createdAt/updatedAt (present but not a JSON string — including an explicit
@@ -630,9 +643,14 @@ public sealed partial class ScriniaMcpTools
             // as auto-extracted while reporting a clean merge, which is the same defect the git
             // merge driver had already been fixed for. Two implementations of this rule are forced
             // (the driver is AOT with no project references); a third was not.
+            if (!TryReadStrings(baseNode, "keywords", out var baseKeywords) ||
+                !TryReadStrings(baseNode, "agentKeywords", out var baseAgentKeywords) ||
+                !TryReadStrings(otherNode, "keywords", out var otherKeywords) ||
+                !TryReadStrings(otherNode, "agentKeywords", out var otherAgentKeywords))
+                return false;
+
             var (mergedKeywords, mergedAgentKeywords) = SidecarKeywordMerge.Union(
-                ReadStrings(baseNode, "keywords"), ReadStrings(baseNode, "agentKeywords"),
-                ReadStrings(otherNode, "keywords"), ReadStrings(otherNode, "agentKeywords"));
+                baseKeywords, baseAgentKeywords, otherKeywords, otherAgentKeywords);
 
             baseNode["keywords"] = ToJsonArray(mergedKeywords);
             if (mergedAgentKeywords is null)
@@ -672,15 +690,35 @@ public sealed partial class ScriniaMcpTools
         }
     }
 
-    /// <summary>A JSON string array as <c>string[]</c>, or null when the key is absent or is not an
-    /// array. Null is load-bearing for <c>agentKeywords</c>, where absent means UNKNOWN.</summary>
-    private static string[]? ReadStrings(JsonNode? node, string key)
+    /// <summary>Reads a keywords/agentKeywords-shaped JSON node into a string array. Returns true for
+    /// ABSENT (<paramref name="value"/> is null; load-bearing for <c>agentKeywords</c>, where absent
+    /// means UNKNOWN provenance) and for a well-formed JSON array (non-string elements are skipped).
+    /// Returns false for MALFORMED input — present but not a JSON array, including an explicit JSON
+    /// <c>null</c> — so the caller can escalate to manual resolution instead of what the
+    /// <c>node?[key]</c> indexer used to do here: return a null reference for BOTH "key absent" and
+    /// "key present with value JSON <c>null</c>," silently treating the latter as absent and letting
+    /// a foreign writer's malformed <c>keywords</c> auto-resolve on the other side's value, or (for
+    /// <c>agentKeywords</c>) be misread as UNKNOWN provenance instead of escalating.
+    ///
+    /// <para>Deliberately mirrors <see cref="TryReadTimestampString"/> and <see cref="TryReadIntMap"/>'s
+    /// two-step shape (<c>JsonObject.TryGetPropertyValue</c> before inspecting the value) for the
+    /// same reason those exist: the indexer cannot tell "absent" from "present but null" apart, and
+    /// getting that wrong here would make the git merge driver and reconcile()'s auto-resolver
+    /// classify a malformed <c>keywords</c> differently — the array analogue of the divergence
+    /// <see cref="TryReadIntMap"/> closes for <c>termFrequencies</c>.</para></summary>
+    private static bool TryReadStrings(JsonNode? node, string key, out string[]? value)
     {
-        if (node?[key] is not JsonArray array) return null;
+        value = null;
+        if (node is not JsonObject nodeObj || !nodeObj.TryGetPropertyValue(key, out var raw))
+            return true; // absent
+        if (raw is not JsonArray array)
+            return false; // malformed: present but not a JSON array (includes an explicit JSON null)
+
         var values = new List<string>(array.Count);
         foreach (var element in array)
             if (element?.GetValue<string>() is string s) values.Add(s);
-        return [.. values];
+        value = [.. values];
+        return true;
     }
 
     private static JsonArray ToJsonArray(string[] values)

@@ -89,4 +89,81 @@ public sealed class SidecarAdmissionParityTests
             fields.Add($"\"keywords\":{JsonSerializer.Serialize(keywords)}");
         return "{" + string.Join(",", fields) + "}";
     }
+
+    /// <summary>
+    /// A <c>keywords</c> value that is present but not a JSON array (here, a bare string — a
+    /// hand-edited or foreign sidecar) is MALFORMED, not ABSENT. Plain <c>o.TryGetPropertyValue(key,
+    /// out var n) || n is not JsonArray arr) return null</c> (the old <c>GetStrings</c>) cannot tell
+    /// this apart from the key being missing, and would silently feed it to
+    /// <c>KeywordJaccard.Compute</c> as an empty side instead of refusing the merge. reconcile()'s
+    /// auto-resolver refuses the identical shape through
+    /// <c>MemoryTools.Lifecycle.TryReadStrings</c>, so the driver must refuse too.
+    /// Paired with <c>ReconcileMetaProvenanceTests.Reconcile_MalformedKeywords_NonArrayValue_EscalatesToManualResolution</c>.
+    /// </summary>
+    [Fact]
+    public void MalformedKeywords_NonArrayValue_RefusesTheMerge()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "keywords-malformed-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string ancestor = Path.Combine(dir, "a.meta.json");
+            string oursPath = Path.Combine(dir, "ours.meta.json");
+            string theirsPath = Path.Combine(dir, "theirs.meta.json");
+
+            File.WriteAllText(ancestor, Sidecar(null));
+            File.WriteAllText(oursPath,
+                "{\"name\":\"m\",\"uri\":\"\",\"originalBytes\":100,\"chunkCount\":1," +
+                "\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-02T00:00:00Z\"," +
+                "\"keywords\":\"urgent\"}");
+            File.WriteAllText(theirsPath, Sidecar(["auth"]));
+
+            MetaJsonMerger.Merge(ancestor, oursPath, theirsPath, new MergeConfig(JaccardThreshold: 0.0))
+                .Should().Be(MetaJsonMerger.MergeResult.Conflict,
+                    because: "keywords is present but not a JSON array — the driver cannot safely " +
+                             "interpret one side's intent, so it must escalate rather than silently " +
+                             "treat it as an empty keyword set");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// An explicit <c>"keywords": null</c> is a distinct shape from an absent key, exactly like
+    /// <c>createdAt: null</c> in <c>SidecarTimestampMergeParityTests</c> — <c>TryGetPropertyValue</c>
+    /// returns true for a present-but-null key, and the value is then not a <c>JsonArray</c> at all
+    /// (a JSON null is a null node reference), so <c>TryGetStrings</c> reports MALFORMED for it.
+    /// Paired with <c>ReconcileMetaProvenanceTests.Reconcile_MalformedKeywords_ExplicitNull_EscalatesToManualResolution</c>.
+    /// </summary>
+    [Fact]
+    public void MalformedKeywords_ExplicitNull_RefusesTheMerge()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "keywords-null-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string ancestor = Path.Combine(dir, "a.meta.json");
+            string oursPath = Path.Combine(dir, "ours.meta.json");
+            string theirsPath = Path.Combine(dir, "theirs.meta.json");
+
+            File.WriteAllText(ancestor, Sidecar(null));
+            File.WriteAllText(oursPath,
+                "{\"name\":\"m\",\"uri\":\"\",\"originalBytes\":100,\"chunkCount\":1," +
+                "\"createdAt\":\"2026-01-01T00:00:00Z\",\"updatedAt\":\"2026-01-02T00:00:00Z\"," +
+                "\"keywords\":null}");
+            File.WriteAllText(theirsPath, Sidecar(["auth"]));
+
+            MetaJsonMerger.Merge(ancestor, oursPath, theirsPath, new MergeConfig(JaccardThreshold: 0.0))
+                .Should().Be(MetaJsonMerger.MergeResult.Conflict,
+                    because: "keywords: null is present but not a JSON array — the driver cannot " +
+                             "safely interpret one side's intent, so it must escalate rather than " +
+                             "silently treat it as an empty keyword set");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

@@ -398,4 +398,110 @@ public sealed class ReconcileMetaProvenanceTests
             because: "escalating must not write anything — the conflict markers stay in place for a " +
                      "human or an explicit choice to resolve");
     }
+
+    private const string OursNoKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}
+        """;
+
+    private const string TheirsNoKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z"}
+        """;
+
+    /// <summary>
+    /// ABSENT keywords (the key is missing on both sides) is a normal side of the admission gate and
+    /// the union, not an error — <c>KeywordJaccard.Compute(null, null)</c> treats two empty sides as
+    /// identical (1.0), and the union rule contributes nothing for a missing side. This is the
+    /// control for the two malformed-keywords tests below: it pins that the fix (escalating
+    /// MALFORMED keywords) does not also start escalating the merely-ABSENT case.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_AbsentKeywords_StillAutoResolves()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+        string conflictId = await SeedConflictAsync(scope, OursNoKeywords, TheirsNoKeywords);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("success",
+            because: "keywords absent on both sides is a normal, mergeable shape — not a foreign " +
+                     "writer's malformed input, so it must not escalate");
+    }
+
+    private const string TheirsExplicitNullKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":null}
+        """;
+
+    /// <summary>
+    /// An explicit <c>"keywords": null</c> is a distinct shape from an absent key, exactly like
+    /// <c>termFrequencies: null</c> and <c>createdAt: null</c> above — but before this fix,
+    /// <c>ReadStrings</c> used the <c>node?[key]</c> indexer, which returns a null reference for BOTH
+    /// "absent" and "present but JSON null," so a foreign writer's explicit <c>null</c> was silently
+    /// read as ABSENT and the conflict auto-resolved on the other side's keywords with no way to tell
+    /// a hand-edit or foreign write happened at all.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_MalformedKeywords_ExplicitNull_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+        string conflictId = await SeedConflictAsync(scope, OursNoKeywords, TheirsExplicitNullKeywords);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "an explicit keywords: null is not the same as the key being absent — treating " +
+                     "it as absent would silently auto-resolve on the other side's keywords instead " +
+                     "of escalating a shape the merger did not produce and cannot safely interpret");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
+
+    private const string TheirsNonArrayKeywords = """
+        {"name":"auth-flow","uri":"","originalBytes":10,"chunkCount":1,
+        "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-03T00:00:00Z",
+        "keywords":"urgent"}
+        """;
+
+    /// <summary>
+    /// A <c>keywords</c> value that is present but not a JSON array (here, a bare string — a
+    /// hand-edited or foreign sidecar) is MALFORMED, not ABSENT. Before this fix, <c>node?[key] is
+    /// not JsonArray array</c> returned <c>null</c> for this exact input, indistinguishable from the
+    /// key being missing, so the conflict silently auto-resolved on the other side's keywords instead
+    /// of escalating input the merger did not produce and cannot safely interpret.
+    /// </summary>
+    [Fact]
+    public async Task Reconcile_MalformedKeywords_NonArrayValue_EscalatesToManualResolution()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        string scriniaDir = Path.Combine(scope.WorkspaceDir, ".scrinia");
+        Directory.CreateDirectory(scriniaDir);
+        File.WriteAllText(Path.Combine(scriniaDir, "merge.config"), "{\"jaccardThreshold\":0.0}");
+        string conflictId = await SeedConflictAsync(scope, OursNoKeywords, TheirsNonArrayKeywords);
+
+        string result = await Tools().MemoryReconcile(conflictId: conflictId);
+
+        ResponseParser.Parse(result).Status.Should().Be("error",
+            because: "a keywords value that isn't a readable JSON array means the auto-resolver " +
+                     "cannot safely interpret one side's intent, so the conflict must escalate to " +
+                     "manual resolution rather than silently resolving on the other side's value");
+
+        string path = Path.Combine(scope.WorkspaceDir, ".scrinia",
+            conflictId.Replace('/', Path.DirectorySeparatorChar));
+        (await File.ReadAllTextAsync(path)).Should().Contain("<<<<<<<",
+            because: "escalating must not write anything — the conflict markers stay in place for a " +
+                     "human or an explicit choice to resolve");
+    }
 }
