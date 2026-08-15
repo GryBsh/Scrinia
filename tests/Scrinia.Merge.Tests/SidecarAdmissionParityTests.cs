@@ -19,15 +19,27 @@ namespace Scrinia.Merge.Tests;
 /// threshold</c> admits — so the <see cref="Cases"/> theory deliberately includes the boundary
 /// itself, which is the value a hand-copied predicate gets wrong first. Every theory case drives
 /// the FULL merge driver over sidecars that differ only in their keyword lists, so the driver's
-/// other rules are no-ops and what is compared is exactly the shared rule.</para>
+/// other rules are no-ops and the driver's verdict turns on this rule alone.</para>
 ///
-/// <para>The standalone <c>[Fact]</c>s below it pin a narrower, JSON-shape-specific divergence:
-/// malformed <c>keywords</c>/<c>agentKeywords</c> input (not merely a disjoint or empty array).
-/// <see cref="Cases"/> cannot express these — it feeds Core's side typed <c>string[]?</c> arrays
-/// directly and only the driver side JSON, so it cannot detect a divergence in how the two
-/// projects READ a malformed value off disk. These facts are necessarily driver-only for the
-/// driver half; each is paired with a reconcile-side case in
-/// <c>ReconcileMetaProvenanceTests</c> that drives the same input through <c>reconcile()</c>.</para>
+/// <para><b>What this file is NOT, corrected.</b> It compares the driver's full pipeline against a
+/// bare predicate, and it builds the two sides' inputs SEPARATELY —
+/// <c>SidecarAdmission.IsSimilarEnough</c> is handed typed <c>string[]?</c> arrays while the driver
+/// is handed hand-written JSON. Two inputs that look alike are not one input. It also omits the
+/// rule's OTHER production caller, <c>reconcile()</c>'s auto-resolver, entirely. Two claims this doc
+/// used to make have been removed as false: that "what is compared is exactly the shared rule" (what
+/// is compared is a pipeline against a predicate), and that each standalone <c>[Fact]</c> below "is
+/// paired with a reconcile-side case in <c>ReconcileMetaProvenanceTests</c> that drives the same
+/// input through <c>reconcile()</c>" — the paired cases share the malformed value and nothing else:
+/// different <c>name</c>, different <c>originalBytes</c>, and a counterpart side that is a
+/// present array here and an absent key there.</para>
+///
+/// <para><b>Where whole-document parity actually lives.</b>
+/// <c>Scrinia.Tests.MetaMergeSymmetricParityTests</c> drives ONE pair of <c>.meta.json</c> strings
+/// through BOTH real mergers — <see cref="MetaJsonMerger.Merge"/> and <c>reconcile()</c> end to end
+/// — and compares the documents they write, including the malformed-input cases below. That is the
+/// suite to extend when a merge rule changes. This file is kept for what it is genuinely good at:
+/// pinning the admission predicate's boundary value against the driver, cheaply and without a
+/// workspace.</para>
 /// </summary>
 public sealed class SidecarAdmissionParityTests
 {
@@ -106,7 +118,8 @@ public sealed class SidecarAdmissionParityTests
     /// <c>KeywordJaccard.Compute</c> as an empty side instead of refusing the merge. reconcile()'s
     /// auto-resolver refuses the identical shape through
     /// <c>MemoryTools.Lifecycle.TryReadStrings</c>, so the driver must refuse too.
-    /// Paired with <c>ReconcileMetaProvenanceTests.Reconcile_MalformedKeywords_NonArrayValue_EscalatesToManualResolution</c>.
+    /// The reconcile-side analogue — a DIFFERENT fixture, not the same
+    /// input; see this class's doc — is <c>ReconcileMetaProvenanceTests.Reconcile_MalformedKeywords_NonArrayValue_EscalatesToManualResolution</c>.
     /// </summary>
     [Fact]
     public void MalformedKeywords_NonArrayValue_RefusesTheMerge()
@@ -146,7 +159,8 @@ public sealed class SidecarAdmissionParityTests
     ///
     /// <para>Deliberately puts the malformed value on <c>theirs</c> — the non-array-value case above
     /// puts it on <c>ours</c> — so a check that only reads one of the two sides cannot pass both
-    /// tests. Paired with
+    /// tests. The reconcile-side analogue — a DIFFERENT fixture, not the same
+    /// input; see this class's doc — is
     /// <c>ReconcileMetaProvenanceTests.Reconcile_MalformedKeywords_ExplicitNull_EscalatesToManualResolution</c>.
     /// </para>
     /// </summary>
@@ -189,7 +203,8 @@ public sealed class SidecarAdmissionParityTests
     /// reconcile()'s auto-resolver happened to throw on the same input and get caught by a broad
     /// outer catch, so the two mergers reached the same escalated outcome by accident rather than by
     /// a shared rule. Both now refuse explicitly.
-    /// Paired with <c>ReconcileMetaProvenanceTests.Reconcile_MalformedKeywords_NonStringElement_EscalatesToManualResolution</c>.
+    /// The reconcile-side analogue — a DIFFERENT fixture, not the same
+    /// input; see this class's doc — is <c>ReconcileMetaProvenanceTests.Reconcile_MalformedKeywords_NonStringElement_EscalatesToManualResolution</c>.
     /// </summary>
     [Fact]
     public void MalformedKeywords_NonStringElement_RefusesTheMerge()
@@ -227,7 +242,8 @@ public sealed class SidecarAdmissionParityTests
     /// absent would be misclassified as UNKNOWN instead of escalating. The admission gate only reads
     /// <c>keywords</c>, so both sides here carry an identical, valid <c>keywords</c> array to reach
     /// the union code where <c>agentKeywords</c> is actually read.
-    /// Paired with <c>ReconcileMetaProvenanceTests.Reconcile_MalformedAgentKeywords_ExplicitNull_EscalatesToManualResolution</c>.
+    /// The reconcile-side analogue — a DIFFERENT fixture, not the same
+    /// input; see this class's doc — is <c>ReconcileMetaProvenanceTests.Reconcile_MalformedAgentKeywords_ExplicitNull_EscalatesToManualResolution</c>.
     /// </summary>
     [Fact]
     public void MalformedAgentKeywords_ExplicitNull_RefusesTheMerge()
@@ -260,7 +276,8 @@ public sealed class SidecarAdmissionParityTests
     }
 
     /// <summary>The non-array-value twin of the explicit-null case above, for the same field.
-    /// Paired with <c>ReconcileMetaProvenanceTests.Reconcile_MalformedAgentKeywords_NonArrayValue_EscalatesToManualResolution</c>.
+    /// The reconcile-side analogue — a DIFFERENT fixture, not the same
+    /// input; see this class's doc — is <c>ReconcileMetaProvenanceTests.Reconcile_MalformedAgentKeywords_NonArrayValue_EscalatesToManualResolution</c>.
     /// </summary>
     [Fact]
     public void MalformedAgentKeywords_NonArrayValue_RefusesTheMerge()

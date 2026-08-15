@@ -9,6 +9,14 @@ namespace Scrinia.Merge.Tests;
 /// The timestamp rule exists twice and must pick once. These cases include the two the old
 /// implementations disagreed about: equal instants written in different offsets, and a createdAt
 /// that differs between sides.
+///
+/// <para><b>What this cannot see.</b> Core is handed <c>string?</c>s and the driver hand-written
+/// JSON — two inputs, not one — and <c>reconcile()</c> is absent. reconcile reaches this same rule
+/// for the merged pair, but selects its BASE NODE with a bare
+/// <c>DateTimeOffset.TryParse(oursUpdated, …)</c> (<c>MemoryTools.Lifecycle.cs:617-618</c>) — no
+/// <c>InvariantCulture</c>, no <c>AssumeUniversal|AdjustToUniversal</c> — which is a THIRD parsing
+/// rule, and the one that decides which side's unmerged fields survive. Nothing here runs it.
+/// <c>Scrinia.Tests.MetaMergeSymmetricParityTests</c> drives one input through both mergers.</para>
 /// </summary>
 public sealed class SidecarTimestampMergeParityTests
 {

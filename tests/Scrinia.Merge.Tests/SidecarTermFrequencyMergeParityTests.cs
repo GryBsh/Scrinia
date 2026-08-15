@@ -9,8 +9,17 @@ namespace Scrinia.Merge.Tests;
 /// The term-frequency merge rule exists twice and must behave once.
 ///
 /// <para>Each case drives the FULL merge driver over sidecars that are identical except for the
-/// termFrequencies maps, so the driver's other rules are no-ops and what is compared is exactly
-/// the shared rule. The Jaccard threshold is dropped to zero so every case reaches it.</para>
+/// termFrequencies maps, so the driver's other rules are no-ops and the driver's output turns on
+/// this rule alone. The Jaccard threshold is dropped to zero so every case reaches it.</para>
+///
+/// <para><b>What this cannot see.</b> Core is handed a live <c>Dictionary</c> and the driver
+/// hand-written JSON — two inputs, not one — and <c>reconcile()</c>, the rule's other production
+/// caller, is absent. The "case-variant keys" case below is exactly where that bites: the union is
+/// keyed <c>OrdinalIgnoreCase</c> and so keeps the first-inserted key, the driver unions ours-first
+/// and reconcile base-first (<c>MemoryTools.Lifecycle.cs:675</c>), so the merged key is
+/// <c>"Auth"</c> through one merger and <c>"auth"</c> through the other. This suite passes either
+/// way. <c>Scrinia.Tests.MetaMergeSymmetricParityTests</c> drives one input through both and records
+/// it.</para>
 /// </summary>
 public sealed class SidecarTermFrequencyMergeParityTests
 {

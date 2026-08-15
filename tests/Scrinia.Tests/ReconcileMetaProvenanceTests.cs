@@ -524,7 +524,10 @@ public sealed class ReconcileMetaProvenanceTests
     /// this side happened to throw and get caught by a broad outer catch, so the two mergers reached
     /// the same escalated outcome by accident rather than by a shared rule. Both now refuse
     /// explicitly via the same <c>TryGetValue&lt;string&gt;</c> check the well-formed path already
-    /// used. Paired with <c>SidecarAdmissionParityTests.MalformedKeywords_NonStringElement_RefusesTheMerge</c>.
+    /// used. The driver-side analogue — a DIFFERENT fixture, not the same input — is
+    /// <c>SidecarAdmissionParityTests.MalformedKeywords_NonStringElement_RefusesTheMerge</c>; the
+    /// suite that drives ONE input through both mergers is
+    /// <c>MetaMergeSymmetricParityTests</c>.
     /// </summary>
     [Fact]
     public async Task Reconcile_MalformedKeywords_NonStringElement_EscalatesToManualResolution()

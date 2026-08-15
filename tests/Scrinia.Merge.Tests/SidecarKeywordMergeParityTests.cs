@@ -18,9 +18,21 @@ namespace Scrinia.Merge.Tests;
 ///
 /// <para>Each case drives the FULL merge driver over sidecars that are identical except for the two
 /// arrays, so the driver's other rules (the Jaccard gate, the three-way field merges, the timestamp
-/// picks) are no-ops and what is compared is exactly the shared rule. The Jaccard threshold is
+/// picks) are no-ops and the driver's output turns on this rule alone. The Jaccard threshold is
 /// dropped to zero so a deliberately dissimilar case reaches the rule instead of being refused
 /// before it.</para>
+///
+/// <para><b>What this cannot see.</b> The two sides' inputs are built SEPARATELY — Core gets typed
+/// <c>string[]?</c> arrays, the driver gets hand-written JSON — so nothing structural stops them
+/// drifting, and <c>reconcile()</c>, the rule's other production caller, is absent. Concretely: this
+/// file calls <c>Union</c> ours-first, which matches the driver by construction rather than by
+/// contract. <c>reconcile()</c> calls it BASE-first, where the base is the timestamp winner
+/// (<c>MemoryTools.Lifecycle.cs:652-653</c>) — and because the union accumulates into a
+/// case-insensitive <c>HashSet</c>, which keeps the first-inserted casing, the "casing differs" case
+/// below resolves to <c>["Auth","JWT"]</c> through the driver and <c>["auth","jwt"]</c> through
+/// reconcile whenever theirs is newer. This suite passes either way.
+/// <c>Scrinia.Tests.MetaMergeSymmetricParityTests</c> drives one input through both mergers and
+/// records that divergence.</para>
 /// </summary>
 public sealed class SidecarKeywordMergeParityTests
 {
