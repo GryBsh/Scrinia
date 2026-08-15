@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using FluentAssertions.Execution;
 using Scrinia;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
@@ -1178,10 +1179,21 @@ public sealed class RemoteStoreToolTests
     {
         using var scope = new RemoteStoreScope();
 
+        // Both keyword lists are seeded NON-EMPTY on purpose. Two reasons, and neither is cosmetic:
+        // an absent list serializes to no JSON key at all (HttpStoreJsonContext omits nulls), so a
+        // "count is within the bound" assertion over an absent property passes on 0 and observes
+        // nothing; and MemoryDerivation.ForMetadataUpdate only grows AgentKeywords when the entry
+        // ALREADY has a non-null one (`updated.AgentKeywords is not null && …`), so a null seed
+        // makes the AgentKeywords half of the defect unreproducible. Seeded, both lists are present
+        // on the wire and can be asserted as EXACTLY the baseline — which is what makes "the links
+        // added nothing" observable, rather than "the total happens to be under 30".
         string artifact = Nmp2ChunkedEncoder.EncodeChunks(["promotable content"]);
+        string[] seededKeywords = ["promotable", "content"];
+        string[] seededAgentKeywords = ["promotable"];
         scope.Store.RememberEphemeral("srcmem", new EphemeralEntry(
             Name: "srcmem", Artifact: artifact, OriginalBytes: 18, ChunkCount: 1,
-            CreatedAt: DateTimeOffset.UtcNow));
+            CreatedAt: DateTimeOffset.UtcNow,
+            Keywords: seededKeywords, AgentKeywords: seededAgentKeywords));
 
         // One link past the bound, which is the smallest count that can cross it — and the shape
         // the reviewer measured (31 links to a 133-character name).
@@ -1212,24 +1224,50 @@ public sealed class RemoteStoreToolTests
         using var doc = JsonDocument.Parse(body);
         var carried = doc.RootElement.GetProperty("entry");
 
-        CarriedArrayLength(carried, "keywords").Should().BeLessThanOrEqualTo(
-            TextAnalysis.DefaultMaxMergedKeywords,
-            because: "MemoryEndpoints.MaxCarriedKeywords is this constant, and a body past it is " +
-                     "the 400 that made a legitimate locally-produced ephemeral unpromotable");
-        CarriedArrayLength(carried, "agentKeywords").Should().BeLessThanOrEqualTo(
-            TextAnalysis.DefaultMaxMergedKeywords,
-            because: "the same bound applies to agentKeywords, and the same degradation grew it");
+        // Equality with the seed, not "≤ 30". The bound is what the server enforces, but the
+        // property this fix guarantees is stronger and is the one worth pinning: 31 links added
+        // NOTHING to either list. Pre-fix these carried 33 and 32.
+        //
+        // Inside an AssertionScope so BOTH are evaluated and both report. Chained bare, the
+        // agentKeywords assertion never runs when the keywords one fails — which is exactly what
+        // happened when this test was first written, and it is how an assertion gets believed
+        // without ever having executed.
+        using (new AssertionScope())
+        {
+            CarriedStrings(carried, "keywords").Should().Equal(seededKeywords,
+                because: "MemoryEndpoints.MaxCarriedKeywords is TextAnalysis.DefaultMaxMergedKeywords " +
+                         "(30) and a body past it earns the 400 that made a legitimate " +
+                         "locally-produced ephemeral unpromotable — the links must contribute nothing");
+            CarriedStrings(carried, "agentKeywords").Should().Equal(seededAgentKeywords,
+                because: "MemoryDerivation.ForMetadataUpdate unions every newly added keyword into " +
+                         "AgentKeywords, which the same wire bound covers");
+        }
+
+        CarriedStrings(carried, "keywords").Should().HaveCountLessThanOrEqualTo(
+            TextAnalysis.DefaultMaxMergedKeywords);
 
         body.Should().Contain("\"ref\"",
             because: "the references themselves must still be on the wire, as attributes");
     }
 
-    /// <summary>Length of a carried string array, or 0 when the property is absent —
-    /// <c>HttpStoreJsonContext</c> omits nulls, so an untouched list has no key at all.</summary>
-    private static int CarriedArrayLength(JsonElement entry, string property) =>
-        entry.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Array
-            ? value.GetArrayLength()
-            : 0;
+    /// <summary>
+    /// The values of a carried string array, REQUIRING the property to be present and to be an
+    /// array.
+    ///
+    /// <para>This deliberately throws rather than treating an absent property as empty. An earlier
+    /// version returned 0 for "absent", which made every assertion over it pass for two unrelated
+    /// reasons — the list really was within bounds, or the field had been renamed / dropped from
+    /// <c>CarriedEntryDto</c> and was not on the wire at all. A test whose subject can silently
+    /// vanish is not pinning the wire shape.</para>
+    /// </summary>
+    private static string[] CarriedStrings(JsonElement entry, string property)
+    {
+        entry.TryGetProperty(property, out var value).Should().BeTrue(
+            because: $"'{property}' must be present in the carried entry — this test is about what " +
+                     "that array contains, so its absence is a broken test, not a passing one");
+        value.ValueKind.Should().Be(JsonValueKind.Array);
+        return [.. value.EnumerateArray().Select(e => e.GetString()!)];
+    }
 
     /// <summary>A missing client-side source has nothing to ask the server about — sending a bare
     /// name and letting the server resolve it is exactly how the old path found an unrelated,

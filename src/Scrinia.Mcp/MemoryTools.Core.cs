@@ -307,9 +307,18 @@ public sealed partial class ScriniaMcpTools
     /// <paramref name="keywords"/> is the indirect one, where a <c>key:value</c>-shaped element is
     /// routed by <see cref="AttributeExtractor.RouteKeywords"/>. Both are supported and they merge
     /// together, but a caller that knows it wants an attribute should say so: routing is
-    /// CONDITIONAL — past <see cref="AttributeExtractor.MaxValueLength"/> the value degrades to a
-    /// plain keyword, which this method's keyword merge unions into <c>Keywords</c> with no cap.
-    /// See <see cref="Link"/>, which is where that degradation was actually reachable.</para>
+    /// CONDITIONAL — past <see cref="AttributeExtractor.MaxValueLength"/>, or for a value starting
+    /// <c>//</c>, the element is NOT routed and stays a plain keyword.</para>
+    ///
+    /// <para><b>The bound a caller must respect</b>, because nothing here enforces it: whatever
+    /// arrives as a plain keyword is unioned into <c>Keywords</c> UNCAPPED, and
+    /// <see cref="MemoryDerivation.ForMetadataUpdate"/> unions the same terms into
+    /// <c>AgentKeywords</c> uncapped. Keep the entry's total at or under
+    /// <see cref="TextAnalysis.DefaultMaxMergedKeywords"/> (30) — past it the memory can no longer
+    /// be promoted to a remote store, because <c>MemoryEndpoints.MaxCarriedKeywords</c> is that same
+    /// constant and answers 400, which <see cref="Copy"/> surfaces as
+    /// <see cref="ErrorCodes.Internal"/>. See the comment on the union itself in
+    /// <see cref="ApplyMetadataMutation"/>.</para>
     /// </summary>
     internal Task<McpResponse> UpdateMeta(
         [Description("Memory name (e.g. '/api/auth-flow', 'session-notes').")] string name,
@@ -405,7 +414,7 @@ public sealed partial class ScriniaMcpTools
                 "remember({ path: '...', content: [...] }) to create it"));
 
         if (changes.Count == 0)
-            return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, description, reviewAfter, reviewWhen."));
+            return Task.FromResult(ResponseBuilder.Warning("No changes specified. Provide at least one of: keywords, attributes, description, reviewAfter, reviewWhen."));
 
         // Found, had something to change, and the store still would not persist it. Remotely that
         // now means the server REFUSED the metadata write rather than that no channel exists —
@@ -476,6 +485,20 @@ public sealed partial class ScriniaMcpTools
         var incomingAttributes = KnownAttributes.Merge(
             routedAttributes, KnownAttributes.Normalize(attributes));
 
+        // NO CAP HERE, BY RULING — and this is the constraint a new caller has to respect, because
+        // nothing downstream will enforce it. A caller that drives an entry's total past
+        // TextAnalysis.DefaultMaxMergedKeywords (30) makes that memory UNPROMOTABLE: a `~name` is
+        // promoted by HttpMemoryStore.CopyMemory, which puts Keywords and AgentKeywords straight
+        // onto the wire, and MemoryEndpoints.CarriedEntryBoundsError refuses more than
+        // MemoryEndpoints.MaxCarriedKeywords of either — that constant IS
+        // TextAnalysis.DefaultMaxMergedKeywords, so the two cannot drift. The 400 it answers with
+        // then reaches the agent as ErrorCodes.Internal (MemoryTools.Copy), naming nothing
+        // actionable. Every OTHER write path merges through TextAnalysis.MergeKeywordsWithSource,
+        // which caps at that same constant; this union and ForMetadataUpdate's AgentKeywords union
+        // downstream of it are the only two that do not. link() used to be the one production
+        // caller that got here, by minting a ref:-shaped keyword that degraded past
+        // AttributeExtractor.MaxValueLength; it writes the attribute directly now, so today the
+        // only callers are tests.
         string[]? mergedKeywords = entry.Keywords;
         if (plainAdds is { Length: > 0 })
         {

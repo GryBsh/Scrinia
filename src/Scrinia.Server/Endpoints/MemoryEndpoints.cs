@@ -54,7 +54,8 @@ public static class MemoryEndpoints
     /// (<see cref="TextAnalysis.DefaultMaxMergedKeywords"/>), not <see cref="AnalyzeText"/>'s
     /// topN=25, which bounds only the auto half before agent keywords are merged in. A memory with
     /// 5+ agent keywords legitimately lands 26-30 total locally.
-    /// <para><b>Why no local write can exceed it (was a residual; closed by Task 14).</b> One
+    /// <para><b>Why no local WRITE can exceed it, and the one read that still can (was a residual;
+    /// narrowed by Task 14).</b> One
     /// mutation in the codebase adds keywords without a cap: <c>ApplyMetadataMutation</c>'s keyword
     /// merge in <c>MemoryTools.Core.cs</c>, whose additions <c>MemoryDerivation.ForMetadataUpdate</c>
     /// then unions into <c>AgentKeywords</c> — neither union caps. Its one production caller was
@@ -68,10 +69,25 @@ public static class MemoryEndpoints
     /// <c>keywords</c> at all — it is <c>internal</c>, has no MCP tool and no CLI command, and the
     /// only remaining callers are this repo's tests. Every OTHER write path
     /// (<c>remember</c>, <c>append</c>) merges through <see cref="TextAnalysis.MergeKeywordsWithSource"/>,
-    /// which caps at this same constant, and both other <c>TryUpdateEntry</c> mutations
-    /// (<c>EntityTypingEventHandler</c>, <c>MaintenanceEventSink</c>) only change attributes or
-    /// REMOVE a keyword. So the bound is now a genuine parity guard on every route, not only on
-    /// this one.</para></summary>
+    /// which caps at this same constant. The four remaining <c>TryUpdateEntry</c> call sites in
+    /// <c>src/</c> all leave the keyword count where they found it or lower:
+    /// <c>EntityTypingEventHandler</c> and <c>MaintenanceEventSink</c>'s first write change only
+    /// attributes, <c>MaintenanceEventSink</c>'s second write only REMOVES the legacy
+    /// <c>orphan</c> keyword, <c>MemoryTools.Exists</c> passes a mutation that returns null, and
+    /// <see cref="PatchEntry"/> — in this file — refuses a keyword change outright.</para>
+    ///
+    /// <para><b>The limit of that claim.</b> It is about what this codebase WRITES today, not about
+    /// what it can READ. <c>AttributeMigration.Forward</c> forward-fills a
+    /// <c>RecommendedKeys</c>-shaped keyword into <c>Attributes</c> but deliberately LEAVES the
+    /// keyword in place, and applies no count bound; so a pre-Task-14 sidecar already on disk,
+    /// carrying 31+ <c>ref:&lt;long&gt;</c> keywords from the defect this comment describes, still
+    /// reads back with them intact. Demote it to an ephemeral with <c>copy()</c> and promote it
+    /// again and this bound fires on data no current write path could produce. Guarding
+    /// <c>Forward</c> by length was considered and rejected: it would silently DROP references from
+    /// legacy entries, which is the harm <see cref="KnownAttributes.MaxValuesPerKey"/>'s own doc
+    /// argues against, and <c>Forward</c> adds no keyword — it only reads one that is already
+    /// there. Migrating such an entry is a re-<c>remember</c>, which re-derives through the capped
+    /// path.</para></summary>
     private const int MaxCarriedKeywords = TextAnalysis.DefaultMaxMergedKeywords;
 
     /// <summary>Top-level Description. No local ceiling exists — <c>MemoryDerivation.cs:152-154</c>
