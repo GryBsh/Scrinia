@@ -55,7 +55,8 @@ public static class MemoryEndpoints
     /// topN=25, which bounds only the auto half before agent keywords are merged in. A memory with
     /// 5+ agent keywords legitimately lands 26-30 total locally.
     /// <para><b>Residual (round 3 review):</b> 30 is still tighter than the local path can produce
-    /// in GENERAL — <c>MemoryTools.Core.cs:345-351</c>'s <c>update({keywords})</c> unions new
+    /// in GENERAL — <c>MemoryTools.Core.cs:452-459</c>'s keyword merge (reached via <c>link()</c>
+    /// and, in tests, direct <c>UpdateMeta</c> calls — no caller outside those two) unions new
     /// keywords into <c>entry.Keywords</c> with no cap, and <c>MemoryDerivation.cs:446-448</c> does
     /// the same for <c>AgentKeywords</c>, so a memory updated enough times locally can exceed 30
     /// either way. Unreachable through THIS route today only because <c>update()</c> refuses
@@ -313,7 +314,8 @@ public static class MemoryEndpoints
     /// from the attributes accepted above, via <see cref="MemoryDerivation.ForMetadataUpdate"/>.
     /// That is the store deriving, not the caller dictating, and it is what stops a remote
     /// metadata write — reached in production only through <c>link()</c> — from succeeding while
-    /// leaving the entry unfindable by the attribute it just added. A caller-supplied map is still discarded whole. <c>Keywords</c> is the
+    /// leaving the entry unfindable by the attribute it just added. A caller-supplied map is
+    /// still discarded whole. <c>Keywords</c> is the
     /// one field that looks caller-owned but is not: <see cref="IMemoryStore"/>'s own contract says
     /// a caller that computes keywords "has re-created the defect this branch exists to remove," and
     /// unlike <c>Description</c>/<c>Attributes</c>, the store's actual keyword pipeline

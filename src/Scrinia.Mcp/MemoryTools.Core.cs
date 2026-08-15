@@ -534,13 +534,13 @@ public sealed partial class ScriniaMcpTools
         // TermFrequencies is deliberately NOT set here. This block used to compute the BM25
         // boost for the added keywords and attributes itself — caller-side derivation, at a
         // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
-        // strings rather than index tokens (against D-14), and reachable only through this one
-        // tool. Over HTTP it could not persist at all: PATCH refuses TermFrequencies from a
-        // body, correctly, so this tool — reached only through link() in production, and
-        // directly by the tests — reported full success while silently discarding the boost,
-        // and a remote corpus ranked differently from a local one forever. MemoryDerivation.ForMetadataUpdate re-derives it — inside TryUpdateEntry on
-        // the persistent path, and at UpdateMeta's ephemeral branch, which IS the store for a
-        // ~name. Either way nothing derived crosses the wire.
+        // strings rather than index tokens (against D-14), and reachable only through UpdateMeta
+        // — no caller outside link() and the tests. Over HTTP it could not persist at all: PATCH
+        // refuses TermFrequencies from a body, correctly, so this write reported full success
+        // while silently discarding the boost, and a remote corpus ranked differently from a
+        // local one forever. MemoryDerivation.ForMetadataUpdate re-derives it — inside
+        // TryUpdateEntry on the persistent path, and at UpdateMeta's ephemeral branch, which IS
+        // the store for a ~name. Either way nothing derived crosses the wire.
         var updated = entry with
         {
             Keywords = mergedKeywords,

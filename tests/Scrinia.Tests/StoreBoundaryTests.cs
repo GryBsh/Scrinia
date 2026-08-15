@@ -23,8 +23,9 @@ namespace Scrinia.Tests;
 /// entry, discard the mutation, and still report <c>true</c>. That override used to correct the
 /// contract by failing closed; it persists for real now, over
 /// <c>GET /memories/{name}/entry</c> + <c>PATCH /memories/{name}</c>, so the MCP tool that needs a
-/// metadata-only write — <c>link()</c>, via <c>MemoryTools.UpdateMeta</c> (no caller outside it
-/// and the tests) — reports a remote success it can back up. It still returns <c>false</c> rather than
+/// metadata-only write — <c>link()</c>, via <c>MemoryTools.UpdateMeta</c> (no caller outside
+/// <c>link()</c> and the tests) — reports a remote success it can back up. It still returns
+/// <c>false</c> rather than
 /// pretending when the server refuses one: a keyword change is rejected there, because keywords are
 /// derived from content the metadata endpoint has none of. Recorded here rather than in a planning
 /// document because <c>.superpowers/</c> is gitignored: a path under it does not exist for anyone
