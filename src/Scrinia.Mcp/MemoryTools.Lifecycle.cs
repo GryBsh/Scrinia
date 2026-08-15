@@ -820,7 +820,9 @@ public sealed partial class ScriniaMcpTools
 
     // ── Maintenance tools ──────────────────────────────────────────────────
 
-    /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version.</summary>
+    /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version,
+    /// except for an ephemeral (no versions/ directory) or a persistent artifact with no index
+    /// entry yet — see <c>hadIndexedEntry</c> below.</summary>
     internal async Task<McpResponse> Compact(
         [Description("Memory name to compact.")] string name,
         [Description("Keep only the N most recent chunks. 0 = merge all into one (default).")] int keepRecent = 0,

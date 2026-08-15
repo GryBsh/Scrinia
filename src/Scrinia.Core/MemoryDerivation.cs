@@ -546,8 +546,9 @@ public static partial class MemoryDerivation
     /// entry points above, and <c>MemoryTools.UpdateMeta</c>, which is the metadata-only writer and
     /// therefore reaches none of them. It kept its own <c>DateTimeOffset.TryParse</c> for one task
     /// longer than the rest, which meant the same <c>"2026-08-01"</c> persisted as UTC through
-    /// <c>remember()</c> and as the machine's local zone through <c>update()</c> — the same defect
-    /// this ruling exists to remove, one caller over.</para>
+    /// <c>remember()</c> and as the machine's local zone through <c>MemoryTools.UpdateMeta</c>
+    /// (no caller outside <c>link()</c> and the tests) — the same defect this ruling exists to
+    /// remove, one caller over.</para>
     /// </summary>
     public static bool TryParseReviewDate(string value, out DateTimeOffset parsed) =>
         DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,

@@ -199,9 +199,10 @@ public sealed class RemoteLoadIndexTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The measured Critical this task's first pass shipped: <c>update()</c> and <c>link()</c>
-    /// reported full success remotely while silently discarding the BM25 boost they had computed
-    /// for the attribute they just added — measured <c>returned=True; attributesPersisted=True;
+    /// The measured Critical this task's first pass shipped: <c>link()</c> (<c>UpdateMeta</c>'s
+    /// only production caller) reported full success remotely while silently discarding the BM25
+    /// boost it had computed for the attribute it just added — measured
+    /// <c>returned=True; attributesPersisted=True;
     /// tfHasAcme=False</c>. Term frequencies are what BM25 scores against, so the entry became
     /// permanently unfindable by its own new attribute, and a remote corpus ranked differently from
     /// a local one forever, with nothing anywhere to say so.

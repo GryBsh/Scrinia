@@ -198,7 +198,7 @@ All commands accept `--workspace-root` to override the workspace directory and `
 | `list` | List stored memories (`summary` / `full` / `drift` modes). |
 | `append` | Append a chunk to an existing memory (or create it). |
 | `forget` | Delete a memory by path. |
-| `compact` | Merge a multi-chunk memory; archives the original. |
+| `compact` | Merge a multi-chunk memory; archives the original (except an ephemeral, or one with no prior index entry). |
 | `link` | Bidirectional link between two memories. |
 | `restore` | Resume workspace context mid-session (usually folded into `guide()` at session start). |
 | `reconcile` | Scan `.scrinia/` for git merge conflicts, or resolve one. |

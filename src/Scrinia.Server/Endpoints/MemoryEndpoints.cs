@@ -312,8 +312,8 @@ public static class MemoryEndpoints
     /// values feed the BM25 index, so <see cref="IMemoryStore.TryUpdateEntry"/> re-derives them
     /// from the attributes accepted above, via <see cref="MemoryDerivation.ForMetadataUpdate"/>.
     /// That is the store deriving, not the caller dictating, and it is what stops a remote
-    /// <c>update()</c> from succeeding while leaving the entry unfindable by the attribute it just
-    /// added. A caller-supplied map is still discarded whole. <c>Keywords</c> is the
+    /// metadata write — reached in production only through <c>link()</c> — from succeeding while
+    /// leaving the entry unfindable by the attribute it just added. A caller-supplied map is still discarded whole. <c>Keywords</c> is the
     /// one field that looks caller-owned but is not: <see cref="IMemoryStore"/>'s own contract says
     /// a caller that computes keywords "has re-created the defect this branch exists to remove," and
     /// unlike <c>Description</c>/<c>Attributes</c>, the store's actual keyword pipeline

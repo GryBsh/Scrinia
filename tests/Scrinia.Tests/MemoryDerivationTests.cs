@@ -613,7 +613,8 @@ public sealed class MemoryDerivationTests
     /// <summary>At the SAME weight every write path uses (D-08's +3 via
     /// <c>AttributeExtractor.SeedTermFrequencies</c>), not a second number. <c>UpdateMeta</c> used
     /// +5 here, so the identical attribute ranked differently depending on whether it arrived
-    /// through <c>update()</c> or through <c>remember()</c>.</summary>
+    /// through <c>UpdateMeta</c> (no caller outside <c>link()</c> and the tests) or through
+    /// <c>remember()</c>.</summary>
     [Fact]
     public void ForMetadataUpdate_SeedsAtTheSameWeightTheWritePathsUse()
     {

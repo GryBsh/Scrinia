@@ -159,7 +159,8 @@ single-chunk memory (equivalent to `store`).
 ### scri compact
 
 Merge the chunks of a multi-chunk memory back into a single chunk (or keep the N
-newest). The pre-compact version is archived first.
+newest). The pre-compact version is archived first, except for an ephemeral (`~name`)
+memory or one with no prior index entry — neither has a previous version to archive.
 
 ```bash
 scri compact <name> [--keep-recent N] [--workspace-root <path>] [--json]

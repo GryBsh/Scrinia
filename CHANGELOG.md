@@ -220,8 +220,10 @@ and all assembly attributes.
   closed fence, read YAML frontmatter and inline `code` spans as ordinary text — and the descriptions
   were rewritten again to state that once instead of route-by-route.
 - `compact`'s description no longer claims unconditionally that it archives the original. An
-  ephemeral memory has no `versions/` directory, so compacting one is irreversible; the response
-  already reported this correctly and the description now agrees with it.
+  ephemeral memory has no `versions/` directory, so compacting one is irreversible — the common,
+  user-reachable case — and, rarely, a persistent artifact with no prior index entry has no
+  previous version either; the response already reported this correctly and the description now
+  agrees with it.
 
 ### Known Issues
 
@@ -276,9 +278,10 @@ and all assembly attributes.
 - `PATCH /memories/{name}` updates a memory's description, attributes and keywords without
   rewriting its content. This is the real fix for a defect the previous branch could only fail
   closed on: `HttpMemoryStore.TryUpdateEntry` used to always return `false` because there was no
-  server-side channel to persist a metadata-only mutation through, so `update()`/`link()` against a
-  remote store either reported `NOT_SUPPORTED` or (before that) reported success while nothing
-  reached the server. Requires the `store` permission.
+  server-side channel to persist a metadata-only mutation through, so `link()` (the only production
+  caller of the internal metadata-only write, `UpdateMeta`) against a remote store either reported
+  `NOT_SUPPORTED` or (before that) reported success while nothing reached the server. Requires the
+  `store` permission.
   - The body **is** the entry — a PATCH that omits `description`, `attributes` or `keywords`
     entirely is rejected with `400` rather than treated as "leave it alone": those keys binding to
     null/default from a partial body would silently erase curated metadata (an explicit `null` is
@@ -292,7 +295,7 @@ and all assembly attributes.
   - **Operational:** updating an entry's metadata against a remote store now needs the `read` *and*
     `store` permissions (`GET .../entry` then `PATCH`), where the path it replaces went through the
     listing endpoint and needed only `search`. An API key scoped to `search` alone that previously
-    got `NOT_SUPPORTED` from `update()`/`link()` now gets a `403`.
+    got `NOT_SUPPORTED` from `link()` now gets a `403`.
 
 ### Changed (breaking) — BM25 ranking now matches between local and remote
 
@@ -306,7 +309,7 @@ and all assembly attributes.
   `anchor` at +3 (previously +2)** — one weight for every attribute value, applied the next time a
   memory is written or rewritten.
 - **A ruling, not just a consequence of unifying the pipelines:** attribute values added through
-  `update()`/`link()` previously seeded at +5 — the same weight as a curated keyword — so an
+  `link()`'s metadata-only write previously seeded at +5 — the same weight as a curated keyword — so an
   attribute added after the fact outranked the same term if it had arrived through `remember()`
   (seeded at +3). They now seed at the same +3 every write path uses. There is no longer a
   preferential lane for a metadata-only update.
@@ -457,10 +460,10 @@ and all assembly attributes.
   used to fall through to an empty list, so a `403` from the `search` permission gate made `list()`
   answer "No memories stored." for a store full of them.
 
-### Fixed — remote `link()`/`update()` reported writes that never happened
+### Fixed — remote `link()` reported writes that never happened
 
-- `MemoryTools.UpdateMeta` — reached by `update()` and by both halves of `link()` — went
-  `LoadIndex` → mutate → `Upsert` → success. It reached the no-op remote `Upsert` **directly**,
+- `MemoryTools.UpdateMeta` — no caller outside `link()` and the tests, and reached by both halves
+  of `link()` — went `LoadIndex` → mutate → `Upsert` → success. It reached the no-op remote `Upsert` **directly**,
   bypassing the `TryUpdateEntry` override above, so once `LoadIndex` was fixed to return the real
   listing, a remote `link()` answered `status: success / action: linked` while no `ref` attribute
   ever reached the server. It now routes through `TryUpdateEntry` and reports `NOT_SUPPORTED` when

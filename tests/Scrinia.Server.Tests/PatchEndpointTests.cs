@@ -246,8 +246,8 @@ public sealed class PatchEndpointTests : IAsyncLifetime
 
         // And the legitimate attribute change DID re-seed, server-side. Without this the test
         // passes just as well against a server that ignores attributes for indexing entirely,
-        // which is the defect that made a remote update() silently unfindable by its own new
-        // attribute while reporting success.
+        // which is the defect that made a remote link() (UpdateMeta's only production caller)
+        // silently unfindable by its own new attribute while reporting success.
         reread.TermFrequencies.Should().ContainKey("survives",
             because: "the promoted attribute's value tokens must reach the BM25 index, and only " +
                      "the store can put them there — the wire refuses TermFrequencies from a body");

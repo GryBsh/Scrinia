@@ -2715,8 +2715,9 @@ public sealed class ScriniaMcpToolsTests
     /// <c>e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase)</c> lookup in <c>UpdateMeta</c>
     /// never did. Once <c>UpdateMeta</c> was rerouted through <c>TryUpdateEntry</c> to fix the
     /// remote fabricated-success bug, that ordinal comparison silently narrowed the local path too:
-    /// <c>update()</c> and both halves of <c>link()</c> would answer NOT_FOUND for a case-mismatched
-    /// name that previously updated fine. This pins the user-visible symptom at the tool level, not
+    /// both halves of <c>link()</c>, and a direct test call to <c>UpdateMeta</c>, would answer
+    /// NOT_FOUND for a case-mismatched name that previously updated fine. This pins the
+    /// user-visible symptom at the tool level, not
     /// just the store method.
     /// </summary>
     [Fact]
@@ -2759,10 +2760,10 @@ public sealed class ScriniaMcpToolsTests
         review.Should().HaveCount(2);
         AttributeReaders.TryReadReview(entry.Attributes, out var reviewDate, out _).Should().BeTrue();
         reviewDate.Should().NotBeNull();
-        // UTC, on every machine — update() parses a review date through the same
+        // UTC, on every machine — UpdateMeta parses a review date through the same
         // MemoryDerivation.TryParseReviewDate rule the write paths use. This assertion used to read
         // DateTimeOffset.Parse("2026-08-01"), which resolves in the machine's LOCAL zone and so
-        // matched update()'s own local-zone parse: it passed by agreeing with the defect, and it
+        // matched UpdateMeta's own local-zone parse: it passed by agreeing with the defect, and it
         // would have passed just as happily with the two writers disagreeing about the same input.
         DateTimeOffset.Parse(review[0]).Should().Be(
             new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero));
@@ -2772,11 +2773,12 @@ public sealed class ScriniaMcpToolsTests
     /// <summary>
     /// The two writers of a <c>review</c> date persist the same STRING for the same input. D-06
     /// exists to stop MCP and REST disagreeing about a bare date; the same disagreement is possible
-    /// between two tools in one process, because <c>update()</c> is a metadata-only write and
-    /// reaches neither derivation entry point. It kept its own <c>DateTimeOffset.TryParse</c> —
+    /// between two write paths in one process, because <c>UpdateMeta</c> (no caller outside
+    /// <c>link()</c> and the tests) is a metadata-only write and reaches neither derivation entry
+    /// point. It kept its own <c>DateTimeOffset.TryParse</c> —
     /// <c>CurrentCulture</c>, local zone — for one task after the write paths adopted the invariant
     /// UTC rule, so on any machine off UTC the same <c>"2026-08-01"</c> persisted two different
-    /// values depending on which tool wrote it.
+    /// values depending on which write path wrote it.
     /// <para>Asserted on the raw persisted strings rather than on parsed instants, deliberately: a
     /// comparison of parsed values would pass even while the two writers stored different text,
     /// and the text is what a sidecar diff, an export and every other reader sees.</para>

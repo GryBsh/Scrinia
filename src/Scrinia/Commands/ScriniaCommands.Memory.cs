@@ -532,7 +532,8 @@ public partial class ScriniaCommands
         return EmitMcpResult(response, json, "append");
     }
 
-    /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version.</summary>
+    /// <summary>Compact a multi-chunk memory by merging chunks. Archives the original version,
+    /// except for an ephemeral memory or one with no prior index entry.</summary>
     /// <param name="name">Memory name to compact.</param>
     /// <param name="keepRecent">-k, Keep only the N most recent chunks. 0 = merge all into one.</param>
     /// <param name="workspaceRoot">Workspace root for .scrinia store. Defaults to cwd.</param>

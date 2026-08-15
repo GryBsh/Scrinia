@@ -202,7 +202,8 @@ public sealed class CompactCuratedKeywordTests
     }
 
     /// <summary>
-    /// A keyword added through <c>update()</c> is curated by definition, and is recorded as such —
+    /// A keyword added through <c>UpdateMeta</c> (no caller outside <c>link()</c> and the tests) is
+    /// curated by definition, and is recorded as such —
     /// otherwise the next compaction would have to guess at it, and for a term the content also
     /// yields the guess is wrong.
     /// </summary>
@@ -222,7 +223,7 @@ public sealed class CompactCuratedKeywordTests
         await Tools().Compact("update-provenance");
 
         Entry("update-provenance").TermFrequencies!["portcullis"].Should().Be(5,
-            because: "the keyword the caller added through update() is as curated as one supplied " +
+            because: "the keyword the caller added through UpdateMeta is as curated as one supplied " +
                      "to remember(), and survives the next content rewrite at agent weight");
     }
 

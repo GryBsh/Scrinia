@@ -480,8 +480,8 @@ public sealed partial class ScriniaMcpTools
         // bare date is UTC), not a bare DateTimeOffset.TryParse. This is a metadata-only write,
         // so it reaches neither derivation entry point and had kept its own parse: the same
         // "2026-08-01" persisted as UTC through remember() and as the writer's local zone
-        // through update(), which is D-06's defect surviving one caller past the ruling that
-        // removed it everywhere else.
+        // through UpdateMeta (no caller outside link() and the tests), which is D-06's defect
+        // surviving one caller past the ruling that removed it everywhere else.
         DateTimeOffset? parsedReviewAfter = existingReviewDate;
         if (!string.IsNullOrWhiteSpace(reviewAfter))
         {
@@ -536,9 +536,9 @@ public sealed partial class ScriniaMcpTools
         // weight (+5) that disagreed with the store path's (+3, D-08), seeding raw keyword
         // strings rather than index tokens (against D-14), and reachable only through this one
         // tool. Over HTTP it could not persist at all: PATCH refuses TermFrequencies from a
-        // body, correctly, so update() and link() reported full success while silently
-        // discarding the boost, and a remote corpus ranked differently from a local one
-        // forever. MemoryDerivation.ForMetadataUpdate re-derives it — inside TryUpdateEntry on
+        // body, correctly, so this tool — reached only through link() in production, and
+        // directly by the tests — reported full success while silently discarding the boost,
+        // and a remote corpus ranked differently from a local one forever. MemoryDerivation.ForMetadataUpdate re-derives it — inside TryUpdateEntry on
         // the persistent path, and at UpdateMeta's ephemeral branch, which IS the store for a
         // ~name. Either way nothing derived crosses the wire.
         var updated = entry with

@@ -91,7 +91,7 @@ Use it before non-trivial work; skip it when the request is self-contained.
 
 ### compact — merge a memory's chunks
 
-`compact({ path, keepRecent? })` — merges a multi-chunk memory into one and archives the original; `keepRecent: N` keeps the N most recent chunks.
+`compact({ path, keepRecent? })` — merges a multi-chunk memory into one and archives the original (except for an ephemeral `~name` memory, or one with no prior index entry); `keepRecent: N` keeps the N most recent chunks.
 
 ### link — connect two memories
 

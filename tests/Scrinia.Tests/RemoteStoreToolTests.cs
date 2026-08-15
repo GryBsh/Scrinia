@@ -862,8 +862,9 @@ public sealed class RemoteStoreToolTests
     // ── Final review, Critical 1: UpdateMeta must not report an unpersisted write ──
 
     /// <summary>
-    /// <c>UpdateMeta</c> — reached by <c>update()</c> and by both halves of <c>link()</c> — used to
-    /// go LoadIndex → mutate → <c>Upsert</c> → <c>ResponseBuilder.Success</c>. Remotely
+    /// <c>UpdateMeta</c> — no caller outside <c>link()</c> and the tests, reached by both halves
+    /// of <c>link()</c> in production — used to go LoadIndex → mutate → <c>Upsert</c> →
+    /// <c>ResponseBuilder.Success</c>. Remotely
     /// <c>Upsert</c> is a deliberate no-op, so once <c>LoadIndex</c> was fixed to return the real
     /// listing, the entry was found, mutated, dropped, and reported as updated. It routes through
     /// <c>TryUpdateEntry</c> now, which really does write — over

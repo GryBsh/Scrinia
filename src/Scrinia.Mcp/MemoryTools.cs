@@ -348,7 +348,8 @@ public sealed partial class ScriniaMcpTools
     [McpServerTool(Name = "compact"), Description(
         "Merge a multi-chunk memory. Archives the previous version first — except for an " +
         "ephemeral (~name) memory, which has no versions/ directory, so compacting one is " +
-        "irreversible. The response says which happened. " +
+        "irreversible, or a persistent memory with no prior index entry, which has no previous " +
+        "version to archive. The response says which happened. " +
         "Example: compact({ path: '/sessions/2026-05-11', keepRecent: 3 }).")]
     public async Task<string> MemoryCompact(
         [Description("Memory path to compact.")] string path,

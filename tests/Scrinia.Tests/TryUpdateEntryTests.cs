@@ -105,8 +105,9 @@ public class TryUpdateEntryTests
     /// case-insensitively, the way <c>UpdateMeta</c> matched before it was rerouted through
     /// TryUpdateEntry. A prior fix wave changed the name match from
     /// <c>e.Name.Equals(subject, StringComparison.OrdinalIgnoreCase)</c> to an ordinal
-    /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, which silently broke update()/link() for
-    /// any case-mismatched name — stored as "MixedCase", looked up as "mixedcase".
+    /// <c>SanitizeName(e.Name) == SanitizeName(subject)</c>, which silently broke <c>link()</c> (and
+    /// a direct <c>UpdateMeta</c> call) for any case-mismatched name — stored as "MixedCase", looked
+    /// up as "mixedcase".
     /// <para>This test passes on Windows for a second, weaker reason as well, which is worth
     /// knowing when reading it: NTFS folds case by default, so the <c>File.Exists(metaPath)</c>
     /// fast path the method used to open with also reported the entry present here, on an ordinary

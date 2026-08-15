@@ -31,7 +31,9 @@ public static class KeywordJaccard
         var setA = new HashSet<string>(a!, StringComparer.OrdinalIgnoreCase);
         var setB = new HashSet<string>(b!, StringComparer.OrdinalIgnoreCase);
         int intersection = setA.Count(x => setB.Contains(x));
+        // union is unreachable at 0 here: both sets are non-empty past the guards above (:26-29),
+        // so union >= max(setA.Count, setB.Count) >= 1.
         int union = setA.Count + setB.Count - intersection;
-        return union == 0 ? 1.0 : (double)intersection / union;
+        return (double)intersection / union;
     }
 }
