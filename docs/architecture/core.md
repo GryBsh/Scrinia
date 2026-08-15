@@ -285,11 +285,11 @@ public static class KnownAttributes
 `AttributeExtractor` in `Scrinia.Core.Search` is the single write-time entry point with three sources feeding one attribute bag:
 
 - **`RouteKeywords(keywords)`** -- agent-keyword routing. Splits agent-supplied keywords into attribute-shaped (`key:value` -> `Attributes`) and plain (stay in `Keywords`, still participate in BM25/keyword scoring).
-- **`Extract(content)`** -- mechanical content extraction. Line-by-line scan for frontmatter, `key: value` line-starts, and `**Bold:** value` labels; skips code fences.
-- **`ExtractRefAttributes(content)`** -- reference extraction. Delegates to `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs` and packages results as `{file: [...], ref: [...]}`, replacing the retired `file:`/`ref:` prefixed-keyword emission.
+- **`Extract(content)`** -- mechanical content extraction. Line-by-line scan for `key: value` line-starts and `**Bold:** value` labels (frontmatter lines pass through untouched, not specially gated); skips properly closed code-fenced blocks only — an unterminated fence (an opening ``` with no matching closer) is not a fence at all, and everything after it extracts as ordinary prose. Both rules come from the shared `ProseScanner`.
+- **`ExtractRefAttributes(content)`** -- reference extraction. Delegates to `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs`, both fence-aware via the same `ProseScanner` rule as `Extract`, and packages results as `{file: [...], ref: [...]}`, replacing the retired `file:`/`ref:` prefixed-keyword emission.
 - **`SeedTermFrequencies(attributes, tf)`** -- not an extraction source; seeds attribute keys/values into the term-frequency dictionary (+3/token) so BM25 also matches attribute vocabulary.
 
-`ReferenceExtractor` itself (source-generated regexes for file-path and memory-reference patterns) still exists as the low-level parser underneath `ExtractRefAttributes` — it's no longer called directly by the write paths to emit keywords.
+`ReferenceExtractor` itself (source-generated regexes for file-path and memory-reference patterns) is called directly from two write-path sites, not only underneath `ExtractRefAttributes`: `MaintenanceEventSink.ExtractMemoryRefs` calls it directly to find `[[wiki-link]]` targets for auto-linking and orphan detection (`MaintenanceEventSink.cs:100`). Neither call site emits a `ref:`/`file:`-prefixed keyword any more — that emission is retired — but the write paths' direct use of the extractor did not go away with it.
 
 #### Dual-read
 
@@ -298,7 +298,7 @@ Every consumer of typed/prefixed data reads **both** shapes so old entries (whic
 - **Scorer** (`WeightedAttributeScorer.ScoreEntryTerm`): scores `entry.Attributes` at 50/40/12 (pair/exact/contains — see the scoring table above), each × the per-key `AttributeWeight`. It does not re-parse `key:value` `Keywords` — that on-the-fly parse was retired in P6.5; the load-time forward-fill promotes such keywords into `Attributes` first.
 - **Entity graph** (`EntityGraph.Build`): unions `ParseEntityKeywords(keywords)` (legacy `type:value` keywords) with `ParseEntityAttributes(attributes)`, which yields a graph node for **every** attribute key uniformly — not just `KnownAttributes.EntityKeys`. Any attribute key you name consistently links memories that share its value; the entity/recommended keys are guidance, not a graph gate.
 - **Orphan/reference tracking** (`MaintenanceEventSink`): checks both `Keywords` for `ref:...` and `Attributes["ref"]` for inbound references; new links are written forward-only into the `ref` attribute (no more `ref:` keyword emission) via `KnownAttributes.Merge`.
-- **FileHashes**: the derivation pipeline (`MemoryDerivation`) unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `FileHashes` — on `ArtifactEntry` for a persistent write and identically on `EphemeralEntry` for an ephemeral one, both local and remote. An append hashes only newly-referenced paths and keeps an already-baselined path's original hash (see CHANGELOG); a plain `remember()`/`Store` hashes every referenced path.
+- **FileHashes**: the derivation pipeline (`MemoryDerivation`) unions the explicit `codeRefs` parameter with `Attributes["file"]` (deduplicated case-insensitively) before hashing into `FileHashes` — on `ArtifactEntry` for a persistent write and identically on `EphemeralEntry` for an ephemeral one, both local and remote. An append hashes only newly-referenced paths and keeps an already-baselined path's original hash (see CHANGELOG); a plain `remember()`/`Store` hashes every referenced path. Because `Attributes["file"]` is itself fence-aware (`ExtractRefAttributes`, above), a path mentioned only inside a properly closed fenced block no longer reaches `Attributes["file"]` and therefore no longer reaches `FileHashes` either — a drift baseline can only be built from a file reference that reads as a real reference, not a pasted example.
 
 This is a **forward-only migration**: `Attributes` is `null` for entries written before this change and stays `null` — there is no backfill script. Dual-read at the scorer/graph/orphan layers is what keeps old and new entries behaving the same, permanently, without a re-index.
 
@@ -306,8 +306,8 @@ This is a **forward-only migration**: `Attributes` is `null` for entries written
 
 ### IMemoryStore
 
-The shared contract: **no member of `IMemoryStore` throws for lack of a local filesystem**. 22
-abstract methods a conforming store must implement with no default, plus 4 members with default
+The shared contract: **no member of `IMemoryStore` throws for lack of a local filesystem**. 24
+abstract methods a conforming store must implement with no default, plus 5 members with default
 bodies a store may override for efficiency, covering all memory operations:
 
 That is the property the split actually achieved, and it is narrower than "a remote store honours
@@ -320,6 +320,10 @@ persists remotely. Pre-existing, recorded as a known gap in
 `/findings/store-boundaries-deferred-followups`.
 
 **Naming:** `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName`
+
+**Write surface:** `StoreAsync`, `AppendAsync` — raw caller input in, the entry the store itself
+derived out (see `MemoryDerivation`, above). Neither has a default body: a store added later must
+say how it derives rather than silently inheriting a derivation that is wrong for it.
 
 **CRUD:** `LoadIndex`, `Upsert`, `Remove`, `ResolveArtifactAsync`
 
@@ -351,7 +355,10 @@ URI rather than throwing.
 **Scope resolution:** `ResolveReadScopes(scopes)`
 
 **Default-bodied members (a store may override for efficiency):** `TryUpdateEntry` (non-atomic
-load→mutate→Upsert unless overridden), `GetEntityFactStore` (rebuilds fresh from `ListScoped`
+load→mutate→Upsert unless overridden), `TryUpdateEphemeral` (the ephemeral counterpart — an
+unsynchronized load→mutate→store unless overridden; both real stores override it as a
+compare-and-swap retry loop instead, so a concurrent writer's change is re-applied to the newer
+entry rather than silently lost), `GetEntityFactStore` (rebuilds fresh from `ListScoped`
 unless overridden), `ListScoped(scopes, excludeTopics)`, and `ResolveReadScopes(scopes,
 excludeTopics)` — the last two post-filter `ListScoped`/`ResolveReadScopes` by scope, which is
 cheap and correct even unoverridden because scope exclusion is a set-membership check, not a

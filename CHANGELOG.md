@@ -61,6 +61,17 @@ and all assembly attributes.
     ``` lost every `key: value` / `**Bold:**` / inline `key:value` attribute and every `mention:`
     span after it, silently. That over-suppression is now fixed — content after an unterminated
     fence extracts attributes and mention spans normally, the same as any other prose.
+    `ExtractMentionSpans` separately stops stripping inline `` `code` `` spans before scanning for
+    capitalized runs, and reads YAML frontmatter as ordinary prose instead of skipping it outright —
+    both were excluded by logic this change deletes in favour of the one shared `ProseScanner` rule,
+    so an identifier that was previously fenced by backticks (or that only appeared in frontmatter)
+    can now surface as a `mention:` span. Measured across the 16 top-level memories under
+    `.scrinia/memories/findings/`: the symmetric difference between the old and new mention-span
+    sets, uncapped, is **11** (11 spans newly present, none lost). The production
+    `MaxMentionSpans = 32` cap floors 15 of those 16 files at capacity, which masks this effect
+    rather than measuring it — a capped comparison shows only 8 and is not a conservative estimate
+    of the real change, since an addition to an already-full set can only displace an existing
+    value, never grow the count.
 
   All of this is the fix working as intended — a reference, attribute, or mention pasted as part of
   quoted/sample content inside a real, properly closed fence was never meant to create a real
@@ -97,6 +108,25 @@ and all assembly attributes.
   `TryGetTimestampString`'s "check presence before inspecting the value" shape is what makes an
   explicit `null` distinguishable from "missing"; a plain indexer read cannot tell them apart.
   Requires a hand-edited or foreign-tool sidecar to reach.
+
+### Fixed — `reconcile()` and the git merge driver silently absorbed a malformed `keywords` array
+
+- Both mergers now escalate to a conflict — `reconcile()`'s auto-resolver reports "auto-resolve
+  failed", the git merge driver returns `MergeResult.Conflict` — when a sidecar's `keywords` (or,
+  independently, `agentKeywords`) is **present but not a well-formed string array**: an explicit
+  JSON `null`, a non-array value (a string, a number, an object), or an array holding a non-string
+  element. Previously both read any of these shapes exactly as they read a genuinely *absent*
+  field and silently auto-resolved on the untouched side — treating a foreign writer's malformed
+  metadata as "nothing to reconcile" rather than the conflict it actually is. The admission gate
+  (the Jaccard-similarity check above) escalates on the same malformed shapes for the same reason:
+  a similarity score computed against a `null`/malformed keyword set is not a real answer to "are
+  these two sides similar enough?", so it is reported as an auto-resolve failure, never as "sides
+  too dissimilar."
+- A non-string array element (e.g. `["auth", 5]`) previously diverged between the two mergers by
+  accident rather than by design: Core's reader threw on it, which only ever escalated because the
+  exception happened to propagate into an existing broad `catch` in both of its callers; the git
+  merge driver's reader silently dropped the bad element and merged the rest. Both readers now
+  refuse explicitly — neither relies on an incidental exception to do the right thing.
 
 ### Fixed — merges lost term frequencies and could move a memory's `createdAt` forward
 
@@ -147,9 +177,10 @@ and all assembly attributes.
   a promoted or demoted memory kept its bytes and preview and became **unfindable by search**.
   `UpdatedAt` carries across the copy; `CreatedAt` deliberately does not — on both directions of
   the boundary, a copy is a new memory, created now, not a relocation of the old one.
-  **This fix is local-store only** — see Known Issues below: `HttpMemoryStore.CopyMemory` routes
-  any copy touching a persistent name through the server's copy endpoint, so a remote promotion or
-  demotion still cannot carry these fields.
+  **This originally landed local-store only.** The remote path — promoting a `~name` to, or
+  demoting a persistent memory from, a remote store — carried none of this and had its own,
+  worse failure modes; see "Fixed — copying across the ephemeral boundary against a remote store"
+  below for the fix.
 - `compact()` now works on ephemeral memories instead of reporting them as not found. It never
   checked whether the target was ephemeral and went straight to the disk-only artifact read, so
   compacting an existing multi-chunk ephemeral memory failed even though `list()` showed it and
@@ -243,17 +274,36 @@ and all assembly attributes.
   previous version either; the response already reported this correctly and the description now
   agrees with it.
 
-### Known Issues
+### Fixed — copying across the ephemeral boundary against a remote store
 
-- **Copying to or from ephemeral storage does not work against a remote store.** The client-side
-  copy request (`HttpMemoryStore.CopyApiRequest`) carries only a destination name, and the server
-  runs the copy against its own store, which has never seen the client's in-process ephemeral
-  memories. Symptoms: promoting when the server has no persistent memory of that name returns a
-  **400 Bad Request**; promoting when a same-named persistent memory *does* exist server-side
-  **silently copies the wrong memory** (the client strips the `~` before sending, so the name
-  collides with an unrelated persistent memory); demoting reports success while the copy lands in
-  the server's own ephemeral map, invisible to the client that asked for it. Needs a wire change;
-  not fixed here.
+- **Promoting a `~name` to a persistent memory, and demoting a persistent memory to a `~name`, now
+  work against a remote store (`scri serve --remote`).** Previously the client stripped the `~` and
+  sent a bare name to the server's existing `/copy` endpoint, which resolves both sides against its
+  own index — an index that has never seen the client's in-process ephemeral memories. That removes
+  three symptoms: promoting when the server held no persistent memory of that name returned a
+  `400 Bad Request`; promoting when a same-named persistent memory *did* exist server-side
+  **silently copied that unrelated memory instead of refusing** (the wrong-memory symptom); demoting
+  reported success while the copy actually landed in the server's own ephemeral map, invisible to
+  the client that asked for it.
+- The fix is a new route, `POST /memories/{name}/copy-from-client`, not an optional field on the
+  existing `/copy` request. **`{name}` is the DESTINATION on this route — the opposite of `/copy`,
+  where `{name}` is the source.** That asymmetry is deliberate and is the whole reason the route
+  exists: the source is a client-side ephemeral the server has never seen, so there is no
+  server-side name to put in the path. The client sends the artifact plus the metadata it already
+  derived (keywords, attributes, term frequencies, chunk entries, drift baseline, keyword
+  provenance) and the server stores both verbatim, deriving nothing — the same rule
+  `ILocalMemoryStore.WriteCarriedCopy` already applies to an in-process, local ephemeral-to-persistent
+  promotion, now reachable through this route by a caller whose source the server cannot see.
+- **A route, not a field, because an older server has to fail loudly, not quietly.** A server
+  predating this change would ignore an unrecognised field on the existing `CopyRequest` body and
+  fall through to the same bare-name resolution that produces the wrong-memory symptom, reporting
+  success. An unknown *route* 404s instead, which the client surfaces as an explicit refusal naming
+  the missing route — a version-skew mismatch the caller can act on, not a silent miscopy.
+- Demoting resolves the source through the same `GET .../entry` and `GET .../memories/{name}`
+  (show) routes any remote caller with `read` permission already uses, then writes the result into
+  the calling process's own ephemeral map — nothing crosses back to the server. Promoting requires
+  the `copy` permission and, like `WriteCarriedCopy`, refuses rather than overwrites an existing
+  destination unless `overwrite` is set.
 
 ### Changed (breaking) — one derivation pipeline; the remote wire is API v2
 
