@@ -220,6 +220,14 @@ public interface IMemoryStore
     /// across attempts. (<see cref="TryUpdateEntry"/> carries no such caveat — it is invoked exactly
     /// once by all three of its implementations.)</para>
     ///
+    /// <para><b><paramref name="mutate"/> must be pure with respect to this store: it must not write
+    /// to <paramref name="key"/>.</b> The retry is unbounded, so a mutation that stores to the same
+    /// key on every invocation invalidates its own swap every time and spins forever. This is a
+    /// contract, not a cap, deliberately: under legitimate contention the loop must retry until it
+    /// wins, and an attempt limit would convert "lost a race" into a spurious false return that a
+    /// caller would report as "nothing to change". The only in-repo mutation that writes is the test
+    /// that exercises the retry, which escapes by writing on its first invocation only.</para>
+    ///
     /// <para>Unlike <see cref="TryUpdateEntry"/> this takes no scope: an ephemeral memory is its own
     /// whole address. It also stays entirely in-process on BOTH store implementations — a
     /// <c>~name</c> addresses the process holding it, never the server — so there is no remote

@@ -441,17 +441,29 @@ public sealed class ReferenceTests : IDisposable
     /// link wrote <c>/patterns/present</c>, then reported "Partial link failure", leaving exactly
     /// the dangling one-sided ref the ephemeral refusal existed to prevent. Recorded in the repo at
     /// the time as <c>Golden/__snapshots__/link-partial-failure.yaml</c>.
+    ///
+    /// <para><b>Both POSITIONS are covered, and the second is the one that matters.</b> With the
+    /// missing name as <c>from</c>, <c>Exists(from)</c> short-circuits the <c>?:</c> chain — the
+    /// second <c>Exists</c> never runs and no write is ever reached, so those two cases would still
+    /// pass against a <c>Link</c> that wrote <c>from</c> before its precheck. Only the <c>to</c>
+    /// cases exercise the dangerous shape: first side present, second missing, first write must not
+    /// happen. Verified by mutation — writing <c>from</c> ahead of the precheck fails ONLY the
+    /// <c>to</c> cases.</para>
     /// </summary>
     [Theory]
-    [InlineData("~absent")]
-    [InlineData("/patterns/absent")]
-    public async Task Link_WithAMissingSide_WritesNeither(string missing)
+    [InlineData("~absent", MissingSide.From)]
+    [InlineData("/patterns/absent", MissingSide.From)]
+    [InlineData("~absent", MissingSide.To)]
+    [InlineData("/patterns/absent", MissingSide.To)]
+    public async Task Link_WithAMissingSide_WritesNeither(string missing, MissingSide side)
     {
         await _tools.Remember(["Present side"], "/patterns/present");
 
-        string result = (await _tools.Link(missing, "/patterns/present")).ToYaml();
+        var response = side == MissingSide.From
+            ? await _tools.Link(missing, "/patterns/present")
+            : await _tools.Link("/patterns/present", missing);
 
-        result.Should().Contain("not found");
+        response.ToYaml().Should().Contain("not found");
 
         var store = MemoryStoreContext.Current!;
         var (scope, subject) = store.ParseQualifiedName("/patterns/present");
@@ -462,6 +474,11 @@ public sealed class ReferenceTests : IDisposable
             because: "the surviving half of a partial write is a ref pointing at a memory that " +
                      "carries no ref back — a link the graph believes in");
     }
+
+    /// <summary>Which argument of <c>link</c> the missing memory is passed as. A bool would read as
+    /// <c>true</c>/<c>false</c> at the call site and say nothing about which position it selects.
+    /// </summary>
+    public enum MissingSide { From, To }
 
     [Fact]
     public async Task References_FindsLinkedMemory()

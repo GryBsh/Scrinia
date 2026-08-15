@@ -512,11 +512,11 @@ public sealed partial class ScriniaMcpTools
         // ReviewAfter/ReviewWhen members below" — false twice over: ArtifactEntry has carried no
         // such members since the Attributes cutover, and there is nothing below.)
         // ADD/REPLACE ONLY — no Remove(ReviewKey) — matches AttributeMigration.Forward's
-        // incoming-only fold: when
-        // neither reviewAfter nor reviewWhen is present, Forward's `incoming` carries no "review"
-        // key, so KnownAttributes.Merge PRESERVES any existing Attributes["review"] rather than
-        // clearing it. KnownAttributes.Merge always returns a NEW dictionary, so this never mutates
-        // entry.Attributes (== mergedAttributes when routedAttributes is null) in place.
+        // incoming-only fold: when neither reviewAfter nor reviewWhen is present, Forward's
+        // `incoming` carries no "review" key, so KnownAttributes.Merge PRESERVES any existing
+        // Attributes["review"] rather than clearing it. KnownAttributes.Merge always returns a NEW
+        // dictionary, so this never mutates entry.Attributes (== mergedAttributes when
+        // routedAttributes is null) in place.
         var reviewParts = new List<string>(2);
         if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
         if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
@@ -1105,8 +1105,12 @@ public sealed partial class ScriniaMcpTools
     /// Create a bidirectional relationship between two memories. Writes a unified
     /// <c>ref</c> attribute on each side (via <see cref="UpdateMeta"/>, which routes the
     /// <c>ref:{name}</c>-shaped keyword into <c>Attributes["ref"]</c> instead of a legacy keyword).
-    /// Refuses without writing anything unless both memories already exist; either side may be
-    /// an ephemeral <c>~name</c>.
+    /// Refuses without writing anything unless both memories already exist.
+    /// <para>Either side may be an ephemeral <c>~name</c> <i>as far as this method is concerned</i>
+    /// — but that only reaches a caller whose process is the one holding the ephemeral. It is real
+    /// for the MCP tool, served by a long-lived <c>scri serve</c>; it is unreachable for the CLI
+    /// (<c>ScriniaCommands.Link</c>), where every invocation is a fresh process whose ephemeral map
+    /// is necessarily empty, so a <c>~name</c> can only ever resolve as missing.</para>
     /// </summary>
     internal async Task<McpResponse> Link(
         [Description("Source memory name.")] string from,

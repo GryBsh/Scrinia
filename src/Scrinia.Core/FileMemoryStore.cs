@@ -324,19 +324,24 @@ public sealed partial class FileMemoryStore : ILocalMemoryStore, IDisposable
     /// stored value is still the one this loop read; if a concurrent writer won, the mutation is
     /// re-applied to that newer entry instead of clobbering it.
     ///
-    /// <para><b>Why record equality is the right comparison here.</b> <see cref="EphemeralEntry"/>
-    /// is a record whose collection members (<c>Attributes</c>, <c>Keywords</c>,
-    /// <c>TermFrequencies</c>, …) compare by REFERENCE, so the synthesized <c>Equals</c> behaves as
-    /// an identity check for anything a real writer produces — every write path builds fresh
-    /// collections. That makes it exactly the "nothing changed since my read" test a CAS needs. The
-    /// only values it treats as unchanged are ones member-wise identical to what was read, where
-    /// swapping is a no-op anyway. (This is the one deliberate USE of that equality; see the footgun
-    /// note on <see cref="ArtifactEntry"/>, which records that nothing relied on it.)</para>
+    /// <para><b>Why record equality is a safe comparison here.</b> Not because it is an identity
+    /// check — for an entry whose six collection members are all null (a plain memory with no
+    /// attributes, keywords or chunk entries) <c>Equals</c> is pure scalar comparison and reference
+    /// identity plays no part at all. The guarantee is stronger and simpler than that:
+    /// <see cref="EphemeralEntry"/> is a SEALED record holding no state outside its members, so
+    /// <c>TryUpdate</c> can only match a value other than the one this loop read if that value is
+    /// MEMBER-WISE EQUAL to it — and a member-wise equal entry is one with nothing to lose, so
+    /// swapping over it discards nothing. Any writer that genuinely changed something produces an
+    /// entry that differs in at least one member and is therefore correctly rejected. (This is the
+    /// one deliberate USE of that equality; see the footgun note on <see cref="ArtifactEntry"/>,
+    /// which records that nothing relied on it — still true of <c>ArtifactEntry</c>.)</para>
     ///
-    /// <para>Deliberately not routed through <see cref="RememberEphemeral"/>: that adds-or-replaces
-    /// and then evicts when over capacity. A swap leaves the entry count unchanged, so no eviction
-    /// can be owed, and going through it would reintroduce the unconditional overwrite this exists
-    /// to remove.</para>
+    /// <para>Deliberately not routed through <see cref="RememberEphemeral"/>, for two reasons. It
+    /// adds-or-replaces and then evicts when over capacity, where a swap leaves the entry count
+    /// unchanged so no eviction can be owed; and it would RESURRECT the memory if
+    /// <see cref="ForgetEphemeral"/> removed the key between this loop's read and its write.
+    /// <c>TryUpdate</c> refuses a missing key, so a forgotten memory stays forgotten and the caller
+    /// gets false.</para>
     ///
     /// <para>The fact-store invalidation tail matches every other mutating write path here
     /// (<c>SaveIndex</c>, <c>Remove</c>, <c>TryUpdateEntry</c>): an ephemeral entry's attributes are
