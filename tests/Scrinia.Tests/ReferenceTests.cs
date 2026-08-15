@@ -480,6 +480,122 @@ public sealed class ReferenceTests : IDisposable
     /// </summary>
     public enum MissingSide { From, To }
 
+    // ── Task 14: the reference is written as an attribute, never minted as a keyword ──────────
+    //
+    // link used to hand UpdateMeta a `ref:{name}`-shaped KEYWORD and rely on
+    // AttributeExtractor.RouteKeywords to turn it back into an attribute. That conversion is
+    // conditional: past AttributeExtractor.MaxValueLength (120) the element stays a plain keyword,
+    // which ApplyMetadataMutation unions into Keywords with no cap and
+    // MemoryDerivation.ForMetadataUpdate then unions into AgentKeywords.
+    //
+    // NOTE ON WHAT WAS AND WAS NOT BROKEN, because it decides what these tests may assert. The ref
+    // ATTRIBUTE landed even for a long name, and still does — not through routing, but through
+    // AttributeMigration.Forward, which folds any RecommendedKeys-shaped keyword into Attributes
+    // verbatim and with no length guard. So "the reference reached Attributes" passes before this
+    // change as well as after, and a test resting on it alone would observe nothing. The KEYWORD
+    // LISTS are the whole defect and the whole assertion.
+
+    /// <summary>
+    /// A destination name past <see cref="AttributeExtractor.MaxValueLength"/> must leave both
+    /// keyword lists exactly as it found them.
+    ///
+    /// <para>Measured before the fix, on the ephemeral row: 31 links to a 134-character name left
+    /// <c>Keywords</c> at 33 and <c>AgentKeywords</c> at 31, against 2 and 0 for the same loop with
+    /// short names. Past 30 (<c>TextAnalysis.DefaultMaxMergedKeywords</c>, which the promotion wire
+    /// bound reads) the ephemeral can no longer be promoted — see
+    /// <c>RemoteStoreToolTests.Copy_Promotion_AfterManyLongNamedLinks_CarriesKeywordsWithinTheWireBound</c>.</para>
+    ///
+    /// <para>Both store rows are covered because they are two different code paths in
+    /// <c>UpdateMeta</c> — <c>TryUpdateEntry</c> for a persistent name, <c>TryUpdateEphemeral</c>'s
+    /// compare-and-swap for a <c>~name</c> — and only the ephemeral one is reachable by the
+    /// promotion this defect actually broke.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("~long-src", "~", true)]
+    [InlineData("/patterns/long-src", "/patterns/", false)]
+    public async Task Link_ToADestinationNameOverTheValueCap_LeavesBothKeywordListsUntouched(
+        string source, string destinationPrefix, bool ephemeral)
+    {
+        // 130 > AttributeExtractor.MaxValueLength (120), so the ref:-shaped keyword this used to
+        // mint would have failed routing's value cap and stayed a keyword. Derived from the
+        // constant, not written as a number, so raising the cap moves this fixture with it.
+        string longDestination =
+            destinationPrefix + new string('d', AttributeExtractor.MaxValueLength + 10);
+        longDestination.Length.Should().BeGreaterThan(AttributeExtractor.MaxValueLength,
+            because: "a fixture that fits the cap exercises the ROUTED path and observes nothing");
+
+        await _tools.Remember(["source body"], source);
+        await _tools.Remember(["destination body"], longDestination);
+
+        var before = ReadKeywordState(source, ephemeral);
+
+        (await _tools.Link(source, longDestination)).IsError.Should().BeFalse();
+
+        var after = ReadKeywordState(source, ephemeral);
+
+        after.Keywords.Should().Equal(before.Keywords,
+            because: "the reference is an attribute — a long destination name must not be able to " +
+                     "deposit anything in Keywords, which nothing downstream caps");
+        after.AgentKeywords.Should().Equal(before.AgentKeywords,
+            because: "MemoryDerivation.ForMetadataUpdate unions any newly added keyword into " +
+                     "AgentKeywords, so the same degradation grew a second uncapped list");
+        after.Attributes.Should().NotBeNull();
+        after.Attributes!["ref"].Should().Equal([longDestination],
+            because: "the reference itself must still land, verbatim and at full length — the fix " +
+                     "removes the keyword, not the link");
+    }
+
+    /// <summary>
+    /// The ≤120-character case — the overwhelmingly common one — stores exactly what the keyword
+    /// route stored. Asserted as the exact value array, not "contains something like the name":
+    /// <c>RouteKeywords</c> applied no normalisation beyond a trim, so a direct write that reached
+    /// for <c>StripReferenceWrappers</c>-style cleanup would silently drop the leading <c>/</c> or
+    /// <c>~</c> and store a second spelling of the same reference.
+    /// </summary>
+    [Theory]
+    [InlineData("/findings/short-a", "/patterns/short-b")]
+    [InlineData("~short-eph-a", "~short-eph-b")]
+    [InlineData("bare-a", "bare-b")]
+    public async Task Link_WithShortNames_StoresTheNameVerbatimOnBothSides(string from, string to)
+    {
+        await _tools.Remember(["a body"], from);
+        await _tools.Remember(["b body"], to);
+
+        (await _tools.Link(from, to)).IsError.Should().BeFalse();
+
+        bool ephemeral = from.StartsWith('~');
+        var fromState = ReadKeywordState(from, ephemeral);
+        var toState = ReadKeywordState(to, ephemeral);
+
+        fromState.Attributes!["ref"].Should().Equal([to],
+            because: "the stored value is the destination name verbatim — leading '/' and '~' " +
+                     "included, exactly as RouteKeywords left it");
+        toState.Attributes!["ref"].Should().Equal([from]);
+
+        fromState.AgentKeywords.Should().BeEmpty(
+            because: "a short-name link never touched the keyword lists and still must not");
+        toState.AgentKeywords.Should().BeEmpty();
+    }
+
+    /// <summary>An entry's keyword lists and attributes, for either store row. Ephemerals are not in
+    /// <c>LoadIndex</c>, so the two need different reads; the assertions do not.</summary>
+    private static (string[] Keywords, string[] AgentKeywords, Dictionary<string, string[]>? Attributes)
+        ReadKeywordState(string name, bool ephemeral)
+    {
+        var store = MemoryStoreContext.Current!;
+        if (ephemeral)
+        {
+            var e = store.GetEphemeral(MemoryNaming.StripEphemeralPrefix(name))
+                ?? throw new InvalidOperationException($"No ephemeral '{name}'.");
+            return (e.Keywords ?? [], e.AgentKeywords ?? [], e.Attributes);
+        }
+
+        var (scope, subject) = store.ParseQualifiedName(name);
+        var entry = store.LoadIndex(scope)
+            .First(x => x.Name.Equals(subject, StringComparison.OrdinalIgnoreCase));
+        return (entry.Keywords ?? [], entry.AgentKeywords ?? [], entry.Attributes);
+    }
+
     [Fact]
     public async Task References_FindsLinkedMemory()
     {

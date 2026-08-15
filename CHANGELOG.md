@@ -10,6 +10,24 @@ and all assembly attributes.
 
 ## [Unreleased]
 
+### Fixed — a long destination name turned a link into keywords, and blocked promotion
+
+- **`link()` no longer degrades a long destination name into a plain keyword.** It recorded each
+  side's reference by minting a `ref:{name}`-shaped keyword and relying on keyword routing to turn
+  it back into a `ref` attribute. That conversion is conditional: past 120 characters the value
+  fails routing's cap and the element stays a keyword, which is then merged into the memory's
+  `keywords` (and, from there, its agent-keyword provenance) with no upper bound. The reference is
+  now written directly as an attribute, so the destination's name length no longer changes anything
+  — a link mints no keyword at any length. Visible effect: a memory linked to long-named
+  destinations keeps the `keywords` it derived from its own content instead of accumulating one
+  `ref:...` entry per link. Short-name links are unchanged in every respect, including the exact
+  attribute value stored and the `N attribute(s) merged` message.
+- **Promoting a heavily linked ephemeral to a remote store works again.** `copy()` from a `~name` to
+  a persistent name carries the ephemeral's `keywords` and `agentKeywords` to the server, which
+  refuses more than 30 of either. Enough long-named links pushed a memory past that, and the
+  resulting `400` surfaced as an internal error naming nothing the caller could act on. Since the
+  keywords are no longer minted, the promotion succeeds.
+
 ### Fixed — file and memory references no longer extract from pasted code
 
 - `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs` now scan outside fenced (```` ``` ````)

@@ -1,11 +1,13 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Scrinia;
 using Scrinia.Core;
 using Scrinia.Core.Encoding;
 using Scrinia.Core.Models;
 using Scrinia.Core.Resilience;
+using Scrinia.Core.Search;
 using Scrinia.Mcp;
 using Scrinia.TestDoubles;
 using Xunit;
@@ -1147,6 +1149,87 @@ public sealed class RemoteStoreToolTests
             because: "a bare status name tells the caller nothing actionable; the server's own " +
                      "refusal text does");
     }
+
+    /// <summary>
+    /// Task 14: an ephemeral linked to many LONG-named destinations still promotes, because the
+    /// keywords it carries onto the wire stay within the bound the promotion route enforces.
+    ///
+    /// <para><b>The defect.</b> <c>link</c> used to mint a <c>ref:{name}</c> keyword and let
+    /// <c>AttributeExtractor.RouteKeywords</c> convert it back into an attribute — a conversion that
+    /// gives up past <see cref="AttributeExtractor.MaxValueLength"/> and leaves a plain keyword
+    /// behind. <c>HttpMemoryStore.CopyMemory</c> puts <c>Keywords</c> and <c>AgentKeywords</c>
+    /// straight onto the wire, and <c>MemoryEndpoints.CarriedEntryBoundsError</c> refuses more than
+    /// <see cref="TextAnalysis.DefaultMaxMergedKeywords"/> of either with a 400 that
+    /// <c>MemoryTools.Copy</c> reports as an internal fault. So this loop used to make its own
+    /// ephemeral unpromotable.</para>
+    ///
+    /// <para><b>What this test can and cannot see, stated plainly.</b> <see cref="StubBackendHandler"/>
+    /// answers <c>copy-from-client</c> with a configured status and applies no bounds check, so a
+    /// success assertion alone would prove nothing — it would pass against a body of any size. The
+    /// load-bearing assertion is therefore on the BODY: the arrays the server's bound reads, counted,
+    /// against the same <see cref="TextAnalysis.DefaultMaxMergedKeywords"/> constant that bound is
+    /// defined from. The server half — that 31 of either really is a 400 — is pinned separately and
+    /// already, by <c>Scrinia.Server.Tests.CopyFromClientEndpointTests.CopyFromClient_WithTooManyKeywords_Returns400</c>
+    /// and its <c>AgentKeywords</c> sibling, both of which post exactly
+    /// <c>DefaultMaxMergedKeywords + 1</c> entries.</para>
+    /// </summary>
+    [Fact]
+    public async Task Copy_Promotion_AfterManyLongNamedLinks_CarriesKeywordsWithinTheWireBound()
+    {
+        using var scope = new RemoteStoreScope();
+
+        string artifact = Nmp2ChunkedEncoder.EncodeChunks(["promotable content"]);
+        scope.Store.RememberEphemeral("srcmem", new EphemeralEntry(
+            Name: "srcmem", Artifact: artifact, OriginalBytes: 18, ChunkCount: 1,
+            CreatedAt: DateTimeOffset.UtcNow));
+
+        // One link past the bound, which is the smallest count that can cross it — and the shape
+        // the reviewer measured (31 links to a 133-character name).
+        int linkCount = TextAnalysis.DefaultMaxMergedKeywords + 1;
+        for (int i = 0; i < linkCount; i++)
+        {
+            string destination =
+                "~" + new string('d', AttributeExtractor.MaxValueLength + 10) + $"-{i:D2}";
+            scope.Store.RememberEphemeral(destination[1..], new EphemeralEntry(
+                Name: destination[1..], Artifact: artifact, OriginalBytes: 18, ChunkCount: 1,
+                CreatedAt: DateTimeOffset.UtcNow));
+
+            (await Tools().Link("~srcmem", destination)).IsError.Should().BeFalse(
+                because: "both sides are ephemerals in this process — no request reaches the wire");
+        }
+
+        scope.Store.GetEphemeral("srcmem")!.Attributes!["ref"].Should().HaveCount(linkCount,
+            because: "every link must still be recorded — this test is about where they are " +
+                     "recorded, not whether they are");
+
+        var response = await Tools().Copy("~srcmem", "promoted");
+        response.Status.Should().Be("success", because: response.Error);
+
+        string request = scope.Handler.Requests.Should().ContainSingle(
+            r => r.EndsWith("/copy-from-client", StringComparison.Ordinal)).Which;
+        string body = scope.Handler.Bodies[scope.Handler.Requests.IndexOf(request)];
+
+        using var doc = JsonDocument.Parse(body);
+        var carried = doc.RootElement.GetProperty("entry");
+
+        CarriedArrayLength(carried, "keywords").Should().BeLessThanOrEqualTo(
+            TextAnalysis.DefaultMaxMergedKeywords,
+            because: "MemoryEndpoints.MaxCarriedKeywords is this constant, and a body past it is " +
+                     "the 400 that made a legitimate locally-produced ephemeral unpromotable");
+        CarriedArrayLength(carried, "agentKeywords").Should().BeLessThanOrEqualTo(
+            TextAnalysis.DefaultMaxMergedKeywords,
+            because: "the same bound applies to agentKeywords, and the same degradation grew it");
+
+        body.Should().Contain("\"ref\"",
+            because: "the references themselves must still be on the wire, as attributes");
+    }
+
+    /// <summary>Length of a carried string array, or 0 when the property is absent —
+    /// <c>HttpStoreJsonContext</c> omits nulls, so an untouched list has no key at all.</summary>
+    private static int CarriedArrayLength(JsonElement entry, string property) =>
+        entry.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Array
+            ? value.GetArrayLength()
+            : 0;
 
     /// <summary>A missing client-side source has nothing to ask the server about — sending a bare
     /// name and letting the server resolve it is exactly how the old path found an unrelated,

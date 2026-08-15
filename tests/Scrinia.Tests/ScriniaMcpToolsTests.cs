@@ -2708,6 +2708,87 @@ public sealed class ScriniaMcpToolsTests
         entries.Single(e => e.Name == "um-beta").Attributes!["ref"].Should().Contain(v => v.Contains("um-alpha"));
     }
 
+    // ── UpdateMeta's direct attribute road (Task 14) ─────────────────────────
+    //
+    // link() stopped minting a `ref:{name}` keyword and hands the reference over as an attribute
+    // instead, so UpdateMeta grew an `attributes` parameter. These three pin the accounting, which
+    // is the part that could silently drift: the "N attribute(s) merged" message used to be
+    // routedAttributes.Count and is now the count of the merged INCOMING map.
+
+    /// <summary>The trailing line <c>WithFileChanges</c> appends to a persistent write's content.
+    /// Spelled out so these tests can assert UpdateMeta's message EXACTLY rather than with
+    /// StartWith, which would pass against a message that grew a second sentence.</summary>
+    private const string FileChangesLine =
+        "\nFiles in .scrinia/ were updated — these are your changes.";
+
+    /// <summary>
+    /// The direct road and the routed one report the SAME message for the same one-key result —
+    /// byte-for-byte, not merely "both say merged". The message is user-visible response text and
+    /// the whole point of Task 14 was to change nothing about it.
+    /// </summary>
+    [Fact]
+    public async Task UpdateMeta_DirectAttribute_ReportsTheSameMessageAsTheRoutedKeyword()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(["routed body"], "acct-routed");
+        await Tools().Remember(["direct body"], "acct-direct");
+
+        var routed = await Tools().UpdateMeta("acct-routed", keywords: ["ref:acct-direct"]);
+        var direct = await Tools().UpdateMeta("acct-direct",
+            attributes: new Dictionary<string, string[]> { ["ref"] = ["acct-routed"] });
+
+        routed.Content.Should().Be(
+            "Updated metadata for 'acct-routed': 1 attribute(s) merged." + FileChangesLine);
+        direct.Content.Should().Be(
+            "Updated metadata for 'acct-direct': 1 attribute(s) merged." + FileChangesLine,
+            because: "the direct road must render the identical sentence the routed one renders — " +
+                     "a count taken from the wrong map is the way that silently becomes '0' or '2'");
+
+        var entries = MemoryStoreContext.Current!.LoadIndex();
+        entries.Single(e => e.Name == "acct-direct").Attributes!["ref"].Should().Equal(["acct-routed"]);
+    }
+
+    /// <summary>Both roads at once, naming DIFFERENT keys: two keys merged, reported as two.</summary>
+    [Fact]
+    public async Task UpdateMeta_BothRoads_CountsEachDistinctKeyOnce()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(["both roads body"], "acct-both");
+
+        var response = await Tools().UpdateMeta("acct-both",
+            keywords: ["person:Carol"],
+            attributes: new Dictionary<string, string[]> { ["topic"] = ["auth"] });
+
+        response.Content.Should().Be(
+            "Updated metadata for 'acct-both': 2 attribute(s) merged." + FileChangesLine);
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "acct-both");
+        entry.Attributes!["person"].Should().Equal(["Carol"]);
+        entry.Attributes!["topic"].Should().Equal(["auth"]);
+    }
+
+    /// <summary>
+    /// Both roads naming the SAME multi-valued key. This is the case a naive
+    /// <c>routed.Count + direct.Count</c> gets wrong: one key was merged, so the message must say
+    /// one — and both values must survive, because <c>ref</c> is a
+    /// <see cref="KnownAttributes.ReferenceKeys"/> member and unions rather than replaces.
+    /// </summary>
+    [Fact]
+    public async Task UpdateMeta_BothRoadsNamingOneKey_ReportsOneKeyAndKeepsBothValues()
+    {
+        using var scope = new TestHelpers.StoreScope();
+        await Tools().Remember(["one key body"], "acct-onekey");
+
+        var response = await Tools().UpdateMeta("acct-onekey",
+            keywords: ["ref:from-the-keyword"],
+            attributes: new Dictionary<string, string[]> { ["ref"] = ["from-the-attribute"] });
+
+        response.Content.Should().Be(
+            "Updated metadata for 'acct-onekey': 1 attribute(s) merged." + FileChangesLine,
+            because: "one KEY was merged — summing the two maps' counts would report two");
+        var entry = MemoryStoreContext.Current!.LoadIndex().Single(e => e.Name == "acct-onekey");
+        entry.Attributes!["ref"].Should().BeEquivalentTo(["from-the-keyword", "from-the-attribute"]);
+    }
+
     /// <summary>
     /// Regression guard for the local-store lookup inside <c>TryUpdateEntry</c>
     /// (<c>FileMemoryStore.cs</c>): it used to compare names with an ordinal

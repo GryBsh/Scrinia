@@ -301,13 +301,24 @@ public sealed partial class ScriniaMcpTools
             : KnownAttributes.Merge(explicitAttributes, KnownAttributes.Normalize(carrier));
     }
 
-    /// <summary>Update metadata on an existing memory without re-encoding its content.</summary>
+    /// <summary>Update metadata on an existing memory without re-encoding its content.
+    ///
+    /// <para><paramref name="attributes"/> is the DIRECT road to <c>Attributes</c>;
+    /// <paramref name="keywords"/> is the indirect one, where a <c>key:value</c>-shaped element is
+    /// routed by <see cref="AttributeExtractor.RouteKeywords"/>. Both are supported and they merge
+    /// together, but a caller that knows it wants an attribute should say so: routing is
+    /// CONDITIONAL — past <see cref="AttributeExtractor.MaxValueLength"/> the value degrades to a
+    /// plain keyword, which this method's keyword merge unions into <c>Keywords</c> with no cap.
+    /// See <see cref="Link"/>, which is where that degradation was actually reachable.</para>
+    /// </summary>
     internal Task<McpResponse> UpdateMeta(
         [Description("Memory name (e.g. '/api/auth-flow', 'session-notes').")] string name,
         [Description("Keywords to add (merged with existing, not replaced).")] string[]? keywords = null,
         [Description("New description (replaces existing if provided).")] string? description = null,
         [Description("ISO 8601 date for review (replaces existing if provided).")] string? reviewAfter = null,
         [Description("Condition for review (replaces existing if provided).")] string? reviewWhen = null,
+        [Description("Attributes to merge (multi-valued keys union; scalar keys are replaced).")]
+        IReadOnlyDictionary<string, string[]>? attributes = null,
         CancellationToken cancellationToken = default)
     {
         var store = CurrentStore;
@@ -346,7 +357,7 @@ public sealed partial class ScriniaMcpTools
 
                 var current = existing.ToArtifactEntry();
                 var mutated = ApplyMetadataMutation(
-                    current, keywords, description, reviewAfter, reviewWhen, changes);
+                    current, keywords, description, reviewAfter, reviewWhen, attributes, changes);
 
                 // Null is "nothing to change" — reported by the shared changes.Count == 0 warning
                 // below, exactly as the persistent path reports it.
@@ -382,7 +393,7 @@ public sealed partial class ScriniaMcpTools
             {
                 found = true;
                 return ApplyMetadataMutation(
-                    entry, keywords, description, reviewAfter, reviewWhen, changes);
+                    entry, keywords, description, reviewAfter, reviewWhen, attributes, changes);
             });
         }
 
@@ -420,8 +431,14 @@ public sealed partial class ScriniaMcpTools
     /// <summary>
     /// The metadata mutation itself: takes the entry the store handed over, folds
     /// <paramref name="keywords"/>/<paramref name="description"/>/<paramref name="reviewAfter"/>/
-    /// <paramref name="reviewWhen"/> into it, and returns the entry to persist — or <c>null</c> for
-    /// "no write", which is what <see cref="IMemoryStore.TryUpdateEntry"/> takes null to mean.
+    /// <paramref name="reviewWhen"/>/<paramref name="attributes"/> into it, and returns the entry to
+    /// persist — or <c>null</c> for "no write", which is what
+    /// <see cref="IMemoryStore.TryUpdateEntry"/> takes null to mean.
+    ///
+    /// <para><paramref name="attributes"/> and the attribute-shaped half of
+    /// <paramref name="keywords"/> are folded into ONE incoming map before it meets the entry, so
+    /// the <c>N attribute(s) merged</c> count stays a count of KEYS actually merged when both are
+    /// supplied and naming the same key twice reports one, not two.</para>
     ///
     /// <para><paramref name="changes"/> is an accumulator, appended to in place, and it is how the
     /// caller renders the response. <b>It is the caller's job to make sure it describes one
@@ -444,10 +461,20 @@ public sealed partial class ScriniaMcpTools
         string? description,
         string? reviewAfter,
         string? reviewWhen,
+        IReadOnlyDictionary<string, string[]>? attributes,
         List<string> changes)
     {
         // Route key:value-shaped additions into Attributes; only plain ones merge into Keywords.
         var (routedAttributes, plainAdds) = AttributeExtractor.RouteKeywords(keywords);
+
+        // The two roads join here. Normalize is what every other write path canonicalizes an
+        // agent-supplied map with, and it applies exactly what RouteKeywords applies to the value it
+        // keeps — lowercase the key, trim the value, drop blanks — so a direct `{ref: ["x"]}` and a
+        // routed `"ref:x"` produce the same stored value rather than two spellings of one reference.
+        // Merged with Merge, not by hand: the union/replace rule per key class is that method's, and
+        // a second copy of it here is how a direct write and a routed one start disagreeing.
+        var incomingAttributes = KnownAttributes.Merge(
+            routedAttributes, KnownAttributes.Normalize(attributes));
 
         string[]? mergedKeywords = entry.Keywords;
         if (plainAdds is { Length: > 0 })
@@ -459,10 +486,10 @@ public sealed partial class ScriniaMcpTools
         }
 
         Dictionary<string, string[]>? mergedAttributes = entry.Attributes;
-        if (routedAttributes is not null)
+        if (incomingAttributes is not null)
         {
-            mergedAttributes = KnownAttributes.Merge(entry.Attributes, routedAttributes);
-            changes.Add($"{routedAttributes.Count} attribute(s) merged");
+            mergedAttributes = KnownAttributes.Merge(entry.Attributes, incomingAttributes);
+            changes.Add($"{incomingAttributes.Count} attribute(s) merged");
         }
 
         // Replace description if provided — displayed via ContentPreview (updatedContentPreview
@@ -516,7 +543,7 @@ public sealed partial class ScriniaMcpTools
         // `incoming` carries no "review" key, so KnownAttributes.Merge PRESERVES any existing
         // Attributes["review"] rather than clearing it. KnownAttributes.Merge always returns a NEW
         // dictionary, so this never mutates entry.Attributes (== mergedAttributes when
-        // routedAttributes is null) in place.
+        // incomingAttributes is null) in place.
         var reviewParts = new List<string>(2);
         if (parsedReviewAfter is { } ra2) reviewParts.Add(ra2.ToString("o", CultureInfo.InvariantCulture));
         if (!string.IsNullOrWhiteSpace(updatedReviewWhen)) reviewParts.Add(updatedReviewWhen);
@@ -1103,8 +1130,8 @@ public sealed partial class ScriniaMcpTools
 
     /// <summary>
     /// Create a bidirectional relationship between two memories. Writes a unified
-    /// <c>ref</c> attribute on each side (via <see cref="UpdateMeta"/>, which routes the
-    /// <c>ref:{name}</c>-shaped keyword into <c>Attributes["ref"]</c> instead of a legacy keyword).
+    /// <c>ref</c> attribute on each side, handed to <see cref="UpdateMeta"/> as an attribute and
+    /// never minted as a <c>ref:{name}</c>-shaped keyword for routing to turn back into one.
     /// Refuses without writing anything unless both memories already exist.
     /// <para>Either side may be an ephemeral <c>~name</c> <i>as far as this method is concerned</i>
     /// — but that only reaches a caller whose process is the one holding the ephemeral. It is real
@@ -1142,10 +1169,24 @@ public sealed partial class ScriniaMcpTools
                 "list() to see available memories",
                 $"remember({{ path: '{missing}', content: [...] }}) to create it, then link it");
 
-        // Add ref:{to} attribute to {from} (UpdateMeta routes the ref:-shaped keyword into Attributes)
-        McpResponse result1 = await UpdateMeta(from, keywords: [$"ref:{to}"], cancellationToken: cancellationToken);
-        // Add ref:{from} attribute to {to}
-        McpResponse result2 = await UpdateMeta(to, keywords: [$"ref:{from}"], cancellationToken: cancellationToken);
+        // Each side's reference is handed over AS AN ATTRIBUTE. It used to be minted as a
+        // `ref:{name}` KEYWORD and left to AttributeExtractor.RouteKeywords to turn back into one,
+        // which is a conditional conversion: routing only keeps a value up to
+        // AttributeExtractor.MaxValueLength (120), and past that the element stays a plain keyword.
+        // ApplyMetadataMutation's keyword merge then unions it into Keywords with no cap, and
+        // MemoryDerivation.ForMetadataUpdate unions the same term into AgentKeywords — so linking
+        // one memory to enough long-named destinations grew two lists that nothing bounds. Measured
+        // on the ephemeral path this reached after Task 8: 31 links to a 134-character name left
+        // Keywords at 33 and AgentKeywords at 31, past the 30 the promotion wire bound
+        // (MemoryEndpoints.MaxCarriedKeywords) allows, so promoting that ephemeral was refused with
+        // a 400 that MemoryTools.Copy reports as an internal fault. The same loop with short names
+        // left both untouched, which is the whole tell: the growth was the DEGRADATION, not the
+        // linking. Writing the attribute directly removes the conversion, so the destination's name
+        // length stops mattering at all.
+        McpResponse result1 = await UpdateMeta(
+            from, attributes: ReferenceTo(to), cancellationToken: cancellationToken);
+        McpResponse result2 = await UpdateMeta(
+            to, attributes: ReferenceTo(from), cancellationToken: cancellationToken);
 
         if (result1.IsError || result2.IsError)
             return ResponseBuilder.Error(
@@ -1158,6 +1199,14 @@ public sealed partial class ScriniaMcpTools
             linkMsg += $" Reason: {reason}";
         return ResponseBuilder.Success(linkMsg).WithAction("linked");
     }
+
+    /// <summary>The one-key attribute map naming <paramref name="name"/> as a reference — the shape
+    /// <see cref="Link"/> hands each side. <c>"ref"</c> is spelled the same way
+    /// <see cref="AttributeExtractor.ExtractRefAttributes"/> spells it, and it is a
+    /// <see cref="KnownAttributes.ReferenceKeys"/> member, so it union-merges with whatever
+    /// references the entry already carries rather than replacing them.</summary>
+    private static Dictionary<string, string[]> ReferenceTo(string name) =>
+        new(StringComparer.OrdinalIgnoreCase) { ["ref"] = [name] };
 
     private static Task<McpResponse> BuildDriftList(ILocalMemoryStore store)
     {

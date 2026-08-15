@@ -54,15 +54,24 @@ public static class MemoryEndpoints
     /// (<see cref="TextAnalysis.DefaultMaxMergedKeywords"/>), not <see cref="AnalyzeText"/>'s
     /// topN=25, which bounds only the auto half before agent keywords are merged in. A memory with
     /// 5+ agent keywords legitimately lands 26-30 total locally.
-    /// <para><b>Residual (round 3 review):</b> 30 is still tighter than the local path can produce
-    /// in GENERAL — <c>MemoryTools.Core.cs:452-459</c>'s keyword merge (reached via <c>link()</c>
-    /// and, in tests, direct <c>UpdateMeta</c> calls — no caller outside those two) unions new
-    /// keywords into <c>entry.Keywords</c> with no cap, and <c>MemoryDerivation.cs:446-448</c> does
-    /// the same for <c>AgentKeywords</c>, so a memory updated enough times locally can exceed 30
-    /// either way. Unreachable through THIS route today only because <c>update()</c> refuses
-    /// ephemerals and this route's sole source is a client-side ephemeral — if copy-from-client
-    /// ever carries a persistent entry instead, this bound bites a value the local path genuinely
-    /// produced.</para></summary>
+    /// <para><b>Why no local write can exceed it (was a residual; closed by Task 14).</b> One
+    /// mutation in the codebase adds keywords without a cap: <c>ApplyMetadataMutation</c>'s keyword
+    /// merge in <c>MemoryTools.Core.cs</c>, whose additions <c>MemoryDerivation.ForMetadataUpdate</c>
+    /// then unions into <c>AgentKeywords</c> — neither union caps. Its one production caller was
+    /// <c>link()</c>, which minted a <c>ref:{name}</c>-shaped KEYWORD and let
+    /// <c>AttributeExtractor.RouteKeywords</c> convert it back to an attribute; past
+    /// <see cref="AttributeExtractor.MaxValueLength"/> that conversion gives up and the element
+    /// stays a keyword, so linking one memory to enough long-named destinations really did carry
+    /// 31+ keywords here and earn this 400 for a value the local path genuinely produced.
+    /// <c>link()</c> now writes the <c>ref</c> attribute directly and mints no keyword at any name
+    /// length, which leaves <c>UpdateMeta</c> with no production caller that passes
+    /// <c>keywords</c> at all — it is <c>internal</c>, has no MCP tool and no CLI command, and the
+    /// only remaining callers are this repo's tests. Every OTHER write path
+    /// (<c>remember</c>, <c>append</c>) merges through <see cref="TextAnalysis.MergeKeywordsWithSource"/>,
+    /// which caps at this same constant, and both other <c>TryUpdateEntry</c> mutations
+    /// (<c>EntityTypingEventHandler</c>, <c>MaintenanceEventSink</c>) only change attributes or
+    /// REMOVE a keyword. So the bound is now a genuine parity guard on every route, not only on
+    /// this one.</para></summary>
     private const int MaxCarriedKeywords = TextAnalysis.DefaultMaxMergedKeywords;
 
     /// <summary>Top-level Description. No local ceiling exists — <c>MemoryDerivation.cs:152-154</c>
