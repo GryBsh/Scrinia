@@ -156,6 +156,12 @@ public static class MemoryEndpoints
         if (req.Content.Any(c => c is not null && System.Text.Encoding.UTF8.GetByteCount(c) > MaxContentBytes))
             return Results.BadRequest(new ErrorResponse($"Each content element must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
 
+        // Resolved here, before the write, so a name the store refuses is a 400 rather than the
+        // unhandled 500 that StoreAsync's internal ParseQualifiedName would otherwise produce.
+        // See NameRefusal for why this is a probe and not a catch around StoreAsync.
+        if (NameRefusal(ctx.Store!, req.Name) is { } nameRefusal)
+            return nameRefusal;
+
         // Attribute-map bounds, both of them.
         //
         // Key cap: KnownAttributes.MaxAttributes, not the search filter's 64. KnownAttributes.Merge
@@ -251,7 +257,27 @@ public static class MemoryEndpoints
             return Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403);
 
         string decoded = Uri.UnescapeDataString(name);
-        var result = await MemoryOrchestrator.ShowAsync(ctx.Store!, decoded, ct);
+
+        // Caught around the call rather than pre-probed: ResolveArtifactAsync — which is what
+        // ShowAsync resolves through — dispatches an inline "NMP/2 " artifact and a file:// URI
+        // BEFORE it ever reaches ParseQualifiedName, and both of those are names this route
+        // accepts. A pre-probe would have to re-state that dispatch here as a second copy, and
+        // would 400 a file:// URI (it contains a ':', which the bare-name branch refuses). Safe to
+        // wrap whole because every ArgumentException ShowAsync can raise is about the caller's
+        // name — the empty-input guard, Path.GetFullPath on a malformed file:// path, and
+        // ParseQualifiedName; the decode below throws InvalidDataException/InvalidOperationException
+        // for a corrupt stored artifact, never ArgumentException — and because nothing here writes,
+        // so no refusal can describe a half-completed operation.
+        ShowResponse? result;
+        try
+        {
+            result = await MemoryOrchestrator.ShowAsync(ctx.Store!, decoded, ct);
+        }
+        catch (ArgumentException ex)
+        {
+            return Results.BadRequest(new ErrorResponse(CallerFacingMessage(ex)));
+        }
+
         if (result is null)
             return Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found."));
         return Results.Ok(result);
@@ -296,7 +322,9 @@ public static class MemoryEndpoints
             return Task.FromResult<IResult>(Results.Json(new ErrorResponse("Permission 'read' required."), statusCode: 403));
 
         string decoded = Uri.UnescapeDataString(name);
-        var (scope, subject) = ctx.Store!.ParseQualifiedName(decoded);
+        if (!TryResolveName(ctx.Store!, decoded, out string scope, out string subject, out IResult? refusal))
+            return Task.FromResult(refusal!);
+
         var entry = FindEntry(ctx.Store!, scope, subject);
         if (entry is null)
             return Task.FromResult<IResult>(Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found.")));
@@ -453,7 +481,8 @@ public static class MemoryEndpoints
             return Results.BadRequest(new ErrorResponse(boundsError));
 
         string decoded = Uri.UnescapeDataString(name);
-        var (scope, subject) = ctx.Store!.ParseQualifiedName(decoded);
+        if (!TryResolveName(ctx.Store!, decoded, out string scope, out string subject, out IResult? refusal))
+            return refusal!;
 
         bool found = false;
         bool conflict = false;
@@ -544,6 +573,11 @@ public static class MemoryEndpoints
 
         string decoded = Uri.UnescapeDataString(name);
 
+        // ForgetAsync resolves the name itself (MemoryOrchestrator.ForgetAsync) and would otherwise
+        // 500. Nothing has been deleted at this point, so the refusal is honest about the state.
+        if (NameRefusal(ctx.Store!, decoded) is { } nameRefusal)
+            return nameRefusal;
+
         try
         {
             bool ok = await pipeline.ForgetAsync(ctx.Store!, decoded, ct);
@@ -580,6 +614,11 @@ public static class MemoryEndpoints
 
         if (System.Text.Encoding.UTF8.GetByteCount(req.Content) > MaxContentBytes)
             return Results.BadRequest(new ErrorResponse($"Content must not exceed {MaxContentBytes / (1024 * 1024)} MB."));
+
+        // See RememberMemory's — an append creates the memory when it does not exist, so this is a
+        // write path with the same unguarded-throw exposure.
+        if (NameRefusal(ctx.Store!, decoded) is { } nameRefusal)
+            return nameRefusal;
 
         // The same attribute bounds POST /memories enforces, normalized first for the same reason.
         // AppendRequest carries an attribute map now (it used to carry Content alone), and an
@@ -618,6 +657,15 @@ public static class MemoryEndpoints
         string decoded = Uri.UnescapeDataString(name);
         if (string.IsNullOrWhiteSpace(req.Destination))
             return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse("destination is required.")));
+
+        // BOTH names are caller-supplied and both are resolved inside CopyMemory
+        // (FileMemoryStore.CopyMemory parses the source and the destination separately), so both
+        // need the guard. Source first, matching the order CopyMemory itself resolves them, so the
+        // message names the same one a caller with two bad names would see from the store.
+        if (NameRefusal(ctx.Store!, decoded) is { } sourceRefusal)
+            return Task.FromResult(sourceRefusal);
+        if (NameRefusal(ctx.Store!, req.Destination) is { } destinationRefusal)
+            return Task.FromResult(destinationRefusal);
 
         bool ok = ctx.Store!.CopyMemory(decoded, req.Destination, req.Overwrite, out string msg);
         if (!ok)
@@ -755,6 +803,14 @@ public static class MemoryEndpoints
         // directory name, a full or disconnected volume. Kept for those, with the message widened
         // off "contains characters the filesystem cannot store" — which is now the one thing it
         // cannot be.
+        //
+        // ASYMMETRY, deliberate and currently unreachable: GetStoreDirForScope sits INSIDE this try
+        // and throws ArgumentException (PathRouter.ToStoreDir, "Unknown scope: …") for a scope that
+        // is neither "local" nor "local:…" — which catch (IOException) does not cover, so it would
+        // escape as a 500. It cannot happen from here: `dstScope` comes from ParseQualifiedName one
+        // block above, which returns only those two shapes. Left uncaught rather than widened,
+        // because if that invariant ever broke, a 500 is the honest answer — the caller's name would
+        // not be at fault, this endpoint's own resolver would be.
         try
         {
             Directory.CreateDirectory(local.GetStoreDirForScope(dstScope));
@@ -876,6 +932,66 @@ public static class MemoryEndpoints
         return null;
     }
 
+    /// <summary>
+    /// Resolves a caller-supplied memory name to its <c>(scope, subject)</c> pair, or produces the
+    /// 400 that says why it cannot be.
+    ///
+    /// <para><b>Why every handler that resolves a name needs this.</b> Task 13 routed
+    /// <see cref="IMemoryStore.ParseQualifiedName"/>'s multi-segment branch through
+    /// <c>MemoryNaming.BuildScopedTopicScope</c>, which REFUSES a topic segment that substitution
+    /// cannot repair — a trailing dot or space, a bare <c>"."</c>, <c>NUL</c>, a segment that
+    /// sanitizes to nothing. Before that, the scope was interpolated from the raw segments and the
+    /// method threw only for the removed <c>topic:subject</c> colon syntax and an empty name. So
+    /// <c>/notes./x</c> is input this server ACCEPTED and stored one commit ago, and an unguarded
+    /// <see cref="ArgumentException"/> turns it into a 500 — a server-fault status for a caller
+    /// error, on routes an untrusted client reaches. <see cref="CopyFromClient"/> answered 400 for
+    /// the same input because it alone had the guard; this makes the rest agree with it.</para>
+    /// </summary>
+    private static bool TryResolveName(
+        IMemoryStore store, string name, out string scope, out string subject, out IResult? refusal)
+    {
+        try
+        {
+            (scope, subject) = store.ParseQualifiedName(name);
+            refusal = null;
+            return true;
+        }
+        catch (ArgumentException ex)
+        {
+            scope = subject = "";
+            refusal = Results.BadRequest(new ErrorResponse(CallerFacingMessage(ex)));
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The 400 a caller-supplied name earns, or null when it resolves — for the handlers that hand
+    /// the name to a pipeline/store member which resolves it INTERNALLY and therefore has no
+    /// <c>(scope, subject)</c> to give back here.
+    ///
+    /// <para><b>Probed in isolation, deliberately.</b> The alternative — wrapping the whole
+    /// <c>StoreAsync</c>/<c>AppendAsync</c>/<c>CopyMemory</c> call in
+    /// <c>catch (ArgumentException)</c> — is the misattribution defect <see cref="CopyFromClient"/>
+    /// documents at length: those calls write, and an <see cref="ArgumentException"/> raised after
+    /// the artifact has landed would 400 with "malformed name" over a write that half-happened.
+    /// Running the resolver alone, before any side effect, keeps the refusal attributable to
+    /// exactly the thing it names. <see cref="IMemoryStore.ParseQualifiedName"/> is pure, so the
+    /// second call the operation itself makes costs nothing but string work.</para>
+    ///
+    /// <para>An ephemeral <c>~name</c> is skipped because every operation behind this check tests
+    /// <see cref="IMemoryStore.IsEphemeral"/> FIRST and routes it without parsing
+    /// (<c>MemoryOrchestrator.Resolve</c>, <c>MemoryOrchestrator.ForgetAsync</c>,
+    /// <c>FileMemoryStore.CopyMemory</c>) — probing one here would refuse a name the operation
+    /// accepts. It is skipped rather than merely harmless: <c>ParseQualifiedName("~x")</c> happens
+    /// not to throw today, but this check must not depend on that.</para>
+    /// </summary>
+    private static IResult? NameRefusal(IMemoryStore store, string name)
+    {
+        if (store.IsEphemeral(name))
+            return null;
+        return TryResolveName(store, name, out _, out _, out IResult? refusal) ? null : refusal;
+    }
+
     /// <summary>Strips <see cref="ArgumentException"/>'s auto-appended <c>" (Parameter 'x')"</c>
     /// suffix before a message reaches a caller — the throwing method's internal C# parameter name
     /// is an implementation detail, not part of a caller-facing refusal.</summary>
@@ -903,6 +1019,15 @@ public static class MemoryEndpoints
         catch (FileNotFoundException)
         {
             return Results.NotFound(new ErrorResponse($"Memory '{decoded}' not found."));
+        }
+        // Same reasoning as RecallMemory's: ResolveArtifactAsync accepts an inline artifact and a
+        // file:// URI ahead of ParseQualifiedName, so the guard belongs around the call and not in
+        // a pre-probe that would have to duplicate that dispatch. The chunk decode below is outside
+        // this try — DecodeChunk's ArgumentOutOfRangeException is a server-side index error, not a
+        // name refusal, and the range check above already makes it unreachable.
+        catch (ArgumentException ex)
+        {
+            return Results.BadRequest(new ErrorResponse(CallerFacingMessage(ex)));
         }
 
         int totalChunks = Nmp2ChunkedEncoder.GetChunkCount(artifact);
@@ -1019,6 +1144,22 @@ public static class MemoryEndpoints
             return Task.FromResult<IResult>(Results.Json(
                 new ErrorResponse("Bundle export requires a store backed by a local filesystem."),
                 statusCode: StatusCodes.Status501NotImplemented));
+
+        // Task 13 made this a refusing path too, and it is a THIRD name-resolution surface, not the
+        // {name} route: BundleFormatService.ExportTopicsToZip builds each topic's scope through
+        // MemoryNaming.BuildScopedTopicScope, which throws ArgumentException for a topic
+        // substitution cannot repair. Pre-validated with the non-throwing form, mirroring
+        // BundleFormatService's own import-side pre-pass, so an unusable topic is a 400 naming the
+        // topic rather than a 500 raised while the response stream is already being built.
+        foreach (string topic in req.Topics)
+        {
+            // Null-tolerant: `topics` is a wire array, so an element can arrive null however the
+            // DTO declares it, and TryBuildScopedTopicScope takes a nullable topic for exactly
+            // that reason.
+            if (!MemoryNaming.TryBuildScopedTopicScope(topic?.Trim(), out _))
+                return Task.FromResult<IResult>(Results.BadRequest(new ErrorResponse(
+                    $"Topic '{topic}' is not a usable scope name.")));
+        }
 
         var stream = BundleService.ExportToStream(localStore, req.Topics);
         string filename = $"export-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.scrinia-bundle";
