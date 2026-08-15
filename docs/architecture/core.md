@@ -285,11 +285,11 @@ public static class KnownAttributes
 `AttributeExtractor` in `Scrinia.Core.Search` is the single write-time entry point with three sources feeding one attribute bag:
 
 - **`RouteKeywords(keywords)`** -- agent-keyword routing. Splits agent-supplied keywords into attribute-shaped (`key:value` -> `Attributes`) and plain (stay in `Keywords`, still participate in BM25/keyword scoring).
-- **`Extract(content)`** -- mechanical content extraction. Line-by-line scan for `key: value` line-starts and `**Bold:** value` labels (frontmatter lines pass through untouched, not specially gated); skips properly closed code-fenced blocks only — an unterminated fence (an opening ``` with no matching closer) is not a fence at all, and everything after it extracts as ordinary prose. Both rules come from the shared `ProseScanner`.
+- **`Extract(content)`** -- mechanical content extraction. Line-by-line scan for `key: value` line-starts, `**Bold:** value` labels, and inline prose `key:value` pairs (`MatchInlineProsePairs`, routed only for the eight recommended keys — see CHANGELOG); frontmatter lines pass through untouched, not specially gated. Skips properly closed code-fenced blocks only — an unterminated fence (an opening ``` with no matching closer) is not a fence at all, and everything after it extracts as ordinary prose. Both the fence rule and the frontmatter pass-through come from the shared `ProseScanner`.
 - **`ExtractRefAttributes(content)`** -- reference extraction. Delegates to `ReferenceExtractor.ExtractFileRefs`/`ExtractMemoryRefs`, both fence-aware via the same `ProseScanner` rule as `Extract`, and packages results as `{file: [...], ref: [...]}`, replacing the retired `file:`/`ref:` prefixed-keyword emission.
 - **`SeedTermFrequencies(attributes, tf)`** -- not an extraction source; seeds attribute keys/values into the term-frequency dictionary (+3/token) so BM25 also matches attribute vocabulary.
 
-`ReferenceExtractor` itself (source-generated regexes for file-path and memory-reference patterns) is called directly from two write-path sites, not only underneath `ExtractRefAttributes`: `MaintenanceEventSink.ExtractMemoryRefs` calls it directly to find `[[wiki-link]]` targets for auto-linking and orphan detection (`MaintenanceEventSink.cs:100`). Neither call site emits a `ref:`/`file:`-prefixed keyword any more — that emission is retired — but the write paths' direct use of the extractor did not go away with it.
+`ReferenceExtractor` itself (source-generated regexes for file-path and memory-reference patterns) has exactly two production call sites, and `ExtractRefAttributes` above is one of them, not the only consumer: `AttributeExtractor.ExtractRefAttributes` (`AttributeExtractor.cs:277-278`) and, separately, `MaintenanceEventSink`'s private `AutoLinkAndDetectOrphans` helper, which calls `ReferenceExtractor.ExtractMemoryRefs` directly (`MaintenanceEventSink.cs:100`) to find `[[wiki-link]]` targets for auto-linking and orphan detection. Neither site emits a `ref:`/`file:`-prefixed keyword any more — that emission is retired — but `ReferenceExtractor` is not merely a private implementation detail sitting only underneath `ExtractRefAttributes`; the CHANGELOG's "three write-path consumers" (`ExtractRefAttributes`, `MaintenanceEventSink`, `Extract`/`ExtractMentionSpans`) names the same two direct callers plus `Extract`/`ExtractMentionSpans`, which do not call `ReferenceExtractor` at all.
 
 #### Dual-read
 
@@ -311,13 +311,18 @@ abstract methods a conforming store must implement with no default, plus 5 membe
 bodies a store may override for efficiency, covering all memory operations:
 
 That is the property the split actually achieved, and it is narrower than "a remote store honours
-the whole contract in substance". Three members are implemented remotely as silent no-ops rather
-than throws — `HttpMemoryStore.LoadIndex` returns `[]`, `Upsert` and `ArchiveVersion` are empty
-bodies. Two are defensible: the server performs those writes, so the client-side call has nothing
-to do. `LoadIndex` returning `[]` is not — the interface's own default `TryUpdateEntry` loads the
-index, finds nothing, and returns `false`, so the async-typing promotion seam silently never
-persists remotely. Pre-existing, recorded as a known gap in
-`/findings/store-boundaries-deferred-followups`.
+the whole contract in substance". Two members are implemented remotely as silent no-ops rather
+than throws — `Upsert` and `ArchiveVersion` are empty bodies — because the server performs those
+writes, so the client-side call has nothing to do. `HttpMemoryStore.LoadIndex` is not a third: it
+pages through the server's listing endpoint (1000 entries per page) until it has collected the
+reported total, and **throws** `HttpRequestException` on a non-success response rather than
+returning `[]` — its own comment states why: returning `[]` there "would look exactly like 'this
+scope has no entries' — the same lie `LoadIndex` told unconditionally before this fix." A caller
+like the async-typing promotion seam's default `TryUpdateEntry` therefore cannot mistake an
+unreachable or erroring server for "this scope has no entries". `HttpMemoryStore` also overrides
+`TryUpdateEntry` itself — `GET .../entry` then `PATCH`, not the interface's default
+`LoadIndex → mutate → Upsert` — so that default (which would silently do nothing against the no-op
+`Upsert`) never runs on the remote path at all.
 
 **Naming:** `ParseQualifiedName`, `FormatQualifiedName`, `IsEphemeral`, `SanitizeName`
 

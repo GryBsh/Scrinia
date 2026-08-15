@@ -109,7 +109,7 @@ and all assembly attributes.
   explicit `null` distinguishable from "missing"; a plain indexer read cannot tell them apart.
   Requires a hand-edited or foreign-tool sidecar to reach.
 
-### Fixed — `reconcile()` and the git merge driver silently absorbed a malformed `keywords` array
+### Changed (breaking) — `reconcile()` and the git merge driver silently absorbed a malformed `keywords` array
 
 - Both mergers now escalate to a conflict — `reconcile()`'s auto-resolver reports "auto-resolve
   failed", the git merge driver returns `MergeResult.Conflict` — when a sidecar's `keywords` (or,
@@ -277,23 +277,30 @@ and all assembly attributes.
 ### Fixed — copying across the ephemeral boundary against a remote store
 
 - **Promoting a `~name` to a persistent memory, and demoting a persistent memory to a `~name`, now
-  work against a remote store (`scri serve --remote`).** Previously the client stripped the `~` and
-  sent a bare name to the server's existing `/copy` endpoint, which resolves both sides against its
-  own index — an index that has never seen the client's in-process ephemeral memories. That removes
-  three symptoms: promoting when the server held no persistent memory of that name returned a
-  `400 Bad Request`; promoting when a same-named persistent memory *did* exist server-side
-  **silently copied that unrelated memory instead of refusing** (the wrong-memory symptom); demoting
-  reported success while the copy actually landed in the server's own ephemeral map, invisible to
-  the client that asked for it.
+  work against a remote store (`scri serve --remote`).** Both directions previously reused the
+  server's existing `/copy` endpoint, and each failed for its own reason. Promotion stripped the
+  `~` from the *source* before sending it, so the server resolved a bare name against its own
+  index — an index that has never seen the client's in-process ephemeral memories — returning a
+  `400 Bad Request` when no persistent memory of that name existed there, or, when a same-named
+  persistent memory *did* exist server-side, **silently copying that unrelated memory instead of
+  refusing** (the wrong-memory symptom). Demotion sent the *destination*'s `~name` intact: the
+  server's own store saw the leading `~` and resolved it as a write into its own in-process
+  ephemeral map — a map the client can never see — so the copy reported success while landing
+  somewhere the caller could not retrieve it from.
 - The fix is a new route, `POST /memories/{name}/copy-from-client`, not an optional field on the
   existing `/copy` request. **`{name}` is the DESTINATION on this route — the opposite of `/copy`,
   where `{name}` is the source.** That asymmetry is deliberate and is the whole reason the route
   exists: the source is a client-side ephemeral the server has never seen, so there is no
-  server-side name to put in the path. The client sends the artifact plus the metadata it already
-  derived (keywords, attributes, term frequencies, chunk entries, drift baseline, keyword
-  provenance) and the server stores both verbatim, deriving nothing — the same rule
-  `ILocalMemoryStore.WriteCarriedCopy` already applies to an in-process, local ephemeral-to-persistent
-  promotion, now reachable through this route by a caller whose source the server cannot see.
+  server-side name to put in the path. The client sends its decoded chunk text — never the encoded
+  artifact itself — plus the metadata it already derived (keywords, attributes, term frequencies,
+  chunk entries, drift baseline, keyword provenance). The server re-encodes the chunks it received
+  into the artifact, so the artifact's own chunk-count header can never disagree with what it
+  actually contains, and derives `OriginalBytes`, `ChunkCount` and `CreatedAt` itself rather than
+  trusting them from the caller — everything else in the carried metadata is stored verbatim, after
+  the same normalisation and bounds checks every other write path applies. This is the same rule
+  `ILocalMemoryStore.WriteCarriedCopy` already applies to an in-process, local
+  ephemeral-to-persistent promotion, now reachable through this route by a caller whose source the
+  server cannot see.
 - **A route, not a field, because an older server has to fail loudly, not quietly.** A server
   predating this change would ignore an unrecognised field on the existing `CopyRequest` body and
   fall through to the same bare-name resolution that produces the wrong-memory symptom, reporting
@@ -587,7 +594,9 @@ and all assembly attributes.
   *Ruling: `archive` and `Archive` are one memory.* The alternative — case-sensitive names
   throughout — is a coherent design, but it is a storage-format decision (two names differing only
   in case need two files, which an ordinary NTFS volume cannot hold), not a change to this check.
-  This was the last open site of the class.
+  This closed every site of the class reachable at the time; the `~name` → persistent promotion
+  branch remained open until `WriteCarriedCopy`'s destination-casing adoption (see "copying across
+  the ephemeral boundary against a remote store", above) closed it too, on a later branch.
 - `copy()` from a source named in a different casing now carries the source's metadata. It resolved
   the source *file* case-insensitively (the filesystem did it) but its *entry* ordinally, so the
   copy silently took the synthesized-defaults branch: destination created, bytes intact, attributes
