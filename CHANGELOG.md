@@ -10,7 +10,7 @@ and all assembly attributes.
 
 ## [Unreleased]
 
-### Fixed — a long destination name turned a link into keywords, and blocked promotion
+### Fixed — a long destination name turned a link into keywords
 
 - **`link()` no longer degrades a long destination name into a plain keyword.** It recorded each
   side's reference by minting a `ref:{name}`-shaped keyword and relying on keyword routing to turn
@@ -22,11 +22,6 @@ and all assembly attributes.
   destinations keeps the `keywords` it derived from its own content instead of accumulating one
   `ref:...` entry per link. Short-name links are unchanged in every respect, including the exact
   attribute value stored and the `N attribute(s) merged` message.
-- **Promoting a heavily linked ephemeral to a remote store works again.** `copy()` from a `~name` to
-  a persistent name carries the ephemeral's `keywords` and `agentKeywords` to the server, which
-  refuses more than 30 of either. Enough long-named links pushed a memory past that, and the
-  resulting `400` surfaced as an internal error naming nothing the caller could act on. Since the
-  keywords are no longer minted, the promotion succeeds.
 
 ### Fixed — file and memory references no longer extract from pasted code
 
@@ -84,6 +79,38 @@ and all assembly attributes.
   change keep whichever `file`/`ref`/attribute/`mention` shape their content produced under the OLD
   rules until they are next stored with `remember` — a corpus can hold multiple shapes side by side
   indefinitely, and appending does not migrate one.
+
+### Changed (breaking) — a topic segment that aliases another scope is now refused
+
+- **A memory path whose topic segment ends in `.` or a space, is a bare `.`, or is `NUL` is now
+  rejected instead of stored.** Every scope string is built by one constructor
+  (`MemoryNaming.BuildScopedTopicScope`), which sanitizes each segment and refuses what substitution
+  cannot repair. Previously the topic was interpolated from the raw path segments while only the
+  leaf was sanitized, so `/notes./x`, `/notes /x` and `/notes/x` produced three *different* scope
+  strings — three index-cache keys and three write locks — over **one** directory, because the
+  filesystem trims a trailing dot or space from a path component. A write through any one of them
+  left the others' cached listing stale, and `SaveIndex`'s orphan sweep then deleted every sidecar
+  absent from that stale list. A bare `.` aliases the parent scope the same way. `NUL` is refused
+  because `Directory.CreateDirectory` cannot create it; `CON`/`PRN`/`AUX`/`COM1-9`/`LPT1-9` are
+  **not** refused — measured on Windows, those create real, writable directories and alias nothing.
+- **Which direction each caller takes.** Write paths — storing, appending, forgetting, copying,
+  bundle import/export — throw `ArgumentException`; over HTTP that is a `400` naming the segment and
+  why. Read paths — the `scopes` filter, `excludeTopics` — treat an unbuildable topic as matching
+  nothing rather than refusing, because a scope that cannot be constructed cannot name a stored
+  memory either. Scope *recovery* (reading back a directory name the filesystem itself produced, or
+  a label a remote store reports) is deliberately exempt and unchanged: validating there would make
+  an already-stored memory in such a scope undeletable.
+- **The repaired direction, which is not a refusal.** `*`, `?`, `<`, `>`, `|` and `"` in a topic
+  segment are now substituted with `_`, exactly as the leaf has always treated them — so `/a*b/x`
+  stores under `local:a_b` and succeeds, where it previously carried the raw `*` down to
+  `Directory.CreateDirectory` and failed there with an I/O error on Windows.
+- **Migration, precisely.** A memory already stored under an aliasing scope still appears in `list()`
+  and in search results, and is still deletable via `forget()` with its `file://` URI — both go
+  through scope *recovery*, which reads the directory name off disk and is exempt. What is refused is
+  addressing it **by path**: `recall('/notes./x')`, `forget('/notes./x')` and a re-`remember` under
+  that path now fail with the refusal above. Recover such a memory by copying it to a valid path.
+  Reaching this state at all requires a filesystem that permits a trailing dot or space in a
+  directory name; Windows trims them, so no memory written there is affected.
 
 ### Changed (breaking) — `reconcile()` refuses to auto-merge dissimilar sidecars
 
