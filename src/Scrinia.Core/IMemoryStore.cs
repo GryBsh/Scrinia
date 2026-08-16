@@ -52,8 +52,11 @@ public interface IMemoryStore
     /// refused rather than merged.</exception>
     Task<ArtifactEntry> AppendAsync(MemoryWrite write, CancellationToken ct = default);
 
-    // Neither member has a default implementation, deliberately: every store implements both, so a
-    // store added later cannot silently inherit a derivation that is wrong for it.
+    // Neither StoreAsync nor AppendAsync has a default implementation, deliberately: every store
+    // implements both, so a store added later cannot silently inherit a derivation that is wrong
+    // for it. This is a rule about DERIVATION, not a policy for the whole interface — several
+    // members below do carry defaults, and carry them correctly; see ListScoped's contract for
+    // the invariant that makes them safe.
 
     // CRUD
     Task<string> ResolveArtifactAsync(string nameOrArtifact, CancellationToken ct = default);
@@ -121,19 +124,40 @@ public interface IMemoryStore
     /// async typing sink (<c>EntityTypingEventHandler</c>) query the existing typed vocabulary
     /// without a bespoke full-store scan on every write event.
     /// </para>
+    /// <para>Correct for any store whose <see cref="ListScoped(string?)"/> honours its completeness
+    /// contract, and only for such a store: facts derived over a truncated listing are wrong, not
+    /// partial.</para>
     /// </summary>
     EntityFactStore GetEntityFactStore() =>
         EntityFactDerivation.BuildStore(ListScoped(null));
 
     // Listing & Search
+
+    /// <summary>
+    /// Every entry in <paramref name="scopes"/>, or across every readable scope when null.
+    ///
+    /// <para><b>The listing is COMPLETE.</b> An implementation backed by a paged remote source
+    /// must page to exhaustion before returning; returning one page is not a degraded answer,
+    /// it is a wrong one, and it is silent — the caller sees a short list, not an error.</para>
+    ///
+    /// <para>This is the precondition every default implementation in this interface rests on:
+    /// <see cref="GetEntityFactStore"/>, <see cref="ListScoped(string?, string?)"/> and (through
+    /// <c>DiscoverTopics</c>) <see cref="ResolveReadScopes(string?, string?)"/> are all correct
+    /// exactly insofar as this member is. <c>HttpMemoryStore.ListScoped</c> broke it by sending
+    /// no <c>limit</c> against a server defaulting to 200 rows, and all three inherited the
+    /// truncation — including the one that makes whole topic scopes disappear rather than merely
+    /// lose entries. <c>PagedListingConformanceTests</c> is what holds this now.</para>
+    /// </summary>
     List<ScopedArtifact> ListScoped(string? scopes = null);
 
     /// <summary>
     /// The one search member. Takes a <see cref="SearchQuery"/> and has no default implementation
     /// on purpose: the five overloads this replaced carried four default bodies that post-filtered
     /// after the top-K cut, so any store that did not override them silently returned fewer than
-    /// <c>Limit</c> results for a selective filter. A store that cannot filter must now say so at
-    /// compile time.
+    /// <c>Limit</c> results for a selective filter. A store that cannot filter must say so at
+    /// compile time — for THIS member. That is a consequence of the specific defect it fixes (four
+    /// default bodies that post-filtered after the top-K cut), not a rule the rest of this
+    /// interface follows.
     /// </summary>
     IReadOnlyList<SearchResult> SearchAll(SearchQuery query);
 
@@ -143,6 +167,8 @@ public interface IMemoryStore
     /// Lists memories, excluding entries from the specified topics.
     /// Default implementation post-filters after calling <see cref="ListScoped(string?)"/>.
     /// FileMemoryStore overrides with efficient scope-level filtering.
+    /// <para>Post-filtering is correct here only because <see cref="ListScoped(string?)"/> is
+    /// complete; see its contract.</para>
     /// </summary>
     /// <param name="scopes">Optional comma-separated scope filter.</param>
     /// <param name="excludeTopics">Optional comma-separated topic names to exclude (e.g. "plan,task,project,learn").</param>
@@ -157,6 +183,9 @@ public interface IMemoryStore
     /// Resolves read scopes, excluding the specified topic scopes.
     /// Default implementation post-filters after calling <see cref="ResolveReadScopes(string?)"/>.
     /// FileMemoryStore overrides with efficient scope-level filtering.
+    /// <para>Correct for the same reason as its sibling, and with the same precondition: the
+    /// underlying single-argument resolution must see every scope, which for a remote store means
+    /// a complete listing.</para>
     /// </summary>
     IReadOnlyList<string> ResolveReadScopes(string? scopes, string? excludeTopics)
     {
