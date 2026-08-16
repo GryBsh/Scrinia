@@ -460,6 +460,7 @@ internal static class WorkspaceSetup
                     $"[scrinia:info] Built-in embeddings not available " +
                     $"(provider={provider.GetType().Name})");
                 SearchContributorContext.Default ??= new PathSegmentScoreContributor();
+                MemoryEventSinkContext.InstallDefault(new MaintenanceEventSink());
             }
         }
         catch (Exception ex)
@@ -468,6 +469,7 @@ internal static class WorkspaceSetup
                 $"[scrinia:warn] Failed to initialize built-in embeddings: " +
                 $"{ex.GetType().Name}: {ex.Message}");
             SearchContributorContext.Default ??= new PathSegmentScoreContributor();
+            MemoryEventSinkContext.InstallDefault(new MaintenanceEventSink());
         }
     }
 
