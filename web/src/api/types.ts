@@ -167,16 +167,6 @@ export interface EmbeddingsSettings {
   provider: string;
   hardware: string;
   semanticWeight: number;
-  maxBatchSize: number;
-  ollamaBaseUrl: string;
-  ollamaModel: string;
-  openAiModel: string;
-  openAiBaseUrl: string;
-}
-
-export interface EmbeddingsSettingsUpdate {
-  semanticWeight?: number;
-  maxBatchSize?: number;
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────

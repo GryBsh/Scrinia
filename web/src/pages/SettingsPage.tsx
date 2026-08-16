@@ -1,35 +1,37 @@
-import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getEmbeddingsStatus, getEmbeddingsSettings, updateEmbeddingsSettings, reindexEmbeddings, validateEmbeddingsSettings } from '../api/client'
-import type { EmbeddingsSettings, EmbeddingsSettingsUpdate } from '../api/types'
-import { RefreshCw, Save } from 'lucide-react'
+import { getHealth, getEmbeddingsStatus, getEmbeddingsSettings, reindexEmbeddings } from '../api/client'
+import { RefreshCw } from 'lucide-react'
 
 export default function SettingsPage() {
   const queryClient = useQueryClient()
 
+  const { data: health } = useQuery({
+    queryKey: ['health'],
+    queryFn: getHealth,
+    refetchInterval: 30_000,
+  })
+
+  const stores = health?.checks
+    ?.filter((c) => c.name.startsWith('store:'))
+    .map((c) => c.name.replace('store:', '')) ?? []
+
+  const store = stores.length === 0 || stores.includes('default') ? 'default' : stores[0]!
+
   const { data: status, isLoading: statusLoading, error: statusError } = useQuery({
-    queryKey: ['embeddings-status'],
-    queryFn: getEmbeddingsStatus,
+    queryKey: ['embeddings-status', store],
+    queryFn: () => getEmbeddingsStatus(store),
     refetchInterval: 30_000,
   })
 
   const { data: settings, isLoading: settingsLoading, error: settingsError } = useQuery({
-    queryKey: ['embeddings-settings'],
-    queryFn: getEmbeddingsSettings,
-  })
-
-  const saveMutation = useMutation({
-    mutationFn: updateEmbeddingsSettings,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['embeddings-settings'] })
-      queryClient.invalidateQueries({ queryKey: ['embeddings-status'] })
-    },
+    queryKey: ['embeddings-settings', store],
+    queryFn: () => getEmbeddingsSettings(store),
   })
 
   const reindexMutation = useMutation({
-    mutationFn: reindexEmbeddings,
+    mutationFn: () => reindexEmbeddings(store),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['embeddings-status'] })
+      queryClient.invalidateQueries({ queryKey: ['embeddings-status', store] })
     },
   })
 
@@ -87,21 +89,16 @@ export default function SettingsPage() {
               </StatusRow>
               <StatusRow label="Dimensions" value={String(status.dimensions)} />
               <StatusRow label="Vectors" value={status.vectorCount.toLocaleString()} />
+              {settings && (
+                <StatusRow label="Semantic Weight" value={String(settings.semanticWeight)} />
+              )}
             </tbody>
           </table>
+          <p className="text-gray-500 text-xs px-4 pb-3">
+            Embedding settings are read from configuration. Change them with{' '}
+            <code>scri config Scrinia:Embeddings:*</code> and restart the server.
+          </p>
         </div>
-      )}
-
-      {/* Settings form */}
-      {settings && (
-        <SettingsForm
-          key={`${settings.semanticWeight}-${settings.maxBatchSize}`}
-          settings={settings}
-          onSave={(values) => saveMutation.mutate(values)}
-          saving={saveMutation.isPending}
-          saveError={saveMutation.error as Error | null}
-          saveSuccess={saveMutation.isSuccess}
-        />
       )}
 
       {/* Actions */}
@@ -135,97 +132,6 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
-  )
-}
-
-function SettingsForm({
-  settings,
-  onSave,
-  saving,
-  saveError,
-  saveSuccess,
-}: {
-  settings: EmbeddingsSettings
-  onSave: (values: EmbeddingsSettingsUpdate) => void
-  saving: boolean
-  saveError: Error | null
-  saveSuccess: boolean
-}) {
-  const [semanticWeight, setSemanticWeight] = useState(String(settings.semanticWeight))
-  const [maxBatchSize, setMaxBatchSize] = useState(String(settings.maxBatchSize))
-  const [fieldErrors, setFieldErrors] = useState<{ semanticWeight?: string; maxBatchSize?: string }>({})
-
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault()
-    const { values, errors } = validateEmbeddingsSettings(semanticWeight, maxBatchSize)
-    if (!values) {
-      setFieldErrors(errors)
-      return
-    }
-    setFieldErrors({})
-    onSave(values)
-  }
-
-  return (
-    <form onSubmit={handleSave} className="bg-white rounded-lg border mb-6">
-      <div className="px-4 py-3 border-b">
-        <h4 className="text-sm font-medium text-gray-700">Configuration</h4>
-      </div>
-      <div className="p-4 space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label htmlFor="settings-semantic-weight" className="text-xs text-gray-500">Semantic Weight (0-200)</label>
-            <input
-              id="settings-semantic-weight"
-              type="number"
-              value={semanticWeight}
-              onChange={(e) => setSemanticWeight(e.target.value)}
-              min="0"
-              max="200"
-              step="0.1"
-              className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {fieldErrors.semanticWeight && (
-              <p className="text-red-500 text-xs mt-1">{fieldErrors.semanticWeight}</p>
-            )}
-          </div>
-          <div>
-            <label htmlFor="settings-max-batch-size" className="text-xs text-gray-500">Max Batch Size (1-64)</label>
-            <input
-              id="settings-max-batch-size"
-              type="number"
-              value={maxBatchSize}
-              onChange={(e) => setMaxBatchSize(e.target.value)}
-              min="1"
-              max="64"
-              step="1"
-              className="w-full mt-1 px-3 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {fieldErrors.maxBatchSize && (
-              <p className="text-red-500 text-xs mt-1">{fieldErrors.maxBatchSize}</p>
-            )}
-          </div>
-        </div>
-
-        {saveError && (
-          <p className="text-red-500 text-xs">{saveError.message}</p>
-        )}
-        {saveSuccess && (
-          <p className="text-green-600 text-xs">Settings updated.</p>
-        )}
-
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={saving}
-            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            <Save className="w-4 h-4" />
-            {saving ? 'Saving...' : 'Save Settings'}
-          </button>
-        </div>
-      </div>
-    </form>
   )
 }
 

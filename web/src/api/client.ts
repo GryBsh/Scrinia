@@ -14,7 +14,6 @@ import type {
   ErrorResponse,
   EmbeddingsStatus,
   EmbeddingsSettings,
-  EmbeddingsSettingsUpdate,
   ChatMessage,
   ChatEvent,
   ChatRequest,
@@ -241,53 +240,16 @@ export function revokeKey(keyId: string) {
 
 // ── Embeddings ──────────────────────────────────────────────────────────────
 
-export interface SettingsValidation {
-  values: EmbeddingsSettingsUpdate | null;
-  errors: { semanticWeight?: string; maxBatchSize?: string };
+export function getEmbeddingsStatus(store: string) {
+  return apiFetch<EmbeddingsStatus>(`${API_BASE}/stores/${store}/embeddings/status`);
 }
 
-// Parse the two numeric settings strings with `Number` (stricter than
-// parseFloat/parseInt — "12abc" and "" become NaN/0 and are rejected here
-// rather than silently serialized as null). Ranges match the inputs' min/max.
-export function validateEmbeddingsSettings(
-  semanticWeightStr: string,
-  maxBatchSizeStr: string,
-): SettingsValidation {
-  const errors: { semanticWeight?: string; maxBatchSize?: string } = {};
-
-  const weight = Number(semanticWeightStr);
-  if (semanticWeightStr.trim() === '' || !Number.isFinite(weight) || weight < 0 || weight > 200) {
-    errors.semanticWeight = 'Enter a number between 0 and 200.';
-  }
-
-  const batch = Number(maxBatchSizeStr);
-  if (maxBatchSizeStr.trim() === '' || !Number.isInteger(batch) || batch < 1 || batch > 64) {
-    errors.maxBatchSize = 'Enter a whole number between 1 and 64.';
-  }
-
-  if (errors.semanticWeight || errors.maxBatchSize) {
-    return { values: null, errors };
-  }
-  return { values: { semanticWeight: weight, maxBatchSize: batch }, errors: {} };
+export function getEmbeddingsSettings(store: string) {
+  return apiFetch<EmbeddingsSettings>(`${API_BASE}/stores/${store}/embeddings/settings`);
 }
 
-export function getEmbeddingsStatus() {
-  return apiFetch<EmbeddingsStatus>(`${API_BASE}/plugins/embeddings/status`);
-}
-
-export function getEmbeddingsSettings() {
-  return apiFetch<EmbeddingsSettings>(`${API_BASE}/plugins/embeddings/settings`);
-}
-
-export function updateEmbeddingsSettings(update: EmbeddingsSettingsUpdate) {
-  return apiFetch<{ message: string }>(`${API_BASE}/plugins/embeddings/settings`, {
-    method: 'PUT',
-    body: JSON.stringify(update),
-  });
-}
-
-export function reindexEmbeddings() {
-  return apiFetch<{ message: string }>(`${API_BASE}/plugins/embeddings/reindex`, {
+export function reindexEmbeddings(store: string) {
+  return apiFetch<{ message: string }>(`${API_BASE}/stores/${store}/embeddings/reindex`, {
     method: 'POST',
   });
 }
