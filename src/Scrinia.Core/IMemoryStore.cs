@@ -140,13 +140,13 @@ public interface IMemoryStore
     /// must page to exhaustion before returning; returning one page is not a degraded answer,
     /// it is a wrong one, and it is silent — the caller sees a short list, not an error.</para>
     ///
-    /// <para>This is the precondition every default implementation in this interface rests on:
-    /// <see cref="GetEntityFactStore"/>, <see cref="ListScoped(string?, string?)"/> and (through
-    /// <c>DiscoverTopics</c>) <see cref="ResolveReadScopes(string?, string?)"/> are all correct
-    /// exactly insofar as this member is. <c>HttpMemoryStore.ListScoped</c> broke it by sending
-    /// no <c>limit</c> against a server defaulting to 200 rows, and all three inherited the
-    /// truncation — including the one that makes whole topic scopes disappear rather than merely
-    /// lose entries. <c>PagedListingConformanceTests</c> is what holds this now.</para>
+    /// <para>This is the precondition every default implementation that reads through this member
+    /// rests on: <see cref="GetEntityFactStore"/>, <see cref="ListScoped(string?, string?)"/> and
+    /// (through <c>DiscoverTopics</c>) <see cref="ResolveReadScopes(string?, string?)"/> are all
+    /// correct exactly insofar as this member is. <c>HttpMemoryStore.ListScoped</c> broke it by
+    /// sending no <c>limit</c> against a server defaulting to 200 rows, and all three inherited
+    /// the truncation — including the one that makes whole topic scopes disappear rather than
+    /// merely lose entries. <c>PagedListingConformanceTests</c> is what holds this now.</para>
     /// </summary>
     List<ScopedArtifact> ListScoped(string? scopes = null);
 
