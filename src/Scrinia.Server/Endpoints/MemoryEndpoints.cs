@@ -984,9 +984,20 @@ public static class MemoryEndpoints
     /// <c>FileMemoryStore.CopyMemory</c>) — probing one here would refuse a name the operation
     /// accepts. It is skipped rather than merely harmless: <c>ParseQualifiedName("~x")</c> happens
     /// not to throw today, but this check must not depend on that.</para>
+    ///
+    /// <para>A <c>/temp/</c>-prefixed name is a DIFFERENT case and is refused outright, ahead of
+    /// that skip: it is the ephemeral alias, a surface form resolved only at the MCP facade and
+    /// the CLI. It is well-formed and parses without throwing — <c>IsEphemeral</c> is also false
+    /// for it, since the store's own ephemeral form is <c>~name</c> — so left unchecked it would
+    /// resolve to the persistent scope <c>local:temp</c> and silently store permanent bytes under
+    /// a name that means something else at every surface above the wire.</para>
     /// </summary>
     private static IResult? NameRefusal(IMemoryStore store, string name)
     {
+        if (MemoryNaming.IsEphemeralAlias(name))
+            return Results.BadRequest(new ErrorResponse(
+                $"'{name}' names a client-side ephemeral memory and cannot be stored on the "
+                + "server. Use '~name', or a persistent path."));
         if (store.IsEphemeral(name))
             return null;
         return TryResolveName(store, name, out _, out _, out IResult? refusal) ? null : refusal;
