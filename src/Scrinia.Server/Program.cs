@@ -93,6 +93,13 @@ builder.Services.AddSingleton(keyStore);
 builder.Services.AddSingleton<IStorageBackend, FilesystemBackend>();
 builder.Services.AddScoped<RequestContext>();
 
+// Maintenance takes no dependencies and has nothing to do with embeddings. It used to be
+// registered inside the embeddings block, so ref-linking and orphan marking silently vanished
+// whenever the model was missing, initialisation threw, or a plugin supplied embeddings — the
+// last being a supported configuration, which meant installing a plugin turned off orphan
+// marking. Registered here so none of those can reach it.
+builder.Services.AddSingleton<IMemoryEventSink>(_ => new MaintenanceEventSink());
+
 // Plugin DI — runs before StoreManager is constructed so plugins can replace IStorageBackend
 foreach (var plugin in loadedPlugins)
 {
@@ -149,10 +156,7 @@ if (!pluginProvidesEmbeddings)
                     sp.GetRequiredService<BuiltInEmbeddingsService>(),
                     new PathSegmentScoreContributor()));
             builder.Services.AddSingleton<IMemoryEventSink>(sp =>
-                new CompositeEventSink([
-                    sp.GetRequiredService<BuiltInEmbeddingsService>(),
-                    new MaintenanceEventSink(),
-                ]));
+                sp.GetRequiredService<BuiltInEmbeddingsService>());
             builder.Services.AddSingleton<IMemoryOperationHook>(sp =>
                 sp.GetRequiredService<BuiltInEmbeddingsService>());
 
@@ -294,7 +298,10 @@ builder.Services
             // Entity-graph signal is embedder-independent and on by default; stateless, so a
             // per-request instance is negligible against the O(N) scan it performs.
             EntityGraphScoreContext.Current = new EntityGraphScoreContributor();
-            MemoryEventSinkContext.Current = httpContext.RequestServices.GetService<IMemoryEventSink>();
+            // GetServices, not GetService: sinks are registered individually (so maintenance can
+            // be registered unconditionally), and GetService would return only the last one.
+            MemoryEventSinkContext.Current = new CompositeEventSink(
+                [.. httpContext.RequestServices.GetServices<IMemoryEventSink>()]);
             return Task.CompletedTask;
         };
     })
